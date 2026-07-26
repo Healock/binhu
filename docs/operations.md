@@ -152,9 +152,11 @@ python -m uvicorn main:app --reload --port 8000
 docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
   --single-transaction --routines --triggers \
   --default-character-set=utf8mb4 \
-  OnlineData OnlineDataArchive daily_report' \
+  --databases OnlineData OnlineDataArchive daily_report' \
   > "/root/binhu_backup_$(date +%Y%m%d_%H%M%S).sql"
 ```
+
+`--databases` 不能省略。省略后，`mysqldump` 会把第二、第三个数据库名称误当成表名，三库备份会失败。
 
 备份后至少检查：
 
