@@ -1,45 +1,104 @@
-# 滨湖智慧平台运维与开发手册
+# 开发与运维手册
 
-本手册只使用变量名和占位符。真实凭据保存在各电脑自己的环境配置或密码管理器中，不得写入共享文档、命令历史或 Git。
+## 最常用：两台电脑怎么开发
 
-## 本地配置
+记住三句话：
 
-两台电脑分别维护自己的 `.env`、`backend/.env` 和可选的 `AGENTS.local.md`；不得通过 Git、聊天或共享网盘复制这些文件。
+1. 开工前先拉取。
+2. 换电脑前先提交并推送。
+3. 功能完成后才合并到 `main`。
 
-根目录 `.env.example` 是 Docker Compose 模板：
+### 开始一个新功能
+
+不管在家里还是单位，都先更新正式代码：
+
+```powershell
+git switch main
+git pull --ff-only
+```
+
+然后建立一个功能分支：
+
+```powershell
+$branchName = "feat/example-topic"
+git switch -c $branchName
+git push -u origin $branchName
+```
+
+把 `example-topic` 换成简短的功能名称。不要建立“家里分支”或“单位分支”。
+
+### 准备换电脑
+
+离开当前电脑前，把进度保存到 GitHub：
+
+```powershell
+git status
+git add -- path/to/reviewed-file
+git commit -m "开发进度：简单说明做了什么"
+git push
+```
+
+功能没写完也可以提交到功能分支，只要暂时不合并进 `main`。
+
+### 在另一台电脑继续
+
+这台电脑第一次使用该分支：
+
+```powershell
+git fetch origin
+git switch --track origin/feat/example-topic
+```
+
+这台电脑已经有该分支：
+
+```powershell
+git switch feat/example-topic
+git pull --ff-only
+```
+
+### 功能完成
+
+检查通过后推送最后一次修改，在 GitHub 创建 Pull Request，然后合并到 `main`。
+
+合并后，两台电脑分别运行：
+
+```powershell
+git switch main
+git pull --ff-only
+```
+
+`.env`、`backend/.env` 和 `AGENTS.local.md` 不会通过 GitHub 同步，两台电脑要分别配置。
+
+## 第一次配置电脑
+
+复制项目配置模板：
 
 ```powershell
 Copy-Item .env.example .env
-# 编辑 .env，将所有 replace-with-* 占位值替换为本机值
+```
+
+然后编辑 `.env`，把所有 `replace-with-*` 示例值换成本机使用的值。不要把真实密码发到聊天或提交到 Git。
+
+如果使用 Docker，可以检查配置：
+
+```powershell
 docker compose config --quiet
 ```
 
-直接从 `backend/` 启动 FastAPI 时，`backend/.env` 使用后端字段名，不能原样复制 Compose 模板：
+如果直接启动后端，还要在 `backend/` 中建立自己的 `.env`。字段示例：
 
 ```dotenv
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=binhu
-MYSQL_PASSWORD=<local-application-password>
+MYSQL_PASSWORD=<本机数据库密码>
 MYSQL_ONLINE_DATA_DB=OnlineData
 MYSQL_ARCHIVE_DB=OnlineDataArchive
 MYSQL_DAILY_REPORT_DB=daily_report
-ENCRYPTION_KEY=<local-application-key>
+ENCRYPTION_KEY=<本机应用密钥>
 ```
 
-部署辅助脚本读取进程环境中的 `BINHU_SSH_*`，不会自动加载根目录 `.env`。PowerShell 示例：
-
-```powershell
-$env:BINHU_SSH_HOST = "<production-host>"
-$env:BINHU_SSH_PORT = "<ssh-port>"
-$env:BINHU_SSH_USER = "<ssh-user>"
-$env:BINHU_SSH_PASSWORD = "<ssh-password>"
-python upload.py
-```
-
-不要把上述真实值保存到脚本、共享 Markdown 或 shell profile。
-
-## 本地开发
+## 本地启动
 
 前端：
 
@@ -47,10 +106,15 @@ python upload.py
 Set-Location frontend
 npm install
 npm.cmd run dev
+```
+
+前端修改完成后检查生产构建：
+
+```powershell
 npm.cmd run build
 ```
 
-后端需要可用的 Python 环境、依赖和三个 MySQL 数据库：
+后端：
 
 ```powershell
 Set-Location backend
@@ -58,63 +122,31 @@ python -m pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8000
 ```
 
-Docker Compose 可用于本地一体化运行，但当前 Compose 的端口发布策略不适合作为生产安全基线，部署前必须先阅读 [风险登记](known-risks.md)。
+后端启动前需要三个可用的 MySQL 数据库，具体用途见 [架构说明](architecture.md)。
 
-## 家庭与单位双地点 Git 流程
+## 部署服务器前
 
-开始新任务：
+目前服务器还有一些安全问题没有处理，不能把现有 Compose 和 nginx 配置直接当成最终部署方案。先看 [风险清单](known-risks.md)。
 
-```powershell
-git switch main
-git pull --ff-only
-$branchName = "feat/example-topic"
-git switch -c $branchName
-git push -u origin $branchName
-```
+只有用户明确要求部署时，Agent 才能操作服务器。部署前必须确认：
 
-离开当前电脑前：
+1. 要部署的是哪个版本。
+2. 前端构建和后端检查已经通过。
+3. 三个数据库已经备份，而且备份文件不是空的。
+4. 服务器上的 `.env` 和数据卷不会被覆盖。
+5. 出问题时知道怎么退回旧版本。
 
-```powershell
-git status
-git add -- path/to/reviewed-file
-git commit -m "feat: describe the completed slice"
-git push
-```
+部署后要检查：
 
-另一台电脑首次继续该分支：
+1. 健康接口能否访问。
+2. 容器是否正常运行。
+3. 日志是否有报错。
+4. 登录和退出是否正常。
+5. 同步、统计和关键数据是否正常。
 
-```powershell
-git fetch origin
-git switch --track origin/feat/example-topic
-```
+## 数据库备份与恢复
 
-本机已有该分支时：
-
-```powershell
-git switch feat/example-topic
-git pull --ff-only
-```
-
-完成后通过 GitHub PR 合并，或在确认 `main` 最新且验证通过后执行非强制合并。不要创建地点分支，不要依赖 `stash` 跨电脑交接，不要对共享分支强制推送。
-
-## 生产部署门禁
-
-当前生产入口、MySQL 暴露和默认凭据仍在第二阶段整改范围内。在这些风险关闭前，不得把现有 Compose/nginx 配置当作已验证的生产模板自动部署。
-
-任何生产部署都必须按顺序满足：
-
-1. 用户明确授权本次部署目标和范围。
-2. `main` 与 `origin/main` 同步，工作树干净，目标提交可追溯。
-3. 前端生产构建、Python 检查和 Compose 配置解析通过。
-4. 备份三个数据库，并确认备份文件非空、时间和目标正确。
-5. 保存远程配置与回滚所需版本，不覆盖远程 `.env` 或数据卷。
-6. 使用受控上传或 Git 拉取更新源码，重建必要服务。
-7. 验证健康接口、入口响应、容器状态、日志、登录、OAuth 状态和关键表数据。
-8. 失败时优先回滚应用，不删除卷或重建数据库。
-
-## 备份与恢复
-
-在服务器上创建一致性备份：
+下面是给负责运维的人使用的备份命令。执行前仍要确认服务器、容器和备份目录是否正确：
 
 ```bash
 docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
@@ -124,17 +156,29 @@ docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
   > "/root/binhu_backup_$(date +%Y%m%d_%H%M%S).sql"
 ```
 
-备份后至少验证文件存在、大小大于零，并检查转储开头；重要变更前还应复制到服务器外的受控存储。
+备份后至少检查：
 
-恢复属于高风险操作，执行前必须：
+- 文件存在。
+- 文件大小不是 0。
+- 文件开头是正常的 SQL 转储内容。
+- 重要操作前，备份已经复制到服务器之外的安全位置。
 
-- 明确备份文件、目标服务器和目标数据库。
-- 再做一次当前状态备份。
-- 停止会写数据库的应用或进入维护窗口。
-- 先在隔离数据库验证转储可读。
-- 获得用户对覆盖范围的明确确认。
-- 恢复后检查库表数量、关键记录、登录、同步和日报查询。
+恢复会覆盖数据，不能自动执行。恢复前必须再次备份当前数据，并得到用户对目标服务器、备份文件和覆盖范围的明确确认。
 
-禁止把 `docker compose down -v` 作为恢复或排障捷径。
+不要使用 `docker compose down -v` 排错或恢复数据，它会删除数据卷。
+
+## 部署脚本使用的变量
+
+`upload.py` 等脚本从 `BINHU_SSH_*` 环境变量读取服务器信息，例如：
+
+```powershell
+$env:BINHU_SSH_HOST = "<服务器地址>"
+$env:BINHU_SSH_PORT = "<SSH端口>"
+$env:BINHU_SSH_USER = "<SSH用户>"
+$env:BINHU_SSH_PASSWORD = "<SSH密码>"
+python upload.py
+```
+
+这里只能保留示例。真实值由每台电脑自己保存，不能写进脚本或共享文档。
 
 _最后核对：2026-07-26_
