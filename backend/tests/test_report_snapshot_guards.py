@@ -77,7 +77,12 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["range"]["days"], 1)
         executed_sql = [call.args[0] for call in cursor.execute.await_args_list]
         self.assertTrue(any(snapshot in sql for sql in executed_sql))
-        self.assertTrue(any("DATE(_first_seen_at) BETWEEN %s AND %s" in sql for sql in executed_sql))
+        self.assertTrue(
+            any(
+                "_first_seen_at >= %s AND _first_seen_at < %s" in sql
+                for sql in executed_sql
+            )
+        )
 
     async def test_build_without_today_snapshot_creates_no_report_tables(self):
         pool, cursor = make_database(fetchone_values=[None])

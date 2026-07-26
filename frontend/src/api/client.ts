@@ -228,6 +228,26 @@ export function formatUTCTime(utcStr: string | null | undefined, timezone: strin
   } catch { return utcStr }
 }
 
+export function formatDateInTimezone(date: Date = new Date(), timezone: string = 'Asia/Shanghai'): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+    const values = Object.fromEntries(parts.map(part => [part.type, part.value]))
+    return `${values.year}-${values.month}-${values.day}`
+  } catch {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date)
+  }
+}
+
 // ---- Auth ----
 export async function getAuthStatus(): Promise<OAuthStatus> {
   const { data } = await api.get('/auth/status')

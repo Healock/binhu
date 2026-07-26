@@ -1,8 +1,8 @@
 """日报 API - 生成和查看分汇总表 + 总汇总表"""
 
-from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Query
+from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
 from services.report_builders.summary import build_summary, get_summary
@@ -29,7 +29,7 @@ async def build_report(
     parser_type: str = Query("全链条"),
 ):
     """手动触发日报生成"""
-    d = report_date or date.today().isoformat()
+    d = report_date or (await get_business_date_from_db()).isoformat()
     if parser_type == "总汇总表":
         result = await build_summary(d)
         if not result.get("implemented"):
@@ -80,7 +80,7 @@ async def list_reports():
 @router.get("/today")
 async def get_today_report(parser_type: str = Query("全链条")):
     """获取今天的日报"""
-    today = date.today().isoformat()
+    today = (await get_business_date_from_db()).isoformat()
     if parser_type == "总汇总表":
         return await get_summary(today)
     return await builder.get_report(today, parser_type)
