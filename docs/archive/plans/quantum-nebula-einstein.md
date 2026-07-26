@@ -1,5 +1,8 @@
 # 全链条汇总工具 -- 实现计划
 
+> [!WARNING]
+> 历史证据，不可直接执行。内容可能与当前源码、配置和运行环境不一致；现行规则见 [文档索引](../../README.md) 与 [风险登记](../../known-risks.md)。
+
 ## 架构概览
 
 ```
@@ -265,7 +268,7 @@ services:
       MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD
       MYSQL_DATABASE: quanliantiao
       MYSQL_POOL_SIZE: 10
-      ENCRYPTION_KEY: changeme-in-production
+      ENCRYPTION_KEY: <historical-placeholder>
     depends_on:
       mysql:
         condition: service_healthy  # 等 MySQL 健康检查通过后再启动
@@ -602,3 +605,4 @@ GROUP BY 核查人, 下发日期;
 - 端到端流程验证
 - 错误场景覆盖
 - UI 完善
+> **历史归档，禁止直接执行。** 本计划描述旧版本实现，路径、端口、变量和操作顺序可能已失效。请先阅读 `docs/README.md` 与 `docs/known-risks.md`，并重新验证当前源码和运行状态。

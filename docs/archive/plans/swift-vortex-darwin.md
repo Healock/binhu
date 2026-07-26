@@ -1,7 +1,10 @@
 # 滨湖智慧平台 / binhu 重命名实施计划
 
+> [!WARNING]
+> 历史证据，不可直接执行。内容可能与当前源码、配置和运行环境不一致；现行规则见 [文档索引](../../README.md) 与 [风险登记](../../known-risks.md)。
+
 > 范围:C 彻底全改(含 MySQL 库名/用户名/密码、加密密钥、远程目录路径、容器名)
-> 本地目录 `C:\Users\Lenovo\Desktop\Bhzh` 保持不动,只改内容
+> 本地目录 `仓库根目录` 保持不动,只改内容
 > 远程目录 `/root/bhzh` → `/root/binhu`
 
 ---
@@ -11,24 +14,24 @@
 在动手前必须先纠正用户清单中三个对系统行为的误解,它们直接决定方案选型:
 
 ### 发现 1:ENCRYPTION_KEY 是"死配置",改它零风险
-- `backend/config.py:16` 定义了 `ENCRYPTION_KEY`,但**全 backend 没有任何代码读取它**。
+- `backend/config.py` 定义了 `ENCRYPTION_KEY`,但**全 backend 没有任何代码读取它**。
 - Grep 搜索 `encrypt|decrypt|Fernet|AES|cryptography` 在 backend 仅命中 3 处:
-  - `config.py:16` — 配置定义(无人引用)
-  - `requirements.txt:7` — `cryptography==44.0.0` 包声明(代码中无 import)
-  - `auth.py:45` — 注释 `# 简单的加密存储(生产环境应使用 AES)`
-- `backend/routers/auth.py:46-50` 的 `save_oauth` 实际是**明文 INSERT**:
+  - `config.py` — 配置定义(无人引用)
+  - `requirements.txt` — `cryptography==44.0.0` 包声明(代码中无 import)
+  - `auth.py` — 注释 `# 简单的加密存储(生产环境应使用 AES)`
+- `backend/routers/auth.py` 的 `save_oauth` 实际是**明文 INSERT**:
   ```python
   await cur.execute(
       """INSERT INTO oauth_tokens (...) VALUES (%s, %s, %s, %s, %s, %s)""",
       (data.client_id, data.client_secret, data.access_token, ...)
   )
   ```
-- `backend/services/sync_engine.py:96-104` 的 `_get_oauth_creds` 也是**明文 SELECT** 直接用。
+- `backend/services/sync_engine.py` 的 `_get_oauth_creds` 也是**明文 SELECT** 直接用。
 
 **结论**: 用户担心的"选项A/B/C 解密重加密"是伪问题。OAuth 凭据本来就是明文存,改 ENCRYPTION_KEY 字符串不会破坏任何数据。**推荐直接改字符串 `$BINHU_ENCRYPTION_KEY` → `$BINHU_ENCRYPTION_KEY`**,无需任何数据迁移步骤。`cryptography` 包和 `ENCRYPTION_KEY` 配置保留(作为占位,无害)。
 
 ### 发现 2:Docker volume 名会随 compose 项目名变化,数据不能"原地保留"
-- `docker-compose.yml:15-16` 用的是命名卷 `mysql_data:/var/lib/mysql`。
+- `docker-compose.yml` 用的是命名卷 `mysql_data:/var/lib/mysql`。
 - Docker Compose 的命名卷实际名 = `<项目名>_mysql_data`,而**项目名默认取自所在目录名**。
 - 当前远程目录 `/root/bhzh` → volume 实际名是 `bhzh_mysql_data`。
 - 改名为 `/root/binhu` 后,新容器启动会创建 `binhu_mysql_data`(空卷),旧卷 `bhzh_mysql_data` 的数据**不会自动迁移**。
@@ -134,7 +137,7 @@ docker exec binhu-mysql mysql -uroot -p$BINHU_MYSQL_ROOT_PASSWORD -e "USE binhu;
 
 ### 2.5 root 密码注意
 
-`docker-compose.yml:9` `MYSQL_ROOT_PASSWORD: $BINHU_MYSQL_ROOT_PASSWORD` 保持不变(用户清单未要求改 root 密码,且 root 只在容器内本地连接,改了反而麻烦)。如果你也想改 root 密码,需在 docker-compose.yml:9 同步修改,并在 2.1/2.4 的命令里替换。**本计划不改 root 密码**。
+`docker-compose.yml` `MYSQL_ROOT_PASSWORD: $BINHU_MYSQL_ROOT_PASSWORD` 保持不变(用户清单未要求改 root 密码,且 root 只在容器内本地连接,改了反而麻烦)。如果你也想改 root 密码,需在 docker-compose.yml 同步修改,并在 2.1/2.4 的命令里替换。**本计划不改 root 密码**。
 
 ---
 
@@ -148,108 +151,108 @@ docker exec binhu-mysql mysql -uroot -p$BINHU_MYSQL_ROOT_PASSWORD -e "USE binhu;
 - 改这个字符串只是改一个配置值,对运行时行为零影响。
 
 **改动**:
-- `backend/config.py:16`: `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"` → `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"`
-- `docker-compose.yml:39`: `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY` → `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY`
+- `backend/config.py`: `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"` → `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"`
+- `docker-compose.yml`: `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY` → `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY`
 
-`cryptography==44.0.0` 在 `requirements.txt:7` 保留不动(无 import,无害;删了会改动依赖文件反而不必要)。
+`cryptography==44.0.0` 在 `requirements.txt` 保留不动(无 import,无害;删了会改动依赖文件反而不必要)。
 
 ---
 
-## 4. 文件修改清单(精确到行号和 old → new)
+## 4. 文件修改清单(历史 old → new)
 
-> 路径全部基于本地 `c:\Users\Lenovo\Desktop\Bhzh\`
+> 路径全部基于本地 `仓库根目录\`
 > 远程对应路径见部署章节
 
 ### 4.1 第一层 bhzh 路径(14 处 + 1 文件名)
 
-**文件 1: `c:\Users\Lenovo\Desktop\Bhzh\upload.py`**
-- 行 10: `REMOTE_BASE = "/root/bhzh"` → `REMOTE_BASE = "/root/binhu"`
-- 行 11: `LOCAL_BASE = r"C:\Users\Lenovo\WorkBuddy\全链条汇总工具"` → `LOCAL_BASE = r"C:\Users\Lenovo\Desktop\Bhzh"`
+**文件 1: `仓库根目录\upload.py`**
+- `REMOTE_BASE = "/root/bhzh"` → `REMOTE_BASE = "/root/binhu"`
+- `LOCAL_BASE = r"旧仓库根目录"` → `LOCAL_BASE = r"仓库根目录"`
   (此行同时属于第三层:消除了"全链条汇总工具"字符串,并修正了已过时的本地路径——实际项目在 Desktop\Bhzh 而非 WorkBuddy\全链条汇总工具)
 
-**文件 2: `c:\Users\Lenovo\Desktop\Bhzh\setup_server.py`**
-- 行 50: `cp /root/bhzh/nginx/bhzh.conf /etc/nginx/conf.d/bhzh.conf` → `cp /root/binhu/nginx/binhu.conf /etc/nginx/conf.d/binhu.conf`
-- 行 66: `cd /root/bhzh && docker compose pull 2>&1 || true` → `cd /root/binhu && docker compose pull 2>&1 || true`
-- 行 68: `cd /root/bhzh && docker compose up -d --build 2>&1` → `cd /root/binhu && docker compose up -d --build 2>&1`
-- 行 75: `cd /root/bhzh && docker compose ps` → `cd /root/binhu && docker compose ps`
-- 行 82: `docker inspect quanliantiao-mysql` → `docker inspect binhu-mysql`(此行属第二层,在此文件一并改)
-- 行 93: `docker logs quanliantiao-backend` → `docker logs binhu-backend`(此行属第二层)
+**文件 2: `仓库根目录\setup_server.py`**
+- `cp /root/bhzh/nginx/bhzh.conf /etc/nginx/conf.d/bhzh.conf` → `cp /root/binhu/nginx/binhu.conf /etc/nginx/conf.d/binhu.conf`
+- `cd /root/bhzh && docker compose pull 2>&1 || true` → `cd /root/binhu && docker compose pull 2>&1 || true`
+- `cd /root/bhzh && docker compose up -d --build 2>&1` → `cd /root/binhu && docker compose up -d --build 2>&1`
+- `cd /root/bhzh && docker compose ps` → `cd /root/binhu && docker compose ps`
+- `docker inspect quanliantiao-mysql` → `docker inspect binhu-mysql`(此行属第二层,在此文件一并改)
+- `docker logs quanliantiao-backend` → `docker logs binhu-backend`(此行属第二层)
 
-**文件 3: `c:\Users\Lenovo\Desktop\Bhzh\retry_deploy.py`**
-- 行 191(注释): `# Try to add bhzh.conf to the right place` → `# Try to add binhu.conf to the right place`
-- 行 194: `cp /root/bhzh/nginx/bhzh.conf {nginx_conf_dir}bhzh.conf` → `cp /root/binhu/nginx/binhu.conf {nginx_conf_dir}binhu.conf`
-- 行 196(注释): `# If bhzh.conf has server_name _, ...` → `# If binhu.conf has server_name _, ...`
-- 行 203: `if [ "$f" != "{nginx_conf_dir}bhzh.conf" ]; then` → `if [ "$f" != "{nginx_conf_dir}binhu.conf" ]; then`
-- 行 218: `cat /root/bhzh/nginx/bhzh.conf` → `cat /root/binhu/nginx/binhu.conf`
-- 行 230: `cd /root/bhzh` → `cd /root/binhu`
-- 行 232: `docker rm -f quanliantiao-mysql quanliantiao-backend` → `docker rm -f binhu-mysql binhu-backend`(此行属第二层)
-- 行 238: `cd /root/bhzh && docker compose build backend` → `cd /root/binhu && docker compose build backend`
-- 行 244: `cd /root/bhzh && docker compose up -d` → `cd /root/binhu && docker compose up -d`
-- 行 257: `docker inspect quanliantiao-mysql` → `docker inspect binhu-mysql`(此行属第二层)
-- 行 265: `docker logs quanliantiao-mysql --tail 20` → `docker logs binhu-mysql --tail 20`(此行属第二层)
-- 行 269: `docker logs quanliantiao-mysql --tail 30` → `docker logs binhu-mysql --tail 30`(此行属第二层)
-- 行 273: `docker logs quanliantiao-backend --tail 30` → `docker logs binhu-backend --tail 30`(此行属第二层)
+**文件 3: `仓库根目录\retry_deploy.py`**
+- `# Try to add bhzh.conf to the right place` → `# Try to add binhu.conf to the right place`
+- `cp /root/bhzh/nginx/bhzh.conf {nginx_conf_dir}bhzh.conf` → `cp /root/binhu/nginx/binhu.conf {nginx_conf_dir}binhu.conf`
+- `# If bhzh.conf has server_name _, ...` → `# If binhu.conf has server_name _, ...`
+- `if [ "$f" != "{nginx_conf_dir}bhzh.conf" ]; then` → `if [ "$f" != "{nginx_conf_dir}binhu.conf" ]; then`
+- `cat /root/bhzh/nginx/bhzh.conf` → `cat /root/binhu/nginx/binhu.conf`
+- `cd /root/bhzh` → `cd /root/binhu`
+- `docker rm -f quanliantiao-mysql quanliantiao-backend` → `docker rm -f binhu-mysql binhu-backend`(此行属第二层)
+- `cd /root/bhzh && docker compose build backend` → `cd /root/binhu && docker compose build backend`
+- `cd /root/bhzh && docker compose up -d` → `cd /root/binhu && docker compose up -d`
+- `docker inspect quanliantiao-mysql` → `docker inspect binhu-mysql`(此行属第二层)
+- `docker logs quanliantiao-mysql --tail 20` → `docker logs binhu-mysql --tail 20`(此行属第二层)
+- `docker logs quanliantiao-mysql --tail 30` → `docker logs binhu-mysql --tail 30`(此行属第二层)
+- `docker logs quanliantiao-backend --tail 30` → `docker logs binhu-backend --tail 30`(此行属第二层)
 
-**文件 4: `c:\Users\Lenovo\Desktop\Bhzh\nginx\bhzh.conf`**
-- 行 6: `root /root/bhzh/frontend/dist;` → `root /root/binhu/frontend/dist;`
+**文件 4: `仓库根目录\nginx\bhzh.conf`**
+- `root /root/bhzh/frontend/dist;` → `root /root/binhu/frontend/dist;`
 - **文件名本身改名**: `nginx/bhzh.conf` → `nginx/binhu.conf`(需要本地 mv + 远程 mv)
 
 ### 4.2 第二层 quanliantiao(全部出处,共 23 处跨 6 文件)
 
-**文件 5: `c:\Users\Lenovo\Desktop\Bhzh\docker-compose.yml`**
-- 行 6: `container_name: quanliantiao-mysql` → `container_name: binhu-mysql`
-- 行 10: `MYSQL_DATABASE: quanliantiao` → `MYSQL_DATABASE: binhu`
-- 行 11: `MYSQL_USER: quanliantiao` → `MYSQL_USER: binhu`
-- 行 12: `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD` → `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD`
-- 行 28: `container_name: quanliantiao-backend` → `container_name: binhu-backend`
-- 行 35: `MYSQL_USER: quanliantiao`(backend env) → `MYSQL_USER: binhu`
-- 行 36: `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD`(backend env) → `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD`
-- 行 37: `MYSQL_DATABASE: quanliantiao`(backend env) → `MYSQL_DATABASE: binhu`
-- 行 39: `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY` → `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY`
+**文件 5: `仓库根目录\docker-compose.yml`**
+- `container_name: quanliantiao-mysql` → `container_name: binhu-mysql`
+- `MYSQL_DATABASE: quanliantiao` → `MYSQL_DATABASE: binhu`
+- `MYSQL_USER: quanliantiao` → `MYSQL_USER: binhu`
+- `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD` → `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD`
+- `container_name: quanliantiao-backend` → `container_name: binhu-backend`
+- `MYSQL_USER: quanliantiao`(backend env) → `MYSQL_USER: binhu`
+- `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD`(backend env) → `MYSQL_PASSWORD: $BINHU_MYSQL_PASSWORD`
+- `MYSQL_DATABASE: quanliantiao`(backend env) → `MYSQL_DATABASE: binhu`
+- `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY` → `ENCRYPTION_KEY: $BINHU_ENCRYPTION_KEY`
 
-**文件 6: `c:\Users\Lenovo\Desktop\Bhzh\backend\config.py`**
-- 行 10: `MYSQL_USER: str = "quanliantiao"` → `MYSQL_USER: str = "binhu"`
-- 行 11: `MYSQL_PASSWORD: str = "$BINHU_MYSQL_PASSWORD"` → `MYSQL_PASSWORD: str = "$BINHU_MYSQL_PASSWORD"`
-- 行 12: `MYSQL_DATABASE: str = "quanliantiao"` → `MYSQL_DATABASE: str = "binhu"`
-- 行 16: `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"` → `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"`
+**文件 6: `仓库根目录\backend\config.py`**
+- `MYSQL_USER: str = "quanliantiao"` → `MYSQL_USER: str = "binhu"`
+- `MYSQL_PASSWORD: str = "$BINHU_MYSQL_PASSWORD"` → `MYSQL_PASSWORD: str = "$BINHU_MYSQL_PASSWORD"`
+- `MYSQL_DATABASE: str = "quanliantiao"` → `MYSQL_DATABASE: str = "binhu"`
+- `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"` → `ENCRYPTION_KEY: str = "$BINHU_ENCRYPTION_KEY"`
 
-**文件 7/8: setup_server.py 和 retry_deploy.py** — 已在 4.1 列出(setup_server.py:82,93;retry_deploy.py:232,257,265,269,273)
+**文件 7/8: setup_server.py 和 retry_deploy.py** — 已在 4.1 列出(setup_server.py;retry_deploy.py)
 
-**文件 9: `c:\Users\Lenovo\Desktop\Bhzh\frontend\package.json`**
-- 行 2: `"name": "quanliantiao-frontend",` → `"name": "binhu-frontend",`
+**文件 9: `仓库根目录\frontend\package.json`**
+- `"name": "quanliantiao-frontend",` → `"name": "binhu-frontend",`
 
-**文件 10: `c:\Users\Lenovo\Desktop\Bhzh\frontend\package-lock.json`**
-- 行 2: `"name": "quanliantiao-frontend",` → `"name": "binhu-frontend",`
-- 行 8: `"name": "quanliantiao-frontend",`(packages[""] 节点内) → `"name": "binhu-frontend",`
+**文件 10: `仓库根目录\frontend\package-lock.json`**
+- `"name": "quanliantiao-frontend",` → `"name": "binhu-frontend",`
+- `"name": "quanliantiao-frontend",`(packages[""] 节点内) → `"name": "binhu-frontend",`
 - **不需要跑 `npm install`**:package-lock.json 里这两处只是顶层包名元数据(name 字段),不影响依赖树解析。手动改完直接 `npm run build` 即可。若想完全干净,改完 `npm install` 重新生成 lock 也行,但非必需。
 
 ### 4.3 第三层 "全链条汇总工具"(源文件 7 处)
 
-**文件 11: `c:\Users\Lenovo\Desktop\Bhzh\backend\main.py`**
-- 行 1: `"""全链条汇总工具 - FastAPI 入口"""` → `"""滨湖智慧平台 - FastAPI 入口"""`
-- 行 23: `title="全链条汇总工具",` → `title="滨湖智慧平台",`
-- 行 24: `description="从腾讯文档获取全链条数据，统计核查结果，生成数据透视表",` → `description="从腾讯文档获取数据，统计核查结果，生成数据透视表",`(去掉"全链条"业务前缀,改成中性表述)
-- 行 47: `return {"status": "ok", "message": "全链条汇总工具运行中"}` → `return {"status": "ok", "message": "滨湖智慧平台运行中"}`
+**文件 11: `仓库根目录\backend\main.py`**
+- `"""全链条汇总工具 - FastAPI 入口"""` → `"""滨湖智慧平台 - FastAPI 入口"""`
+- `title="全链条汇总工具",` → `title="滨湖智慧平台",`
+- `description="从腾讯文档获取全链条数据，统计核查结果，生成数据透视表",` → `description="从腾讯文档获取数据，统计核查结果，生成数据透视表",`(去掉"全链条"业务前缀,改成中性表述)
+- `return {"status": "ok", "message": "全链条汇总工具运行中"}` → `return {"status": "ok", "message": "滨湖智慧平台运行中"}`
 
-**文件 12: `c:\Users\Lenovo\Desktop\Bhzh\backend\init.sql`**
-- 行 1: `-- 全链条汇总工具 - 数据库初始化脚本` → `-- 滨湖智慧平台 - 数据库初始化脚本`
+**文件 12: `仓库根目录\backend\init.sql`**
+- `-- 全链条汇总工具 - 数据库初始化脚本` → `-- 滨湖智慧平台 - 数据库初始化脚本`
 
-**文件 13: `c:\Users\Lenovo\Desktop\Bhzh\backend\schemas\spreadsheet.py`**
-- 行 10: `data_sheet_id: str = Field(default="000001", description="全链条数据所在子表ID")` → `data_sheet_id: str = Field(default="000001", description="数据所在子表ID")`
+**文件 13: `仓库根目录\backend\schemas\spreadsheet.py`**
+- `data_sheet_id: str = Field(default="000001", description="全链条数据所在子表ID")` → `data_sheet_id: str = Field(default="000001", description="数据所在子表ID")`
 
-**文件 14: `c:\Users\Lenovo\Desktop\Bhzh\upload.py`** — 行 11 已在 4.1 列出(消除"全链条汇总工具")
+**文件 14: `仓库根目录\upload.py`** — 对应位置 已在 4.1 列出(消除"全链条汇总工具")
 
-**文件 15: `c:\Users\Lenovo\Desktop\Bhzh\retry_deploy.py`**
-- 行 63: `print("  全链条汇总工具 - 重新部署")` → `print("  滨湖智慧平台 - 重新部署")`
+**文件 15: `仓库根目录\retry_deploy.py`**
+- `print("  全链条汇总工具 - 重新部署")` → `print("  滨湖智慧平台 - 重新部署")`
 
-**文件 16: `c:\Users\Lenovo\Desktop\Bhzh\frontend\index.html`**
-- 行 6: `<title>全链条汇总工具</title>` → `<title>滨湖智慧平台</title>`
+**文件 16: `仓库根目录\frontend\index.html`**
+- `<title>全链条汇总工具</title>` → `<title>滨湖智慧平台</title>`
 
-**文件 17: `c:\Users\Lenovo\Desktop\Bhzh\frontend\src\components\Layout.tsx`**
-- 行 10: `<h1 className="text-lg font-bold text-gray-800">全链条汇总工具</h1>` → `<h1 className="text-lg font-bold text-gray-800">滨湖智慧平台</h1>`
+**文件 17: `仓库根目录\frontend\src\components\Layout.tsx`**
+- `<h1 className="text-lg font-bold text-gray-800">全链条汇总工具</h1>` → `<h1 className="text-lg font-bold text-gray-800">滨湖智慧平台</h1>`
 
 **构建产物(自动重生成,不手改)**:
-- `frontend/dist/index.html:6`
+- `frontend/dist/index.html`
 - `frontend/dist/assets/index-*.js:67`
 
 改完源文件后,在本地或服务器执行 `cd frontend && npm run build`,dist/ 自动更新。
@@ -270,14 +273,14 @@ docker exec binhu-mysql mysql -uroot -p$BINHU_MYSQL_ROOT_PASSWORD -e "USE binhu;
 
 ## 5. 部署步骤(本地 → 服务器)
 
-### 阶段 A:本地代码改动(在 `C:\Users\Lenovo\Desktop\Bhzh` 下完成第 4 节所有修改)
+### 阶段 A:本地代码改动(在 `仓库根目录` 下完成第 4 节所有修改)
 
 1. 按第 4 节清单逐文件修改 17 个文件
 2. 把 `nginx/bhzh.conf` 重命名为 `nginx/binhu.conf`
 3. 在 `frontend/` 目录下执行 `npm run build` 重新生成 `frontend/dist/`
    - 若本地未装 node_modules,可跳过,在服务器上 build;但因为 upload.py 的 UPLOAD_ITEMS 包含 `frontend/dist`,本地 build 好再上传更稳
 
-### 阶段 B:服务器侧 — 停服窗口开始(SSH 到 $BINHU_SSH_HOST:51234)
+### 阶段 B:服务器侧 — 停服窗口开始(SSH 到 $BINHU_SSH_HOST:$BINHU_SSH_PORT)
 
 ```bash
 # B1. 关键:旧容器还活着时导出数据库(数据保险)
@@ -499,35 +502,36 @@ docker compose ps  # 在 /root/binhu 下
 ## 8. 关键风险与注意事项
 
 1. **数据备份是第一优先级**:阶段 B1 的 mysqldump 必须在停容器前完成,且校验文件非空。这是整个流程的安全网。
-2. **upload.py 的 LOCAL_BASE 路径修正**:原值 `C:\Users\Lenovo\WorkBuddy\全链条汇总工具` 是过时路径,改为实际的 `C:\Users\Lenovo\Desktop\Bhzh`。否则阶段 C2 上传会失败。
-3. **nginx 配置文件名冲突**:阶段 C3 删除旧 bhzh.conf 后,如果 `/etc/nginx/conf.d/` 下还有其他监听 80 端口的 default 配置,会和 binhu.conf 的 `server_name _;` 冲突。retry_deploy.py:201-208 已有冲突处理逻辑,但首次部署建议手动 `ls /etc/nginx/conf.d/` 确认。
-4. **MySQL root 密码不变**:本计划保持 `MYSQL_ROOT_PASSWORD: $BINHU_MYSQL_ROOT_PASSWORD` 不变。若要改,需同步修改 docker-compose.yml:9 和所有 mysqldump/mysql 命令。
+2. **upload.py 的 LOCAL_BASE 路径修正**:原值 `旧仓库根目录` 是过时路径,改为实际的 `仓库根目录`。否则阶段 C2 上传会失败。
+3. **nginx 配置文件名冲突**:阶段 C3 删除旧 bhzh.conf 后,如果 `/etc/nginx/conf.d/` 下还有其他监听 80 端口的 default 配置,会和 binhu.conf 的 `server_name _;` 冲突。retry_deploy.py 已有冲突处理逻辑,但首次部署建议手动 `ls /etc/nginx/conf.d/` 确认。
+4. **MySQL root 密码不变**:本计划保持 `MYSQL_ROOT_PASSWORD: $BINHU_MYSQL_ROOT_PASSWORD` 不变。若要改,需同步修改 docker-compose.yml 和所有 mysqldump/mysql 命令。
 5. **package-lock.json 改完不需要 npm install**:只是 name 元数据变更,不影响依赖解析。改完直接 `npm run build`。
 6. **旧 volume 保留**:阶段 E3 的 `docker volume rm bhzh_mysql_data` 是可选清理,建议观察 24-48h 确认无问题再删。
-7. **本地 Bhzh 目录名不动**:本地路径 `C:\Users\Lenovo\Desktop\Bhzh` 保持,只有 upload.py:11 的 LOCAL_BASE 指向它(已修正)。
+7. **本地 Bhzh 目录名不动**:本地路径 `仓库根目录` 保持,只有 upload.py 的 LOCAL_BASE 指向它(已修正)。
 
 ---
 
 ## 9. 涉及的关键文件路径汇总(供实施时快速定位)
 
-本地(要改的文件,绝对路径):
-- `c:\Users\Lenovo\Desktop\Bhzh\docker-compose.yml`
-- `c:\Users\Lenovo\Desktop\Bhzh\backend\config.py`
-- `c:\Users\Lenovo\Desktop\Bhzh\backend\main.py`
-- `c:\Users\Lenovo\Desktop\Bhzh\backend\init.sql`
-- `c:\Users\Lenovo\Desktop\Bhzh\backend\schemas\spreadsheet.py`
-- `c:\Users\Lenovo\Desktop\Bhzh\setup_server.py`
-- `c:\Users\Lenovo\Desktop\Bhzh\retry_deploy.py`
-- `c:\Users\Lenovo\Desktop\Bhzh\upload.py`
-- `c:\Users\Lenovo\Desktop\Bhzh\nginx\bhzh.conf` → 改名为 `nginx\binhu.conf`
-- `c:\Users\Lenovo\Desktop\Bhzh\frontend\package.json`
-- `c:\Users\Lenovo\Desktop\Bhzh\frontend\package-lock.json`
-- `c:\Users\Lenovo\Desktop\Bhzh\frontend\index.html`
-- `c:\Users\Lenovo\Desktop\Bhzh\frontend\src\components\Layout.tsx`
-- `c:\Users\Lenovo\Desktop\Bhzh\frontend\dist\` (由 npm run build 自动重生成)
+本地(均以仓库根目录为基准):
+- `仓库根目录\docker-compose.yml`
+- `仓库根目录\backend\config.py`
+- `仓库根目录\backend\main.py`
+- `仓库根目录\backend\init.sql`
+- `仓库根目录\backend\schemas\spreadsheet.py`
+- `仓库根目录\setup_server.py`
+- `仓库根目录\retry_deploy.py`
+- `仓库根目录\upload.py`
+- `仓库根目录\nginx\bhzh.conf` → 改名为 `nginx\binhu.conf`
+- `仓库根目录\frontend\package.json`
+- `仓库根目录\frontend\package-lock.json`
+- `仓库根目录\frontend\index.html`
+- `仓库根目录\frontend\src\components\Layout.tsx`
+- `仓库根目录\frontend\dist\` (由 npm run build 自动重生成)
 
 远程(部署目标):
 - `/root/bhzh` → `/root/binhu`(目录改名)
 - `/etc/nginx/conf.d/bhzh.conf` → `/etc/nginx/conf.d/binhu.conf`
 - Docker volume: `bhzh_mysql_data`(旧,保留) → `binhu_mysql_data`(新)
 - Docker 容器:`quanliantiao-mysql/backend`(旧) → `binhu-mysql/backend`(新)
+> **历史归档，禁止直接执行。** 本计划描述旧版本实现，路径、端口、变量和操作顺序可能已失效。请先阅读 `docs/README.md` 与 `docs/known-risks.md`，并重新验证当前源码和运行状态。

@@ -1,7 +1,10 @@
 # 全链条汇总工具 - 服务器部署计划
 
+> [!WARNING]
+> 历史证据，不可直接执行。内容可能与当前源码、配置和运行环境不一致；现行规则见 [文档索引](../../README.md) 与 [风险登记](../../known-risks.md)。
+
 ## 目标
-将全链条汇总工具部署到 `root@$BINHU_SSH_HOST:51234`，路径 `/root/bhzh`。
+将全链条汇总工具部署到 `$BINHU_SSH_USER@$BINHU_SSH_HOST:$BINHU_SSH_PORT`，路径 `/root/bhzh`。
 
 ## 部署架构
 
@@ -110,3 +113,4 @@ cd /root/bhzh && docker-compose up -d
 3. **首次启动**: MySQL 首次初始化需要约 30 秒，Backend 依赖健康检查
 4. **防火墙**: 确保服务器防火墙开放 80 端口（Nginx）
 5. **腾讯文档 API**: 需要在 OAuth 设置中配置回调地址为服务器 IP
+> **历史归档，禁止直接执行。** 本计划描述旧版本实现，路径、端口、变量和操作顺序可能已失效。请先阅读 `docs/README.md` 与 `docs/known-risks.md`，并重新验证当前源码和运行状态。
