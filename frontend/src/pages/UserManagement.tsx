@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Alert, Button, Input, Modal, Select, Tag } from 'antd'
+import { PlusOutlined } from '@ant-design/icons'
 import { ROLE_LABELS } from '../types'
 import type { Role } from '../types'
 import { getDisplayMode } from '../utils/displayMode'
+import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
 interface UserItem {
   id: number
@@ -21,13 +24,19 @@ export default function UserManagement() {
   const [formRole, setFormRole] = useState<Role>('member')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [loadError, setLoadError] = useState('')
 
   const fetchUsers = useCallback(async () => {
+    setLoading(true)
+    setLoadError('')
     try {
       const res = await fetch('/api/users', { credentials: 'include' })
+      if (!res.ok) throw new Error('用户列表加载失败')
       const data = await res.json()
       setUsers(data.data || [])
-    } catch {} finally { setLoading(false) }
+    } catch {
+      setLoadError('用户列表加载失败，请稍后重试')
+    } finally { setLoading(false) }
   }, [])
 
   useEffect(() => { fetchUsers() }, [fetchUsers])
@@ -76,14 +85,24 @@ export default function UserManagement() {
     setMsg('')
   }
 
-  const handleDelete = async (id: number, username: string) => {
-    if (!confirm(`确认删除用户"${username}"？`)) return
-    try {
-      const res = await fetch(`/api/users/${id}`, { method: 'DELETE', credentials: 'include' })
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || '删除失败') }
-      setMsg('删除成功')
-      fetchUsers()
-    } catch (e: any) { setMsg(e.message) }
+  const handleDelete = (id: number, username: string) => {
+    Modal.confirm({
+      title: '删除用户',
+      content: `确认删除用户“${username}”？`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const res = await fetch(`/api/users/${id}`, { method: 'DELETE', credentials: 'include' })
+          if (!res.ok) { const d = await res.json(); throw new Error(d.detail || '删除失败') }
+          setMsg('删除成功')
+          fetchUsers()
+        } catch (e: any) {
+          setMsg(e.message || '删除失败')
+        }
+      },
+    })
   }
 
   const handleAdd = () => {
@@ -97,53 +116,71 @@ export default function UserManagement() {
   const cardMode = getDisplayMode() === 'card'
 
   return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-semibold text-gray-800">用户管理</h2>
-          <button onClick={handleAdd} className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">添加用户</button>
-          <span className="text-sm text-gray-500 ml-auto">共 {users.length} 个用户</span>
-        </div>
-        {msg && <p className={`text-sm mt-2 ${msg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{msg}</p>}
-      </div>
+    <div className="app-page">
+      <PageHeader
+        title="用户管理"
+        description="管理登录账号和系统角色，仅超级管理员可以使用"
+        actions={
+          <>
+            <Tag color="blue">共 {users.length} 个用户</Tag>
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>添加用户</Button>
+          </>
+        }
+      />
 
-      {showForm && (
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">{editingUser ? '编辑用户' : '添加用户'}</h3>
-          <div className="flex flex-wrap gap-3 items-end">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">用户名</label>
-              <input value={formUsername} onChange={(e) => setFormUsername(e.target.value)}
-                disabled={!!editingUser}
-                className="border border-gray-300 rounded px-3 py-1.5 text-sm w-40 disabled:bg-gray-100" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">{editingUser ? '新密码（留空不改）' : '密码'}</label>
-              <input type="password" value={formPassword} onChange={(e) => setFormPassword(e.target.value)}
-                className="border border-gray-300 rounded px-3 py-1.5 text-sm w-40" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">角色</label>
-              <select value={formRole} onChange={(e) => setFormRole(e.target.value as Role)}
-                className="border border-gray-300 rounded px-3 py-1.5 text-sm">
-                {roleOptions.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-              </select>
-            </div>
-            <button onClick={handleSave} disabled={saving}
-              className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-              {saving ? '保存中...' : '保存'}
-            </button>
-            <button onClick={() => setShowForm(false)}
-              className="px-4 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-50">取消</button>
-          </div>
-        </div>
+      {msg && !showForm && (
+        <Alert type={msg.includes('成功') ? 'success' : 'error'} showIcon message={msg} />
       )}
 
-      <div className="bg-white rounded-lg shadow overflow-auto">
+      {showForm && (
+        <Modal
+          open
+          title={editingUser ? '编辑用户' : '添加用户'}
+          okText="保存"
+          cancelText="取消"
+          confirmLoading={saving}
+          onOk={handleSave}
+          onCancel={() => { setShowForm(false); setEditingUser(null); setMsg('') }}
+        >
+          <div className="space-y-4 pt-2">
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
+              <Input
+                value={formUsername}
+                onChange={event => setFormUsername(event.target.value)}
+                disabled={!!editingUser}
+                placeholder="请输入用户名"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">{editingUser ? '新密码（留空不改）' : '密码'}</label>
+              <Input.Password
+                value={formPassword}
+                onChange={event => setFormPassword(event.target.value)}
+                placeholder={editingUser ? '不修改密码可留空' : '请输入密码'}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">角色</label>
+              <Select
+                value={formRole}
+                onChange={value => setFormRole(value as Role)}
+                className="w-full"
+                options={roleOptions.map(role => ({ value: role, label: ROLE_LABELS[role] }))}
+              />
+            </div>
+            {msg && <p className="text-sm text-red-700">{msg}</p>}
+          </div>
+        </Modal>
+      )}
+
+      <div className="app-table-wrap">
         {loading ? (
-          <p className="p-8 text-center text-gray-400 text-sm">加载中...</p>
+          <LoadingState />
+        ) : loadError ? (
+          <EmptyState label={loadError} />
         ) : users.length === 0 ? (
-          <p className="p-8 text-center text-gray-400 text-sm">暂无用户</p>
+          <EmptyState label="暂无用户" />
         ) : cardMode ? (
           <div className="grid grid-cols-1 gap-3 p-4">
             {users.map((u) => (
@@ -154,14 +191,14 @@ export default function UserManagement() {
                   {u.created_at && <div className="text-xs text-gray-400">创建于 {u.created_at}</div>}
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => handleEdit(u)} className="text-xs text-blue-500 hover:underline">编辑</button>
-                  <button onClick={() => handleDelete(u.id, u.username)} className="text-xs text-red-500 hover:underline">删除</button>
+                  <Button type="link" size="small" onClick={() => handleEdit(u)}>编辑</Button>
+                  <Button type="link" danger size="small" onClick={() => handleDelete(u.id, u.username)}>删除</Button>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <table className="min-w-full text-sm">
+          <table className="app-table min-w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10">
               <tr>
                 <th className="px-3 py-2 text-left font-medium text-gray-600">用户名</th>
@@ -177,8 +214,8 @@ export default function UserManagement() {
                   <td className="px-3 py-2 text-gray-700">{ROLE_LABELS[u.role] || u.role}</td>
                   <td className="px-3 py-2 text-gray-500 text-xs">{u.created_at || '-'}</td>
                   <td className="px-3 py-2">
-                    <button onClick={() => handleEdit(u)} className="text-xs text-blue-500 hover:underline mr-3">编辑</button>
-                    <button onClick={() => handleDelete(u.id, u.username)} className="text-xs text-red-500 hover:underline">删除</button>
+                    <Button type="link" size="small" onClick={() => handleEdit(u)}>编辑</Button>
+                    <Button type="link" danger size="small" onClick={() => handleDelete(u.id, u.username)}>删除</Button>
                   </td>
                 </tr>
               ))}

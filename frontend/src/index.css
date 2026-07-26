@@ -1,6 +1,287 @@
 @import "tailwindcss";
 
+:root {
+  color: #172033;
+  background: #f4f6f9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --app-primary: #1d4ed8;
+  --app-primary-hover: #1e40af;
+  --app-primary-soft: #eff6ff;
+  --app-bg: #f4f6f9;
+  --app-surface: #ffffff;
+  --app-border: #e2e8f0;
+  --app-text: #172033;
+  --app-text-secondary: #64748b;
+  --app-success: #15803d;
+  --app-warning: #c2410c;
+  --app-danger: #b91c1c;
+  --app-radius: 10px;
+  --app-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--app-bg);
+}
+
 body {
   margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--app-text);
+  background: var(--app-bg);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 3px solid rgb(37 99 235 / 0.22);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background: var(--app-bg);
+}
+
+.app-content {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.app-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+}
+
+.page-header__title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.page-header__description {
+  margin: 5px 0 0;
+  color: var(--app-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.page-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-card {
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+}
+
+.app-card--padded {
+  padding: 20px;
+}
+
+.app-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.app-card__title {
+  margin: 0;
+  color: #1e293b;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.app-card__description {
+  margin: 4px 0 0;
+  color: var(--app-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.app-card__body {
+  padding: 20px;
+}
+
+.app-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.app-shell input:not([type='checkbox']):not([type='radio']),
+.app-shell select,
+.app-shell textarea {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+.app-shell button:not(.ant-btn):not(.compact-action) {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+.app-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+}
+
+.app-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.app-table thead {
+  background: #f8fafc;
+}
+
+.app-table th {
+  color: #475569;
+  font-weight: 600;
+}
+
+.app-table th,
+.app-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #edf1f5;
+}
+
+.app-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.app-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.app-empty {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  color: var(--app-text-secondary);
+  text-align: center;
+}
+
+.app-feedback {
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.app-feedback--success {
+  color: var(--app-success);
+}
+
+.app-feedback--warning {
+  color: var(--app-warning);
+}
+
+.app-feedback--error {
+  color: var(--app-danger);
+}
+
+.settings-content {
+  width: 100%;
+  max-width: 960px;
+}
+
+@media (max-width: 767px) {
+  .page-header {
+    flex-direction: column;
+    min-height: auto;
+  }
+
+  .page-header__title {
+    font-size: 20px;
+  }
+
+  .page-header__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .app-card--padded,
+  .app-card__body {
+    padding: 16px;
+  }
+
+  .app-toolbar {
+    padding: 14px 16px;
+  }
+
+  .app-shell input:not([type='checkbox']):not([type='radio']),
+  .app-shell select,
+  .app-shell textarea,
+  .app-shell button:not(.ant-btn):not(.compact-action) {
+    min-height: 44px;
+  }
+
+  .app-shell .ant-btn,
+  .app-shell .ant-input-affix-wrapper,
+  .app-shell .ant-picker,
+  .app-shell .ant-segmented,
+  .app-shell .ant-select-single,
+  .app-shell .ant-select-single .ant-select-selector {
+    min-height: 44px;
+  }
+
+  .app-shell .ant-select-single .ant-select-selector {
+    align-items: center;
+  }
 }

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
+import { Alert, Button, Checkbox, Input } from 'antd'
 import { getSpreadsheetsConfig, saveSpreadsheetsConfig, getSystemConfig, updateSystemConfig, getReportTypes } from '../api/client'
+import { LoadingState, Panel } from '../components/ui'
 
 const FIXED_TYPES = [
   '全链条',
@@ -16,16 +18,19 @@ export default function SpreadsheetSettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [loadError, setLoadError] = useState('')
 
   // 总汇总表类型配置
   const [allTypes, setAllTypes] = useState<string[]>([])
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
   const [savingTypes, setSavingTypes] = useState(false)
   const [typeMsg, setTypeMsg] = useState('')
+  const [typeLoadError, setTypeLoadError] = useState('')
 
   useEffect(() => {
     getSpreadsheetsConfig()
       .then((map) => setConfigs(map))
+      .catch(() => setLoadError('表格配置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
 
     // 加载总汇总表类型配置
@@ -36,7 +41,7 @@ export default function SpreadsheetSettings() {
         const saved = JSON.parse(config.summary_types || '[]')
         setSelectedTypes(saved.length > 0 ? saved : subTypes)
       } catch { setSelectedTypes(subTypes) }
-    }).catch(() => {})
+    }).catch(() => setTypeLoadError('汇总类型加载失败，请稍后重试'))
   }, [])
 
   const handleSave = async () => {
@@ -69,65 +74,63 @@ export default function SpreadsheetSettings() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-lg shadow p-5">
-        <h2 className="text-base font-semibold text-gray-800 mb-1">在线表格配置</h2>
-        <p className="text-sm text-gray-500 mb-4">为每种表格类型配置对应的腾讯文档链接，保存后系统自动解析</p>
-
+      <Panel
+        title="在线表格配置"
+        description="为每种业务类型填写对应的腾讯文档链接"
+      >
         {loading ? (
-          <p className="text-sm text-gray-400">加载中...</p>
+          <LoadingState />
+        ) : loadError ? (
+          <Alert type="error" showIcon message={loadError} />
         ) : (
           <div className="space-y-4">
             {FIXED_TYPES.map((type) => (
               <div key={type}>
-                <label className="block text-xs font-medium text-gray-500 mb-1">{type}</label>
-                <input
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">{type}</label>
+                <Input
                   placeholder="https://docs.qq.com/sheet/DZxxxxx?tab=xxxxx"
                   value={configs[type] || ''}
-                  onChange={(e) => setConfigs({ ...configs, [type]: e.target.value })}
-                  className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm"
+                  onChange={event => setConfigs({ ...configs, [type]: event.target.value })}
                 />
               </div>
             ))}
             <div className="flex items-center gap-3 pt-2">
-              <button
+              <Button
+                type="primary"
                 onClick={handleSave}
-                disabled={saving}
-                className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+                loading={saving}
               >
-                {saving ? '保存中...' : '保存配置'}
-              </button>
-              {msg && (
-                <p className={`text-sm ${msg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>
-                  {msg}
-                </p>
-              )}
+                保存配置
+              </Button>
+              {msg && <Alert type={msg.includes('成功') ? 'success' : 'error'} showIcon message={msg} />}
             </div>
           </div>
         )}
-      </div>
+      </Panel>
 
-      {/* 总汇总表类型配置 */}
-      <div className="bg-white rounded-lg shadow p-5">
-        <h2 className="text-base font-semibold text-gray-800 mb-1">总汇总表配置</h2>
-        <p className="text-sm text-gray-500 mb-4">选择哪些分表类型参与总汇总表的数据合并</p>
-
-        <div className="flex flex-wrap gap-4 mb-4">
+      <Panel
+        title="总汇总表配置"
+        description="选择哪些业务类型参与总汇总表的数据合并"
+      >
+        {typeLoadError && <Alert className="mb-4" type="error" showIcon message={typeLoadError} />}
+        <div className="mb-5 flex flex-wrap gap-4">
           {allTypes.map((t) => (
-            <label key={t} className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={selectedTypes.includes(t)} onChange={() => handleToggleType(t)} className="rounded" />
-              <span className="text-sm text-gray-700">{t}</span>
-            </label>
+            <Checkbox key={t} checked={selectedTypes.includes(t)} onChange={() => handleToggleType(t)}>
+              {t}
+            </Checkbox>
           ))}
         </div>
 
-        <button onClick={handleSaveTypes} disabled={savingTypes || selectedTypes.length === 0}
-          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-          {savingTypes ? '保存中...' : '保存配置'}
-        </button>
-        {typeMsg && (
-          <span className={`text-sm ml-3 ${typeMsg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{typeMsg}</span>
-        )}
-      </div>
+        <Button
+          type="primary"
+          onClick={handleSaveTypes}
+          loading={savingTypes}
+          disabled={selectedTypes.length === 0}
+        >
+          保存配置
+        </Button>
+        {typeMsg && <Alert className="mt-4" type={typeMsg.includes('成功') ? 'success' : 'error'} showIcon message={typeMsg} />}
+      </Panel>
     </div>
   )
 }

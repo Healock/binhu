@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { DatePicker } from 'antd'
+import { Button, DatePicker, Select, Tag } from 'antd'
 import dayjs from 'dayjs'
 import SyncPanel from '../components/SyncPanel'
+import { EmptyState, PageHeader, Panel } from '../components/ui'
 import { buildReport, getReport, getReportRange, listReports, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
 import { getDisplayMode } from '../utils/displayMode'
 
@@ -101,7 +102,7 @@ export default function Dashboard() {
 
   // 卡片渲染辅助
   const renderCard = (row: Record<string, any>, columns: string[], titleCols: string[]) => (
-    <div className="bg-white rounded-lg shadow p-4 space-y-1.5">
+    <div className="app-card app-card--padded space-y-1.5">
       <div className="flex items-center justify-between border-b pb-2 mb-1">
         <span className="font-semibold text-gray-800">{titleCols.map(c => row[c]).filter(Boolean).join(' · ')}</span>
       </div>
@@ -117,14 +118,32 @@ export default function Dashboard() {
   )
 
   return (
-    <div className="space-y-4">
+    <div className="app-page">
+      <PageHeader
+        title="在线数据汇总"
+        description="同步腾讯文档数据，并按日期和业务类型查看统计结果"
+        actions={report.exists ? (
+          <Tag color="blue">
+            {isSummary
+              ? `${report.data?.length || 0} 个社区`
+              : `核查人 ${report.inspector?.data.length || 0} 行 · 社区 ${report.community?.data.length || 0} 行`}
+          </Tag>
+        ) : undefined}
+      />
+
       <SyncPanel syncing={syncing} status={syncStatus} error={syncError} onSync={handleSync} timezone={timezone} />
 
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex flex-wrap gap-3 items-center">
-          <select value={reportType} onChange={(e) => setReportType(e.target.value)} className="border border-gray-300 rounded px-3 py-1.5 text-sm">
-            {types.map((t) => <option key={t} value={t}>{t}{!implemented.includes(t) ? '（待对接）' : ''}</option>)}
-          </select>
+      <section className="app-card">
+        <div className="app-toolbar">
+          <Select
+            value={reportType}
+            onChange={setReportType}
+            className="min-w-44"
+            options={types.map(type => ({
+              value: type,
+              label: `${type}${!implemented.includes(type) ? '（待对接）' : ''}`,
+            }))}
+          />
           {/* 移动端：原生 date input */}
           <div className="md:hidden flex items-center gap-1.5 w-full">
             <input type="date" value={startDate} onChange={(e) => setDateRange([e.target.value, e.target.value > endDate ? e.target.value : endDate])}
@@ -143,28 +162,35 @@ export default function Dashboard() {
               allowClear={false}
             />
           </div>
-          <button onClick={handleBuild} disabled={building || !isImplemented} className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-            {building ? '生成中...' : '生成日报'}
-          </button>
-          {msg && <span className={`text-sm ${msg.includes('成功') ? 'text-green-600' : 'text-orange-500'}`}>{msg}</span>}
-          {report.exists && (
-            <span className="text-sm text-gray-500 ml-auto">
-              {isRange && rangeInfo ? `${rangeInfo.start} 至 ${rangeInfo.end}（${rangeInfo.days} 天）· ` : ''}
-              {isSummary ? `${report.data?.length || 0} 个社区` : `核查人 ${report.inspector?.data.length || 0} 行 · 社区 ${report.community?.data.length || 0} 行`}
+          <Button type="primary" onClick={handleBuild} loading={building} disabled={!isImplemented}>
+            生成日报
+          </Button>
+          {msg && report.exists && (
+            <span className={`text-sm ${msg.includes('成功') ? 'text-green-700' : 'text-orange-700'}`}>
+              {msg}
+            </span>
+          )}
+          {isRange && rangeInfo && (
+            <span className="ml-auto text-sm text-slate-500">
+              {rangeInfo.start} 至 {rangeInfo.end}（{rangeInfo.days} 天）
             </span>
           )}
         </div>
-        {isRange && <p className="text-xs text-gray-400 mt-1.5">区间模式下"生成日报"将针对起始日期（{startDate}）生成</p>}
-      </div>
+        {isRange && (
+          <p className="border-t border-slate-100 px-5 py-2.5 text-xs text-slate-500">
+            区间模式下，“生成日报”只会生成起始日期（{startDate}）的日报。
+          </p>
+        )}
+      </section>
 
       {!isImplemented ? (
-        <div className="bg-white rounded-lg shadow p-8 text-center text-gray-400 text-sm">
-          「{reportType}」的统计规则尚未对接，请后续逐个定义
-        </div>
+        <section className="app-card">
+          <EmptyState label={`“${reportType}”的统计规则尚未对接`} />
+        </section>
       ) : !report.exists ? (
-        <div className="bg-white rounded-lg shadow p-8 text-center text-gray-400 text-sm">
-          {msg || `${startDate} 至 ${endDate} 暂无「${reportType}」报告`}
-        </div>
+        <section className="app-card">
+          <EmptyState label={msg || `${startDate} 至 ${endDate} 暂无“${reportType}”报告`} />
+        </section>
       ) : isSummary ? (
         cardMode ? (
           <div className="space-y-3">
@@ -177,14 +203,14 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-        <div className="bg-white rounded-lg shadow overflow-auto">
+        <div className="app-table-wrap">
           <div className="px-4 py-2 border-b bg-gray-50">
             <h3 className="text-sm font-semibold text-gray-700">
               总汇总表（{report.data?.length || 0} 个社区）
               {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
             </h3>
           </div>
-          <table className="min-w-full text-sm">
+          <table className="app-table min-w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
               {report.columns?.filter((c: string) => c !== 'id').map((col: string) => (
                 <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
@@ -225,14 +251,14 @@ export default function Dashboard() {
         </div>
       ) : (
         <>
-          <div className="bg-white rounded-lg shadow overflow-auto">
+          <div className="app-table-wrap">
             <div className="px-4 py-2 border-b bg-gray-50">
               <h3 className="text-sm font-semibold text-gray-700">
                 核查人明细统计（{report.inspector?.data.length || 0} 人）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
             </div>
-            <table className="min-w-full text-sm">
+            <table className="app-table min-w-full">
               <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
                 {report.inspector?.columns.filter(c => c !== 'id').map((col) => (
                   <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
@@ -250,14 +276,14 @@ export default function Dashboard() {
             </table>
           </div>
 
-          <div className="bg-white rounded-lg shadow overflow-auto">
+          <div className="app-table-wrap">
             <div className="px-4 py-2 border-b bg-gray-50">
               <h3 className="text-sm font-semibold text-gray-700">
                 社区汇总统计（{report.community?.data.length || 0} 个社区）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
             </div>
-            <table className="min-w-full text-sm">
+            <table className="app-table min-w-full">
               <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
                 {report.community?.columns.filter(c => c !== 'id').map((col) => (
                   <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
@@ -278,18 +304,18 @@ export default function Dashboard() {
       )}
 
       {reports.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">历史日报</h3>
+        <Panel title="历史日报" description="选择已生成的日报快速查看">
           <div className="flex flex-wrap gap-2">
             {reports.map((r) => (
-              <button key={r.date + r.type}
+              <Button key={r.date + r.type}
                 onClick={() => { setDateRange([r.date, r.date]); setReportType(r.type) }}
-                className={`px-3 py-1.5 rounded text-xs border ${r.date === startDate && r.date === endDate && r.type === reportType ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
+                type={r.date === startDate && r.date === endDate && r.type === reportType ? 'primary' : 'default'}
+                size="small">
                 {r.date} {r.type}
-              </button>
+              </Button>
             ))}
           </div>
-        </div>
+        </Panel>
       )}
     </div>
   )
