@@ -1,0 +1,282 @@
+SET NAMES utf8mb4;
+-- 滨湖智慧平台 - 三库初始化脚本
+-- MySQL 容器首次启动时自动执行（root 身份）
+-- OnlineData 由 docker-compose MYSQL_DATABASE 自动创建，这里建另外两个库
+
+CREATE DATABASE IF NOT EXISTS OnlineDataArchive CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS daily_report CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+GRANT ALL PRIVILEGES ON OnlineDataArchive.* TO 'binhu'@'%';
+GRANT ALL PRIVILEGES ON daily_report.* TO 'binhu'@'%';
+FLUSH PRIVILEGES;
+
+-- ============================================================
+-- OnlineData 库：配置表 + 7张业务表
+-- ============================================================
+USE OnlineData;
+
+-- 配置表（从 binhu 库迁移）
+CREATE TABLE IF NOT EXISTS _config_spreadsheets (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    name            VARCHAR(100) NOT NULL,
+    url             TEXT NOT NULL,
+    file_id         VARCHAR(100) NOT NULL DEFAULT '',
+    data_sheet_id   VARCHAR(20) NOT NULL DEFAULT '000001',
+    summary_sheet_id VARCHAR(50) DEFAULT '汇总',
+    header_row      INT DEFAULT 1,
+    parser_type     VARCHAR(50) DEFAULT 'default',
+    enabled         TINYINT(1) DEFAULT 1,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _config_oauth_tokens (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    client_id       VARCHAR(200) NOT NULL,
+    client_secret   TEXT NOT NULL,
+    access_token    TEXT,
+    refresh_token   TEXT,
+    open_id         VARCHAR(200),
+    expires_at      DATETIME,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _sync_log (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    status          VARCHAR(20) DEFAULT 'pending',
+    total_rows      INT DEFAULT 0,
+    processed_rows  INT DEFAULT 0,
+    error_message   TEXT,
+    started_at      DATETIME,
+    finished_at     DATETIME
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 1. 全链条（14列业务数据）
+CREATE TABLE IF NOT EXISTS t_fullchain (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发日期        VARCHAR(50),
+    截止日期        VARCHAR(50),
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    来源            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(50),
+    电话号码        VARCHAR(50),
+    地址            VARCHAR(500),
+    创建时间        VARCHAR(50),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_fc_inspector (核查人),
+    INDEX idx_fc_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 2. 出租房屋核查（13列）
+CREATE TABLE IF NOT EXISTS t_rental_check (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发时间        VARCHAR(50),
+    截止时间        VARCHAR(50),
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(50),
+    手机号码        VARCHAR(50),
+    房屋地址        VARCHAR(500),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    入住方式        VARCHAR(100),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_rc_inspector (核查人),
+    INDEX idx_rc_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. 寄递业（14列）
+CREATE TABLE IF NOT EXISTS t_delivery_industry (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发时间        VARCHAR(50),
+    截止时间        VARCHAR(50),
+    核查人          VARCHAR(100),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(50),
+    地址1           VARCHAR(500),
+    手机号码        VARCHAR(50),
+    社区            VARCHAR(200),
+    参考姓名        VARCHAR(100),
+    参考身份证号码  VARCHAR(50),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_di_inspector (核查人),
+    INDEX idx_di_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 4. 涉警统计（12列，仅raw入库）
+CREATE TABLE IF NOT EXISTS t_police_stats (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    序号            VARCHAR(50),
+    日期            VARCHAR(50),
+    社区            VARCHAR(200),
+    简要警情及处理结果 TEXT,
+    是否开户        VARCHAR(100),
+    现住址          VARCHAR(500),
+    房屋属性        VARCHAR(200),
+    居住时间        VARCHAR(100),
+    房东信息        VARCHAR(500),
+    二房东信息      VARCHAR(500),
+    备注            VARCHAR(500),
+    房东是否处罚    VARCHAR(200),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_ps_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 5. 疑似未注销模型三（9列）
+CREATE TABLE IF NOT EXISTS t_suspect_unrevoked (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    截止时间        VARCHAR(50),
+    核查人          VARCHAR(100),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(50),
+    联系方式        VARCHAR(50),
+    地址            VARCHAR(500),
+    下发社区        VARCHAR(200),
+    核查结果        VARCHAR(500),
+    备注            VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_su_inspector (核查人),
+    INDEX idx_su_community (下发社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. 疑似返苏（12列）
+CREATE TABLE IF NOT EXISTS t_suspect_return (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发日期        VARCHAR(50),
+    截止日期        VARCHAR(50),
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(50),
+    联系号码        VARCHAR(50),
+    高频抓拍小区    VARCHAR(200),
+    现住址          VARCHAR(500),
+    核查反馈        VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_sr_inspector (核查人),
+    INDEX idx_sr_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 7. 群租房核查（16列，仅raw入库）
+CREATE TABLE IF NOT EXISTS t_group_rental (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    出租屋编号      VARCHAR(100),
+    出租屋地址      VARCHAR(500),
+    更新时间        VARCHAR(50),
+    居住证_居住人数 VARCHAR(20),
+    居住证_间数     VARCHAR(20),
+    居住证_床位数   VARCHAR(20),
+    核查_人数       VARCHAR(20),
+    核查_房间数     VARCHAR(20),
+    核查_床位数     VARCHAR(20),
+    入户走访        VARCHAR(500),
+    走访日期        VARCHAR(50),
+    星级评定        VARCHAR(100),
+    责任书签订      VARCHAR(200),
+    实际情况        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_gr_inspector (核查人),
+    INDEX idx_gr_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- OnlineDataArchive 库：7张归档表（结构同业务表 + 归档元数据）
+-- ============================================================
+USE OnlineDataArchive;
+
+CREATE TABLE IF NOT EXISTS t_fullchain_archive LIKE OnlineData.t_fullchain;
+ALTER TABLE t_fullchain_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                DROP INDEX uk_row_key,
+                                ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_rental_check_archive LIKE OnlineData.t_rental_check;
+ALTER TABLE t_rental_check_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                   ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                   DROP INDEX uk_row_key,
+                                   ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_delivery_industry_archive LIKE OnlineData.t_delivery_industry;
+ALTER TABLE t_delivery_industry_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                        DROP INDEX uk_row_key,
+                                        ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_police_stats_archive LIKE OnlineData.t_police_stats;
+ALTER TABLE t_police_stats_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                   ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                   DROP INDEX uk_row_key,
+                                   ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_suspect_unrevoked_archive LIKE OnlineData.t_suspect_unrevoked;
+ALTER TABLE t_suspect_unrevoked_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                        DROP INDEX uk_row_key,
+                                        ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_suspect_return_archive LIKE OnlineData.t_suspect_return;
+ALTER TABLE t_suspect_return_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                     ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                     DROP INDEX uk_row_key,
+                                     ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_group_rental_archive LIKE OnlineData.t_group_rental;
+ALTER TABLE t_group_rental_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                   ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                   DROP INDEX uk_row_key,
+                                   ADD INDEX idx_row_key (_row_key);
+
+-- ============================================================
+-- daily_report 库：元数据表（日报表后续动态创建）
+-- ============================================================
+USE daily_report;
+
+CREATE TABLE IF NOT EXISTS _daily_report_meta (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    table_name      VARCHAR(100) NOT NULL,
+    report_date     DATE NOT NULL,
+    parser_type     VARCHAR(50) NOT NULL,
+    generation_method VARCHAR(20) DEFAULT 'auto',
+    generated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_table_name (table_name),
+    INDEX idx_date (report_date),
+    INDEX idx_type (parser_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

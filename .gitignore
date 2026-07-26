@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+backend/.env
+.env.local
+
+# Local operator notes may contain deployment credentials.
+AGENTS.md
+venv/
+.venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# WorkBuddy（plans 已复制到 docs/plans/）
+.workbuddy/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# 临时文件
+rename_changes.html

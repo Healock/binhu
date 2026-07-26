@@ -1,0 +1,89 @@
+"""在线数据查询 API"""
+
+import json
+from typing import Optional
+from fastapi import APIRouter, Depends, Query, HTTPException
+from database import get_db
+from services.parsers import PARSER_REGISTRY, get_parser
+
+router = APIRouter(prefix="/api/query", tags=["数据查询"])
+
+QUERY_TYPES = [t for t in PARSER_REGISTRY.keys() if t != "default"]
+
+
+@router.get("/types")
+async def get_query_types():
+    return {"data": QUERY_TYPES}
+
+
+@router.get("/{parser_type}")
+async def query_data(
+    parser_type: str,
+    source: str = Query("online"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    keyword: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_order: str = Query("desc"),
+    filters: Optional[str] = Query(None, description='JSON: {"列名": ["值1","值2"]}'),
+    conn=Depends(get_db),
+):
+    """分页查询，支持关键词搜索 + 按列筛选 + 排序"""
+    if parser_type not in PARSER_REGISTRY or parser_type == "default":
+        raise HTTPException(status_code=400, detail=f"不支持的类型: {parser_type}")
+
+    parser = get_parser(parser_type)
+    table = parser.table_name
+    columns = parser.COLUMNS
+
+    if source == "archive":
+        table = f"OnlineDataArchive.{table}_archive"
+
+    col_list = ", ".join(f"`{c}`" for c in columns)
+
+    # 构建 WHERE
+    where_parts = []
+    params = []
+
+    if keyword:
+        like_conditions = " OR ".join(f"`{c}` LIKE %s" for c in columns)
+        where_parts.append(f"({like_conditions})")
+        params.extend([f"%{keyword}%"] * len(columns))
+
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+            for col, vals in filter_dict.items():
+                if col in columns and vals:
+                    placeholders = ",".join(["%s"] * len(vals))
+                    where_parts.append(f"`{col}` IN ({placeholders})")
+                    params.extend(vals)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    where = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+    async with conn.cursor() as cur:
+        await cur.execute(f"SELECT COUNT(*) FROM {table}{where}", params)
+        count_row = await cur.fetchone()
+        total = count_row[0] if count_row else 0
+
+        offset = (page - 1) * page_size
+        if sort_by and sort_by in columns:
+            order_clause = f"ORDER BY `{sort_by}` {'ASC' if sort_order == 'asc' else 'DESC'}"
+        else:
+            order_clause = "ORDER BY id DESC"
+        await cur.execute(
+            f"SELECT {col_list} FROM {table}{where} {order_clause} LIMIT %s OFFSET %s",
+            params + [page_size, offset],
+        )
+        rows = await cur.fetchall()
+
+    data = []
+    for row in rows:
+        record = {}
+        for i, col in enumerate(columns):
+            record[col] = str(row[i]) if row[i] is not None else ""
+        data.append(record)
+
+    return {"data": data, "total": total, "page": page, "page_size": page_size, "columns": columns}

@@ -1,0 +1,89 @@
+"""滨湖智慧平台 - FastAPI 入口"""
+
+import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from database import init_db, close_db
+from deps import get_current_user
+from routers.spreadsheets import router as spreadsheets_router
+from routers.sync import router as sync_router
+from routers.stats import router as stats_router
+from routers.auth import router as auth_router
+from routers.query import router as query_router
+from routers.grid_members import router as grid_members_router
+from routers.system import router as system_router
+from routers.users import router as users_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时初始化数据库连接池，关闭时清理"""
+    await init_db()
+    yield
+    await close_db()
+
+
+app = FastAPI(
+    title="滨湖智慧平台",
+    description="从腾讯文档获取数据，统计核查结果，生成数据透视表",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS - 生产环境由 Nginx 同源代理，无需跨域；保留开放配置以支持 API 外部调用
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 健康检查（无需鉴权）
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "message": "滨湖智慧平台运行中"}
+
+# auth 路由（login 端点无需鉴权，logout/me 需要鉴权在路由内处理）
+app.include_router(auth_router)
+
+# 业务路由（全部需要登录）
+auth_dep = [Depends(get_current_user)]
+app.include_router(spreadsheets_router, dependencies=auth_dep)
+app.include_router(sync_router, dependencies=auth_dep)
+app.include_router(stats_router, dependencies=auth_dep)
+app.include_router(query_router, dependencies=auth_dep)
+app.include_router(grid_members_router, dependencies=auth_dep)
+app.include_router(system_router, dependencies=auth_dep)
+
+# 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
+app.include_router(users_router, dependencies=auth_dep)
+
+
+# ========== 前端静态文件一体化托管（单端口模式，无需 Nginx） ==========
+STATIC_DIR = os.environ.get("STATIC_DIR", "../frontend/dist")
+
+# 挂载 assets 目录（JS/CSS 等构建产物）
+_assets_dir = os.path.join(STATIC_DIR, "assets")
+if os.path.isdir(_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    """非 API 路径：返回静态文件，找不到则回退到 index.html（SPA 路由）"""
+    if full_path.startswith("api/"):
+        return {"error": "Not found", "path": f"/{full_path}"}
+    # 尝试返回对应静态文件（favicon、vite.svg 等）
+    file_path = os.path.join(STATIC_DIR, full_path)
+    if os.path.isfile(file_path):
+        return FileResponse(file_path)
+    # SPA 路由回退
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return {"error": "Frontend not built", "static_dir": STATIC_DIR}
