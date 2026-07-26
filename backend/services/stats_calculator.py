@@ -16,12 +16,14 @@ class DailyReportBuilder:
         if not builder:
             return {"implemented": False, "message": f"{parser_type}的统计规则尚未实现"}
         result = await builder.build(date_str)
-        result["implemented"] = True
+        result.setdefault("implemented", True)
         return result
 
     async def get_report(self, date_str: str, parser_type: str = "全链条") -> dict:
         """查看日报（返回两张表的数据）"""
-        suffix = self.TYPE_SUFFIX.get(parser_type, "fullChain")
+        suffix = self.TYPE_SUFFIX.get(parser_type)
+        if not suffix:
+            return {"exists": False, "message": f"{parser_type}的统计规则尚未实现"}
         t_inspector = f"`{date_str}_daily_{suffix}_inspector`"
         t_community = f"`{date_str}_daily_{suffix}_community`"
         pool = db_manager.get_pool("daily_report")
@@ -30,10 +32,23 @@ class DailyReportBuilder:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
+                    (f"{date_str}_snapshot_{suffix}",),
+                )
+                if not await cur.fetchone():
+                    return {
+                        "exists": False,
+                        "message": f"{date_str} 没有同步快照，暂无日报",
+                    }
+
+                await cur.execute(
+                    "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
                     (f"{date_str}_daily_{suffix}_inspector",),
                 )
                 if not await cur.fetchone():
-                    return {"exists": False}
+                    return {
+                        "exists": False,
+                        "message": f"{date_str} 尚未生成「{parser_type}」日报",
+                    }
 
                 await cur.execute(f"SELECT * FROM {t_inspector} ORDER BY 社区, 姓名")
                 insp_rows = await cur.fetchall()
