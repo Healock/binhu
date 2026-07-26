@@ -9,6 +9,7 @@
 
 import json
 from database import db_manager
+from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
 
 
@@ -134,6 +135,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
             # 每个 dedup_subquery 有2个 %s（日期），需要传对应数量参数
             param_count = union_sql.count("%s")
             params = [start_date, end_date] * (param_count // 2)
+            active_condition = active_member_sql()
 
             await cur.execute(f"""
                 SELECT
@@ -150,21 +152,21 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                          ELSE 0 END,
                     COALESCE((
                         SELECT COUNT(*) FROM OnlineData._grid_members
-                        WHERE community = t.社区 AND status = '在岗'
+                        WHERE community = t.社区 AND {active_condition}
                     ), 0),
                     CASE
                         WHEN COALESCE((SELECT COUNT(*) FROM OnlineData._grid_members
-                                       WHERE community = t.社区 AND status = '在岗'), 0) > 0
+                                       WHERE community = t.社区 AND {active_condition}), 0) > 0
                         THEN ROUND(SUM(t.已完成) / (
                             SELECT COUNT(*) FROM OnlineData._grid_members
-                            WHERE community = t.社区 AND status = '在岗'
+                            WHERE community = t.社区 AND {active_condition}
                         ), 2)
                         ELSE 0
                     END
                 FROM ({union_sql}) t
                 GROUP BY t.社区
                 ORDER BY t.社区
-            """, params)
+            """, [end_date, end_date, end_date, *params])
             rows = await cur.fetchall()
             cols = [
                 "社区", "数据总数", "未核查", "已核查", "已完成", "核查完成率",
