@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Alert, Button, Input, Modal, Pagination, Select, Tag } from 'antd'
+import { Alert, Button, DatePicker, Input, Modal, Pagination, Select, Tag } from 'antd'
 import { DownloadOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
+import dayjs from 'dayjs'
 import {
   listGridMembers, createGridMember, updateGridMember, deleteGridMember,
   exportGridMembersUrl, getGridCommunities,
@@ -43,17 +44,6 @@ export default function GridMembers() {
   useEffect(() => { fetch() }, [fetch])
   useEffect(() => { fetchCommunities() }, [fetchCommunities, members])
 
-  const handleToggleStatus = async (m: GridMember) => {
-    const newStatus = m.status === '在岗' ? '离岗' : '在岗'
-    try {
-      await updateGridMember(m.id, { status: newStatus })
-      setMembers(prev => prev.map(x => x.id === m.id ? { ...x, status: newStatus } : x))
-      setMsg(`已将“${m.name}”设为${newStatus}`)
-    } catch {
-      setMsg('状态更新失败，请稍后重试')
-    }
-  }
-
   const handleDelete = (id: number, name: string) => {
     Modal.confirm({
       title: '删除网格员',
@@ -76,13 +66,13 @@ export default function GridMembers() {
   const handleExport = () => { window.open(exportGridMembersUrl(), '_blank') }
 
   const communityNames = communities.map((c) => c.name)
-  const activeCount = members.filter(m => m.status === '在岗').length
+  const activeCount = members.filter(m => m.effective_status === '在岗').length
 
   return (
     <div className="app-page">
       <PageHeader
         title="网格员管理"
-        description="维护网格员、所属社区、联系方式和在岗状态"
+        description="维护长期状态和请假日期，请假期间会自动显示为离岗"
         actions={
           <>
             <Button icon={<DownloadOutlined />} onClick={handleExport}>导出 CSV</Button>
@@ -137,20 +127,12 @@ export default function GridMembers() {
            </tr></thead>
            <tbody className="divide-y divide-gray-100">
              {members.map((m) => (
-               <tr key={m.id} className={`hover:bg-gray-50 ${m.status === '离岗' ? 'opacity-50' : ''}`}>
+               <tr key={m.id} className={`hover:bg-gray-50 ${m.effective_status === '离岗' ? 'bg-slate-50/60' : ''}`}>
                  <td className="px-3 py-2 font-medium text-gray-800">{m.name}</td>
                  <td className="px-3 py-2 text-gray-600">{m.community || '-'}</td>
                  <td className="px-3 py-2 text-gray-600">{m.phone || '-'}</td>
                  <td className="px-3 py-2">
-                   <button onClick={() => handleToggleStatus(m)}
-                     aria-label={`将${m.name}设为${m.status === '在岗' ? '离岗' : '在岗'}`}
-                     className={`compact-action rounded px-2 py-1 text-xs font-medium ${
-                       m.status === '在岗'
-                         ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                         : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                     }`}>
-                     {m.status}
-                   </button>
+                   <MemberStatus member={m} />
                  </td>
                  <td className="px-3 py-2 text-gray-600">{m.notes || '-'}</td>
                  <td className="px-3 py-2">
@@ -183,6 +165,26 @@ export default function GridMembers() {
   )
 }
 
+function MemberStatus({ member }: { member: GridMember }) {
+  const isLeave = member.status === '在岗' && member.effective_status === '离岗'
+  const isPermanentOffDuty = member.status === '离岗'
+  const label = isLeave ? '离岗（请假）' : isPermanentOffDuty ? '长期离岗' : '在岗'
+  const color = isLeave ? 'orange' : isPermanentOffDuty ? 'default' : 'green'
+  const detail = isPermanentOffDuty ? '' : member.status_detail
+
+  return (
+    <div className="min-w-32">
+      <Tag color={color}>{label}</Tag>
+      {detail && <div className="mt-1 text-xs text-slate-500">{detail}</div>}
+      {member.leave_reason && (isLeave || member.leave_state === 'upcoming') && (
+        <div className="mt-0.5 max-w-48 truncate text-xs text-slate-400" title={member.leave_reason}>
+          {member.leave_reason}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MemberForm({ member, communities, onClose, onSaved }: {
   member: GridMember | null; communities: string[]; onClose: () => void; onSaved: () => void
 }) {
@@ -190,7 +192,15 @@ function MemberForm({ member, communities, onClose, onSaved }: {
   const [community, setCommunity] = useState(member?.community || '')
   const [phone, setPhone] = useState(member?.phone || '')
   const [notes, setNotes] = useState(member?.notes || '')
-  const [status, setStatus] = useState(member?.status || '在岗')
+  const [status, setStatus] = useState<'在岗' | '离岗'>(
+    member?.status === '离岗' ? '离岗' : '在岗'
+  )
+  const [leaveRange, setLeaveRange] = useState<[string, string] | null>(
+    member?.leave_start_date && member?.leave_end_date
+      ? [member.leave_start_date, member.leave_end_date]
+      : null
+  )
+  const [leaveReason, setLeaveReason] = useState(member?.leave_reason || '')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -198,8 +208,24 @@ function MemberForm({ member, communities, onClose, onSaved }: {
     setSaving(true)
     setFormError('')
     try {
-      if (member) await updateGridMember(member.id, { community, phone, notes, status })
-      else await createGridMember({ name, community, phone, notes, status })
+      const originalRange = member?.leave_start_date && member?.leave_end_date
+        ? [member.leave_start_date, member.leave_end_date]
+        : null
+      const leaveChanged =
+        JSON.stringify(originalRange) !== JSON.stringify(leaveRange) ||
+        (member?.leave_reason || '') !== leaveReason
+      const payload = {
+        community,
+        phone,
+        notes,
+        status,
+        leave_start_date: leaveRange?.[0] || null,
+        leave_end_date: leaveRange?.[1] || null,
+        leave_reason: leaveRange ? leaveReason : '',
+        leave_source: leaveChanged ? 'manual' : (member?.leave_source || 'manual'),
+      }
+      if (member) await updateGridMember(member.id, payload)
+      else await createGridMember({ name, ...payload })
       onSaved()
     } catch (e: any) { setFormError(e?.response?.data?.detail || '保存失败') }
     finally { setSaving(false) }
@@ -236,12 +262,45 @@ function MemberForm({ member, communities, onClose, onSaved }: {
             <Input value={phone} onChange={event => setPhone(event.target.value)} />
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">状态</label>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">长期状态</label>
             <Select
               value={status}
               onChange={setStatus}
               className="w-full"
-              options={[{ value: '在岗', label: '在岗' }, { value: '离岗', label: '离岗' }]}
+              options={[
+                { value: '在岗', label: '正常在岗' },
+                { value: '离岗', label: '长期离岗' },
+              ]}
+            />
+            <p className="mt-1.5 text-xs text-slate-500">长期离岗适合调离或不再参与工作的人员。</p>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">临时请假日期</label>
+            <DatePicker.RangePicker
+              value={leaveRange ? [dayjs(leaveRange[0]), dayjs(leaveRange[1])] : null}
+              onChange={(_, dateStrings) => {
+                setLeaveRange(
+                  dateStrings[0] && dateStrings[1]
+                    ? [dateStrings[0], dateStrings[1]]
+                    : null
+                )
+              }}
+              format="YYYY-MM-DD"
+              placeholder={['开始日期', '结束日期']}
+              className="w-full"
+            />
+            <p className="mt-1.5 text-xs text-slate-500">
+              日期范围内自动显示“离岗（请假）”，结束后自动恢复在岗。
+            </p>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">请假原因</label>
+            <Input
+              value={leaveReason}
+              onChange={event => setLeaveReason(event.target.value)}
+              disabled={!leaveRange}
+              maxLength={200}
+              placeholder={leaveRange ? '例如：年假、病假' : '请先选择请假日期'}
             />
           </div>
           <div>

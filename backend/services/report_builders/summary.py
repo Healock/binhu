@@ -5,6 +5,7 @@
 
 import json
 from database import db_manager
+from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
 
 SUMMARY_COLS = """
@@ -19,6 +20,19 @@ SUMMARY_COLS = """
     网格员人数 INT DEFAULT 0,
     当日人均核查数 DECIMAL(8,2) DEFAULT 0.00
 """
+
+SUMMARY_OUTPUT_COLS = [
+    "社区",
+    "数据总数",
+    "未核查",
+    "已核查",
+    "已完成",
+    "核查完成率",
+    "无法见底数",
+    "核查见底率",
+    "网格员人数",
+    "当日人均核查数",
+]
 
 
 async def _get_summary_types(cur) -> list[str]:
@@ -73,6 +87,7 @@ async def build_summary(date_str: str) -> dict:
                     f"FROM `{date_str}_daily_{suffix}`"
                 )
             union_sql = " UNION ALL ".join(union_parts)
+            active_condition = active_member_sql()
 
             await cur.execute(f"""
                 INSERT INTO {t_summary} (社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数, 网格员人数)
@@ -83,10 +98,13 @@ async def build_summary(date_str: str) -> dict:
                     SUM(t.已核查),
                     SUM(t.已完成),
                     SUM(t.无法见底数),
-                    COALESCE((SELECT COUNT(*) FROM OnlineData._grid_members WHERE community = t.社区 AND status = '在岗'), 0)
+                    COALESCE((
+                        SELECT COUNT(*) FROM OnlineData._grid_members
+                        WHERE community = t.社区 AND {active_condition}
+                    ), 0)
                 FROM ({union_sql}) t
                 GROUP BY t.社区
-            """)
+            """, (date_str,))
 
             await cur.execute(f"""
                 UPDATE {t_summary} SET
@@ -123,11 +141,41 @@ async def get_summary(date_str: str) -> dict:
             if not await cur.fetchone():
                 return {"exists": False}
 
-            await cur.execute(f"SELECT * FROM {t_summary} ORDER BY 社区")
+            active_condition = active_member_sql()
+            await cur.execute(f"""
+                SELECT
+                    s.社区,
+                    s.数据总数,
+                    s.未核查,
+                    s.已核查,
+                    s.已完成,
+                    s.核查完成率,
+                    s.无法见底数,
+                    s.核查见底率,
+                    COALESCE((
+                        SELECT COUNT(*) FROM OnlineData._grid_members
+                        WHERE community = s.社区 AND {active_condition}
+                    ), 0),
+                    CASE
+                        WHEN COALESCE((
+                            SELECT COUNT(*) FROM OnlineData._grid_members
+                            WHERE community = s.社区 AND {active_condition}
+                        ), 0) > 0
+                        THEN ROUND(s.已完成 / (
+                            SELECT COUNT(*) FROM OnlineData._grid_members
+                            WHERE community = s.社区 AND {active_condition}
+                        ), 2)
+                        ELSE 0
+                    END
+                FROM {t_summary} s
+                ORDER BY s.社区
+            """, (date_str, date_str, date_str))
             rows = await cur.fetchall()
-            await cur.execute(f"SHOW COLUMNS FROM {t_summary}")
-            cols = [c[0] for c in await cur.fetchall()]
 
-        return {"exists": True, "columns": cols, "data": [dict(zip(cols, r)) for r in rows]}
+        return {
+            "exists": True,
+            "columns": SUMMARY_OUTPUT_COLS,
+            "data": [dict(zip(SUMMARY_OUTPUT_COLS, row)) for row in rows],
+        }
     finally:
         pool.release(conn)

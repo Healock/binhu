@@ -40,6 +40,11 @@ class DatabaseManager:
                         community VARCHAR(200) DEFAULT '',
                         phone VARCHAR(50) DEFAULT '',
                         notes VARCHAR(500) DEFAULT '',
+                        status VARCHAR(10) NOT NULL DEFAULT '在岗',
+                        leave_start_date DATE DEFAULT NULL,
+                        leave_end_date DATE DEFAULT NULL,
+                        leave_reason VARCHAR(200) DEFAULT '',
+                        leave_source VARCHAR(30) NOT NULL DEFAULT 'manual',
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         UNIQUE KEY uk_name (name)
@@ -85,13 +90,22 @@ class DatabaseManager:
                         await cur.execute(f"ALTER TABLE {table} MODIFY COLUMN `{col}` VARCHAR(500)")
                     except Exception:
                         pass
-                # _grid_members 表加 status 列（在岗/离岗）
-                try:
+                # 旧数据库平滑补齐网格员状态和请假字段
+                for column_name, column_definition in [
+                    ("status", "VARCHAR(10) NOT NULL DEFAULT '在岗'"),
+                    ("leave_start_date", "DATE DEFAULT NULL"),
+                    ("leave_end_date", "DATE DEFAULT NULL"),
+                    ("leave_reason", "VARCHAR(200) DEFAULT ''"),
+                    ("leave_source", "VARCHAR(30) NOT NULL DEFAULT 'manual'"),
+                ]:
                     await cur.execute(
-                        "ALTER TABLE _grid_members ADD COLUMN status VARCHAR(10) NOT NULL DEFAULT '在岗'"
+                        "SHOW COLUMNS FROM _grid_members LIKE %s", (column_name,)
                     )
-                except Exception:
-                    pass
+                    if not await cur.fetchone():
+                        await cur.execute(
+                            f"ALTER TABLE _grid_members "
+                            f"ADD COLUMN `{column_name}` {column_definition}"
+                        )
                 # 测试数据表（用于验证工作量统计逻辑）
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS t_test_mock (

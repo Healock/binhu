@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Button, DatePicker, Select, Tag } from 'antd'
 import dayjs from 'dayjs'
 import SyncPanel from '../components/SyncPanel'
-import { EmptyState, PageHeader, Panel } from '../components/ui'
-import { buildReport, getReport, getReportRange, listReports, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
+import { EmptyState, PageHeader } from '../components/ui'
+import { buildReport, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
 import { getDisplayMode } from '../utils/displayMode'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
@@ -20,7 +20,6 @@ export default function Dashboard() {
   const [types, setTypes] = useState<string[]>([])
   const [implemented, setImplemented] = useState<string[]>([])
   const [report, setReport] = useState<any>({ exists: false })
-  const [reports, setReports] = useState<{ date: string; type: string }[]>([])
   const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
@@ -74,10 +73,8 @@ export default function Dashboard() {
       setReport({ exists: false })
     }
   }, [startDate, endDate, reportType])
-  const fetchReports = useCallback(async () => { try { setReports(await listReports()) } catch {} }, [])
 
   useEffect(() => { fetchReport() }, [fetchReport])
-  useEffect(() => { fetchReports() }, [fetchReports])
 
   const handleBuild = async () => {
     setBuilding(true); setMsg('')
@@ -89,7 +86,7 @@ export default function Dashboard() {
       } else {
         setMsg(`生成成功：${startDate} · 核查人 ${res.inspector_rows} 行，社区 ${res.community_rows} 行`)
       }
-      fetchReport(); fetchReports()
+      fetchReport()
     } catch (e: any) { setMsg('生成失败') }
     finally { setBuilding(false) }
   }
@@ -303,20 +300,6 @@ export default function Dashboard() {
         </>
       )}
 
-      {reports.length > 0 && (
-        <Panel title="历史日报" description="选择已生成的日报快速查看">
-          <div className="flex flex-wrap gap-2">
-            {reports.map((r) => (
-              <Button key={r.date + r.type}
-                onClick={() => { setDateRange([r.date, r.date]); setReportType(r.type) }}
-                type={r.date === startDate && r.date === endDate && r.type === reportType ? 'primary' : 'default'}
-                size="small">
-                {r.date} {r.type}
-              </Button>
-            ))}
-          </div>
-        </Panel>
-      )}
     </div>
   )
 }

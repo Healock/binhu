@@ -91,11 +91,6 @@ export async function getReportRange(startDate: string, endDate: string, parserT
   return data
 }
 
-export async function listReports(): Promise<{ date: string; type: string; method: string; generated_at: string }[]> {
-  const { data } = await api.get('/stats/reports')
-  return data.data
-}
-
 export async function getTodayReport(): Promise<{ exists: boolean; columns?: string[]; data?: Record<string, any>[] }> {
   const { data } = await api.get('/stats/today')
   return data
@@ -139,6 +134,25 @@ export interface GridMember {
   phone: string
   notes: string
   status: string
+  effective_status: string
+  status_detail: string
+  leave_start_date: string | null
+  leave_end_date: string | null
+  leave_reason: string
+  leave_source: string
+  leave_state: 'active' | 'upcoming' | 'expired' | null
+}
+
+export interface GridMemberPayload {
+  name?: string
+  community?: string
+  phone?: string
+  notes?: string
+  status?: '在岗' | '离岗'
+  leave_start_date?: string | null
+  leave_end_date?: string | null
+  leave_reason?: string
+  leave_source?: string
 }
 
 export async function listGridMembers(params: {
@@ -169,11 +183,11 @@ export async function importCommunitiesFromData(): Promise<{ new_count: number; 
   return data
 }
 
-export async function createGridMember(payload: { name: string; community?: string; phone?: string; notes?: string; status?: string }): Promise<void> {
+export async function createGridMember(payload: GridMemberPayload & { name: string }): Promise<void> {
   await api.post('/grid-members', payload)
 }
 
-export async function updateGridMember(id: number, payload: { community?: string; phone?: string; notes?: string; status?: string }): Promise<void> {
+export async function updateGridMember(id: number, payload: GridMemberPayload): Promise<void> {
   await api.put(`/grid-members/${id}`, payload)
 }
 
