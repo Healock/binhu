@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { Alert, Button, Radio } from 'antd'
+import { Panel } from '../components/ui'
 
 export default function PersonalizationSettings() {
   const [displayMode, setDisplayMode] = useState<'table' | 'card'>('table')
@@ -20,30 +22,27 @@ export default function PersonalizationSettings() {
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h2 className="text-lg font-semibold text-gray-800 mb-2">个性化</h2>
-      <p className="text-sm text-gray-500 mb-4">选择数据列表的显示方式（移动端建议使用卡片模式）</p>
+    <Panel
+      title="个性化"
+      description="选择数据列表的显示方式，移动端建议使用卡片模式"
+    >
+      <Radio.Group
+        value={displayMode}
+        onChange={event => setDisplayMode(event.target.value)}
+        optionType="button"
+        buttonStyle="solid"
+        options={[
+          { label: '表格模式', value: 'table' },
+          { label: '卡片模式', value: 'card' },
+        ]}
+      />
 
-      <div className="flex gap-4 mb-4">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="radio" name="displayMode" value="table"
-            checked={displayMode === 'table'}
-            onChange={() => setDisplayMode('table')} />
-          <span className="text-sm text-gray-700">表格模式</span>
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="radio" name="displayMode" value="card"
-            checked={displayMode === 'card'}
-            onChange={() => setDisplayMode('card')} />
-          <span className="text-sm text-gray-700">卡片模式</span>
-        </label>
+      <div className="mt-5">
+        <Button type="primary" onClick={handleSave} loading={saving}>保存</Button>
       </div>
-
-      <button onClick={handleSave} disabled={saving}
-        className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-        {saving ? '保存中...' : '保存'}
-      </button>
-      {msg && <span className={`text-sm ml-3 ${msg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{msg}</span>}
-    </div>
+      {msg && (
+        <Alert className="mt-4" type={msg.includes('成功') ? 'success' : 'error'} showIcon message={msg} />
+      )}
+    </Panel>
   )
 }

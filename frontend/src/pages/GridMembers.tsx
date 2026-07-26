@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Alert, Button, Input, Modal, Pagination, Select, Tag } from 'antd'
+import { DownloadOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   listGridMembers, createGridMember, updateGridMember, deleteGridMember,
   exportGridMembersUrl, getGridCommunities,
   type GridMember,
 } from '../api/client'
+import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
 interface Community { id: number; name: string; grid_count: number }
 
@@ -19,14 +22,19 @@ export default function GridMembers() {
   const [editing, setEditing] = useState<GridMember | null>(null)
   const [showAddForm, setShowAddForm] = useState(false)
   const [msg, setMsg] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const pageSize = 100
 
   const fetch = useCallback(async () => {
     setLoading(true)
+    setLoadError('')
     try {
-      const res = await listGridMembers({ keyword: keyword || undefined, community: communityFilter || undefined, page, page_size: 100 })
+      const res = await listGridMembers({ keyword: keyword || undefined, community: communityFilter || undefined, page, page_size: pageSize })
       setMembers(res.data); setTotal(res.total)
+    } catch {
+      setLoadError('网格员列表加载失败，请稍后重试')
     } finally { setLoading(false) }
-  }, [keyword, communityFilter, page])
+  }, [keyword, communityFilter, page, pageSize])
 
   const fetchCommunities = useCallback(async () => {
     try { setCommunities(await getGridCommunities()) } catch {}
@@ -40,12 +48,29 @@ export default function GridMembers() {
     try {
       await updateGridMember(m.id, { status: newStatus })
       setMembers(prev => prev.map(x => x.id === m.id ? { ...x, status: newStatus } : x))
-    } catch {}
+      setMsg(`已将“${m.name}”设为${newStatus}`)
+    } catch {
+      setMsg('状态更新失败，请稍后重试')
+    }
   }
 
-  const handleDelete = async (id: number, name: string) => {
-    if (!confirm(`确认删除网格员"${name}"？`)) return
-    try { await deleteGridMember(id); fetch() } catch {}
+  const handleDelete = (id: number, name: string) => {
+    Modal.confirm({
+      title: '删除网格员',
+      content: `确认删除网格员“${name}”？`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await deleteGridMember(id)
+          setMsg(`已删除网格员“${name}”`)
+          fetch()
+        } catch {
+          setMsg('删除失败，请稍后重试')
+        }
+      },
+    })
   }
 
   const handleExport = () => { window.open(exportGridMembersUrl(), '_blank') }
@@ -54,29 +79,54 @@ export default function GridMembers() {
   const activeCount = members.filter(m => m.status === '在岗').length
 
   return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex flex-wrap gap-3 items-center">
-          <input placeholder="搜索姓名/电话..." value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && (setKeyword(searchInput), setPage(1))}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm flex-1 min-w-32" />
-          <select value={communityFilter} onChange={(e) => (setCommunityFilter(e.target.value), setPage(1))}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm">
-            <option value="">全部社区</option>
-            {communityNames.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <button onClick={handleExport} className="px-3 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-50">导出CSV</button>
-          <button onClick={() => setShowAddForm(true)} className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">添加</button>
-          <span className="text-sm text-gray-500 ml-auto">共 {total} 人 · 在岗 {activeCount} 人</span>
-        </div>
-        {msg && <p className="text-sm text-gray-500 mt-2">{msg}</p>}
-      </div>
+    <div className="app-page">
+      <PageHeader
+        title="网格员管理"
+        description="维护网格员、所属社区、联系方式和在岗状态"
+        actions={
+          <>
+            <Button icon={<DownloadOutlined />} onClick={handleExport}>导出 CSV</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setShowAddForm(true)}>添加网格员</Button>
+          </>
+        }
+      />
 
-      <div className="bg-white rounded-lg shadow overflow-auto">
-        {loading ? <p className="p-8 text-center text-gray-400 text-sm">加载中...</p> :
-         members.length === 0 ? <p className="p-8 text-center text-gray-400 text-sm">暂无网格员，点击"提取网格员"自动提取</p> :
-         <table className="min-w-full text-sm">
+      <section className="app-card">
+        <div className="app-toolbar">
+          <Input
+            allowClear
+            prefix={<SearchOutlined className="text-slate-400" />}
+            placeholder="搜索姓名或电话"
+            value={searchInput}
+            onChange={event => setSearchInput(event.target.value)}
+            onPressEnter={() => { setKeyword(searchInput); setPage(1) }}
+            className="min-w-56 flex-1"
+          />
+          <Select
+            value={communityFilter}
+            onChange={value => { setCommunityFilter(value); setPage(1) }}
+            className="min-w-40"
+            options={[
+              { value: '', label: '全部社区' },
+              ...communityNames.map(community => ({ value: community, label: community })),
+            ]}
+          />
+          <Button type="primary" icon={<SearchOutlined />} onClick={() => { setKeyword(searchInput); setPage(1) }}>
+            搜索
+          </Button>
+          <div className="ml-auto flex gap-2">
+            <Tag color="blue">共 {total} 人</Tag>
+            <Tag color="green">当前页在岗 {activeCount} 人</Tag>
+          </div>
+        </div>
+        {msg && <Alert type={msg.includes('失败') ? 'error' : 'success'} showIcon message={msg} />}
+      </section>
+
+      <div className="app-table-wrap">
+        {loading ? <LoadingState /> :
+         loadError ? <EmptyState label={loadError} /> :
+         members.length === 0 ? <EmptyState label="暂无网格员，可点击“添加网格员”手动添加" /> :
+         <table className="app-table min-w-full">
            <thead className="bg-gray-50 border-b"><tr>
              <th className="px-3 py-2 text-left font-medium text-gray-600">姓名</th>
              <th className="px-3 py-2 text-left font-medium text-gray-600">所属社区</th>
@@ -93,7 +143,8 @@ export default function GridMembers() {
                  <td className="px-3 py-2 text-gray-600">{m.phone || '-'}</td>
                  <td className="px-3 py-2">
                    <button onClick={() => handleToggleStatus(m)}
-                     className={`px-2 py-0.5 rounded text-xs font-medium ${
+                     aria-label={`将${m.name}设为${m.status === '在岗' ? '离岗' : '在岗'}`}
+                     className={`compact-action rounded px-2 py-1 text-xs font-medium ${
                        m.status === '在岗'
                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
@@ -103,8 +154,8 @@ export default function GridMembers() {
                  </td>
                  <td className="px-3 py-2 text-gray-600">{m.notes || '-'}</td>
                  <td className="px-3 py-2">
-                   <button onClick={() => setEditing(m)} className="text-blue-500 hover:underline text-xs mr-2">编辑</button>
-                   <button onClick={() => handleDelete(m.id, m.name)} className="text-red-500 hover:underline text-xs">删除</button>
+                   <Button type="link" size="small" onClick={() => setEditing(m)}>编辑</Button>
+                   <Button type="link" danger size="small" onClick={() => handleDelete(m.id, m.name)}>删除</Button>
                  </td>
                </tr>
              ))}
@@ -112,10 +163,21 @@ export default function GridMembers() {
          </table>}
       </div>
 
+      {total > pageSize && (
+        <div className="flex justify-center">
+          <Pagination current={page} pageSize={pageSize} total={total} showSizeChanger={false} onChange={setPage} />
+        </div>
+      )}
+
       {(showAddForm || editing) && (
         <MemberForm member={editing} communities={communityNames}
           onClose={() => { setShowAddForm(false); setEditing(null) }}
-          onSaved={() => { setShowAddForm(false); setEditing(null); fetch() }} />
+          onSaved={() => {
+            setShowAddForm(false)
+            setEditing(null)
+            setMsg(editing ? '网格员信息已更新' : '网格员已添加')
+            fetch()
+          }} />
       )}
     </div>
   )
@@ -130,62 +192,64 @@ function MemberForm({ member, communities, onClose, onSaved }: {
   const [notes, setNotes] = useState(member?.notes || '')
   const [status, setStatus] = useState(member?.status || '在岗')
   const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
 
   const handleSave = async () => {
     setSaving(true)
+    setFormError('')
     try {
       if (member) await updateGridMember(member.id, { community, phone, notes, status })
       else await createGridMember({ name, community, phone, notes, status })
       onSaved()
-    } catch (e: any) { alert(e?.response?.data?.detail || '保存失败') }
+    } catch (e: any) { setFormError(e?.response?.data?.detail || '保存失败') }
     finally { setSaving(false) }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-gray-800 mb-4">{member ? '编辑网格员' : '添加网格员'}</h3>
-        <div className="space-y-3">
+    <Modal
+      open
+      title={member ? '编辑网格员' : '添加网格员'}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={saving}
+      maskClosable={!saving}
+      onOk={handleSave}
+      onCancel={onClose}
+    >
+        <div className="space-y-4 pt-2">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">姓名</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} disabled={!!member}
-              className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm disabled:bg-gray-100" />
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">姓名</label>
+            <Input value={name} onChange={event => setName(event.target.value)} disabled={!!member} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">所属社区</label>
-            <select value={community} onChange={(e) => setCommunity(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
-              <option value="">请选择社区</option>
-              {communities.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">所属社区</label>
+            <Select
+              value={community || undefined}
+              onChange={setCommunity}
+              placeholder="请选择社区"
+              className="w-full"
+              options={communities.map(item => ({ value: item, label: item }))}
+            />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">电话</label>
-            <input value={phone} onChange={(e) => setPhone(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">电话</label>
+            <Input value={phone} onChange={event => setPhone(event.target.value)} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">状态</label>
-            <select value={status} onChange={(e) => setStatus(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
-              <option value="在岗">在岗</option>
-              <option value="离岗">离岗</option>
-            </select>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">状态</label>
+            <Select
+              value={status}
+              onChange={setStatus}
+              className="w-full"
+              options={[{ value: '在岗', label: '在岗' }, { value: '离岗', label: '离岗' }]}
+            />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">备注</label>
-            <input value={notes} onChange={(e) => setNotes(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">备注</label>
+            <Input.TextArea value={notes} onChange={event => setNotes(event.target.value)} rows={3} />
           </div>
+          {formError && <p className="text-sm text-red-700">{formError}</p>}
         </div>
-        <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="px-4 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-50">取消</button>
-          <button onClick={handleSave} disabled={saving}
-            className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-            {saving ? '保存中...' : '保存'}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

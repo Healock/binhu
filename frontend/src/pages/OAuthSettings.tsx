@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
+import { Alert, Button, Input } from 'antd'
+import { SafetyCertificateOutlined } from '@ant-design/icons'
 import type { OAuthConfig } from '../types'
 import { saveOAuth, testOAuth, getAuthStatus } from '../api/client'
+import { Panel } from '../components/ui'
 
 export default function OAuthSettings() {
   const [clientId, setClientId] = useState('')
@@ -9,7 +12,9 @@ export default function OAuthSettings() {
   const [refreshToken, setRefreshToken] = useState('')
   const [openId, setOpenId] = useState('')
   const [statusMsg, setStatusMsg] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [testing, setTesting] = useState(false)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     getAuthStatus().then((s) => {
@@ -17,10 +22,11 @@ export default function OAuthSettings() {
         setClientId(s.client_id)
         setOpenId(s.open_id)
       }
-    }).catch(() => {})
+    }).catch(() => setLoadError('OAuth 配置状态加载失败，请稍后重试'))
   }, [])
 
   const handleSave = async () => {
+    setSaving(true)
     setStatusMsg('')
     try {
       await saveOAuth({
@@ -33,6 +39,8 @@ export default function OAuthSettings() {
       setStatusMsg('保存成功')
     } catch (e: any) {
       setStatusMsg(e?.response?.data?.detail || '保存失败')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -56,73 +64,73 @@ export default function OAuthSettings() {
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-5">
-      <h2 className="text-base font-semibold text-gray-800 mb-4">腾讯文档 OAuth 认证</h2>
-      <div className="space-y-3">
+    <Panel
+      title="腾讯文档 OAuth 认证"
+      description="用于读取和写入已授权的腾讯文档"
+    >
+      <Alert
+        className="mb-5"
+        type="warning"
+        showIcon
+        icon={<SafetyCertificateOutlined />}
+        message="这些字段属于敏感信息，请勿复制到聊天、截图或共享文档。"
+      />
+      {loadError && <Alert className="mb-5" type="error" showIcon message={loadError} />}
+      <div className="space-y-4">
         <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Client-Id</label>
-          <input
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Client-Id</label>
+          <Input
             value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm"
+            onChange={event => setClientId(event.target.value)}
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Client-Secret</label>
-          <input
-            type="password"
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Client-Secret</label>
+          <Input.Password
             value={clientSecret}
-            onChange={(e) => setClientSecret(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm"
+            onChange={event => setClientSecret(event.target.value)}
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Access-Token</label>
-          <input
-            type="password"
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Access-Token</label>
+          <Input.Password
             value={accessToken}
-            onChange={(e) => setAccessToken(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm"
+            onChange={event => setAccessToken(event.target.value)}
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Refresh-Token（可选）</label>
-          <input
-            type="password"
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Refresh-Token（可选）</label>
+          <Input.Password
             value={refreshToken}
-            onChange={(e) => setRefreshToken(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm"
+            onChange={event => setRefreshToken(event.target.value)}
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Open-Id</label>
-          <input
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Open-Id</label>
+          <Input
             value={openId}
-            onChange={(e) => setOpenId(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm"
+            onChange={event => setOpenId(event.target.value)}
           />
         </div>
         <div className="flex gap-3 pt-2">
-          <button
+          <Button
             onClick={handleTest}
-            disabled={testing}
-            className="px-4 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50"
+            loading={testing}
           >
-            {testing ? '测试中...' : '测试连接'}
-          </button>
-          <button
+            测试连接
+          </Button>
+          <Button
+            type="primary"
             onClick={handleSave}
-            className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+            loading={saving}
           >
             保存
-          </button>
+          </Button>
         </div>
         {statusMsg && (
-          <p className={`text-sm ${statusMsg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>
-            {statusMsg}
-          </p>
+          <Alert type={statusMsg.includes('成功') ? 'success' : 'error'} showIcon message={statusMsg} />
         )}
       </div>
-    </div>
+    </Panel>
   )
 }

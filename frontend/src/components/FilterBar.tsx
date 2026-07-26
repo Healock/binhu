@@ -37,7 +37,7 @@ export default function FilterBar({ spreadsheets, selectedId, inspectors, onFilt
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-4">
+    <div className="app-card app-toolbar">
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1">表格</label>

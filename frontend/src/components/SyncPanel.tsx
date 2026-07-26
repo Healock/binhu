@@ -1,3 +1,5 @@
+import { Alert, Button, Progress, Tag } from 'antd'
+import { ClockCircleOutlined, SyncOutlined } from '@ant-design/icons'
 import type { SyncStatus } from '../types'
 import { formatUTCTime } from '../api/client'
 
@@ -9,55 +11,66 @@ interface Props {
   timezone?: string
 }
 
+const statusLabel = (status?: string) => {
+  if (status === 'completed') return { color: 'success', label: '同步完成' }
+  if (status === 'failed') return { color: 'error', label: '同步失败' }
+  if (status === 'running') return { color: 'processing', label: '正在同步' }
+  if (status === 'pending') return { color: 'default', label: '等待处理' }
+  return { color: 'default', label: '尚未同步' }
+}
+
 export default function SyncPanel({ syncing, status, error, onSync, timezone = 'Asia/Shanghai' }: Props) {
   const progress = status && status.total_rows > 0
     ? Math.round((status.processed_rows / status.total_rows) * 100)
     : 0
+  const currentStatus = statusLabel(status?.status)
 
   return (
-    <div className="bg-white rounded-lg shadow p-4">
-      <div className="flex items-center justify-between mb-2">
-        <div>
-          <h3 className="text-sm font-medium text-gray-700">数据同步</h3>
-          {status?.finished_at && (
-            <p className="text-xs text-gray-400 mt-0.5">
-              数据更新时间: {formatUTCTime(status?.finished_at, timezone)}
-            </p>
-          )}
+    <section className="app-card">
+      <div className="app-toolbar justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="app-card__title">数据同步</h2>
+            <Tag color={currentStatus.color}>{currentStatus.label}</Tag>
+          </div>
+          <p className="app-card__description flex items-center gap-1.5">
+            <ClockCircleOutlined />
+            {status?.finished_at
+              ? `最近更新：${formatUTCTime(status.finished_at, timezone)}`
+              : '还没有同步记录'}
+          </p>
         </div>
-        <button
+        <Button
+          type="primary"
+          icon={<SyncOutlined spin={syncing} />}
           onClick={onSync}
+          loading={syncing}
           disabled={syncing}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            syncing
-              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              : 'bg-blue-600 text-white hover:bg-blue-700'
-          }`}
         >
-          {syncing ? '同步中...' : '🔄 同步数据'}
-        </button>
+          {syncing ? '同步中' : '同步数据'}
+        </Button>
       </div>
 
       {syncing && status && (
-        <div className="mt-2">
-          <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>{status.status === 'running' ? '处理中...' : status.status}</span>
+        <div className="border-t border-slate-100 px-5 py-3">
+          <div className="mb-1.5 flex justify-between text-xs text-slate-500">
+            <span>正在处理数据</span>
             <span>{status.processed_rows}/{status.total_rows || '?'}</span>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div
-              className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-              style={{ width: `${status.total_rows > 0 ? progress : 50}%` }}
-            />
-          </div>
+          <Progress
+            percent={status.total_rows > 0 ? progress : 50}
+            showInfo={false}
+            size="small"
+            status="active"
+          />
         </div>
       )}
 
       {error && (
-        <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-          {error}
+        <div className="border-t border-slate-100 p-4">
+          <Alert type="error" showIcon message="同步失败" description={error} />
         </div>
       )}
-    </div>
+    </section>
   )
 }

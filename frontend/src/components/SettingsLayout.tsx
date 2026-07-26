@@ -1,64 +1,65 @@
-import { NavLink, Outlet, Navigate } from 'react-router-dom'
+import { Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
+import {
+  ApiOutlined,
+  BgColorsOutlined,
+  ClockCircleOutlined,
+  FileTextOutlined,
+} from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
+import { PageHeader } from './ui'
 
 export default function SettingsLayout() {
   const { user } = useAuth()
+  const location = useLocation()
   const isSuperAdmin = user?.role === 'super_admin'
 
   const allMenuItems = [
-    { path: '/settings/spreadsheets', label: '在线表格配置', superOnly: true },
-    { path: '/settings/oauth', label: '腾讯文档OAuth', superOnly: true },
-    { path: '/settings/system', label: '系统设置', superOnly: true },
-    { path: '/settings/personalization', label: '个性化', superOnly: false },
+    { path: '/settings/spreadsheets', label: '在线表格配置', icon: <FileTextOutlined />, superOnly: true },
+    { path: '/settings/oauth', label: '腾讯文档 OAuth', icon: <ApiOutlined />, superOnly: true },
+    { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, superOnly: true },
+    { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
   ]
 
-  // 非超管只看到"个性化"
   const menuItems = allMenuItems.filter(item => !item.superOnly || isSuperAdmin)
+  const restrictedPaths = allMenuItems.filter(item => item.superOnly).map(item => item.path)
 
-  // 非超管访问超管页面 → 重定向到个性化
-  const currentPath = window.location.pathname
-  const restrictedPaths = allMenuItems.filter(i => i.superOnly).map(i => i.path)
-  if (!isSuperAdmin && restrictedPaths.some(p => currentPath.startsWith(p))) {
+  if (!isSuperAdmin && restrictedPaths.some(path => location.pathname.startsWith(path))) {
     return <Navigate to="/settings/personalization" replace />
   }
 
-  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    isActive
-      ? 'bg-blue-50 text-blue-700'
-      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+  const linkClass = ({ isActive }: { isActive: boolean }) =>
+    `flex min-h-10 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors ${
+      isActive
+        ? 'bg-blue-50 text-blue-700'
+        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+    }`
 
   return (
-    <div className="max-w-5xl mx-auto">
-      <div className="md:flex md:gap-6">
-        <aside className="hidden md:block w-48 shrink-0">
-          <nav className="space-y-1">
-            {menuItems.map((item) => (
-              <NavLink key={item.path} to={item.path}
-                className={({ isActive }) =>
-                  `block px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${navLinkClass({ isActive })}`
-                }
-              >
+    <div className="app-page">
+      <PageHeader title="系统设置" description="管理数据来源、认证信息和个人显示习惯" />
+
+      <div className="md:flex md:items-start md:gap-6">
+        <aside className="hidden w-52 shrink-0 md:block">
+          <nav className="app-card space-y-1 p-2">
+            {menuItems.map(item => (
+              <NavLink key={item.path} to={item.path} className={linkClass}>
+                <span className="flex w-5 justify-center">{item.icon}</span>
                 {item.label}
               </NavLink>
             ))}
           </nav>
         </aside>
 
-        <div className="md:hidden mb-4">
-          <nav className="flex gap-1 overflow-x-auto pb-1">
-            {menuItems.map((item) => (
-              <NavLink key={item.path} to={item.path}
-                className={({ isActive }) =>
-                  `shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium ${navLinkClass({ isActive })}`
-                }
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
-        </div>
+        <nav className="mb-4 flex gap-2 overflow-x-auto pb-1 md:hidden">
+          {menuItems.map(item => (
+            <NavLink key={item.path} to={item.path} className={({ isActive }) => `${linkClass({ isActive })} shrink-0`}>
+              {item.icon}
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
 
-        <div className="flex-1 min-w-0">
+        <div className="settings-content min-w-0 flex-1">
           <Outlet />
         </div>
       </div>

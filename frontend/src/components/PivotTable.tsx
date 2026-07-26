@@ -24,7 +24,7 @@ export default function PivotTable({ data, loading, page, total, pageSize, onPag
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow p-8 text-center text-gray-400">
+      <div className="app-card app-empty">
         加载中...
       </div>
     )
@@ -32,7 +32,7 @@ export default function PivotTable({ data, loading, page, total, pageSize, onPag
 
   if (!data.length) {
     return (
-      <div className="bg-white rounded-lg shadow p-8 text-center text-gray-400">
+      <div className="app-card app-empty">
         暂无数据，请先同步数据
       </div>
     )
@@ -45,9 +45,9 @@ export default function PivotTable({ data, loading, page, total, pageSize, onPag
   ]
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
+    <div className="app-table-wrap">
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200 text-sm">
+        <table className="app-table min-w-full">
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
               {headers.map((h, i) => (

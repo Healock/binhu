@@ -1,5 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Alert, Button, Input } from 'antd'
+import {
+  BarChartOutlined,
+  DatabaseOutlined,
+  LockOutlined,
+  UserOutlined,
+} from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
@@ -10,10 +17,11 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
     if (!username.trim() || !password) return
-    setLoading(true); setError('')
+    setLoading(true)
+    setError('')
     try {
       await login(username.trim(), password)
       navigate('/', { replace: true })
@@ -25,57 +33,91 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen">
-      {/* 左侧装饰区（PC端） */}
-      <div className="hidden md:flex md:w-1/2 bg-gradient-to-br from-blue-600 to-blue-800 flex-col justify-center items-center text-white p-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold mb-3">滨湖智慧平台</h1>
-          <p className="text-blue-200 text-sm">数据汇总 · 统计分析 · 实时监控</p>
+    <div className="flex min-h-screen bg-slate-50">
+      <section className="hidden w-[44%] flex-col justify-between bg-[#17335c] p-10 text-white md:flex lg:p-14">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-lg font-semibold text-[#17335c]">
+            滨
+          </span>
+          <div>
+            <div className="text-lg font-semibold">滨湖智慧平台</div>
+            <div className="text-xs text-blue-100/75">数据管理中心</div>
+          </div>
         </div>
-      </div>
 
-      {/* 右侧表单区 */}
-      <div className="flex-1 flex items-center justify-center p-6 bg-gray-50">
-        <div className="w-full max-w-sm">
-          {/* 移动端标题 */}
-          <h1 className="md:hidden text-xl font-bold text-gray-800 text-center mb-6">滨湖智慧平台</h1>
+        <div className="max-w-md">
+          <p className="mb-3 text-sm font-medium text-blue-100">集中管理业务数据</p>
+          <h1 className="text-3xl font-semibold leading-tight">让数据同步、查询和统计更清楚</h1>
+          <div className="mt-8 space-y-4 text-sm text-blue-100/90">
+            <div className="flex items-center gap-3">
+              <DatabaseOutlined className="text-base" />
+              腾讯文档数据统一归档
+            </div>
+            <div className="flex items-center gap-3">
+              <BarChartOutlined className="text-base" />
+              按人员、社区和日期统计
+            </div>
+          </div>
+        </div>
 
-          <div className="bg-white rounded-lg shadow-lg p-8">
-            <h2 className="text-lg font-semibold text-gray-800 mb-6">登录</h2>
+        <p className="text-xs text-blue-100/55">滨湖智慧平台 · 内部业务系统</p>
+      </section>
+
+      <main className="flex flex-1 items-center justify-center p-5 sm:p-8">
+        <div className="w-full max-w-[400px]">
+          <div className="mb-7 md:hidden">
+            <div className="mb-3 flex items-center gap-3">
+              <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-700 font-semibold text-white">滨</span>
+              <span className="text-lg font-semibold text-slate-900">滨湖智慧平台</span>
+            </div>
+            <p className="text-sm text-slate-500">数据管理中心</p>
+          </div>
+
+          <div className="app-card app-card--padded">
+            <div className="mb-6">
+              <h2 className="text-xl font-semibold text-slate-900">登录系统</h2>
+              <p className="mt-1.5 text-sm text-slate-500">请输入分配给你的账号和密码</p>
+            </div>
+
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">用户名</label>
-                <input
-                  type="text"
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
+                <Input
+                  size="large"
+                  prefix={<UserOutlined className="text-slate-400" />}
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  onChange={event => setUsername(event.target.value)}
                   placeholder="请输入用户名"
                   autoFocus
+                  autoComplete="username"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">密码</label>
-                <input
-                  type="password"
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">密码</label>
+                <Input.Password
+                  size="large"
+                  prefix={<LockOutlined className="text-slate-400" />}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  onChange={event => setPassword(event.target.value)}
                   placeholder="请输入密码"
+                  autoComplete="current-password"
                 />
               </div>
-              {error && <p className="text-sm text-red-500">{error}</p>}
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              {error && <Alert type="error" showIcon message={error} />}
+              <Button
+                type="primary"
+                htmlType="submit"
+                size="large"
+                loading={loading}
+                disabled={!username.trim() || !password}
+                block
               >
-                {loading ? '登录中...' : '登录'}
-              </button>
+                登录
+              </Button>
             </form>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   )
 }

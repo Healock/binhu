@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
+import { Alert, Button, Select } from 'antd'
 import { getSystemConfig, updateSystemConfig } from '../api/client'
+import { Panel } from '../components/ui'
 
 const TIMEZONES = [
   { value: 'Asia/Shanghai', label: '上海 (UTC+8)' },
@@ -17,7 +19,9 @@ export default function SystemSettings() {
   const [msg, setMsg] = useState('')
 
   useEffect(() => {
-    getSystemConfig().then(c => setTimezone(c.timezone || 'Asia/Shanghai')).catch(() => {})
+    getSystemConfig()
+      .then(c => setTimezone(c.timezone || 'Asia/Shanghai'))
+      .catch(() => setMsg('系统设置加载失败，请稍后重试'))
   }, [])
 
   const handleSave = async () => {
@@ -30,29 +34,24 @@ export default function SystemSettings() {
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h2 className="text-lg font-semibold text-gray-800 mb-4">系统设置</h2>
-
+    <Panel title="系统设置" description="设置系统时间在页面上的显示方式">
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">系统时区</label>
-          <p className="text-xs text-gray-500 mb-2">数据库存储UTC标准时间，前端按此时区显示</p>
-          <select value={timezone} onChange={(e) => setTimezone(e.target.value)}
-            className="border border-gray-300 rounded px-3 py-2 text-sm w-full md:w-64">
-            {TIMEZONES.map((tz) => (
-              <option key={tz.value} value={tz.value}>{tz.label}</option>
-            ))}
-          </select>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">系统时区</label>
+          <p className="mb-2 text-xs text-slate-500">数据库保存 UTC 标准时间，页面按照这里选择的时区显示。</p>
+          <Select
+            value={timezone}
+            onChange={setTimezone}
+            className="w-full md:w-72"
+            options={TIMEZONES}
+          />
         </div>
 
         <div className="flex items-center gap-3">
-          <button onClick={handleSave} disabled={saving}
-            className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-            {saving ? '保存中...' : '保存'}
-          </button>
-          {msg && <span className={`text-sm ${msg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{msg}</span>}
+          <Button type="primary" onClick={handleSave} loading={saving}>保存</Button>
         </div>
+        {msg && <Alert type={msg.includes('成功') ? 'success' : 'error'} showIcon message={msg} />}
       </div>
-    </div>
+    </Panel>
   )
 }
