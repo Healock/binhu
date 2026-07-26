@@ -1,39 +1,54 @@
-# 滨湖智慧平台架构说明
+# 系统是怎么工作的
 
-本文描述当前仓库中可由源码验证的稳定架构。运行中的生产状态与待整改差异见 [风险登记](known-risks.md)。
+## 先说人话
 
-## 系统数据流
+这个系统主要做六件事：
+
+1. 从腾讯文档读取表格。
+2. 整理数据，并去掉重复项。
+3. 保存当前数据。
+4. 保存每日快照和被移除的数据。
+5. 计算每天或一段时间内的统计结果。
+6. 在网页上展示，也可以把汇总结果写回腾讯文档。
 
 ```mermaid
 flowchart LR
-    T["腾讯文档表格"] --> C["读取、解析、按业务键去重"]
-    C --> O["OnlineData 在线数据"]
-    O --> S["daily_report DWD 快照"]
-    O --> A["OnlineDataArchive 移除项归档"]
-    S --> R["单日 / 区间统计"]
-    R --> U["React 前端"]
-    R --> W["可选：写回腾讯文档汇总表"]
+    A["腾讯文档表格"] --> B["读取和整理"]
+    B --> C["保存当前数据"]
+    C --> D["保存每日快照"]
+    C --> E["保存被移除的数据"]
+    D --> F["计算统计结果"]
+    F --> G["网页展示"]
+    F --> H["可选：写回腾讯文档"]
 ```
 
-后端使用 FastAPI 与 aiomysql，前端使用 React 18、Ant Design 6、Tailwind CSS 4 和 Vite 6。Docker Compose 定义 MySQL 与后端服务；生产入口配置仍有开放风险，不能从旧部署计划推断实际链路。
+## 三个数据库分别放什么
 
-## 数据库与数仓层次
-
-| 数据库 | 层次与职责 |
+| 数据库 | 通俗解释 |
 |---|---|
-| `OnlineData` | ODS 在线业务表、表格配置、OAuth 配置、同步日志、用户、会话、网格员、社区和系统配置 |
-| `OnlineDataArchive` | 被在线源移除数据的归档副本，可保留同一业务键的多次归档记录 |
-| `daily_report` | DWD 日快照、DWS 按核查人/社区日报、ADS 总汇总与 `_daily_report_meta` 元数据 |
+| `OnlineData` | 当前正在使用的数据，以及用户、配置和同步记录 |
+| `OnlineDataArchive` | 已经从腾讯文档移除的数据，留作历史查询 |
+| `daily_report` | 每日快照、每日统计和总汇总 |
 
-同步会先比较在线源与当前在线表的新增、修改和移除项。支持日报的类型在归档前保存快照；移除项随后写入归档库。区间统计必须从 DWD 快照合并、按业务键取最新版本，不能直接累加多日 DWS/ADS 结果。
+源码中还会看到四个数仓缩写：
 
-数据库初始化入口是 `backend/init.sql` 与 `backend/database.py`。前者只在新 MySQL 数据目录首次启动时自动执行，后者还包含运行时兼容建表与迁移逻辑。修改任一处时必须检查二者是否继续一致。
+- ODS：当前原始数据，主要在 `OnlineData`。
+- DWD：每天保存一份数据快照。
+- DWS：按核查人或社区整理出的每日报表。
+- ADS：给页面展示的总汇总。
 
-## 解析器与日报能力
+最重要的规则：查询多天数据时，要从每日快照重新计算，不能直接把每天的报表相加，否则同一条数据可能被重复计算。
 
-解析器注册以 `backend/services/parsers/__init__.py` 为唯一事实来源；日报注册以 `backend/services/report_builders/__init__.py` 为准。
+数据库初始化由两个地方共同负责：
 
-| 业务类型 | 在线表 | 解析 | 日报/区间统计 |
+- `backend/init.sql`：新数据库第一次启动时建表。
+- `backend/database.py`：后端启动时补充必要的表和兼容处理。
+
+改数据库结构时，这两个地方都要检查。
+
+## 目前支持哪些业务表
+
+| 业务类型 | 保存到哪里 | 能读取 | 能生成日报 |
 |---|---|---:|---:|
 | 全链条 | `t_fullchain` | 是 | 是 |
 | 出租房屋核查 | `t_rental_check` | 是 | 是 |
@@ -43,24 +58,43 @@ flowchart LR
 | 寄递业 | `t_delivery_industry` | 是 | 是 |
 | 群租房核查 | `t_group_rental` | 是 | 否 |
 
-`parser_type` 的当前外部值是中文业务名称，不是文件名中的英文后缀。新增业务类型时必须同时评估解析器、初始化表、归档表、查询 API、前端选择项、日报注册和汇总配置。
+代码中的最终依据：
 
-## 后端边界
+- 支持读取哪些表：`backend/services/parsers/__init__.py`。
+- 支持生成哪些日报：`backend/services/report_builders/__init__.py`。
 
-- 应用入口与实际路由注册：`backend/main.py`。
-- 同步编排：`backend/services/sync_engine.py`。
-- 腾讯文档读取：`backend/services/txdocs_client.py`，按单元格上限分页。
-- 日报与区间统计：`backend/services/report_builders/`、`backend/services/report_range.py`。
-- 静态资源：FastAPI 可以托管构建后的前端并提供 SPA fallback；仓库还保留独立 nginx 配置，当前两种入口尚未统一。
+增加一种业务表时，不能只增加一个页面，还要一起检查数据库表、解析器、归档、查询、日报和前端选项。
 
-当前已注册的路由族为：`/api/auth`、`/api/spreadsheets`、`/api/sync`、`/api/stats`、`/api/query`、`/api/grid-members`、`/api/system`、`/api/users` 和 `/api/health`。具体方法和请求结构以 FastAPI OpenAPI 与各路由模块为准。
+## 后端主要文件
 
-除登录和健康检查外，业务路由需要会话鉴权；用户管理和 OAuth 修改还要求超级管理员。`backend/routers/test_mock.py` 定义了 `/api/test`，但当前没有在应用入口注册，详见风险登记。
+| 文件或目录 | 作用 |
+|---|---|
+| `backend/main.py` | 启动 FastAPI，并注册真正可用的接口 |
+| `backend/services/sync_engine.py` | 负责完整的数据同步流程 |
+| `backend/services/txdocs_client.py` | 负责读取和写入腾讯文档 |
+| `backend/services/report_builders/` | 负责生成单日报表 |
+| `backend/services/report_range.py` | 负责计算一段时间的统计 |
 
-## 前端边界
+后端目前包括登录、表格配置、同步、统计、数据查询、网格员、系统设置、用户管理和健康检查。
 
-前端路由以 `frontend/src/App.tsx` 为准。认证状态由 `AuthContext` 管理，受保护页面通过 `ProtectedRoute` 进入；用户管理页面要求超级管理员。API 封装主要位于 `frontend/src/api/client.ts`。
+`backend/routers/test_mock.py` 虽然存在，但没有在 `backend/main.py` 中启用，所以它现在不是可用接口。这个问题记录在 [风险清单](known-risks.md)。
 
-前端生产构建输出到 `frontend/dist/`，该目录不进入 Git。任何涉及页面、类型或 API 的改动都至少执行一次生产构建。
+## 前端主要文件
+
+- 页面入口：`frontend/src/App.tsx`。
+- 接口调用：`frontend/src/api/client.ts`。
+- 登录状态：`frontend/src/context/`。
+- 登录保护：`frontend/src/components/ProtectedRoute.tsx`。
+
+前端构建结果放在 `frontend/dist/`，这个目录不会上传 Git。修改前端后要重新运行：
+
+```powershell
+Set-Location frontend
+npm.cmd run build
+```
+
+## 当前生产环境要注意什么
+
+仓库里同时存在 FastAPI 直接提供网页和 nginx 代理两种配置，但线上入口还没有完全整理一致。不要直接照搬旧部署计划，先看 [风险清单](known-risks.md)。
 
 _源码核对：2026-07-26_
