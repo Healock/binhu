@@ -65,14 +65,21 @@ async def build_summary(date_str: str) -> dict:
                 if not builder:
                     continue
                 tname = f"{date_str}_daily_{builder.table_suffix}_community"
+                snapshot_name = f"{date_str}_snapshot_{builder.table_suffix}"
                 await cur.execute(
-                    "SELECT table_name FROM _daily_report_meta WHERE table_name = %s", (tname,)
+                    "SELECT table_name FROM _daily_report_meta "
+                    "WHERE table_name IN (%s, %s)",
+                    (tname, snapshot_name),
                 )
-                if await cur.fetchone():
+                available = {row[0] for row in await cur.fetchall()}
+                if {tname, snapshot_name}.issubset(available):
                     existing_tables.append(f"{builder.table_suffix}_community")
 
             if not existing_tables:
-                return {"implemented": False, "message": "请先生成至少一个分汇总表"}
+                return {
+                    "implemented": False,
+                    "message": f"{date_str} 没有可用快照和分汇总表，不能生成总汇总表",
+                }
 
             await cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {t_summary} ({SUMMARY_COLS}) "
@@ -135,11 +142,26 @@ async def get_summary(date_str: str) -> dict:
     try:
         async with conn.cursor() as cur:
             await cur.execute(
+                "SELECT table_name FROM _daily_report_meta "
+                "WHERE report_date = %s AND RIGHT(parser_type, 9) = '_snapshot' "
+                "LIMIT 1",
+                (date_str,),
+            )
+            if not await cur.fetchone():
+                return {
+                    "exists": False,
+                    "message": f"{date_str} 没有同步快照，暂无总汇总表",
+                }
+
+            await cur.execute(
                 "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
                 (f"{date_str}_daily_summary",),
             )
             if not await cur.fetchone():
-                return {"exists": False}
+                return {
+                    "exists": False,
+                    "message": f"{date_str} 尚未生成总汇总表",
+                }
 
             active_condition = active_member_sql()
             await cur.execute(f"""

@@ -71,27 +71,25 @@ async def get_report_range(start_date: str, end_date: str, parser_type: str) -> 
             snapshots = await _find_snapshots(cur, start_date, end_date, parser_type)
 
             if not snapshots:
-                src = f"OnlineData.{builder.source_table}"
-                insp_sql, comm_sql = builder.build_stats_sql(src)
-                await cur.execute(insp_sql)
-                insp_rows = await cur.fetchall()
-                await cur.execute(comm_sql)
-                comm_rows = await cur.fetchall()
-            else:
-                dedup_subquery = _build_dedup_subquery(snapshots, start_date, end_date)
-                src = f"({dedup_subquery})"
-                insp_sql, comm_sql = builder.build_stats_sql(src)
-                await cur.execute(insp_sql, (start_date, end_date))
-                insp_rows = await cur.fetchall()
-                await cur.execute(comm_sql, (start_date, end_date))
-                comm_rows = await cur.fetchall()
+                return {
+                    "exists": False,
+                    "message": f"{start_date} 至 {end_date} 没有同步快照，暂无统计数据",
+                }
+
+            dedup_subquery = _build_dedup_subquery(snapshots, start_date, end_date)
+            src = f"({dedup_subquery})"
+            insp_sql, comm_sql = builder.build_stats_sql(src)
+            await cur.execute(insp_sql, (start_date, end_date))
+            insp_rows = await cur.fetchall()
+            await cur.execute(comm_sql, (start_date, end_date))
+            comm_rows = await cur.fetchall()
 
         insp_cols = ["社区", "姓名", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]
         comm_cols = ["社区", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]
 
         return {
             "exists": True,
-            "range": {"start": start_date, "end": end_date, "days": len(snapshots) or 1},
+            "range": {"start": start_date, "end": end_date, "days": len(snapshots)},
             "inspector": {"columns": insp_cols, "data": [dict(zip(insp_cols, r)) for r in insp_rows]},
             "community": {"columns": comm_cols, "data": [dict(zip(comm_cols, r)) for r in comm_rows]},
         }

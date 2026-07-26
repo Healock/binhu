@@ -6,7 +6,8 @@
 - 已核查 = 当天现住址从空变非空（核查结果仍空）
 - 已完成 = 当天核查结果从空变非空
 
-无前一天快照时回退到全量统计（存量）
+当天没有快照时不生成日报，避免把当前全量数据写到错误的历史日期。
+当天有快照、但没有前一天快照时，只统计当天实际发生变化的数据。
 """
 
 from datetime import date, timedelta
@@ -58,17 +59,17 @@ class BaseReportBuilder:
         conn = await pool.acquire()
         try:
             async with conn.cursor() as cur:
-                await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-                await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-                await cur.execute(f"TRUNCATE TABLE {t_inspector}")
-                await cur.execute(f"TRUNCATE TABLE {t_community}")
-
                 # 检查当天快照是否存在
                 await cur.execute(
                     "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
                     (f"{date_str}_snapshot_{self.table_suffix}",),
                 )
                 has_today = await cur.fetchone() is not None
+                if not has_today:
+                    return {
+                        "implemented": False,
+                        "message": f"{date_str} 没有同步快照，不能生成日报",
+                    }
 
                 # 检查前一天快照是否存在
                 await cur.execute(
@@ -77,22 +78,21 @@ class BaseReportBuilder:
                 )
                 has_prev = await cur.fetchone() is not None
 
-                if has_today and has_prev:
+                await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+                await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+                await cur.execute(f"TRUNCATE TABLE {t_inspector}")
+                await cur.execute(f"TRUNCATE TABLE {t_community}")
+
+                if has_prev:
                     # 工作量统计：对比快照检测状态变更
                     insp_sql, comm_sql = self._build_workload_sql(today_snap, prev_snap)
                     sql_params = None
                     print(f"[BUILD] {self.parser_type} {date_str}: 工作量统计（对比 {prev_date} 快照）")
-                elif has_today:
+                else:
                     # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据
                     insp_sql, comm_sql = self._build_workload_sql(today_snap, None)
                     sql_params = (date_str,)
                     print(f"[BUILD] {self.parser_type} {date_str}: 首日统计（用 _last_updated_at 筛选当天活动）")
-                else:
-                    # 无快照：回退到原始表全量统计
-                    src = f"OnlineData.{self.source_table}"
-                    insp_sql, comm_sql = self.build_stats_sql(src)
-                    sql_params = None
-                    print(f"[BUILD] {self.parser_type} {date_str}: 全量统计（无快照，回退原始表）")
 
                 if sql_params:
                     await cur.execute(f"INSERT INTO {t_inspector} (社区, 姓名, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {insp_sql}", sql_params)
@@ -192,7 +192,7 @@ class BaseReportBuilder:
         return inspector_sql, community_sql
 
     def build_stats_sql(self, src: str) -> tuple[str, str]:
-        """生成全量统计 SQL（回退用，无快照时从原始表统计存量）
+        """生成全量统计 SQL（用于从指定快照子查询统计存量）
 
         列名加 AS 别名，便于在子查询中引用
         """
