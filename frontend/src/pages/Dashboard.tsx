@@ -3,7 +3,7 @@ import { Button, DatePicker, Select, Tag } from 'antd'
 import dayjs from 'dayjs'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
-import { buildReport, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
+import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
 import { getDisplayMode } from '../utils/displayMode'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
@@ -14,7 +14,7 @@ const fmt = (val: any, col: string) => {
 }
 
 export default function Dashboard() {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = formatDateInTimezone()
   const [dateRange, setDateRange] = useState<[string, string]>([today, today])
   const [reportType, setReportType] = useState('全链条')
   const [types, setTypes] = useState<string[]>([])
@@ -50,7 +50,17 @@ export default function Dashboard() {
   }
 
   useEffect(() => { getSyncStatus().then(setSyncStatus).catch(() => {}) }, [])
-  useEffect(() => { getSystemConfig().then(c => setTimezone(c.timezone || 'Asia/Shanghai')).catch(() => {}) }, [])
+  useEffect(() => {
+    getSystemConfig().then(c => {
+      const configuredTimezone = c.timezone || 'Asia/Shanghai'
+      setTimezone(configuredTimezone)
+      setDateRange(current => {
+        if (current[0] !== today || current[1] !== today) return current
+        const configuredToday = formatDateInTimezone(new Date(), configuredTimezone)
+        return [configuredToday, configuredToday]
+      })
+    }).catch(() => {})
+  }, [])
   useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current) }, [])
 
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])

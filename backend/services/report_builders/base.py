@@ -12,6 +12,7 @@
 
 from datetime import date, timedelta
 from database import db_manager
+from services.business_time import get_business_date_range_utc_bounds
 
 
 class BaseReportBuilder:
@@ -91,7 +92,9 @@ class BaseReportBuilder:
                 else:
                     # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据
                     insp_sql, comm_sql = self._build_workload_sql(today_snap, None)
-                    sql_params = (date_str,)
+                    sql_params = await get_business_date_range_utc_bounds(
+                        cur, date_str, date_str
+                    )
                     print(f"[BUILD] {self.parser_type} {date_str}: 首日统计（用 _last_updated_at 筛选当天活动）")
 
                 if sql_params:
@@ -149,7 +152,9 @@ class BaseReportBuilder:
         else:
             # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据，按当前状态分类
             join_clause = ""
-            change_filter = "DATE(t._last_updated_at) = %s"
+            change_filter = (
+                "t._last_updated_at >= %s AND t._last_updated_at < %s"
+            )
             cond_unchecked = "(t.现住址 IS NULL OR t.现住址 = '')"
             cond_checked = f"t.现住址 <> '' AND (t.{rc} IS NULL OR t.{rc} = '')"
             cond_done = f"t.{rc} <> ''"

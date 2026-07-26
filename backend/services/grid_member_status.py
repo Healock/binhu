@@ -1,7 +1,8 @@
 """网格员长期状态、请假区间与实际状态的统一规则。"""
 
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import date
+
+from services.business_time import get_business_date
 
 
 def validate_leave_period(start_date: date | None, end_date: date | None) -> None:
@@ -63,17 +64,3 @@ def active_member_sql(alias: str = "", date_placeholder: str = "%s") -> str:
         f"AND {date_placeholder} BETWEEN {prefix}leave_start_date AND {prefix}leave_end_date"
         f")"
     )
-
-
-async def get_business_date(cur) -> date:
-    """按系统配置的时区取得今天，配置异常时使用上海时区。"""
-    await cur.execute(
-        "SELECT config_value FROM _system_config WHERE config_key = 'timezone'"
-    )
-    row = await cur.fetchone()
-    timezone_name = row[0] if row and row[0] else "Asia/Shanghai"
-    try:
-        timezone = ZoneInfo(timezone_name)
-    except Exception:
-        timezone = ZoneInfo("Asia/Shanghai")
-    return datetime.now(timezone).date()

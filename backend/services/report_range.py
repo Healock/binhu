@@ -9,6 +9,7 @@
 
 import json
 from database import db_manager
+from services.business_time import get_business_date_range_utc_bounds
 from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
 
@@ -43,7 +44,7 @@ async def _find_snapshots(cur, start_date: str, end_date: str, parser_type: str)
     return result
 
 
-def _build_dedup_subquery(snapshot_tables: list[str], start_date: str, end_date: str) -> str:
+def _build_dedup_subquery(snapshot_tables: list[str]) -> str:
     """构建 UNION ALL + ROW_NUMBER 去重子查询"""
     union_sql = " UNION ALL ".join(
         f"SELECT * FROM `{tn}`" for tn in snapshot_tables
@@ -52,7 +53,7 @@ def _build_dedup_subquery(snapshot_tables: list[str], start_date: str, end_date:
         SELECT * FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY _row_key ORDER BY _last_updated_at DESC) AS _rn
             FROM ({union_sql}) _all_snap
-            WHERE DATE(_first_seen_at) BETWEEN %s AND %s
+            WHERE _first_seen_at >= %s AND _first_seen_at < %s
         ) _dedup
         WHERE _rn = 1
     """
@@ -76,12 +77,15 @@ async def get_report_range(start_date: str, end_date: str, parser_type: str) -> 
                     "message": f"{start_date} 至 {end_date} 没有同步快照，暂无统计数据",
                 }
 
-            dedup_subquery = _build_dedup_subquery(snapshots, start_date, end_date)
+            utc_bounds = await get_business_date_range_utc_bounds(
+                cur, start_date, end_date
+            )
+            dedup_subquery = _build_dedup_subquery(snapshots)
             src = f"({dedup_subquery})"
             insp_sql, comm_sql = builder.build_stats_sql(src)
-            await cur.execute(insp_sql, (start_date, end_date))
+            await cur.execute(insp_sql, utc_bounds)
             insp_rows = await cur.fetchall()
-            await cur.execute(comm_sql, (start_date, end_date))
+            await cur.execute(comm_sql, utc_bounds)
             comm_rows = await cur.fetchall()
 
         insp_cols = ["社区", "姓名", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]
@@ -105,6 +109,9 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
         async with conn.cursor() as cur:
             # 读取配置：总汇总表使用哪些分表
             summary_types = await _get_summary_types(cur)
+            utc_bounds = await get_business_date_range_utc_bounds(
+                cur, start_date, end_date
+            )
 
             union_parts = []
             total_days = 0
@@ -116,7 +123,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 if not snapshots:
                     continue
                 total_days = max(total_days, len(snapshots))
-                dedup_subquery = _build_dedup_subquery(snapshots, start_date, end_date)
+                dedup_subquery = _build_dedup_subquery(snapshots)
                 src = f"({dedup_subquery})"
                 # 用 build_stats_sql 做全量统计，取社区汇总
                 _, comm_sql = builder.build_stats_sql(src)
@@ -130,9 +137,9 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 return {"exists": False}
 
             union_sql = " UNION ALL ".join(union_parts)
-            # 每个 dedup_subquery 有2个 %s（日期），需要传对应数量参数
+            # 每个 dedup_subquery 有2个 %s（UTC 起止时间），需要传对应数量参数
             param_count = union_sql.count("%s")
-            params = [start_date, end_date] * (param_count // 2)
+            params = list(utc_bounds) * (param_count // 2)
             active_condition = active_member_sql()
 
             await cur.execute(f"""

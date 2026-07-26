@@ -5,6 +5,7 @@
 
 from services.txdocs_client import TxDocsClient
 from services.parsers import get_parser
+from services.business_time import get_business_date
 
 
 class SyncEngine:
@@ -204,14 +205,13 @@ class SyncEngine:
 
     async def _save_snapshot(self, conn, table: str, parser_type: str):
         """保存原始表全量快照到 daily_report 库（归档前调用，包含即将移除的数据）"""
-        from datetime import date
         from services.report_builders import BUILDERS
         builder = BUILDERS.get(parser_type)
         if not builder:
             return
-        today = date.today().isoformat()
-        snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
         async with conn.cursor() as cur:
+            today = (await get_business_date(cur)).isoformat()
+            snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
             await cur.execute(f"DROP TABLE IF EXISTS daily_report.`{snapshot_table}`")
             await cur.execute(
                 f"CREATE TABLE daily_report.`{snapshot_table}` AS SELECT * FROM OnlineData.`{table}`"
