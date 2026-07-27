@@ -69,7 +69,15 @@ class SyncSnapshotTimezoneTests(unittest.IsolatedAsyncioTestCase):
         connection.cursor.return_value = cursor_context
         builder = MagicMock()
         builder.table_suffix = "fullChain"
-        builder.build = AsyncMock(return_value={"implemented": True})
+        # BaseReportBuilder.build 成功时不返回 implemented 字段。
+        builder.build = AsyncMock(
+            return_value={
+                "date": "2026-07-27",
+                "type": "全链条",
+                "inspector_rows": 1,
+                "community_rows": 1,
+            }
+        )
 
         with patch(
             "services.sync_engine.get_business_date",
