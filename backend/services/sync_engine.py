@@ -77,13 +77,33 @@ class SyncEngine:
             # 3. 逐表同步
             total = 0
             errors = []
+            report_dates = set()
             for sp in spreadsheets:
                 try:
-                    count = await self._sync_one(conn, client, sp)
+                    count, report_date = await self._sync_one(conn, client, sp)
                     total += count
+                    if report_date:
+                        report_dates.add(report_date)
                     await self._set_progress(conn, task_id, total)
                 except Exception as e:
                     errors.append(f"{sp['name']}: {e}")
+
+            # 所有分表日报刷新后，再统一重建总汇总表。
+            if report_dates:
+                from services.report_builders.summary import build_summary
+
+                for report_date in sorted(report_dates):
+                    try:
+                        result = await build_summary(report_date)
+                        if not result.get("implemented"):
+                            errors.append(
+                                f"{report_date} 总汇总表: "
+                                f"{result.get('message', '生成失败')}"
+                            )
+                        else:
+                            print(f"[SYNC] 总汇总表已刷新: {report_date}")
+                    except Exception as e:
+                        errors.append(f"{report_date} 总汇总表: {e}")
 
             await client.close()
 
@@ -120,7 +140,7 @@ class SyncEngine:
             for r in rows
         ]
 
-    async def _sync_one(self, conn, client, sp: dict) -> int:
+    async def _sync_one(self, conn, client, sp: dict) -> tuple[int, str | None]:
         """同步单个表格：增量比对 + 归档"""
         parser = get_parser(sp["parser_type"])
         table = parser.table_name
@@ -190,7 +210,7 @@ class SyncEngine:
             print(f"[SYNC] UPDATE统计: 成功{update_ok} 失败{update_fail}")
 
         # ★ 保存快照（归档前，包含即将被移除的数据）
-        await self._save_snapshot(conn, table, sp["parser_type"])
+        report_date = await self._save_snapshot(conn, table, sp["parser_type"])
 
         if removed_keys:
             archive_table = f"OnlineDataArchive.{table}_archive"
@@ -207,7 +227,7 @@ class SyncEngine:
                     archive_column_map,
                 )
 
-        return len(online)
+        return len(online), report_date
 
     async def _load_existing(
         self, conn, table: str, parser, column_map: dict[str, str]
@@ -289,12 +309,15 @@ class SyncEngine:
             )
             await cur.execute(f"DELETE FROM {table} WHERE _row_key = %s", (key,))
 
-    async def _save_snapshot(self, conn, table: str, parser_type: str):
-        """保存原始表全量快照到 daily_report 库（归档前调用，包含即将移除的数据）"""
+    async def _save_snapshot(
+        self, conn, table: str, parser_type: str
+    ) -> str | None:
+        """保存快照并刷新对应日报，返回使用的业务日期。"""
         from services.report_builders import BUILDERS
+
         builder = BUILDERS.get(parser_type)
         if not builder:
-            return
+            return None
         async with conn.cursor() as cur:
             today = (await get_business_date(cur)).isoformat()
             snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
@@ -308,6 +331,12 @@ class SyncEngine:
                 (snapshot_table, today, f"{parser_type}_snapshot"),
             )
             print(f"[SYNC] 快照已保存: {snapshot_table}")
+
+        result = await builder.build(today)
+        if not result.get("implemented"):
+            raise RuntimeError(result.get("message", f"{parser_type}日报生成失败"))
+        print(f"[SYNC] 日报已刷新: {today} {parser_type}")
+        return today
 
     # --- 任务状态管理 ---
     async def _set_status(self, conn, task_id: int, status: str):

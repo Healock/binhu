@@ -2,9 +2,8 @@
 
 工作量口径：
 - 数据总数 = 当天新入库 + 当天状态变更的数据
-- 未核查 = 当天新入库且现住址为空的数据
-- 已核查 = 当天现住址从空变非空（核查结果仍空）
-- 已完成 = 当天核查结果从空变非空
+- 新入库数据按当前状态归类：未核查、已核查或已完成
+- 已有数据按当天状态变化归类：填写现住址算已核查，填写核查结果算已完成
 
 当天没有快照时不生成日报，避免把当前全量数据写到错误的历史日期。
 当天有快照、但没有前一天快照时，只统计当天实际发生变化的数据。
@@ -141,17 +140,29 @@ class BaseReportBuilder:
                 OR IFNULL(prev.现住址, '') <> IFNULL(t.现住址, '')
                 OR IFNULL(prev.{rc}, '') <> IFNULL(t.{rc}, '')
             )""".format(rc=rc)
-            # 未核查：新增数据且现住址为空
-            cond_unchecked = "prev._row_key IS NULL AND (t.现住址 IS NULL OR t.现住址 = '')"
-            # 已核查：现住址从空变非空（核查结果仍空）
-            cond_checked = """prev._row_key IS NOT NULL
-                AND (prev.现住址 IS NULL OR prev.现住址 = '')
-                AND t.现住址 <> ''
-                AND (t.{rc} IS NULL OR t.{rc} = '')""".format(rc=rc)
-            # 已完成：核查结果从空变非空
-            cond_done = """prev._row_key IS NOT NULL
-                AND (prev.{rc} IS NULL OR prev.{rc} = '')
-                AND t.{rc} <> ''""".format(rc=rc)
+            # 新增数据可能在首次入库时就已经填写了现住址或核查结果，
+            # 必须按当前状态归类，不能只把“空地址”算作未核查。
+            cond_unchecked = """prev._row_key IS NULL
+                AND IFNULL(t.现住址, '') = ''
+                AND IFNULL(t.{rc}, '') = ''""".format(rc=rc)
+            cond_checked = """(
+                    prev._row_key IS NULL
+                    AND IFNULL(t.现住址, '') <> ''
+                    AND IFNULL(t.{rc}, '') = ''
+                ) OR (
+                    prev._row_key IS NOT NULL
+                    AND IFNULL(prev.现住址, '') = ''
+                    AND IFNULL(t.现住址, '') <> ''
+                    AND IFNULL(t.{rc}, '') = ''
+                )""".format(rc=rc)
+            cond_done = """(
+                    prev._row_key IS NULL
+                    AND IFNULL(t.{rc}, '') <> ''
+                ) OR (
+                    prev._row_key IS NOT NULL
+                    AND IFNULL(prev.{rc}, '') = ''
+                    AND IFNULL(t.{rc}, '') <> ''
+                )""".format(rc=rc)
         else:
             # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据，按当前状态分类
             join_clause = ""
