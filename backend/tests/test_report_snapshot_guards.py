@@ -46,6 +46,28 @@ def make_database(fetchone_values=None, fetchall_values=None):
 
 
 class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
+    def test_new_rows_are_classified_by_current_status(self):
+        inspector_sql, _ = FullChainBuilder()._build_workload_sql(
+            "`2026-07-27_snapshot_fullChain`",
+            "`2026-07-26_snapshot_fullChain`",
+        )
+        normalized_sql = " ".join(inspector_sql.split())
+
+        self.assertIn(
+            "prev._row_key IS NULL AND IFNULL(t.现住址, '') = '' "
+            "AND IFNULL(t.核查结果, '') = ''",
+            normalized_sql,
+        )
+        self.assertIn(
+            "prev._row_key IS NULL AND IFNULL(t.现住址, '') <> '' "
+            "AND IFNULL(t.核查结果, '') = ''",
+            normalized_sql,
+        )
+        self.assertIn(
+            "prev._row_key IS NULL AND IFNULL(t.核查结果, '') <> ''",
+            normalized_sql,
+        )
+
     async def test_range_without_snapshots_does_not_query_live_table(self):
         pool, cursor = make_database(fetchall_values=[[]])
 
