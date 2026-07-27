@@ -6,6 +6,7 @@ import AppTable from '../components/AppTable'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
 import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
+import type { SyncStatus } from '../types'
 import { getDisplayMode } from '../utils/displayMode'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
@@ -60,31 +61,50 @@ export default function Dashboard() {
   const [timezone, setTimezone] = useState('Asia/Shanghai')
   // 同步状态
   const [syncing, setSyncing] = useState(false)
-  const [syncStatus, setSyncStatus] = useState<any>(null)
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
   const pollRef = useRef<number | null>(null)
+
+  const pollSyncStatus = useCallback(async function pollSyncStatus() {
+    try {
+      const status = await getSyncStatus()
+      setSyncStatus(status)
+      const isActive = status.status === 'running' || status.status === 'pending'
+      setSyncing(isActive)
+      if (isActive) {
+        pollRef.current = window.setTimeout(() => void pollSyncStatus(), 2000)
+      } else if (status.status === 'failed' || status.status === 'partial') {
+        setSyncError(status.error_message || (
+          status.status === 'partial' ? '部分数据同步失败' : '同步失败'
+        ))
+      } else {
+        setSyncError(null)
+      }
+    } catch {
+      setSyncing(false)
+      setSyncError('无法获取同步状态，请稍后重试')
+    }
+  }, [])
 
   const handleSync = async () => {
     setSyncing(true); setSyncError(null)
     try {
-      await triggerSync()
-      const poll = async () => {
-        const st = await getSyncStatus()
-        setSyncStatus(st)
-        if (st.status === 'running' || st.status === 'pending') {
-          pollRef.current = window.setTimeout(poll, 2000)
-        } else {
-          setSyncing(false)
-          if (st.status === 'failed') setSyncError(st.error_message || '同步失败')
-        }
+      const result = await triggerSync()
+      if (result.status === 'conflict') {
+        setSyncError(result.message)
       }
-      poll()
+      void pollSyncStatus()
     } catch (e: any) {
       setSyncing(false); setSyncError(e?.response?.data?.detail || '触发同步失败')
     }
   }
 
-  useEffect(() => { getSyncStatus().then(setSyncStatus).catch(() => {}) }, [])
+  useEffect(() => {
+    void pollSyncStatus()
+    return () => {
+      if (pollRef.current) window.clearTimeout(pollRef.current)
+    }
+  }, [pollSyncStatus])
   useEffect(() => {
     getSystemConfig().then(c => {
       const configuredTimezone = c.timezone || 'Asia/Shanghai'
@@ -96,8 +116,6 @@ export default function Dashboard() {
       })
     }).catch(() => {})
   }, [])
-  useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current) }, [])
-
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
 
   // 状态驱动：dateRange 或 reportType 变化 → 自动 fetch
