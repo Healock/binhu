@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Alert, Button, DatePicker, Input, Modal, Pagination, Select, Tag } from 'antd'
+import { Alert, Button, DatePicker, Input, Modal, Select, Tag, Tooltip } from 'antd'
+import type { TableColumnsType } from 'antd'
 import { DownloadOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import AppTable from '../components/AppTable'
 import {
   listGridMembers, createGridMember, updateGridMember, deleteGridMember,
   exportGridMembersUrl, getGridCommunities,
   type GridMember,
 } from '../api/client'
-import { EmptyState, LoadingState, PageHeader } from '../components/ui'
+import { PageHeader } from '../components/ui'
 
 interface Community { id: number; name: string; grid_count: number }
 
@@ -67,6 +69,58 @@ export default function GridMembers() {
 
   const communityNames = communities.map((c) => c.name)
   const activeCount = members.filter(m => m.effective_status === '在岗').length
+  const memberColumns: TableColumnsType<GridMember> = [
+    {
+      title: '姓名',
+      dataIndex: 'name',
+      key: 'name',
+      width: 120,
+      render: value => <span className="font-medium text-slate-800">{value}</span>,
+    },
+    {
+      title: '所属社区',
+      dataIndex: 'community',
+      key: 'community',
+      width: 140,
+      render: value => value || '-',
+    },
+    {
+      title: '电话',
+      dataIndex: 'phone',
+      key: 'phone',
+      width: 150,
+      render: value => value || '-',
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 180,
+      render: (_, member) => <MemberStatus member={member} />,
+    },
+    {
+      title: '备注',
+      dataIndex: 'notes',
+      key: 'notes',
+      width: 220,
+      ellipsis: { showTitle: false },
+      render: value => (
+        <Tooltip title={value || '-'}>
+          <span>{value || '-'}</span>
+        </Tooltip>
+      ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 130,
+      render: (_, member) => (
+        <>
+          <Button type="link" size="small" onClick={() => setEditing(member)}>编辑</Button>
+          <Button type="link" danger size="small" onClick={() => handleDelete(member.id, member.name)}>删除</Button>
+        </>
+      ),
+    },
+  ]
 
   return (
     <div className="app-page">
@@ -112,44 +166,24 @@ export default function GridMembers() {
         {msg && <Alert type={msg.includes('失败') ? 'error' : 'success'} showIcon message={msg} />}
       </section>
 
-      <div className="app-table-wrap">
-        {loading ? <LoadingState /> :
-         loadError ? <EmptyState label={loadError} /> :
-         members.length === 0 ? <EmptyState label="暂无网格员，可点击“添加网格员”手动添加" /> :
-         <table className="app-table min-w-full">
-           <thead className="bg-gray-50 border-b"><tr>
-             <th className="px-3 py-2 text-left font-medium text-gray-600">姓名</th>
-             <th className="px-3 py-2 text-left font-medium text-gray-600">所属社区</th>
-             <th className="px-3 py-2 text-left font-medium text-gray-600">电话</th>
-             <th className="px-3 py-2 text-left font-medium text-gray-600">状态</th>
-             <th className="px-3 py-2 text-left font-medium text-gray-600">备注</th>
-             <th className="px-3 py-2 text-left font-medium text-gray-600">操作</th>
-           </tr></thead>
-           <tbody className="divide-y divide-gray-100">
-             {members.map((m) => (
-               <tr key={m.id} className={`hover:bg-gray-50 ${m.effective_status === '离岗' ? 'bg-slate-50/60' : ''}`}>
-                 <td className="px-3 py-2 font-medium text-gray-800">{m.name}</td>
-                 <td className="px-3 py-2 text-gray-600">{m.community || '-'}</td>
-                 <td className="px-3 py-2 text-gray-600">{m.phone || '-'}</td>
-                 <td className="px-3 py-2">
-                   <MemberStatus member={m} />
-                 </td>
-                 <td className="px-3 py-2 text-gray-600">{m.notes || '-'}</td>
-                 <td className="px-3 py-2">
-                   <Button type="link" size="small" onClick={() => setEditing(m)}>编辑</Button>
-                   <Button type="link" danger size="small" onClick={() => handleDelete(m.id, m.name)}>删除</Button>
-                 </td>
-               </tr>
-             ))}
-           </tbody>
-         </table>}
-      </div>
-
-      {total > pageSize && (
-        <div className="flex justify-center">
-          <Pagination current={page} pageSize={pageSize} total={total} showSizeChanger={false} onChange={setPage} />
-        </div>
-      )}
+      <AppTable<GridMember>
+        columns={memberColumns}
+        dataSource={members}
+        emptyText={loadError || '暂无网格员，可点击“添加网格员”手动添加'}
+        loading={loading}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          hideOnSinglePage: true,
+          showSizeChanger: false,
+          showTotal: count => `共 ${count} 人`,
+          onChange: setPage,
+        }}
+        rowClassName={member => member.effective_status === '离岗' ? 'app-table-row--muted' : ''}
+        rowKey="id"
+        scroll={{ x: 940 }}
+      />
 
       {(showAddForm || editing) && (
         <MemberForm member={editing} communities={communityNames}

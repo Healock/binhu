@@ -196,41 +196,52 @@ button:disabled {
 }
 
 .app-table-wrap {
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-surface);
   box-shadow: var(--app-shadow);
 }
 
-.app-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
+.app-data-table {
   font-size: 13px;
 }
 
-.app-table thead {
+.app-data-table .ant-table-title {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--app-border);
   background: #f8fafc;
 }
 
-.app-table th {
+.app-data-table .ant-table-thead > tr > th {
+  padding: 10px 14px;
   color: #475569;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.app-table th,
-.app-table td {
+.app-data-table .ant-table-tbody > tr > td {
   padding: 10px 14px;
-  border-bottom: 1px solid #edf1f5;
 }
 
-.app-table tbody tr:hover {
-  background: #f8fbff;
+.app-data-table .ant-table-column-sorters {
+  gap: 8px;
 }
 
-.app-table tbody tr:last-child td {
-  border-bottom: 0;
+.app-data-table .ant-table-pagination.ant-pagination {
+  margin: 14px 16px;
+}
+
+.app-data-table .ant-table-cell-ellipsis {
+  max-width: 100%;
+}
+
+.app-data-table .ant-table-row.app-table-row--muted > td {
+  background: #f8fafc;
+}
+
+.app-data-table .ant-table-row.app-table-row--muted:hover > td {
+  background: #f1f5f9;
 }
 
 .app-empty {

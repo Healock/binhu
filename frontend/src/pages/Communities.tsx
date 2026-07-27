@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Alert, Button, Input, Modal, Tag } from 'antd'
+import type { TableColumnsType } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { getGridCommunities, addGridCommunity, deleteGridCommunity } from '../api/client'
+import AppTable from '../components/AppTable'
 import { getDisplayMode } from '../utils/displayMode'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
@@ -53,6 +55,34 @@ export default function Communities() {
     })
   }
 
+  const communityColumns: TableColumnsType<Community> = [
+    {
+      title: '社区名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 240,
+      sorter: (left, right) => left.name.localeCompare(right.name, 'zh-CN'),
+      render: value => <span className="font-medium text-slate-800">{value}</span>,
+    },
+    {
+      title: '网格员人数',
+      dataIndex: 'grid_count',
+      key: 'grid_count',
+      width: 160,
+      sorter: (left, right) => left.grid_count - right.grid_count,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 120,
+      render: (_, community) => (
+        <Button type="link" danger size="small" onClick={() => handleDelete(community.id, community.name)}>
+          删除
+        </Button>
+      ),
+    },
+  ]
+
   return (
     <div className="app-page">
       <PageHeader
@@ -77,14 +107,20 @@ export default function Communities() {
         {msg && <Alert type={msg.includes('失败') ? 'error' : 'success'} showIcon message={msg} />}
       </section>
 
-      <div className="app-table-wrap">
-        {loading ? (
+      {loading ? (
+        <div className="app-table-wrap">
           <LoadingState />
-        ) : loadError ? (
+        </div>
+      ) : loadError ? (
+        <div className="app-table-wrap">
           <EmptyState label={loadError} />
-        ) : communities.length === 0 ? (
+        </div>
+      ) : communities.length === 0 ? (
+        <div className="app-table-wrap">
           <EmptyState label="暂无社区，可在上方输入社区名称后添加" />
-        ) : getDisplayMode() === 'card' ? (
+        </div>
+      ) : getDisplayMode() === 'card' ? (
+        <div className="app-table-wrap">
           <div className="grid grid-cols-1 gap-3 p-4">
             {communities.map((c) => (
               <div key={c.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
@@ -96,27 +132,15 @@ export default function Communities() {
               </div>
             ))}
           </div>
-        ) : (
-          <table className="app-table min-w-full">
-            <thead className="bg-gray-50 border-b sticky top-0 z-10">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">社区名称</th>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">网格员人数</th>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {communities.map((c) => (
-                <tr key={c.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-2 text-gray-800">{c.name}</td>
-                  <td className="px-3 py-2 text-gray-700">{c.grid_count}</td>
-                  <td className="px-3 py-2"><Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+        </div>
+      ) : (
+        <AppTable<Community>
+          columns={communityColumns}
+          dataSource={communities}
+          rowKey="id"
+          scroll={{ x: 520 }}
+        />
+      )}
       <p className="text-xs text-slate-500">网格员人数会根据“网格员管理”中的所属社区自动统计，无需手动填写。</p>
     </div>
   )

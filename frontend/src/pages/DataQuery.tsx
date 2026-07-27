@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Button, Input, Pagination, Segmented, Select, Tag } from 'antd'
+import { Button, Input, Segmented, Select, Tag, Tooltip } from 'antd'
+import type { TableColumnsType, TableProps } from 'antd'
 import { FilterOutlined, SearchOutlined } from '@ant-design/icons'
 import { getQueryTypes, queryData } from '../api/client'
-import { EmptyState, LoadingState, PageHeader } from '../components/ui'
+import AppTable from '../components/AppTable'
+import { PageHeader } from '../components/ui'
+
+type QueryRow = Record<string, string> & { __tableKey: string }
+
+const EMPTY_FILTER_VALUE = '__binhu_empty_value__'
 
 export default function DataQuery() {
   const [types, setTypes] = useState<string[]>([])
@@ -20,7 +26,6 @@ export default function DataQuery() {
   const [sortCol, setSortCol] = useState<string | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [filters, setFilters] = useState<Record<string, string[]>>({})
-  const [filterOpenCol, setFilterOpenCol] = useState<string | null>(null)
 
   useEffect(() => { getQueryTypes().then(setTypes).catch(() => {}) }, [])
 
@@ -45,38 +50,95 @@ export default function DataQuery() {
     } catch (e) {
       console.error('查询失败', e)
       setError('查询失败，请检查网络后重试')
+      setData([])
+      setTotal(0)
     }
     finally { setLoading(false) }
   }, [selectedType, source, page, pageSize, keyword, sortCol, sortDir, filters, activeFilterCount])
 
-  useEffect(() => { setPage(1); fetchData() }, [selectedType, source, keyword, sortCol, sortDir, filters])
-  useEffect(() => { fetchData() }, [page])
-
-  const handleSort = (col: string) => {
-    if (sortCol === col) setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    else { setSortCol(col); setSortDir('asc') }
-  }
+  useEffect(() => { fetchData() }, [fetchData])
 
   // 每列唯一值（基于当前页数据，用于下拉选项）
   const getUniqueValues = (col: string): string[] => {
-    const set = new Set<string>()
-    for (const row of data) set.add(row[col] || '(空)')
-    return Array.from(set).sort()
+    const set = new Set<string>(filters[col] || [])
+    for (const row of data) set.add(row[col] ?? '')
+    return Array.from(set).sort((left, right) => left.localeCompare(right, 'zh-CN'))
   }
 
-  const toggleFilter = (col: string, value: string) => {
-    setFilters((prev) => {
-      const cur = prev[col] || []
-      const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value]
-      return { ...prev, [col]: next }
-    })
+  const resetTableState = () => {
+    setPage(1)
+    setSortCol(null)
+    setSortDir('desc')
+    setFilters({})
   }
 
-  const clearFilter = (col: string) => {
-    setFilters((prev) => { const n = { ...prev }; delete n[col]; return n })
+  const handleTypeChange = (value: string) => {
+    setSelectedType(value)
+    resetTableState()
   }
 
-  const totalPages = Math.ceil(total / pageSize)
+  const handleSourceChange = (value: 'online' | 'archive') => {
+    setSource(value)
+    resetTableState()
+  }
+
+  const handleSearch = () => {
+    setKeyword(searchInput)
+    setPage(1)
+  }
+
+  const handleTableChange: NonNullable<TableProps<QueryRow>['onChange']> = (
+    pagination,
+    nextFilters,
+    sorter,
+  ) => {
+    setPage(pagination.current || 1)
+
+    const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    if (activeSorter?.order) {
+      setSortCol(String(activeSorter.field || activeSorter.columnKey))
+      setSortDir(activeSorter.order === 'ascend' ? 'asc' : 'desc')
+    } else {
+      setSortCol(null)
+      setSortDir('desc')
+    }
+
+    const normalizedFilters: Record<string, string[]> = {}
+    for (const [column, values] of Object.entries(nextFilters)) {
+      if (!values?.length) continue
+      normalizedFilters[column] = values.map(value => (
+        String(value) === EMPTY_FILTER_VALUE ? '' : String(value)
+      ))
+    }
+    setFilters(normalizedFilters)
+  }
+
+  const tableColumns: TableColumnsType<QueryRow> = columns.map(column => ({
+    title: column,
+    dataIndex: column,
+    key: column,
+    width: 180,
+    sorter: true,
+    sortOrder: sortCol === column
+      ? (sortDir === 'asc' ? 'ascend' : 'descend')
+      : null,
+    filters: getUniqueValues(column).map(value => ({
+      text: value || '(空)',
+      value: value || EMPTY_FILTER_VALUE,
+    })),
+    filteredValue: filters[column]?.map(value => value || EMPTY_FILTER_VALUE) || null,
+    ellipsis: { showTitle: false },
+    render: value => (
+      <Tooltip title={value || '-'}>
+        <span>{value || '-'}</span>
+      </Tooltip>
+    ),
+  }))
+
+  const tableData: QueryRow[] = data.map((row, index) => ({
+    ...row,
+    __tableKey: `${page}-${index}`,
+  }))
 
   return (
     <div className="app-page">
@@ -90,13 +152,13 @@ export default function DataQuery() {
         <div className="app-toolbar">
           <Select
             value={selectedType}
-            onChange={setSelectedType}
+            onChange={handleTypeChange}
             className="min-w-44"
             options={types.map(type => ({ value: type, label: type }))}
           />
           <Segmented
             value={source}
-            onChange={value => setSource(value as 'online' | 'archive')}
+            onChange={value => handleSourceChange(value as 'online' | 'archive')}
             options={[
               { value: 'online', label: '当前数据' },
               { value: 'archive', label: '归档数据' },
@@ -108,10 +170,10 @@ export default function DataQuery() {
             placeholder="输入关键词搜索"
             value={searchInput}
             onChange={event => setSearchInput(event.target.value)}
-            onPressEnter={() => setKeyword(searchInput)}
+            onPressEnter={handleSearch}
             className="min-w-56 flex-1"
           />
-          <Button type="primary" icon={<SearchOutlined />} onClick={() => setKeyword(searchInput)}>
+          <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>
             搜索
           </Button>
           {activeFilterCount > 0 && (
@@ -120,76 +182,24 @@ export default function DataQuery() {
         </div>
       </section>
 
-      <div className="app-table-wrap">
-        {loading ? (
-          <LoadingState label="正在查询数据..." />
-        ) : error ? (
-          <EmptyState label={error} />
-        ) : data.length === 0 ? (
-          <EmptyState label="没有找到符合条件的数据" />
-        ) : (
-          <table className="app-table min-w-full">
-            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
-              <tr>
-                {columns.map((col) => (
-                  <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap select-none">
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => handleSort(col)} className="compact-action flex items-center gap-0.5 hover:text-blue-600">
-                        {col}
-                        {sortCol === col && <span className="text-blue-600">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-                      </button>
-                      <div className="relative">
-                        <button onClick={() => setFilterOpenCol(filterOpenCol === col ? null : col)}
-                          aria-label={`筛选${col}`}
-                          className={`compact-action rounded px-1 text-xs ${filters[col]?.length > 0 ? 'font-bold text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>▼</button>
-                        {filterOpenCol === col && (
-                          <div className="absolute z-20 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-60 overflow-auto w-40">
-                            <div className="flex justify-between items-center px-2 py-1 border-b border-gray-100">
-                              <span className="text-xs text-gray-500">筛选</span>
-                              <button onClick={() => clearFilter(col)} className="compact-action text-xs text-red-600 hover:underline">清除</button>
-                            </div>
-                            {getUniqueValues(col).map((val) => (
-                              <label key={val} className="flex items-center px-2 py-1 hover:bg-gray-50 cursor-pointer">
-                                <input type="checkbox" checked={filters[col]?.includes(val) || false}
-                                  onChange={() => toggleFilter(col, val)} className="mr-2" />
-                                <span className="text-xs truncate">{val}</span>
-                              </label>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {data.map((row, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  {columns.map((col) => (
-                    <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap max-w-48 truncate" title={row[col]}>
-                      {row[col] || '-'}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {totalPages > 1 && !loading && (
-        <div className="flex justify-center">
-          <Pagination
-            current={page}
-            pageSize={pageSize}
-            total={total}
-            showSizeChanger={false}
-            showLessItems
-            onChange={setPage}
-          />
-        </div>
-      )}
+      <AppTable<QueryRow>
+        columns={tableColumns}
+        dataSource={tableData}
+        emptyText={error || '没有找到符合条件的数据'}
+        loading={{ spinning: loading, tip: '正在查询数据...' }}
+        onChange={handleTableChange}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          hideOnSinglePage: true,
+          showLessItems: true,
+          showSizeChanger: false,
+          showTotal: count => `共 ${count} 条`,
+        }}
+        rowKey="__tableKey"
+        scroll={{ x: Math.max(columns.length * 180, 900) }}
+      />
     </div>
   )
 }

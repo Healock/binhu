@@ -111,6 +111,7 @@ flowchart LR
 - 接口调用：`frontend/src/api/client.ts`。
 - 登录状态：`frontend/src/context/`。
 - 登录保护：`frontend/src/components/ProtectedRoute.tsx`。
+- 统一表格：`frontend/src/components/AppTable.tsx`。汇总、原始数据和管理页面都使用 Ant Design Table；手机端原有卡片模式继续保留。
 
 前端构建结果放在 `frontend/dist/`，这个目录不会上传 Git。修改前端后要重新运行：
 
@@ -123,4 +124,4 @@ npm.cmd run build
 
 仓库里同时存在 FastAPI 直接提供网页和 nginx 代理两种配置，但线上入口还没有完全整理一致。不要直接照搬旧部署计划，先看 [风险清单](known-risks.md)。
 
-_源码核对：2026-07-26_
+_源码核对：2026-07-27_
