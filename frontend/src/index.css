@@ -236,6 +236,15 @@ button:disabled {
   max-width: 100%;
 }
 
+.app-table-wrap--sticky {
+  overflow: visible;
+}
+
+.app-table-wrap--sticky .ant-table-sticky-holder {
+  border-radius: var(--app-radius) var(--app-radius) 0 0;
+  box-shadow: 0 4px 10px rgb(15 23 42 / 0.08);
+}
+
 .app-data-table .ant-table-row.app-table-row--muted > td {
   background: #f8fafc;
 }
@@ -334,5 +343,9 @@ button:disabled {
 
   .app-shell .ant-select-single .ant-select-selector {
     align-items: center;
+  }
+
+  .app-table-wrap--sticky .ant-table-sticky-holder {
+    top: 56px !important;
   }
 }

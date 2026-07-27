@@ -199,6 +199,7 @@ export default function DataQuery() {
         }}
         rowKey="__tableKey"
         scroll={{ x: Math.max(columns.length * 180, 900) }}
+        sticky
       />
     </div>
   )
