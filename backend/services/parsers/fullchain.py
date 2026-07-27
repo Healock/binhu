@@ -12,4 +12,4 @@ class FullChainParser(BaseParser):
     ]
 
     def get_business_key(self) -> list[str]:
-        return ["身份证号", "电话号码"]
+        return ["身份证号", "电话号码", "下发日期"]

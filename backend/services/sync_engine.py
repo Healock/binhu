@@ -9,6 +9,46 @@ from services.business_time import get_business_date
 from services.schema_compat import get_database_column_map, quote_identifier
 
 
+def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int]:
+    """按业务主键去重；不同内容撞键时立即停止，避免静默覆盖。"""
+    online: dict[str, dict] = {}
+    exact_duplicate_count = 0
+    conflicts: list[set[str]] = []
+
+    for raw in raw_rows:
+        parsed = {
+            key: "" if value is None else str(value).strip()
+            for key, value in raw.items()
+        }
+        key = parser.make_row_key(parsed)
+        if key not in online:
+            online[key] = parsed
+            continue
+
+        previous = online[key]
+        if previous == parsed:
+            exact_duplicate_count += 1
+            continue
+
+        conflicts.append(
+            {
+                column
+                for column in parser.COLUMNS
+                if previous.get(column, "") != parsed.get(column, "")
+            }
+        )
+
+    if conflicts:
+        differing_columns = sorted(set().union(*conflicts))
+        raise ValueError(
+            f"检测到 {len(conflicts)} 行主键相同但内容不同，"
+            f"涉及字段: {', '.join(differing_columns)}；"
+            "已停止该表同步，未覆盖任何冲突行"
+        )
+
+    return online, exact_duplicate_count
+
+
 class SyncEngine:
     def __init__(self, db_pool):
         """db_pool: OnlineData 库的连接池"""
@@ -91,19 +131,12 @@ class SyncEngine:
             sp["file_id"], sp["data_sheet_id"], sp["header_row"], cols
         )
 
-        # 2. 解析 + 生成业务主键（直接用 dict，跳过 parse_row 的位置映射避免顺序问题）
-        online: dict[str, dict] = {}
-        dup_count = 0
-        for raw in raw_rows:
-            parsed = {k: str(v).strip() if v else "" for k, v in raw.items()}
-            key = parser.make_row_key(parsed)
-            if key in online:
-                dup_count += 1
-                # 打印主键冲突详情
-                bk = parser.get_business_key()
-                print(f"[SYNC] 主键冲突! key={key} 旧:{[online[key].get(k,'') for k in bk]} 新:{[parsed.get(k,'') for k in bk]}")
-            online[key] = parsed
-        print(f"[SYNC] {sp['name']}: API返回{len(raw_rows)}行, 去重后{len(online)}行, 重复{dup_count}行")
+        # 2. 解析 + 生成业务主键。仅完全相同的行可以自动去重。
+        online, exact_duplicate_count = deduplicate_rows(parser, raw_rows)
+        print(
+            f"[SYNC] {sp['name']}: API返回{len(raw_rows)}行, "
+            f"有效{len(online)}行, 完全重复{exact_duplicate_count}行"
+        )
 
         # 3. 读取数据库现有数据
         column_map = await get_database_column_map(conn, table, parser)
