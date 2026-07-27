@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from database import get_db
 from services.parsers import PARSER_REGISTRY, get_parser
+from services.schema_compat import get_database_column_map, quote_identifier
 
 router = APIRouter(prefix="/api/query", tags=["数据查询"])
 
@@ -39,14 +40,21 @@ async def query_data(
     if source == "archive":
         table = f"OnlineDataArchive.{table}_archive"
 
-    col_list = ", ".join(f"`{c}`" for c in columns)
+    column_map = await get_database_column_map(conn, table, parser)
+
+    def database_column(column: str) -> str:
+        return quote_identifier(column_map[column])
+
+    col_list = ", ".join(database_column(column) for column in columns)
 
     # 构建 WHERE
     where_parts = []
     params = []
 
     if keyword:
-        like_conditions = " OR ".join(f"`{c}` LIKE %s" for c in columns)
+        like_conditions = " OR ".join(
+            f"{database_column(column)} LIKE %s" for column in columns
+        )
         where_parts.append(f"({like_conditions})")
         params.extend([f"%{keyword}%"] * len(columns))
 
@@ -56,7 +64,9 @@ async def query_data(
             for col, vals in filter_dict.items():
                 if col in columns and vals:
                     placeholders = ",".join(["%s"] * len(vals))
-                    where_parts.append(f"`{col}` IN ({placeholders})")
+                    where_parts.append(
+                        f"{database_column(col)} IN ({placeholders})"
+                    )
                     params.extend(vals)
         except (json.JSONDecodeError, TypeError):
             pass
@@ -70,7 +80,10 @@ async def query_data(
 
         offset = (page - 1) * page_size
         if sort_by and sort_by in columns:
-            order_clause = f"ORDER BY `{sort_by}` {'ASC' if sort_order == 'asc' else 'DESC'}"
+            order_clause = (
+                f"ORDER BY {database_column(sort_by)} "
+                f"{'ASC' if sort_order == 'asc' else 'DESC'}"
+            )
         else:
             order_clause = "ORDER BY id DESC"
         await cur.execute(
