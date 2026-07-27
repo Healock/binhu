@@ -19,9 +19,10 @@ COLUMNS = [
 ]
 COLUMN_COUNT = len(COLUMNS)  # 14
 
-# API 限制：每次最多 10000 个单元格
-# 14 列 × 714 行 = 9996 个单元格 < 10000
-ROWS_PER_PAGE = 714
+# API 同时限制单次读取的单元格数和行数。
+# 即使单元格没有超过 10000，读取 1001 行以上也可能返回空数据。
+MAX_CELLS_PER_PAGE = 10000
+MAX_ROWS_PER_PAGE = 1000
 
 
 class TxDocsClient:
@@ -111,7 +112,10 @@ class TxDocsClient:
             column_names = COLUMNS
 
         col_count = len(column_names)
-        rows_per_page = 10000 // col_count  # 满足 10000 单元格限制
+        rows_per_page = min(
+            MAX_ROWS_PER_PAGE,
+            MAX_CELLS_PER_PAGE // col_count,
+        )
 
         # 列字母映射
         col_start = "A"
