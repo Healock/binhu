@@ -141,11 +141,11 @@ export default function Dashboard() {
       <SyncPanel syncing={syncing} status={syncStatus} error={syncError} onSync={handleSync} timezone={timezone} />
 
       <section className="app-card">
-        <div className="app-toolbar">
+        <div className="app-toolbar dashboard-report-toolbar">
           <Select
             value={reportType}
             onChange={setReportType}
-            className="min-w-44"
+            className="w-full md:w-40"
             options={types.map(type => ({
               value: type,
               label: `${type}${!implemented.includes(type) ? '（待对接）' : ''}`,
@@ -160,8 +160,9 @@ export default function Dashboard() {
               className="border border-gray-300 rounded px-2 py-1.5 text-sm flex-1" />
           </div>
           {/* 桌面端：Ant Design RangePicker */}
-          <div className="hidden md:block">
+          <div className="hidden w-[272px] md:block">
             <DatePicker.RangePicker
+              className="w-full"
               value={[dayjs(startDate), dayjs(endDate)]}
               onChange={(_, dateStrings) => {
                 if (dateStrings[0] && dateStrings[1]) setDateRange([dateStrings[0], dateStrings[1]])
@@ -169,7 +170,13 @@ export default function Dashboard() {
               allowClear={false}
             />
           </div>
-          <Button type="primary" onClick={handleBuild} loading={building} disabled={!isImplemented}>
+          <Button
+            type="primary"
+            className="dashboard-report-toolbar__build"
+            onClick={handleBuild}
+            loading={building}
+            disabled={!isImplemented}
+          >
             生成日报
           </Button>
           {msg && report.exists && (

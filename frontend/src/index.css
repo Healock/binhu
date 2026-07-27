@@ -159,6 +159,28 @@ button:disabled {
   padding: 16px 20px;
 }
 
+.dashboard-report-toolbar {
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.dashboard-report-toolbar .ant-select-single,
+.dashboard-report-toolbar .ant-select-single .ant-select-selector,
+.dashboard-report-toolbar .ant-picker,
+.dashboard-report-toolbar .ant-btn {
+  min-height: 36px;
+}
+
+.dashboard-report-toolbar .ant-select-single .ant-select-selector {
+  align-items: center;
+}
+
+.dashboard-report-toolbar__build {
+  min-width: 96px;
+  padding-inline: 18px;
+  font-weight: 600;
+}
+
 .app-shell input:not([type='checkbox']):not([type='radio']),
 .app-shell select,
 .app-shell textarea {
@@ -263,6 +285,15 @@ button:disabled {
 
   .app-toolbar {
     padding: 14px 16px;
+  }
+
+  .dashboard-report-toolbar {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .dashboard-report-toolbar__build {
+    width: 100%;
   }
 
   .app-shell input:not([type='checkbox']):not([type='radio']),
