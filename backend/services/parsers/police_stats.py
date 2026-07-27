@@ -12,4 +12,4 @@ class PoliceStatsParser(BaseParser):
     ]
 
     def get_business_key(self) -> list[str]:
-        return ["序号", "日期", "社区"]
+        return ["序号", "日期", "社区", "简要警情及处理结果"]
