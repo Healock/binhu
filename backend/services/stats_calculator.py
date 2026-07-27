@@ -2,6 +2,7 @@
 
 from database import db_manager
 from services.report_builders import get_builder, IMPLEMENTED_TYPES, BUILDERS
+from services.report_members import complete_inspector_rows
 
 
 class DailyReportBuilder:
@@ -54,6 +55,7 @@ class DailyReportBuilder:
                 insp_rows = await cur.fetchall()
                 await cur.execute(f"SHOW COLUMNS FROM {t_inspector}")
                 insp_cols = [c[0] for c in await cur.fetchall()]
+                insp_rows = await complete_inspector_rows(cur, insp_rows, date_str)
 
                 await cur.execute(f"SELECT * FROM {t_community} ORDER BY 社区")
                 comm_rows = await cur.fetchall()
