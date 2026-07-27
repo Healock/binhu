@@ -2,8 +2,6 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Input } from 'antd'
 import {
-  BarChartOutlined,
-  DatabaseOutlined,
   LockOutlined,
   UserOutlined,
 } from '@ant-design/icons'
@@ -34,7 +32,7 @@ export default function Login() {
 
   return (
     <div className="flex min-h-screen bg-slate-50">
-      <section className="hidden w-[44%] flex-col justify-between bg-[#17335c] p-10 text-white md:flex lg:p-14">
+      <section className="hidden w-[44%] flex-col bg-[#17335c] p-10 text-white md:flex lg:p-14">
         <div className="flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-lg font-semibold text-[#17335c]">
             滨
@@ -44,23 +42,6 @@ export default function Login() {
             <div className="text-xs text-blue-100/75">数据管理中心</div>
           </div>
         </div>
-
-        <div className="max-w-md">
-          <p className="mb-3 text-sm font-medium text-blue-100">集中管理业务数据</p>
-          <h1 className="text-3xl font-semibold leading-tight">让数据同步、查询和统计更清楚</h1>
-          <div className="mt-8 space-y-4 text-sm text-blue-100/90">
-            <div className="flex items-center gap-3">
-              <DatabaseOutlined className="text-base" />
-              腾讯文档数据统一归档
-            </div>
-            <div className="flex items-center gap-3">
-              <BarChartOutlined className="text-base" />
-              按人员、社区和日期统计
-            </div>
-          </div>
-        </div>
-
-        <p className="text-xs text-blue-100/55">滨湖智慧平台 · 内部业务系统</p>
       </section>
 
       <main className="flex flex-1 items-center justify-center p-5 sm:p-8">
@@ -76,7 +57,6 @@ export default function Login() {
           <div className="app-card app-card--padded">
             <div className="mb-6">
               <h2 className="text-xl font-semibold text-slate-900">登录系统</h2>
-              <p className="mt-1.5 text-sm text-slate-500">请输入分配给你的账号和密码</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
