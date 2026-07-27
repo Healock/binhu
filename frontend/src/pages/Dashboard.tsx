@@ -173,7 +173,8 @@ export default function Dashboard() {
       const res = await buildReport({ date: startDate, parser_type: reportType })
       if (res.implemented === false) { setMsg(res.message); return }
       if (reportType === '总汇总表') {
-        setMsg(`生成成功：${startDate} · ${res.rows} 个社区`)
+        const rebuilt = res.subreports?.length || 0
+        setMsg(`生成成功：已更新 ${rebuilt} 张分汇总表 · ${res.rows} 个社区`)
       } else {
         setMsg(`生成成功：${startDate} · 核查人 ${res.inspector_rows} 行，社区 ${res.community_rows} 行`)
       }

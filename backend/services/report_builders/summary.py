@@ -48,15 +48,71 @@ async def _get_summary_types(cur) -> list[str]:
         return list(BUILDERS.keys())
 
 
-async def build_summary(date_str: str) -> dict:
+async def _load_summary_types() -> list[str]:
+    """读取当前参与总汇总表的分表类型，并及时释放数据库连接。"""
+    pool = db_manager.get_pool("daily_report")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            return await _get_summary_types(cur)
+    finally:
+        pool.release(conn)
+
+
+async def build_summary_with_subreports(date_str: str) -> dict:
+    """先重建已配置的分汇总表，再生成总汇总表。"""
+    summary_types = await _load_summary_types()
+    subreports = []
+
+    for parser_type in summary_types:
+        builder = BUILDERS[parser_type]
+        try:
+            result = await builder.build(date_str)
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+            return {
+                "implemented": False,
+                "failed_type": parser_type,
+                "subreports": subreports,
+                "message": (
+                    f"无法生成总汇总表：「{parser_type}」分汇总表生成失败，"
+                    "请查看服务器日志"
+                ),
+            }
+
+        if result.get("implemented") is False:
+            reason = result.get("message") or "没有可用的同步快照"
+            return {
+                "implemented": False,
+                "failed_type": parser_type,
+                "subreports": subreports,
+                "message": (
+                    f"无法生成总汇总表：「{parser_type}」分汇总表未生成。"
+                    f"{reason}"
+                ),
+            }
+
+        subreports.append({"parser_type": parser_type, **result})
+
+    summary_result = await build_summary(date_str, summary_types=summary_types)
+    return {**summary_result, "subreports": subreports}
+
+
+async def build_summary(
+    date_str: str,
+    summary_types: list[str] | None = None,
+) -> dict:
     """生成总汇总表（合并分表社区汇总 + 网格员人数）"""
     t_summary = f"`{date_str}_daily_summary`"
     pool = db_manager.get_pool("daily_report")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
-            # 读取配置：使用哪些分表类型
-            summary_types = await _get_summary_types(cur)
+            # 未指定时读取配置；手动串联生成时沿用开始时读取的同一份配置。
+            if summary_types is None:
+                summary_types = await _get_summary_types(cur)
 
             # 检查已配置分表的社区汇总日报表是否存在
             existing_tables = []

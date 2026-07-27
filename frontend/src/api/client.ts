@@ -76,7 +76,7 @@ export async function getReportTypes(): Promise<{ data: string[]; implemented: s
   return data
 }
 
-export async function buildReport(params: { date?: string; parser_type?: string }): Promise<{ message: string; implemented: boolean; inspector_rows?: number; community_rows?: number; rows?: number; date?: string }> {
+export async function buildReport(params: { date?: string; parser_type?: string }): Promise<{ message: string; implemented: boolean; inspector_rows?: number; community_rows?: number; rows?: number; date?: string; subreports?: Array<{ parser_type: string }> }> {
   const { data } = await api.post('/stats/build', null, { params })
   return data
 }

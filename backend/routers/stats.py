@@ -5,7 +5,10 @@ from fastapi import APIRouter, Query
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
-from services.report_builders.summary import build_summary, get_summary
+from services.report_builders.summary import (
+    build_summary_with_subreports,
+    get_summary,
+)
 from services.report_range import get_report_range, get_summary_range
 
 router = APIRouter(prefix="/api/stats", tags=["统计查询"])
@@ -31,10 +34,10 @@ async def build_report(
     """手动触发日报生成"""
     d = report_date or (await get_business_date_from_db()).isoformat()
     if parser_type == "总汇总表":
-        result = await build_summary(d)
+        result = await build_summary_with_subreports(d)
         if not result.get("implemented"):
             return {"message": result.get("message", ""), "implemented": False}
-        return {"message": "总汇总表生成成功", **result}
+        return {"message": "分汇总表和总汇总表生成成功", **result}
     result = await builder.build(d, parser_type)
     if not result.get("implemented"):
         return {"message": result.get("message", "未实现"), "implemented": False}
