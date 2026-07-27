@@ -12,6 +12,7 @@ from database import db_manager
 from services.business_time import get_business_date_range_utc_bounds
 from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
+from services.report_members import complete_inspector_rows
 
 
 async def _get_summary_types(cur) -> list[str]:
@@ -87,6 +88,7 @@ async def get_report_range(start_date: str, end_date: str, parser_type: str) -> 
             insp_rows = await cur.fetchall()
             await cur.execute(comm_sql, utc_bounds)
             comm_rows = await cur.fetchall()
+            insp_rows = await complete_inspector_rows(cur, insp_rows, end_date)
 
         insp_cols = ["社区", "姓名", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]
         comm_cols = ["社区", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]

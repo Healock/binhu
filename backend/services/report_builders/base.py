@@ -13,6 +13,7 @@
 from datetime import date, timedelta
 from database import db_manager
 from services.business_time import get_business_date_range_utc_bounds
+from services.report_members import insert_zero_member_rows
 
 
 class BaseReportBuilder:
@@ -103,6 +104,8 @@ class BaseReportBuilder:
                 else:
                     await cur.execute(f"INSERT INTO {t_inspector} (社区, 姓名, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {insp_sql}")
                     await cur.execute(f"INSERT INTO {t_community} (社区, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {comm_sql}")
+
+                await insert_zero_member_rows(cur, t_inspector, date_str)
 
                 await cur.execute(f"SELECT COUNT(*) FROM {t_inspector}")
                 insp_count = (await cur.fetchone())[0]

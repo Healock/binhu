@@ -65,7 +65,12 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         inspector_row = ("社区甲", "张三", 1, 1, 0, 0, 0, 1, 0)
         community_row = ("社区甲", 1, 1, 0, 0, 0, 1, 0)
         pool, cursor = make_database(
-            fetchall_values=[[(snapshot,)], [inspector_row], [community_row]]
+            fetchall_values=[
+                [(snapshot,)],
+                [inspector_row],
+                [community_row],
+                [],
+            ]
         )
 
         with patch.object(report_range.db_manager, "get_pool", return_value=pool):
@@ -82,6 +87,10 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
                 "_first_seen_at >= %s AND _first_seen_at < %s" in sql
                 for sql in executed_sql
             )
+        )
+        self.assertEqual(
+            cursor.execute.await_args_list[-1].args[1],
+            ("2026-07-28",),
         )
 
     async def test_build_without_today_snapshot_creates_no_report_tables(self):

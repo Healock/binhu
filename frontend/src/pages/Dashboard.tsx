@@ -5,8 +5,17 @@ import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
 import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
 import { getDisplayMode } from '../utils/displayMode'
+import { nextReportSort, sortReportRows, type ReportSortState } from '../utils/reportSort'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
+type ReportTableKey = 'inspector' | 'community' | 'summary'
+
+const EMPTY_SORTS: Record<ReportTableKey, ReportSortState | null> = {
+  inspector: null,
+  community: null,
+  summary: null,
+}
+
 const fmt = (val: any, col: string) => {
   if (val == null) return '-'
   if (RATE_COLS.includes(col)) return `${(val * 100).toFixed(0)}%`
@@ -23,6 +32,7 @@ export default function Dashboard() {
   const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
+  const [sortStates, setSortStates] = useState<Record<ReportTableKey, ReportSortState | null>>(EMPTY_SORTS)
   // 同步状态
   const [syncing, setSyncing] = useState(false)
   const [syncStatus, setSyncStatus] = useState<any>(null)
@@ -67,6 +77,10 @@ export default function Dashboard() {
 
   // 状态驱动：dateRange 或 reportType 变化 → 自动 fetch
   const [startDate, endDate] = dateRange
+  useEffect(() => {
+    setSortStates({ ...EMPTY_SORTS })
+  }, [startDate, endDate, reportType])
+
   const fetchReport = useCallback(async () => {
     if (startDate > endDate) return
     try {
@@ -106,6 +120,49 @@ export default function Dashboard() {
   const isRange = startDate !== endDate
   const rangeInfo = report.range
   const cardMode = getDisplayMode() === 'card'
+
+  const handleSort = (table: ReportTableKey, column: string) => {
+    setSortStates(current => ({
+      ...current,
+      [table]: nextReportSort(current[table], column),
+    }))
+  }
+
+  const sortedRows = (table: ReportTableKey, rows: Record<string, any>[] | undefined) =>
+    sortReportRows(rows || [], sortStates[table])
+
+  const renderSortableHeader = (table: ReportTableKey, column: string) => {
+    const activeSort = sortStates[table]
+    const isActive = activeSort?.column === column
+    const ariaSort = isActive
+      ? (activeSort.direction === 'asc' ? 'ascending' : 'descending')
+      : 'none'
+    const sortLabel = !isActive
+      ? '排序 ↕'
+      : activeSort.direction === 'asc'
+        ? '升序 ↑'
+        : '降序 ↓'
+
+    return (
+      <th
+        key={column}
+        aria-sort={ariaSort}
+        className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap"
+      >
+        <button
+          type="button"
+          className="compact-action inline-flex items-center gap-1.5 rounded-sm text-left hover:text-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+          onClick={() => handleSort(table, column)}
+          title={`按“${column}”排序`}
+        >
+          <span>{column}</span>
+          <span className={`text-[11px] ${isActive ? 'text-blue-700' : 'text-slate-400'}`}>
+            {sortLabel}
+          </span>
+        </button>
+      </th>
+    )
+  }
 
   // 卡片渲染辅助
   const renderCard = (row: Record<string, any>, columns: string[], titleCols: string[]) => (
@@ -230,11 +287,11 @@ export default function Dashboard() {
           <table className="app-table min-w-full">
             <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
               {report.columns?.filter((c: string) => c !== 'id').map((col: string) => (
-                <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
+                renderSortableHeader('summary', col)
               ))}
             </tr></thead>
             <tbody className="divide-y divide-gray-100">
-              {report.data?.map((row: any, i: number) => (
+              {sortedRows('summary', report.data).map((row: any, i: number) => (
                 <tr key={i} className="hover:bg-gray-50 font-medium">
                   {report.columns?.filter((c: string) => c !== 'id').map((col: string) => (
                     <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap">{fmt(row[col], col)}</td>
@@ -253,7 +310,7 @@ export default function Dashboard() {
               {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
             </h3>
             <div className="grid grid-cols-1 gap-3">
-              {report.inspector?.data.map((row, i) => renderCard(row, report.inspector?.columns || [], ['社区', '姓名']))}
+              {report.inspector?.data.map((row: Record<string, any>, i: number) => renderCard(row, report.inspector?.columns || [], ['社区', '姓名']))}
             </div>
           </div>
           <div className="space-y-3">
@@ -262,7 +319,7 @@ export default function Dashboard() {
               {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
             </h3>
             <div className="grid grid-cols-1 gap-3">
-              {report.community?.data.map((row, i) => renderCard(row, report.community?.columns || [], ['社区']))}
+              {report.community?.data.map((row: Record<string, any>, i: number) => renderCard(row, report.community?.columns || [], ['社区']))}
             </div>
           </div>
         </div>
@@ -277,14 +334,14 @@ export default function Dashboard() {
             </div>
             <table className="app-table min-w-full">
               <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
-                {report.inspector?.columns.filter(c => c !== 'id').map((col) => (
-                  <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
+                {report.inspector?.columns.filter((c: string) => c !== 'id').map((col: string) => (
+                  renderSortableHeader('inspector', col)
                 ))}
               </tr></thead>
               <tbody className="divide-y divide-gray-100">
-                {report.inspector?.data.map((row, i) => (
+                {sortedRows('inspector', report.inspector?.data).map((row, i) => (
                   <tr key={i} className="hover:bg-gray-50">
-                    {report.inspector?.columns.filter(c => c !== 'id').map((col) => (
+                    {report.inspector?.columns.filter((c: string) => c !== 'id').map((col: string) => (
                       <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap">{fmt(row[col], col)}</td>
                     ))}
                   </tr>
@@ -302,14 +359,14 @@ export default function Dashboard() {
             </div>
             <table className="app-table min-w-full">
               <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
-                {report.community?.columns.filter(c => c !== 'id').map((col) => (
-                  <th key={col} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
+                {report.community?.columns.filter((c: string) => c !== 'id').map((col: string) => (
+                  renderSortableHeader('community', col)
                 ))}
               </tr></thead>
               <tbody className="divide-y divide-gray-100">
-                {report.community?.data.map((row, i) => (
+                {sortedRows('community', report.community?.data).map((row, i) => (
                   <tr key={i} className="hover:bg-gray-50 font-medium">
-                    {report.community?.columns.filter(c => c !== 'id').map((col) => (
+                    {report.community?.columns.filter((c: string) => c !== 'id').map((col: string) => (
                       <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap">{fmt(row[col], col)}</td>
                     ))}
                   </tr>
