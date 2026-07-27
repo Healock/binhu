@@ -165,13 +165,15 @@ button:disabled {
 }
 
 .dashboard-report-toolbar .ant-select-single,
-.dashboard-report-toolbar .ant-select-single .ant-select-selector,
 .dashboard-report-toolbar .ant-picker,
 .dashboard-report-toolbar .ant-btn {
-  min-height: 36px;
+  height: 40px;
+  min-height: 40px;
 }
 
 .dashboard-report-toolbar .ant-select-single .ant-select-selector {
+  height: 100% !important;
+  min-height: 100%;
   align-items: center;
 }
 
@@ -294,6 +296,13 @@ button:disabled {
 
   .dashboard-report-toolbar__build {
     width: 100%;
+  }
+
+  .dashboard-report-toolbar .ant-select-single,
+  .dashboard-report-toolbar .ant-picker,
+  .dashboard-report-toolbar .ant-btn {
+    height: 44px;
+    min-height: 44px;
   }
 
   .app-shell input:not([type='checkbox']):not([type='radio']),

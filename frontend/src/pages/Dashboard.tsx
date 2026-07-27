@@ -143,6 +143,7 @@ export default function Dashboard() {
       <section className="app-card">
         <div className="app-toolbar dashboard-report-toolbar">
           <Select
+            size="large"
             value={reportType}
             onChange={setReportType}
             className="w-full md:w-40"
@@ -162,6 +163,7 @@ export default function Dashboard() {
           {/* 桌面端：Ant Design RangePicker */}
           <div className="hidden w-[272px] md:block">
             <DatePicker.RangePicker
+              size="large"
               className="w-full"
               value={[dayjs(startDate), dayjs(endDate)]}
               onChange={(_, dateStrings) => {
@@ -172,6 +174,7 @@ export default function Dashboard() {
           </div>
           <Button
             type="primary"
+            size="large"
             className="dashboard-report-toolbar__build"
             onClick={handleBuild}
             loading={building}
