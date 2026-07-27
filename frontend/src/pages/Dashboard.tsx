@@ -10,6 +10,7 @@ import type { SyncStatus } from '../types'
 import { getDisplayMode } from '../utils/displayMode'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
+const EMPTY_FILTER_VALUE = '__binhu_empty_report_value__'
 
 const fmt = (val: any, col: string) => {
   if (val == null) return '-'
@@ -37,17 +38,44 @@ const compareReportValues = (left: unknown, right: unknown, sortOrder?: string) 
   })
 }
 
-const reportTableColumns = (columns: string[]): TableColumnsType<Record<string, any>> =>
+const reportTableColumns = (
+  columns: string[],
+  rows: Record<string, any>[],
+): TableColumnsType<Record<string, any>> =>
   columns
     .filter(column => column !== 'id')
-    .map(column => ({
-      title: column,
-      dataIndex: column,
-      key: column,
-      width: column === '社区' || column === '姓名' ? 120 : 112,
-      sorter: (left, right, sortOrder) => compareReportValues(left[column], right[column], sortOrder),
-      render: value => fmt(value, column),
-    }))
+    .map(column => {
+      const filterOptions = new Map<string, { text: string; value: string; raw: unknown }>()
+      for (const row of rows) {
+        const raw = row[column]
+        const value = raw == null || raw === '' ? EMPTY_FILTER_VALUE : String(raw)
+        if (!filterOptions.has(value)) {
+          filterOptions.set(value, {
+            text: fmt(raw, column),
+            value,
+            raw,
+          })
+        }
+      }
+
+      return {
+        title: column,
+        dataIndex: column,
+        key: column,
+        width: column === '社区' || column === '姓名' ? 120 : 112,
+        sorter: (left, right, sortOrder) => compareReportValues(left[column], right[column], sortOrder),
+        filters: Array.from(filterOptions.values())
+          .sort((left, right) => compareReportValues(left.raw, right.raw))
+          .map(({ text, value }) => ({ text, value })),
+        filterSearch: true,
+        onFilter: (selectedValue, row) => {
+          const raw = row[column]
+          const rowValue = raw == null || raw === '' ? EMPTY_FILTER_VALUE : String(raw)
+          return rowValue === String(selectedValue)
+        },
+        render: (value: unknown) => fmt(value, column),
+      }
+    })
 
 export default function Dashboard() {
   const today = formatDateInTimezone()
@@ -275,7 +303,7 @@ export default function Dashboard() {
         ) : (
           <AppTable<Record<string, any>>
             key={`summary-${reportType}-${startDate}-${endDate}`}
-            columns={reportTableColumns(report.columns || [])}
+            columns={reportTableColumns(report.columns || [], report.data || [])}
             dataSource={report.data || []}
             rowKey={row => row.id || row.社区}
             title={() => (
@@ -311,7 +339,7 @@ export default function Dashboard() {
         <>
           <AppTable<Record<string, any>>
             key={`inspector-${reportType}-${startDate}-${endDate}`}
-            columns={reportTableColumns(report.inspector?.columns || [])}
+            columns={reportTableColumns(report.inspector?.columns || [], report.inspector?.data || [])}
             dataSource={report.inspector?.data || []}
             rowKey={row => row.id || `${row.社区}-${row.姓名}`}
             title={() => (
@@ -324,7 +352,7 @@ export default function Dashboard() {
 
           <AppTable<Record<string, any>>
             key={`community-${reportType}-${startDate}-${endDate}`}
-            columns={reportTableColumns(report.community?.columns || [])}
+            columns={reportTableColumns(report.community?.columns || [], report.community?.data || [])}
             dataSource={report.community?.data || []}
             rowKey={row => row.id || row.社区}
             title={() => (
