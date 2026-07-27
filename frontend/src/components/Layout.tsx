@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { ROLE_LABELS } from '../types'
+import NotificationCenter from './NotificationCenter'
 
 interface MenuItem {
   path: string
@@ -78,8 +79,14 @@ export default function Layout() {
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">滨</span>
           <span className="font-semibold text-slate-800">滨湖智慧平台</span>
         </div>
-        {user && <span className="ml-auto text-xs text-slate-500">{ROLE_LABELS[user.role] || user.role}</span>}
+        {user && (
+          <span className={`ml-auto text-xs text-slate-500 ${user.role === 'super_admin' ? 'mr-11' : ''}`}>
+            {ROLE_LABELS[user.role] || user.role}
+          </span>
+        )}
       </header>
+
+      {user?.role === 'super_admin' && <NotificationCenter />}
 
       {sidebarOpen && (
         <button

@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Button, DatePicker, Select, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
-import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
-import type { SyncStatus } from '../types'
+import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, getSystemConfig } from '../api/client'
 import { getDisplayMode } from '../utils/displayMode'
+import { useAuth } from '../context/AuthContext'
+import { useSync } from '../hooks/useSync'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
 const EMPTY_FILTER_VALUE = '__binhu_empty_report_value__'
@@ -18,7 +19,7 @@ const fmt = (val: any, col: string) => {
   return String(val)
 }
 
-const compareReportValues = (left: unknown, right: unknown, sortOrder?: string) => {
+const compareReportValues = (left: unknown, right: unknown, sortOrder?: string | null) => {
   const leftEmpty = left == null || left === ''
   const rightEmpty = right == null || right === ''
   if (leftEmpty || rightEmpty) {
@@ -78,6 +79,7 @@ const reportTableColumns = (
     })
 
 export default function Dashboard() {
+  const { user } = useAuth()
   const today = formatDateInTimezone()
   const [dateRange, setDateRange] = useState<[string, string]>([today, today])
   const [reportType, setReportType] = useState('全链条')
@@ -87,67 +89,9 @@ export default function Dashboard() {
   const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
-  // 同步状态
-  const [syncing, setSyncing] = useState(false)
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
-  const [syncError, setSyncError] = useState<string | null>(null)
-  const pollRef = useRef<number | null>(null)
-
-  const pollSyncStatus = useCallback(async function pollSyncStatus() {
-    try {
-      const status = await getSyncStatus()
-      setSyncStatus(status)
-      const isActive = status.status === 'running' || status.status === 'pending'
-      setSyncing(isActive)
-      if (isActive) {
-        pollRef.current = window.setTimeout(() => void pollSyncStatus(), 2000)
-      } else if (status.status === 'failed' || status.status === 'partial') {
-        setSyncError(status.error_message || (
-          status.status === 'partial' ? '部分数据同步失败' : '同步失败'
-        ))
-      } else {
-        setSyncError(null)
-      }
-    } catch {
-      setSyncing(false)
-      setSyncError('无法获取同步状态，请稍后重试')
-    }
-  }, [])
-
-  const handleSync = async () => {
-    setSyncing(true); setSyncError(null)
-    try {
-      const result = await triggerSync()
-      if (result.status === 'conflict') {
-        setSyncError(result.message)
-      }
-      void pollSyncStatus()
-    } catch (e: any) {
-      setSyncing(false); setSyncError(e?.response?.data?.detail || '触发同步失败')
-    }
-  }
-
-  useEffect(() => {
-    void pollSyncStatus()
-    return () => {
-      if (pollRef.current) window.clearTimeout(pollRef.current)
-    }
-  }, [pollSyncStatus])
-  useEffect(() => {
-    getSystemConfig().then(c => {
-      const configuredTimezone = c.timezone || 'Asia/Shanghai'
-      setTimezone(configuredTimezone)
-      setDateRange(current => {
-        if (current[0] !== today || current[1] !== today) return current
-        const configuredToday = formatDateInTimezone(new Date(), configuredTimezone)
-        return [configuredToday, configuredToday]
-      })
-    }).catch(() => {})
-  }, [])
-  useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
-
-  // 状态驱动：dateRange 或 reportType 变化 → 自动 fetch
   const [startDate, endDate] = dateRange
+
+  // 日期或业务类型变化时读取报表；同步任务结束时也会调用同一函数。
   const fetchReport = useCallback(async () => {
     if (startDate > endDate) return
     try {
@@ -165,6 +109,26 @@ export default function Dashboard() {
     }
   }, [startDate, endDate, reportType])
 
+  const {
+    syncing,
+    status: syncStatus,
+    error: syncError,
+    startSync: handleSync,
+  } = useSync(fetchReport)
+  const canManualSync = user?.role === 'admin' || user?.role === 'super_admin'
+
+  useEffect(() => {
+    getSystemConfig().then(c => {
+      const configuredTimezone = c.timezone || 'Asia/Shanghai'
+      setTimezone(configuredTimezone)
+      setDateRange(current => {
+        if (current[0] !== today || current[1] !== today) return current
+        const configuredToday = formatDateInTimezone(new Date(), configuredTimezone)
+        return [configuredToday, configuredToday]
+      })
+    }).catch(() => {})
+  }, [])
+  useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
   useEffect(() => { fetchReport() }, [fetchReport])
 
   const handleBuild = async () => {
@@ -220,7 +184,14 @@ export default function Dashboard() {
         ) : undefined}
       />
 
-      <SyncPanel syncing={syncing} status={syncStatus} error={syncError} onSync={handleSync} timezone={timezone} />
+      <SyncPanel
+        syncing={syncing}
+        status={syncStatus}
+        error={syncError}
+        onSync={handleSync}
+        canManualSync={canManualSync}
+        timezone={timezone}
+      />
 
       <section className="app-card">
         <div className="app-toolbar dashboard-report-toolbar">

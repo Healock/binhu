@@ -1,7 +1,8 @@
 import axios from 'axios'
 import type {
   Spreadsheet, SpreadsheetCreate, StatsResponse, StatsItem,
-  SyncStatus, SyncTriggerResponse, OAuthConfig, OAuthStatus,
+  SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
+  OAuthConfig, OAuthStatus,
 } from '../types'
 
 const api = axios.create({
@@ -68,6 +69,41 @@ export async function triggerSync(): Promise<SyncTriggerResponse> {
 export async function getSyncStatus(): Promise<SyncStatus> {
   const { data } = await api.get('/sync/status')
   return data
+}
+
+export async function getSyncSchedule(): Promise<SyncSchedule> {
+  const { data } = await api.get('/sync/schedule')
+  return data
+}
+
+export async function updateSyncSchedule(payload: {
+  enabled: boolean
+  interval_minutes: number
+}): Promise<SyncSchedule & { message: string }> {
+  const { data } = await api.put('/sync/schedule', payload)
+  return data
+}
+
+// ---- Notifications / 站内信 ----
+export async function getNotifications(limit = 20): Promise<{
+  unread_count: number
+  data: AppNotification[]
+}> {
+  const { data } = await api.get('/notifications', { params: { limit } })
+  return data
+}
+
+export async function getNotificationUnreadCount(): Promise<number> {
+  const { data } = await api.get('/notifications/unread-count')
+  return data.unread_count
+}
+
+export async function markNotificationRead(id: number): Promise<void> {
+  await api.post(`/notifications/${id}/read`)
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await api.post('/notifications/read-all')
 }
 
 // ---- Stats / 日报 ----

@@ -38,6 +38,16 @@ async def require_super_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """要求管理员或超级管理员角色。"""
+    if user["role"] not in {"admin", "super_admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
+        )
+    return user
+
+
 def create_session(user_id: int) -> str:
     """生成 session_id（调用方负责写库）"""
     return secrets.token_urlsafe(32)

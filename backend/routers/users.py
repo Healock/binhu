@@ -118,6 +118,10 @@ async def delete_user(user_id: int, user: dict = Depends(require_super_admin)):
                 raise HTTPException(status_code=404, detail="用户不存在")
             # 同时删除该用户的 session
             await cur.execute("DELETE FROM _sessions WHERE user_id = %s", (user_id,))
+            await cur.execute(
+                "DELETE FROM _notifications WHERE user_id = %s",
+                (user_id,),
+            )
     finally:
         pool.release(conn)
 

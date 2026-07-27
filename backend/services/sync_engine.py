@@ -57,8 +57,10 @@ class SyncEngine:
     async def run_full_sync(self, task_id: int):
         """执行全量同步"""
         conn = await self.db_pool.acquire()
+        client = None
         try:
-            await self._set_status(conn, task_id, "running")
+            await self._set_status(conn, task_id, "running", "syncing")
+            await self._set_current(conn, task_id, "读取同步配置")
 
             # 1. 获取 OAuth 凭据
             creds = await self._get_oauth_creds(conn)
@@ -74,27 +76,108 @@ class SyncEngine:
                 await self._fail(conn, task_id, "没有已配置且启用的在线表格")
                 return
 
-            # 3. 逐表同步
+            # 3. 先完成全部在线数据和快照，不在单表中途生成日报。
             total = 0
             errors = []
-            report_dates = set()
+            report_jobs: list[tuple[str, str]] = []
             for sp in spreadsheets:
+                await self._set_current(
+                    conn,
+                    task_id,
+                    f"同步数据：{sp['name']}",
+                )
                 try:
                     count, report_date = await self._sync_one(conn, client, sp)
                     total += count
                     if report_date:
-                        report_dates.add(report_date)
+                        job = (report_date, sp["parser_type"])
+                        if job not in report_jobs:
+                            report_jobs.append(job)
                     await self._set_progress(conn, task_id, total)
                 except Exception as e:
                     errors.append(f"{sp['name']}: {e}")
+                finally:
+                    await self._advance_step(conn, task_id)
 
-            # 所有分表日报刷新后，再统一重建总汇总表。
+            # 4. 数据阶段结束后，再统一生成本轮成功业务的分汇总表。
+            report_dates = sorted({date for date, _ in report_jobs})
+            await self._set_total_steps(
+                conn,
+                task_id,
+                len(spreadsheets) + len(report_jobs) + len(report_dates),
+            )
+            built_reports: dict[str, set[str]] = {
+                date: set() for date in report_dates
+            }
+            if report_jobs:
+                from services.report_builders import BUILDERS
+
+                await self._set_phase(conn, task_id, "building_reports")
+                for report_date, parser_type in report_jobs:
+                    await self._set_current(
+                        conn,
+                        task_id,
+                        f"生成分汇总：{parser_type}",
+                    )
+                    try:
+                        builder = BUILDERS[parser_type]
+                        result = await builder.build(report_date)
+                        if result.get("implemented") is False:
+                            raise RuntimeError(
+                                result.get(
+                                    "message",
+                                    f"{parser_type}分汇总表生成失败",
+                                )
+                            )
+                        built_reports[report_date].add(parser_type)
+                        print(
+                            f"[SYNC] 日报已刷新: "
+                            f"{report_date} {parser_type}"
+                        )
+                    except Exception as e:
+                        errors.append(
+                            f"{report_date} {parser_type}分汇总表: {e}"
+                        )
+                    finally:
+                        await self._advance_step(conn, task_id)
+
+            # 5. 只有数据和全部分汇总都成功，才更新总汇总表。
             if report_dates:
-                from services.report_builders.summary import build_summary
+                from services.report_builders.summary import (
+                    _load_summary_types,
+                    build_summary,
+                )
 
                 for report_date in sorted(report_dates):
+                    await self._set_current(
+                        conn,
+                        task_id,
+                        "生成总汇总表" if not errors else "总汇总表未更新",
+                    )
                     try:
-                        result = await build_summary(report_date)
+                        if errors:
+                            print(
+                                f"[SYNC] 本轮存在错误，未更新总汇总表: "
+                                f"{report_date}"
+                            )
+                            continue
+
+                        summary_types = await _load_summary_types()
+                        missing_types = [
+                            parser_type
+                            for parser_type in summary_types
+                            if parser_type not in built_reports[report_date]
+                        ]
+                        if missing_types:
+                            raise RuntimeError(
+                                "以下总汇总配置未在本轮成功生成："
+                                + "、".join(missing_types)
+                            )
+
+                        result = await build_summary(
+                            report_date,
+                            summary_types=summary_types,
+                        )
                         if not result.get("implemented"):
                             errors.append(
                                 f"{report_date} 总汇总表: "
@@ -104,8 +187,8 @@ class SyncEngine:
                             print(f"[SYNC] 总汇总表已刷新: {report_date}")
                     except Exception as e:
                         errors.append(f"{report_date} 总汇总表: {e}")
-
-            await client.close()
+                    finally:
+                        await self._advance_step(conn, task_id)
 
             if errors:
                 await self._complete_with_errors(conn, task_id, total, "\n".join(errors))
@@ -115,6 +198,11 @@ class SyncEngine:
         except Exception as e:
             await self._fail(conn, task_id, str(e))
         finally:
+            if client:
+                try:
+                    await client.close()
+                except Exception as e:
+                    print(f"[SYNC] 关闭腾讯文档客户端失败: {e}")
             self.db_pool.release(conn)
 
     async def _get_oauth_creds(self, conn) -> dict | None:
@@ -208,6 +296,12 @@ class SyncEngine:
                     print(f"[SYNC] UPDATE失败: {e} | key={key}")
         if update_fail > 0:
             print(f"[SYNC] UPDATE统计: 成功{update_ok} 失败{update_fail}")
+
+        if insert_fail or update_fail:
+            raise RuntimeError(
+                f"数据库写入不完整：新增失败{insert_fail}条，"
+                f"更新失败{update_fail}条"
+            )
 
         # ★ 保存快照（归档前，包含即将被移除的数据）
         report_date = await self._save_snapshot(conn, table, sp["parser_type"])
@@ -312,7 +406,7 @@ class SyncEngine:
     async def _save_snapshot(
         self, conn, table: str, parser_type: str
     ) -> str | None:
-        """保存快照并刷新对应日报，返回使用的业务日期。"""
+        """保存快照，返回使用的业务日期；日报在全部数据同步后统一生成。"""
         from services.report_builders import BUILDERS
 
         builder = BUILDERS.get(parser_type)
@@ -332,18 +426,50 @@ class SyncEngine:
             )
             print(f"[SYNC] 快照已保存: {snapshot_table}")
 
-        result = await builder.build(today)
-        if result.get("implemented") is False:
-            raise RuntimeError(result.get("message", f"{parser_type}日报生成失败"))
-        print(f"[SYNC] 日报已刷新: {today} {parser_type}")
         return today
 
     # --- 任务状态管理 ---
-    async def _set_status(self, conn, task_id: int, status: str):
+    async def _set_status(
+        self,
+        conn,
+        task_id: int,
+        status: str,
+        phase: str,
+    ):
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE _sync_log SET status=%s, started_at=NOW() WHERE id=%s",
-                (status, task_id),
+                "UPDATE _sync_log SET status=%s, phase=%s, "
+                "started_at=UTC_TIMESTAMP() WHERE id=%s",
+                (status, phase, task_id),
+            )
+
+    async def _set_phase(self, conn, task_id: int, phase: str):
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE _sync_log SET phase=%s WHERE id=%s",
+                (phase, task_id),
+            )
+
+    async def _set_current(self, conn, task_id: int, current_item: str):
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE _sync_log SET current_item=%s WHERE id=%s",
+                (current_item, task_id),
+            )
+
+    async def _advance_step(self, conn, task_id: int):
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE _sync_log "
+                "SET completed_steps=completed_steps+1 WHERE id=%s",
+                (task_id,),
+            )
+
+    async def _set_total_steps(self, conn, task_id: int, total_steps: int):
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE _sync_log SET total_steps=%s WHERE id=%s",
+                (total_steps, task_id),
             )
 
     async def _set_progress(self, conn, task_id: int, processed: int):
@@ -356,20 +482,27 @@ class SyncEngine:
     async def _complete(self, conn, task_id: int, total: int):
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE _sync_log SET status='success', total_rows=%s, processed_rows=%s, finished_at=NOW() WHERE id=%s",
+                "UPDATE _sync_log SET status='success', phase='finished', "
+                "current_item=NULL, total_rows=%s, processed_rows=%s, "
+                "completed_steps=total_steps, finished_at=UTC_TIMESTAMP() "
+                "WHERE id=%s",
                 (total, total, task_id),
             )
 
     async def _complete_with_errors(self, conn, task_id: int, total: int, errors: str):
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE _sync_log SET status='partial', total_rows=%s, processed_rows=%s, error_message=%s, finished_at=NOW() WHERE id=%s",
+                "UPDATE _sync_log SET status='partial', phase='finished', "
+                "current_item=NULL, total_rows=%s, processed_rows=%s, "
+                "error_message=%s, finished_at=UTC_TIMESTAMP() WHERE id=%s",
                 (total, total, errors[:1000], task_id),
             )
 
     async def _fail(self, conn, task_id: int, error: str):
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE _sync_log SET status='failed', error_message=%s, finished_at=NOW() WHERE id=%s",
+                "UPDATE _sync_log SET status='failed', phase='finished', "
+                "current_item=NULL, error_message=%s, "
+                "finished_at=UTC_TIMESTAMP() WHERE id=%s",
                 (error[:1000], task_id),
             )
