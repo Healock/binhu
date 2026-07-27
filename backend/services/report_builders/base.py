@@ -130,7 +130,7 @@ class BaseReportBuilder:
         """
         rc = self.result_column
         see_base = " OR ".join(f"t.{rc} LIKE '%%{kw}%%'" for kw in self.see_base_keywords)
-        no_base = f"t.{rc} LIKE '%%无法核实%%' OR t.{rc} IS NULL OR t.{rc} = ''"
+        no_base = f"t.{rc} LIKE '%%无法核实%%'"
 
         if prev:
             join_clause = f"LEFT JOIN {prev} prev ON t._row_key = prev._row_key"
@@ -217,7 +217,7 @@ class BaseReportBuilder:
         """
         rc = self.result_column
         see_base = " OR ".join(f"t.{rc} LIKE '%%{kw}%%'" for kw in self.see_base_keywords)
-        no_base = f"t.{rc} LIKE '%%无法核实%%' OR t.{rc} IS NULL OR t.{rc} = ''"
+        no_base = f"t.{rc} LIKE '%%无法核实%%'"
 
         inspector_sql = f"""
             SELECT

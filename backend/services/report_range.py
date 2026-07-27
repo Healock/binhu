@@ -155,7 +155,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                          THEN ROUND(SUM(t.已完成) / SUM(t.数据总数), 2) ELSE 0 END,
                     SUM(t.无法见底数),
                     CASE WHEN SUM(t.数据总数) > 0
-                         THEN ROUND((SUM(t.数据总数) - SUM(t.无法见底数)) / SUM(t.数据总数), 2)
+                         THEN ROUND(GREATEST(SUM(t.已完成) - SUM(t.无法见底数), 0) / SUM(t.数据总数), 2)
                          ELSE 0 END,
                     COALESCE((
                         SELECT COUNT(*) FROM OnlineData._grid_members
