@@ -46,6 +46,27 @@ def make_database(fetchone_values=None, fetchall_values=None):
 
 
 class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
+    def test_unable_to_verify_metric_does_not_include_unchecked_rows(self):
+        builder = FullChainBuilder()
+        workload_sql, _ = builder._build_workload_sql(
+            "`2026-07-27_snapshot_fullChain`",
+            "`2026-07-26_snapshot_fullChain`",
+        )
+        range_sql, _ = builder.build_stats_sql("(`snapshot_union`)")
+
+        for sql in (workload_sql, range_sql):
+            normalized_sql = " ".join(sql.split())
+            self.assertIn(
+                "SUM(CASE WHEN t.核查结果 LIKE '%%无法核实%%' "
+                "THEN 1 ELSE 0 END)",
+                normalized_sql,
+            )
+            self.assertNotIn(
+                "t.核查结果 LIKE '%%无法核实%%' "
+                "OR t.核查结果 IS NULL",
+                normalized_sql,
+            )
+
     def test_new_rows_are_classified_by_current_status(self):
         inspector_sql, _ = FullChainBuilder()._build_workload_sql(
             "`2026-07-27_snapshot_fullChain`",

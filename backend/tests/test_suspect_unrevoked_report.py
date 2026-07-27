@@ -32,6 +32,10 @@ class SuspectUnrevokedReportTests(unittest.TestCase):
             "<> TRIM(IFNULL(t.`核查结果`, ''))",
             sql,
         )
+        self.assertEqual(
+            sql.count("SUM(CASE WHEN NOT (TRIM(IFNULL(t.`核查结果`, ''))"),
+            2,
+        )
 
     def test_first_day_sql_filters_business_day(self):
         inspector_sql, _ = self.builder._build_workload_sql(
@@ -54,7 +58,7 @@ class SuspectUnrevokedReportTests(unittest.TestCase):
         self.assertIn("0 AS 已核查", sql)
         self.assertIn("AS 未核查", sql)
         self.assertIn("AS 已完成", sql)
-        self.assertIn("AS 无法见底数", sql)
+        self.assertEqual(sql.count("0 AS 无法见底数"), 2)
         self.assertIn("AS 核查见底率", sql)
         self.assertNotIn("现住址", sql)
 

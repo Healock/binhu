@@ -53,7 +53,7 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END,
-                SUM(CASE WHEN {unresolved} THEN 1 ELSE 0 END),
+                0,
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END
@@ -77,7 +77,7 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END,
-                SUM(CASE WHEN {unresolved} THEN 1 ELSE 0 END),
+                0,
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END
@@ -109,7 +109,7 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END AS 核查完成率,
-                SUM(CASE WHEN {unresolved} THEN 1 ELSE 0 END) AS 无法见底数,
+                0 AS 无法见底数,
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END AS 核查见底率
@@ -132,7 +132,7 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END AS 核查完成率,
-                SUM(CASE WHEN {unresolved} THEN 1 ELSE 0 END) AS 无法见底数,
+                0 AS 无法见底数,
                 CASE WHEN COUNT(*) > 0
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END AS 核查见底率
