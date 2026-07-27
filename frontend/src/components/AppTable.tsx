@@ -13,10 +13,11 @@ export default function AppTable<T extends object>({
   pagination,
   scroll,
   size = 'small',
+  sticky = false,
   ...props
 }: AppTableProps<T>) {
   return (
-    <div className="app-table-wrap app-table-wrap--antd">
+    <div className={`app-table-wrap app-table-wrap--antd ${sticky ? 'app-table-wrap--sticky' : ''}`.trim()}>
       <Table<T>
         {...props}
         className={`app-data-table ${className}`.trim()}
@@ -33,7 +34,7 @@ export default function AppTable<T extends object>({
         scroll={{ x: 'max-content', ...scroll }}
         showSorterTooltip={{ target: 'sorter-icon' }}
         size={size}
-        sticky
+        sticky={sticky}
       />
     </div>
   )
