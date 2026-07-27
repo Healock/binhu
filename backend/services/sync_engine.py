@@ -6,6 +6,7 @@
 from services.txdocs_client import TxDocsClient
 from services.parsers import get_parser
 from services.business_time import get_business_date
+from services.schema_compat import get_database_column_map, quote_identifier
 
 
 class SyncEngine:
@@ -105,7 +106,8 @@ class SyncEngine:
         print(f"[SYNC] {sp['name']}: API返回{len(raw_rows)}行, 去重后{len(online)}行, 重复{dup_count}行")
 
         # 3. 读取数据库现有数据
-        db_data = await self._load_existing(conn, table, parser)
+        column_map = await get_database_column_map(conn, table, parser)
+        db_data = await self._load_existing(conn, table, parser, column_map)
 
         # 4. 三向比对
         online_keys = set(online.keys())
@@ -128,7 +130,9 @@ class SyncEngine:
         insert_fail = 0
         for key in new_keys:
             try:
-                await self._insert(conn, table, key, online[key], parser)
+                await self._insert(
+                    conn, table, key, online[key], parser, column_map
+                )
                 insert_ok += 1
             except Exception as e:
                 insert_fail += 1
@@ -141,7 +145,9 @@ class SyncEngine:
         update_fail = 0
         for key in modified_keys:
             try:
-                await self._update(conn, table, key, online[key], parser)
+                await self._update(
+                    conn, table, key, online[key], parser, column_map
+                )
                 update_ok += 1
             except Exception as e:
                 update_fail += 1
@@ -153,14 +159,30 @@ class SyncEngine:
         # ★ 保存快照（归档前，包含即将被移除的数据）
         await self._save_snapshot(conn, table, sp["parser_type"])
 
-        for key in removed_keys:
-            await self._archive(conn, table, key, db_data[key], parser)
+        if removed_keys:
+            archive_table = f"OnlineDataArchive.{table}_archive"
+            archive_column_map = await get_database_column_map(
+                conn, archive_table, parser
+            )
+            for key in removed_keys:
+                await self._archive(
+                    conn,
+                    table,
+                    key,
+                    db_data[key],
+                    parser,
+                    archive_column_map,
+                )
 
         return len(online)
 
-    async def _load_existing(self, conn, table: str, parser) -> dict[str, dict]:
+    async def _load_existing(
+        self, conn, table: str, parser, column_map: dict[str, str]
+    ) -> dict[str, dict]:
         """加载现有数据，返回 _row_key → {列名: 值} 字典"""
-        col_list = ", ".join(f"`{c}`" for c in parser.COLUMNS)
+        col_list = ", ".join(
+            quote_identifier(column_map[column]) for column in parser.COLUMNS
+        )
         async with conn.cursor() as cur:
             await cur.execute(f"SELECT _row_key, {col_list} FROM {table}")
             rows = await cur.fetchall()
@@ -171,8 +193,18 @@ class SyncEngine:
             result[key] = {c: str(vals[i]).strip() if vals[i] is not None else "" for i, c in enumerate(parser.COLUMNS)}
         return result
 
-    async def _insert(self, conn, table: str, key: str, data: dict, parser):
-        col_list = ", ".join(f"`{c}`" for c in parser.COLUMNS)
+    async def _insert(
+        self,
+        conn,
+        table: str,
+        key: str,
+        data: dict,
+        parser,
+        column_map: dict[str, str],
+    ):
+        col_list = ", ".join(
+            quote_identifier(column_map[column]) for column in parser.COLUMNS
+        )
         placeholders = ", ".join(["%s"] * (len(parser.COLUMNS) + 1))
         values = [key] + [data.get(c, "") for c in parser.COLUMNS]
         async with conn.cursor() as cur:
@@ -181,8 +213,19 @@ class SyncEngine:
                 values,
             )
 
-    async def _update(self, conn, table: str, key: str, data: dict, parser):
-        set_clause = ", ".join(f"`{c}` = %s" for c in parser.COLUMNS)
+    async def _update(
+        self,
+        conn,
+        table: str,
+        key: str,
+        data: dict,
+        parser,
+        column_map: dict[str, str],
+    ):
+        set_clause = ", ".join(
+            f"{quote_identifier(column_map[column])} = %s"
+            for column in parser.COLUMNS
+        )
         values = [data.get(c, "") for c in parser.COLUMNS] + [key]
         async with conn.cursor() as cur:
             await cur.execute(
@@ -190,10 +233,20 @@ class SyncEngine:
                 values,
             )
 
-    async def _archive(self, conn, table: str, key: str, data: dict, parser):
+    async def _archive(
+        self,
+        conn,
+        table: str,
+        key: str,
+        data: dict,
+        parser,
+        column_map: dict[str, str],
+    ):
         """归档：INSERT 到 OnlineDataArchive + DELETE 原表"""
         archive_table = f"{table}_archive"
-        col_list = ", ".join(f"`{c}`" for c in parser.COLUMNS)
+        col_list = ", ".join(
+            quote_identifier(column_map[column]) for column in parser.COLUMNS
+        )
         placeholders = ", ".join(["%s"] * (len(parser.COLUMNS) + 1))
         values = [key] + [data.get(c, "") for c in parser.COLUMNS]
         async with conn.cursor() as cur:
