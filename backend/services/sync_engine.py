@@ -333,7 +333,7 @@ class SyncEngine:
             print(f"[SYNC] 快照已保存: {snapshot_table}")
 
         result = await builder.build(today)
-        if not result.get("implemented"):
+        if result.get("implemented") is False:
             raise RuntimeError(result.get("message", f"{parser_type}日报生成失败"))
         print(f"[SYNC] 日报已刷新: {today} {parser_type}")
         return today
