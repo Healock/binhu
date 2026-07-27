@@ -51,9 +51,19 @@ export interface StatsResponse {
 }
 
 // 同步状态
+export type SyncStatusValue =
+  | 'no_data'
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'conflict'
+
 export interface SyncStatus {
   task_id: number
-  status: string
+  status: SyncStatusValue
   total_rows: number
   processed_rows: number
   error_message: string | null
@@ -63,7 +73,7 @@ export interface SyncStatus {
 
 export interface SyncTriggerResponse {
   task_id: number
-  status: string
+  status: 'pending' | 'conflict'
   message: string
 }
 

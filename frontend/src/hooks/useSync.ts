@@ -30,10 +30,14 @@ export function useSync(onComplete?: () => void) {
       try {
         const s = await getSyncStatus()
         setStatus(s)
-        if (s.status === 'success') {
+        if (s.status === 'success' || s.status === 'completed') {
           stopPolling()
           setSyncing(false)
           onComplete?.()
+        } else if (s.status === 'partial') {
+          stopPolling()
+          setSyncing(false)
+          setError(s.error_message || '部分数据同步失败')
         } else if (s.status === 'failed') {
           stopPolling()
           setSyncing(false)
