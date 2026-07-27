@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Alert, Button, Input, Modal, Select, Tag } from 'antd'
+import type { TableColumnsType } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
+import AppTable from '../components/AppTable'
 import { ROLE_LABELS } from '../types'
 import type { Role } from '../types'
 import { getDisplayMode } from '../utils/displayMode'
@@ -114,6 +116,48 @@ export default function UserManagement() {
 
   const roleOptions: Role[] = ['super_admin', 'admin', 'leader', 'member']
   const cardMode = getDisplayMode() === 'card'
+  const userColumns: TableColumnsType<UserItem> = [
+    {
+      title: '用户名',
+      dataIndex: 'username',
+      key: 'username',
+      width: 200,
+      sorter: (left, right) => left.username.localeCompare(right.username, 'zh-CN'),
+      render: value => <span className="font-medium text-slate-800">{value}</span>,
+    },
+    {
+      title: '角色',
+      dataIndex: 'role',
+      key: 'role',
+      width: 160,
+      sorter: (left, right) => (
+        (ROLE_LABELS[left.role] || left.role).localeCompare(
+          ROLE_LABELS[right.role] || right.role,
+          'zh-CN',
+        )
+      ),
+      render: value => ROLE_LABELS[value] || value,
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 200,
+      sorter: (left, right) => (left.created_at || '').localeCompare(right.created_at || ''),
+      render: value => <span className="text-xs text-slate-500">{value || '-'}</span>,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 130,
+      render: (_, user) => (
+        <>
+          <Button type="link" size="small" onClick={() => handleEdit(user)}>编辑</Button>
+          <Button type="link" danger size="small" onClick={() => handleDelete(user.id, user.username)}>删除</Button>
+        </>
+      ),
+    },
+  ]
 
   return (
     <div className="app-page">
@@ -174,14 +218,20 @@ export default function UserManagement() {
         </Modal>
       )}
 
-      <div className="app-table-wrap">
-        {loading ? (
+      {loading ? (
+        <div className="app-table-wrap">
           <LoadingState />
-        ) : loadError ? (
+        </div>
+      ) : loadError ? (
+        <div className="app-table-wrap">
           <EmptyState label={loadError} />
-        ) : users.length === 0 ? (
+        </div>
+      ) : users.length === 0 ? (
+        <div className="app-table-wrap">
           <EmptyState label="暂无用户" />
-        ) : cardMode ? (
+        </div>
+      ) : cardMode ? (
+        <div className="app-table-wrap">
           <div className="grid grid-cols-1 gap-3 p-4">
             {users.map((u) => (
               <div key={u.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
@@ -197,32 +247,15 @@ export default function UserManagement() {
               </div>
             ))}
           </div>
-        ) : (
-          <table className="app-table min-w-full">
-            <thead className="bg-gray-50 border-b sticky top-0 z-10">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">用户名</th>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">角色</th>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">创建时间</th>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {users.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-2 text-gray-800 font-medium">{u.username}</td>
-                  <td className="px-3 py-2 text-gray-700">{ROLE_LABELS[u.role] || u.role}</td>
-                  <td className="px-3 py-2 text-gray-500 text-xs">{u.created_at || '-'}</td>
-                  <td className="px-3 py-2">
-                    <Button type="link" size="small" onClick={() => handleEdit(u)}>编辑</Button>
-                    <Button type="link" danger size="small" onClick={() => handleDelete(u.id, u.username)}>删除</Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+        </div>
+      ) : (
+        <AppTable<UserItem>
+          columns={userColumns}
+          dataSource={users}
+          rowKey="id"
+          scroll={{ x: 690 }}
+        />
+      )}
     </div>
   )
 }

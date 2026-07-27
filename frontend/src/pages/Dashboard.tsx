@@ -1,26 +1,52 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Button, DatePicker, Select, Tag } from 'antd'
+import type { TableColumnsType } from 'antd'
 import dayjs from 'dayjs'
+import AppTable from '../components/AppTable'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
 import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, triggerSync, getSyncStatus, getSystemConfig } from '../api/client'
 import { getDisplayMode } from '../utils/displayMode'
-import { nextReportSort, sortReportRows, type ReportSortState } from '../utils/reportSort'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
-type ReportTableKey = 'inspector' | 'community' | 'summary'
-
-const EMPTY_SORTS: Record<ReportTableKey, ReportSortState | null> = {
-  inspector: null,
-  community: null,
-  summary: null,
-}
 
 const fmt = (val: any, col: string) => {
   if (val == null) return '-'
   if (RATE_COLS.includes(col)) return `${(val * 100).toFixed(0)}%`
   return String(val)
 }
+
+const compareReportValues = (left: unknown, right: unknown, sortOrder?: string) => {
+  const leftEmpty = left == null || left === ''
+  const rightEmpty = right == null || right === ''
+  if (leftEmpty || rightEmpty) {
+    if (leftEmpty && rightEmpty) return 0
+    const emptyAfter = leftEmpty ? 1 : -1
+    return sortOrder === 'descend' ? -emptyAfter : emptyAfter
+  }
+
+  const leftNumber = typeof left === 'number' ? left : Number(left)
+  const rightNumber = typeof right === 'number' ? right : Number(right)
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber
+  }
+  return String(left).localeCompare(String(right), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+const reportTableColumns = (columns: string[]): TableColumnsType<Record<string, any>> =>
+  columns
+    .filter(column => column !== 'id')
+    .map(column => ({
+      title: column,
+      dataIndex: column,
+      key: column,
+      width: column === '社区' || column === '姓名' ? 120 : 112,
+      sorter: (left, right, sortOrder) => compareReportValues(left[column], right[column], sortOrder),
+      render: value => fmt(value, column),
+    }))
 
 export default function Dashboard() {
   const today = formatDateInTimezone()
@@ -32,7 +58,6 @@ export default function Dashboard() {
   const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
-  const [sortStates, setSortStates] = useState<Record<ReportTableKey, ReportSortState | null>>(EMPTY_SORTS)
   // 同步状态
   const [syncing, setSyncing] = useState(false)
   const [syncStatus, setSyncStatus] = useState<any>(null)
@@ -77,10 +102,6 @@ export default function Dashboard() {
 
   // 状态驱动：dateRange 或 reportType 变化 → 自动 fetch
   const [startDate, endDate] = dateRange
-  useEffect(() => {
-    setSortStates({ ...EMPTY_SORTS })
-  }, [startDate, endDate, reportType])
-
   const fetchReport = useCallback(async () => {
     if (startDate > endDate) return
     try {
@@ -120,49 +141,6 @@ export default function Dashboard() {
   const isRange = startDate !== endDate
   const rangeInfo = report.range
   const cardMode = getDisplayMode() === 'card'
-
-  const handleSort = (table: ReportTableKey, column: string) => {
-    setSortStates(current => ({
-      ...current,
-      [table]: nextReportSort(current[table], column),
-    }))
-  }
-
-  const sortedRows = (table: ReportTableKey, rows: Record<string, any>[] | undefined) =>
-    sortReportRows(rows || [], sortStates[table])
-
-  const renderSortableHeader = (table: ReportTableKey, column: string) => {
-    const activeSort = sortStates[table]
-    const isActive = activeSort?.column === column
-    const ariaSort = isActive
-      ? (activeSort.direction === 'asc' ? 'ascending' : 'descending')
-      : 'none'
-    const sortLabel = !isActive
-      ? '排序 ↕'
-      : activeSort.direction === 'asc'
-        ? '升序 ↑'
-        : '降序 ↓'
-
-    return (
-      <th
-        key={column}
-        aria-sort={ariaSort}
-        className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap"
-      >
-        <button
-          type="button"
-          className="compact-action inline-flex items-center gap-1.5 rounded-sm text-left hover:text-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-          onClick={() => handleSort(table, column)}
-          title={`按“${column}”排序`}
-        >
-          <span>{column}</span>
-          <span className={`text-[11px] ${isActive ? 'text-blue-700' : 'text-slate-400'}`}>
-            {sortLabel}
-          </span>
-        </button>
-      </th>
-    )
-  }
 
   // 卡片渲染辅助
   const renderCard = (row: Record<string, any>, columns: string[], titleCols: string[]) => (
@@ -277,30 +255,18 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-        <div className="app-table-wrap">
-          <div className="px-4 py-2 border-b bg-gray-50">
-            <h3 className="text-sm font-semibold text-gray-700">
-              总汇总表（{report.data?.length || 0} 个社区）
-              {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-            </h3>
-          </div>
-          <table className="app-table min-w-full">
-            <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
-              {report.columns?.filter((c: string) => c !== 'id').map((col: string) => (
-                renderSortableHeader('summary', col)
-              ))}
-            </tr></thead>
-            <tbody className="divide-y divide-gray-100">
-              {sortedRows('summary', report.data).map((row: any, i: number) => (
-                <tr key={i} className="hover:bg-gray-50 font-medium">
-                  {report.columns?.filter((c: string) => c !== 'id').map((col: string) => (
-                    <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap">{fmt(row[col], col)}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+          <AppTable<Record<string, any>>
+            key={`summary-${reportType}-${startDate}-${endDate}`}
+            columns={reportTableColumns(report.columns || [])}
+            dataSource={report.data || []}
+            rowKey={row => row.id || row.社区}
+            title={() => (
+              <h3 className="text-sm font-semibold text-gray-700">
+                总汇总表（{report.data?.length || 0} 个社区）
+                {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+              </h3>
+            )}
+          />
         )
       ) : cardMode ? (
         <div className="space-y-6">
@@ -325,55 +291,31 @@ export default function Dashboard() {
         </div>
       ) : (
         <>
-          <div className="app-table-wrap">
-            <div className="px-4 py-2 border-b bg-gray-50">
+          <AppTable<Record<string, any>>
+            key={`inspector-${reportType}-${startDate}-${endDate}`}
+            columns={reportTableColumns(report.inspector?.columns || [])}
+            dataSource={report.inspector?.data || []}
+            rowKey={row => row.id || `${row.社区}-${row.姓名}`}
+            title={() => (
               <h3 className="text-sm font-semibold text-gray-700">
                 核查人明细统计（{report.inspector?.data.length || 0} 人）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
-            </div>
-            <table className="app-table min-w-full">
-              <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
-                {report.inspector?.columns.filter((c: string) => c !== 'id').map((col: string) => (
-                  renderSortableHeader('inspector', col)
-                ))}
-              </tr></thead>
-              <tbody className="divide-y divide-gray-100">
-                {sortedRows('inspector', report.inspector?.data).map((row, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    {report.inspector?.columns.filter((c: string) => c !== 'id').map((col: string) => (
-                      <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap">{fmt(row[col], col)}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            )}
+          />
 
-          <div className="app-table-wrap">
-            <div className="px-4 py-2 border-b bg-gray-50">
+          <AppTable<Record<string, any>>
+            key={`community-${reportType}-${startDate}-${endDate}`}
+            columns={reportTableColumns(report.community?.columns || [])}
+            dataSource={report.community?.data || []}
+            rowKey={row => row.id || row.社区}
+            title={() => (
               <h3 className="text-sm font-semibold text-gray-700">
                 社区汇总统计（{report.community?.data.length || 0} 个社区）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
-            </div>
-            <table className="app-table min-w-full">
-              <thead className="bg-gray-50 border-b sticky top-0 z-10"><tr>
-                {report.community?.columns.filter((c: string) => c !== 'id').map((col: string) => (
-                  renderSortableHeader('community', col)
-                ))}
-              </tr></thead>
-              <tbody className="divide-y divide-gray-100">
-                {sortedRows('community', report.community?.data).map((row, i) => (
-                  <tr key={i} className="hover:bg-gray-50 font-medium">
-                    {report.community?.columns.filter((c: string) => c !== 'id').map((col: string) => (
-                      <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap">{fmt(row[col], col)}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            )}
+          />
         </>
       )}
 
