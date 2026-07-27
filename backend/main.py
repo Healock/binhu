@@ -1,6 +1,8 @@
 """滨湖智慧平台 - FastAPI 入口"""
 
 import os
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,14 +19,27 @@ from routers.query import router as query_router
 from routers.grid_members import router as grid_members_router
 from routers.system import router as system_router
 from routers.users import router as users_router
+from routers.notifications import router as notifications_router
+from services.sync_scheduler import run_sync_scheduler
+from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化数据库连接池，关闭时清理"""
     await init_db()
-    yield
-    await close_db()
+    interrupted = await recover_interrupted_tasks()
+    if interrupted:
+        print(f"[SYNC] 已关闭 {interrupted} 个服务重启前遗留的同步任务")
+    scheduler_task = asyncio.create_task(run_sync_scheduler())
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
+        await stop_sync_tasks()
+        await close_db()
 
 
 app = FastAPI(
@@ -59,6 +74,7 @@ app.include_router(stats_router, dependencies=auth_dep)
 app.include_router(query_router, dependencies=auth_dep)
 app.include_router(grid_members_router, dependencies=auth_dep)
 app.include_router(system_router, dependencies=auth_dep)
+app.include_router(notifications_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

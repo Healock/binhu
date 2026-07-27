@@ -66,6 +66,67 @@ class DatabaseManager:
                 await cur.execute(
                     "INSERT IGNORE INTO _system_config (config_key, config_value) VALUES ('timezone', 'Asia/Shanghai')"
                 )
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _sync_schedule (
+                        id TINYINT NOT NULL PRIMARY KEY,
+                        enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        interval_minutes INT NOT NULL DEFAULT 5,
+                        next_run_at DATETIME DEFAULT NULL,
+                        last_triggered_at DATETIME DEFAULT NULL,
+                        updated_by INT DEFAULT NULL,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute(
+                    "INSERT IGNORE INTO _sync_schedule "
+                    "(id, enabled, interval_minutes, next_run_at) "
+                    "VALUES (1, 1, 5, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE))"
+                )
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _notifications (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        category VARCHAR(30) NOT NULL DEFAULT 'sync',
+                        severity VARCHAR(20) NOT NULL DEFAULT 'error',
+                        title VARCHAR(100) NOT NULL,
+                        content TEXT NOT NULL,
+                        related_task_id INT DEFAULT NULL,
+                        is_read TINYINT(1) NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        read_at DATETIME DEFAULT NULL,
+                        UNIQUE KEY uk_notification_user_task (
+                            user_id, category, related_task_id
+                        ),
+                        INDEX idx_notification_unread (
+                            user_id, is_read, created_at
+                        )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """)
+                for column_name, column_definition in [
+                    (
+                        "trigger_source",
+                        "VARCHAR(20) NOT NULL DEFAULT 'manual'",
+                    ),
+                    ("requested_by", "INT DEFAULT NULL"),
+                    ("phase", "VARCHAR(30) NOT NULL DEFAULT 'queued'"),
+                    ("current_item", "VARCHAR(200) DEFAULT NULL"),
+                    ("total_steps", "INT NOT NULL DEFAULT 0"),
+                    ("completed_steps", "INT NOT NULL DEFAULT 0"),
+                ]:
+                    await cur.execute(
+                        "SHOW COLUMNS FROM _sync_log LIKE %s",
+                        (column_name,),
+                    )
+                    if not await cur.fetchone():
+                        await cur.execute(
+                            f"ALTER TABLE _sync_log "
+                            f"ADD COLUMN `{column_name}` {column_definition}"
+                        )
+                await cur.execute(
+                    "UPDATE _sync_log SET phase='finished' "
+                    "WHERE status IN ('success', 'completed', 'partial', 'failed') "
+                    "AND phase='queued'"
+                )
                 # 疑似返苏表列名修正（身份证号→身份证号码，二次反馈→二次核查结果）
                 for old_name, new_name, col_type in [
                     ("身份证号", "身份证号码", "VARCHAR(50)"),

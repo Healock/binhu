@@ -44,11 +44,49 @@ CREATE TABLE IF NOT EXISTS _config_oauth_tokens (
 CREATE TABLE IF NOT EXISTS _sync_log (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     status          VARCHAR(20) DEFAULT 'pending',
+    trigger_source  VARCHAR(20) NOT NULL DEFAULT 'manual',
+    requested_by    INT DEFAULT NULL,
+    phase           VARCHAR(30) NOT NULL DEFAULT 'queued',
+    current_item    VARCHAR(200) DEFAULT NULL,
+    total_steps     INT NOT NULL DEFAULT 0,
+    completed_steps INT NOT NULL DEFAULT 0,
     total_rows      INT DEFAULT 0,
     processed_rows  INT DEFAULT 0,
     error_message   TEXT,
     started_at      DATETIME,
-    finished_at     DATETIME
+    finished_at     DATETIME,
+    INDEX idx_sync_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _sync_schedule (
+    id                TINYINT NOT NULL PRIMARY KEY,
+    enabled           TINYINT(1) NOT NULL DEFAULT 1,
+    interval_minutes  INT NOT NULL DEFAULT 5,
+    next_run_at       DATETIME DEFAULT NULL,
+    last_triggered_at DATETIME DEFAULT NULL,
+    updated_by        INT DEFAULT NULL,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO _sync_schedule (
+    id, enabled, interval_minutes, next_run_at
+) VALUES (
+    1, 1, 5, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE)
+);
+
+CREATE TABLE IF NOT EXISTS _notifications (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id          INT NOT NULL,
+    category         VARCHAR(30) NOT NULL DEFAULT 'sync',
+    severity         VARCHAR(20) NOT NULL DEFAULT 'error',
+    title            VARCHAR(100) NOT NULL,
+    content          TEXT NOT NULL,
+    related_task_id  INT DEFAULT NULL,
+    is_read          TINYINT(1) NOT NULL DEFAULT 0,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    read_at          DATETIME DEFAULT NULL,
+    UNIQUE KEY uk_notification_user_task (user_id, category, related_task_id),
+    INDEX idx_notification_unread (user_id, is_read, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 1. 全链条（14列业务数据）

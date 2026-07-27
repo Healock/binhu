@@ -61,6 +61,13 @@ export type SyncStatusValue =
   | 'failed'
   | 'conflict'
 
+export interface SyncSchedule {
+  enabled: boolean
+  interval_minutes: number
+  next_run_at: string | null
+  server_time: string | null
+}
+
 export interface SyncStatus {
   task_id: number
   status: SyncStatusValue
@@ -69,12 +76,31 @@ export interface SyncStatus {
   error_message: string | null
   started_at: string | null
   finished_at: string | null
+  trigger_source: 'manual' | 'scheduled'
+  phase: 'queued' | 'syncing' | 'building_reports' | 'finished'
+  current_item: string | null
+  total_steps: number
+  completed_steps: number
+  last_success_at: string | null
+  schedule: SyncSchedule
 }
 
 export interface SyncTriggerResponse {
   task_id: number
   status: 'pending' | 'conflict'
   message: string
+}
+
+export interface AppNotification {
+  id: number
+  category: string
+  severity: 'error' | 'warning' | 'info'
+  title: string
+  content: string
+  related_task_id: number | null
+  is_read: boolean
+  created_at: string
+  read_at: string | null
 }
 
 // OAuth
