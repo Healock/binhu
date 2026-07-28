@@ -7,7 +7,7 @@ from routers.visits import summary as summary_endpoint
 from services.visit_summary import (
     COMMUNITY_COLUMNS,
     INSPECTOR_COLUMNS,
-    _average_per_household,
+    _round_ratio,
     get_visit_summary,
 )
 
@@ -26,7 +26,7 @@ class SummaryCursor:
     async def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.connection.calls.append((normalized, params))
-        if "TRIM(`操作人`)" in normalized:
+        if "COUNT(DISTINCT" not in normalized:
             self.rows = list(self.connection.inspector_rows)
         else:
             self.rows = list(self.connection.community_rows)
@@ -47,8 +47,8 @@ class SummaryConnection:
 
 class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
     def test_household_average_uses_round_half_up(self):
-        self.assertEqual(_average_per_household(1, 4), 0.3)
-        self.assertEqual(_average_per_household(0, 0), 0.0)
+        self.assertEqual(_round_ratio(1, 4), 0.3)
+        self.assertEqual(_round_ratio(0, 0), 0.0)
 
     async def test_builds_inspector_community_and_recalculated_totals(self):
         connection = SummaryConnection(
@@ -57,7 +57,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 ("长板", "李四", 2, 0, 1, 1, 1),
             ],
             community_rows=[
-                ("长板", 6, 1, 1, 1, 4),
+                ("长板", 6, 2, 1, 1, 1, 4),
             ],
         )
 
@@ -81,11 +81,24 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inspector_total["总变动数"], 3)
         self.assertEqual(inspector_total["户均变动数"], 0.5)
         self.assertEqual(inspector_total["星级评定率"], 0.6667)
-        for column in COMMUNITY_COLUMNS:
+        for column in (
+            "社区",
+            "走访户数",
+            "新增",
+            "变更",
+            "注销",
+            "总变动数",
+            "户均变动数",
+            "星级评定数",
+            "星级评定率",
+        ):
             self.assertEqual(
                 inspector_total[column],
                 result["community"]["summary"][column],
             )
+        community_total = result["community"]["summary"]
+        self.assertEqual(community_total["人均走访户数"], 3.0)
+        self.assertEqual(community_total["人均变动数"], 1.5)
 
         self.assertEqual(
             [params for _, params in connection.calls],
@@ -105,6 +118,38 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["inspector"]["data"], [])
         self.assertEqual(result["inspector"]["summary"]["走访户数"], 0)
         self.assertEqual(result["community"]["summary"]["星级评定率"], 0.0)
+        self.assertEqual(result["community"]["summary"]["人均走访户数"], 0.0)
+
+    async def test_total_counts_cross_community_member_once(self):
+        connection = SummaryConnection(
+            inspector_rows=[
+                ("长板", "张三", 2, 0, 1, 0, 1),
+                ("水秀", "张三", 3, 0, 2, 0, 2),
+            ],
+            community_rows=[
+                ("长板", 2, 1, 0, 1, 0, 1),
+                ("水秀", 3, 1, 0, 2, 0, 2),
+            ],
+        )
+
+        result = await get_visit_summary(
+            connection,
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+        )
+
+        self.assertEqual(
+            [row["人均走访户数"] for row in result["community"]["data"]],
+            [2.0, 3.0],
+        )
+        self.assertEqual(
+            result["community"]["summary"]["人均走访户数"],
+            5.0,
+        )
+        self.assertEqual(
+            result["community"]["summary"]["人均变动数"],
+            3.0,
+        )
 
     async def test_rejects_reversed_date_range(self):
         with self.assertRaises(HTTPException) as raised:

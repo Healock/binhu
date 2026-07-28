@@ -39,7 +39,11 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024
 const ISSUE_PAGE_SIZE = 50
 const EMPTY_FILTER_VALUE = '__binhu_empty_visit_summary_value__'
 const SUMMARY_RATE_COLUMNS = new Set(['星级评定率'])
-const SUMMARY_DECIMAL_COLUMNS = new Set(['户均变动数'])
+const SUMMARY_DECIMAL_COLUMNS = new Set([
+  '人均走访户数',
+  '人均变动数',
+  '户均变动数',
+])
 type VisitSummaryRow = Record<string, string | number>
 
 const statusMeta = {
