@@ -158,9 +158,9 @@ export default function GridMembers() {
       ),
     },
     {
-      title: '请假情况',
+      title: '人员状态',
       key: 'status',
-      width: 180,
+      width: 220,
       render: (_, member) => <MemberStatus member={member} />,
     },
     {
@@ -351,7 +351,7 @@ function MemberStatus({ member }: { member: GridMember }) {
   const isActiveLeave = !isLongTerm && member.effective_status === '离岗'
   const isUpcoming = !isLongTerm && member.leave_state === 'upcoming'
   const label = isLongTerm
-    ? '长期'
+    ? '长期离岗'
     : isActiveLeave
     ? '请假中'
     : isUpcoming
@@ -364,21 +364,34 @@ function MemberStatus({ member }: { member: GridMember }) {
     : isUpcoming
     ? 'blue'
     : 'green'
+  const detail = isLongTerm ? '' : (member.status_detail || '').trim()
+  const reason = (
+    isLongTerm || isActiveLeave || isUpcoming
+  ) ? (member.leave_reason || '').trim() : ''
 
   return (
-    <div className="min-w-32">
-      <Tag color={color}>{label}</Tag>
-      {member.status_detail && (
-        <div className="mt-1 text-xs text-slate-500">
-          {member.status_detail}
-        </div>
-      )}
-      {member.leave_reason && (isLongTerm || isActiveLeave || isUpcoming) && (
-        <div
-          className="mt-0.5 max-w-48 truncate text-xs text-slate-400"
-          title={member.leave_reason}
-        >
-          {member.leave_reason}
+    <div className="flex min-w-[190px] items-center gap-2">
+      <Tag
+        color={color}
+        className="m-0 min-w-[68px] shrink-0 text-center"
+      >
+        {label}
+      </Tag>
+      {(detail || reason) && (
+        <div className="min-w-0 flex-1 leading-5">
+          {detail && (
+            <div className="truncate text-xs text-slate-600" title={detail}>
+              {detail}
+            </div>
+          )}
+          {reason && (
+            <div
+              className="truncate text-xs text-slate-400"
+              title={`原因：${reason}`}
+            >
+              原因：{reason}
+            </div>
+          )}
         </div>
       )}
     </div>
