@@ -1,6 +1,6 @@
 """数据同步、定时配置和状态 API。"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
@@ -11,6 +11,7 @@ from services.sync_tasks import (
     get_schedule,
     update_schedule,
 )
+from services.audit import record_admin_audit, request_audit_fields
 
 router = APIRouter(prefix="/api/sync", tags=["数据同步"])
 
@@ -25,12 +26,24 @@ def _iso_utc(value) -> str | None:
 
 
 @router.post("/trigger", response_model=SyncTriggerResponse)
-async def trigger_sync(user: dict = Depends(require_admin)):
+async def trigger_sync(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
     """由管理员或超级管理员触发全量同步。"""
     task_id, status, message = await create_sync_task(
         "manual",
         requested_by=user["id"],
     )
+    if user["role"] == "super_admin":
+        await record_admin_audit(
+            user,
+            "sync.trigger",
+            target_type="sync",
+            target_name=str(task_id) if task_id else "",
+            result=status,
+            **request_audit_fields(request),
+        )
     return SyncTriggerResponse(
         task_id=task_id,
         status=status,
@@ -97,18 +110,30 @@ async def read_schedule(user: dict = Depends(require_super_admin)):
 
 @router.put("/schedule")
 async def save_schedule(
-    request: SyncScheduleRequest,
+    payload: SyncScheduleRequest,
+    request: Request,
     user: dict = Depends(require_super_admin),
 ):
     """超级管理员保存定时同步配置。"""
     try:
         schedule = await update_schedule(
-            request.enabled,
-            request.interval_minutes,
+            payload.enabled,
+            payload.interval_minutes,
             user["id"],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await record_admin_audit(
+        user,
+        "sync.schedule.update",
+        target_type="sync_schedule",
+        target_name="default",
+        detail={
+            "enabled": payload.enabled,
+            "interval_minutes": payload.interval_minutes,
+        },
+        **request_audit_fields(request),
+    )
     return {"message": "定时同步设置已保存", **schedule}
 
 

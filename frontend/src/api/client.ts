@@ -2,7 +2,8 @@ import axios from 'axios'
 import type {
   Spreadsheet, SpreadsheetCreate, StatsResponse, StatsItem,
   SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
-  OAuthConfig, OAuthStatus,
+  OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
+  BackupJob, AuditEvent,
 } from '../types'
 
 const api = axios.create({
@@ -104,6 +105,83 @@ export async function markNotificationRead(id: number): Promise<void> {
 
 export async function markAllNotificationsRead(): Promise<void> {
   await api.post('/notifications/read-all')
+}
+
+// ---- Super-admin operations center ----
+export async function getOpsOverview(): Promise<OpsOverview> {
+  const { data } = await api.get('/admin/ops/overview')
+  return data
+}
+
+export async function getOpsDatabases(): Promise<OpsDatabase[]> {
+  const { data } = await api.get('/admin/ops/databases')
+  return data.data
+}
+
+export async function getOpsDatabaseTables(database: string): Promise<any[]> {
+  const { data } = await api.get(`/admin/ops/databases/${encodeURIComponent(database)}/tables`)
+  return data.data
+}
+
+export async function getOpsTableStructure(database: string, table: string): Promise<any> {
+  const { data } = await api.get(
+    `/admin/ops/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(table)}`,
+  )
+  return data
+}
+
+export async function getBackups(): Promise<{
+  data: BackupJob[]
+  legacy_files: Array<{ filename: string; size_bytes: number; modified_at: string }>
+  schedule: BackupSchedule
+}> {
+  const { data } = await api.get('/admin/ops/backups')
+  return data
+}
+
+export async function triggerDatabaseBackup(): Promise<{
+  task_id: number
+  status: string
+  message: string
+}> {
+  const { data } = await api.post('/admin/ops/backups')
+  return data
+}
+
+export async function updateBackupSchedule(payload: {
+  enabled: boolean
+  run_hour: number
+  run_minute: number
+}): Promise<BackupSchedule> {
+  const { data } = await api.put('/admin/ops/backup-schedule', payload)
+  return data
+}
+
+export async function downloadBackup(jobId: number, password: string): Promise<Blob> {
+  const { data } = await api.post(
+    `/admin/ops/backups/${jobId}/download`,
+    { password },
+    { responseType: 'blob', timeout: 120000 },
+  )
+  return data
+}
+
+export async function getAuditEvents(params: {
+  page: number
+  page_size: number
+  action?: string
+}): Promise<{ data: AuditEvent[]; total: number; page: number; page_size: number }> {
+  const { data } = await api.get('/admin/ops/audit', { params })
+  return data
+}
+
+export async function downloadDiagnostics(): Promise<Blob> {
+  const { data } = await api.post(
+    '/admin/ops/diagnostics',
+    null,
+    { responseType: 'blob', timeout: 120000 },
+  )
+  return data
 }
 
 // ---- Stats / 日报 ----

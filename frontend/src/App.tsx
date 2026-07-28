@@ -12,6 +12,7 @@ import SpreadsheetSettings from './pages/SpreadsheetSettings'
 import OAuthSettings from './pages/OAuthSettings'
 import SystemSettings from './pages/SystemSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
+import OperationsCenter from './pages/OperationsCenter'
 import Login from './pages/Login'
 
 function App() {
@@ -40,6 +41,9 @@ function App() {
               <Route path="oauth" element={<OAuthSettings />} />
               <Route path="system" element={<SystemSettings />} />
               <Route path="personalization" element={<PersonalizationSettings />} />
+              <Route element={<ProtectedRoute requireRole="super_admin" />}>
+                <Route path="operations" element={<OperationsCenter />} />
+              </Route>
             </Route>
           </Route>
         </Route>

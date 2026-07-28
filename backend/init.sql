@@ -89,6 +89,54 @@ CREATE TABLE IF NOT EXISTS _notifications (
     INDEX idx_notification_unread (user_id, is_read, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _backup_schedule (
+    id                TINYINT NOT NULL PRIMARY KEY,
+    enabled           TINYINT(1) NOT NULL DEFAULT 1,
+    run_hour          TINYINT NOT NULL DEFAULT 2,
+    run_minute        TINYINT NOT NULL DEFAULT 0,
+    retention_days    INT NOT NULL DEFAULT 7,
+    next_run_at       DATETIME DEFAULT NULL,
+    last_triggered_at DATETIME DEFAULT NULL,
+    updated_by        INT DEFAULT NULL,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO _backup_schedule (
+    id, enabled, run_hour, run_minute, retention_days
+) VALUES (1, 1, 2, 0, 7);
+
+CREATE TABLE IF NOT EXISTS _backup_jobs (
+    id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trigger_source VARCHAR(20) NOT NULL DEFAULT 'manual',
+    status         VARCHAR(20) NOT NULL DEFAULT 'pending',
+    requested_by   INT DEFAULT NULL,
+    filename       VARCHAR(255) DEFAULT NULL,
+    size_bytes     BIGINT DEFAULT NULL,
+    sha256         CHAR(64) DEFAULT NULL,
+    error_message  TEXT DEFAULT NULL,
+    started_at     DATETIME DEFAULT NULL,
+    finished_at    DATETIME DEFAULT NULL,
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_backup_status (status),
+    INDEX idx_backup_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _admin_audit_log (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id      INT DEFAULT NULL,
+    username     VARCHAR(50) NOT NULL DEFAULT '',
+    action       VARCHAR(80) NOT NULL,
+    target_type  VARCHAR(50) NOT NULL DEFAULT '',
+    target_name  VARCHAR(200) NOT NULL DEFAULT '',
+    result       VARCHAR(20) NOT NULL DEFAULT 'success',
+    detail_json  JSON DEFAULT NULL,
+    ip_address   VARCHAR(45) NOT NULL DEFAULT '',
+    user_agent   VARCHAR(300) NOT NULL DEFAULT '',
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_audit_user_time (user_id, created_at),
+    INDEX idx_audit_action_time (action, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 1. 全链条（14列业务数据）
 CREATE TABLE IF NOT EXISTS t_fullchain (
     id              INT AUTO_INCREMENT PRIMARY KEY,

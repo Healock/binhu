@@ -2,10 +2,12 @@
 
 import re
 from urllib.parse import urlparse, parse_qs
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from database import get_db
+from deps import require_super_admin
 from schemas.spreadsheet import SpreadsheetCreate, SpreadsheetUpdate, SpreadsheetResponse
 from services.parsers import SUPPORTED_TYPES
+from services.audit import record_admin_audit, request_audit_fields
 
 # 固定的7种表格类型（用户配置时按此列表展示，不可自由添加）
 FIXED_TYPES = [
@@ -82,7 +84,12 @@ async def get_spreadsheets_config(conn=Depends(get_db)):
 
 
 @router.put("/config")
-async def save_spreadsheets_config(payload: dict, conn=Depends(get_db)):
+async def save_spreadsheets_config(
+    payload: dict,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
     """批量保存7种表格类型的URL配置
 
     payload: {"configs": {"全链条": "https://...", "出租房屋核查": "https://...", ...}}
@@ -109,6 +116,14 @@ async def save_spreadsheets_config(payload: dict, conn=Depends(get_db)):
                        VALUES (%s, %s, %s, %s, %s, 1)""",
                     (parser_type, url, parsed["file_id"], parsed["data_sheet_id"], parser_type),
                 )
+    await record_admin_audit(
+        user,
+        "spreadsheet.config.update",
+        target_type="spreadsheet",
+        target_name="batch",
+        detail={"types": sorted(configs)},
+        **request_audit_fields(request),
+    )
     return {"message": "配置已保存"}
 
 
@@ -122,7 +137,12 @@ async def list_spreadsheets(conn=Depends(get_db)):
 
 
 @router.post("", response_model=SpreadsheetResponse, status_code=201)
-async def create_spreadsheet(data: SpreadsheetCreate, conn=Depends(get_db)):
+async def create_spreadsheet(
+    data: SpreadsheetCreate,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
     """添加在线表格（自动从URL解析file_id和子表ID）"""
     parsed = parse_tencent_doc_url(data.url)
     file_id = data.file_id or parsed["file_id"]
@@ -147,6 +167,14 @@ async def create_spreadsheet(data: SpreadsheetCreate, conn=Depends(get_db)):
             if "Duplicate" in str(e):
                 raise HTTPException(status_code=400, detail="该URL已存在")
             raise
+    await record_admin_audit(
+        user,
+        "spreadsheet.create",
+        target_type="spreadsheet",
+        target_name=str(new_id),
+        detail={"name": data.name, "parser_type": data.parser_type},
+        **request_audit_fields(request),
+    )
     return _row_to_response(r)
 
 
@@ -162,7 +190,13 @@ async def get_spreadsheet(spreadsheet_id: int, conn=Depends(get_db)):
 
 
 @router.put("/{spreadsheet_id}", response_model=SpreadsheetResponse)
-async def update_spreadsheet(spreadsheet_id: int, data: SpreadsheetUpdate, conn=Depends(get_db)):
+async def update_spreadsheet(
+    spreadsheet_id: int,
+    data: SpreadsheetUpdate,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
     """更新在线表格"""
     updates = {}
     if data.name is not None:
@@ -195,14 +229,34 @@ async def update_spreadsheet(spreadsheet_id: int, data: SpreadsheetUpdate, conn=
         r = await cur.fetchone()
     if not r:
         raise HTTPException(status_code=404, detail="表格不存在")
+    await record_admin_audit(
+        user,
+        "spreadsheet.update",
+        target_type="spreadsheet",
+        target_name=str(spreadsheet_id),
+        detail={"fields": sorted(updates)},
+        **request_audit_fields(request),
+    )
     return _row_to_response(r)
 
 
 @router.delete("/{spreadsheet_id}")
-async def delete_spreadsheet(spreadsheet_id: int, conn=Depends(get_db)):
+async def delete_spreadsheet(
+    spreadsheet_id: int,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
     """删除在线表格"""
     async with conn.cursor() as cur:
         await cur.execute("DELETE FROM _config_spreadsheets WHERE id = %s", (spreadsheet_id,))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="表格不存在")
+    await record_admin_audit(
+        user,
+        "spreadsheet.delete",
+        target_type="spreadsheet",
+        target_name=str(spreadsheet_id),
+        **request_audit_fields(request),
+    )
     return {"message": "删除成功"}

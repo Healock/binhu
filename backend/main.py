@@ -21,6 +21,9 @@ from routers.grid_members import router as grid_members_router
 from routers.system import router as system_router
 from routers.users import router as users_router
 from routers.notifications import router as notifications_router
+from routers.admin_ops import router as admin_ops_router
+from services.backup_scheduler import run_backup_scheduler
+from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
 from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 
@@ -32,14 +35,25 @@ async def lifespan(app: FastAPI):
     interrupted = await recover_interrupted_tasks()
     if interrupted:
         print(f"[SYNC] 已关闭 {interrupted} 个服务重启前遗留的同步任务")
+    interrupted_backups = await recover_interrupted_backups()
+    if interrupted_backups:
+        print(
+            f"[BACKUP] 已关闭 {interrupted_backups} "
+            "个服务重启前遗留的备份任务"
+        )
     scheduler_task = asyncio.create_task(run_sync_scheduler())
+    backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     try:
         yield
     finally:
         scheduler_task.cancel()
+        backup_scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
+        with suppress(asyncio.CancelledError):
+            await backup_scheduler_task
         await stop_sync_tasks()
+        await stop_backup_tasks()
         await close_db()
 
 
@@ -80,6 +94,7 @@ app.include_router(notifications_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)
+app.include_router(admin_ops_router, dependencies=auth_dep)
 
 
 # ========== 前端静态文件一体化托管（单端口模式，无需 Nginx） ==========

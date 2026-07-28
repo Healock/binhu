@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     BOOTSTRAP_ADMIN_USERNAME: str = ""
     BOOTSTRAP_ADMIN_PASSWORD: str = ""
 
+    # Super-admin operations center
+    OPS_AGENT_URL: str = "http://ops-agent:9001"
+    OPS_AGENT_TOKEN: str = ""
+    BACKUP_DIR: str = "../backups"
+    LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
+
     @property
     def cors_allowed_origins(self) -> list[str]:
         """Return the explicit CORS allowlist; same-origin deployments leave it empty."""

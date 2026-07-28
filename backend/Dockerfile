@@ -5,9 +5,10 @@ WORKDIR /app
 # 换国内镜像源加速（apt 阿里云 + pip 阿里云）
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true
 
-# Install system dependencies for aiomysql
+# Install build tools and the client used for controlled three-database backups.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -1,8 +1,9 @@
 """系统配置 API"""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from database import get_db
 from deps import require_super_admin
+from services.audit import record_admin_audit, request_audit_fields
 
 router = APIRouter(
     prefix="/api/system",
@@ -21,7 +22,12 @@ async def get_config(conn=Depends(get_db)):
 
 
 @router.put("/config")
-async def update_config(config: dict, conn=Depends(get_db)):
+async def update_config(
+    config: dict,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
     """更新系统配置"""
     async with conn.cursor() as cur:
         for k, v in config.items():
@@ -30,4 +36,12 @@ async def update_config(config: dict, conn=Depends(get_db)):
                 "ON DUPLICATE KEY UPDATE config_value = %s",
                 (k, str(v), str(v)),
             )
+    await record_admin_audit(
+        user,
+        "system.config.update",
+        target_type="system_config",
+        target_name=",".join(sorted(str(key) for key in config)),
+        detail={"keys": sorted(str(key) for key in config)},
+        **request_audit_fields(request),
+    )
     return {"message": "配置已更新"}

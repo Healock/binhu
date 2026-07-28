@@ -26,6 +26,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: binhu-backend
     container_name: binhu-backend
     restart: unless-stopped
     ports:
@@ -44,9 +45,13 @@ services:
       CORS_ALLOWED_ORIGINS: ${BINHU_CORS_ALLOWED_ORIGINS:-}
       BOOTSTRAP_ADMIN_USERNAME: ${BINHU_BOOTSTRAP_ADMIN_USERNAME:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BINHU_BOOTSTRAP_ADMIN_PASSWORD:-}
+      OPS_AGENT_URL: http://ops-agent:9001
+      OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
+      BACKUP_DIR: /app/backups
       STATIC_DIR: /app/static
     volumes:
       - ./frontend/dist:/app/static:ro
+      - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
     logging:
       driver: json-file
       options:
@@ -55,5 +60,42 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      ops-agent:
+        condition: service_healthy
+
+  ops-agent:
+    image: binhu-backend
+    container_name: binhu-ops-agent
+    restart: unless-stopped
+    command: ["uvicorn", "ops_agent:app", "--host", "0.0.0.0", "--port", "9001"]
+    environment:
+      OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
+      OPS_AGENT_CONTAINERS: backend=binhu-backend,mysql=binhu-mysql
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "9001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
 volumes:
   mysql_data:
