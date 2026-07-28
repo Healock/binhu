@@ -257,6 +257,18 @@ button:disabled {
   background: #f1f5f9;
 }
 
+.app-data-table .ant-table-summary > tr.app-report-total-row > td {
+  border-top: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 600;
+}
+
+.app-report-total-card {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
 .app-empty {
   display: flex;
   min-height: 180px;

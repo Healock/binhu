@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Button, DatePicker, Select, Tag } from 'antd'
+import { Button, DatePicker, Select, Table, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
@@ -76,6 +76,21 @@ const reportTableColumns = (
         render: (value: unknown) => fmt(value, column),
       }
     })
+
+const reportTableSummary = (
+  columns: string[],
+  summary: Record<string, any>,
+) => () => (
+  <Table.Summary.Row className="app-report-total-row">
+    {columns.filter(column => column !== 'id').map((column, index) => (
+      <Table.Summary.Cell index={index} key={column}>
+        <span className={index === 0 ? 'font-semibold text-blue-900' : ''}>
+          {fmt(summary[column], column)}
+        </span>
+      </Table.Summary.Cell>
+    ))}
+  </Table.Summary.Row>
+)
 
 export default function Dashboard() {
   const { user } = useAuth()
@@ -154,8 +169,17 @@ export default function Dashboard() {
   const cardMode = user?.table_display_mode === 'card'
 
   // 卡片渲染辅助
-  const renderCard = (row: Record<string, any>, columns: string[], titleCols: string[]) => (
-    <div className="app-card app-card--padded space-y-1.5">
+  const renderCard = (
+    row: Record<string, any>,
+    columns: string[],
+    titleCols: string[],
+    key: string | number,
+    isTotal = false,
+  ) => (
+    <div
+      key={key}
+      className={`app-card app-card--padded space-y-1.5${isTotal ? ' app-report-total-card' : ''}`}
+    >
       <div className="flex items-center justify-between border-b pb-2 mb-1">
         <span className="font-semibold text-gray-800">{titleCols.map(c => row[c]).filter(Boolean).join(' · ')}</span>
       </div>
@@ -269,7 +293,16 @@ export default function Dashboard() {
               {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
             </h3>
             <div className="grid grid-cols-1 gap-3">
-              {report.data?.map((row: any, i: number) => renderCard(row, report.columns || [], ['社区']))}
+              {report.data?.map((row: any, i: number) => (
+                renderCard(row, report.columns || [], ['社区'], row.id || row.社区 || i)
+              ))}
+              {report.summary && renderCard(
+                report.summary,
+                report.columns || [],
+                ['社区'],
+                'summary-total',
+                true,
+              )}
             </div>
           </div>
         ) : (
@@ -278,6 +311,9 @@ export default function Dashboard() {
             columns={reportTableColumns(report.columns || [], report.data || [])}
             dataSource={report.data || []}
             rowKey={row => row.id || row.社区}
+            summary={report.summary
+              ? reportTableSummary(report.columns || [], report.summary)
+              : undefined}
             title={() => (
               <h3 className="text-sm font-semibold text-gray-700">
                 总汇总表（{report.data?.length || 0} 个社区）
@@ -294,7 +330,21 @@ export default function Dashboard() {
               {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
             </h3>
             <div className="grid grid-cols-1 gap-3">
-              {report.inspector?.data.map((row: Record<string, any>, i: number) => renderCard(row, report.inspector?.columns || [], ['社区', '姓名']))}
+              {report.inspector?.data.map((row: Record<string, any>, i: number) => (
+                renderCard(
+                  row,
+                  report.inspector?.columns || [],
+                  ['社区', '姓名'],
+                  row.id || `${row.社区}-${row.姓名}-${i}`,
+                )
+              ))}
+              {report.inspector?.summary && renderCard(
+                report.inspector.summary,
+                report.inspector?.columns || [],
+                ['社区', '姓名'],
+                'inspector-summary-total',
+                true,
+              )}
             </div>
           </div>
           <div className="space-y-3">
@@ -303,7 +353,21 @@ export default function Dashboard() {
               {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
             </h3>
             <div className="grid grid-cols-1 gap-3">
-              {report.community?.data.map((row: Record<string, any>, i: number) => renderCard(row, report.community?.columns || [], ['社区']))}
+              {report.community?.data.map((row: Record<string, any>, i: number) => (
+                renderCard(
+                  row,
+                  report.community?.columns || [],
+                  ['社区'],
+                  row.id || row.社区 || i,
+                )
+              ))}
+              {report.community?.summary && renderCard(
+                report.community.summary,
+                report.community?.columns || [],
+                ['社区'],
+                'community-summary-total',
+                true,
+              )}
             </div>
           </div>
         </div>
@@ -314,6 +378,12 @@ export default function Dashboard() {
             columns={reportTableColumns(report.inspector?.columns || [], report.inspector?.data || [])}
             dataSource={report.inspector?.data || []}
             rowKey={row => row.id || `${row.社区}-${row.姓名}`}
+            summary={report.inspector?.summary
+              ? reportTableSummary(
+                  report.inspector?.columns || [],
+                  report.inspector.summary,
+                )
+              : undefined}
             title={() => (
               <h3 className="text-sm font-semibold text-gray-700">
                 核查人明细统计（{report.inspector?.data.length || 0} 人）
@@ -327,6 +397,12 @@ export default function Dashboard() {
             columns={reportTableColumns(report.community?.columns || [], report.community?.data || [])}
             dataSource={report.community?.data || []}
             rowKey={row => row.id || row.社区}
+            summary={report.community?.summary
+              ? reportTableSummary(
+                  report.community?.columns || [],
+                  report.community.summary,
+                )
+              : undefined}
             title={() => (
               <h3 className="text-sm font-semibold text-gray-700">
                 社区汇总统计（{report.community?.data.length || 0} 个社区）
