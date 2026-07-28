@@ -92,6 +92,17 @@ export default function GridMembers() {
       render: value => value || '-',
     },
     {
+      title: '身份证号',
+      dataIndex: 'id_card_masked',
+      key: 'id_card_masked',
+      width: 190,
+      render: (value, member) => (
+        member.has_id_card
+          ? <Tooltip title="完整号码仅保存在数据库中，页面不显示"><span>{value}</span></Tooltip>
+          : <span className="text-slate-400">未补齐</span>
+      ),
+    },
+    {
       title: '状态',
       key: 'status',
       width: 180,
@@ -182,7 +193,7 @@ export default function GridMembers() {
         }}
         rowClassName={member => member.effective_status === '离岗' ? 'app-table-row--muted' : ''}
         rowKey="id"
-        scroll={{ x: 940 }}
+        scroll={{ x: 1130 }}
       />
 
       {(showAddForm || editing) && (

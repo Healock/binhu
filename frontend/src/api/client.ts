@@ -282,6 +282,8 @@ export interface GridMember {
   leave_reason: string
   leave_source: string
   leave_state: 'active' | 'upcoming' | 'expired' | null
+  has_id_card: boolean
+  id_card_masked: string
 }
 
 export interface GridMemberPayload {
@@ -343,6 +345,77 @@ export async function extractGridMembers(): Promise<{ new_count: number; new_nam
 
 export function exportGridMembersUrl(): string {
   return '/api/grid-members/export'
+}
+
+// ---- Visit detail imports ----
+export interface VisitCoverage {
+  start_date: string | null
+  end_date: string | null
+  total_records: number
+  data_days: number
+  missing_date_count: number
+  missing_dates: string[]
+  last_import_at: string | null
+}
+
+export interface VisitImportIssue {
+  id: number
+  severity: 'error' | 'warning'
+  code: string
+  row_number: number
+  message: string
+  row_preview: Record<string, string>
+}
+
+export interface VisitIssuePage {
+  data: VisitImportIssue[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface VisitImportResult {
+  batch_id: number
+  status: 'success' | 'partial' | 'failed' | 'duplicate'
+  duplicate_file: boolean
+  file_start_date: string | null
+  file_end_date: string | null
+  overlap_start_date: string | null
+  overlap_end_date: string | null
+  inserted_rows: number
+  updated_rows: number
+  unchanged_rows: number
+  ignored_rows: number
+  error_count: number
+  warning_count: number
+  message: string
+  coverage: VisitCoverage
+  issues: VisitIssuePage
+}
+
+export async function getVisitCoverage(): Promise<VisitCoverage> {
+  const { data } = await api.get('/visits/coverage')
+  return data
+}
+
+export async function uploadVisitDetail(file: File): Promise<VisitImportResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/visits/imports/detail', formData, {
+    timeout: 300000,
+  })
+  return data
+}
+
+export async function getVisitImportIssues(
+  batchId: number,
+  page: number,
+  pageSize = 50,
+): Promise<VisitIssuePage> {
+  const { data } = await api.get(`/visits/imports/${batchId}/issues`, {
+    params: { page, page_size: pageSize },
+  })
+  return data
 }
 
 // ---- System Config ----

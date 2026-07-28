@@ -22,10 +22,12 @@ from routers.system import router as system_router
 from routers.users import router as users_router
 from routers.notifications import router as notifications_router
 from routers.admin_ops import router as admin_ops_router
+from routers.visits import router as visits_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
 from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
+from services.visit_import import recover_interrupted_visit_imports
 
 
 @asynccontextmanager
@@ -40,6 +42,12 @@ async def lifespan(app: FastAPI):
         print(
             f"[BACKUP] 已关闭 {interrupted_backups} "
             "个服务重启前遗留的备份任务"
+        )
+    interrupted_visit_imports = await recover_interrupted_visit_imports()
+    if interrupted_visit_imports:
+        print(
+            f"[VISIT] 已关闭 {interrupted_visit_imports} "
+            "个服务重启前遗留的导入任务"
         )
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
@@ -91,6 +99,7 @@ app.include_router(query_router, dependencies=auth_dep)
 app.include_router(grid_members_router, dependencies=auth_dep)
 app.include_router(system_router, dependencies=auth_dep)
 app.include_router(notifications_router, dependencies=auth_dep)
+app.include_router(visits_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

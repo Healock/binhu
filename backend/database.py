@@ -71,9 +71,11 @@ class DatabaseManager:
                         leave_end_date DATE DEFAULT NULL,
                         leave_reason VARCHAR(200) DEFAULT '',
                         leave_source VARCHAR(30) NOT NULL DEFAULT 'manual',
+                        id_card_number VARCHAR(50) DEFAULT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        UNIQUE KEY uk_name (name)
+                        UNIQUE KEY uk_name (name),
+                        UNIQUE KEY uk_grid_id_card (id_card_number)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
                 await cur.execute("""
@@ -184,6 +186,87 @@ class DatabaseManager:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                       COLLATE=utf8mb4_unicode_ci
                 """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _visit_import_batches (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        filename VARCHAR(255) NOT NULL,
+                        file_sha256 CHAR(64) NOT NULL,
+                        file_size_bytes BIGINT NOT NULL DEFAULT 0,
+                        status VARCHAR(20) NOT NULL DEFAULT 'running',
+                        uploader_id INT DEFAULT NULL,
+                        sheet_name VARCHAR(100) DEFAULT NULL,
+                        total_rows INT NOT NULL DEFAULT 0,
+                        valid_rows INT NOT NULL DEFAULT 0,
+                        inserted_rows INT NOT NULL DEFAULT 0,
+                        updated_rows INT NOT NULL DEFAULT 0,
+                        unchanged_rows INT NOT NULL DEFAULT 0,
+                        ignored_rows INT NOT NULL DEFAULT 0,
+                        error_count INT NOT NULL DEFAULT 0,
+                        warning_count INT NOT NULL DEFAULT 0,
+                        file_start_date DATE DEFAULT NULL,
+                        file_end_date DATE DEFAULT NULL,
+                        overlap_start_date DATE DEFAULT NULL,
+                        overlap_end_date DATE DEFAULT NULL,
+                        error_message TEXT DEFAULT NULL,
+                        started_at DATETIME DEFAULT NULL,
+                        finished_at DATETIME DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_visit_batch_hash (file_sha256),
+                        INDEX idx_visit_batch_status (status),
+                        INDEX idx_visit_batch_created (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS t_visit_details (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        _row_key CHAR(64) NOT NULL,
+                        派出所名称 VARCHAR(200) DEFAULT '',
+                        村社区 VARCHAR(200) NOT NULL,
+                        社区 VARCHAR(200) NOT NULL,
+                        进入方式 VARCHAR(20) NOT NULL,
+                        地址 VARCHAR(1000) NOT NULL,
+                        _normalized_address VARCHAR(1000) NOT NULL,
+                        _address_key CHAR(64) NOT NULL,
+                        操作人 VARCHAR(100) NOT NULL,
+                        操作人账号 VARCHAR(50) DEFAULT '',
+                        入户时间 DATETIME NOT NULL,
+                        业务日期 DATE NOT NULL,
+                        _raw_visit_time VARCHAR(100) DEFAULT '',
+                        房间核查数量 INT UNSIGNED NOT NULL DEFAULT 0,
+                        新增 INT UNSIGNED NOT NULL DEFAULT 0,
+                        变更 INT UNSIGNED NOT NULL DEFAULT 0,
+                        注销 INT UNSIGNED NOT NULL DEFAULT 0,
+                        import_batch_id BIGINT NOT NULL,
+                        source_row_number INT NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_visit_row_key (_row_key),
+                        INDEX idx_visit_date (业务日期),
+                        INDEX idx_visit_community_date (社区, 业务日期),
+                        INDEX idx_visit_operator_date (操作人, 业务日期),
+                        INDEX idx_visit_address_date (_address_key, 业务日期),
+                        INDEX idx_visit_batch (import_batch_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _visit_import_issues (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        batch_id BIGINT NOT NULL,
+                        severity VARCHAR(20) NOT NULL,
+                        code VARCHAR(60) NOT NULL,
+                        row_number INT NOT NULL DEFAULT 0,
+                        message VARCHAR(500) NOT NULL,
+                        row_preview JSON DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_visit_issue_batch (
+                            batch_id, severity, row_number
+                        )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
                 for column_name, column_definition in [
                     (
                         "trigger_source",
@@ -240,6 +323,7 @@ class DatabaseManager:
                     ("leave_end_date", "DATE DEFAULT NULL"),
                     ("leave_reason", "VARCHAR(200) DEFAULT ''"),
                     ("leave_source", "VARCHAR(30) NOT NULL DEFAULT 'manual'"),
+                    ("id_card_number", "VARCHAR(50) DEFAULT NULL"),
                 ]:
                     await cur.execute(
                         "SHOW COLUMNS FROM _grid_members LIKE %s", (column_name,)
@@ -249,6 +333,15 @@ class DatabaseManager:
                             f"ALTER TABLE _grid_members "
                             f"ADD COLUMN `{column_name}` {column_definition}"
                         )
+                await cur.execute(
+                    "SHOW INDEX FROM _grid_members "
+                    "WHERE Key_name='uk_grid_id_card'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _grid_members "
+                        "ADD UNIQUE KEY uk_grid_id_card (id_card_number)"
+                    )
                 # 测试数据表（用于验证工作量统计逻辑）
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS t_test_mock (

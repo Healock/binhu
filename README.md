@@ -1,6 +1,6 @@
 # 滨湖智慧平台
 
-滨湖智慧平台从腾讯文档在线表格同步核查业务数据，提供归档、按核查人/社区/日期的统计，以及透视表回写能力。
+滨湖智慧平台从腾讯文档在线表格同步核查业务数据，也支持管理员导入走访明细 XLSX。平台提供归档、按核查人/社区/日期的统计，以及透视表回写能力。
 
 技术栈：FastAPI、MySQL 8、React、Ant Design、Tailwind CSS、Vite 与 Docker Compose。
 
@@ -23,7 +23,7 @@
 
 ```powershell
 $env:BINHU_SSH_HOST = "your-server.example.com"
-$env:BINHU_SSH_PASSWORD = "your-ssh-password"
+$env:BINHU_SSH_PASSWORD = "<your-ssh-password>"
 python upload.py
 ```
 
