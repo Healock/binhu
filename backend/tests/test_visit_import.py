@@ -349,17 +349,22 @@ class CoverageCursor:
 
     async def fetchone(self):
         if self.last_sql.startswith("SELECT MIN(`业务日期`)"):
-            return (date(2026, 7, 1), date(2026, 7, 4), 3, 3)
-        if self.last_sql.startswith("SELECT MAX(finished_at)"):
-            return (datetime(2026, 7, 29, 2, 0),)
+            return (date(2026, 7, 1), date(2026, 7, 4), 3, 3, 1, 2)
         return None
 
     async def fetchall(self):
-        return [
-            (date(2026, 7, 1),),
-            (date(2026, 7, 2),),
-            (date(2026, 7, 4),),
-        ]
+        if self.last_sql.startswith("SELECT DISTINCT `业务日期`"):
+            return [
+                (date(2026, 7, 1),),
+                (date(2026, 7, 2),),
+                (date(2026, 7, 4),),
+            ]
+        if self.last_sql.startswith("SELECT import_type"):
+            return [
+                ("detail", datetime(2026, 7, 29, 2, 0)),
+                ("rating", datetime(2026, 7, 29, 3, 0)),
+            ]
+        return []
 
 
 class CoverageConnection:
@@ -377,9 +382,12 @@ class VisitCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coverage["start_date"], "2026-07-01")
         self.assertEqual(coverage["end_date"], "2026-07-04")
         self.assertEqual(coverage["total_records"], 3)
+        self.assertEqual(coverage["rated_records"], 1)
+        self.assertEqual(coverage["unrated_records"], 2)
         self.assertEqual(coverage["missing_dates"], ["2026-07-03"])
         self.assertEqual(coverage["missing_date_count"], 1)
         self.assertTrue(coverage["last_import_at"].endswith("Z"))
+        self.assertTrue(coverage["last_rating_import_at"].endswith("Z"))
 
     def test_upload_and_issue_routes_require_admin(self):
         protected_paths = {
@@ -391,6 +399,7 @@ class VisitCoverageTests(unittest.IsolatedAsyncioTestCase):
             )
         }
         self.assertIn("/api/visits/imports/detail", protected_paths)
+        self.assertIn("/api/visits/imports/rating", protected_paths)
         self.assertIn("/api/visits/imports/{batch_id}/issues", protected_paths)
         self.assertNotIn("/api/visits/coverage", protected_paths)
 

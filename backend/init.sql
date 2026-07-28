@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS _community_aliases (
 
 CREATE TABLE IF NOT EXISTS _visit_import_batches (
     id                 BIGINT AUTO_INCREMENT PRIMARY KEY,
+    import_type        VARCHAR(20) NOT NULL DEFAULT 'detail',
     filename           VARCHAR(255) NOT NULL,
     file_sha256        CHAR(64) NOT NULL,
     file_size_bytes    BIGINT NOT NULL DEFAULT 0,
@@ -181,6 +182,7 @@ CREATE TABLE IF NOT EXISTS _visit_import_batches (
     finished_at        DATETIME DEFAULT NULL,
     created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_visit_batch_hash (file_sha256),
+    INDEX idx_visit_batch_type_hash (import_type, file_sha256, status),
     INDEX idx_visit_batch_status (status),
     INDEX idx_visit_batch_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -204,6 +206,19 @@ CREATE TABLE IF NOT EXISTS t_visit_details (
     新增                  INT UNSIGNED NOT NULL DEFAULT 0,
     变更                  INT UNSIGNED NOT NULL DEFAULT 0,
     注销                  INT UNSIGNED NOT NULL DEFAULT 0,
+    星级派出所名称        VARCHAR(200) DEFAULT NULL,
+    星级所属社区          VARCHAR(200) DEFAULT NULL,
+    星级社区              VARCHAR(200) DEFAULT NULL,
+    星级地址              VARCHAR(1000) DEFAULT NULL,
+    得分                  DECIMAL(18, 6) DEFAULT NULL,
+    星级                  VARCHAR(50) DEFAULT NULL,
+    星级采集时间          DATETIME DEFAULT NULL,
+    星级采集日期          DATE DEFAULT NULL,
+    _raw_star_time        VARCHAR(100) DEFAULT NULL,
+    隐患详情              MEDIUMTEXT DEFAULT NULL,
+    星级时间差秒          INT UNSIGNED DEFAULT NULL,
+    star_import_batch_id  BIGINT DEFAULT NULL,
+    star_source_row_number INT DEFAULT NULL,
     import_batch_id       BIGINT NOT NULL,
     source_row_number     INT NOT NULL,
     created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -214,7 +229,9 @@ CREATE TABLE IF NOT EXISTS t_visit_details (
     INDEX idx_visit_community_date (社区, 业务日期),
     INDEX idx_visit_operator_date (操作人, 业务日期),
     INDEX idx_visit_address_date (_address_key, 业务日期),
-    INDEX idx_visit_batch (import_batch_id)
+    INDEX idx_visit_batch (import_batch_id),
+    INDEX idx_visit_star_time (星级采集时间),
+    INDEX idx_visit_star_batch (star_import_batch_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _visit_import_issues (

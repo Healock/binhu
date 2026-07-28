@@ -367,10 +367,14 @@ export interface VisitCoverage {
   start_date: string | null
   end_date: string | null
   total_records: number
+  rated_records: number
+  unrated_records: number
   data_days: number
   missing_date_count: number
   missing_dates: string[]
   last_import_at: string | null
+  last_detail_import_at: string | null
+  last_rating_import_at: string | null
 }
 
 export interface VisitImportIssue {
@@ -391,6 +395,7 @@ export interface VisitIssuePage {
 
 export interface VisitImportResult {
   batch_id: number
+  import_type: 'detail' | 'rating'
   status: 'success' | 'partial' | 'failed' | 'duplicate'
   duplicate_file: boolean
   file_start_date: string | null
@@ -401,6 +406,9 @@ export interface VisitImportResult {
   updated_rows: number
   unchanged_rows: number
   ignored_rows: number
+  matched_rows?: number
+  unmatched_rows?: number
+  ambiguous_rows?: number
   error_count: number
   warning_count: number
   message: string
@@ -417,6 +425,15 @@ export async function uploadVisitDetail(file: File): Promise<VisitImportResult> 
   const formData = new FormData()
   formData.append('file', file)
   const { data } = await api.post('/visits/imports/detail', formData, {
+    timeout: 300000,
+  })
+  return data
+}
+
+export async function uploadStarRating(file: File): Promise<VisitImportResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/visits/imports/rating', formData, {
     timeout: 300000,
   })
   return data

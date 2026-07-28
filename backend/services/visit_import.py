@@ -175,18 +175,24 @@ def _parse_nonnegative_int(value: Any, field_name: str) -> int:
     return int(number)
 
 
-def _parse_visit_datetime(value: Any, timezone_name: str) -> tuple[datetime, date]:
+def _parse_business_datetime(
+    value: Any,
+    timezone_name: str,
+    field_name: str,
+) -> tuple[datetime, date]:
     parsed: datetime
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, date):
         parsed = datetime.combine(value, datetime.min.time())
     elif isinstance(value, (int, float, Decimal)):
-        raise ValueError("入户时间是未格式化的数字单元格，请在 Excel 中改成日期时间")
+        raise ValueError(
+            f"{field_name}是未格式化的数字单元格，请在 Excel 中改成日期时间"
+        )
     else:
         text = _text(value)
         if not text:
-            raise ValueError("入户时间不能为空")
+            raise ValueError(f"{field_name}不能为空")
         normalized = (
             text.replace("年", "-")
             .replace("月", "-")
@@ -209,7 +215,7 @@ def _parse_visit_datetime(value: Any, timezone_name: str) -> tuple[datetime, dat
                 except ValueError:
                     continue
             if parsed is None:
-                raise ValueError("入户时间格式无法识别") from None
+                raise ValueError(f"{field_name}格式无法识别") from None
 
     business_timezone = resolve_timezone(timezone_name)
     if parsed.tzinfo is None:
@@ -217,9 +223,13 @@ def _parse_visit_datetime(value: Any, timezone_name: str) -> tuple[datetime, dat
     else:
         local_time = parsed.astimezone(business_timezone)
     if local_time.date() < date(1000, 1, 1):
-        raise ValueError("入户时间不能早于 1000-01-01")
+        raise ValueError(f"{field_name}不能早于 1000-01-01")
     utc_time = local_time.astimezone(timezone.utc).replace(tzinfo=None)
     return utc_time, local_time.date()
+
+
+def _parse_visit_datetime(value: Any, timezone_name: str) -> tuple[datetime, date]:
+    return _parse_business_datetime(value, timezone_name, "入户时间")
 
 
 def _safe_preview(raw: dict[str, Any]) -> dict[str, Any]:
@@ -529,11 +539,20 @@ async def get_visit_coverage(conn) -> dict[str, Any]:
         await cur.execute(
             """
             SELECT MIN(`业务日期`), MAX(`业务日期`), COUNT(*),
-                   COUNT(DISTINCT `业务日期`)
+                   COUNT(DISTINCT `业务日期`),
+                   SUM(`星级采集时间` IS NOT NULL),
+                   SUM(`星级采集时间` IS NULL)
             FROM t_visit_details
             """
         )
-        start_date, end_date, total_records, data_days = await cur.fetchone()
+        (
+            start_date,
+            end_date,
+            total_records,
+            data_days,
+            rated_records,
+            unrated_records,
+        ) = await cur.fetchone()
         missing_dates: list[str] = []
         if start_date and end_date:
             await cur.execute(
@@ -548,20 +567,32 @@ async def get_visit_coverage(conn) -> dict[str, Any]:
                 current = date.fromordinal(current.toordinal() + 1)
         await cur.execute(
             """
-            SELECT MAX(finished_at)
+            SELECT import_type, MAX(finished_at)
             FROM _visit_import_batches
             WHERE status IN ('success', 'partial')
+            GROUP BY import_type
             """
         )
-        last_import = (await cur.fetchone())[0]
+        last_imports = {
+            str(row[0]): row[1]
+            for row in await cur.fetchall()
+        }
+        last_import = max(
+            (value for value in last_imports.values() if value),
+            default=None,
+        )
     return {
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "total_records": int(total_records or 0),
+        "rated_records": int(rated_records or 0),
+        "unrated_records": int(unrated_records or 0),
         "data_days": int(data_days or 0),
         "missing_date_count": len(missing_dates),
         "missing_dates": missing_dates,
         "last_import_at": _utc_iso(last_import),
+        "last_detail_import_at": _utc_iso(last_imports.get("detail")),
+        "last_rating_import_at": _utc_iso(last_imports.get("rating")),
     }
 
 
@@ -600,24 +631,37 @@ async def recover_interrupted_visit_imports() -> int:
         pool.release(conn)
 
 
-async def find_duplicate_batch(conn, file_sha256: str) -> dict[str, Any] | None:
+async def find_duplicate_batch(
+    conn,
+    file_sha256: str,
+    import_type: str = "detail",
+    include_partial: bool = True,
+) -> dict[str, Any] | None:
+    accepted_statuses = (
+        ("success", "partial")
+        if include_partial
+        else ("success",)
+    )
+    placeholders = ", ".join(["%s"] * len(accepted_statuses))
     async with conn.cursor() as cur:
         await cur.execute(
-            """
+            f"""
             SELECT id, status, file_start_date, file_end_date,
                    inserted_rows, updated_rows, unchanged_rows, ignored_rows,
                    error_count, warning_count
             FROM _visit_import_batches
-            WHERE file_sha256=%s AND status IN ('success', 'partial')
+            WHERE file_sha256=%s AND import_type=%s
+              AND status IN ({placeholders})
             ORDER BY id DESC LIMIT 1
             """,
-            (file_sha256,),
+            (file_sha256, import_type, *accepted_statuses),
         )
         row = await cur.fetchone()
     if not row:
         return None
     return {
         "batch_id": row[0],
+        "import_type": import_type,
         "status": "duplicate",
         "duplicate_file": True,
         "file_start_date": row[2].isoformat() if row[2] else None,
@@ -641,16 +685,26 @@ async def create_import_batch(
     file_sha256: str,
     file_size: int,
     uploader_id: int,
+    import_type: str = "detail",
 ) -> int:
     async with conn.cursor() as cur:
         await cur.execute(
             """
             INSERT INTO _visit_import_batches (
-                filename, file_sha256, file_size_bytes, status, uploader_id,
-                started_at, created_at
-            ) VALUES (%s, %s, %s, 'running', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+                import_type, filename, file_sha256, file_size_bytes, status,
+                uploader_id, started_at, created_at
+            ) VALUES (
+                %s, %s, %s, %s, 'running', %s,
+                UTC_TIMESTAMP(), UTC_TIMESTAMP()
+            )
             """,
-            (filename[:255], file_sha256, file_size, uploader_id),
+            (
+                import_type,
+                filename[:255],
+                file_sha256,
+                file_size,
+                uploader_id,
+            ),
         )
         return int(cur.lastrowid)
 
@@ -690,12 +744,14 @@ async def fail_import_batch(
         await cur.execute(
             """
             UPDATE _visit_import_batches
-            SET status='failed', error_count=%s, error_message=%s,
+            SET status='failed', error_count=%s, warning_count=%s,
+                error_message=%s,
                 finished_at=UTC_TIMESTAMP()
             WHERE id=%s
             """,
             (
                 sum(issue.severity == "error" for issue in issues),
+                sum(issue.severity == "warning" for issue in issues),
                 message[:1000],
                 batch_id,
             ),
@@ -818,6 +874,7 @@ async def import_parsed_workbook(
             )
         return {
             "batch_id": batch_id,
+            "import_type": "detail",
             "status": "failed",
             "duplicate_file": False,
             "file_start_date": None,
@@ -1049,6 +1106,7 @@ async def import_parsed_workbook(
 
     return {
         "batch_id": batch_id,
+        "import_type": "detail",
         "status": status,
         "duplicate_file": False,
         "file_start_date": parsed.start_date.isoformat(),
