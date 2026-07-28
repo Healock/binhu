@@ -1,11 +1,14 @@
 """系统配置 API"""
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-from typing import Optional
 from database import get_db
+from deps import require_super_admin
 
-router = APIRouter(prefix="/api/system", tags=["系统配置"])
+router = APIRouter(
+    prefix="/api/system",
+    tags=["系统配置"],
+    dependencies=[Depends(require_super_admin)],
+)
 
 
 @router.get("/config")

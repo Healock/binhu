@@ -62,7 +62,13 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
             pool.release(conn)
 
     cookie_cfg = get_session_cookie_config()
-    response.delete_cookie(cookie_cfg["key"])
+    response.delete_cookie(
+        cookie_cfg["key"],
+        path=cookie_cfg["path"],
+        secure=cookie_cfg["secure"],
+        httponly=cookie_cfg["httponly"],
+        samesite=cookie_cfg["samesite"],
+    )
     return {"message": "已退出"}
 
 

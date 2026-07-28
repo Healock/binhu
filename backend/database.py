@@ -11,6 +11,32 @@ DB_NAMES = {
 }
 
 
+async def ensure_bootstrap_admin(cur) -> bool:
+    """Create the first super administrator only from explicit environment values."""
+    await cur.execute("SELECT COUNT(*) FROM _users")
+    if (await cur.fetchone())[0] > 0:
+        return False
+
+    username = settings.BOOTSTRAP_ADMIN_USERNAME.strip()
+    password = settings.BOOTSTRAP_ADMIN_PASSWORD
+    if not username or not password:
+        raise RuntimeError(
+            "用户表为空。请临时设置 BOOTSTRAP_ADMIN_USERNAME 和 "
+            "BOOTSTRAP_ADMIN_PASSWORD 创建首个超级管理员。"
+        )
+
+    import bcrypt
+
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    await cur.execute(
+        "INSERT INTO _users (username, password_hash, role) "
+        "VALUES (%s, %s, 'super_admin')",
+        (username, password_hash),
+    )
+    print(f"[DB] 初始超级管理员已创建: {username}")
+    return True
+
+
 class DatabaseManager:
     """管理三个数据库的连接池"""
     _pools: dict[str, aiomysql.Pool] = {}
@@ -205,16 +231,7 @@ class DatabaseManager:
                         INDEX idx_expires (expires_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
-                # 种子超管 caixinlei（表空时插入）
-                await cur.execute("SELECT COUNT(*) FROM _users")
-                if (await cur.fetchone())[0] == 0:
-                    import bcrypt
-                    password_hash = bcrypt.hashpw(b"caixinlei", bcrypt.gensalt()).decode()
-                    await cur.execute(
-                        "INSERT INTO _users (username, password_hash, role) VALUES (%s, %s, 'super_admin')",
-                        ("caixinlei", password_hash),
-                    )
-                    print("[DB] 种子超管已创建: caixinlei / caixinlei")
+                await ensure_bootstrap_admin(cur)
         return cls
 
     @classmethod

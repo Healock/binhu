@@ -58,6 +58,8 @@ def get_session_cookie_config():
     return {
         "key": settings.SESSION_COOKIE_NAME,
         "httponly": True,
-        "samesite": "lax",
+        "secure": settings.SESSION_COOKIE_SECURE,
+        "samesite": settings.SESSION_COOKIE_SAMESITE,
+        "path": "/",
         "max_age": settings.SESSION_EXPIRE_HOURS * 3600,
     }

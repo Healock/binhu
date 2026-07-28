@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from config import settings
 from database import init_db, close_db
 from deps import get_current_user
 from routers.spreadsheets import router as spreadsheets_router
@@ -49,14 +50,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - 生产环境由 Nginx 同源代理，无需跨域；保留开放配置以支持 API 外部调用
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 生产环境由 Nginx 同源代理，不需要 CORS。确有外部调用时必须显式列出来源。
+if settings.cors_allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Authorization", "Content-Type"],
+    )
 
 # 健康检查（无需鉴权）
 @app.get("/api/health")
