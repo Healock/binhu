@@ -33,6 +33,8 @@ function App() {
             {/* 用户管理仅超管 */}
             <Route element={<ProtectedRoute requireRole="super_admin" />}>
               <Route path="/users" element={<UserManagement />} />
+              <Route path="/operations" element={<OperationsCenter />} />
+              <Route path="/settings/operations" element={<Navigate to="/operations" replace />} />
             </Route>
 
             <Route path="/settings" element={<SettingsLayout />}>
@@ -41,9 +43,6 @@ function App() {
               <Route path="oauth" element={<OAuthSettings />} />
               <Route path="system" element={<SystemSettings />} />
               <Route path="personalization" element={<PersonalizationSettings />} />
-              <Route element={<ProtectedRoute requireRole="super_admin" />}>
-                <Route path="operations" element={<OperationsCenter />} />
-              </Route>
             </Route>
           </Route>
         </Route>

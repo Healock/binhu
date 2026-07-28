@@ -7,6 +7,7 @@ import {
   DatabaseOutlined,
   LogoutOutlined,
   MenuOutlined,
+  MonitorOutlined,
   SearchOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -54,6 +55,9 @@ export default function Layout() {
     {
       label: '系统',
       items: [
+        ...(user?.role === 'super_admin'
+          ? [{ path: '/operations', label: '运维中心', icon: <MonitorOutlined /> }]
+          : []),
         { path: '/settings', label: '设置', icon: <SettingOutlined /> },
       ],
     },
