@@ -6,7 +6,9 @@ from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.personnel_positions import (
     POSITION_CONFIG_KEYS,
+    VISIT_POSITION_CONFIG_KEY,
     serialize_position_config,
+    serialize_rental_position_config,
 )
 
 router = APIRouter(
@@ -37,7 +39,11 @@ async def update_config(
         for k, v in config.items():
             if k in POSITION_CONFIG_KEYS:
                 try:
-                    v = serialize_position_config(v)
+                    v = (
+                        serialize_rental_position_config(v)
+                        if k == VISIT_POSITION_CONFIG_KEY
+                        else serialize_position_config(v)
+                    )
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from exc
             await cur.execute(

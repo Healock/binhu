@@ -437,7 +437,11 @@ export interface VisitSummaryTable {
   summary: Record<string, string | number>
 }
 
+export type VisitSummaryCategory = 'rental' | 'self_owned'
+
 export interface VisitSummaryReport {
+  category: VisitSummaryCategory
+  category_label: string
   start_date: string
   end_date: string
   inspector: VisitSummaryTable
@@ -452,11 +456,13 @@ export async function getVisitCoverage(): Promise<VisitCoverage> {
 export async function getVisitSummary(
   startDate: string,
   endDate: string,
+  category: VisitSummaryCategory = 'rental',
 ): Promise<VisitSummaryReport> {
   const { data } = await api.get('/visits/summary', {
     params: {
       start_date: startDate,
       end_date: endDate,
+      category,
     },
   })
   return data

@@ -4,6 +4,7 @@ import {
   Button,
   DatePicker,
   Modal,
+  Select,
   Statistic,
   Table,
   Tag,
@@ -32,6 +33,7 @@ import {
   type VisitImportIssue,
   type VisitImportResult,
   type VisitSummaryReport,
+  type VisitSummaryCategory,
 } from '../api/client'
 import { buildVisitTableTotal } from '../utils/tableTotals'
 
@@ -46,6 +48,13 @@ const SUMMARY_DECIMAL_COLUMNS = new Set([
   '户均变动数',
 ])
 type VisitSummaryRow = Record<string, string | number>
+const VISIT_CATEGORY_OPTIONS: Array<{
+  value: VisitSummaryCategory
+  label: string
+}> = [
+  { value: 'rental', label: '出租房' },
+  { value: 'self_owned', label: '自购房' },
+]
 
 const statusMeta = {
   success: { color: 'success', label: '导入成功' },
@@ -205,26 +214,39 @@ export default function VisitSummary() {
   const [issuePage, setIssuePage] = useState(1)
   const [issueLoading, setIssueLoading] = useState(false)
   const [summaryRange, setSummaryRange] = useState<[string, string] | null>(null)
+  const [summaryCategory, setSummaryCategory] = useState<VisitSummaryCategory>('rental')
   const [shownSummaryRange, setShownSummaryRange] = useState<[string, string] | null>(null)
+  const [shownSummaryCategory, setShownSummaryCategory] = useState<VisitSummaryCategory | null>(null)
   const [summaryReport, setSummaryReport] = useState<VisitSummaryReport | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState('')
   const rangeInitialized = useRef(false)
+  const summaryRequestId = useRef(0)
 
-  const loadSummary = useCallback(async (range: [string, string]) => {
+  const loadSummary = useCallback(async (
+    range: [string, string],
+    category: VisitSummaryCategory,
+  ) => {
+    const requestId = summaryRequestId.current + 1
+    summaryRequestId.current = requestId
     setSummaryLoading(true)
     setSummaryError('')
     try {
-      const nextReport = await getVisitSummary(range[0], range[1])
+      const nextReport = await getVisitSummary(range[0], range[1], category)
+      if (requestId !== summaryRequestId.current) return
       setSummaryReport(nextReport)
       setShownSummaryRange(range)
+      setShownSummaryCategory(category)
     } catch (error: any) {
+      if (requestId !== summaryRequestId.current) return
       setSummaryError(
         error?.response?.data?.detail
           || '走访汇总读取失败，请稍后重试',
       )
     } finally {
-      setSummaryLoading(false)
+      if (requestId === summaryRequestId.current) {
+        setSummaryLoading(false)
+      }
     }
   }, [])
 
@@ -242,7 +264,7 @@ export default function VisitSummary() {
         ]
         rangeInitialized.current = true
         setSummaryRange(initialRange)
-        await loadSummary(initialRange)
+        await loadSummary(initialRange, 'rental')
       }
     } catch {
       setCoverageError('走访数据范围读取失败，请稍后重试')
@@ -307,7 +329,10 @@ export default function VisitSummary() {
             ]
           : shownSummaryRange
         setSummaryRange(refreshedRange)
-        await loadSummary(refreshedRange)
+        await loadSummary(
+          refreshedRange,
+          shownSummaryCategory || summaryCategory,
+        )
       }
     } catch (error: any) {
       setImportError(
@@ -371,7 +396,10 @@ export default function VisitSummary() {
             ]
           : shownSummaryRange
         setSummaryRange(refreshedRange)
-        await loadSummary(refreshedRange)
+        await loadSummary(
+          refreshedRange,
+          shownSummaryCategory || summaryCategory,
+        )
       }
     } catch (error: any) {
       setRatingImportError(
@@ -529,6 +557,12 @@ export default function VisitSummary() {
   const shownRangeLabel = shownSummaryRange
     ? `${shownSummaryRange[0]} 至 ${shownSummaryRange[1]}`
     : '尚未查询'
+  const shownCategoryLabel = summaryReport?.category_label
+    || VISIT_CATEGORY_OPTIONS.find(
+      option => option.value === shownSummaryCategory,
+    )?.label
+    || '出租房'
+  const shownResultLabel = `${shownCategoryLabel} · ${shownRangeLabel}`
 
   return (
     <div className="app-page min-w-0">
@@ -591,6 +625,18 @@ export default function VisitSummary() {
         description="按入户业务日期统计；社区使用走访记录中的实际走访社区"
       >
         <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center">
+          <Select<VisitSummaryCategory>
+            size="large"
+            value={summaryCategory}
+            options={VISIT_CATEGORY_OPTIONS}
+            className="w-full md:w-36"
+            onChange={(category) => {
+              setSummaryCategory(category)
+              if (summaryRange) {
+                void loadSummary(summaryRange, category)
+              }
+            }}
+          />
           <div className="flex w-full items-center gap-1.5 md:hidden">
             <input
               type="date"
@@ -641,16 +687,18 @@ export default function VisitSummary() {
             icon={<SearchOutlined />}
             loading={summaryLoading}
             disabled={!summaryRange}
-            onClick={() => summaryRange && loadSummary(summaryRange)}
+            onClick={() => (
+              summaryRange && loadSummary(summaryRange, summaryCategory)
+            )}
           >
             查询汇总
           </Button>
           <span className="text-sm text-slate-500 md:ml-auto">
-            当前结果：{shownRangeLabel}
+            当前结果：{shownResultLabel}
           </span>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          走访户数按去重后的走访记录计算；星级评定按已经关联到这些走访记录的数据计算。
+          出租房按系统设置中的岗位统计；自购房固定统计“自购房”岗位。走访户数按去重后的走访记录计算。
         </p>
       </Panel>
 
@@ -664,14 +712,14 @@ export default function VisitSummary() {
         </Panel>
       ) : summaryReport && inspectorRows.length === 0 ? (
         <Panel>
-          <EmptyState label={`${shownRangeLabel} 暂无走访数据`} />
+          <EmptyState label={`${shownResultLabel} 暂无走访数据`} />
         </Panel>
       ) : summaryReport && cardMode ? (
         <div className="space-y-6">
           <div className="space-y-3">
             <h2 className="px-1 text-sm font-semibold text-gray-700">
-              网格员汇总（{inspectorRows.length} 行）
-              <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+              人员汇总（{inspectorRows.length} 行）
+              <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
             </h2>
             <div className="grid grid-cols-1 gap-3">
               {inspectorRows.map((row, index) => (
@@ -693,7 +741,7 @@ export default function VisitSummary() {
           <div className="space-y-3">
             <h2 className="px-1 text-sm font-semibold text-gray-700">
               社区汇总（{communityRows.length} 个社区）
-              <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+              <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
             </h2>
             <div className="grid grid-cols-1 gap-3">
               {communityRows.map((row, index) => (
@@ -716,7 +764,7 @@ export default function VisitSummary() {
       ) : summaryReport ? (
         <>
           <AppTable<VisitSummaryRow>
-            key={`visit-inspector-${shownRangeLabel}`}
+            key={`visit-inspector-${shownSummaryCategory}-${shownRangeLabel}`}
             columns={visitSummaryColumns(
               summaryReport.inspector.columns,
               inspectorRows,
@@ -730,13 +778,13 @@ export default function VisitSummary() {
             )}
             title={currentRows => (
               <h2 className="text-sm font-semibold text-gray-700">
-                网格员汇总（{currentRows.length} 行）
-                <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+                人员汇总（{currentRows.length} 行）
+                <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
               </h2>
             )}
           />
           <AppTable<VisitSummaryRow>
-            key={`visit-community-${shownRangeLabel}`}
+            key={`visit-community-${shownSummaryCategory}-${shownRangeLabel}`}
             columns={visitSummaryColumns(
               summaryReport.community.columns,
               communityRows,
@@ -752,7 +800,7 @@ export default function VisitSummary() {
             title={currentRows => (
               <h2 className="text-sm font-semibold text-gray-700">
                 社区汇总（{currentRows.length} 个社区）
-                <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+                <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
               </h2>
             )}
           />

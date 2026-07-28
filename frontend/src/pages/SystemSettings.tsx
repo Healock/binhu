@@ -25,6 +25,7 @@ import {
 import {
   DEFAULT_SUMMARY_POSITIONS,
   PERSONNEL_POSITIONS,
+  RENTAL_PERSONNEL_POSITIONS,
   parseSummaryPositions,
   type PersonnelPosition,
 } from '../constants/personnel'
@@ -90,8 +91,13 @@ export default function SystemSettings() {
         setOnlinePositions(
           parseSummaryPositions(config.online_summary_positions),
         )
+        const configuredVisitPositions = parseSummaryPositions(
+          config.visit_summary_positions,
+        ).filter(position => position !== '自购房')
         setVisitPositions(
-          parseSummaryPositions(config.visit_summary_positions),
+          configuredVisitPositions.length
+            ? configuredVisitPositions
+            : [...DEFAULT_SUMMARY_POSITIONS],
         )
         setSchedule(currentSchedule)
         setEnabled(currentSchedule.enabled)
@@ -163,7 +169,7 @@ export default function SystemSettings() {
 
   const handleSavePositions = async () => {
     if (!onlinePositions.length || !visitPositions.length) {
-      setPositionsMsg('在线汇总和走访汇总都至少选择一个岗位')
+      setPositionsMsg('在线汇总和出租房走访汇总都至少选择一个岗位')
       return
     }
     setSavingPositions(true)
@@ -291,17 +297,17 @@ export default function SystemSettings() {
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
-              走访汇总
+              出租房走访汇总
             </label>
             <Select<PersonnelPosition[]>
               mode="multiple"
               value={visitPositions}
               onChange={setVisitPositions}
-              options={PERSONNEL_POSITIONS.map(position => ({
+              options={RENTAL_PERSONNEL_POSITIONS.map(position => ({
                 value: position,
                 label: position,
               }))}
-              placeholder="选择参与走访汇总的岗位"
+              placeholder="选择参与出租房走访汇总的岗位"
               className="w-full"
               maxTagCount="responsive"
             />
@@ -310,7 +316,7 @@ export default function SystemSettings() {
             type="info"
             showIcon
             message="默认统计组长和组员"
-            description="人员管理中没有登记的姓名仍会保留在汇总中，避免未知数据被直接隐藏。"
+            description="这里配置的是出租房汇总。自购房汇总固定统计“自购房”岗位；人员管理中没有登记的姓名暂时归入出租房，避免未知数据被直接隐藏。"
           />
           <Button
             type="primary"
