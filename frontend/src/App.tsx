@@ -13,6 +13,7 @@ import OAuthSettings from './pages/OAuthSettings'
 import SystemSettings from './pages/SystemSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
 import OperationsCenter from './pages/OperationsCenter'
+import VisitSummary from './pages/VisitSummary'
 import Login from './pages/Login'
 
 function App() {
@@ -27,6 +28,7 @@ function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/query" element={<DataQuery />} />
+            <Route path="/visit-summary" element={<VisitSummary />} />
             <Route path="/grid-members" element={<GridMembers />} />
             <Route path="/communities" element={<Communities />} />
 

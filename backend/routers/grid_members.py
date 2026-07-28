@@ -14,6 +14,7 @@ from services.grid_member_status import (
     get_status_snapshot,
     validate_leave_period,
 )
+from services.privacy import mask_identity_number
 
 router = APIRouter(prefix="/api/grid-members", tags=["网格员管理"])
 
@@ -65,6 +66,8 @@ def _member_to_dict(row, business_date: date) -> dict:
         "leave_end_date": row[7],
         "leave_reason": row[8],
         "leave_source": row[9],
+        "has_id_card": bool(row[10]),
+        "id_card_masked": mask_identity_number(row[10]),
         **snapshot,
     }
 
@@ -95,7 +98,8 @@ async def list_members(
         offset = (page - 1) * page_size
         await cur.execute(
             f"SELECT id, name, community, phone, notes, status, "
-            f"leave_start_date, leave_end_date, leave_reason, leave_source "
+            f"leave_start_date, leave_end_date, leave_reason, leave_source, "
+            f"id_card_number "
             f"FROM _grid_members{where} "
             f"ORDER BY community, name LIMIT %s OFFSET %s",
             params + [page_size, offset],

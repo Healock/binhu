@@ -15,7 +15,7 @@
 
 ## 这个项目是做什么的
 
-滨湖智慧平台从腾讯文档读取业务表格，把数据保存到 MySQL，再按核查人、社区和日期生成统计结果，最后显示在网页上，也可以把汇总结果写回腾讯文档。
+滨湖智慧平台从腾讯文档读取核查业务表格，也支持管理员上传走访明细 XLSX。数据保存到 MySQL 后，系统按人员、社区和日期进行整理并显示在网页上；已经接入日报的核查业务还可以生成汇总结果并写回腾讯文档。
 
 主要技术：FastAPI、MySQL 8、React 18、Ant Design 6、Tailwind CSS 4、Vite 6、Docker Compose。
 
@@ -30,6 +30,7 @@
 - 支持哪些表格，以 `backend/services/parsers/__init__.py` 为准。
 - 支持哪些日报，以 `backend/services/report_builders/__init__.py` 为准。
 - 后端有哪些接口，以 `backend/main.py` 为准；前端有哪些页面，以 `frontend/src/App.tsx` 为准。
+- 走访明细和腾讯文档同步是两条独立的数据入口。走访明细按“本地业务日期 + 标准化地址”去重，不进入现有核查日报、归档和总汇总流程。
 
 ## 两台电脑怎么开发
 

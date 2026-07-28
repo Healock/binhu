@@ -8,6 +8,7 @@ import {
   LogoutOutlined,
   MenuOutlined,
   MonitorOutlined,
+  ReadOutlined,
   SearchOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -40,6 +41,7 @@ export default function Layout() {
       items: [
         { path: '/', label: '在线数据汇总', icon: <BarChartOutlined />, end: true },
         { path: '/query', label: '在线数据查询', icon: <SearchOutlined /> },
+        { path: '/visit-summary', label: '走访汇总', icon: <ReadOutlined /> },
       ],
     },
     {

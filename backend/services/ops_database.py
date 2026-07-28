@@ -32,6 +32,8 @@ async def _last_activity(cur, database_name: str) -> datetime | None:
                 SELECT MAX(updated_at) FROM OnlineData._users
                 UNION ALL
                 SELECT MAX(updated_at) FROM OnlineData._grid_members
+                UNION ALL
+                SELECT MAX(finished_at) FROM OnlineData._visit_import_batches
             ) activity
             """
         )
