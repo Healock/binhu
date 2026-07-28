@@ -7,6 +7,8 @@ from routers.visits import summary as summary_endpoint
 from services.visit_summary import (
     COMMUNITY_COLUMNS,
     INSPECTOR_COLUMNS,
+    VISIT_CATEGORY_RENTAL,
+    VISIT_CATEGORY_SELF_OWNED,
     _round_ratio,
     get_visit_summary,
 )
@@ -188,11 +190,80 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             5,
         )
 
+    async def test_rental_excludes_self_owned_even_if_old_config_selected_it(self):
+        result = await get_visit_summary(
+            SummaryConnection(
+                [
+                    ("长板", "组员甲", 2, 0, 1, 0, 1),
+                    ("长板", "自购房乙", 4, 1, 0, 0, 2),
+                    ("水秀", "名册外人员", 3, 0, 0, 1, 1),
+                ],
+                [],
+            ),
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            category=VISIT_CATEGORY_RENTAL,
+            selected_positions={"组长", "组员", "自购房"},
+            known_positions={
+                "组员甲": "组员",
+                "自购房乙": "自购房",
+            },
+        )
+
+        self.assertEqual(result["category_label"], "出租房")
+        self.assertEqual(
+            [row["姓名"] for row in result["inspector"]["data"]],
+            ["组员甲", "名册外人员"],
+        )
+
+    async def test_self_owned_only_contains_known_self_owned_people(self):
+        result = await get_visit_summary(
+            SummaryConnection(
+                [
+                    ("长板", "组员甲", 2, 0, 1, 0, 1),
+                    ("长板", "自购房乙", 4, 1, 0, 0, 2),
+                    ("水秀", "名册外人员", 3, 0, 0, 1, 1),
+                ],
+                [],
+            ),
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            category=VISIT_CATEGORY_SELF_OWNED,
+            selected_positions={"组长", "组员"},
+            known_positions={
+                "组员甲": "组员",
+                "自购房乙": "自购房",
+            },
+        )
+
+        self.assertEqual(result["category"], "self_owned")
+        self.assertEqual(result["category_label"], "自购房")
+        self.assertEqual(
+            [row["姓名"] for row in result["inspector"]["data"]],
+            ["自购房乙"],
+        )
+        self.assertEqual(
+            result["community"]["summary"]["走访户数"],
+            4,
+        )
+
+    async def test_rejects_unknown_summary_category(self):
+        with self.assertRaisesRegex(ValueError, "不支持的走访汇总类型"):
+            await get_visit_summary(
+                SummaryConnection([], []),
+                date(2026, 7, 1),
+                date(2026, 7, 31),
+                category="other",
+                selected_positions={"组员"},
+                known_positions={},
+            )
+
     async def test_rejects_reversed_date_range(self):
         with self.assertRaises(HTTPException) as raised:
             await summary_endpoint(
                 start_date=date(2026, 7, 2),
                 end_date=date(2026, 7, 1),
+                category="rental",
                 conn=None,
             )
 

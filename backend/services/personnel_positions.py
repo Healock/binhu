@@ -74,6 +74,13 @@ def serialize_position_config(value: Any) -> str:
     )
 
 
+def serialize_rental_position_config(value: Any) -> str:
+    positions = json.loads(serialize_position_config(value))
+    if "自购房" in positions:
+        raise ValueError("自购房岗位使用单独的“自购房”汇总类型")
+    return json.dumps(positions, ensure_ascii=False)
+
+
 async def get_configured_positions(cur, config_key: str) -> list[str]:
     if config_key not in POSITION_CONFIG_KEYS:
         raise ValueError("未知的岗位统计配置")
@@ -114,9 +121,13 @@ def person_is_in_scope(
     name: Any,
     selected_positions: set[str],
     known_positions: dict[str, str],
+    *,
+    include_unknown: bool = True,
 ) -> bool:
     position = known_positions.get(normalized_person_name(name))
-    return position is None or position in selected_positions
+    if position is None:
+        return include_unknown
+    return position in selected_positions
 
 
 def filter_person_rows(
@@ -125,6 +136,7 @@ def filter_person_rows(
     name_index: int,
     selected_positions: set[str],
     known_positions: dict[str, str],
+    include_unknown: bool = True,
 ) -> list[tuple[Any, ...]]:
     return [
         tuple(row)
@@ -134,5 +146,6 @@ def filter_person_rows(
             row[name_index],
             selected_positions,
             known_positions,
+            include_unknown=include_unknown,
         )
     ]

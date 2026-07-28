@@ -9,8 +9,16 @@ from typing import Any, Iterable
 from services.personnel_positions import (
     VISIT_POSITION_CONFIG_KEY,
     filter_person_rows,
-    get_personnel_scope,
+    get_configured_positions,
+    get_known_personnel_positions,
 )
+
+VISIT_CATEGORY_RENTAL = "rental"
+VISIT_CATEGORY_SELF_OWNED = "self_owned"
+VISIT_CATEGORY_LABELS = {
+    VISIT_CATEGORY_RENTAL: "出租房",
+    VISIT_CATEGORY_SELF_OWNED: "自购房",
+}
 
 INSPECTOR_COLUMNS = [
     "社区",
@@ -133,16 +141,30 @@ async def get_visit_summary(
     start_date: date,
     end_date: date,
     *,
+    category: str = VISIT_CATEGORY_RENTAL,
     selected_positions: set[str] | None = None,
     known_positions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """查询闭区间内的走访，并分别按实际走访社区和网格员汇总。"""
+    if category not in VISIT_CATEGORY_LABELS:
+        raise ValueError("不支持的走访汇总类型")
     async with conn.cursor() as cur:
-        if selected_positions is None or known_positions is None:
-            selected_positions, known_positions = await get_personnel_scope(
-                cur,
-                VISIT_POSITION_CONFIG_KEY,
-            )
+        if known_positions is None:
+            known_positions = await get_known_personnel_positions(cur)
+        if selected_positions is None:
+            if category == VISIT_CATEGORY_SELF_OWNED:
+                selected_positions = {"自购房"}
+            else:
+                selected_positions = set(await get_configured_positions(
+                    cur,
+                    VISIT_POSITION_CONFIG_KEY,
+                ))
+        if category == VISIT_CATEGORY_RENTAL:
+            selected_positions = selected_positions - {"自购房"}
+            include_unknown = True
+        else:
+            selected_positions = {"自购房"}
+            include_unknown = False
         await cur.execute(
             """
             SELECT
@@ -167,6 +189,7 @@ async def get_visit_summary(
             name_index=1,
             selected_positions=selected_positions,
             known_positions=known_positions,
+            include_unknown=include_unknown,
         )
         inspector_rows = [
             _build_row(row, inspector=True)
@@ -215,6 +238,8 @@ async def get_visit_summary(
         for row in inspector_rows
     })
     return {
+        "category": category,
+        "category_label": VISIT_CATEGORY_LABELS[category],
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "inspector": {

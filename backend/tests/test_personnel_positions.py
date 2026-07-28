@@ -5,6 +5,7 @@ from services.personnel_positions import (
     filter_person_rows,
     normalize_position,
     parse_position_config,
+    serialize_rental_position_config,
     serialize_position_config,
 )
 
@@ -27,6 +28,10 @@ class PersonnelPositionTests(unittest.TestCase):
             serialize_position_config('["组员", "组长", "组员"]'),
             '["组员", "组长"]',
         )
+
+    def test_rental_configuration_rejects_self_owned_position(self):
+        with self.assertRaisesRegex(ValueError, "单独的“自购房”汇总类型"):
+            serialize_rental_position_config('["组员", "自购房"]')
 
     def test_known_unselected_people_are_filtered_but_unknown_people_remain(self):
         rows = [

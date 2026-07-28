@@ -4,6 +4,7 @@ import asyncio
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
@@ -86,6 +87,7 @@ async def coverage(conn=Depends(get_db)):
 async def summary(
     start_date: date = Query(...),
     end_date: date = Query(...),
+    category: Literal["rental", "self_owned"] = Query("rental"),
     conn=Depends(get_db),
 ):
     if start_date > end_date:
@@ -93,7 +95,12 @@ async def summary(
             status_code=400,
             detail="开始日期不能晚于结束日期",
         )
-    return await get_visit_summary(conn, start_date, end_date)
+    return await get_visit_summary(
+        conn,
+        start_date,
+        end_date,
+        category=category,
+    )
 
 
 @router.post("/imports/detail")

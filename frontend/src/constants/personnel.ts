@@ -10,6 +10,9 @@ export const PERSONNEL_POSITIONS = [
 export type PersonnelPosition = typeof PERSONNEL_POSITIONS[number]
 
 export const DEFAULT_SUMMARY_POSITIONS: PersonnelPosition[] = ['组长', '组员']
+export const RENTAL_PERSONNEL_POSITIONS = PERSONNEL_POSITIONS.filter(
+  position => position !== '自购房',
+)
 
 export function parseSummaryPositions(value: unknown): PersonnelPosition[] {
   if (typeof value !== 'string' || !value) {

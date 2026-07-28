@@ -481,7 +481,7 @@ function MemberForm({
             }))}
           />
           <p className="mt-1.5 text-xs text-slate-500">
-            是否进入在线汇总和走访汇总，由超级管理员在系统设置中决定。
+            出租房汇总岗位由超级管理员配置；“自购房”岗位进入单独的自购房汇总。
           </p>
         </div>
         <div>
