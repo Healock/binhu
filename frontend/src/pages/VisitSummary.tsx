@@ -21,6 +21,7 @@ import {
   formatUTCTime,
   getVisitCoverage,
   getVisitImportIssues,
+  uploadStarRating,
   uploadVisitDetail,
   type VisitCoverage,
   type VisitImportIssue,
@@ -54,6 +55,10 @@ export default function VisitSummary() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState('')
+  const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])
+  const [selectedRatingFile, setSelectedRatingFile] = useState<File | null>(null)
+  const [ratingImporting, setRatingImporting] = useState(false)
+  const [ratingImportError, setRatingImportError] = useState('')
   const [result, setResult] = useState<VisitImportResult | null>(null)
   const [issues, setIssues] = useState<VisitImportIssue[]>([])
   const [issueTotal, setIssueTotal] = useState(0)
@@ -124,6 +129,54 @@ export default function VisitSummary() {
     }
   }
 
+  const beforeRatingUpload: UploadProps['beforeUpload'] = file => {
+    setRatingImportError('')
+    setResult(null)
+    setSelectedRatingFile(null)
+    setRatingFileList([])
+    setIssues([])
+    setIssueTotal(0)
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      setRatingImportError('只支持 .xlsx 文件')
+      return Upload.LIST_IGNORE
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setRatingImportError('XLSX 文件不能超过 20MB')
+      return Upload.LIST_IGNORE
+    }
+    setSelectedRatingFile(file)
+    setRatingFileList([{
+      uid: file.uid,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      status: 'done',
+      originFileObj: file,
+    }])
+    return false
+  }
+
+  const handleRatingImport = async () => {
+    if (!selectedRatingFile) return
+    setRatingImporting(true)
+    setRatingImportError('')
+    try {
+      const nextResult = await uploadStarRating(selectedRatingFile)
+      setResult(nextResult)
+      setCoverage(nextResult.coverage)
+      setIssues(nextResult.issues.data)
+      setIssueTotal(nextResult.issues.total)
+      setIssuePage(1)
+    } catch (error: any) {
+      setRatingImportError(
+        error?.response?.data?.detail
+          || (error?.code === 'ECONNABORTED' ? '导入处理超时，请稍后刷新查看' : '上传失败，请稍后重试'),
+      )
+    } finally {
+      setRatingImporting(false)
+    }
+  }
+
   const loadIssuePage = async (page: number) => {
     if (!result || (result.status === 'duplicate' && issueTotal === 0)) return
     setIssueLoading(true)
@@ -139,7 +192,7 @@ export default function VisitSummary() {
     }
   }
 
-  const issueColumns: TableColumnsType<VisitImportIssue> = [
+  const detailIssueColumns: TableColumnsType<VisitImportIssue> = [
     {
       title: '类型',
       dataIndex: 'severity',
@@ -194,13 +247,68 @@ export default function VisitSummary() {
     },
   ]
 
+  const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
+    {
+      title: '类型',
+      dataIndex: 'severity',
+      width: 90,
+      render: value => (
+        <Tag color={value === 'error' ? 'error' : 'warning'}>
+          {value === 'error' ? '错误' : '提醒'}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Excel 行',
+      dataIndex: 'row_number',
+      width: 100,
+      render: value => value || '-',
+    },
+    {
+      title: '原因',
+      dataIndex: 'message',
+      width: 340,
+      render: value => <span className="text-slate-700">{value}</span>,
+    },
+    {
+      title: '社区',
+      width: 130,
+      render: (_, item) => item.row_preview['所属社区'] || '-',
+    },
+    {
+      title: '星级',
+      width: 130,
+      render: (_, item) => item.row_preview['星级'] || '-',
+    },
+    {
+      title: '得分',
+      width: 100,
+      render: (_, item) => item.row_preview['得分'] || '-',
+    },
+    {
+      title: '采集时间',
+      width: 180,
+      render: (_, item) => item.row_preview['采集时间'] || '-',
+    },
+    {
+      title: '地址',
+      width: 300,
+      ellipsis: { showTitle: false },
+      render: (_, item) => (
+        <Tooltip title={item.row_preview['地址'] || '-'}>
+          <span>{item.row_preview['地址'] || '-'}</span>
+        </Tooltip>
+      ),
+    },
+  ]
+
   const shownMissingDates = coverage?.missing_dates.slice(0, 10) || []
 
   return (
     <div className="app-page min-w-0">
       <PageHeader
         title="走访汇总"
-        description="第一阶段先导入走访明细，星级评定与最终汇总将在下一阶段接入"
+        description="分别上传走访明细和星级评定，系统按地址和前后 24 小时自动关联"
       />
 
       <Panel
@@ -217,7 +325,7 @@ export default function VisitSummary() {
         }
       >
         {coverageError && <Alert className="mb-4" type="error" showIcon message={coverageError} />}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 xl:col-span-2">
             <div className="text-xs text-slate-500">已入库日期范围</div>
             <div className="mt-2 text-lg font-semibold text-slate-900">
@@ -228,6 +336,12 @@ export default function VisitSummary() {
             <Statistic title="有效走访记录" value={coverage?.total_records || 0} suffix="条" />
           </div>
           <div className="rounded-lg border border-slate-200 p-4">
+            <Statistic title="已星级评定" value={coverage?.rated_records || 0} suffix="条" />
+          </div>
+          <div className="rounded-lg border border-slate-200 p-4">
+            <Statistic title="仅走访未评定" value={coverage?.unrated_records || 0} suffix="条" />
+          </div>
+          <div className="rounded-lg border border-slate-200 p-4">
             <Statistic title="有数据日期" value={coverage?.data_days || 0} suffix="天" />
           </div>
           <div className="rounded-lg border border-slate-200 p-4">
@@ -235,7 +349,8 @@ export default function VisitSummary() {
           </div>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-          <span>最近成功导入：{formatUTCTime(coverage?.last_import_at)}</span>
+          <span>最近走访导入：{formatUTCTime(coverage?.last_detail_import_at)}</span>
+          <span>最近星级导入：{formatUTCTime(coverage?.last_rating_import_at)}</span>
           {shownMissingDates.map(item => <Tag key={item}>{item}</Tag>)}
           {(coverage?.missing_date_count || 0) > 10 && (
             <Button type="link" size="small" onClick={() => setMissingOpen(true)}>
@@ -245,52 +360,101 @@ export default function VisitSummary() {
         </div>
       </Panel>
 
-      <Panel
-        title="上传走访明细"
-        description="仅支持一个 XLSX 文件，最大 20MB；正确行会入库，错误行会单独列出"
-      >
-        {!canUpload ? (
-          <Alert
-            type="info"
-            showIcon
-            message="只有超级管理员和管理员可以上传走访数据"
-            description="你仍然可以查看上方数据库日期范围。"
-          />
-        ) : (
-          <>
-            <Dragger
-              accept=".xlsx"
-              maxCount={1}
-              fileList={fileList}
-              beforeUpload={beforeUpload}
-              onRemove={() => {
-                setSelectedFile(null)
-                setFileList([])
-                setResult(null)
-                setIssues([])
-                setIssueTotal(0)
-              }}
-              disabled={importing}
-            >
-              <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-              <p className="ant-upload-text">拖入走访明细，或点击选择 XLSX 文件</p>
-              <p className="ant-upload-hint">重叠日期不会重复计数；同一网格员同日同地址取时间最晚的一条，不同网格员分别保留。</p>
-            </Dragger>
-            <div className="mt-4 flex justify-end">
-              <Button
-                type="primary"
-                icon={<UploadOutlined />}
-                loading={importing}
-                disabled={!selectedFile}
-                onClick={handleImport}
+      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+        <Panel
+          title="上传走访明细"
+          description="先导入走访明细；重叠日期会自动去重"
+        >
+          {!canUpload ? (
+            <Alert
+              type="info"
+              showIcon
+              message="只有超级管理员和管理员可以上传"
+              description="你仍然可以查看上方数据库日期范围。"
+            />
+          ) : (
+            <>
+              <Dragger
+                accept=".xlsx"
+                maxCount={1}
+                fileList={fileList}
+                beforeUpload={beforeUpload}
+                onRemove={() => {
+                  setSelectedFile(null)
+                  setFileList([])
+                  setResult(null)
+                  setIssues([])
+                  setIssueTotal(0)
+                }}
+                disabled={importing || ratingImporting}
               >
-                {importing ? '正在校验并入库' : '开始导入'}
-              </Button>
-            </div>
-          </>
-        )}
-        {importError && <Alert className="mt-4" type="error" showIcon message={importError} />}
-      </Panel>
+                <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                <p className="ant-upload-text">拖入走访明细，或点击选择 XLSX</p>
+                <p className="ant-upload-hint">同一网格员同日同地址取时间最晚的一条，不同网格员分别保留。</p>
+              </Dragger>
+              <div className="mt-4 flex justify-end">
+                <Button
+                  type="primary"
+                  icon={<UploadOutlined />}
+                  loading={importing}
+                  disabled={!selectedFile || ratingImporting}
+                  onClick={handleImport}
+                >
+                  {importing ? '正在校验并入库' : '导入走访明细'}
+                </Button>
+              </div>
+            </>
+          )}
+          {importError && <Alert className="mt-4" type="error" showIcon message={importError} />}
+        </Panel>
+
+        <Panel
+          title="上传星级评定"
+          description="按地址匹配采集时间前后 24 小时内最接近的走访"
+        >
+          {!canUpload ? (
+            <Alert
+              type="info"
+              showIcon
+              message="只有超级管理员和管理员可以上传"
+              description="你仍然可以查看上方评定数量。"
+            />
+          ) : (
+            <>
+              <Dragger
+                accept=".xlsx"
+                maxCount={1}
+                fileList={ratingFileList}
+                beforeUpload={beforeRatingUpload}
+                onRemove={() => {
+                  setSelectedRatingFile(null)
+                  setRatingFileList([])
+                  setResult(null)
+                  setIssues([])
+                  setIssueTotal(0)
+                }}
+                disabled={ratingImporting || importing}
+              >
+                <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                <p className="ant-upload-text">拖入星级评定，或点击选择 XLSX</p>
+                <p className="ant-upload-hint">星级评定必须匹配已有走访；无法判断时不会强行关联。</p>
+              </Dragger>
+              <div className="mt-4 flex justify-end">
+                <Button
+                  type="primary"
+                  icon={<UploadOutlined />}
+                  loading={ratingImporting}
+                  disabled={!selectedRatingFile || importing}
+                  onClick={handleRatingImport}
+                >
+                  {ratingImporting ? '正在匹配并关联' : '导入星级评定'}
+                </Button>
+              </div>
+            </>
+          )}
+          {ratingImportError && <Alert className="mt-4" type="error" showIcon message={ratingImportError} />}
+        </Panel>
+      </div>
 
       {result && (
         <Panel
@@ -312,15 +476,25 @@ export default function VisitSummary() {
               </span>
             }
           />
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-            {[
-              ['新增', result.inserted_rows],
-              ['更新', result.updated_rows],
-              ['重复未变', result.unchanged_rows],
-              ['忽略', result.ignored_rows],
-              ['错误', result.error_count],
-              ['提醒', result.warning_count],
-            ].map(([label, value]) => (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
+            {(result.import_type === 'rating'
+              ? [
+                ['新增评定', result.inserted_rows],
+                ['更新评定', result.updated_rows],
+                ['重复未变', result.unchanged_rows],
+                ['无法匹配', result.unmatched_rows || 0],
+                ['匹配有歧义', result.ambiguous_rows || 0],
+                ['未采用', result.ignored_rows],
+                ['错误/提醒', result.error_count + result.warning_count],
+              ]
+              : [
+                ['新增', result.inserted_rows],
+                ['更新', result.updated_rows],
+                ['重复未变', result.unchanged_rows],
+                ['忽略', result.ignored_rows],
+                ['错误', result.error_count],
+                ['提醒', result.warning_count],
+              ]).map(([label, value]) => (
               <div key={String(label)} className="rounded-lg border border-slate-200 p-4">
                 <Statistic title={label} value={value} suffix="条" />
               </div>
@@ -332,11 +506,13 @@ export default function VisitSummary() {
       {result && issueTotal > 0 && (
         <Panel
           title={`错误和提醒（${issueTotal} 条）`}
-          description="身份证号已经遮盖；错误行未入库，提醒行不影响有效数据入库"
+          description={result.import_type === 'rating'
+            ? '无法匹配或存在歧义的星级评定不会强行写入走访记录'
+            : '身份证号已经遮盖；错误行未入库，提醒行不影响有效数据入库'}
           padded={false}
         >
           <AppTable<VisitImportIssue>
-            columns={issueColumns}
+            columns={result.import_type === 'rating' ? ratingIssueColumns : detailIssueColumns}
             dataSource={issues}
             rowKey="id"
             loading={issueLoading}

@@ -204,6 +204,7 @@ class DatabaseManager:
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _visit_import_batches (
                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        import_type VARCHAR(20) NOT NULL DEFAULT 'detail',
                         filename VARCHAR(255) NOT NULL,
                         file_sha256 CHAR(64) NOT NULL,
                         file_size_bytes BIGINT NOT NULL DEFAULT 0,
@@ -227,6 +228,9 @@ class DatabaseManager:
                         finished_at DATETIME DEFAULT NULL,
                         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_visit_batch_hash (file_sha256),
+                        INDEX idx_visit_batch_type_hash (
+                            import_type, file_sha256, status
+                        ),
                         INDEX idx_visit_batch_status (status),
                         INDEX idx_visit_batch_created (created_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -252,6 +256,19 @@ class DatabaseManager:
                         新增 INT UNSIGNED NOT NULL DEFAULT 0,
                         变更 INT UNSIGNED NOT NULL DEFAULT 0,
                         注销 INT UNSIGNED NOT NULL DEFAULT 0,
+                        星级派出所名称 VARCHAR(200) DEFAULT NULL,
+                        星级所属社区 VARCHAR(200) DEFAULT NULL,
+                        星级社区 VARCHAR(200) DEFAULT NULL,
+                        星级地址 VARCHAR(1000) DEFAULT NULL,
+                        得分 DECIMAL(18, 6) DEFAULT NULL,
+                        星级 VARCHAR(50) DEFAULT NULL,
+                        星级采集时间 DATETIME DEFAULT NULL,
+                        星级采集日期 DATE DEFAULT NULL,
+                        _raw_star_time VARCHAR(100) DEFAULT NULL,
+                        隐患详情 MEDIUMTEXT DEFAULT NULL,
+                        星级时间差秒 INT UNSIGNED DEFAULT NULL,
+                        star_import_batch_id BIGINT DEFAULT NULL,
+                        star_source_row_number INT DEFAULT NULL,
                         import_batch_id BIGINT NOT NULL,
                         source_row_number INT NOT NULL,
                         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -262,10 +279,76 @@ class DatabaseManager:
                         INDEX idx_visit_community_date (社区, 业务日期),
                         INDEX idx_visit_operator_date (操作人, 业务日期),
                         INDEX idx_visit_address_date (_address_key, 业务日期),
-                        INDEX idx_visit_batch (import_batch_id)
+                        INDEX idx_visit_batch (import_batch_id),
+                        INDEX idx_visit_star_time (星级采集时间),
+                        INDEX idx_visit_star_batch (star_import_batch_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                       COLLATE=utf8mb4_unicode_ci
                 """)
+                await cur.execute(
+                    "SHOW COLUMNS FROM _visit_import_batches "
+                    "LIKE 'import_type'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _visit_import_batches "
+                        "ADD COLUMN import_type VARCHAR(20) NOT NULL "
+                        "DEFAULT 'detail' AFTER id"
+                    )
+                await cur.execute(
+                    "SHOW INDEX FROM _visit_import_batches "
+                    "WHERE Key_name='idx_visit_batch_type_hash'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "CREATE INDEX idx_visit_batch_type_hash "
+                        "ON _visit_import_batches "
+                        "(import_type, file_sha256, status)"
+                    )
+                visit_star_columns = [
+                    ("星级派出所名称", "VARCHAR(200) DEFAULT NULL"),
+                    ("星级所属社区", "VARCHAR(200) DEFAULT NULL"),
+                    ("星级社区", "VARCHAR(200) DEFAULT NULL"),
+                    ("星级地址", "VARCHAR(1000) DEFAULT NULL"),
+                    ("得分", "DECIMAL(18, 6) DEFAULT NULL"),
+                    ("星级", "VARCHAR(50) DEFAULT NULL"),
+                    ("星级采集时间", "DATETIME DEFAULT NULL"),
+                    ("星级采集日期", "DATE DEFAULT NULL"),
+                    ("_raw_star_time", "VARCHAR(100) DEFAULT NULL"),
+                    ("隐患详情", "MEDIUMTEXT DEFAULT NULL"),
+                    ("星级时间差秒", "INT UNSIGNED DEFAULT NULL"),
+                    ("star_import_batch_id", "BIGINT DEFAULT NULL"),
+                    ("star_source_row_number", "INT DEFAULT NULL"),
+                ]
+                for column_name, column_definition in visit_star_columns:
+                    await cur.execute(
+                        "SHOW COLUMNS FROM t_visit_details LIKE %s",
+                        (column_name,),
+                    )
+                    if not await cur.fetchone():
+                        await cur.execute(
+                            f"ALTER TABLE t_visit_details "
+                            f"ADD COLUMN `{column_name}` {column_definition}"
+                        )
+                for index_name, index_sql in [
+                    (
+                        "idx_visit_star_time",
+                        "CREATE INDEX idx_visit_star_time "
+                        "ON t_visit_details (`星级采集时间`)",
+                    ),
+                    (
+                        "idx_visit_star_batch",
+                        "CREATE INDEX idx_visit_star_batch "
+                        "ON t_visit_details (star_import_batch_id)",
+                    ),
+                ]:
+                    await cur.execute(
+                        "SHOW INDEX FROM t_visit_details "
+                        "WHERE Key_name=%s",
+                        (index_name,),
+                    )
+                    if not await cur.fetchone():
+                        await cur.execute(index_sql)
                 # 兼容已经导入的数据：正式匹配值去掉“社区”或“村”后缀，
                 # 原始“村社区”字段保持不变。
                 await cur.execute("""

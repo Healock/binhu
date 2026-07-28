@@ -1,4 +1,4 @@
-"""走访汇总第一阶段：走访明细上传、覆盖范围和导入问题。"""
+"""走访明细与星级评定上传、关联、覆盖范围和导入问题。"""
 
 import asyncio
 from hashlib import sha256
@@ -10,6 +10,10 @@ from database import get_db
 from deps import require_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_timezone_name
+from services.star_rating_import import (
+    import_star_rating_workbook,
+    parse_star_rating_workbook,
+)
 from services.visit_import import (
     ISSUE_PAGE_SIZE,
     MAX_FILE_BYTES,
@@ -145,6 +149,7 @@ async def import_visit_detail(
             await fail_import_batch(conn, batch_id, str(exc), [issue])
             result = {
                 "batch_id": batch_id,
+                "import_type": "detail",
                 "status": "failed",
                 "duplicate_file": False,
                 "file_start_date": None,
@@ -187,6 +192,139 @@ async def import_visit_detail(
                 "updated_rows": result["updated_rows"],
                 "unchanged_rows": result["unchanged_rows"],
                 "ignored_rows": result["ignored_rows"],
+                "error_count": result["error_count"],
+                "warning_count": result["warning_count"],
+            },
+            **request_audit_fields(request),
+        )
+        return await _result_with_details(conn, result)
+    finally:
+        await _release_import_lock(conn)
+
+
+@router.post("/imports/rating")
+async def import_star_rating(
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    filename = _safe_filename(file.filename)
+    if Path(filename).suffix.lower() != ".xlsx":
+        raise HTTPException(status_code=400, detail="只支持 .xlsx 文件")
+
+    content = await file.read(MAX_FILE_BYTES + 1)
+    await file.close()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    if len(content) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="XLSX 文件不能超过 20MB")
+
+    if not await _try_acquire_import_lock(conn):
+        raise HTTPException(
+            status_code=409,
+            detail="另一份走访或星级文件正在导入，请稍后再试",
+        )
+    try:
+        file_sha256 = sha256(content).hexdigest()
+        duplicate = await find_duplicate_batch(
+            conn,
+            file_sha256,
+            import_type="rating",
+            include_partial=False,
+        )
+        if duplicate:
+            await record_admin_audit(
+                user,
+                "visit_rating.import",
+                target_type="visit_import",
+                target_name=str(duplicate["batch_id"]),
+                result="duplicate",
+                detail={"duplicate_file": True},
+                **request_audit_fields(request),
+            )
+            return await _result_with_details(conn, duplicate)
+
+        batch_id = await create_import_batch(
+            conn,
+            filename=filename,
+            file_sha256=file_sha256,
+            file_size=len(content),
+            uploader_id=user["id"],
+            import_type="rating",
+        )
+        try:
+            async with conn.cursor() as cur:
+                timezone_name = await get_business_timezone_name(cur)
+            parsed = await asyncio.to_thread(
+                parse_star_rating_workbook,
+                content,
+                timezone_name,
+            )
+            result = await import_star_rating_workbook(
+                conn,
+                batch_id=batch_id,
+                parsed=parsed,
+            )
+        except VisitWorkbookError as exc:
+            issue = ImportIssue(
+                severity="error",
+                code="invalid_star_rating_workbook",
+                row_number=0,
+                message=str(exc),
+                row_preview={},
+            )
+            await fail_import_batch(conn, batch_id, str(exc), [issue])
+            result = {
+                "batch_id": batch_id,
+                "import_type": "rating",
+                "status": "failed",
+                "duplicate_file": False,
+                "file_start_date": None,
+                "file_end_date": None,
+                "overlap_start_date": None,
+                "overlap_end_date": None,
+                "inserted_rows": 0,
+                "updated_rows": 0,
+                "unchanged_rows": 0,
+                "ignored_rows": 0,
+                "matched_rows": 0,
+                "unmatched_rows": 0,
+                "ambiguous_rows": 0,
+                "error_count": 1,
+                "warning_count": 0,
+                "message": str(exc),
+            }
+        except Exception:
+            await fail_import_batch(
+                conn,
+                batch_id,
+                "星级评定关联失败，请稍后重试",
+            )
+            await record_admin_audit(
+                user,
+                "visit_rating.import",
+                target_type="visit_import",
+                target_name=str(batch_id),
+                result="failed",
+                detail={"reason": "internal_error"},
+                **request_audit_fields(request),
+            )
+            raise
+
+        await record_admin_audit(
+            user,
+            "visit_rating.import",
+            target_type="visit_import",
+            target_name=str(batch_id),
+            result=result["status"],
+            detail={
+                "inserted_rows": result["inserted_rows"],
+                "updated_rows": result["updated_rows"],
+                "unchanged_rows": result["unchanged_rows"],
+                "ignored_rows": result["ignored_rows"],
+                "unmatched_rows": result.get("unmatched_rows", 0),
+                "ambiguous_rows": result.get("ambiguous_rows", 0),
                 "error_count": result["error_count"],
                 "warning_count": result["warning_count"],
             },
