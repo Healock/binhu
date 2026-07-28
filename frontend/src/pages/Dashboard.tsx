@@ -8,6 +8,7 @@ import { EmptyState, PageHeader } from '../components/ui'
 import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, getSystemConfig } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useSync } from '../hooks/useSync'
+import { buildReportTableTotal } from '../utils/tableTotals'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
 const EMPTY_FILTER_VALUE = '__binhu_empty_report_value__'
@@ -79,18 +80,21 @@ const reportTableColumns = (
 
 const reportTableSummary = (
   columns: string[],
-  summary: Record<string, any>,
-) => () => (
-  <Table.Summary.Row className="app-report-total-row">
-    {columns.filter(column => column !== 'id').map((column, index) => (
-      <Table.Summary.Cell index={index} key={column}>
-        <span className={index === 0 ? 'font-semibold text-blue-900' : ''}>
-          {fmt(summary[column], column)}
-        </span>
-      </Table.Summary.Cell>
-    ))}
-  </Table.Summary.Row>
-)
+) => (currentRows: readonly Record<string, any>[]) => {
+  const visibleColumns = columns.filter(column => column !== 'id')
+  const summary = buildReportTableTotal(visibleColumns, currentRows)
+  return (
+    <Table.Summary.Row className="app-report-total-row">
+      {visibleColumns.map((column, index) => (
+        <Table.Summary.Cell index={index} key={column}>
+          <span className={index === 0 ? 'font-semibold text-blue-900' : ''}>
+            {fmt(summary[column], column)}
+          </span>
+        </Table.Summary.Cell>
+      ))}
+    </Table.Summary.Row>
+  )
+}
 
 export default function Dashboard() {
   const { user } = useAuth()
@@ -312,11 +316,11 @@ export default function Dashboard() {
             dataSource={report.data || []}
             rowKey={row => row.id || row.社区}
             summary={report.summary
-              ? reportTableSummary(report.columns || [], report.summary)
+              ? reportTableSummary(report.columns || [])
               : undefined}
-            title={() => (
+            title={currentRows => (
               <h3 className="text-sm font-semibold text-gray-700">
-                总汇总表（{report.data?.length || 0} 个社区）
+                总汇总表（{currentRows.length} 个社区）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
             )}
@@ -381,12 +385,11 @@ export default function Dashboard() {
             summary={report.inspector?.summary
               ? reportTableSummary(
                   report.inspector?.columns || [],
-                  report.inspector.summary,
                 )
               : undefined}
-            title={() => (
+            title={currentRows => (
               <h3 className="text-sm font-semibold text-gray-700">
-                核查人明细统计（{report.inspector?.data.length || 0} 人）
+                核查人明细统计（{currentRows.length} 人）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
             )}
@@ -400,12 +403,11 @@ export default function Dashboard() {
             summary={report.community?.summary
               ? reportTableSummary(
                   report.community?.columns || [],
-                  report.community.summary,
                 )
               : undefined}
-            title={() => (
+            title={currentRows => (
               <h3 className="text-sm font-semibold text-gray-700">
-                社区汇总统计（{report.community?.data.length || 0} 个社区）
+                社区汇总统计（{currentRows.length} 个社区）
                 {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
               </h3>
             )}

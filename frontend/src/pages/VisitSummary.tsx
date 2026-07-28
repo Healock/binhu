@@ -33,6 +33,7 @@ import {
   type VisitImportResult,
   type VisitSummaryReport,
 } from '../api/client'
+import { buildVisitTableTotal } from '../utils/tableTotals'
 
 const { Dragger } = Upload
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -129,19 +130,26 @@ function visitSummaryColumns(
 
 function visitSummaryTotal(
   columns: string[],
-  summary: VisitSummaryRow,
+  memberCount?: (rows: readonly VisitSummaryRow[]) => number,
 ) {
-  return () => (
-    <Table.Summary.Row className="app-report-total-row">
-      {columns.map((column, index) => (
-        <Table.Summary.Cell index={index} key={column}>
-          <span className={index === 0 ? 'font-semibold text-blue-900' : ''}>
-            {formatSummaryValue(summary[column], column)}
-          </span>
-        </Table.Summary.Cell>
-      ))}
-    </Table.Summary.Row>
-  )
+  return (currentRows: readonly VisitSummaryRow[]) => {
+    const summary = buildVisitTableTotal(
+      columns,
+      currentRows,
+      memberCount?.(currentRows) || 0,
+    )
+    return (
+      <Table.Summary.Row className="app-report-total-row">
+        {columns.map((column, index) => (
+          <Table.Summary.Cell index={index} key={column}>
+            <span className={index === 0 ? 'font-semibold text-blue-900' : ''}>
+              {formatSummaryValue(summary[column], column)}
+            </span>
+          </Table.Summary.Cell>
+        ))}
+      </Table.Summary.Row>
+    )
+  }
 }
 
 function SummaryCard({
@@ -504,6 +512,18 @@ export default function VisitSummary() {
   const cardMode = user?.table_display_mode === 'card'
   const inspectorRows = (summaryReport?.inspector.data || []) as VisitSummaryRow[]
   const communityRows = (summaryReport?.community.data || []) as VisitSummaryRow[]
+  const countCommunityMembers = useCallback((
+    visibleRows: readonly VisitSummaryRow[],
+  ) => {
+    const visibleCommunities = new Set(
+      visibleRows.map(row => String(row.社区 || '未分配社区')),
+    )
+    return new Set(
+      inspectorRows
+        .filter(row => visibleCommunities.has(String(row.社区 || '未分配社区')))
+        .map(row => String(row.姓名 || '未填写姓名')),
+    ).size
+  }, [inspectorRows])
   const selectedStartDate = summaryRange?.[0] || ''
   const selectedEndDate = summaryRange?.[1] || ''
   const shownRangeLabel = shownSummaryRange
@@ -707,11 +727,10 @@ export default function VisitSummary() {
             sticky
             summary={visitSummaryTotal(
               summaryReport.inspector.columns,
-              summaryReport.inspector.summary as VisitSummaryRow,
             )}
-            title={() => (
+            title={currentRows => (
               <h2 className="text-sm font-semibold text-gray-700">
-                网格员汇总（{inspectorRows.length} 行）
+                网格员汇总（{currentRows.length} 行）
                 <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
               </h2>
             )}
@@ -728,11 +747,11 @@ export default function VisitSummary() {
             sticky
             summary={visitSummaryTotal(
               summaryReport.community.columns,
-              summaryReport.community.summary as VisitSummaryRow,
+              countCommunityMembers,
             )}
-            title={() => (
+            title={currentRows => (
               <h2 className="text-sm font-semibold text-gray-700">
-                社区汇总（{communityRows.length} 个社区）
+                社区汇总（{currentRows.length} 个社区）
                 <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
               </h2>
             )}
