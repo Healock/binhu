@@ -32,5 +32,8 @@ Thumbs.db
 # Logs
 *.log
 
+# Database backup files contain business data.
+backups/
+
 # 临时文件
 rename_changes.html

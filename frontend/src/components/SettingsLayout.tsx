@@ -4,6 +4,7 @@ import {
   BgColorsOutlined,
   ClockCircleOutlined,
   FileTextOutlined,
+  MonitorOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { PageHeader } from './ui'
@@ -17,6 +18,7 @@ export default function SettingsLayout() {
     { path: '/settings/spreadsheets', label: '在线表格配置', icon: <FileTextOutlined />, superOnly: true },
     { path: '/settings/oauth', label: '腾讯文档 OAuth', icon: <ApiOutlined />, superOnly: true },
     { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, superOnly: true },
+    { path: '/settings/operations', label: '运维中心', icon: <MonitorOutlined />, superOnly: true },
     { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
   ]
 
@@ -35,11 +37,11 @@ export default function SettingsLayout() {
     }`
 
   return (
-    <div className="app-page">
+    <div className="app-page min-w-0">
       <PageHeader title="系统设置" description="管理数据来源、认证信息和个人显示习惯" />
 
-      <div className="md:flex md:items-start md:gap-6">
-        <aside className="hidden w-52 shrink-0 md:block">
+      <div className="lg:flex lg:items-start lg:gap-6">
+        <aside className="hidden w-52 shrink-0 lg:block">
           <nav className="app-card space-y-1 p-2">
             {menuItems.map(item => (
               <NavLink key={item.path} to={item.path} className={linkClass}>
@@ -50,7 +52,7 @@ export default function SettingsLayout() {
           </nav>
         </aside>
 
-        <nav className="mb-4 flex gap-2 overflow-x-auto pb-1 md:hidden">
+        <nav className="mb-4 flex w-full max-w-full gap-2 overflow-x-auto pb-1 lg:hidden">
           {menuItems.map(item => (
             <NavLink key={item.path} to={item.path} className={({ isActive }) => `${linkClass({ isActive })} shrink-0`}>
               {item.icon}
@@ -59,7 +61,7 @@ export default function SettingsLayout() {
           ))}
         </nav>
 
-        <div className="settings-content min-w-0 flex-1">
+        <div className="settings-content min-w-0 max-w-full flex-1">
           <Outlet />
         </div>
       </div>

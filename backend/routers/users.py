@@ -1,11 +1,12 @@
 """用户管理 API - 超管专用"""
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from database import db_manager
 from deps import get_current_user, require_super_admin
+from services.audit import record_admin_audit, request_audit_fields
 
 router = APIRouter(prefix="/api/users", tags=["用户管理"])
 
@@ -49,7 +50,11 @@ async def list_users(user: dict = Depends(require_super_admin)):
 
 
 @router.post("")
-async def create_user(req: CreateUserRequest, user: dict = Depends(require_super_admin)):
+async def create_user(
+    req: CreateUserRequest,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
     """创建用户（超管）"""
     if req.role not in ROLE_LABELS:
         raise HTTPException(status_code=400, detail=f"无效角色，可选：{list(ROLE_LABELS.keys())}")
@@ -70,11 +75,24 @@ async def create_user(req: CreateUserRequest, user: dict = Depends(require_super
     finally:
         pool.release(conn)
 
+    await record_admin_audit(
+        user,
+        "user.create",
+        target_type="user",
+        target_name=req.username,
+        detail={"role": req.role},
+        **request_audit_fields(request),
+    )
     return {"message": "用户创建成功", "username": req.username, "role": req.role}
 
 
 @router.put("/{user_id}")
-async def update_user(user_id: int, req: UpdateUserRequest, user: dict = Depends(require_super_admin)):
+async def update_user(
+    user_id: int,
+    req: UpdateUserRequest,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
     """修改用户（改角色/改密码）（超管）"""
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
@@ -100,11 +118,26 @@ async def update_user(user_id: int, req: UpdateUserRequest, user: dict = Depends
     finally:
         pool.release(conn)
 
+    await record_admin_audit(
+        user,
+        "user.update",
+        target_type="user",
+        target_name=str(user_id),
+        detail={
+            "role": req.role,
+            "password_changed": bool(req.password),
+        },
+        **request_audit_fields(request),
+    )
     return {"message": "用户修改成功"}
 
 
 @router.delete("/{user_id}")
-async def delete_user(user_id: int, user: dict = Depends(require_super_admin)):
+async def delete_user(
+    user_id: int,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
     """删除用户（超管），不能删自己"""
     if user["id"] == user_id:
         raise HTTPException(status_code=400, detail="不能删除自己")
@@ -125,4 +158,11 @@ async def delete_user(user_id: int, user: dict = Depends(require_super_admin)):
     finally:
         pool.release(conn)
 
+    await record_admin_audit(
+        user,
+        "user.delete",
+        target_type="user",
+        target_name=str(user_id),
+        **request_audit_fields(request),
+    )
     return {"message": "用户已删除"}

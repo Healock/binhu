@@ -103,6 +103,110 @@ export interface AppNotification {
   read_at: string | null
 }
 
+// 超级管理员运维中心
+export interface OpsContainer {
+  source: 'backend' | 'mysql'
+  name: string
+  image?: string
+  status: string
+  health?: string | null
+  started_at?: string | null
+  restart_count?: number
+  cpu_percent?: number
+  memory_used_bytes?: number
+  memory_limit_bytes?: number
+  network_rx_bytes?: number
+  network_tx_bytes?: number
+  error?: string
+}
+
+export interface OpsDatabase {
+  name: 'OnlineData' | 'OnlineDataArchive' | 'daily_report'
+  purpose: string
+  table_count: number
+  estimated_rows: number
+  data_bytes: number
+  index_bytes: number
+  engine_update_at: string | null
+  last_activity_at: string | null
+}
+
+export interface BackupSchedule {
+  enabled: boolean
+  run_hour: number
+  run_minute: number
+  retention_days: number
+  next_run_at: string | null
+  last_triggered_at: string | null
+  server_time: string | null
+}
+
+export interface BackupJob {
+  id: number
+  trigger_source: 'manual' | 'scheduled'
+  status: 'pending' | 'running' | 'success' | 'failed' | 'expired'
+  filename: string | null
+  size_bytes: number | null
+  sha256: string | null
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string | null
+  requested_by: string | null
+}
+
+export interface OpsOverview {
+  server_time: string | null
+  containers: OpsContainer[]
+  container_error: string | null
+  disk: {
+    total_bytes: number
+    free_bytes: number
+    used_bytes: number
+    free_percent: number
+  }
+  mysql: {
+    connected: boolean
+    version?: string
+    connections?: number
+    max_connections?: number
+    error?: string
+  }
+  databases: OpsDatabase[]
+  latest_sync: {
+    id: number
+    status: string
+    trigger_source: string
+    finished_at: string | null
+  } | null
+  latest_backup: {
+    id: number
+    status: string
+    finished_at: string | null
+    size_bytes: number | null
+  } | null
+  backup_schedule: BackupSchedule
+  oauth: {
+    configured: boolean
+    status: 'not_configured' | 'unknown' | 'expired' | 'expiring' | 'healthy'
+    expires_at?: string | null
+  }
+}
+
+export interface AuditEvent {
+  id: number
+  user_id: number | null
+  username: string
+  action: string
+  target_type: string
+  target_name: string
+  result: string
+  detail: Record<string, unknown> | null
+  ip_address: string
+  user_agent: string
+  created_at: string
+}
+
 // OAuth
 export interface OAuthConfig {
   client_id: string

@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from database import db_manager
 from config import settings
 from deps import get_current_user, require_super_admin, create_session, get_session_cookie_config
+from services.audit import record_admin_audit, request_audit_fields
+from services.ops_redaction import redact_text
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -89,7 +91,7 @@ class OAuthRequest(BaseModel):
 
 
 @router.get("/status")
-async def get_auth_status(user: dict = Depends(get_current_user)):
+async def get_auth_status(user: dict = Depends(require_super_admin)):
     """获取 OAuth 配置状态"""
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
@@ -108,7 +110,11 @@ async def get_auth_status(user: dict = Depends(get_current_user)):
 
 
 @router.post("/oauth")
-async def save_oauth(req: OAuthRequest, user: dict = Depends(require_super_admin)):
+async def save_oauth(
+    req: OAuthRequest,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
     """保存 OAuth 凭据（超管）"""
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
@@ -122,11 +128,23 @@ async def save_oauth(req: OAuthRequest, user: dict = Depends(require_super_admin
             )
     finally:
         pool.release(conn)
+    await record_admin_audit(
+        user,
+        "oauth.update",
+        target_type="oauth",
+        target_name="tencent-docs",
+        detail={"configured": True},
+        **request_audit_fields(request),
+    )
     return {"message": "保存成功"}
 
 
 @router.post("/oauth/test")
-async def test_oauth(req: OAuthRequest, user: dict = Depends(require_super_admin)):
+async def test_oauth(
+    req: OAuthRequest,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
     """测试 OAuth 凭据（超管）"""
     import httpx
     try:
@@ -137,8 +155,30 @@ async def test_oauth(req: OAuthRequest, user: dict = Depends(require_super_admin
                 params={"client_id": req.client_id, "open_id": req.open_id},
                 timeout=10,
             )
-        if resp.status_code == 200:
+        valid = resp.status_code == 200
+        await record_admin_audit(
+            user,
+            "oauth.test",
+            target_type="oauth",
+            target_name="tencent-docs",
+            result="success" if valid else "failed",
+            detail={"http_status": resp.status_code},
+            **request_audit_fields(request),
+        )
+        if valid:
             return {"valid": True, "message": "凭据有效"}
         return {"valid": False, "message": f"API返回 {resp.status_code}: {resp.text[:100]}"}
     except Exception as e:
-        return {"valid": False, "message": f"连接失败: {e}"}
+        await record_admin_audit(
+            user,
+            "oauth.test",
+            target_type="oauth",
+            target_name="tencent-docs",
+            result="failed",
+            detail={"error": redact_text(str(e))[:200]},
+            **request_audit_fields(request),
+        )
+        return {
+            "valid": False,
+            "message": f"连接失败: {redact_text(str(e))}",
+        }

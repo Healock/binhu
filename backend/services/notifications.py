@@ -38,3 +38,33 @@ async def create_sync_failure_notifications(
             )
     finally:
         pool.release(conn)
+
+
+async def create_backup_failure_notifications(
+    task_id: int,
+    error_message: str | None,
+) -> None:
+    """Notify every super administrator when a database backup fails."""
+    summary = (error_message or "数据库备份未正常完成").strip()
+    content = f"数据库备份任务 #{task_id}：{summary}"[:1000]
+
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT IGNORE INTO _notifications (
+                    user_id, category, severity, title, content,
+                    related_task_id, created_at
+                )
+                SELECT
+                    id, 'backup', 'error', '数据库备份失败', %s, %s,
+                    UTC_TIMESTAMP()
+                FROM _users
+                WHERE role = 'super_admin'
+                """,
+                (content, task_id),
+            )
+    finally:
+        pool.release(conn)
