@@ -2,17 +2,24 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
   Button,
+  Card,
   DatePicker,
+  Empty,
   Input,
   Modal,
+  Pagination,
   Radio,
   Select,
+  Skeleton,
   Tag,
   Tooltip,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import {
+  CalendarOutlined,
+  DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
   PlusOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
@@ -237,7 +244,7 @@ export default function GridMembers() {
               setKeyword(searchInput)
               setPage(1)
             }}
-            className="min-w-56 flex-1"
+            className="w-full md:min-w-56 md:flex-1"
           />
           <Select
             value={communityFilter}
@@ -245,7 +252,7 @@ export default function GridMembers() {
               setCommunityFilter(value)
               setPage(1)
             }}
-            className="min-w-36"
+            className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
               { value: '', label: '全部社区' },
               ...communityNames.map(community => ({
@@ -260,7 +267,7 @@ export default function GridMembers() {
               setPositionFilter(value)
               setPage(1)
             }}
-            className="min-w-36"
+            className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
               { value: '', label: '全部岗位' },
               ...PERSONNEL_POSITIONS.map(position => ({
@@ -272,6 +279,7 @@ export default function GridMembers() {
           <Button
             type="primary"
             icon={<SearchOutlined />}
+            className="w-full md:w-auto"
             onClick={() => {
               setKeyword(searchInput)
               setPage(1)
@@ -279,7 +287,7 @@ export default function GridMembers() {
           >
             搜索
           </Button>
-          <div className="ml-auto flex gap-2">
+          <div className="flex w-full flex-wrap gap-2 md:ml-auto md:w-auto">
             <Tag color="blue">共 {total} 人</Tag>
             <Tag color="green">当前页正常 {normalCount} 人</Tag>
           </div>
@@ -293,26 +301,68 @@ export default function GridMembers() {
         )}
       </section>
 
-      <AppTable<GridMember>
-        columns={memberColumns}
-        dataSource={members}
-        emptyText={loadError || '暂无人员，可点击“添加人员”手动添加'}
-        loading={loading}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          hideOnSinglePage: true,
-          showSizeChanger: false,
-          showTotal: count => `共 ${count} 人`,
-          onChange: setPage,
-        }}
-        rowClassName={member => (
-          member.effective_status === '离岗' ? 'app-table-row--muted' : ''
+      <div className="hidden md:block">
+        <AppTable<GridMember>
+          columns={memberColumns}
+          dataSource={members}
+          emptyText={loadError || '暂无人员，可点击“添加人员”手动添加'}
+          loading={loading}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            hideOnSinglePage: true,
+            showSizeChanger: false,
+            showTotal: count => `共 ${count} 人`,
+            onChange: setPage,
+          }}
+          rowClassName={member => (
+            member.effective_status === '离岗' ? 'app-table-row--muted' : ''
+          )}
+          rowKey="id"
+          scroll={{ x: 1250 }}
+        />
+      </div>
+
+      <div className="md:hidden">
+        {loading ? (
+          <Card size="small">
+            <Skeleton active paragraph={{ rows: 5 }} />
+          </Card>
+        ) : members.length > 0 ? (
+          <div className="space-y-3">
+            {members.map(member => (
+              <MobileMemberCard
+                key={member.id}
+                member={member}
+                onEdit={() => setEditing(member)}
+                onLeave={() => setLeaveEditing(member)}
+                onDelete={() => handleDelete(member.id, member.name)}
+              />
+            ))}
+          </div>
+        ) : (
+          <Card size="small">
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={loadError || '暂无人员，可点击“添加人员”手动添加'}
+            />
+          </Card>
         )}
-        rowKey="id"
-        scroll={{ x: 1250 }}
-      />
+
+        {!loading && total > pageSize && (
+          <div className="mt-4 flex justify-center">
+            <Pagination
+              simple
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger={false}
+              onChange={setPage}
+            />
+          </div>
+        )}
+      </div>
 
       {(showAddForm || editing) && (
         <MemberForm
@@ -346,7 +396,7 @@ export default function GridMembers() {
   )
 }
 
-function MemberStatus({ member }: { member: GridMember }) {
+function getMemberStatusMeta(member: GridMember) {
   const isLongTerm = member.status === '离岗'
   const isActiveLeave = !isLongTerm && member.effective_status === '离岗'
   const isUpcoming = !isLongTerm && member.leave_state === 'upcoming'
@@ -368,6 +418,12 @@ function MemberStatus({ member }: { member: GridMember }) {
   const reason = (
     isLongTerm || isActiveLeave || isUpcoming
   ) ? (member.leave_reason || '').trim() : ''
+
+  return { label, color, detail, reason }
+}
+
+function MemberStatus({ member }: { member: GridMember }) {
+  const { label, color, detail, reason } = getMemberStatusMeta(member)
 
   return (
     <div className="flex min-w-[190px] items-center gap-2">
@@ -395,6 +451,92 @@ function MemberStatus({ member }: { member: GridMember }) {
         </div>
       )}
     </div>
+  )
+}
+
+function MobileMemberCard({
+  member,
+  onEdit,
+  onLeave,
+  onDelete,
+}: {
+  member: GridMember
+  onEdit: () => void
+  onLeave: () => void
+  onDelete: () => void
+}) {
+  const { label, color, detail, reason } = getMemberStatusMeta(member)
+
+  return (
+    <Card
+      size="small"
+      className={member.effective_status === '离岗' ? 'bg-slate-50' : ''}
+      styles={{ body: { padding: 16 } }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-base font-semibold text-slate-900">
+              {member.name}
+            </span>
+            <Tag color="blue" className="m-0">
+              {member.position || '组员'}
+            </Tag>
+          </div>
+          <div className="mt-1 truncate text-sm text-slate-500">
+            {member.community || '未分配社区'}
+          </div>
+        </div>
+        <Tag color={color} className="m-0 shrink-0">
+          {label}
+        </Tag>
+      </div>
+
+      {(detail || reason) && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5">
+          {detail && <div className="text-slate-600">{detail}</div>}
+          {reason && <div className="text-slate-500">原因：{reason}</div>}
+        </div>
+      )}
+
+      <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
+        <div className="flex min-w-0 gap-3">
+          <span className="w-16 shrink-0 text-slate-500">电话</span>
+          <span className="min-w-0 truncate text-slate-700" title={member.phone || '-'}>
+            {member.phone || '-'}
+          </span>
+        </div>
+        <div className="flex min-w-0 gap-3">
+          <span className="w-16 shrink-0 text-slate-500">身份证</span>
+          <span
+            className="min-w-0 truncate text-slate-700"
+            title={member.has_id_card ? member.id_card_masked : '未补齐'}
+          >
+            {member.has_id_card ? member.id_card_masked : '未补齐'}
+          </span>
+        </div>
+        {member.notes && (
+          <div className="flex min-w-0 gap-3">
+            <span className="w-16 shrink-0 text-slate-500">备注</span>
+            <span className="min-w-0 truncate text-slate-700" title={member.notes}>
+              {member.notes}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-2 border-t border-slate-200 pt-3">
+        <Button block icon={<EditOutlined />} onClick={onEdit}>
+          编辑
+        </Button>
+        <Button block icon={<CalendarOutlined />} onClick={onLeave}>
+          请假
+        </Button>
+        <Button block danger icon={<DeleteOutlined />} onClick={onDelete}>
+          删除
+        </Button>
+      </div>
+    </Card>
   )
 }
 
