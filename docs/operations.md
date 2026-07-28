@@ -150,6 +150,42 @@ python -m uvicorn main:app --reload --port 8000
 4. 登录和退出是否正常。
 5. 同步、统计和关键数据是否正常。
 
+## 安全入口怎么部署
+
+生产环境必须由 nginx 统一提供 HTTPS，不能继续让 MySQL 或 Uvicorn 直接响应公网请求。
+仓库中的目标端口关系是：
+
+- 公网只开放 nginx 的 80 和 443。
+- 后端只绑定 `127.0.0.1:37125`，由 nginx 转发。
+- MySQL 不发布宿主机端口，只在 Compose 内部使用 `mysql:3306`。
+
+服务器没有域名时，可以使用支持 IP 地址的短期证书。部署时先用 Certbot 5.4 或更高版本
+申请证书，再把实际证书软链接到：
+
+```text
+/etc/nginx/ssl/binhu/fullchain.pem
+/etc/nginx/ssl/binhu/privkey.pem
+```
+
+证书有效期较短，必须配置自动续期、续期后的 `nginx -t` 和重新加载。首次切换前先检查：
+
+1. 80 端口的 ACME 验证目录可以访问。
+2. `nginx -t` 通过。
+3. HTTPS 健康接口和登录都正常。
+4. 再关闭公网 37125 和 3306，不能先切断当前可用入口。
+5. 从外部网络确认只有 80、443 和必要的 SSH 端口可以连接。
+
+生产 `.env` 还要设置：
+
+```dotenv
+BINHU_SESSION_COOKIE_SECURE=true
+BINHU_CORS_ALLOWED_ORIGINS=https://<公网地址>
+```
+
+新建空数据库时，临时设置 `BINHU_BOOTSTRAP_ADMIN_USERNAME` 和
+`BINHU_BOOTSTRAP_ADMIN_PASSWORD`。首个超级管理员创建并成功登录后立即删除这两个变量。
+已有用户的生产数据库不需要设置。
+
 ## 数据库备份与恢复
 
 下面是给负责运维的人使用的备份命令。执行前仍要确认服务器、容器和备份目录是否正确：
@@ -216,4 +252,4 @@ python upload.py
 
 这里只能保留示例。真实值由每台电脑自己保存，不能写进脚本或共享文档。
 
-_最后核对：2026-07-27_
+_最后核对：2026-07-28_

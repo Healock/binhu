@@ -30,6 +30,25 @@ class Settings(BaseSettings):
     # Auth / Session
     SESSION_COOKIE_NAME: str = "binhu_session"
     SESSION_EXPIRE_HOURS: int = 24
+    SESSION_COOKIE_SECURE: bool = False
+    SESSION_COOKIE_SAMESITE: str = "lax"
+    CORS_ALLOWED_ORIGINS: str = ""
+
+    # Fresh databases only: bootstrap one administrator without a built-in password.
+    BOOTSTRAP_ADMIN_USERNAME: str = ""
+    BOOTSTRAP_ADMIN_PASSWORD: str = ""
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        """Return the explicit CORS allowlist; same-origin deployments leave it empty."""
+        origins = [
+            origin.strip()
+            for origin in self.CORS_ALLOWED_ORIGINS.split(",")
+            if origin.strip()
+        ]
+        if "*" in origins:
+            raise ValueError("CORS_ALLOWED_ORIGINS 不允许使用通配符 *")
+        return origins
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
