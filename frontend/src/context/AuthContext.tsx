@@ -1,15 +1,21 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import type { User } from '../types'
+import { saveUserPreferences } from '../api/client'
+import type { User, UserPreferences } from '../types'
 
 interface AuthContextValue {
   user: User | null
   loading: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  updatePreferences: (preferences: UserPreferences) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue>({
-  user: null, loading: true, login: async () => {}, logout: async () => {},
+  user: null,
+  loading: true,
+  login: async () => {},
+  logout: async () => {},
+  updatePreferences: async () => {},
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -44,8 +50,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }
 
+  const updatePreferences = async (preferences: UserPreferences) => {
+    const updatedUser = await saveUserPreferences(preferences)
+    setUser(updatedUser)
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, updatePreferences }}>
       {children}
     </AuthContext.Provider>
   )

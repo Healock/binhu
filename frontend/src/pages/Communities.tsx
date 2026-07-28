@@ -4,12 +4,13 @@ import type { TableColumnsType } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { getGridCommunities, addGridCommunity, deleteGridCommunity } from '../api/client'
 import AppTable from '../components/AppTable'
-import { getDisplayMode } from '../utils/displayMode'
+import { useAuth } from '../context/AuthContext'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
 interface Community { id: number; name: string; grid_count: number }
 
 export default function Communities() {
+  const { user } = useAuth()
   const [communities, setCommunities] = useState<Community[]>([])
   const [newName, setNewName] = useState('')
   const [msg, setMsg] = useState('')
@@ -119,7 +120,7 @@ export default function Communities() {
         <div className="app-table-wrap">
           <EmptyState label="暂无社区，可在上方输入社区名称后添加" />
         </div>
-      ) : getDisplayMode() === 'card' ? (
+      ) : user?.table_display_mode === 'card' ? (
         <div className="app-table-wrap">
           <div className="grid grid-cols-1 gap-3 p-4">
             {communities.map((c) => (

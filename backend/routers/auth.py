@@ -1,6 +1,8 @@
 """认证 API - 登录/登出/当前用户 + OAuth 凭据管理"""
 
 from datetime import datetime, timedelta
+from typing import Literal
+
 import bcrypt
 from fastapi import APIRouter, Request, Response, HTTPException, status, Depends
 from pydantic import BaseModel
@@ -18,6 +20,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class UserPreferencesRequest(BaseModel):
+    table_display_mode: Literal["table", "card"]
+    report_column_mode: Literal["two", "three"]
+
+
 @router.post("/login")
 async def login(req: LoginRequest, request: Request, response: Response):
     """用户登录"""
@@ -26,13 +33,22 @@ async def login(req: LoginRequest, request: Request, response: Response):
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT id, username, password_hash, role FROM _users WHERE username = %s",
+                "SELECT id, username, password_hash, role, "
+                "table_display_mode, report_column_mode "
+                "FROM _users WHERE username = %s",
                 (req.username,),
             )
             row = await cur.fetchone()
             if not row:
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
-            user_id, username, password_hash, role = row
+            (
+                user_id,
+                username,
+                password_hash,
+                role,
+                table_display_mode,
+                report_column_mode,
+            ) = row
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
@@ -47,7 +63,16 @@ async def login(req: LoginRequest, request: Request, response: Response):
 
     cookie_cfg = get_session_cookie_config()
     response.set_cookie(value=session_id, **cookie_cfg)
-    return {"message": "登录成功", "user": {"id": user_id, "username": username, "role": role}}
+    return {
+        "message": "登录成功",
+        "user": {
+            "id": user_id,
+            "username": username,
+            "role": role,
+            "table_display_mode": table_display_mode or "table",
+            "report_column_mode": report_column_mode or "three",
+        },
+    }
 
 
 @router.post("/logout")
@@ -78,6 +103,38 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
 async def get_me(user: dict = Depends(get_current_user)):
     """获取当前用户信息"""
     return {"user": user}
+
+
+@router.put("/preferences")
+async def update_preferences(
+    req: UserPreferencesRequest,
+    user: dict = Depends(get_current_user),
+):
+    """保存当前账号的个性化设置。"""
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE _users SET table_display_mode=%s, report_column_mode=%s "
+                "WHERE id=%s",
+                (
+                    req.table_display_mode,
+                    req.report_column_mode,
+                    user["id"],
+                ),
+            )
+    finally:
+        pool.release(conn)
+
+    return {
+        "message": "个性化设置已保存",
+        "user": {
+            **user,
+            "table_display_mode": req.table_display_mode,
+            "report_column_mode": req.report_column_mode,
+        },
+    }
 
 
 # ========== OAuth 凭据管理（超管专用）==========

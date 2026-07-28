@@ -18,7 +18,8 @@ async def get_current_user(request: Request) -> dict:
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT u.id, u.username, u.role "
+                "SELECT u.id, u.username, u.role, "
+                "u.table_display_mode, u.report_column_mode "
                 "FROM _sessions s JOIN _users u ON s.user_id = u.id "
                 "WHERE s.session_id = %s AND s.expires_at > NOW()",
                 (session_id,),
@@ -26,7 +27,13 @@ async def get_current_user(request: Request) -> dict:
             row = await cur.fetchone()
             if not row:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="会话已过期")
-            return {"id": row[0], "username": row[1], "role": row[2]}
+            return {
+                "id": row[0],
+                "username": row[1],
+                "role": row[2],
+                "table_display_mode": row[3] or "table",
+                "report_column_mode": row[4] or "three",
+            }
     finally:
         pool.release(conn)
 

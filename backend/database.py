@@ -272,10 +272,32 @@ class DatabaseManager:
                         username VARCHAR(50) NOT NULL UNIQUE,
                         password_hash VARCHAR(255) NOT NULL,
                         role ENUM('super_admin','admin','leader','member') NOT NULL DEFAULT 'member',
+                        table_display_mode VARCHAR(10) NOT NULL DEFAULT 'table',
+                        report_column_mode VARCHAR(10) NOT NULL DEFAULT 'three',
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
+                # 旧用户表平滑补齐账号级个性化设置
+                for column_name, column_definition in [
+                    (
+                        "table_display_mode",
+                        "VARCHAR(10) NOT NULL DEFAULT 'table'",
+                    ),
+                    (
+                        "report_column_mode",
+                        "VARCHAR(10) NOT NULL DEFAULT 'three'",
+                    ),
+                ]:
+                    await cur.execute(
+                        "SHOW COLUMNS FROM _users LIKE %s",
+                        (column_name,),
+                    )
+                    if not await cur.fetchone():
+                        await cur.execute(
+                            f"ALTER TABLE _users "
+                            f"ADD COLUMN `{column_name}` {column_definition}"
+                        )
                 # Session 表
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _sessions (
