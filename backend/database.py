@@ -86,6 +86,21 @@ class DatabaseManager:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
                 await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _community_aliases (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        community_id INT NOT NULL,
+                        alias VARCHAR(200) NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_community_alias (alias),
+                        INDEX idx_community_alias_owner (community_id),
+                        CONSTRAINT fk_community_alias_owner
+                            FOREIGN KEY (community_id)
+                            REFERENCES _communities(id)
+                            ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _system_config (
                         config_key VARCHAR(100) PRIMARY KEY,
                         config_value TEXT
@@ -250,6 +265,45 @@ class DatabaseManager:
                         INDEX idx_visit_batch (import_batch_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                       COLLATE=utf8mb4_unicode_ci
+                """)
+                # 兼容已经导入的数据：正式匹配值去掉“社区”或“村”后缀，
+                # 原始“村社区”字段保持不变。
+                await cur.execute("""
+                    UPDATE t_visit_details
+                    SET 社区 = CASE
+                        WHEN RIGHT(TRIM(村社区), 2) = '社区'
+                            THEN TRIM(LEFT(
+                                TRIM(村社区),
+                                CHAR_LENGTH(TRIM(村社区)) - 2
+                            ))
+                        WHEN RIGHT(TRIM(村社区), 1) = '村'
+                            THEN TRIM(LEFT(
+                                TRIM(村社区),
+                                CHAR_LENGTH(TRIM(村社区)) - 1
+                            ))
+                        ELSE TRIM(村社区)
+                    END
+                    WHERE 村社区 IS NOT NULL
+                """)
+                # 去重主键包含网格员姓名：同日同地址由不同网格员走访时，
+                # 每名网格员各保留一条。
+                await cur.execute("""
+                    UPDATE t_visit_details
+                    SET _row_key = LOWER(SHA2(CONCAT(
+                        DATE_FORMAT(业务日期, '%Y-%m-%d'),
+                        '|',
+                        _normalized_address,
+                        '|',
+                        TRIM(操作人)
+                    ), 256))
+                """)
+                await cur.execute("""
+                    UPDATE t_visit_details AS v
+                    JOIN _community_aliases AS a
+                      ON a.alias = v.社区
+                    JOIN _communities AS c
+                      ON c.id = a.community_id
+                    SET v.社区 = c.name
                 """)
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _visit_import_issues (

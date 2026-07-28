@@ -274,7 +274,7 @@ export default function VisitSummary() {
             >
               <p className="ant-upload-drag-icon"><InboxOutlined /></p>
               <p className="ant-upload-text">拖入走访明细，或点击选择 XLSX 文件</p>
-              <p className="ant-upload-hint">重叠日期不会重复计数，同日同地址取入户时间最晚的一条。</p>
+              <p className="ant-upload-hint">重叠日期不会重复计数；同一网格员同日同地址取时间最晚的一条，不同网格员分别保留。</p>
             </Dragger>
             <div className="mt-4 flex justify-end">
               <Button

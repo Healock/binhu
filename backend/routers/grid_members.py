@@ -5,7 +5,7 @@ import io
 from datetime import date
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional
 from database import get_db
 from services.grid_member_status import (
@@ -15,6 +15,7 @@ from services.grid_member_status import (
     validate_leave_period,
 )
 from services.privacy import mask_identity_number
+from services.visit_import import normalize_community
 
 router = APIRouter(prefix="/api/grid-members", tags=["网格员管理"])
 
@@ -51,6 +52,24 @@ class GridMemberUpdate(BaseModel):
     leave_end_date: Optional[date] = None
     leave_reason: Optional[str] = Field(default=None, max_length=200)
     leave_source: Optional[str] = Field(default=None, max_length=30)
+
+
+class CommunityAliasesUpdate(BaseModel):
+    aliases: list[str] = Field(default_factory=list, max_length=30)
+
+    @field_validator("aliases")
+    @classmethod
+    def normalize_aliases(cls, aliases: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw_alias in aliases:
+            alias = normalize_community(raw_alias)
+            if not alias:
+                raise ValueError("社区别名不能为空")
+            if len(alias) > 200:
+                raise ValueError("社区别名不能超过 200 个字符")
+            if alias not in normalized:
+                normalized.append(alias)
+        return normalized
 
 
 def _member_to_dict(row, business_date: date) -> dict:
@@ -131,16 +150,48 @@ async def list_communities(conn=Depends(get_db)):
             ORDER BY c.name
         """, (business_date,))
         rows = await cur.fetchall()
-    return {"data": [{"id": r[0], "name": r[1], "grid_count": r[2]} for r in rows]}
+        await cur.execute(
+            "SELECT community_id, alias FROM _community_aliases "
+            "ORDER BY community_id, alias"
+        )
+        alias_rows = await cur.fetchall()
+    aliases_by_community: dict[int, list[str]] = {}
+    for community_id, alias in alias_rows:
+        aliases_by_community.setdefault(community_id, []).append(alias)
+    return {
+        "data": [
+            {
+                "id": row[0],
+                "name": row[1],
+                "grid_count": row[2],
+                "aliases": aliases_by_community.get(row[0], []),
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.post("/communities")
 async def add_community(name: str = Query(...), conn=Depends(get_db)):
     """添加社区"""
-    name = name.strip()
+    name = normalize_community(name)
     if not name:
         raise HTTPException(400, "社区名不能为空")
     async with conn.cursor() as cur:
+        await cur.execute("SELECT name FROM _communities")
+        existing_names = {
+            normalize_community(row[0])
+            for row in await cur.fetchall()
+        }
+        if name in existing_names:
+            raise HTTPException(400, "该社区已存在")
+        await cur.execute("SELECT alias FROM _community_aliases")
+        existing_aliases = {
+            normalize_community(row[0])
+            for row in await cur.fetchall()
+        }
+        if name in existing_aliases:
+            raise HTTPException(400, "该名称已经是其他社区的别名")
         try:
             await cur.execute("INSERT INTO _communities (name) VALUES (%s)", (name,))
         except Exception as e:
@@ -160,6 +211,90 @@ async def delete_community(community_id: int, conn=Depends(get_db)):
     return {"message": "删除成功"}
 
 
+@router.put("/communities/{community_id}/aliases")
+async def update_community_aliases(
+    community_id: int,
+    data: CommunityAliasesUpdate,
+    conn=Depends(get_db),
+):
+    """设置社区别名，并把已导入走访数据归到社区正式名称。"""
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id, name FROM _communities")
+            community_rows = await cur.fetchall()
+            communities = {
+                row[0]: {
+                    "name": str(row[1]).strip(),
+                    "normalized_name": normalize_community(row[1]),
+                }
+                for row in community_rows
+            }
+            current = communities.get(community_id)
+            if not current:
+                raise HTTPException(404, "社区不存在")
+
+            for alias in data.aliases:
+                if alias == current["normalized_name"]:
+                    raise HTTPException(400, "别名不能与社区正式名称相同")
+                for other_id, other in communities.items():
+                    if (
+                        other_id != community_id
+                        and alias == other["normalized_name"]
+                    ):
+                        raise HTTPException(
+                            400,
+                            f"别名“{alias}”与社区“{other['name']}”的正式名称冲突",
+                        )
+
+            if data.aliases:
+                placeholders = ", ".join(["%s"] * len(data.aliases))
+                await cur.execute(
+                    f"""
+                    SELECT a.alias, c.id, c.name
+                    FROM _community_aliases AS a
+                    JOIN _communities AS c ON c.id = a.community_id
+                    WHERE a.alias IN ({placeholders})
+                    """,
+                    data.aliases,
+                )
+                for alias, owner_id, owner_name in await cur.fetchall():
+                    if owner_id != community_id:
+                        raise HTTPException(
+                            400,
+                            f"别名“{alias}”已经属于社区“{owner_name}”",
+                        )
+
+            await cur.execute(
+                "DELETE FROM _community_aliases WHERE community_id=%s",
+                (community_id,),
+            )
+            if data.aliases:
+                await cur.executemany(
+                    "INSERT INTO _community_aliases (community_id, alias) "
+                    "VALUES (%s, %s)",
+                    [(community_id, alias) for alias in data.aliases],
+                )
+
+            matched_rows = 0
+            for alias in data.aliases:
+                await cur.execute(
+                    "UPDATE t_visit_details SET 社区=%s WHERE 社区=%s",
+                    (current["name"], alias),
+                )
+                matched_rows += cur.rowcount
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    return {
+        "message": "社区别名已保存",
+        "aliases": data.aliases,
+        "matched_visit_rows": matched_rows,
+    }
+
+
 @router.post("/communities/import-from-data")
 async def import_communities_from_data(conn=Depends(get_db)):
     """从原始数据提取社区名，去重后导入 _communities 表"""
@@ -169,13 +304,23 @@ async def import_communities_from_data(conn=Depends(get_db)):
             try:
                 await cur.execute(f"SELECT DISTINCT `社区` FROM {table} WHERE `社区` IS NOT NULL AND `社区` != ''")
                 for r in await cur.fetchall():
-                    raw.add(str(r[0]).strip())
+                    name = normalize_community(r[0])
+                    if name:
+                        raw.add(name)
             except Exception:
                 continue
         # 已有的
         await cur.execute("SELECT name FROM _communities")
-        existing = {str(r[0]) for r in await cur.fetchall()}
-        new = raw - existing
+        existing = {
+            normalize_community(r[0])
+            for r in await cur.fetchall()
+        }
+        await cur.execute("SELECT alias FROM _community_aliases")
+        aliases = {
+            normalize_community(r[0])
+            for r in await cur.fetchall()
+        }
+        new = raw - existing - aliases
         for name in new:
             await cur.execute("INSERT IGNORE INTO _communities (name) VALUES (%s)", (name,))
     return {"message": f"导入完成，新增 {len(new)} 个社区", "new_count": len(new), "new_names": sorted(new)}

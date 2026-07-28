@@ -137,6 +137,25 @@ CREATE TABLE IF NOT EXISTS _admin_audit_log (
     INDEX idx_audit_action_time (action, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _communities (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(200) NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _community_aliases (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    community_id INT NOT NULL,
+    alias        VARCHAR(200) NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_community_alias (alias),
+    INDEX idx_community_alias_owner (community_id),
+    CONSTRAINT fk_community_alias_owner
+        FOREIGN KEY (community_id)
+        REFERENCES _communities(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _visit_import_batches (
     id                 BIGINT AUTO_INCREMENT PRIMARY KEY,
     filename           VARCHAR(255) NOT NULL,

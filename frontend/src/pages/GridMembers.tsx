@@ -7,15 +7,13 @@ import AppTable from '../components/AppTable'
 import {
   listGridMembers, createGridMember, updateGridMember, deleteGridMember,
   exportGridMembersUrl, getGridCommunities,
-  type GridMember,
+  type GridCommunity, type GridMember,
 } from '../api/client'
 import { PageHeader } from '../components/ui'
 
-interface Community { id: number; name: string; grid_count: number }
-
 export default function GridMembers() {
   const [members, setMembers] = useState<GridMember[]>([])
-  const [communities, setCommunities] = useState<Community[]>([])
+  const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')

@@ -298,6 +298,13 @@ export interface GridMemberPayload {
   leave_source?: string
 }
 
+export interface GridCommunity {
+  id: number
+  name: string
+  grid_count: number
+  aliases: string[]
+}
+
 export async function listGridMembers(params: {
   keyword?: string
   community?: string
@@ -308,7 +315,7 @@ export async function listGridMembers(params: {
   return data
 }
 
-export async function getGridCommunities(): Promise<{ id: number; name: string; grid_count: number }[]> {
+export async function getGridCommunities(): Promise<GridCommunity[]> {
   const { data } = await api.get('/grid-members/communities')
   return data.data
 }
@@ -319,6 +326,14 @@ export async function addGridCommunity(name: string): Promise<void> {
 
 export async function deleteGridCommunity(id: number): Promise<void> {
   await api.delete(`/grid-members/communities/${id}`)
+}
+
+export async function updateGridCommunityAliases(
+  id: number,
+  aliases: string[],
+): Promise<{ aliases: string[]; matched_visit_rows: number }> {
+  const { data } = await api.put(`/grid-members/communities/${id}/aliases`, { aliases })
+  return data
 }
 
 export async function importCommunitiesFromData(): Promise<{ new_count: number; new_names: string[] }> {
