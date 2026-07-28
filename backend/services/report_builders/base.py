@@ -2,8 +2,8 @@
 
 工作量口径：
 - 数据总数 = 当天新入库 + 当天状态变更的数据
-- 新入库数据按当前状态归类：未核查、已核查或已完成
-- 已有数据按当天状态变化归类：填写现住址算已核查，填写核查结果算已完成
+- 进入当天工作量的数据统一按当天最终状态归类
+- 未核查、已核查、已完成三列之和必须等于数据总数
 
 当天没有快照时不生成日报，避免把当前全量数据写到错误的历史日期。
 当天有快照、但没有前一天快照时，只统计当天实际发生变化的数据。
@@ -148,38 +148,27 @@ class BaseReportBuilder:
                 OR IFNULL(prev.现住址, '') <> IFNULL(t.现住址, '')
                 OR IFNULL(prev.{rc}, '') <> IFNULL(t.{rc}, '')
             )""".format(rc=rc)
-            # 新增数据可能在首次入库时就已经填写了现住址或核查结果，
-            # 必须按当前状态归类，不能只把“空地址”算作未核查。
-            cond_unchecked = """prev._row_key IS NULL
-                AND IFNULL(t.现住址, '') = ''
+            # 只用前一天快照判断“今天是否发生变化”；一旦进入当天工作量，
+            # 必须按今天的最终状态归类。否则地址从一个非空值改成另一个
+            # 非空值时会进入数据总数，却不会进入任何状态列。
+            cond_unchecked = """IFNULL(t.现住址, '') = ''
                 AND IFNULL(t.{rc}, '') = ''""".format(rc=rc)
-            cond_checked = """(
-                    prev._row_key IS NULL
-                    AND IFNULL(t.现住址, '') <> ''
-                    AND IFNULL(t.{rc}, '') = ''
-                ) OR (
-                    prev._row_key IS NOT NULL
-                    AND IFNULL(prev.现住址, '') = ''
-                    AND IFNULL(t.现住址, '') <> ''
-                    AND IFNULL(t.{rc}, '') = ''
-                )""".format(rc=rc)
-            cond_done = """(
-                    prev._row_key IS NULL
-                    AND IFNULL(t.{rc}, '') <> ''
-                ) OR (
-                    prev._row_key IS NOT NULL
-                    AND IFNULL(prev.{rc}, '') = ''
-                    AND IFNULL(t.{rc}, '') <> ''
-                )""".format(rc=rc)
+            cond_checked = """IFNULL(t.现住址, '') <> ''
+                AND IFNULL(t.{rc}, '') = ''""".format(rc=rc)
+            cond_done = "IFNULL(t.{rc}, '') <> ''".format(rc=rc)
         else:
             # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据，按当前状态分类
             join_clause = ""
             change_filter = (
                 "t._last_updated_at >= %s AND t._last_updated_at < %s"
             )
-            cond_unchecked = "(t.现住址 IS NULL OR t.现住址 = '')"
-            cond_checked = f"t.现住址 <> '' AND (t.{rc} IS NULL OR t.{rc} = '')"
-            cond_done = f"t.{rc} <> ''"
+            cond_unchecked = (
+                f"IFNULL(t.现住址, '') = '' AND IFNULL(t.{rc}, '') = ''"
+            )
+            cond_checked = (
+                f"IFNULL(t.现住址, '') <> '' AND IFNULL(t.{rc}, '') = ''"
+            )
+            cond_done = f"IFNULL(t.{rc}, '') <> ''"
 
         inspector_sql = f"""
             SELECT
@@ -230,10 +219,10 @@ class BaseReportBuilder:
         inspector_sql = f"""
             SELECT
                 t.社区 AS 社区, t.核查人 AS 姓名, COUNT(*) AS 数据总数,
-                SUM(CASE WHEN t.现住址 IS NULL OR t.现住址 = '' THEN 1 ELSE 0 END) AS 未核查,
-                SUM(CASE WHEN t.现住址 <> '' AND (t.{rc} IS NULL OR t.{rc} = '') THEN 1 ELSE 0 END) AS 已核查,
-                SUM(CASE WHEN t.现住址 <> '' AND t.{rc} <> '' THEN 1 ELSE 0 END) AS 已完成,
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN t.现住址 <> '' AND t.{rc} <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
+                SUM(CASE WHEN IFNULL(t.现住址, '') = '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 未核查,
+                SUM(CASE WHEN IFNULL(t.现住址, '') <> '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 已核查,
+                SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) AS 已完成,
+                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END) AS 无法见底数,
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查见底率
             FROM {src} t
@@ -246,10 +235,10 @@ class BaseReportBuilder:
         community_sql = f"""
             SELECT
                 t.社区 AS 社区, COUNT(*) AS 数据总数,
-                SUM(CASE WHEN t.现住址 IS NULL OR t.现住址 = '' THEN 1 ELSE 0 END) AS 未核查,
-                SUM(CASE WHEN t.现住址 <> '' AND (t.{rc} IS NULL OR t.{rc} = '') THEN 1 ELSE 0 END) AS 已核查,
-                SUM(CASE WHEN t.现住址 <> '' AND t.{rc} <> '' THEN 1 ELSE 0 END) AS 已完成,
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN t.现住址 <> '' AND t.{rc} <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
+                SUM(CASE WHEN IFNULL(t.现住址, '') = '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 未核查,
+                SUM(CASE WHEN IFNULL(t.现住址, '') <> '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 已核查,
+                SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) AS 已完成,
+                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END) AS 无法见底数,
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查见底率
             FROM {src} t

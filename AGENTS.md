@@ -27,6 +27,7 @@
   - `OnlineDataArchive`：已经从在线表格移除的数据。
   - `daily_report`：每日快照和统计结果。
 - 查询多天数据时，要从每日快照重新计算，不能把多天的日报直接相加，否则结果可能重复。
+- 单日报表只纳入当天新增或地址、核查结果发生变化的数据；进入当天工作量后必须按当天最终状态归类，未核查、已核查、已完成三列之和必须等于数据总数。
 - 支持哪些表格，以 `backend/services/parsers/__init__.py` 为准。
 - 支持哪些日报，以 `backend/services/report_builders/__init__.py` 为准。
 - 后端有哪些接口，以 `backend/main.py` 为准；前端有哪些页面，以 `frontend/src/App.tsx` 为准。

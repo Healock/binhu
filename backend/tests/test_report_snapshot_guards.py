@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 import types
 import unittest
@@ -68,7 +69,7 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
                 normalized_sql,
             )
 
-    def test_new_rows_are_classified_by_current_status(self):
+    def test_changed_rows_are_classified_by_current_status(self):
         inspector_sql, _ = FullChainBuilder()._build_workload_sql(
             "`2026-07-27_snapshot_fullChain`",
             "`2026-07-26_snapshot_fullChain`",
@@ -76,19 +77,70 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         normalized_sql = " ".join(inspector_sql.split())
 
         self.assertIn(
-            "prev._row_key IS NULL AND IFNULL(t.现住址, '') = '' "
-            "AND IFNULL(t.核查结果, '') = ''",
+            "IFNULL(t.现住址, '') = '' AND IFNULL(t.核查结果, '') = ''",
             normalized_sql,
         )
         self.assertIn(
-            "prev._row_key IS NULL AND IFNULL(t.现住址, '') <> '' "
-            "AND IFNULL(t.核查结果, '') = ''",
+            "IFNULL(t.现住址, '') <> '' AND IFNULL(t.核查结果, '') = ''",
             normalized_sql,
         )
         self.assertIn(
-            "prev._row_key IS NULL AND IFNULL(t.核查结果, '') <> ''",
+            "IFNULL(t.核查结果, '') <> ''",
             normalized_sql,
         )
+        self.assertNotIn(
+            "prev._row_key IS NULL AND IFNULL(t.现住址, '')",
+            normalized_sql,
+        )
+
+    def test_address_correction_still_counts_as_checked(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            for table in ("today_snapshot", "previous_snapshot"):
+                connection.execute(
+                    f"""
+                    CREATE TABLE {table} (
+                        _row_key TEXT PRIMARY KEY,
+                        社区 TEXT,
+                        核查人 TEXT,
+                        现住址 TEXT,
+                        核查结果 TEXT
+                    )
+                    """
+                )
+            previous_rows = [
+                ("checked", "社区甲", "吕强", "旧地址", ""),
+                ("done_address", "社区甲", "吕强", "旧地址", "已登记"),
+                ("done_result", "社区甲", "吕强", "地址三", "已登记"),
+                ("unchanged", "社区甲", "吕强", "地址四", "已登记"),
+            ]
+            today_rows = [
+                ("checked", "社区甲", "吕强", "新地址", ""),
+                ("done_address", "社区甲", "吕强", "新地址", "已登记"),
+                ("done_result", "社区甲", "吕强", "地址三", "移交"),
+                ("unchanged", "社区甲", "吕强", "地址四", "已登记"),
+                ("new_unchecked", "社区甲", "吕强", "", ""),
+            ]
+            connection.executemany(
+                "INSERT INTO previous_snapshot VALUES (?, ?, ?, ?, ?)",
+                previous_rows,
+            )
+            connection.executemany(
+                "INSERT INTO today_snapshot VALUES (?, ?, ?, ?, ?)",
+                today_rows,
+            )
+
+            inspector_sql, _ = FullChainBuilder()._build_workload_sql(
+                "today_snapshot",
+                "previous_snapshot",
+            )
+            row = connection.execute(inspector_sql).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual(row[2:6], (4, 1, 1, 2))
+            self.assertEqual(sum(row[3:6]), row[2])
+        finally:
+            connection.close()
 
     async def test_range_without_snapshots_does_not_query_live_table(self):
         pool, cursor = make_database(fetchall_values=[[]])
