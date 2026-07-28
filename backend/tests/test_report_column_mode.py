@@ -33,6 +33,44 @@ def sample_report():
     }
 
 
+def sample_detailed_table():
+    columns = [
+        "社区",
+        "数据总数",
+        "未核查",
+        "已核查",
+        "已完成",
+        "核查完成率",
+        "无法见底数",
+        "核查见底率",
+    ]
+    return {
+        "columns": columns,
+        "data": [
+            {
+                "社区": "长板",
+                "数据总数": 30,
+                "未核查": 10,
+                "已核查": 5,
+                "已完成": 15,
+                "核查完成率": 0.5,
+                "无法见底数": 3,
+                "核查见底率": 0.4,
+            },
+            {
+                "社区": "水秀",
+                "数据总数": 20,
+                "未核查": 4,
+                "已核查": 6,
+                "已完成": 10,
+                "核查完成率": 0.5,
+                "无法见底数": 2,
+                "核查见底率": 0.4,
+            },
+        ],
+    }
+
+
 class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
     def test_two_column_mode_merges_unfinished_work(self):
         source = sample_report()
@@ -64,6 +102,8 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已完成", result["columns"])
         self.assertEqual(result["data"][0]["已核查"], 5)
         self.assertEqual(result["column_mode"], "three")
+        self.assertEqual(result["summary"]["社区"], "总计")
+        self.assertEqual(result["summary"]["数据总数"], 30)
 
     def test_nested_inspector_and_community_tables_are_projected(self):
         table = sample_report()
@@ -81,6 +121,62 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["inspector"]["data"][0]["未核查"], 15)
         self.assertEqual(result["community"]["data"][0]["已核查"], 15)
         self.assertNotIn("已完成", result["inspector"]["columns"])
+
+    def test_total_row_sums_counts_and_recalculates_rates(self):
+        result = project_report_payload(
+            {"exists": True, **sample_detailed_table()},
+            "three",
+        )
+
+        summary = result["summary"]
+        self.assertEqual(summary["社区"], "总计")
+        self.assertEqual(summary["数据总数"], 50)
+        self.assertEqual(summary["未核查"], 14)
+        self.assertEqual(summary["已核查"], 11)
+        self.assertEqual(summary["已完成"], 25)
+        self.assertEqual(summary["无法见底数"], 5)
+        self.assertEqual(summary["核查完成率"], 0.5)
+        self.assertEqual(summary["核查见底率"], 0.4)
+
+    def test_two_column_mode_projects_total_row(self):
+        result = project_report_payload(
+            {"exists": True, **sample_detailed_table()},
+            "two",
+        )
+
+        summary = result["summary"]
+        self.assertEqual(summary["未核查"], 25)
+        self.assertEqual(summary["已核查"], 25)
+        self.assertNotIn("已完成", summary)
+        self.assertEqual(summary["核查完成率"], 0.5)
+
+    def test_summary_report_total_recalculates_person_average(self):
+        table = sample_detailed_table()
+        table["columns"].extend(["网格员人数", "当日人均核查数"])
+        table["data"][0].update({"网格员人数": 3, "当日人均核查数": 5})
+        table["data"][1].update({"网格员人数": 1, "当日人均核查数": 10})
+
+        result = project_report_payload({"exists": True, **table}, "three")
+
+        self.assertEqual(result["summary"]["网格员人数"], 4)
+        self.assertEqual(result["summary"]["当日人均核查数"], 6.25)
+
+    def test_inspector_total_uses_one_total_label(self):
+        table = sample_detailed_table()
+        table["columns"] = ["社区", "姓名", *table["columns"][1:]]
+        table["data"][0]["姓名"] = "张三"
+        table["data"][1]["姓名"] = "李四"
+        payload = {
+            "exists": True,
+            "inspector": table,
+            "community": sample_detailed_table(),
+        }
+
+        result = project_report_payload(payload, "three")
+
+        self.assertEqual(result["inspector"]["summary"]["社区"], "总计")
+        self.assertEqual(result["inspector"]["summary"]["姓名"], "")
+        self.assertEqual(result["community"]["summary"]["社区"], "总计")
 
     async def test_report_endpoint_uses_saved_account_mode_by_default(self):
         with patch(
