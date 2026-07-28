@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert,
   Button,
+  DatePicker,
   Modal,
   Statistic,
+  Table,
   Tag,
   Tooltip,
   Upload,
@@ -12,25 +14,33 @@ import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
 import {
   CalendarOutlined,
   InboxOutlined,
+  SearchOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
+import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
-import { PageHeader, Panel } from '../components/ui'
+import { EmptyState, LoadingState, PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
   formatUTCTime,
   getVisitCoverage,
   getVisitImportIssues,
+  getVisitSummary,
   uploadStarRating,
   uploadVisitDetail,
   type VisitCoverage,
   type VisitImportIssue,
   type VisitImportResult,
+  type VisitSummaryReport,
 } from '../api/client'
 
 const { Dragger } = Upload
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 const ISSUE_PAGE_SIZE = 50
+const EMPTY_FILTER_VALUE = '__binhu_empty_visit_summary_value__'
+const SUMMARY_RATE_COLUMNS = new Set(['星级评定率'])
+const SUMMARY_DECIMAL_COLUMNS = new Set(['户均变动数'])
+type VisitSummaryRow = Record<string, string | number>
 
 const statusMeta = {
   success: { color: 'success', label: '导入成功' },
@@ -42,6 +52,124 @@ const statusMeta = {
 function DateRange({ start, end }: { start: string | null; end: string | null }) {
   if (!start || !end) return <span className="text-slate-400">暂无数据</span>
   return <span>{start} 至 {end}</span>
+}
+
+function formatSummaryValue(value: unknown, column: string) {
+  if (value == null || value === '') return column === '姓名' ? '' : '-'
+  if (SUMMARY_RATE_COLUMNS.has(column)) {
+    return `${(Number(value) * 100).toFixed(1)}%`
+  }
+  if (SUMMARY_DECIMAL_COLUMNS.has(column)) {
+    return Number(value).toFixed(1)
+  }
+  return String(value)
+}
+
+function compareSummaryValues(left: unknown, right: unknown, sortOrder?: string | null) {
+  const leftEmpty = left == null || left === ''
+  const rightEmpty = right == null || right === ''
+  if (leftEmpty || rightEmpty) {
+    if (leftEmpty && rightEmpty) return 0
+    const emptyAfter = leftEmpty ? 1 : -1
+    return sortOrder === 'descend' ? -emptyAfter : emptyAfter
+  }
+  const leftNumber = typeof left === 'number' ? left : Number(left)
+  const rightNumber = typeof right === 'number' ? right : Number(right)
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber
+  }
+  return String(left).localeCompare(String(right), 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+function visitSummaryColumns(
+  columns: string[],
+  rows: VisitSummaryRow[],
+): TableColumnsType<VisitSummaryRow> {
+  return columns.map(column => {
+    const filterOptions = new Map<string, { text: string; value: string; raw: unknown }>()
+    for (const row of rows) {
+      const raw = row[column]
+      const value = raw == null || raw === '' ? EMPTY_FILTER_VALUE : String(raw)
+      if (!filterOptions.has(value)) {
+        filterOptions.set(value, {
+          text: formatSummaryValue(raw, column),
+          value,
+          raw,
+        })
+      }
+    }
+    return {
+      title: column,
+      dataIndex: column,
+      key: column,
+      width: column === '社区' || column === '姓名' ? 120 : 112,
+      sorter: (left, right, sortOrder) => (
+        compareSummaryValues(left[column], right[column], sortOrder)
+      ),
+      filters: Array.from(filterOptions.values())
+        .sort((left, right) => compareSummaryValues(left.raw, right.raw))
+        .map(({ text, value }) => ({ text, value })),
+      filterSearch: true,
+      onFilter: (selectedValue, row) => {
+        const raw = row[column]
+        const value = raw == null || raw === '' ? EMPTY_FILTER_VALUE : String(raw)
+        return value === String(selectedValue)
+      },
+      render: (value: unknown) => formatSummaryValue(value, column),
+    }
+  })
+}
+
+function visitSummaryTotal(
+  columns: string[],
+  summary: VisitSummaryRow,
+) {
+  return () => (
+    <Table.Summary.Row className="app-report-total-row">
+      {columns.map((column, index) => (
+        <Table.Summary.Cell index={index} key={column}>
+          <span className={index === 0 ? 'font-semibold text-blue-900' : ''}>
+            {formatSummaryValue(summary[column], column)}
+          </span>
+        </Table.Summary.Cell>
+      ))}
+    </Table.Summary.Row>
+  )
+}
+
+function SummaryCard({
+  row,
+  columns,
+  titleColumns,
+  total = false,
+}: {
+  row: VisitSummaryRow
+  columns: string[]
+  titleColumns: string[]
+  total?: boolean
+}) {
+  return (
+    <div className={`app-card app-card--padded space-y-1.5${total ? ' app-report-total-card' : ''}`}>
+      <div className="mb-1 flex items-center justify-between border-b pb-2">
+        <span className="font-semibold text-gray-800">
+          {titleColumns.map(column => row[column]).filter(Boolean).join(' · ')}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-sm">
+        {columns.filter(column => !titleColumns.includes(column)).map(column => (
+          <div key={column}>
+            <span className="block text-xs text-gray-400">{column}</span>
+            <span className="text-gray-800">
+              {formatSummaryValue(row[column], column)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function VisitSummary() {
@@ -64,18 +192,52 @@ export default function VisitSummary() {
   const [issueTotal, setIssueTotal] = useState(0)
   const [issuePage, setIssuePage] = useState(1)
   const [issueLoading, setIssueLoading] = useState(false)
+  const [summaryRange, setSummaryRange] = useState<[string, string] | null>(null)
+  const [shownSummaryRange, setShownSummaryRange] = useState<[string, string] | null>(null)
+  const [summaryReport, setSummaryReport] = useState<VisitSummaryReport | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
+  const rangeInitialized = useRef(false)
+
+  const loadSummary = useCallback(async (range: [string, string]) => {
+    setSummaryLoading(true)
+    setSummaryError('')
+    try {
+      const nextReport = await getVisitSummary(range[0], range[1])
+      setSummaryReport(nextReport)
+      setShownSummaryRange(range)
+    } catch (error: any) {
+      setSummaryError(
+        error?.response?.data?.detail
+          || '走访汇总读取失败，请稍后重试',
+      )
+    } finally {
+      setSummaryLoading(false)
+    }
+  }, [])
 
   const loadCoverage = useCallback(async () => {
     setCoverageLoading(true)
     setCoverageError('')
     try {
-      setCoverage(await getVisitCoverage())
+      const nextCoverage = await getVisitCoverage()
+      setCoverage(nextCoverage)
+      if (!rangeInitialized.current) {
+        const fallbackDate = dayjs().format('YYYY-MM-DD')
+        const initialRange: [string, string] = [
+          nextCoverage.start_date || fallbackDate,
+          nextCoverage.end_date || fallbackDate,
+        ]
+        rangeInitialized.current = true
+        setSummaryRange(initialRange)
+        await loadSummary(initialRange)
+      }
     } catch {
       setCoverageError('走访数据范围读取失败，请稍后重试')
     } finally {
       setCoverageLoading(false)
     }
-  }, [])
+  }, [loadSummary])
 
   useEffect(() => {
     loadCoverage()
@@ -119,6 +281,22 @@ export default function VisitSummary() {
       setIssues(nextResult.issues.data)
       setIssueTotal(nextResult.issues.total)
       setIssuePage(1)
+      if (shownSummaryRange) {
+        const previouslyCoveredAllDates = (
+          shownSummaryRange[0] === coverage?.start_date
+          && shownSummaryRange[1] === coverage?.end_date
+        )
+        const refreshedRange: [string, string] = previouslyCoveredAllDates
+          && nextResult.coverage.start_date
+          && nextResult.coverage.end_date
+          ? [
+              nextResult.coverage.start_date,
+              nextResult.coverage.end_date,
+            ]
+          : shownSummaryRange
+        setSummaryRange(refreshedRange)
+        await loadSummary(refreshedRange)
+      }
     } catch (error: any) {
       setImportError(
         error?.response?.data?.detail
@@ -167,6 +345,22 @@ export default function VisitSummary() {
       setIssues(nextResult.issues.data)
       setIssueTotal(nextResult.issues.total)
       setIssuePage(1)
+      if (shownSummaryRange) {
+        const previouslyCoveredAllDates = (
+          shownSummaryRange[0] === coverage?.start_date
+          && shownSummaryRange[1] === coverage?.end_date
+        )
+        const refreshedRange: [string, string] = previouslyCoveredAllDates
+          && nextResult.coverage.start_date
+          && nextResult.coverage.end_date
+          ? [
+              nextResult.coverage.start_date,
+              nextResult.coverage.end_date,
+            ]
+          : shownSummaryRange
+        setSummaryRange(refreshedRange)
+        await loadSummary(refreshedRange)
+      }
     } catch (error: any) {
       setRatingImportError(
         error?.response?.data?.detail
@@ -303,6 +497,14 @@ export default function VisitSummary() {
   ]
 
   const shownMissingDates = coverage?.missing_dates.slice(0, 10) || []
+  const cardMode = user?.table_display_mode === 'card'
+  const inspectorRows = (summaryReport?.inspector.data || []) as VisitSummaryRow[]
+  const communityRows = (summaryReport?.community.data || []) as VisitSummaryRow[]
+  const selectedStartDate = summaryRange?.[0] || ''
+  const selectedEndDate = summaryRange?.[1] || ''
+  const shownRangeLabel = shownSummaryRange
+    ? `${shownSummaryRange[0]} 至 ${shownSummaryRange[1]}`
+    : '尚未查询'
 
   return (
     <div className="app-page min-w-0">
@@ -359,6 +561,180 @@ export default function VisitSummary() {
           )}
         </div>
       </Panel>
+
+      <Panel
+        title="走访数据汇总"
+        description="按入户业务日期统计；社区使用走访记录中的实际走访社区"
+      >
+        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center">
+          <div className="flex w-full items-center gap-1.5 md:hidden">
+            <input
+              type="date"
+              value={selectedStartDate}
+              onChange={(event) => {
+                const nextStart = event.target.value
+                if (!nextStart) return
+                setSummaryRange([
+                  nextStart,
+                  nextStart > selectedEndDate ? nextStart : selectedEndDate,
+                ])
+              }}
+              className="min-h-11 min-w-0 flex-1 rounded border border-gray-300 px-2 text-sm"
+            />
+            <span className="text-xs text-gray-400">至</span>
+            <input
+              type="date"
+              value={selectedEndDate}
+              onChange={(event) => {
+                const nextEnd = event.target.value
+                if (!nextEnd) return
+                setSummaryRange([
+                  nextEnd < selectedStartDate ? nextEnd : selectedStartDate,
+                  nextEnd,
+                ])
+              }}
+              className="min-h-11 min-w-0 flex-1 rounded border border-gray-300 px-2 text-sm"
+            />
+          </div>
+          <div className="hidden w-[300px] md:block">
+            <DatePicker.RangePicker
+              size="large"
+              className="w-full"
+              value={summaryRange
+                ? [dayjs(summaryRange[0]), dayjs(summaryRange[1])]
+                : null}
+              onChange={(_, dateStrings) => {
+                if (dateStrings[0] && dateStrings[1]) {
+                  setSummaryRange([dateStrings[0], dateStrings[1]])
+                }
+              }}
+              allowClear={false}
+            />
+          </div>
+          <Button
+            type="primary"
+            size="large"
+            icon={<SearchOutlined />}
+            loading={summaryLoading}
+            disabled={!summaryRange}
+            onClick={() => summaryRange && loadSummary(summaryRange)}
+          >
+            查询汇总
+          </Button>
+          <span className="text-sm text-slate-500 md:ml-auto">
+            当前结果：{shownRangeLabel}
+          </span>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          走访户数按去重后的走访记录计算；星级评定按已经关联到这些走访记录的数据计算。
+        </p>
+      </Panel>
+
+      {summaryError && (
+        <Alert type="error" showIcon message={summaryError} />
+      )}
+
+      {summaryLoading && !summaryReport ? (
+        <Panel>
+          <LoadingState label="正在计算走访汇总..." />
+        </Panel>
+      ) : summaryReport && inspectorRows.length === 0 ? (
+        <Panel>
+          <EmptyState label={`${shownRangeLabel} 暂无走访数据`} />
+        </Panel>
+      ) : summaryReport && cardMode ? (
+        <div className="space-y-6">
+          <div className="space-y-3">
+            <h2 className="px-1 text-sm font-semibold text-gray-700">
+              网格员汇总（{inspectorRows.length} 行）
+              <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+            </h2>
+            <div className="grid grid-cols-1 gap-3">
+              {inspectorRows.map((row, index) => (
+                <SummaryCard
+                  key={`${row.社区}-${row.姓名}-${index}`}
+                  row={row}
+                  columns={summaryReport.inspector.columns}
+                  titleColumns={['社区', '姓名']}
+                />
+              ))}
+              <SummaryCard
+                row={summaryReport.inspector.summary as VisitSummaryRow}
+                columns={summaryReport.inspector.columns}
+                titleColumns={['社区', '姓名']}
+                total
+              />
+            </div>
+          </div>
+          <div className="space-y-3">
+            <h2 className="px-1 text-sm font-semibold text-gray-700">
+              社区汇总（{communityRows.length} 个社区）
+              <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+            </h2>
+            <div className="grid grid-cols-1 gap-3">
+              {communityRows.map((row, index) => (
+                <SummaryCard
+                  key={`${row.社区}-${index}`}
+                  row={row}
+                  columns={summaryReport.community.columns}
+                  titleColumns={['社区']}
+                />
+              ))}
+              <SummaryCard
+                row={summaryReport.community.summary as VisitSummaryRow}
+                columns={summaryReport.community.columns}
+                titleColumns={['社区']}
+                total
+              />
+            </div>
+          </div>
+        </div>
+      ) : summaryReport ? (
+        <>
+          <AppTable<VisitSummaryRow>
+            key={`visit-inspector-${shownRangeLabel}`}
+            columns={visitSummaryColumns(
+              summaryReport.inspector.columns,
+              inspectorRows,
+            )}
+            dataSource={inspectorRows}
+            rowKey={(row, index) => `${row.社区}-${row.姓名}-${index}`}
+            loading={summaryLoading}
+            sticky
+            summary={visitSummaryTotal(
+              summaryReport.inspector.columns,
+              summaryReport.inspector.summary as VisitSummaryRow,
+            )}
+            title={() => (
+              <h2 className="text-sm font-semibold text-gray-700">
+                网格员汇总（{inspectorRows.length} 行）
+                <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+              </h2>
+            )}
+          />
+          <AppTable<VisitSummaryRow>
+            key={`visit-community-${shownRangeLabel}`}
+            columns={visitSummaryColumns(
+              summaryReport.community.columns,
+              communityRows,
+            )}
+            dataSource={communityRows}
+            rowKey={(row, index) => `${row.社区}-${index}`}
+            loading={summaryLoading}
+            sticky
+            summary={visitSummaryTotal(
+              summaryReport.community.columns,
+              summaryReport.community.summary as VisitSummaryRow,
+            )}
+            title={() => (
+              <h2 className="text-sm font-semibold text-gray-700">
+                社区汇总（{communityRows.length} 个社区）
+                <span className="ml-2 font-normal text-gray-400">{shownRangeLabel}</span>
+              </h2>
+            )}
+          />
+        </>
+      ) : null}
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-2">
         <Panel

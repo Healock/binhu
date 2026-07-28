@@ -416,8 +416,34 @@ export interface VisitImportResult {
   issues: VisitIssuePage
 }
 
+export interface VisitSummaryTable {
+  columns: string[]
+  data: Array<Record<string, string | number>>
+  summary: Record<string, string | number>
+}
+
+export interface VisitSummaryReport {
+  start_date: string
+  end_date: string
+  inspector: VisitSummaryTable
+  community: VisitSummaryTable
+}
+
 export async function getVisitCoverage(): Promise<VisitCoverage> {
   const { data } = await api.get('/visits/coverage')
+  return data
+}
+
+export async function getVisitSummary(
+  startDate: string,
+  endDate: string,
+): Promise<VisitSummaryReport> {
+  const { data } = await api.get('/visits/summary', {
+    params: {
+      start_date: startDate,
+      end_date: endDate,
+    },
+  })
   return data
 }
 
