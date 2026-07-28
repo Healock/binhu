@@ -662,7 +662,7 @@ async def fail_import_batch(
             await cur.executemany(
                 """
                 INSERT INTO _visit_import_issues (
-                    batch_id, severity, code, row_number, message,
+                    batch_id, severity, code, source_row_number, message,
                     row_preview, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP())
                 """,
@@ -971,7 +971,7 @@ async def import_parsed_workbook(
                 await cur.executemany(
                     """
                     INSERT INTO _visit_import_issues (
-                        batch_id, severity, code, row_number, message,
+                        batch_id, severity, code, source_row_number, message,
                         row_preview, created_at
                     ) VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP())
                     """,
@@ -1070,11 +1070,11 @@ async def list_import_issues(
         total = int((await cur.fetchone())[0])
         await cur.execute(
             """
-            SELECT id, severity, code, row_number, message, row_preview
+            SELECT id, severity, code, source_row_number, message, row_preview
             FROM _visit_import_issues
             WHERE batch_id=%s
             ORDER BY CASE severity WHEN 'error' THEN 0 ELSE 1 END,
-                     row_number, id
+                     source_row_number, id
             LIMIT %s OFFSET %s
             """,
             (batch_id, page_size, offset),

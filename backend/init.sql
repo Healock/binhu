@@ -203,11 +203,11 @@ CREATE TABLE IF NOT EXISTS _visit_import_issues (
     batch_id     BIGINT NOT NULL,
     severity     VARCHAR(20) NOT NULL,
     code         VARCHAR(60) NOT NULL,
-    row_number   INT NOT NULL DEFAULT 0,
+    source_row_number INT NOT NULL DEFAULT 0,
     message      VARCHAR(500) NOT NULL,
     row_preview  JSON DEFAULT NULL,
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_visit_issue_batch (batch_id, severity, row_number)
+    INDEX idx_visit_issue_batch (batch_id, severity, source_row_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 1. 全链条（14列业务数据）
