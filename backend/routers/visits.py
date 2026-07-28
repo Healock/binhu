@@ -1,6 +1,7 @@
-"""走访明细与星级评定上传、关联、覆盖范围和导入问题。"""
+"""走访导入、星级关联、覆盖范围和区间汇总接口。"""
 
 import asyncio
+from datetime import date
 from hashlib import sha256
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from services.star_rating_import import (
     import_star_rating_workbook,
     parse_star_rating_workbook,
 )
+from services.visit_summary import get_visit_summary
 from services.visit_import import (
     ISSUE_PAGE_SIZE,
     MAX_FILE_BYTES,
@@ -78,6 +80,20 @@ async def _release_import_lock(conn) -> None:
 @router.get("/coverage")
 async def coverage(conn=Depends(get_db)):
     return await get_visit_coverage(conn)
+
+
+@router.get("/summary")
+async def summary(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    conn=Depends(get_db),
+):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="开始日期不能晚于结束日期",
+        )
+    return await get_visit_summary(conn, start_date, end_date)
 
 
 @router.post("/imports/detail")

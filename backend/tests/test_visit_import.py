@@ -402,6 +402,7 @@ class VisitCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/visits/imports/rating", protected_paths)
         self.assertIn("/api/visits/imports/{batch_id}/issues", protected_paths)
         self.assertNotIn("/api/visits/coverage", protected_paths)
+        self.assertNotIn("/api/visits/summary", protected_paths)
 
 
 class ImportFlowCursor:
