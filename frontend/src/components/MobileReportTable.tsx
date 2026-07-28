@@ -245,11 +245,11 @@ export default function MobileReportTable({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate font-medium text-slate-900">
+                    <div className="truncate text-[17px] font-semibold leading-6 text-slate-900">
                       {labels.primary}
                     </div>
                     {labels.secondary && (
-                      <div className="mt-0.5 truncate text-xs text-slate-500">
+                      <div className="mt-0.5 truncate text-[13px] text-slate-500">
                         {labels.secondary}
                       </div>
                     )}
