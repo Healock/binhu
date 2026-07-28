@@ -106,6 +106,12 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
         row = result["data"][0]
         self.assertEqual(row["核查完成率"], 0.83)
         self.assertEqual(row["核查见底率"], 0.67)
+        self.assertEqual(result["community"]["data"], result["data"])
+        self.assertEqual(result["inspector"]["data"][0]["姓名"], "张三")
+        self.assertEqual(
+            result["inspector"]["data"][0]["核查完成率"],
+            0.83,
+        )
 
 
 if __name__ == "__main__":

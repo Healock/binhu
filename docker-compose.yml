@@ -51,6 +51,7 @@ services:
       STATIC_DIR: /app/static
     volumes:
       - ./frontend/dist:/app/static:ro
+      - ./VERSION:/app/VERSION:ro
       - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
     logging:
       driver: json-file

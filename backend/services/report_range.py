@@ -16,7 +16,7 @@ from services.report_members import (
     calculate_ratio,
     complete_inspector_rows,
     get_active_members,
-    merge_community_rows,
+    merge_inspector_rows,
 )
 
 
@@ -119,7 +119,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 cur, start_date, end_date
             )
 
-            all_community_rows = []
+            all_inspector_rows = []
             total_days = 0
             for ptype in summary_types:
                 builder = BUILDERS.get(ptype)
@@ -139,39 +139,62 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                     insp_rows,
                     end_date,
                 )
-                all_community_rows.extend(
-                    aggregate_community_rows(insp_rows)
-                )
+                all_inspector_rows.extend(insp_rows)
 
-            if not all_community_rows:
+            if not all_inspector_rows:
                 return {"exists": False}
 
-            merged_rows = merge_community_rows(all_community_rows)
+            active_members = await get_active_members(cur, end_date)
+            inspector_rows = merge_inspector_rows(
+                all_inspector_rows,
+                active_members,
+            )
+            merged_rows = aggregate_community_rows(inspector_rows)
             member_counts: dict[str, int] = {}
-            for community, _ in await get_active_members(cur, end_date):
+            for community, _ in active_members:
                 member_counts[community] = member_counts.get(community, 0) + 1
-            rows = []
+            community_rows = []
             for row in merged_rows:
                 community = str(row[0])
                 count = member_counts.get(community, 0)
                 completed = int(row[4] or 0)
-                rows.append(
+                community_rows.append(
                     (
                         *row,
                         count,
                         calculate_ratio(completed, count),
                     )
                 )
-            cols = [
+            inspector_cols = [
+                "社区", "姓名", "数据总数", "未核查", "已核查", "已完成",
+                "核查完成率", "无法见底数", "核查见底率",
+            ]
+            community_cols = [
                 "社区", "数据总数", "未核查", "已核查", "已完成", "核查完成率",
                 "无法见底数", "核查见底率", "网格员人数", "当日人均核查数",
             ]
 
+        inspector_table = {
+            "columns": inspector_cols,
+            "data": [
+                dict(zip(inspector_cols, row))
+                for row in inspector_rows
+            ],
+        }
+        community_table = {
+            "columns": community_cols,
+            "data": [
+                dict(zip(community_cols, row))
+                for row in community_rows
+            ],
+        }
         return {
             "exists": True,
             "range": {"start": start_date, "end": end_date, "days": total_days or 1},
-            "columns": cols,
-            "data": [dict(zip(cols, r)) for r in rows],
+            # 顶层继续提供社区表，兼容旧调用方。
+            **community_table,
+            "inspector": inspector_table,
+            "community": community_table,
         }
     finally:
         pool.release(conn)

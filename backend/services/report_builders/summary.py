@@ -16,7 +16,7 @@ from services.report_members import (
     calculate_ratio,
     complete_inspector_rows,
     get_active_members,
-    merge_community_rows,
+    merge_inspector_rows,
 )
 
 SUMMARY_COLS = """
@@ -43,6 +43,18 @@ SUMMARY_OUTPUT_COLS = [
     "核查见底率",
     "网格员人数",
     "当日人均核查数",
+]
+
+SUMMARY_INSPECTOR_OUTPUT_COLS = [
+    "社区",
+    "姓名",
+    "数据总数",
+    "未核查",
+    "已核查",
+    "已完成",
+    "核查完成率",
+    "无法见底数",
+    "核查见底率",
 ]
 
 
@@ -238,7 +250,7 @@ async def get_summary(date_str: str) -> dict:
                 }
 
             summary_types = await _get_summary_types(cur)
-            all_community_rows = []
+            all_inspector_rows = []
             for parser_type in summary_types:
                 builder = BUILDERS.get(parser_type)
                 if not builder:
@@ -262,26 +274,29 @@ async def get_summary(date_str: str) -> dict:
                     await cur.fetchall(),
                     date_str,
                 )
-                all_community_rows.extend(
-                    aggregate_community_rows(inspector_rows)
-                )
+                all_inspector_rows.extend(inspector_rows)
 
-            if not all_community_rows:
+            if not all_inspector_rows:
                 return {
                     "exists": False,
                     "message": f"{date_str} 没有可用的分汇总表",
                 }
 
-            merged_rows = merge_community_rows(all_community_rows)
+            active_members = await get_active_members(cur, date_str)
+            inspector_rows = merge_inspector_rows(
+                all_inspector_rows,
+                active_members,
+            )
+            merged_rows = aggregate_community_rows(inspector_rows)
             member_counts: dict[str, int] = {}
-            for community, _ in await get_active_members(cur, date_str):
+            for community, _ in active_members:
                 member_counts[community] = member_counts.get(community, 0) + 1
-            rows = []
+            community_rows = []
             for row in merged_rows:
                 community = str(row[0])
                 count = member_counts.get(community, 0)
                 completed = int(row[4] or 0)
-                rows.append(
+                community_rows.append(
                     (
                         *row,
                         count,
@@ -289,10 +304,26 @@ async def get_summary(date_str: str) -> dict:
                     )
                 )
 
+        inspector_table = {
+            "columns": SUMMARY_INSPECTOR_OUTPUT_COLS,
+            "data": [
+                dict(zip(SUMMARY_INSPECTOR_OUTPUT_COLS, row))
+                for row in inspector_rows
+            ],
+        }
+        community_table = {
+            "columns": SUMMARY_OUTPUT_COLS,
+            "data": [
+                dict(zip(SUMMARY_OUTPUT_COLS, row))
+                for row in community_rows
+            ],
+        }
         return {
             "exists": True,
-            "columns": SUMMARY_OUTPUT_COLS,
-            "data": [dict(zip(SUMMARY_OUTPUT_COLS, row)) for row in rows],
+            # 保留原来的顶层社区表字段，兼容尚未升级的调用方。
+            **community_table,
+            "inspector": inspector_table,
+            "community": community_table,
         }
     finally:
         pool.release(conn)
