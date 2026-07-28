@@ -52,7 +52,9 @@ export default function PersonalizationSettings() {
               { label: '卡片模式', value: 'card' },
             ]}
           />
-          <p className="mt-2 text-sm text-slate-500">手机端内容较窄时，可以使用卡片模式。</p>
+          <p className="mt-2 text-sm text-slate-500">
+            该选项主要控制电脑端；在线数据汇总在手机端会自动使用精简列表，也可以临时切换为完整表格。
+          </p>
         </div>
 
         <div>

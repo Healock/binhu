@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Button, DatePicker, Select, Table, Tag } from 'antd'
+import { Button, DatePicker, Segmented, Select, Table, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
+import MobileReportTable from '../components/MobileReportTable'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
 import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, getSystemConfig } from '../api/client'
@@ -108,6 +109,7 @@ export default function Dashboard() {
   const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
+  const [mobileReportSection, setMobileReportSection] = useState<'inspector' | 'community'>('inspector')
   const [startDate, endDate] = dateRange
 
   // 日期或业务类型变化时读取报表；同步任务结束时也会调用同一函数。
@@ -171,6 +173,12 @@ export default function Dashboard() {
   const isRange = startDate !== endDate
   const rangeInfo = report.range
   const cardMode = user?.table_display_mode === 'card'
+  const mobileTable = mobileReportSection === 'inspector'
+    ? report.inspector
+    : report.community
+  const mobileTitleColumns = mobileReportSection === 'inspector'
+    ? ['社区', '姓名']
+    : ['社区']
 
   // 卡片渲染辅助
   const renderCard = (
@@ -290,128 +298,186 @@ export default function Dashboard() {
           <EmptyState label={msg || `${startDate} 至 ${endDate} 暂无“${reportType}”报告`} />
         </section>
       ) : isSummary ? (
-        cardMode ? (
-          <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-gray-700 px-1">
-              总汇总表（{report.data?.length || 0} 个社区）
-              {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-            </h3>
-            <div className="grid grid-cols-1 gap-3">
-              {report.data?.map((row: any, i: number) => (
-                renderCard(row, report.columns || [], ['社区'], row.id || row.社区 || i)
-              ))}
-              {report.summary && renderCard(
-                report.summary,
-                report.columns || [],
-                ['社区'],
-                'summary-total',
-                true,
-              )}
-            </div>
+        <>
+          <div className="md:hidden">
+            <MobileReportTable
+              columns={report.columns || []}
+              rows={report.data || []}
+              titleColumns={['社区']}
+              resetKey={`summary-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+              fullColumns={reportTableColumns(report.columns || [], report.data || [])}
+              fullSummary={reportTableSummary(report.columns || [])}
+              rowKey={(row, index) => row.id || row.社区 || index}
+            />
           </div>
-        ) : (
-          <AppTable<Record<string, any>>
-            key={`summary-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-            columns={reportTableColumns(report.columns || [], report.data || [])}
-            dataSource={report.data || []}
-            rowKey={row => row.id || row.社区}
-            summary={report.summary
-              ? reportTableSummary(report.columns || [])
-              : undefined}
-            title={currentRows => (
-              <h3 className="text-sm font-semibold text-gray-700">
-                总汇总表（{currentRows.length} 个社区）
-                {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-              </h3>
+
+          <div className="hidden md:block">
+            {cardMode ? (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700 px-1">
+                  总汇总表（{report.data?.length || 0} 个社区）
+                  {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                </h3>
+                <div className="grid grid-cols-1 gap-3">
+                  {report.data?.map((row: any, i: number) => (
+                    renderCard(row, report.columns || [], ['社区'], row.id || row.社区 || i)
+                  ))}
+                  {report.summary && renderCard(
+                    report.summary,
+                    report.columns || [],
+                    ['社区'],
+                    'summary-total',
+                    true,
+                  )}
+                </div>
+              </div>
+            ) : (
+              <AppTable<Record<string, any>>
+                key={`summary-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+                columns={reportTableColumns(report.columns || [], report.data || [])}
+                dataSource={report.data || []}
+                rowKey={row => row.id || row.社区}
+                summary={report.summary
+                  ? reportTableSummary(report.columns || [])
+                  : undefined}
+                title={currentRows => (
+                  <h3 className="text-sm font-semibold text-gray-700">
+                    总汇总表（{currentRows.length} 个社区）
+                    {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                  </h3>
+                )}
+              />
             )}
-          />
-        )
-      ) : cardMode ? (
-        <div className="space-y-6">
-          <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-gray-700 px-1">
-              核查人明细统计（{report.inspector?.data.length || 0} 人）
-              {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-            </h3>
-            <div className="grid grid-cols-1 gap-3">
-              {report.inspector?.data.map((row: Record<string, any>, i: number) => (
-                renderCard(
-                  row,
-                  report.inspector?.columns || [],
-                  ['社区', '姓名'],
-                  row.id || `${row.社区}-${row.姓名}-${i}`,
-                )
-              ))}
-              {report.inspector?.summary && renderCard(
-                report.inspector.summary,
-                report.inspector?.columns || [],
-                ['社区', '姓名'],
-                'inspector-summary-total',
-                true,
-              )}
-            </div>
           </div>
-          <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-gray-700 px-1">
-              社区汇总统计（{report.community?.data.length || 0} 个社区）
-              {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-            </h3>
-            <div className="grid grid-cols-1 gap-3">
-              {report.community?.data.map((row: Record<string, any>, i: number) => (
-                renderCard(
-                  row,
-                  report.community?.columns || [],
-                  ['社区'],
-                  row.id || row.社区 || i,
-                )
-              ))}
-              {report.community?.summary && renderCard(
-                report.community.summary,
-                report.community?.columns || [],
-                ['社区'],
-                'community-summary-total',
-                true,
-              )}
-            </div>
-          </div>
-        </div>
+        </>
       ) : (
         <>
-          <AppTable<Record<string, any>>
-            key={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-            columns={reportTableColumns(report.inspector?.columns || [], report.inspector?.data || [])}
-            dataSource={report.inspector?.data || []}
-            rowKey={row => row.id || `${row.社区}-${row.姓名}`}
-            summary={report.inspector?.summary
-              ? reportTableSummary(
-                  report.inspector?.columns || [],
-                )
-              : undefined}
-            title={currentRows => (
-              <h3 className="text-sm font-semibold text-gray-700">
-                核查人明细统计（{currentRows.length} 人）
-                {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-              </h3>
-            )}
-          />
+          <div className="space-y-3 md:hidden">
+            <Segmented
+              block
+              value={mobileReportSection}
+              onChange={value => setMobileReportSection(value as 'inspector' | 'community')}
+              options={[
+                {
+                  label: `核查人 ${report.inspector?.data.length || 0}`,
+                  value: 'inspector',
+                },
+                {
+                  label: `社区 ${report.community?.data.length || 0}`,
+                  value: 'community',
+                },
+              ]}
+            />
+            <MobileReportTable
+              columns={mobileTable?.columns || []}
+              rows={mobileTable?.data || []}
+              titleColumns={mobileTitleColumns}
+              resetKey={`${mobileReportSection}-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+              fullColumns={reportTableColumns(
+                mobileTable?.columns || [],
+                mobileTable?.data || [],
+              )}
+              fullSummary={reportTableSummary(mobileTable?.columns || [])}
+              rowKey={(row, index) => (
+                row.id
+                || (mobileReportSection === 'inspector'
+                  ? `${row.社区}-${row.姓名}-${index}`
+                  : row.社区)
+                || index
+              )}
+            />
+          </div>
 
-          <AppTable<Record<string, any>>
-            key={`community-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-            columns={reportTableColumns(report.community?.columns || [], report.community?.data || [])}
-            dataSource={report.community?.data || []}
-            rowKey={row => row.id || row.社区}
-            summary={report.community?.summary
-              ? reportTableSummary(
-                  report.community?.columns || [],
-                )
-              : undefined}
-            title={currentRows => (
-              <h3 className="text-sm font-semibold text-gray-700">
-                社区汇总统计（{currentRows.length} 个社区）
-                {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-              </h3>
+          <div className="hidden md:block">
+            {cardMode ? (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-gray-700 px-1">
+                    核查人明细统计（{report.inspector?.data.length || 0} 人）
+                    {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                  </h3>
+                  <div className="grid grid-cols-1 gap-3">
+                    {report.inspector?.data.map((row: Record<string, any>, i: number) => (
+                      renderCard(
+                        row,
+                        report.inspector?.columns || [],
+                        ['社区', '姓名'],
+                        row.id || `${row.社区}-${row.姓名}-${i}`,
+                      )
+                    ))}
+                    {report.inspector?.summary && renderCard(
+                      report.inspector.summary,
+                      report.inspector?.columns || [],
+                      ['社区', '姓名'],
+                      'inspector-summary-total',
+                      true,
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-gray-700 px-1">
+                    社区汇总统计（{report.community?.data.length || 0} 个社区）
+                    {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                  </h3>
+                  <div className="grid grid-cols-1 gap-3">
+                    {report.community?.data.map((row: Record<string, any>, i: number) => (
+                      renderCard(
+                        row,
+                        report.community?.columns || [],
+                        ['社区'],
+                        row.id || row.社区 || i,
+                      )
+                    ))}
+                    {report.community?.summary && renderCard(
+                      report.community.summary,
+                      report.community?.columns || [],
+                      ['社区'],
+                      'community-summary-total',
+                      true,
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <AppTable<Record<string, any>>
+                  key={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+                  columns={reportTableColumns(report.inspector?.columns || [], report.inspector?.data || [])}
+                  dataSource={report.inspector?.data || []}
+                  rowKey={row => row.id || `${row.社区}-${row.姓名}`}
+                  summary={report.inspector?.summary
+                    ? reportTableSummary(
+                        report.inspector?.columns || [],
+                      )
+                    : undefined}
+                  title={currentRows => (
+                    <h3 className="text-sm font-semibold text-gray-700">
+                      核查人明细统计（{currentRows.length} 人）
+                      {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                    </h3>
+                  )}
+                />
+
+                <AppTable<Record<string, any>>
+                  key={`community-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+                  columns={reportTableColumns(report.community?.columns || [], report.community?.data || [])}
+                  dataSource={report.community?.data || []}
+                  rowKey={row => row.id || row.社区}
+                  summary={report.community?.summary
+                    ? reportTableSummary(
+                        report.community?.columns || [],
+                      )
+                    : undefined}
+                  title={currentRows => (
+                    <h3 className="text-sm font-semibold text-gray-700">
+                      社区汇总统计（{currentRows.length} 个社区）
+                      {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                    </h3>
+                  )}
+                />
+              </>
             )}
-          />
+          </div>
         </>
       )}
 
