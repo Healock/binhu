@@ -1,21 +1,28 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Alert, Button, Input, Modal, Tag } from 'antd'
+import { Alert, Button, Input, Modal, Select, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
-import { getGridCommunities, addGridCommunity, deleteGridCommunity } from '../api/client'
+import { EditOutlined, PlusOutlined } from '@ant-design/icons'
+import {
+  getGridCommunities,
+  addGridCommunity,
+  deleteGridCommunity,
+  updateGridCommunityAliases,
+  type GridCommunity,
+} from '../api/client'
 import AppTable from '../components/AppTable'
 import { useAuth } from '../context/AuthContext'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
-interface Community { id: number; name: string; grid_count: number }
-
 export default function Communities() {
   const { user } = useAuth()
-  const [communities, setCommunities] = useState<Community[]>([])
+  const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [newName, setNewName] = useState('')
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [editingAliases, setEditingAliases] = useState<GridCommunity | null>(null)
+  const [aliasDraft, setAliasDraft] = useState<string[]>([])
+  const [savingAliases, setSavingAliases] = useState(false)
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -56,7 +63,34 @@ export default function Communities() {
     })
   }
 
-  const communityColumns: TableColumnsType<Community> = [
+  const openAliasEditor = (community: GridCommunity) => {
+    setEditingAliases(community)
+    setAliasDraft(community.aliases || [])
+  }
+
+  const handleSaveAliases = async () => {
+    if (!editingAliases) return
+    setSavingAliases(true)
+    try {
+      const result = await updateGridCommunityAliases(
+        editingAliases.id,
+        aliasDraft,
+      )
+      const matchedText = result.matched_visit_rows > 0
+        ? `，同时归类 ${result.matched_visit_rows} 条已有走访数据`
+        : ''
+      setMsg(`“${editingAliases.name}”的别名已保存${matchedText}`)
+      setEditingAliases(null)
+      setAliasDraft([])
+      await fetch()
+    } catch (error: any) {
+      setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
+    } finally {
+      setSavingAliases(false)
+    }
+  }
+
+  const communityColumns: TableColumnsType<GridCommunity> = [
     {
       title: '社区名称',
       dataIndex: 'name',
@@ -73,13 +107,36 @@ export default function Communities() {
       sorter: (left, right) => left.grid_count - right.grid_count,
     },
     {
+      title: '别名',
+      dataIndex: 'aliases',
+      key: 'aliases',
+      width: 300,
+      render: aliases => aliases?.length > 0
+        ? (
+          <div className="flex flex-wrap gap-1">
+            {aliases.map(alias => <Tag key={alias}>{alias}</Tag>)}
+          </div>
+        )
+        : <span className="text-slate-400">暂无别名</span>,
+    },
+    {
       title: '操作',
       key: 'actions',
-      width: 120,
+      width: 190,
       render: (_, community) => (
-        <Button type="link" danger size="small" onClick={() => handleDelete(community.id, community.name)}>
-          删除
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="link"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => openAliasEditor(community)}
+          >
+            编辑别名
+          </Button>
+          <Button type="link" danger size="small" onClick={() => handleDelete(community.id, community.name)}>
+            删除
+          </Button>
+        </div>
       ),
     },
   ]
@@ -128,14 +185,22 @@ export default function Communities() {
                 <div>
                   <div className="font-medium text-gray-800">{c.name}</div>
                   <div className="text-sm text-gray-500">网格员 {c.grid_count} 人</div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {c.aliases?.length > 0
+                      ? c.aliases.map(alias => <Tag key={alias}>{alias}</Tag>)
+                      : <span className="text-xs text-slate-400">暂无别名</span>}
+                  </div>
                 </div>
-                <Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button>
+                <div className="flex flex-col items-end">
+                  <Button type="link" size="small" onClick={() => openAliasEditor(c)}>编辑别名</Button>
+                  <Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button>
+                </div>
               </div>
             ))}
           </div>
         </div>
       ) : (
-        <AppTable<Community>
+        <AppTable<GridCommunity>
           columns={communityColumns}
           dataSource={communities}
           rowKey="id"
@@ -143,6 +208,33 @@ export default function Communities() {
         />
       )}
       <p className="text-xs text-slate-500">网格员人数会根据“网格员管理”中的所属社区自动统计，无需手动填写。</p>
+
+      <Modal
+        open={Boolean(editingAliases)}
+        title={editingAliases ? `编辑“${editingAliases.name}”的别名` : '编辑社区别名'}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={savingAliases}
+        onOk={handleSaveAliases}
+        onCancel={() => {
+          setEditingAliases(null)
+          setAliasDraft([])
+        }}
+      >
+        <p className="mb-3 text-sm text-slate-500">
+          输入来源数据里可能出现的其他名称，按回车添加。末尾的“社区”或“村”会自动去掉。
+        </p>
+        <Select
+          mode="tags"
+          value={aliasDraft}
+          onChange={setAliasDraft}
+          tokenSeparators={[',', '，']}
+          placeholder="例如：芦荡"
+          className="w-full"
+          maxTagCount="responsive"
+          options={[]}
+        />
+      </Modal>
     </div>
   )
 }

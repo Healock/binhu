@@ -6,6 +6,7 @@ import unittest
 from openpyxl import Workbook
 
 from deps import require_admin
+from routers.grid_members import CommunityAliasesUpdate
 from routers.visits import router as visits_router
 from services.privacy import mask_identity_number
 from services.visit_import import (
@@ -97,8 +98,26 @@ class VisitWorkbookParsingTests(unittest.TestCase):
         self.assertEqual(parsed.rows[0].changed_count, 3)
         self.assertEqual(parsed.ignored_rows, 1)
         self.assertTrue(
-            any(issue.code == "same_day_address_replaced" for issue in parsed.issues)
+            any(
+                issue.code == "same_day_address_operator_replaced"
+                for issue in parsed.issues
+            )
         )
+
+    def test_same_day_same_address_keeps_different_operators(self):
+        parsed = parse_visit_workbook(
+            workbook_bytes(
+                [
+                    visit_row(operator="张三"),
+                    visit_row(operator="李四"),
+                ]
+            ),
+            "Asia/Shanghai",
+        )
+
+        self.assertEqual(len(parsed.rows), 2)
+        self.assertEqual(parsed.ignored_rows, 0)
+        self.assertNotEqual(parsed.rows[0].row_key, parsed.rows[1].row_key)
 
     def test_same_address_on_different_days_is_kept(self):
         parsed = parse_visit_workbook(
@@ -304,7 +323,15 @@ class VisitIdentityTests(unittest.TestCase):
 
     def test_community_suffix_is_removed_once(self):
         self.assertEqual(normalize_community(" 长板社区 "), "长板")
+        self.assertEqual(normalize_community(" 南厍村 "), "南厍")
         self.assertEqual(normalize_community("社区"), "")
+        self.assertEqual(normalize_community("村"), "")
+
+    def test_community_aliases_are_normalized_and_deduplicated(self):
+        payload = CommunityAliasesUpdate(
+            aliases=[" 芦荡社区 ", "芦荡", "长板村"],
+        )
+        self.assertEqual(payload.aliases, ["芦荡", "长板"])
 
 
 class CoverageCursor:
@@ -384,8 +411,16 @@ class ImportFlowCursor:
         self.connection.executed.append((normalized, params))
         if normalized.startswith("SELECT MIN(`业务日期`), MAX(`业务日期`)"):
             self.rows = [(None, None)]
-        elif normalized == "SELECT name FROM _communities":
-            self.rows = [(name,) for name in self.connection.communities]
+        elif normalized == "SELECT id, name FROM _communities":
+            self.rows = [
+                (index, name)
+                for index, name in enumerate(
+                    self.connection.communities,
+                    start=1,
+                )
+            ]
+        elif normalized.startswith("SELECT a.alias, c.name"):
+            self.rows = list(self.connection.community_aliases)
         elif normalized.startswith(
             "SELECT id, name, community, id_card_number FROM _grid_members"
         ):
@@ -419,8 +454,9 @@ class ImportFlowCursor:
 
 
 class ImportFlowConnection:
-    def __init__(self, *, communities=(), members=()):
+    def __init__(self, *, communities=(), community_aliases=(), members=()):
         self.communities = list(communities)
+        self.community_aliases = list(community_aliases)
         self.members = list(members)
         self.executed = []
         self.executed_many = []
@@ -497,6 +533,34 @@ class VisitImportFlowTests(unittest.IsolatedAsyncioTestCase):
             issue_codes,
             {"community_not_found", "member_not_found"},
         )
+
+    async def test_alias_matches_canonical_community_without_member_mismatch(self):
+        parsed = parse_visit_workbook(
+            workbook_bytes(
+                [
+                    visit_row(
+                        community="芦荡社区",
+                        operator="陈亚平",
+                    )
+                ]
+            ),
+            "Asia/Shanghai",
+        )
+        connection = ImportFlowConnection(
+            communities=["长板"],
+            community_aliases=[("芦荡", "长板")],
+            members=[(1, "陈亚平", "其他社区", None)],
+        )
+
+        result = await import_parsed_workbook(
+            connection,
+            batch_id=9,
+            parsed=parsed,
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["warning_count"], 0)
+        self.assertEqual(connection.visit_inserts[0][3], "长板")
 
 
 if __name__ == "__main__":

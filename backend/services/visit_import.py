@@ -136,8 +136,10 @@ def _text(value: Any) -> str:
 
 def normalize_community(value: Any) -> str:
     text = unicodedata.normalize("NFKC", _text(value)).strip()
-    if text.endswith("社区"):
-        text = text[:-2].strip()
+    for suffix in ("社区", "村"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+            break
     return text
 
 
@@ -354,7 +356,7 @@ def parse_visit_workbook(
                 raw_community = _require_text(raw, "村社区", max_length=200)
                 community = normalize_community(raw_community)
                 if not community:
-                    raise ValueError("村社区去除“社区”后不能为空")
+                    raise ValueError("村社区去除“社区”或“村”后不能为空")
                 entry_method = _require_text(raw, "进入方式", max_length=20)
                 if entry_method not in ALLOWED_ENTRY_METHODS:
                     raise ValueError("进入方式只能是“扫码”或“搜索”")
@@ -399,7 +401,10 @@ def parse_visit_workbook(
             preview = _safe_preview(raw)
             address_key = sha256(normalized_address.encode("utf-8")).hexdigest()
             row_key = sha256(
-                f"{visit_date.isoformat()}|{normalized_address}".encode("utf-8")
+                (
+                    f"{visit_date.isoformat()}|{normalized_address}|"
+                    f"{operator_name}"
+                ).encode("utf-8")
             ).hexdigest()
             visit_row = VisitRow(
                 row_number=row_number,
@@ -445,9 +450,9 @@ def parse_visit_workbook(
                 issues.append(
                     ImportIssue(
                         severity="warning",
-                        code="same_day_address_replaced",
+                        code="same_day_address_operator_replaced",
                         row_number=previous.row_number,
-                        message="同日同地址存在更晚记录，本行未采用",
+                        message="同一网格员同日同地址存在更晚记录，本行未采用",
                         row_preview=previous.preview,
                     )
                 )
@@ -456,9 +461,9 @@ def parse_visit_workbook(
                 issues.append(
                     ImportIssue(
                         severity="warning",
-                        code="same_day_address_ignored",
+                        code="same_day_address_operator_ignored",
                         row_number=visit_row.row_number,
-                        message="同日同地址已有更晚记录，本行未采用",
+                        message="同一网格员同日同地址已有更晚记录，本行未采用",
                         row_preview=visit_row.preview,
                     )
                 )
@@ -720,8 +725,24 @@ async def _load_existing_rows(conn, row_keys: list[str]) -> dict[str, tuple[Any,
 
 async def _load_reference_data(conn):
     async with conn.cursor() as cur:
-        await cur.execute("SELECT name FROM _communities")
-        communities = {str(row[0]).strip() for row in await cur.fetchall()}
+        await cur.execute("SELECT id, name FROM _communities")
+        community_rows = await cur.fetchall()
+        communities = {str(row[1]).strip() for row in community_rows}
+        community_lookup = {
+            normalize_community(row[1]): str(row[1]).strip()
+            for row in community_rows
+        }
+        await cur.execute(
+            """
+            SELECT a.alias, c.name
+            FROM _community_aliases AS a
+            JOIN _communities AS c ON c.id = a.community_id
+            """
+        )
+        for alias, community_name in await cur.fetchall():
+            community_lookup[normalize_community(alias)] = str(
+                community_name
+            ).strip()
         await cur.execute(
             "SELECT id, name, community, id_card_number FROM _grid_members"
         )
@@ -738,7 +759,7 @@ async def _load_reference_data(conn):
         for name, value in members.items()
         if value["id_card_number"]
     }
-    return communities, members, id_owners
+    return communities, community_lookup, members, id_owners
 
 
 async def import_parsed_workbook(
@@ -814,7 +835,12 @@ async def import_parsed_workbook(
 
     await conn.begin()
     try:
-        communities, members, id_owners = await _load_reference_data(conn)
+        (
+            communities,
+            community_lookup,
+            members,
+            id_owners,
+        ) = await _load_reference_data(conn)
         seen_reference_warnings: set[tuple[str, str]] = set()
         member_updates: list[tuple[str, int]] = []
 
@@ -834,7 +860,10 @@ async def import_parsed_workbook(
             )
 
         for row in parsed.rows:
-            if row.community not in communities:
+            canonical_community = community_lookup.get(row.community)
+            if canonical_community:
+                row.community = canonical_community
+            elif row.community not in communities:
                 warning_once(
                     "community_not_found",
                     row.community,
@@ -850,16 +879,6 @@ async def import_parsed_workbook(
                     f"操作人“{row.operator_name}”不在网格员名单中，未自动创建",
                 )
                 continue
-            if (
-                member["community"]
-                and member["community"] != row.community
-            ):
-                warning_once(
-                    "member_community_mismatch",
-                    row.operator_name,
-                    row,
-                    f"操作人“{row.operator_name}”的网格员社区与走访社区不同",
-                )
             if not row.operator_account_valid:
                 continue
             existing_identity = member["id_card_number"]
