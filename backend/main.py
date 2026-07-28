@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app_version import APP_VERSION
 from config import settings
 from database import init_db, close_db
 from deps import get_current_user
@@ -68,7 +69,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="滨湖智慧平台",
     description="从腾讯文档获取数据，统计核查结果，生成数据透视表",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -85,7 +86,11 @@ if settings.cors_allowed_origins:
 # 健康检查（无需鉴权）
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "message": "滨湖智慧平台运行中"}
+    return {
+        "status": "ok",
+        "message": "滨湖智慧平台运行中",
+        "version": APP_VERSION,
+    }
 
 # auth 路由（login 端点无需鉴权，logout/me 需要鉴权在路由内处理）
 app.include_router(auth_router)

@@ -122,6 +122,28 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["community"]["data"][0]["已核查"], 15)
         self.assertNotIn("已完成", result["inspector"]["columns"])
 
+    def test_total_summary_projects_nested_tables_and_flat_compatibility_alias(self):
+        community = sample_detailed_table()
+        inspector = sample_detailed_table()
+        inspector["columns"] = ["社区", "姓名", *inspector["columns"][1:]]
+        inspector["data"][0]["姓名"] = "张三"
+        inspector["data"][1]["姓名"] = "李四"
+        payload = {
+            "exists": True,
+            "columns": community["columns"],
+            "data": community["data"],
+            "inspector": inspector,
+            "community": community,
+        }
+
+        result = project_report_payload(payload, "two")
+
+        self.assertNotIn("已完成", result["columns"])
+        self.assertNotIn("已完成", result["inspector"]["columns"])
+        self.assertNotIn("已完成", result["community"]["columns"])
+        self.assertEqual(result["data"], result["community"]["data"])
+        self.assertEqual(result["summary"], result["community"]["summary"])
+
     def test_total_row_sums_counts_and_recalculates_rates(self):
         result = project_report_payload(
             {"exists": True, **sample_detailed_table()},

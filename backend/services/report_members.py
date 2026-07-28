@@ -200,6 +200,75 @@ def merge_community_rows(
     return aggregate_community_rows(synthetic_inspector_rows)
 
 
+def merge_inspector_rows(
+    inspector_rows: Iterable[Sequence[Any]],
+    canonical_members: Iterable[tuple[str, str]] = (),
+) -> list[tuple[Any, ...]]:
+    """合并多张分汇总表的人员行，并按当前名册统一社区和姓名。
+
+    同一个姓名在多个业务分表中只保留一行。数量字段相加，比例根据
+    合并后的数量重新计算；名册外但确有业务数据的人员仍然保留。
+    """
+    canonical = {
+        _normalized_name(name): (
+            str(community or "未分配社区"),
+            str(name).strip(),
+        )
+        for community, name in canonical_members
+        if _normalized_name(name)
+    }
+    totals: dict[str, dict[str, Any]] = {}
+
+    for row in inspector_rows:
+        if len(row) < 9:
+            continue
+        normalized = _normalized_name(row[1])
+        if not normalized:
+            continue
+        canonical_member = canonical.get(normalized)
+        bucket = totals.setdefault(
+            normalized,
+            {
+                "community": (
+                    canonical_member[0]
+                    if canonical_member
+                    else str(row[0] or "未分配社区")
+                ),
+                "name": (
+                    canonical_member[1]
+                    if canonical_member
+                    else str(row[1]).strip()
+                ),
+                "counts": [0, 0, 0, 0, 0],
+            },
+        )
+        counts = bucket["counts"]
+        counts[0] += int(row[2] or 0)
+        counts[1] += int(row[3] or 0)
+        counts[2] += int(row[4] or 0)
+        counts[3] += int(row[5] or 0)
+        counts[4] += int(row[7] or 0)
+
+    result = []
+    for bucket in totals.values():
+        total, unchecked, checked, completed, unable = bucket["counts"]
+        result.append(
+            (
+                bucket["community"],
+                bucket["name"],
+                total,
+                unchecked,
+                checked,
+                completed,
+                calculate_ratio(completed, total),
+                unable,
+                calculate_ratio(max(completed - unable, 0), total),
+            )
+        )
+    result.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
+    return result
+
+
 async def rebuild_community_report_table(
     cur,
     inspector_table: str,

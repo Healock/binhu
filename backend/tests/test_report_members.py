@@ -19,6 +19,7 @@ from services.report_members import (
     get_active_members,
     get_missing_zero_rows,
     insert_zero_member_rows,
+    merge_inspector_rows,
     rebuild_community_report_table,
 )
 
@@ -188,6 +189,29 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("person.position IN (%s, %s)", normalized)
         self.assertNotIn("DELETE", normalized)
         self.assertEqual(params, ["组长", "组员"])
+
+    def test_total_summary_merges_same_person_across_business_tables(self):
+        rows = [
+            ("业务社区甲", "张三", 10, 2, 3, 5, 0.5, 1, 0.4),
+            ("业务社区乙", " 张三 ", 4, 1, 1, 2, 0.5, 1, 0.25),
+            ("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0),
+            ("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0),
+            ("社区外", "名册外人员", 3, 0, 1, 2, 0.67, 0, 0.67),
+        ]
+
+        merged = merge_inspector_rows(
+            rows,
+            [("名册社区", "张三"), ("社区乙", "李四")],
+        )
+
+        self.assertEqual(
+            merged,
+            [
+                ("名册社区", "张三", 14, 3, 4, 7, 0.5, 2, 0.36),
+                ("社区乙", "李四", 0, 0, 0, 0, 0.0, 0, 0.0),
+                ("社区外", "名册外人员", 3, 0, 1, 2, 0.67, 0, 0.67),
+            ],
+        )
 
 
 if __name__ == "__main__":

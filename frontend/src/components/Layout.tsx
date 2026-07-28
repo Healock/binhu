@@ -114,7 +114,7 @@ export default function Layout() {
           </span>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900">滨湖智慧平台</div>
-            <div className="text-xs text-slate-500">数据管理中心</div>
+            <div className="text-xs text-slate-500">数据管理中心 · v{__APP_VERSION__}</div>
           </div>
           <button
             type="button"

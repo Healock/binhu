@@ -71,6 +71,13 @@ def _with_summary(table: dict) -> dict:
     return {**table, "summary": _build_summary(table)}
 
 
+def _prepare_table(table: dict, mode: ReportColumnMode) -> dict:
+    prepared = _with_summary(table)
+    if mode == "two":
+        prepared = _project_table(prepared)
+    return prepared
+
+
 def _project_row(source_row: dict) -> dict:
     row = dict(source_row)
     row["未核查"] = _count(source_row.get("未核查")) + _count(
@@ -105,16 +112,19 @@ def project_report_payload(payload: dict, mode: ReportColumnMode) -> dict:
     if not result.get("exists"):
         return result
 
-    if "columns" in result and "data" in result:
-        result = _with_summary(result)
-        if mode == "two":
-            result = _project_table(result)
-        result["column_mode"] = mode
-        return result
-
     for section in ("inspector", "community"):
         if isinstance(result.get(section), dict):
-            result[section] = _with_summary(result[section])
-            if mode == "two":
-                result[section] = _project_table(result[section])
+            result[section] = _prepare_table(result[section], mode)
+
+    if "columns" in result and "data" in result:
+        flat_table = _prepare_table(
+            {
+                "columns": result["columns"],
+                "data": result["data"],
+            },
+            mode,
+        )
+        for key in ("columns", "data", "summary"):
+            result[key] = flat_table[key]
+
     return result
