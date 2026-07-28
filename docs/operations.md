@@ -180,6 +180,14 @@ IP 地址证书只有约 6 天有效期。生产服务器使用 `binhu-certbot-r
 4. `systemctl is-active binhu-certbot-renew.timer` 返回 `active`。
 5. 从外部确认 `443` 可连接，`3306` 和 `37125` 不可连接。
 
+续期镜像和 systemd 模板保存在 `nginx/`。如果本地 Certbot 镜像被清理，可以重新构建：
+
+```bash
+docker build -f nginx/Dockerfile.certbot -t binhu-certbot:5.4.0 nginx
+```
+
+安装或更新定时器前，先比较服务器现有 unit 文件并备份，不能直接覆盖未知配置。
+
 生产 `.env` 还要设置：
 
 ```dotenv
