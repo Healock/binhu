@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -19,6 +19,7 @@ from services.report_members import (
     get_active_members,
     get_missing_zero_rows,
     insert_zero_member_rows,
+    rebuild_community_report_table,
 )
 
 
@@ -48,7 +49,11 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             return_value=[("", "王五"), ("社区甲", "赵六")]
         )
 
-        members = await get_active_members(cursor, "2026-07-28")
+        members = await get_active_members(
+            cursor,
+            "2026-07-28",
+            ["组长", "组员"],
+        )
 
         sql, params = cursor.execute.await_args.args
         self.assertIn("g.status = '在岗'", sql)
@@ -56,7 +61,8 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             "%s BETWEEN g.leave_start_date AND g.leave_end_date",
             sql,
         )
-        self.assertEqual(params, ("2026-07-28",))
+        self.assertIn("g.position IN (%s, %s)", sql)
+        self.assertEqual(params, ("组长", "组员", "2026-07-28"))
         self.assertEqual(
             members,
             [("未分配社区", "王五"), ("社区甲", "赵六")],
@@ -65,18 +71,34 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_old_report_is_completed_without_losing_real_rows(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
-        cursor.fetchall = AsyncMock(return_value=[("社区乙", "李四")])
+        cursor.fetchall = AsyncMock(return_value=[])
         existing = [
             ("社区甲", "张三", 1, 0, 0, 1, 1, 0, 1),
             ("社区外", "名册外人员", 1, 1, 0, 0, 0, 1, 0),
             ("社区丙", "后来请假的人员", 0, 0, 0, 0, 0, 0, 0),
         ]
 
-        completed = await complete_inspector_rows(
-            cursor,
-            existing,
-            "2026-07-28",
-        )
+        with patch(
+            "services.report_members.get_configured_positions",
+            new=AsyncMock(return_value=["组长", "组员"]),
+        ), patch(
+            "services.report_members.get_known_personnel_positions",
+            new=AsyncMock(
+                return_value={
+                    "张三": "组员",
+                    "后来请假的人员": "组员",
+                    "不参与统计的人": "中队长",
+                }
+            ),
+        ), patch(
+            "services.report_members.get_active_members",
+            new=AsyncMock(return_value=[("社区乙", "李四")]),
+        ):
+            completed = await complete_inspector_rows(
+                cursor,
+                existing,
+                "2026-07-28",
+            )
 
         self.assertEqual(len(completed), 3)
         self.assertIn(existing[0], completed)
@@ -90,19 +112,23 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_report_persists_missing_zero_rows(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
-        cursor.fetchall = AsyncMock(
-            side_effect=[
-                [("社区甲", "张三")],
-                [("社区甲", "张三"), ("社区乙", "李四")],
-            ]
-        )
+        cursor.fetchall = AsyncMock(return_value=[("社区甲", "张三")])
         cursor.executemany = AsyncMock()
 
-        inserted = await insert_zero_member_rows(
-            cursor,
-            "`2026-07-28_daily_fullChain_inspector`",
-            "2026-07-28",
-        )
+        with patch(
+            "services.report_members.get_active_members",
+            new=AsyncMock(
+                return_value=[
+                    ("社区甲", "张三"),
+                    ("社区乙", "李四"),
+                ]
+            ),
+        ):
+            inserted = await insert_zero_member_rows(
+                cursor,
+                "`2026-07-28_daily_fullChain_inspector`",
+                "2026-07-28",
+            )
 
         self.assertEqual(inserted, 1)
         rows = cursor.executemany.await_args.args[1]
@@ -110,6 +136,58 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             rows,
             [("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0)],
         )
+
+    async def test_known_unselected_person_is_hidden_but_unknown_person_remains(self):
+        cursor = MagicMock()
+        existing = [
+            ("社区甲", "组员甲", 1, 0, 0, 1, 1, 0, 1),
+            ("社区乙", "中队长乙", 2, 0, 0, 2, 1, 0, 1),
+            ("社区外", "名册外人员", 3, 0, 0, 3, 1, 0, 1),
+        ]
+
+        with patch(
+            "services.report_members.get_configured_positions",
+            new=AsyncMock(return_value=["组长", "组员"]),
+        ), patch(
+            "services.report_members.get_known_personnel_positions",
+            new=AsyncMock(
+                return_value={
+                    "组员甲": "组员",
+                    "中队长乙": "中队长",
+                }
+            ),
+        ), patch(
+            "services.report_members.get_active_members",
+            new=AsyncMock(return_value=[]),
+        ):
+            completed = await complete_inspector_rows(
+                cursor,
+                existing,
+                "2026-07-28",
+            )
+
+        self.assertIn(existing[0], completed)
+        self.assertNotIn(existing[1], completed)
+        self.assertIn(existing[2], completed)
+
+    async def test_community_rebuild_filters_without_deleting_person_rows(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=('["组长", "组员"]',))
+
+        await rebuild_community_report_table(
+            cursor,
+            "`2026-07-28_daily_fullChain_inspector`",
+            "`2026-07-28_daily_fullChain_community`",
+        )
+
+        sql, params = cursor.execute.await_args.args
+        normalized = " ".join(sql.split())
+        self.assertIn("LEFT JOIN OnlineData._grid_members", normalized)
+        self.assertIn("person.id IS NULL", normalized)
+        self.assertIn("person.position IN (%s, %s)", normalized)
+        self.assertNotIn("DELETE", normalized)
+        self.assertEqual(params, ["组长", "组员"])
 
 
 if __name__ == "__main__":

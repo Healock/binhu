@@ -1,9 +1,13 @@
 """系统配置 API"""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from database import get_db
 from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
+from services.personnel_positions import (
+    POSITION_CONFIG_KEYS,
+    serialize_position_config,
+)
 
 router = APIRouter(
     prefix="/api/system",
@@ -31,6 +35,11 @@ async def update_config(
     """更新系统配置"""
     async with conn.cursor() as cur:
         for k, v in config.items():
+            if k in POSITION_CONFIG_KEYS:
+                try:
+                    v = serialize_position_config(v)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
             await cur.execute(
                 "INSERT INTO _system_config (config_key, config_value) VALUES (%s, %s) "
                 "ON DUPLICATE KEY UPDATE config_value = %s",

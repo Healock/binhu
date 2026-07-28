@@ -1,4 +1,4 @@
-"""网格员长期状态、请假区间与实际状态的统一规则。"""
+"""人员临时请假、长期和实际状态的统一规则。"""
 
 from datetime import date
 
@@ -23,7 +23,7 @@ def get_status_snapshot(
     if base_status == "离岗":
         return {
             "effective_status": "离岗",
-            "status_detail": "长期离岗",
+            "status_detail": "长期",
             "leave_state": None,
         }
 

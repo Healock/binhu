@@ -15,6 +15,37 @@ FLUSH PRIVILEGES;
 -- ============================================================
 USE OnlineData;
 
+CREATE TABLE IF NOT EXISTS _system_config (
+    config_key   VARCHAR(100) PRIMARY KEY,
+    config_value TEXT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
+    ('timezone', 'Asia/Shanghai'),
+    ('online_summary_positions', '["组长", "组员"]'),
+    ('visit_summary_positions', '["组长", "组员"]');
+
+CREATE TABLE IF NOT EXISTS _grid_members (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    name             VARCHAR(100) NOT NULL,
+    community        VARCHAR(200) DEFAULT '',
+    position         VARCHAR(20) NOT NULL DEFAULT '组员',
+    phone            VARCHAR(50) DEFAULT '',
+    notes            VARCHAR(500) DEFAULT '',
+    status           VARCHAR(10) NOT NULL DEFAULT '在岗',
+    leave_start_date DATE DEFAULT NULL,
+    leave_end_date   DATE DEFAULT NULL,
+    leave_reason     VARCHAR(200) DEFAULT '',
+    leave_source     VARCHAR(30) NOT NULL DEFAULT 'manual',
+    id_card_number   VARCHAR(50) DEFAULT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+                     ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_name (name),
+    UNIQUE KEY uk_grid_id_card (id_card_number),
+    INDEX idx_grid_position (position)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 配置表（从 binhu 库迁移）
 CREATE TABLE IF NOT EXISTS _config_spreadsheets (
     id              INT AUTO_INCREMENT PRIMARY KEY,

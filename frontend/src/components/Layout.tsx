@@ -47,7 +47,7 @@ export default function Layout() {
     {
       label: '基础资料',
       items: [
-        { path: '/grid-members', label: '网格员管理', icon: <TeamOutlined /> },
+        { path: '/grid-members', label: '人员管理', icon: <TeamOutlined /> },
         { path: '/communities', label: '社区管理', icon: <ApartmentOutlined /> },
         ...(user?.role === 'super_admin'
           ? [{ path: '/users', label: '用户管理', icon: <UserOutlined /> }]

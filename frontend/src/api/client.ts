@@ -272,6 +272,7 @@ export interface GridMember {
   id: number
   name: string
   community: string
+  position: string
   phone: string
   notes: string
   status: string
@@ -289,6 +290,7 @@ export interface GridMember {
 export interface GridMemberPayload {
   name?: string
   community?: string
+  position?: string
   phone?: string
   notes?: string
   status?: '在岗' | '离岗'
@@ -308,6 +310,7 @@ export interface GridCommunity {
 export async function listGridMembers(params: {
   keyword?: string
   community?: string
+  position?: string
   page?: number
   page_size?: number
 }): Promise<{ data: GridMember[]; total: number; page: number; page_size: number }> {
@@ -347,6 +350,18 @@ export async function createGridMember(payload: GridMemberPayload & { name: stri
 
 export async function updateGridMember(id: number, payload: GridMemberPayload): Promise<void> {
   await api.put(`/grid-members/${id}`, payload)
+}
+
+export async function updateGridMemberLeave(
+  id: number,
+  payload: {
+    action: 'temporary' | 'long_term' | 'clear'
+    leave_start_date?: string | null
+    leave_end_date?: string | null
+    leave_reason?: string
+  },
+): Promise<void> {
+  await api.put(`/grid-members/${id}/leave`, payload)
 }
 
 export async function deleteGridMember(id: number): Promise<void> {

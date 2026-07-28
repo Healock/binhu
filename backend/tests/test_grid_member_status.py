@@ -17,7 +17,7 @@ class GridMemberStatusTests(unittest.TestCase):
             date(2026, 7, 15),
         )
         self.assertEqual(result["effective_status"], "离岗")
-        self.assertEqual(result["status_detail"], "长期离岗")
+        self.assertEqual(result["status_detail"], "长期")
 
     def test_leave_is_active_on_both_boundary_dates(self):
         for current in (date(2026, 7, 10), date(2026, 7, 12)):
