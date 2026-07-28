@@ -3,7 +3,7 @@ import type {
   Spreadsheet, SpreadsheetCreate, StatsResponse, StatsItem,
   SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
   OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
-  BackupJob, AuditEvent,
+  BackupJob, AuditEvent, User, UserPreferences, ReportColumnMode,
 } from '../types'
 
 const api = axios.create({
@@ -190,18 +190,45 @@ export async function getReportTypes(): Promise<{ data: string[]; implemented: s
   return data
 }
 
+export async function saveUserPreferences(payload: UserPreferences): Promise<User> {
+  const { data } = await api.put('/auth/preferences', payload)
+  return data.user
+}
+
 export async function buildReport(params: { date?: string; parser_type?: string }): Promise<{ message: string; implemented: boolean; inspector_rows?: number; community_rows?: number; rows?: number; date?: string; subreports?: Array<{ parser_type: string }> }> {
   const { data } = await api.post('/stats/build', null, { params })
   return data
 }
 
-export async function getReport(date: string, parser_type?: string): Promise<any> {
-  const { data } = await api.get('/stats/report', { params: { report_date: date, parser_type: parser_type || '全链条' } })
+export async function getReport(
+  date: string,
+  parser_type?: string,
+  columnMode?: ReportColumnMode,
+): Promise<any> {
+  const { data } = await api.get('/stats/report', {
+    params: {
+      report_date: date,
+      parser_type: parser_type || '全链条',
+      column_mode: columnMode,
+    },
+  })
   return data
 }
 
-export async function getReportRange(startDate: string, endDate: string, parserType: string): Promise<any> {
-  const { data } = await api.get('/stats/report_range', { params: { start_date: startDate, end_date: endDate, parser_type: parserType } })
+export async function getReportRange(
+  startDate: string,
+  endDate: string,
+  parserType: string,
+  columnMode?: ReportColumnMode,
+): Promise<any> {
+  const { data } = await api.get('/stats/report_range', {
+    params: {
+      start_date: startDate,
+      end_date: endDate,
+      parser_type: parserType,
+      column_mode: columnMode,
+    },
+  })
   return data
 }
 

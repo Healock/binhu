@@ -225,8 +225,15 @@ export interface OAuthStatus {
 
 // 用户与认证
 export type Role = 'super_admin' | 'admin' | 'leader' | 'member'
+export type TableDisplayMode = 'table' | 'card'
+export type ReportColumnMode = 'two' | 'three'
 
-export interface User {
+export interface UserPreferences {
+  table_display_mode: TableDisplayMode
+  report_column_mode: ReportColumnMode
+}
+
+export interface User extends UserPreferences {
   id: number
   username: string
   role: Role

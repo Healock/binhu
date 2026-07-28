@@ -5,7 +5,7 @@ import { PlusOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { ROLE_LABELS } from '../types'
 import type { Role } from '../types'
-import { getDisplayMode } from '../utils/displayMode'
+import { useAuth } from '../context/AuthContext'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
 interface UserItem {
@@ -17,6 +17,7 @@ interface UserItem {
 }
 
 export default function UserManagement() {
+  const { user } = useAuth()
   const [users, setUsers] = useState<UserItem[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -115,7 +116,7 @@ export default function UserManagement() {
   }
 
   const roleOptions: Role[] = ['super_admin', 'admin', 'leader', 'member']
-  const cardMode = getDisplayMode() === 'card'
+  const cardMode = user?.table_display_mode === 'card'
   const userColumns: TableColumnsType<UserItem> = [
     {
       title: '用户名',

@@ -1,7 +1,10 @@
 """日报 API - 生成和查看分汇总表 + 总汇总表"""
 
-from typing import Optional
-from fastapi import APIRouter, Query
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, Query
+
+from deps import get_current_user
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
@@ -10,6 +13,7 @@ from services.report_builders.summary import (
     get_summary,
 )
 from services.report_range import get_report_range, get_summary_range
+from services.report_view import project_report_payload
 
 router = APIRouter(prefix="/api/stats", tags=["统计查询"])
 builder = DailyReportBuilder()
@@ -18,6 +22,15 @@ builder = DailyReportBuilder()
 REPORT_TYPES = ["全链条", "出租房屋核查", "寄递业", "疑似未注销模型三", "疑似返苏", "总汇总表"]
 # 分表已实现的类型
 IMPLEMENTED_SUBTYPES = [t for t in IMPLEMENTED_TYPES] + ["总汇总表"]
+
+
+def _column_mode(
+    requested_mode: Optional[Literal["two", "three"]],
+    user: dict,
+) -> Literal["two", "three"]:
+    if requested_mode:
+        return requested_mode
+    return "two" if user.get("report_column_mode") == "two" else "three"
 
 
 @router.get("/types")
@@ -48,11 +61,15 @@ async def build_report(
 async def get_report(
     report_date: str = Query(..., description="yyyy-MM-dd"),
     parser_type: str = Query("全链条"),
+    column_mode: Optional[Literal["two", "three"]] = Query(None),
+    user: dict = Depends(get_current_user),
 ):
     """查看指定日期的分汇总表或总汇总表"""
     if parser_type == "总汇总表":
-        return await get_summary(report_date)
-    return await builder.get_report(report_date, parser_type)
+        result = await get_summary(report_date)
+    else:
+        result = await builder.get_report(report_date, parser_type)
+    return project_report_payload(result, _column_mode(column_mode, user))
 
 
 @router.get("/report_range")
@@ -60,14 +77,18 @@ async def get_report_range_endpoint(
     start_date: str = Query(..., description="yyyy-MM-dd"),
     end_date: str = Query(..., description="yyyy-MM-dd"),
     parser_type: str = Query("全链条"),
+    column_mode: Optional[Literal["two", "three"]] = Query(None),
+    user: dict = Depends(get_current_user),
 ):
     """按时间区间聚合查看分汇总表或总汇总表（跨日 SUM + 比率重算）"""
     try:
         if start_date > end_date:
             return {"exists": False, "message": "起始日期不能晚于结束日期"}
         if parser_type == "总汇总表":
-            return await get_summary_range(start_date, end_date)
-        return await get_report_range(start_date, end_date, parser_type)
+            result = await get_summary_range(start_date, end_date)
+        else:
+            result = await get_report_range(start_date, end_date, parser_type)
+        return project_report_payload(result, _column_mode(column_mode, user))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -81,9 +102,15 @@ async def list_reports():
 
 
 @router.get("/today")
-async def get_today_report(parser_type: str = Query("全链条")):
+async def get_today_report(
+    parser_type: str = Query("全链条"),
+    column_mode: Optional[Literal["two", "three"]] = Query(None),
+    user: dict = Depends(get_current_user),
+):
     """获取今天的日报"""
     today = (await get_business_date_from_db()).isoformat()
     if parser_type == "总汇总表":
-        return await get_summary(today)
-    return await builder.get_report(today, parser_type)
+        result = await get_summary(today)
+    else:
+        result = await builder.get_report(today, parser_type)
+    return project_report_payload(result, _column_mode(column_mode, user))

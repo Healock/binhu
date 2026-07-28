@@ -6,7 +6,6 @@ import AppTable from '../components/AppTable'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader } from '../components/ui'
 import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, getSystemConfig } from '../api/client'
-import { getDisplayMode } from '../utils/displayMode'
 import { useAuth } from '../context/AuthContext'
 import { useSync } from '../hooks/useSync'
 
@@ -80,6 +79,7 @@ const reportTableColumns = (
 
 export default function Dashboard() {
   const { user } = useAuth()
+  const reportColumnMode = user?.report_column_mode || 'three'
   const today = formatDateInTimezone()
   const [dateRange, setDateRange] = useState<[string, string]>([today, today])
   const [reportType, setReportType] = useState('全链条')
@@ -97,8 +97,8 @@ export default function Dashboard() {
     try {
       // 同一天走单日查询（查日报表，工作量口径）；不同天走区间查询（查快照存量）
       const res = startDate === endDate
-        ? await getReport(startDate, reportType)
-        : await getReportRange(startDate, endDate, reportType)
+        ? await getReport(startDate, reportType, reportColumnMode)
+        : await getReportRange(startDate, endDate, reportType, reportColumnMode)
       setReport(res)
       setMsg(!res.exists ? (res.message || `${startDate} 暂无「${reportType}」日报`) : '')
     } catch (e: any) {
@@ -107,7 +107,7 @@ export default function Dashboard() {
       setMsg(`查询失败(${status || '?'})：${detail || '网络错误'}`)
       setReport({ exists: false })
     }
-  }, [startDate, endDate, reportType])
+  }, [startDate, endDate, reportType, reportColumnMode])
 
   const {
     syncing,
@@ -151,7 +151,7 @@ export default function Dashboard() {
   const isSummary = reportType === '总汇总表'
   const isRange = startDate !== endDate
   const rangeInfo = report.range
-  const cardMode = getDisplayMode() === 'card'
+  const cardMode = user?.table_display_mode === 'card'
 
   // 卡片渲染辅助
   const renderCard = (row: Record<string, any>, columns: string[], titleCols: string[]) => (
@@ -274,7 +274,7 @@ export default function Dashboard() {
           </div>
         ) : (
           <AppTable<Record<string, any>>
-            key={`summary-${reportType}-${startDate}-${endDate}`}
+            key={`summary-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
             columns={reportTableColumns(report.columns || [], report.data || [])}
             dataSource={report.data || []}
             rowKey={row => row.id || row.社区}
@@ -310,7 +310,7 @@ export default function Dashboard() {
       ) : (
         <>
           <AppTable<Record<string, any>>
-            key={`inspector-${reportType}-${startDate}-${endDate}`}
+            key={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
             columns={reportTableColumns(report.inspector?.columns || [], report.inspector?.data || [])}
             dataSource={report.inspector?.data || []}
             rowKey={row => row.id || `${row.社区}-${row.姓名}`}
@@ -323,7 +323,7 @@ export default function Dashboard() {
           />
 
           <AppTable<Record<string, any>>
-            key={`community-${reportType}-${startDate}-${endDate}`}
+            key={`community-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
             columns={reportTableColumns(report.community?.columns || [], report.community?.data || [])}
             dataSource={report.community?.data || []}
             rowKey={row => row.id || row.社区}
