@@ -10,9 +10,14 @@
 import json
 from database import db_manager
 from services.business_time import get_business_date_range_utc_bounds
-from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
-from services.report_members import complete_inspector_rows
+from services.report_members import (
+    aggregate_community_rows,
+    calculate_ratio,
+    complete_inspector_rows,
+    get_active_members,
+    merge_community_rows,
+)
 
 
 async def _get_summary_types(cur) -> list[str]:
@@ -83,12 +88,11 @@ async def get_report_range(start_date: str, end_date: str, parser_type: str) -> 
             )
             dedup_subquery = _build_dedup_subquery(snapshots)
             src = f"({dedup_subquery})"
-            insp_sql, comm_sql = builder.build_stats_sql(src)
+            insp_sql, _ = builder.build_stats_sql(src)
             await cur.execute(insp_sql, utc_bounds)
             insp_rows = await cur.fetchall()
-            await cur.execute(comm_sql, utc_bounds)
-            comm_rows = await cur.fetchall()
             insp_rows = await complete_inspector_rows(cur, insp_rows, end_date)
+            comm_rows = aggregate_community_rows(insp_rows)
 
         insp_cols = ["社区", "姓名", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]
         comm_cols = ["社区", "数据总数", "未核查", "已核查", "已完成", "核查完成率", "无法见底数", "核查见底率"]
@@ -115,7 +119,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 cur, start_date, end_date
             )
 
-            union_parts = []
+            all_community_rows = []
             total_days = 0
             for ptype in summary_types:
                 builder = BUILDERS.get(ptype)
@@ -127,54 +131,37 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 total_days = max(total_days, len(snapshots))
                 dedup_subquery = _build_dedup_subquery(snapshots)
                 src = f"({dedup_subquery})"
-                # 用 build_stats_sql 做全量统计，取社区汇总
-                _, comm_sql = builder.build_stats_sql(src)
-                # comm_sql 返回带别名的列，用子查询包装取需要的列
-                union_parts.append(
-                    f"SELECT 社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数 "
-                    f"FROM ({comm_sql}) _c{builder.table_suffix}"
+                insp_sql, _ = builder.build_stats_sql(src)
+                await cur.execute(insp_sql, utc_bounds)
+                insp_rows = await cur.fetchall()
+                insp_rows = await complete_inspector_rows(
+                    cur,
+                    insp_rows,
+                    end_date,
+                )
+                all_community_rows.extend(
+                    aggregate_community_rows(insp_rows)
                 )
 
-            if not union_parts:
+            if not all_community_rows:
                 return {"exists": False}
 
-            union_sql = " UNION ALL ".join(union_parts)
-            # 每个 dedup_subquery 有2个 %s（UTC 起止时间），需要传对应数量参数
-            param_count = union_sql.count("%s")
-            params = list(utc_bounds) * (param_count // 2)
-            active_condition = active_member_sql()
-
-            await cur.execute(f"""
-                SELECT
-                    t.社区,
-                    SUM(t.数据总数),
-                    SUM(t.未核查),
-                    SUM(t.已核查),
-                    SUM(t.已完成),
-                    CASE WHEN SUM(t.数据总数) > 0
-                         THEN ROUND(SUM(t.已完成) / SUM(t.数据总数), 2) ELSE 0 END,
-                    SUM(t.无法见底数),
-                    CASE WHEN SUM(t.数据总数) > 0
-                         THEN ROUND(GREATEST(SUM(t.已完成) - SUM(t.无法见底数), 0) / SUM(t.数据总数), 2)
-                         ELSE 0 END,
-                    COALESCE((
-                        SELECT COUNT(*) FROM OnlineData._grid_members
-                        WHERE community = t.社区 AND {active_condition}
-                    ), 0),
-                    CASE
-                        WHEN COALESCE((SELECT COUNT(*) FROM OnlineData._grid_members
-                                       WHERE community = t.社区 AND {active_condition}), 0) > 0
-                        THEN ROUND(SUM(t.已完成) / (
-                            SELECT COUNT(*) FROM OnlineData._grid_members
-                            WHERE community = t.社区 AND {active_condition}
-                        ), 2)
-                        ELSE 0
-                    END
-                FROM ({union_sql}) t
-                GROUP BY t.社区
-                ORDER BY t.社区
-            """, [end_date, end_date, end_date, *params])
-            rows = await cur.fetchall()
+            merged_rows = merge_community_rows(all_community_rows)
+            member_counts: dict[str, int] = {}
+            for community, _ in await get_active_members(cur, end_date):
+                member_counts[community] = member_counts.get(community, 0) + 1
+            rows = []
+            for row in merged_rows:
+                community = str(row[0])
+                count = member_counts.get(community, 0)
+                completed = int(row[4] or 0)
+                rows.append(
+                    (
+                        *row,
+                        count,
+                        calculate_ratio(completed, count),
+                    )
+                )
             cols = [
                 "社区", "数据总数", "未核查", "已核查", "已完成", "核查完成率",
                 "无法见底数", "核查见底率", "网格员人数", "当日人均核查数",

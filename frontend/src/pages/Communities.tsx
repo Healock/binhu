@@ -100,7 +100,7 @@ export default function Communities() {
       render: value => <span className="font-medium text-slate-800">{value}</span>,
     },
     {
-      title: '网格员人数',
+      title: '人员数量',
       dataIndex: 'grid_count',
       key: 'grid_count',
       width: 160,
@@ -145,7 +145,7 @@ export default function Communities() {
     <div className="app-page">
       <PageHeader
         title="社区管理"
-        description="维护社区名单，并查看每个社区的网格员人数"
+        description="维护社区名单，并查看每个社区的人员数量"
         actions={<Tag color="blue">共 {communities.length} 个社区</Tag>}
       />
 
@@ -184,7 +184,7 @@ export default function Communities() {
               <div key={c.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
                 <div>
                   <div className="font-medium text-gray-800">{c.name}</div>
-                  <div className="text-sm text-gray-500">网格员 {c.grid_count} 人</div>
+                  <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {c.aliases?.length > 0
                       ? c.aliases.map(alias => <Tag key={alias}>{alias}</Tag>)
@@ -207,7 +207,7 @@ export default function Communities() {
           scroll={{ x: 520 }}
         />
       )}
-      <p className="text-xs text-slate-500">网格员人数会根据“网格员管理”中的所属社区自动统计，无需手动填写。</p>
+      <p className="text-xs text-slate-500">人员数量会根据“人员管理”中的所属社区自动统计，无需手动填写。</p>
 
       <Modal
         open={Boolean(editingAliases)}

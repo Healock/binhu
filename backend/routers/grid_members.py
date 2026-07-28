@@ -1,4 +1,4 @@
-"""网格员管理 API"""
+"""人员管理 API"""
 
 import csv
 import io
@@ -9,15 +9,15 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional
 from database import get_db
 from services.grid_member_status import (
-    active_member_sql,
     get_business_date,
     get_status_snapshot,
     validate_leave_period,
 )
+from services.personnel_positions import normalize_position
 from services.privacy import mask_identity_number
 from services.visit_import import normalize_community
 
-router = APIRouter(prefix="/api/grid-members", tags=["网格员管理"])
+router = APIRouter(prefix="/api/grid-members", tags=["人员管理"])
 
 # 有"核查人"列的业务表
 TABLES_WITH_INSPECTOR = [
@@ -29,6 +29,7 @@ TABLES_WITH_INSPECTOR = [
 class GridMemberCreate(BaseModel):
     name: str
     community: str = ""
+    position: str = "组员"
     phone: str = ""
     notes: str = ""
     status: Literal["在岗", "离岗"] = "在岗"
@@ -36,6 +37,11 @@ class GridMemberCreate(BaseModel):
     leave_end_date: Optional[date] = None
     leave_reason: str = Field(default="", max_length=200)
     leave_source: str = Field(default="manual", max_length=30)
+
+    @field_validator("position")
+    @classmethod
+    def validate_position(cls, value: str) -> str:
+        return normalize_position(value)
 
     @model_validator(mode="after")
     def validate_leave_dates(self):
@@ -45,6 +51,7 @@ class GridMemberCreate(BaseModel):
 
 class GridMemberUpdate(BaseModel):
     community: Optional[str] = None
+    position: Optional[str] = None
     phone: Optional[str] = None
     notes: Optional[str] = None
     status: Optional[Literal["在岗", "离岗"]] = None
@@ -52,6 +59,31 @@ class GridMemberUpdate(BaseModel):
     leave_end_date: Optional[date] = None
     leave_reason: Optional[str] = Field(default=None, max_length=200)
     leave_source: Optional[str] = Field(default=None, max_length=30)
+
+    @field_validator("position")
+    @classmethod
+    def validate_position(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_position(value) if value is not None else None
+
+
+class GridMemberLeaveUpdate(BaseModel):
+    action: Literal["temporary", "long_term", "clear"]
+    leave_start_date: Optional[date] = None
+    leave_end_date: Optional[date] = None
+    leave_reason: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def validate_action(self):
+        if self.action == "temporary":
+            validate_leave_period(
+                self.leave_start_date,
+                self.leave_end_date,
+            )
+            if not self.leave_start_date:
+                raise ValueError("临时请假需要选择日期")
+        elif self.leave_start_date or self.leave_end_date:
+            raise ValueError("长期或恢复正常不需要填写日期")
+        return self
 
 
 class CommunityAliasesUpdate(BaseModel):
@@ -73,20 +105,21 @@ class CommunityAliasesUpdate(BaseModel):
 
 
 def _member_to_dict(row, business_date: date) -> dict:
-    snapshot = get_status_snapshot(row[5], row[6], row[7], business_date)
+    snapshot = get_status_snapshot(row[6], row[7], row[8], business_date)
     return {
         "id": row[0],
         "name": row[1],
         "community": row[2],
-        "phone": row[3],
-        "notes": row[4],
-        "status": row[5],
-        "leave_start_date": row[6],
-        "leave_end_date": row[7],
-        "leave_reason": row[8],
-        "leave_source": row[9],
-        "has_id_card": bool(row[10]),
-        "id_card_masked": mask_identity_number(row[10]),
+        "position": row[3],
+        "phone": row[4],
+        "notes": row[5],
+        "status": row[6],
+        "leave_start_date": row[7],
+        "leave_end_date": row[8],
+        "leave_reason": row[9],
+        "leave_source": row[10],
+        "has_id_card": bool(row[11]),
+        "id_card_masked": mask_identity_number(row[11]),
         **snapshot,
     }
 
@@ -95,6 +128,7 @@ def _member_to_dict(row, business_date: date) -> dict:
 async def list_members(
     keyword: Optional[str] = Query(None),
     community: Optional[str] = Query(None),
+    position: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     conn=Depends(get_db),
@@ -103,11 +137,20 @@ async def list_members(
     where_parts = []
     params = []
     if keyword:
-        where_parts.append("(name LIKE %s OR phone LIKE %s OR notes LIKE %s)")
-        params.extend([f"%{keyword}%"] * 3)
+        where_parts.append(
+            "(name LIKE %s OR phone LIKE %s OR notes LIKE %s OR position LIKE %s)"
+        )
+        params.extend([f"%{keyword}%"] * 4)
     if community:
         where_parts.append("community = %s")
         params.append(community)
+    if position:
+        try:
+            position = normalize_position(position)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        where_parts.append("position = %s")
+        params.append(position)
     where = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     async with conn.cursor() as cur:
@@ -116,7 +159,7 @@ async def list_members(
         total = (await cur.fetchone())[0]
         offset = (page - 1) * page_size
         await cur.execute(
-            f"SELECT id, name, community, phone, notes, status, "
+            f"SELECT id, name, community, position, phone, notes, status, "
             f"leave_start_date, leave_end_date, leave_reason, leave_source, "
             f"id_card_number "
             f"FROM _grid_members{where} "
@@ -136,19 +179,16 @@ async def list_members(
 
 @router.get("/communities")
 async def list_communities(conn=Depends(get_db)):
-    """获取社区列表（网格员人数由 _grid_members 表实时统计）"""
+    """获取社区列表（人员数量由 _grid_members 表实时统计）"""
     async with conn.cursor() as cur:
-        business_date = await get_business_date(cur)
-        active_condition = active_member_sql("g")
         await cur.execute(f"""
             SELECT c.id, c.name, COUNT(g.id) as grid_count
             FROM _communities c
             LEFT JOIN _grid_members g
               ON g.community = c.name
-             AND {active_condition}
             GROUP BY c.id, c.name
             ORDER BY c.name
-        """, (business_date,))
+        """)
         rows = await cur.fetchall()
         await cur.execute(
             "SELECT community_id, alias FROM _community_aliases "
@@ -333,12 +373,14 @@ async def create_member(data: GridMemberCreate, conn=Depends(get_db)):
         try:
             await cur.execute(
                 "INSERT INTO _grid_members "
-                "(name, community, phone, notes, status, leave_start_date, "
+                "(name, community, position, phone, notes, status, "
+                "leave_start_date, "
                 "leave_end_date, leave_reason, leave_source) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     data.name,
                     data.community,
+                    data.position,
                     data.phone,
                     data.notes,
                     data.status,
@@ -350,7 +392,7 @@ async def create_member(data: GridMemberCreate, conn=Depends(get_db)):
             )
         except Exception as e:
             if "Duplicate" in str(e):
-                raise HTTPException(400, "该网格员已存在")
+                raise HTTPException(400, "该人员已存在")
             raise
     return {"message": "添加成功"}
 
@@ -366,7 +408,7 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
         )
         existing = await cur.fetchone()
         if not existing:
-            raise HTTPException(404, "网格员不存在")
+            raise HTTPException(404, "人员不存在")
 
     fields_set = data.model_fields_set
     next_start = (
@@ -385,7 +427,7 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
         raise HTTPException(400, str(exc)) from exc
 
     updates = {}
-    for field in ["community", "phone", "notes", "leave_reason"]:
+    for field in ["community", "position", "phone", "notes", "leave_reason"]:
         if field in fields_set:
             updates[field] = getattr(data, field) or ""
     for field in ["leave_start_date", "leave_end_date"]:
@@ -407,19 +449,54 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
     return {"message": "修改成功"}
 
 
+@router.put("/{member_id}/leave")
+async def update_member_leave(
+    member_id: int,
+    data: GridMemberLeaveUpdate,
+    conn=Depends(get_db),
+):
+    """独立设置临时请假、长期或恢复正常。"""
+    if data.action == "temporary":
+        updates = (
+            "在岗",
+            data.leave_start_date,
+            data.leave_end_date,
+            data.leave_reason,
+            "manual",
+        )
+    elif data.action == "long_term":
+        updates = ("离岗", None, None, data.leave_reason, "manual")
+    else:
+        updates = ("在岗", None, None, "", "manual")
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE _grid_members
+            SET status=%s, leave_start_date=%s, leave_end_date=%s,
+                leave_reason=%s, leave_source=%s
+            WHERE id=%s
+            """,
+            (*updates, member_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "人员不存在")
+    return {"message": "请假状态已更新"}
+
+
 @router.delete("/{member_id}")
 async def delete_member(member_id: int, conn=Depends(get_db)):
     """删除"""
     async with conn.cursor() as cur:
         await cur.execute("DELETE FROM _grid_members WHERE id=%s", (member_id,))
         if cur.rowcount == 0:
-            raise HTTPException(404, "网格员不存在")
+            raise HTTPException(404, "人员不存在")
     return {"message": "删除成功"}
 
 
 @router.post("/extract")
 async def extract_from_data(conn=Depends(get_db)):
-    """从原始数据提取网格员，同时提取社区候选列表"""
+    """从原始数据提取人员，同时提取社区候选列表"""
     name_communities: dict[str, set[str]] = {}
     async with conn.cursor() as cur:
         for table in TABLES_WITH_INSPECTOR:
@@ -450,7 +527,7 @@ async def extract_from_data(conn=Depends(get_db)):
         all_communities.update(comms)
 
     return {
-        "message": f"提取完成，新增 {len(new_names)} 名网格员",
+        "message": f"提取完成，新增 {len(new_names)} 名人员",
         "new_count": len(new_names),
         "new_names": sorted(new_names),
         "communities": sorted(all_communities),
@@ -463,7 +540,8 @@ async def export_csv(conn=Depends(get_db)):
     async with conn.cursor() as cur:
         business_date = await get_business_date(cur)
         await cur.execute(
-            "SELECT name, community, phone, notes, status, leave_start_date, "
+            "SELECT name, community, position, phone, notes, status, "
+            "leave_start_date, "
             "leave_end_date, leave_reason, leave_source "
             "FROM _grid_members ORDER BY community, name"
         )
@@ -475,32 +553,41 @@ async def export_csv(conn=Depends(get_db)):
     writer.writerow([
         "姓名",
         "所属社区",
+        "岗位",
         "电话",
         "备注",
-        "长期状态",
-        "当前状态",
+        "请假类型",
+        "当前情况",
         "请假开始",
         "请假结束",
         "请假原因",
         "请假来源",
     ])
     for r in rows:
-        snapshot = get_status_snapshot(r[4], r[5], r[6], business_date)
+        snapshot = get_status_snapshot(r[5], r[6], r[7], business_date)
+        leave_type = (
+            "长期"
+            if r[5] == "离岗"
+            else "临时请假"
+            if r[6] and r[7]
+            else "无"
+        )
         writer.writerow([
             r[0],
             r[1],
             r[2],
             r[3],
             r[4],
+            leave_type,
             snapshot["effective_status"],
-            r[5] or "",
             r[6] or "",
-            r[7],
+            r[7] or "",
             r[8],
+            r[9],
         ])
 
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=grid_members.csv"},
+        headers={"Content-Disposition": "attachment; filename=personnel.csv"},
     )

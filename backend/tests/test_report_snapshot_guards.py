@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -111,12 +112,18 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
             fetchall_values=[
                 [(snapshot,)],
                 [inspector_row],
-                [community_row],
-                [],
             ]
         )
 
-        with patch.object(report_range.db_manager, "get_pool", return_value=pool):
+        with patch.object(
+            report_range.db_manager,
+            "get_pool",
+            return_value=pool,
+        ), patch.object(
+            report_range,
+            "complete_inspector_rows",
+            new=AsyncMock(return_value=[inspector_row]),
+        ):
             result = await report_range.get_report_range(
                 "2026-07-27", "2026-07-28", "全链条"
             )
@@ -133,7 +140,10 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             cursor.execute.await_args_list[-1].args[1],
-            ("2026-07-28",),
+            (
+                datetime(2026, 7, 26, 16, 0),
+                datetime(2026, 7, 28, 16, 0),
+            ),
         )
 
     async def test_build_without_today_snapshot_creates_no_report_tables(self):

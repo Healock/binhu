@@ -6,6 +6,11 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Iterable
 
+from services.personnel_positions import (
+    VISIT_POSITION_CONFIG_KEY,
+    filter_person_rows,
+    get_personnel_scope,
+)
 
 INSPECTOR_COLUMNS = [
     "社区",
@@ -127,9 +132,17 @@ async def get_visit_summary(
     conn,
     start_date: date,
     end_date: date,
+    *,
+    selected_positions: set[str] | None = None,
+    known_positions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """查询闭区间内的走访，并分别按实际走访社区和网格员汇总。"""
     async with conn.cursor() as cur:
+        if selected_positions is None or known_positions is None:
+            selected_positions, known_positions = await get_personnel_scope(
+                cur,
+                VISIT_POSITION_CONFIG_KEY,
+            )
         await cur.execute(
             """
             SELECT
@@ -149,34 +162,52 @@ async def get_visit_summary(
             """,
             (start_date, end_date),
         )
+        raw_inspector_rows = filter_person_rows(
+            await cur.fetchall(),
+            name_index=1,
+            selected_positions=selected_positions,
+            known_positions=known_positions,
+        )
         inspector_rows = [
             _build_row(row, inspector=True)
-            for row in await cur.fetchall()
+            for row in raw_inspector_rows
         ]
 
-        await cur.execute(
-            """
-            SELECT
-                COALESCE(NULLIF(TRIM(`社区`), ''), '未分配社区'),
-                COUNT(*),
-                COUNT(DISTINCT COALESCE(
-                    NULLIF(TRIM(`操作人`), ''),
-                    '未填写姓名'
-                )),
-                COALESCE(SUM(`新增`), 0),
-                COALESCE(SUM(`变更`), 0),
-                COALESCE(SUM(`注销`), 0),
-                COUNT(`星级采集时间`)
-            FROM t_visit_details
-            WHERE `业务日期` BETWEEN %s AND %s
-            GROUP BY COALESCE(NULLIF(TRIM(`社区`), ''), '未分配社区')
-            ORDER BY 1
-            """,
-            (start_date, end_date),
-        )
+        community_totals: dict[str, dict[str, Any]] = {}
+        for row in raw_inspector_rows:
+            community = str(row[0] or "未分配社区")
+            bucket = community_totals.setdefault(
+                community,
+                {
+                    "members": set(),
+                    "visits": 0,
+                    "added": 0,
+                    "changed": 0,
+                    "cancelled": 0,
+                    "ratings": 0,
+                },
+            )
+            bucket["members"].add(str(row[1] or "未填写姓名"))
+            bucket["visits"] += _int(row[2])
+            bucket["added"] += _int(row[3])
+            bucket["changed"] += _int(row[4])
+            bucket["cancelled"] += _int(row[5])
+            bucket["ratings"] += _int(row[6])
+
         community_rows = [
-            _build_row(row, inspector=False)
-            for row in await cur.fetchall()
+            _build_row(
+                (
+                    community,
+                    totals["visits"],
+                    len(totals["members"]),
+                    totals["added"],
+                    totals["changed"],
+                    totals["cancelled"],
+                    totals["ratings"],
+                ),
+                inspector=False,
+            )
+            for community, totals in sorted(community_totals.items())
         ]
 
     distinct_members = len({

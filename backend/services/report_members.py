@@ -1,10 +1,16 @@
 """用网格员名册补全核查人明细中的零工作行。"""
 
 from collections.abc import Iterable, Sequence
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from services.grid_member_status import active_member_sql
+from services.personnel_positions import (
+    ONLINE_POSITION_CONFIG_KEY,
+    filter_person_rows,
+    get_configured_positions,
+    get_known_personnel_positions,
+)
 
 
 ZERO_METRICS = (0, 0, 0, 0, 0, 0, 0)
@@ -25,8 +31,17 @@ def _is_persisted_zero_row(row: Sequence[Any]) -> bool:
     return len(row) >= 9 and all(_is_zero_metric(value) for value in row[2:9])
 
 
-async def get_active_members(cur, as_of_date: str) -> list[tuple[str, str]]:
+async def get_active_members(
+    cur,
+    as_of_date: str,
+    positions: list[str] | None = None,
+) -> list[tuple[str, str]]:
     """读取指定日期实际在岗的网格员，返回（社区，姓名）。"""
+    positions = positions or await get_configured_positions(
+        cur,
+        ONLINE_POSITION_CONFIG_KEY,
+    )
+    placeholders = ", ".join(["%s"] * len(positions))
     active_condition = active_member_sql("g")
     await cur.execute(
         f"""
@@ -35,10 +50,11 @@ async def get_active_members(cur, as_of_date: str) -> list[tuple[str, str]]:
             TRIM(g.name)
         FROM OnlineData._grid_members g
         WHERE TRIM(g.name) <> ''
+          AND g.position IN ({placeholders})
           AND {active_condition}
         ORDER BY g.community, g.name
         """,
-        (as_of_date,),
+        (*positions, as_of_date),
     )
     return [
         (str(community or "未分配社区"), str(name).strip())
@@ -72,12 +88,27 @@ async def complete_inspector_rows(
     as_of_date: str,
 ) -> list[tuple[Any, ...]]:
     """查询日报时补全旧报表，不修改历史日报表。"""
+    selected_positions = await get_configured_positions(
+        cur,
+        ONLINE_POSITION_CONFIG_KEY,
+    )
+    known_positions = await get_known_personnel_positions(cur)
+    scoped_rows = filter_person_rows(
+        existing_rows,
+        name_index=1,
+        selected_positions=set(selected_positions),
+        known_positions=known_positions,
+    )
     rows = [
         tuple(row)
-        for row in existing_rows
+        for row in scoped_rows
         if not _is_persisted_zero_row(row)
     ]
-    active_members = await get_active_members(cur, as_of_date)
+    active_members = await get_active_members(
+        cur,
+        as_of_date,
+        selected_positions,
+    )
     rows.extend(get_missing_zero_rows(rows, active_members))
     rows.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
     return rows
@@ -100,3 +131,122 @@ async def insert_zero_member_rows(cur, inspector_table: str, as_of_date: str) ->
             missing_rows,
         )
     return len(missing_rows)
+
+
+def calculate_ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return float(
+        (Decimal(numerator) / Decimal(denominator)).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+
+def aggregate_community_rows(
+    inspector_rows: Iterable[Sequence[Any]],
+) -> list[tuple[Any, ...]]:
+    """由人员行重建社区行，保证岗位筛选后两张表口径一致。"""
+    totals: dict[str, list[int]] = {}
+    for row in inspector_rows:
+        if len(row) < 9:
+            continue
+        community = str(row[0] or "未分配社区")
+        bucket = totals.setdefault(community, [0, 0, 0, 0, 0])
+        bucket[0] += int(row[2] or 0)
+        bucket[1] += int(row[3] or 0)
+        bucket[2] += int(row[4] or 0)
+        bucket[3] += int(row[5] or 0)
+        bucket[4] += int(row[7] or 0)
+
+    result = []
+    for community in sorted(totals):
+        total, unchecked, checked, completed, unable = totals[community]
+        result.append(
+            (
+                community,
+                total,
+                unchecked,
+                checked,
+                completed,
+                calculate_ratio(completed, total),
+                unable,
+                calculate_ratio(max(completed - unable, 0), total),
+            )
+        )
+    return result
+
+
+def merge_community_rows(
+    community_rows: Iterable[Sequence[Any]],
+) -> list[tuple[Any, ...]]:
+    """合并多张分汇总表的社区行，并重新计算比例。"""
+    synthetic_inspector_rows = [
+        (
+            row[0],
+            "",
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+            row[7],
+        )
+        for row in community_rows
+        if len(row) >= 8
+    ]
+    return aggregate_community_rows(synthetic_inspector_rows)
+
+
+async def rebuild_community_report_table(
+    cur,
+    inspector_table: str,
+    community_table: str,
+) -> None:
+    """保留完整人员日报，只在重建社区表时应用当前岗位范围。"""
+    positions = await get_configured_positions(
+        cur,
+        ONLINE_POSITION_CONFIG_KEY,
+    )
+    placeholders = ", ".join(["%s"] * len(positions))
+    await cur.execute(f"TRUNCATE TABLE {community_table}")
+    await cur.execute(
+        f"""
+        INSERT INTO {community_table}
+            (社区, 数据总数, 未核查, 已核查, 已完成,
+             核查完成率, 无法见底数, 核查见底率)
+        SELECT
+            report_row.社区,
+            SUM(report_row.数据总数),
+            SUM(report_row.未核查),
+            SUM(report_row.已核查),
+            SUM(report_row.已完成),
+            CASE WHEN SUM(report_row.数据总数) > 0
+                 THEN ROUND(
+                    SUM(report_row.已完成) / SUM(report_row.数据总数),
+                    2
+                 )
+                 ELSE 0 END,
+            SUM(report_row.无法见底数),
+            CASE WHEN SUM(report_row.数据总数) > 0
+                 THEN ROUND(
+                    GREATEST(
+                        SUM(report_row.已完成)
+                        - SUM(report_row.无法见底数),
+                        0
+                    )
+                    / SUM(report_row.数据总数),
+                    2
+                 )
+                 ELSE 0 END
+        FROM {inspector_table} AS report_row
+        LEFT JOIN OnlineData._grid_members AS person
+          ON LOWER(TRIM(person.name)) = LOWER(TRIM(report_row.姓名))
+        WHERE person.id IS NULL
+           OR person.position IN ({placeholders})
+        GROUP BY report_row.社区
+        """,
+        positions,
+    )

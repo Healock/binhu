@@ -22,6 +22,12 @@ import {
   getRemainingTime,
   getServerOffset,
 } from '../utils/countdown'
+import {
+  DEFAULT_SUMMARY_POSITIONS,
+  PERSONNEL_POSITIONS,
+  parseSummaryPositions,
+  type PersonnelPosition,
+} from '../constants/personnel'
 
 const TIMEZONES = [
   { value: 'Asia/Shanghai', label: '上海 (UTC+8)' },
@@ -67,12 +73,26 @@ export default function SystemSettings() {
   const [savingSchedule, setSavingSchedule] = useState(false)
   const [timezoneMsg, setTimezoneMsg] = useState('')
   const [scheduleMsg, setScheduleMsg] = useState('')
+  const [onlinePositions, setOnlinePositions] = useState<PersonnelPosition[]>(
+    [...DEFAULT_SUMMARY_POSITIONS],
+  )
+  const [visitPositions, setVisitPositions] = useState<PersonnelPosition[]>(
+    [...DEFAULT_SUMMARY_POSITIONS],
+  )
+  const [savingPositions, setSavingPositions] = useState(false)
+  const [positionsMsg, setPositionsMsg] = useState('')
   const [clock, setClock] = useState(Date.now())
 
   useEffect(() => {
     Promise.all([getSystemConfig(), getSyncSchedule()])
       .then(([config, currentSchedule]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
+        setOnlinePositions(
+          parseSummaryPositions(config.online_summary_positions),
+        )
+        setVisitPositions(
+          parseSummaryPositions(config.visit_summary_positions),
+        )
         setSchedule(currentSchedule)
         setEnabled(currentSchedule.enabled)
         setIntervalValue(currentSchedule.interval_minutes)
@@ -138,6 +158,26 @@ export default function SystemSettings() {
       setScheduleMsg(error?.response?.data?.detail || '保存失败')
     } finally {
       setSavingSchedule(false)
+    }
+  }
+
+  const handleSavePositions = async () => {
+    if (!onlinePositions.length || !visitPositions.length) {
+      setPositionsMsg('在线汇总和走访汇总都至少选择一个岗位')
+      return
+    }
+    setSavingPositions(true)
+    setPositionsMsg('')
+    try {
+      await updateSystemConfig({
+        online_summary_positions: JSON.stringify(onlinePositions),
+        visit_summary_positions: JSON.stringify(visitPositions),
+      })
+      setPositionsMsg('统计岗位已保存，重新查询汇总后生效')
+    } catch (error: any) {
+      setPositionsMsg(error?.response?.data?.detail || '保存失败')
+    } finally {
+      setSavingPositions(false)
     }
   }
 
@@ -222,6 +262,73 @@ export default function SystemSettings() {
               type={scheduleMsg.includes('失败') ? 'error' : 'success'}
               showIcon
               message={scheduleMsg}
+            />
+          )}
+        </div>
+      </Panel>
+
+      <Panel
+        title="汇总统计岗位"
+        description="人员仍会保留在人员管理中，只有这里选中的岗位才进入对应汇总"
+      >
+        <div className="space-y-5">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">
+              在线数据汇总
+            </label>
+            <Select<PersonnelPosition[]>
+              mode="multiple"
+              value={onlinePositions}
+              onChange={setOnlinePositions}
+              options={PERSONNEL_POSITIONS.map(position => ({
+                value: position,
+                label: position,
+              }))}
+              placeholder="选择参与在线汇总的岗位"
+              className="w-full"
+              maxTagCount="responsive"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">
+              走访汇总
+            </label>
+            <Select<PersonnelPosition[]>
+              mode="multiple"
+              value={visitPositions}
+              onChange={setVisitPositions}
+              options={PERSONNEL_POSITIONS.map(position => ({
+                value: position,
+                label: position,
+              }))}
+              placeholder="选择参与走访汇总的岗位"
+              className="w-full"
+              maxTagCount="responsive"
+            />
+          </div>
+          <Alert
+            type="info"
+            showIcon
+            message="默认统计组长和组员"
+            description="人员管理中没有登记的姓名仍会保留在汇总中，避免未知数据被直接隐藏。"
+          />
+          <Button
+            type="primary"
+            loading={savingPositions}
+            disabled={
+              loading
+              || !onlinePositions.length
+              || !visitPositions.length
+            }
+            onClick={handleSavePositions}
+          >
+            保存统计岗位
+          </Button>
+          {positionsMsg && (
+            <Alert
+              type={positionsMsg.includes('已保存') ? 'success' : 'error'}
+              showIcon
+              message={positionsMsg}
             />
           )}
         </div>

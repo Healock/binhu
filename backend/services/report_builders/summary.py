@@ -6,7 +6,18 @@
 import json
 from database import db_manager
 from services.grid_member_status import active_member_sql
+from services.personnel_positions import (
+    ONLINE_POSITION_CONFIG_KEY,
+    get_configured_positions,
+)
 from services.report_builders import BUILDERS
+from services.report_members import (
+    aggregate_community_rows,
+    calculate_ratio,
+    complete_inspector_rows,
+    get_active_members,
+    merge_community_rows,
+)
 
 SUMMARY_COLS = """
     社区 VARCHAR(100) NOT NULL PRIMARY KEY,
@@ -151,6 +162,11 @@ async def build_summary(
                 )
             union_sql = " UNION ALL ".join(union_parts)
             active_condition = active_member_sql()
+            positions = await get_configured_positions(
+                cur,
+                ONLINE_POSITION_CONFIG_KEY,
+            )
+            position_placeholders = ", ".join(["%s"] * len(positions))
 
             await cur.execute(f"""
                 INSERT INTO {t_summary} (社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数, 网格员人数)
@@ -163,11 +179,13 @@ async def build_summary(
                     SUM(t.无法见底数),
                     COALESCE((
                         SELECT COUNT(*) FROM OnlineData._grid_members
-                        WHERE community = t.社区 AND {active_condition}
+                        WHERE community = t.社区
+                          AND position IN ({position_placeholders})
+                          AND {active_condition}
                     ), 0)
                 FROM ({union_sql}) t
                 GROUP BY t.社区
-            """, (date_str,))
+            """, (*positions, date_str))
 
             await cur.execute(f"""
                 UPDATE {t_summary} SET
@@ -219,36 +237,57 @@ async def get_summary(date_str: str) -> dict:
                     "message": f"{date_str} 尚未生成总汇总表",
                 }
 
-            active_condition = active_member_sql()
-            await cur.execute(f"""
-                SELECT
-                    s.社区,
-                    s.数据总数,
-                    s.未核查,
-                    s.已核查,
-                    s.已完成,
-                    s.核查完成率,
-                    s.无法见底数,
-                    s.核查见底率,
-                    COALESCE((
-                        SELECT COUNT(*) FROM OnlineData._grid_members
-                        WHERE community = s.社区 AND {active_condition}
-                    ), 0),
-                    CASE
-                        WHEN COALESCE((
-                            SELECT COUNT(*) FROM OnlineData._grid_members
-                            WHERE community = s.社区 AND {active_condition}
-                        ), 0) > 0
-                        THEN ROUND(s.已完成 / (
-                            SELECT COUNT(*) FROM OnlineData._grid_members
-                            WHERE community = s.社区 AND {active_condition}
-                        ), 2)
-                        ELSE 0
-                    END
-                FROM {t_summary} s
-                ORDER BY s.社区
-            """, (date_str, date_str, date_str))
-            rows = await cur.fetchall()
+            summary_types = await _get_summary_types(cur)
+            all_community_rows = []
+            for parser_type in summary_types:
+                builder = BUILDERS.get(parser_type)
+                if not builder:
+                    continue
+                inspector_name = (
+                    f"{date_str}_daily_{builder.table_suffix}_inspector"
+                )
+                await cur.execute(
+                    "SELECT table_name FROM _daily_report_meta "
+                    "WHERE table_name=%s",
+                    (inspector_name,),
+                )
+                if not await cur.fetchone():
+                    continue
+                inspector_table = f"`{inspector_name}`"
+                await cur.execute(
+                    f"SELECT * FROM {inspector_table} ORDER BY 社区, 姓名"
+                )
+                inspector_rows = await complete_inspector_rows(
+                    cur,
+                    await cur.fetchall(),
+                    date_str,
+                )
+                all_community_rows.extend(
+                    aggregate_community_rows(inspector_rows)
+                )
+
+            if not all_community_rows:
+                return {
+                    "exists": False,
+                    "message": f"{date_str} 没有可用的分汇总表",
+                }
+
+            merged_rows = merge_community_rows(all_community_rows)
+            member_counts: dict[str, int] = {}
+            for community, _ in await get_active_members(cur, date_str):
+                member_counts[community] = member_counts.get(community, 0) + 1
+            rows = []
+            for row in merged_rows:
+                community = str(row[0])
+                count = member_counts.get(community, 0)
+                completed = int(row[4] or 0)
+                rows.append(
+                    (
+                        *row,
+                        count,
+                        calculate_ratio(completed, count),
+                    )
+                )
 
         return {
             "exists": True,

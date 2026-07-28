@@ -84,6 +84,18 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
                     "2026-07-28 00:00:00",
                 )
             ),
+        ), patch.object(
+            report_range,
+            "complete_inspector_rows",
+            new=AsyncMock(
+                return_value=[
+                    ("长板", "张三", 12, 0, 0, 10, 0, 2, 0),
+                ]
+            ),
+        ), patch.object(
+            report_range,
+            "get_active_members",
+            new=AsyncMock(return_value=[("长板", "张三")]),
         ):
             result = await report_range.get_summary_range(
                 "2026-07-27",
@@ -91,17 +103,9 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["exists"])
-        summary_sql = cursor.execute.await_args_list[-1].args[0]
-        normalized = " ".join(summary_sql.split())
-        self.assertIn(
-            "GREATEST(SUM(t.已完成) - SUM(t.无法见底数), 0) "
-            "/ SUM(t.数据总数)",
-            normalized,
-        )
-        self.assertNotIn(
-            "SUM(t.数据总数) - SUM(t.无法见底数)",
-            normalized,
-        )
+        row = result["data"][0]
+        self.assertEqual(row["核查完成率"], 0.83)
+        self.assertEqual(row["核查见底率"], 0.67)
 
 
 if __name__ == "__main__":

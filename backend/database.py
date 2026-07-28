@@ -64,6 +64,7 @@ class DatabaseManager:
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         name VARCHAR(100) NOT NULL,
                         community VARCHAR(200) DEFAULT '',
+                        position VARCHAR(20) NOT NULL DEFAULT '组员',
                         phone VARCHAR(50) DEFAULT '',
                         notes VARCHAR(500) DEFAULT '',
                         status VARCHAR(10) NOT NULL DEFAULT '在岗',
@@ -108,6 +109,12 @@ class DatabaseManager:
                 """)
                 await cur.execute(
                     "INSERT IGNORE INTO _system_config (config_key, config_value) VALUES ('timezone', 'Asia/Shanghai')"
+                )
+                await cur.execute(
+                    "INSERT IGNORE INTO _system_config "
+                    "(config_key, config_value) VALUES "
+                    "('online_summary_positions', '[\"组长\", \"组员\"]'), "
+                    "('visit_summary_positions', '[\"组长\", \"组员\"]')"
                 )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _sync_schedule (
@@ -455,6 +462,7 @@ class DatabaseManager:
                         pass
                 # 旧数据库平滑补齐网格员状态和请假字段
                 for column_name, column_definition in [
+                    ("position", "VARCHAR(20) NOT NULL DEFAULT '组员'"),
                     ("status", "VARCHAR(10) NOT NULL DEFAULT '在岗'"),
                     ("leave_start_date", "DATE DEFAULT NULL"),
                     ("leave_end_date", "DATE DEFAULT NULL"),
@@ -478,6 +486,15 @@ class DatabaseManager:
                     await cur.execute(
                         "ALTER TABLE _grid_members "
                         "ADD UNIQUE KEY uk_grid_id_card (id_card_number)"
+                    )
+                await cur.execute(
+                    "SHOW INDEX FROM _grid_members "
+                    "WHERE Key_name='idx_grid_position'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _grid_members "
+                        "ADD INDEX idx_grid_position (position)"
                     )
                 # 测试数据表（用于验证工作量统计逻辑）
                 await cur.execute("""

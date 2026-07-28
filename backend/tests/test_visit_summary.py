@@ -65,6 +65,8 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             connection,
             date(2026, 7, 1),
             date(2026, 7, 31),
+            selected_positions={"组长", "组员"},
+            known_positions={},
         )
 
         self.assertEqual(result["inspector"]["columns"], INSPECTOR_COLUMNS)
@@ -102,10 +104,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [params for _, params in connection.calls],
-            [
-                (date(2026, 7, 1), date(2026, 7, 31)),
-                (date(2026, 7, 1), date(2026, 7, 31)),
-            ],
+            [(date(2026, 7, 1), date(2026, 7, 31))],
         )
 
     async def test_empty_range_still_returns_zero_totals(self):
@@ -113,6 +112,8 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             SummaryConnection([], []),
             date(2026, 7, 1),
             date(2026, 7, 1),
+            selected_positions={"组长", "组员"},
+            known_positions={},
         )
 
         self.assertEqual(result["inspector"]["data"], [])
@@ -136,11 +137,17 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             connection,
             date(2026, 7, 1),
             date(2026, 7, 31),
+            selected_positions={"组长", "组员"},
+            known_positions={},
         )
 
+        visit_averages = {
+            row["社区"]: row["人均走访户数"]
+            for row in result["community"]["data"]
+        }
         self.assertEqual(
-            [row["人均走访户数"] for row in result["community"]["data"]],
-            [2.0, 3.0],
+            visit_averages,
+            {"长板": 2.0, "水秀": 3.0},
         )
         self.assertEqual(
             result["community"]["summary"]["人均走访户数"],
@@ -149,6 +156,36 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["community"]["summary"]["人均变动数"],
             3.0,
+        )
+
+    async def test_known_unselected_position_is_hidden_but_unknown_remains(self):
+        connection = SummaryConnection(
+            inspector_rows=[
+                ("长板", "组员甲", 2, 0, 1, 0, 1),
+                ("长板", "中队长乙", 5, 1, 1, 0, 2),
+                ("水秀", "名册外人员", 3, 0, 0, 1, 1),
+            ],
+            community_rows=[],
+        )
+
+        result = await get_visit_summary(
+            connection,
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            selected_positions={"组长", "组员"},
+            known_positions={
+                "组员甲": "组员",
+                "中队长乙": "中队长",
+            },
+        )
+
+        self.assertEqual(
+            [row["姓名"] for row in result["inspector"]["data"]],
+            ["组员甲", "名册外人员"],
+        )
+        self.assertEqual(
+            result["community"]["summary"]["走访户数"],
+            5,
         )
 
     async def test_rejects_reversed_date_range(self):
