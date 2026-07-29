@@ -60,7 +60,10 @@ def _build_summary(table: dict) -> dict:
     if "核查完成率" in columns:
         summary["核查完成率"] = _ratio(completed, total)
     if "核查见底率" in columns:
-        summary["核查见底率"] = _ratio(max(completed - unable, 0), total)
+        summary["核查见底率"] = _ratio(
+            max(completed - unable, 0),
+            completed,
+        )
     if "当日人均核查数" in columns:
         summary["当日人均核查数"] = _ratio(completed, member_count)
 

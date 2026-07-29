@@ -31,18 +31,33 @@ test('在线汇总总计只使用筛选后的行', () => {
   assert.equal(total.社区, '总计')
   assert.equal(total.数据总数, 10)
   assert.equal(total.核查完成率, 0.5)
-  assert.equal(total.核查见底率, 0.4)
+  assert.equal(total.核查见底率, 0.8)
 })
 
 test('在线汇总两列模式按已核查计算完成率', () => {
-  const columns = ['社区', '数据总数', '未核查', '已核查', '核查完成率']
+  const columns = [
+    '社区',
+    '数据总数',
+    '未核查',
+    '已核查',
+    '核查完成率',
+    '无法见底数',
+    '核查见底率',
+  ]
   const total = buildReportTableTotal(columns, [
-    { 社区: '长板', 数据总数: 10, 未核查: 6, 已核查: 4 },
+    {
+      社区: '长板',
+      数据总数: 10,
+      未核查: 6,
+      已核查: 4,
+      无法见底数: 1,
+    },
   ])
 
   assert.equal(total.未核查, 6)
   assert.equal(total.已核查, 4)
   assert.equal(total.核查完成率, 0.4)
+  assert.equal(total.核查见底率, 0.75)
 })
 
 test('走访汇总总计按筛选行重算比率和人均数', () => {

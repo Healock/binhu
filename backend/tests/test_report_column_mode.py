@@ -55,7 +55,7 @@ def sample_detailed_table():
                 "已完成": 15,
                 "核查完成率": 0.5,
                 "无法见底数": 3,
-                "核查见底率": 0.4,
+                "核查见底率": 0.8,
             },
             {
                 "社区": "水秀",
@@ -65,7 +65,7 @@ def sample_detailed_table():
                 "已完成": 10,
                 "核查完成率": 0.5,
                 "无法见底数": 2,
-                "核查见底率": 0.4,
+                "核查见底率": 0.8,
             },
         ],
     }
@@ -158,7 +158,29 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["已完成"], 25)
         self.assertEqual(summary["无法见底数"], 5)
         self.assertEqual(summary["核查完成率"], 0.5)
-        self.assertEqual(summary["核查见底率"], 0.4)
+        self.assertEqual(summary["核查见底率"], 0.8)
+
+    def test_total_reached_bottom_rate_is_zero_without_completed_data(self):
+        table = sample_detailed_table()
+        table["data"] = [
+            {
+                "社区": "长板",
+                "数据总数": 5,
+                "未核查": 3,
+                "已核查": 2,
+                "已完成": 0,
+                "核查完成率": 0,
+                "无法见底数": 0,
+                "核查见底率": 0,
+            }
+        ]
+
+        result = project_report_payload(
+            {"exists": True, **table},
+            "three",
+        )
+
+        self.assertEqual(result["summary"]["核查见底率"], 0.0)
 
     def test_two_column_mode_projects_total_row(self):
         result = project_report_payload(
@@ -171,6 +193,7 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["已核查"], 25)
         self.assertNotIn("已完成", summary)
         self.assertEqual(summary["核查完成率"], 0.5)
+        self.assertEqual(summary["核查见底率"], 0.8)
 
     def test_summary_report_total_recalculates_person_average(self):
         table = sample_detailed_table()

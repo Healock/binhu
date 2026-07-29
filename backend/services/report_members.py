@@ -172,7 +172,7 @@ def aggregate_community_rows(
                 completed,
                 calculate_ratio(completed, total),
                 unable,
-                calculate_ratio(max(completed - unable, 0), total),
+                calculate_ratio(max(completed - unable, 0), completed),
             )
         )
     return result
@@ -262,7 +262,7 @@ def merge_inspector_rows(
                 completed,
                 calculate_ratio(completed, total),
                 unable,
-                calculate_ratio(max(completed - unable, 0), total),
+                calculate_ratio(max(completed - unable, 0), completed),
             )
         )
     result.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
@@ -299,14 +299,14 @@ async def rebuild_community_report_table(
                  )
                  ELSE 0 END,
             SUM(report_row.无法见底数),
-            CASE WHEN SUM(report_row.数据总数) > 0
+            CASE WHEN SUM(report_row.已完成) > 0
                  THEN ROUND(
                     GREATEST(
                         SUM(report_row.已完成)
                         - SUM(report_row.无法见底数),
                         0
                     )
-                    / SUM(report_row.数据总数),
+                    / SUM(report_row.已完成),
                     2
                  )
                  ELSE 0 END
@@ -348,7 +348,13 @@ async def rebuild_community_report_from_ledger(
             SUM(ledger.task_state = 'completed'),
             ROUND(SUM(ledger.task_state = 'completed') / COUNT(*), 2),
             SUM(ledger.unable_to_verify),
-            ROUND(SUM(ledger.reached_bottom) / COUNT(*), 2)
+            CASE WHEN SUM(ledger.task_state = 'completed') > 0
+                 THEN ROUND(
+                    SUM(ledger.reached_bottom)
+                    / SUM(ledger.task_state = 'completed'),
+                    2
+                 )
+                 ELSE 0 END
         FROM _daily_task_ledger AS ledger
         LEFT JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(ledger.inspector))

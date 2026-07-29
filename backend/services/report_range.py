@@ -152,8 +152,12 @@ async def _aggregate_range_ledger(
                  )
                  ELSE 0 END AS completion_rate,
             SUM(latest.unable_to_verify) AS unable_count,
-            CASE WHEN COUNT(*) > 0
-                 THEN ROUND(SUM(latest.reached_bottom) / COUNT(*), 2)
+            CASE WHEN SUM(latest.task_state = 'completed') > 0
+                 THEN ROUND(
+                    SUM(latest.reached_bottom)
+                    / SUM(latest.task_state = 'completed'),
+                    2
+                 )
                  ELSE 0 END AS reached_bottom_rate
         FROM (
             SELECT ranked.*
@@ -211,8 +215,12 @@ async def _aggregate_range_community_ledger(
                  )
                  ELSE 0 END AS completion_rate,
             SUM(latest.unable_to_verify) AS unable_count,
-            CASE WHEN COUNT(*) > 0
-                 THEN ROUND(SUM(latest.reached_bottom) / COUNT(*), 2)
+            CASE WHEN SUM(latest.task_state = 'completed') > 0
+                 THEN ROUND(
+                    SUM(latest.reached_bottom)
+                    / SUM(latest.task_state = 'completed'),
+                    2
+                 )
                  ELSE 0 END AS reached_bottom_rate
         FROM (
             SELECT ranked.*

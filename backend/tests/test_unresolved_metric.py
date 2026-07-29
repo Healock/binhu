@@ -25,7 +25,7 @@ def make_database(*, fetchall=None, fetchone=None):
 
 
 class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
-    async def test_daily_summary_rate_uses_completed_minus_unable(self):
+    async def test_daily_summary_rate_uses_completed_as_denominator(self):
         report_date = "2026-07-27"
         community_table = f"{report_date}_daily_fullChain_community"
         snapshot_table = f"{report_date}_snapshot_fullChain"
@@ -52,15 +52,15 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
         )
         normalized = " ".join(update_sql.split())
         self.assertIn(
-            "GREATEST(已完成 - 无法见底数, 0) / 数据总数",
+            "GREATEST(已完成 - 无法见底数, 0) / 已完成",
             normalized,
         )
         self.assertNotIn(
-            "(数据总数 - 无法见底数) / 数据总数",
+            "GREATEST(已完成 - 无法见底数, 0) / 数据总数",
             normalized,
         )
 
-    async def test_range_summary_rate_uses_completed_minus_unable(self):
+    async def test_range_summary_preserves_completed_denominator_rate(self):
         pool, cursor = make_database(fetchall=[])
 
         with patch.object(
@@ -79,7 +79,7 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             report_range,
             "_aggregate_range_ledger",
             new=AsyncMock(
-                return_value=[("长板", "张三", 12, 0, 0, 10, 0.83, 2, 0.67)]
+                return_value=[("长板", "张三", 12, 0, 0, 10, 0.83, 2, 0.8)]
             ),
         ), patch.object(
             report_range,
@@ -102,12 +102,33 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["exists"])
         row = result["data"][0]
         self.assertEqual(row["核查完成率"], 0.83)
-        self.assertEqual(row["核查见底率"], 0.67)
+        self.assertEqual(row["核查见底率"], 0.8)
         self.assertEqual(result["community"]["data"], result["data"])
         self.assertEqual(result["inspector"]["data"][0]["姓名"], "张三")
         self.assertEqual(
             result["inspector"]["data"][0]["核查完成率"],
             0.83,
+        )
+
+    async def test_range_ledger_rate_divides_by_completed_count(self):
+        _, cursor = make_database(fetchall=[])
+
+        await report_range._aggregate_range_ledger(
+            cursor,
+            "2026-07-27",
+            "2026-07-29",
+            "全链条",
+        )
+
+        sql = " ".join(cursor.execute.await_args.args[0].split())
+        self.assertIn(
+            "SUM(latest.reached_bottom) "
+            "/ SUM(latest.task_state = 'completed')",
+            sql,
+        )
+        self.assertNotIn(
+            "SUM(latest.reached_bottom) / COUNT(*)",
+            sql,
         )
 
 
