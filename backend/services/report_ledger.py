@@ -367,7 +367,12 @@ async def aggregate_ledger_into_reports(
             SUM(task_state='completed'),
             ROUND(SUM(task_state='completed') / COUNT(*), 2),
             SUM(unable_to_verify),
-            ROUND(SUM(reached_bottom) / COUNT(*), 2)
+            CASE WHEN SUM(task_state='completed') > 0
+                 THEN ROUND(
+                    SUM(reached_bottom) / SUM(task_state='completed'),
+                    2
+                 )
+                 ELSE 0 END
         FROM _daily_task_ledger
         WHERE report_date=%s
           AND parser_type=%s

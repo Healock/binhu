@@ -487,10 +487,10 @@ async def _create_stage_summaries(
                     ELSE 0
                 END,
                 核查见底率=CASE
-                    WHEN 数据总数 > 0
+                    WHEN 已完成 > 0
                     THEN ROUND(
                         GREATEST(已完成 - 无法见底数, 0)
-                        / 数据总数,
+                        / 已完成,
                         2
                     )
                     ELSE 0

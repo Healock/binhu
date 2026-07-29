@@ -223,7 +223,13 @@ class BaseReportBuilder:
                 SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END),
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END
+                CASE WHEN SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) > 0
+                     THEN ROUND(
+                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
+                        2
+                     )
+                     ELSE 0 END
             FROM {today} t
             {join_clause}
             WHERE t.核查人 IS NOT NULL AND t.核查人 <> '' AND t.核查人 <> '核查人'
@@ -241,7 +247,13 @@ class BaseReportBuilder:
                 SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END),
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END
+                CASE WHEN SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) > 0
+                     THEN ROUND(
+                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
+                        2
+                     )
+                     ELSE 0 END
             FROM {today} t
             {join_clause}
             WHERE t.社区 IS NOT NULL AND t.社区 <> '' AND t.社区 <> '社区'
@@ -269,7 +281,13 @@ class BaseReportBuilder:
                 SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) AS 已完成,
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END) AS 无法见底数,
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查见底率
+                CASE WHEN SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) > 0
+                     THEN ROUND(
+                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END),
+                        2
+                     )
+                     ELSE 0 END AS 核查见底率
             FROM {src} t
             WHERE t.核查人 IS NOT NULL AND t.核查人 <> '' AND t.核查人 <> '核查人'
               AND t.社区 IS NOT NULL AND t.社区 <> '' AND t.社区 <> '社区'
@@ -285,7 +303,13 @@ class BaseReportBuilder:
                 SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) AS 已完成,
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END) AS 无法见底数,
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查见底率
+                CASE WHEN SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) > 0
+                     THEN ROUND(
+                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END),
+                        2
+                     )
+                     ELSE 0 END AS 核查见底率
             FROM {src} t
             WHERE t.社区 IS NOT NULL AND t.社区 <> '' AND t.社区 <> '社区'
             GROUP BY t.社区

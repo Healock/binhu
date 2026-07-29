@@ -188,6 +188,12 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("LEFT JOIN OnlineData._grid_members", normalized)
         self.assertIn("person.id IS NULL", normalized)
         self.assertIn("person.position IN (%s, %s)", normalized)
+        self.assertIn(
+            "GREATEST( SUM(report_row.已完成) "
+            "- SUM(report_row.无法见底数), 0 ) "
+            "/ SUM(report_row.已完成)",
+            normalized,
+        )
         self.assertNotIn("DELETE", normalized)
         self.assertEqual(params, ["组长", "组员"])
 
@@ -211,6 +217,11 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ledger.inspector <>", normalized)
         self.assertIn("person.id IS NULL", normalized)
         self.assertIn("person.position IN (%s, %s)", normalized)
+        self.assertIn(
+            "SUM(ledger.reached_bottom) "
+            "/ SUM(ledger.task_state = 'completed')",
+            normalized,
+        )
         self.assertEqual(
             params,
             ("2026-07-29", "寄递业", "组长", "组员"),
@@ -238,9 +249,9 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             merged,
             [
-                ("名册社区", "张三", 14, 3, 4, 7, 0.5, 2, 0.36),
+                ("名册社区", "张三", 14, 3, 4, 7, 0.5, 2, 0.71),
                 ("社区乙", "李四", 0, 0, 0, 0, 0.0, 0, 0.0),
-                ("社区外", "名册外人员", 3, 0, 1, 2, 0.67, 0, 0.67),
+                ("社区外", "名册外人员", 3, 0, 1, 2, 0.67, 0, 1.0),
             ],
         )
 

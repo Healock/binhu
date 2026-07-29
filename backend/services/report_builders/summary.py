@@ -200,7 +200,7 @@ async def build_summary(
             await cur.execute(f"""
                 UPDATE {t_summary} SET
                     核查完成率 = CASE WHEN 数据总数 > 0 THEN ROUND(已完成 / 数据总数, 2) ELSE 0 END,
-                    核查见底率 = CASE WHEN 数据总数 > 0 THEN ROUND(GREATEST(已完成 - 无法见底数, 0) / 数据总数, 2) ELSE 0 END,
+                    核查见底率 = CASE WHEN 已完成 > 0 THEN ROUND(GREATEST(已完成 - 无法见底数, 0) / 已完成, 2) ELSE 0 END,
                     当日人均核查数 = CASE WHEN 网格员人数 > 0 THEN ROUND(已完成 / 网格员人数, 2) ELSE 0 END
             """)
 

@@ -54,6 +54,33 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(builder.ledger_unable_sql("task"), "0")
         self.assertIn("近期反吴", builder.ledger_reached_bottom_sql("task"))
 
+    async def test_daily_rate_divides_reached_bottom_by_completed_count(self):
+        cursor = make_cursor([(2,), (1,)])
+
+        with patch.object(
+            report_ledger,
+            "insert_zero_member_rows",
+            new=AsyncMock(return_value=0),
+        ), patch.object(
+            report_ledger,
+            "rebuild_community_report_from_ledger",
+            new=AsyncMock(),
+        ):
+            await report_ledger.aggregate_ledger_into_reports(
+                cursor,
+                FullChainBuilder(),
+                "2026-07-29",
+                "`inspector_report`",
+                "`community_report`",
+            )
+
+        insert_sql = " ".join(cursor.execute.await_args_list[2].args[0].split())
+        self.assertIn(
+            "SUM(reached_bottom) / SUM(task_state='completed')",
+            insert_sql,
+        )
+        self.assertNotIn("SUM(reached_bottom) / COUNT(*)", insert_sql)
+
     async def test_carried_task_changed_today_has_one_carryover_row(self):
         cursor = make_cursor(
             [

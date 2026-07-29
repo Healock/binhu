@@ -73,7 +73,7 @@ export function buildReportTableTotal(
   if (columns.includes('核查见底率')) {
     total['核查见底率'] = roundRatio(
       Math.max(completed - unable, 0),
-      dataTotal,
+      completed,
       2,
     )
   }

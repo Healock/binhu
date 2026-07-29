@@ -72,8 +72,8 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END,
                 0,
-                CASE WHEN COUNT(*) > 0
-                     THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
+                CASE WHEN SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) > 0
+                     THEN 1.00
                      ELSE 0 END
             FROM {today} t
             {join_clause}
@@ -96,8 +96,8 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END,
                 0,
-                CASE WHEN COUNT(*) > 0
-                     THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
+                CASE WHEN SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) > 0
+                     THEN 1.00
                      ELSE 0 END
             FROM {today} t
             {join_clause}
@@ -128,8 +128,8 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END AS 核查完成率,
                 0 AS 无法见底数,
-                CASE WHEN COUNT(*) > 0
-                     THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
+                CASE WHEN SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) > 0
+                     THEN 1.00
                      ELSE 0 END AS 核查见底率
             FROM {src} t
             WHERE t.核查人 IS NOT NULL AND t.核查人 <> '' AND t.核查人 <> '核查人'
@@ -151,8 +151,8 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
                      THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
                      ELSE 0 END AS 核查完成率,
                 0 AS 无法见底数,
-                CASE WHEN COUNT(*) > 0
-                     THEN ROUND(SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) / COUNT(*), 2)
+                CASE WHEN SUM(CASE WHEN {valid_result} THEN 1 ELSE 0 END) > 0
+                     THEN 1.00
                      ELSE 0 END AS 核查见底率
             FROM {src} t
             WHERE t.`{self.community_column}` IS NOT NULL
