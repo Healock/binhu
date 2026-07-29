@@ -20,6 +20,7 @@ from services.report_members import (
     get_missing_zero_rows,
     insert_zero_member_rows,
     merge_inspector_rows,
+    rebuild_community_report_from_ledger,
     rebuild_community_report_table,
 )
 
@@ -189,6 +190,36 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("person.position IN (%s, %s)", normalized)
         self.assertNotIn("DELETE", normalized)
         self.assertEqual(params, ["组长", "组员"])
+
+    async def test_ledger_community_rebuild_keeps_rows_without_inspector(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=('["组长", "组员"]',))
+
+        await rebuild_community_report_from_ledger(
+            cursor,
+            "`2026-07-29_daily_deliveryIndustry_inspector`",
+            "`2026-07-29_daily_deliveryIndustry_community`",
+            "2026-07-29",
+            "寄递业",
+        )
+
+        ledger_call = cursor.execute.await_args_list[-2]
+        sql, params = ledger_call.args
+        normalized = " ".join(sql.split())
+        self.assertIn("FROM _daily_task_ledger AS ledger", normalized)
+        self.assertNotIn("ledger.inspector <>", normalized)
+        self.assertIn("person.id IS NULL", normalized)
+        self.assertIn("person.position IN (%s, %s)", normalized)
+        self.assertEqual(
+            params,
+            ("2026-07-29", "寄递业", "组长", "组员"),
+        )
+        zero_sql, zero_params = cursor.execute.await_args_list[-1].args
+        normalized_zero_sql = " ".join(zero_sql.split())
+        self.assertIn("report_row.数据总数 = 0", normalized_zero_sql)
+        self.assertIn("existing.社区 IS NULL", normalized_zero_sql)
+        self.assertEqual(zero_params, ["组长", "组员"])
 
     def test_total_summary_merges_same_person_across_business_tables(self):
         rows = [

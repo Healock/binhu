@@ -10,7 +10,7 @@ from services.business_time import (
 )
 from services.report_members import (
     insert_zero_member_rows,
-    rebuild_community_report_table,
+    rebuild_community_report_from_ledger,
 )
 
 
@@ -383,10 +383,12 @@ async def aggregate_ledger_into_reports(
         (report_date, builder.parser_type),
     )
     await insert_zero_member_rows(cur, inspector_table, report_date)
-    await rebuild_community_report_table(
+    await rebuild_community_report_from_ledger(
         cur,
         inspector_table,
         community_table,
+        report_date,
+        builder.parser_type,
     )
     await cur.execute(f"SELECT COUNT(*) FROM {inspector_table}")
     inspector_rows = int((await cur.fetchone())[0])
