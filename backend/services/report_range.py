@@ -163,12 +163,12 @@ async def _aggregate_range_ledger(
                     ROW_NUMBER() OVER (
                         PARTITION BY ledger.parser_type, ledger.row_key
                         ORDER BY ledger.report_date DESC, ledger.updated_at DESC
-                    ) AS row_number
+                    ) AS ledger_rank
                 FROM _daily_task_ledger ledger
                 WHERE ledger.report_date BETWEEN %s AND %s
                   AND ledger.parser_type = %s
             ) ranked
-            WHERE ranked.row_number = 1
+            WHERE ranked.ledger_rank = 1
               AND ranked.included = 1
         ) latest
         WHERE latest.inspector <> ''
@@ -222,12 +222,12 @@ async def _aggregate_range_community_ledger(
                     ROW_NUMBER() OVER (
                         PARTITION BY ledger.parser_type, ledger.row_key
                         ORDER BY ledger.report_date DESC, ledger.updated_at DESC
-                    ) AS row_number
+                    ) AS ledger_rank
                 FROM _daily_task_ledger ledger
                 WHERE ledger.report_date BETWEEN %s AND %s
                   AND ledger.parser_type = %s
             ) ranked
-            WHERE ranked.row_number = 1
+            WHERE ranked.ledger_rank = 1
               AND ranked.included = 1
         ) latest
         LEFT JOIN OnlineData._grid_members AS person
