@@ -215,6 +215,8 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         sql, params = cursor.execute.await_args.args
         normalized = " ".join(sql.split())
         self.assertNotIn("latest.inspector <>", normalized)
+        self.assertNotIn("AS row_number", normalized)
+        self.assertIn("AS ledger_rank", normalized)
         self.assertIn("person.id IS NULL", normalized)
         self.assertEqual(
             params,
