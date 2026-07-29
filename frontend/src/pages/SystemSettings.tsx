@@ -5,7 +5,6 @@ import {
   Descriptions,
   InputNumber,
   Select,
-  Space,
   Switch,
 } from 'antd'
 import {
@@ -193,76 +192,83 @@ export default function SystemSettings() {
         title="自动同步"
         description="按固定间隔读取腾讯文档；修改设置后会重新开始倒计时"
       >
-        <div className="space-y-5">
-          <div>
-            <div className="mb-2 text-sm font-medium text-slate-700">启用状态</div>
-            <Space>
-              <Switch
-                checked={enabled}
-                onChange={setEnabled}
-                loading={loading}
-              />
-              <span className="text-sm text-slate-600">
-                {enabled ? '已开启自动同步' : '已关闭自动同步'}
-              </span>
-            </Space>
-          </div>
-
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              同步间隔
-            </label>
-            <Space wrap>
-              <Select
-                value={intervalChoice}
-                onChange={handleIntervalChoice}
-                options={INTERVAL_OPTIONS}
-                className="w-48"
-                disabled={loading}
-              />
-              {intervalChoice === 'custom' && (
-                <InputNumber
-                  min={5}
-                  max={10080}
-                  value={interval}
-                  onChange={value => setIntervalValue(value || 5)}
-                  addonAfter="分钟"
-                  className="w-48"
+        <div className="flex flex-col gap-5">
+          <div className="grid gap-5 md:grid-cols-2">
+            <div>
+              <div className="mb-2 text-sm font-medium text-slate-700">启用状态</div>
+              <div className="flex min-h-9 items-center gap-3">
+                <Switch
+                  checked={enabled}
+                  onChange={setEnabled}
+                  loading={loading}
                 />
-              )}
-            </Space>
-            <p className="mt-2 text-xs text-slate-500">
-              自定义范围为 5 分钟至 7 天。
-            </p>
+                <span className="text-sm text-slate-600">
+                  {enabled ? '已开启自动同步' : '已关闭自动同步'}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                同步间隔
+              </label>
+              <div className="flex flex-wrap gap-3">
+                <Select
+                  value={intervalChoice}
+                  onChange={handleIntervalChoice}
+                  options={INTERVAL_OPTIONS}
+                  className="w-48"
+                  disabled={loading}
+                />
+                {intervalChoice === 'custom' && (
+                  <InputNumber
+                    min={5}
+                    max={10080}
+                    value={interval}
+                    onChange={value => setIntervalValue(value || 5)}
+                    addonAfter="分钟"
+                    className="w-48"
+                  />
+                )}
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                自定义范围为 5 分钟至 7 天。
+              </p>
+            </div>
           </div>
 
-          <Descriptions
-            size="small"
-            column={{ xs: 1, sm: 2 }}
-            items={[
-              {
-                key: 'countdown',
-                label: '距离下次同步',
-                children: schedule.enabled ? countdown : '已关闭',
-              },
-              {
-                key: 'next',
-                label: '下次执行时间',
-                children: schedule.enabled && schedule.next_run_at
-                  ? formatUTCTime(schedule.next_run_at, timezone)
-                  : '-',
-              },
-            ]}
-          />
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+            <Descriptions
+              size="small"
+              colon={false}
+              column={{ xs: 1, sm: 2 }}
+              items={[
+                {
+                  key: 'countdown',
+                  label: '距离下次同步',
+                  children: schedule.enabled ? countdown : '已关闭',
+                },
+                {
+                  key: 'next',
+                  label: '下次执行时间',
+                  children: schedule.enabled && schedule.next_run_at
+                    ? formatUTCTime(schedule.next_run_at, timezone)
+                    : '-',
+                },
+              ]}
+            />
+          </div>
 
-          <Button
-            type="primary"
-            onClick={handleSaveSchedule}
-            loading={savingSchedule}
-            disabled={loading || interval < 5 || interval > 10080}
-          >
-            保存自动同步设置
-          </Button>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              onClick={handleSaveSchedule}
+              loading={savingSchedule}
+              disabled={loading || interval < 5 || interval > 10080}
+            >
+              保存自动同步设置
+            </Button>
+          </div>
           {scheduleMsg && (
             <Alert
               type={scheduleMsg.includes('失败') ? 'error' : 'success'}
@@ -277,40 +283,42 @@ export default function SystemSettings() {
         title="汇总统计岗位"
         description="人员仍会保留在人员管理中，只有这里选中的岗位才进入对应汇总"
       >
-        <div className="space-y-5">
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">
-              在线数据汇总
-            </label>
-            <Select<PersonnelPosition[]>
-              mode="multiple"
-              value={onlinePositions}
-              onChange={setOnlinePositions}
-              options={PERSONNEL_POSITIONS.map(position => ({
-                value: position,
-                label: position,
-              }))}
-              placeholder="选择参与在线汇总的岗位"
-              className="w-full"
-              maxTagCount="responsive"
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">
-              出租房走访汇总
-            </label>
-            <Select<PersonnelPosition[]>
-              mode="multiple"
-              value={visitPositions}
-              onChange={setVisitPositions}
-              options={RENTAL_PERSONNEL_POSITIONS.map(position => ({
-                value: position,
-                label: position,
-              }))}
-              placeholder="选择参与出租房走访汇总的岗位"
-              className="w-full"
-              maxTagCount="responsive"
-            />
+        <div className="flex flex-col gap-5">
+          <div className="grid gap-5 md:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                在线数据汇总
+              </label>
+              <Select<PersonnelPosition[]>
+                mode="multiple"
+                value={onlinePositions}
+                onChange={setOnlinePositions}
+                options={PERSONNEL_POSITIONS.map(position => ({
+                  value: position,
+                  label: position,
+                }))}
+                placeholder="选择参与在线汇总的岗位"
+                className="w-full"
+                maxTagCount="responsive"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                出租房走访汇总
+              </label>
+              <Select<PersonnelPosition[]>
+                mode="multiple"
+                value={visitPositions}
+                onChange={setVisitPositions}
+                options={RENTAL_PERSONNEL_POSITIONS.map(position => ({
+                  value: position,
+                  label: position,
+                }))}
+                placeholder="选择参与出租房走访汇总的岗位"
+                className="w-full"
+                maxTagCount="responsive"
+              />
+            </div>
           </div>
           <Alert
             type="info"
@@ -318,18 +326,20 @@ export default function SystemSettings() {
             message="默认统计组长和组员"
             description="这里配置的是出租房汇总。自购房汇总固定统计“自购房”岗位；人员管理中没有登记的姓名暂时归入出租房，避免未知数据被直接隐藏。"
           />
-          <Button
-            type="primary"
-            loading={savingPositions}
-            disabled={
-              loading
-              || !onlinePositions.length
-              || !visitPositions.length
-            }
-            onClick={handleSavePositions}
-          >
-            保存统计岗位
-          </Button>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              loading={savingPositions}
+              disabled={
+                loading
+                || !onlinePositions.length
+                || !visitPositions.length
+              }
+              onClick={handleSavePositions}
+            >
+              保存统计岗位
+            </Button>
+          </div>
           {positionsMsg && (
             <Alert
               type={positionsMsg.includes('已保存') ? 'success' : 'error'}
@@ -341,7 +351,7 @@ export default function SystemSettings() {
       </Panel>
 
       <Panel title="系统时间" description="设置系统时间在页面上的显示方式">
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               系统时区
@@ -356,13 +366,15 @@ export default function SystemSettings() {
               options={TIMEZONES}
             />
           </div>
-          <Button
-            type="primary"
-            onClick={handleSaveTimezone}
-            loading={savingTimezone}
-          >
-            保存时区
-          </Button>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              onClick={handleSaveTimezone}
+              loading={savingTimezone}
+            >
+              保存时区
+            </Button>
+          </div>
           {timezoneMsg && (
             <Alert
               type={timezoneMsg.includes('成功') ? 'success' : 'error'}

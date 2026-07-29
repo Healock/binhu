@@ -20,6 +20,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  InfoCircleOutlined,
   PlusOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
@@ -167,7 +168,7 @@ export default function GridMembers() {
     {
       title: '人员状态',
       key: 'status',
-      width: 220,
+      width: 210,
       render: (_, member) => <MemberStatus member={member} />,
     },
     {
@@ -424,30 +425,36 @@ function getMemberStatusMeta(member: GridMember) {
 
 function MemberStatus({ member }: { member: GridMember }) {
   const { label, color, detail, reason } = getMemberStatusMeta(member)
+  const dotClassName = color === 'green'
+    ? 'bg-green-500'
+    : color === 'orange'
+    ? 'bg-orange-500'
+    : color === 'blue'
+    ? 'bg-blue-500'
+    : 'bg-slate-400'
 
   return (
-    <div className="flex min-w-[190px] items-center gap-2">
-      <Tag
-        color={color}
-        className="m-0 min-w-[68px] shrink-0 text-center"
-      >
-        {label}
-      </Tag>
-      {(detail || reason) && (
-        <div className="min-w-0 flex-1 leading-5">
-          {detail && (
-            <div className="truncate text-xs text-slate-600" title={detail}>
-              {detail}
-            </div>
-          )}
-          {reason && (
-            <div
-              className="truncate text-xs text-slate-400"
-              title={`原因：${reason}`}
-            >
-              原因：{reason}
-            </div>
-          )}
+    <div className="min-w-[180px] py-0.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          aria-hidden="true"
+          className={`h-2 w-2 shrink-0 rounded-full ${dotClassName}`}
+        />
+        <span className="shrink-0 text-sm font-medium text-slate-700">
+          {label}
+        </span>
+        {detail && (
+          <span className="min-w-0 truncate text-xs text-slate-500" title={detail}>
+            {detail}
+          </span>
+        )}
+      </div>
+      {reason && (
+        <div
+          className="mt-1 truncate pl-4 text-xs text-slate-500"
+          title={`原因：${reason}`}
+        >
+          原因：{reason}
         </div>
       )}
     </div>
@@ -636,7 +643,12 @@ function MemberForm({
             }))}
           />
           <p className="mt-1.5 text-xs text-slate-500">
-            出租房汇总岗位由超级管理员配置；“自购房”岗位进入单独的自购房汇总。
+            <span className="flex items-start gap-1.5 leading-5">
+              <InfoCircleOutlined className="mt-0.5 shrink-0" />
+              <span>
+                出租房汇总岗位由超级管理员配置；“自购房”岗位进入单独的自购房汇总。
+              </span>
+            </span>
           </p>
         </div>
         <div>

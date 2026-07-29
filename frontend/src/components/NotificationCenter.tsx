@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Badge,
   Button,
@@ -62,16 +63,29 @@ export default function NotificationCenter() {
     setUnreadCount(0)
   }
 
+  const renderTrigger = () => (
+    <Badge count={unreadCount} size="small" overflowCount={99}>
+      <Button
+        type="text"
+        shape="circle"
+        aria-label="打开站内通知"
+        icon={<BellOutlined />}
+        onClick={handleOpen}
+      />
+    </Badge>
+  )
+
   return (
     <>
-      <div className="fixed right-3 top-2.5 z-[60] md:bottom-[104px] md:left-[180px] md:right-auto md:top-auto">
-        <Badge count={unreadCount} size="small" overflowCount={99}>
-          <Button
-            aria-label="打开站内通知"
-            icon={<BellOutlined />}
-            onClick={handleOpen}
-          />
-        </Badge>
+      {typeof document !== 'undefined' && createPortal(
+        <div className="fixed right-3 top-2.5 z-[60] md:hidden">
+          {renderTrigger()}
+        </div>,
+        document.body,
+      )}
+
+      <div className="hidden shrink-0 md:block">
+        {renderTrigger()}
       </div>
 
       <Drawer

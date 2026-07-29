@@ -97,8 +97,6 @@ export default function Layout() {
         )}
       </header>
 
-      {user?.role === 'super_admin' && <NotificationCenter />}
-
       {sidebarOpen && (
         <button
           type="button"
@@ -164,25 +162,26 @@ export default function Layout() {
 
         {user && (
           <div className="shrink-0 border-t border-slate-200 p-3">
-            <div className="rounded-lg bg-slate-50 p-3">
-              <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-slate-600">
-                  <UserOutlined />
-                </span>
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-slate-800">{user.username}</div>
-                  <div className="text-xs text-slate-500">{ROLE_LABELS[user.role] || user.role}</div>
+            <div className="flex items-center gap-2.5 px-1 py-1">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                <UserOutlined />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-slate-800">{user.username}</div>
+                <div className="mt-0.5 truncate text-xs text-slate-500">
+                  {ROLE_LABELS[user.role] || user.role}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="mt-3 flex w-full items-center justify-center gap-2 border border-slate-200 bg-white text-xs text-slate-600 hover:border-slate-300 hover:text-slate-900"
-              >
-                <LogoutOutlined />
-                退出登录
-              </button>
+              {user.role === 'super_admin' && <NotificationCenter />}
             </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="mt-2 flex w-full items-center justify-center gap-2 border-0 bg-slate-50 text-sm text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+            >
+              <LogoutOutlined />
+              退出登录
+            </button>
           </div>
         )}
       </aside>

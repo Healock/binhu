@@ -68,68 +68,69 @@ export default function OAuthSettings() {
       title="腾讯文档 OAuth 认证"
       description="用于读取和写入已授权的腾讯文档"
     >
-      <Alert
-        className="mb-5"
-        type="warning"
-        showIcon
-        icon={<SafetyCertificateOutlined />}
-        message="这些字段属于敏感信息，请勿复制到聊天、截图或共享文档。"
-      />
-      {loadError && <Alert className="mb-5" type="error" showIcon message={loadError} />}
-      <div className="space-y-4">
-        <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">Client-Id</label>
-          <Input
-            value={clientId}
-            onChange={event => setClientId(event.target.value)}
-          />
+      <div className="flex flex-col gap-5">
+        <Alert
+          type="warning"
+          showIcon
+          icon={<SafetyCertificateOutlined />}
+          message="这些字段属于敏感信息，请勿复制到聊天、截图或共享文档。"
+        />
+        {loadError && <Alert type="error" showIcon message={loadError} />}
+        <div className="flex flex-col gap-4">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Client-Id</label>
+            <Input
+              value={clientId}
+              onChange={event => setClientId(event.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Client-Secret</label>
+            <Input.Password
+              value={clientSecret}
+              onChange={event => setClientSecret(event.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Access-Token</label>
+            <Input.Password
+              value={accessToken}
+              onChange={event => setAccessToken(event.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Refresh-Token（可选）</label>
+            <Input.Password
+              value={refreshToken}
+              onChange={event => setRefreshToken(event.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Open-Id</label>
+            <Input
+              value={openId}
+              onChange={event => setOpenId(event.target.value)}
+            />
+          </div>
+          <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
+            <Button
+              onClick={handleTest}
+              loading={testing}
+            >
+              测试连接
+            </Button>
+            <Button
+              type="primary"
+              onClick={handleSave}
+              loading={saving}
+            >
+              保存
+            </Button>
+          </div>
+          {statusMsg && (
+            <Alert type={statusMsg.includes('成功') ? 'success' : 'error'} showIcon message={statusMsg} />
+          )}
         </div>
-        <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">Client-Secret</label>
-          <Input.Password
-            value={clientSecret}
-            onChange={event => setClientSecret(event.target.value)}
-          />
-        </div>
-        <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">Access-Token</label>
-          <Input.Password
-            value={accessToken}
-            onChange={event => setAccessToken(event.target.value)}
-          />
-        </div>
-        <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">Refresh-Token（可选）</label>
-          <Input.Password
-            value={refreshToken}
-            onChange={event => setRefreshToken(event.target.value)}
-          />
-        </div>
-        <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">Open-Id</label>
-          <Input
-            value={openId}
-            onChange={event => setOpenId(event.target.value)}
-          />
-        </div>
-        <div className="flex gap-3 pt-2">
-          <Button
-            onClick={handleTest}
-            loading={testing}
-          >
-            测试连接
-          </Button>
-          <Button
-            type="primary"
-            onClick={handleSave}
-            loading={saving}
-          >
-            保存
-          </Button>
-        </div>
-        {statusMsg && (
-          <Alert type={statusMsg.includes('成功') ? 'success' : 'error'} showIcon message={statusMsg} />
-        )}
       </div>
     </Panel>
   )
