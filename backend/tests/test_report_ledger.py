@@ -20,11 +20,16 @@ def make_cursor(fetchone_values):
 
 class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
     def test_standard_status_covers_all_three_columns(self):
-        sql = FullChainBuilder().ledger_state_sql("task")
+        builder = FullChainBuilder()
+        sql = builder.ledger_state_sql("task")
         self.assertIn("'completed'", sql)
         self.assertIn("'checked'", sql)
         self.assertIn("'unchecked'", sql)
         self.assertIn("task.`现住址`", sql)
+        # 这两个表达式会和数据库参数一起执行；百分号必须转义，
+        # 否则 aiomysql 会把它误当作 Python 格式化符。
+        self.assertIn("%%无法核实%%", builder.ledger_unable_sql("task"))
+        self.assertIn("%%已登记%%", builder.ledger_reached_bottom_sql("task"))
 
     def test_model_three_has_only_unchecked_and_completed(self):
         builder = SuspectUnrevokedBuilder()
