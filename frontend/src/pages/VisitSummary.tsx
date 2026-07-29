@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
+import DataOverview from '../components/DataOverview'
 import { EmptyState, LoadingState, PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -572,8 +573,8 @@ export default function VisitSummary() {
       />
 
       <Panel
-        title="当前数据库数据范围"
-        description="上传前先确认现有日期范围，重叠日期会自动合并去重"
+        title="走访数据概览"
+        description="展示数据库现有范围、星级关联情况和缺少数据的日期"
         extra={
           <Button
             icon={<CalendarOutlined />}
@@ -585,29 +586,51 @@ export default function VisitSummary() {
         }
       >
         {coverageError && <Alert className="mb-4" type="error" showIcon message={coverageError} />}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 xl:col-span-2">
-            <div className="text-xs text-slate-500">已入库日期范围</div>
-            <div className="mt-2 text-lg font-semibold text-slate-900">
-              <DateRange start={coverage?.start_date || null} end={coverage?.end_date || null} />
-            </div>
-          </div>
-          <div className="rounded-lg border border-slate-200 p-4">
-            <Statistic title="有效走访记录" value={coverage?.total_records || 0} suffix="条" />
-          </div>
-          <div className="rounded-lg border border-slate-200 p-4">
-            <Statistic title="已星级评定" value={coverage?.rated_records || 0} suffix="条" />
-          </div>
-          <div className="rounded-lg border border-slate-200 p-4">
-            <Statistic title="仅走访未评定" value={coverage?.unrated_records || 0} suffix="条" />
-          </div>
-          <div className="rounded-lg border border-slate-200 p-4">
-            <Statistic title="有数据日期" value={coverage?.data_days || 0} suffix="天" />
-          </div>
-          <div className="rounded-lg border border-slate-200 p-4">
-            <Statistic title="无数据日期" value={coverage?.missing_date_count || 0} suffix="天" />
-          </div>
-        </div>
+        <DataOverview
+          loading={coverageLoading}
+          rangeTitle="数据库日期范围"
+          rangeValue={(
+            <DateRange
+              start={coverage?.start_date || null}
+              end={coverage?.end_date || null}
+            />
+          )}
+          rangeDescription="重复日期会在导入时自动合并去重"
+          metrics={[
+            {
+              key: 'records',
+              title: '有效走访记录',
+              value: coverage?.total_records || 0,
+              suffix: '条',
+            },
+            {
+              key: 'rated',
+              title: '已星级评定',
+              value: coverage?.rated_records || 0,
+              suffix: '条',
+              valueStyle: { color: '#047857' },
+            },
+            {
+              key: 'unrated',
+              title: '仅走访未评定',
+              value: coverage?.unrated_records || 0,
+              suffix: '条',
+              valueStyle: { color: '#d97706' },
+            },
+            {
+              key: 'data-days',
+              title: '有数据日期',
+              value: coverage?.data_days || 0,
+              suffix: '天',
+            },
+            {
+              key: 'missing-days',
+              title: '无数据日期',
+              value: coverage?.missing_date_count || 0,
+              suffix: '天',
+            },
+          ]}
+        />
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-500">
           <span>最近走访导入：{formatUTCTime(coverage?.last_detail_import_at)}</span>
           <span>最近星级导入：{formatUTCTime(coverage?.last_rating_import_at)}</span>
@@ -700,6 +723,58 @@ export default function VisitSummary() {
         <p className="mt-3 text-xs text-slate-500">
           出租房按系统设置中的岗位统计；自购房固定统计“自购房”岗位。走访户数按去重后的走访记录计算。
         </p>
+        {summaryReport && (
+          <div className="mt-5 border-t border-slate-100 pt-5">
+            <DataOverview
+              loading={summaryLoading}
+              rangeTitle="当前汇总范围"
+              rangeValue={shownRangeLabel}
+              rangeDescription={`${shownCategoryLabel} · 跟随上方查询条件`}
+              metrics={[
+                {
+                  key: 'visits',
+                  title: '走访户数',
+                  value: summaryReport.overview.visit_records,
+                  suffix: '户',
+                },
+                {
+                  key: 'participants',
+                  title: '参与人员',
+                  value: summaryReport.overview.participant_count,
+                  suffix: '人',
+                },
+                {
+                  key: 'changes',
+                  title: '总变动数',
+                  value: summaryReport.overview.total_changes,
+                  suffix: '项',
+                  help: `新增 ${summaryReport.overview.added_count}、变更 ${summaryReport.overview.changed_count}、注销 ${summaryReport.overview.cancelled_count}`,
+                },
+                {
+                  key: 'ratings',
+                  title: '星级评定',
+                  value: summaryReport.overview.rated_records,
+                  suffix: '户',
+                  help: `评定率 ${(summaryReport.overview.rating_rate * 100).toFixed(1)}%`,
+                  valueStyle: { color: '#047857' },
+                },
+                {
+                  key: 'unrated',
+                  title: '仅走访未评定',
+                  value: summaryReport.overview.unrated_records,
+                  suffix: '户',
+                  valueStyle: { color: '#d97706' },
+                },
+                {
+                  key: 'communities',
+                  title: '涉及社区',
+                  value: summaryReport.overview.community_count,
+                  suffix: '个',
+                },
+              ]}
+            />
+          </div>
+        )}
       </Panel>
 
       {summaryError && (

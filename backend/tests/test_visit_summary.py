@@ -103,6 +103,21 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         community_total = result["community"]["summary"]
         self.assertEqual(community_total["人均走访户数"], 3.0)
         self.assertEqual(community_total["人均变动数"], 1.5)
+        self.assertEqual(
+            result["overview"],
+            {
+                "visit_records": 6,
+                "participant_count": 2,
+                "community_count": 1,
+                "added_count": 1,
+                "changed_count": 1,
+                "cancelled_count": 1,
+                "total_changes": 3,
+                "rated_records": 4,
+                "unrated_records": 2,
+                "rating_rate": 0.6667,
+            },
+        )
 
         self.assertEqual(
             [params for _, params in connection.calls],
@@ -122,6 +137,9 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["inspector"]["summary"]["走访户数"], 0)
         self.assertEqual(result["community"]["summary"]["星级评定率"], 0.0)
         self.assertEqual(result["community"]["summary"]["人均走访户数"], 0.0)
+        self.assertEqual(result["overview"]["visit_records"], 0)
+        self.assertEqual(result["overview"]["unrated_records"], 0)
+        self.assertEqual(result["overview"]["rating_rate"], 0.0)
 
     async def test_total_counts_cross_community_member_once(self):
         connection = SummaryConnection(

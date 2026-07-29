@@ -190,6 +190,39 @@ export async function getReportTypes(): Promise<{ data: string[]; implemented: s
   return data
 }
 
+export interface OnlineDataOverview {
+  exists: boolean
+  parser_type: string
+  start_date: string
+  end_date: string
+  available_start_date: string | null
+  available_end_date: string | null
+  available_data_days: number
+  selected_data_days: number
+  total_tasks: number
+  carryover_tasks: number
+  new_tasks: number
+  changed_tasks: number
+  pending_tasks: number
+  completed_tasks: number
+  completion_rate: number
+}
+
+export async function getOnlineDataOverview(
+  startDate: string,
+  endDate: string,
+  parserType: string,
+): Promise<OnlineDataOverview> {
+  const { data } = await api.get('/stats/overview', {
+    params: {
+      start_date: startDate,
+      end_date: endDate,
+      parser_type: parserType,
+    },
+  })
+  return data
+}
+
 export async function saveUserPreferences(payload: UserPreferences): Promise<User> {
   const { data } = await api.put('/auth/preferences', payload)
   return data.user
@@ -444,6 +477,18 @@ export interface VisitSummaryReport {
   category_label: string
   start_date: string
   end_date: string
+  overview: {
+    visit_records: number
+    participant_count: number
+    community_count: number
+    added_count: number
+    changed_count: number
+    cancelled_count: number
+    total_changes: number
+    rated_records: number
+    unrated_records: number
+    rating_rate: number
+  }
   inspector: VisitSummaryTable
   community: VisitSummaryTable
 }

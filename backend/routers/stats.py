@@ -2,7 +2,7 @@
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from deps import get_current_user
 from services.business_time import get_business_date_from_db
@@ -13,6 +13,7 @@ from services.report_builders.summary import (
     get_summary,
 )
 from services.report_range import get_report_range, get_summary_range
+from services.report_overview import get_online_overview
 from services.report_view import project_report_payload
 
 router = APIRouter(prefix="/api/stats", tags=["统计查询"])
@@ -37,6 +38,23 @@ def _column_mode(
 async def get_types():
     """获取分汇总表类型列表"""
     return {"data": REPORT_TYPES, "implemented": IMPLEMENTED_SUBTYPES}
+
+
+@router.get("/overview")
+async def get_overview(
+    start_date: str = Query(..., description="yyyy-MM-dd"),
+    end_date: str = Query(..., description="yyyy-MM-dd"),
+    parser_type: str = Query("全链条"),
+):
+    """读取跟随当前业务类型和日期区间变化的数据概览。"""
+    try:
+        return await get_online_overview(
+            start_date,
+            end_date,
+            parser_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/build")
