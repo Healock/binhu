@@ -12,8 +12,6 @@ from services.personnel_positions import (
 )
 from services.report_builders import BUILDERS
 from services.report_members import (
-    aggregate_community_rows,
-    calculate_ratio,
     complete_inspector_rows,
     get_active_members,
     merge_inspector_rows,
@@ -287,22 +285,11 @@ async def get_summary(date_str: str) -> dict:
                 all_inspector_rows,
                 active_members,
             )
-            merged_rows = aggregate_community_rows(inspector_rows)
-            member_counts: dict[str, int] = {}
-            for community, _ in active_members:
-                member_counts[community] = member_counts.get(community, 0) + 1
-            community_rows = []
-            for row in merged_rows:
-                community = str(row[0])
-                count = member_counts.get(community, 0)
-                completed = int(row[4] or 0)
-                community_rows.append(
-                    (
-                        *row,
-                        count,
-                        calculate_ratio(completed, count),
-                    )
-                )
+            await cur.execute(
+                f"SELECT {', '.join(SUMMARY_OUTPUT_COLS)} "
+                f"FROM {t_summary} ORDER BY 社区"
+            )
+            community_rows = await cur.fetchall()
 
         inspector_table = {
             "columns": SUMMARY_INSPECTOR_OUTPUT_COLS,

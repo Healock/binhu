@@ -319,3 +319,75 @@ async def rebuild_community_report_table(
         """,
         positions,
     )
+
+
+async def rebuild_community_report_from_ledger(
+    cur,
+    inspector_table: str,
+    community_table: str,
+    report_date: str,
+    parser_type: str,
+) -> None:
+    """直接从任务流水重建社区表，避免漏掉尚未填写核查人的任务。"""
+    positions = await get_configured_positions(
+        cur,
+        ONLINE_POSITION_CONFIG_KEY,
+    )
+    placeholders = ", ".join(["%s"] * len(positions))
+    await cur.execute(f"TRUNCATE TABLE {community_table}")
+    await cur.execute(
+        f"""
+        INSERT INTO {community_table}
+            (社区, 数据总数, 未核查, 已核查, 已完成,
+             核查完成率, 无法见底数, 核查见底率)
+        SELECT
+            ledger.community,
+            COUNT(*),
+            SUM(ledger.task_state = 'unchecked'),
+            SUM(ledger.task_state = 'checked'),
+            SUM(ledger.task_state = 'completed'),
+            ROUND(SUM(ledger.task_state = 'completed') / COUNT(*), 2),
+            SUM(ledger.unable_to_verify),
+            ROUND(SUM(ledger.reached_bottom) / COUNT(*), 2)
+        FROM _daily_task_ledger AS ledger
+        LEFT JOIN OnlineData._grid_members AS person
+          ON LOWER(TRIM(person.name)) = LOWER(TRIM(ledger.inspector))
+        WHERE ledger.report_date = %s
+          AND ledger.parser_type = %s
+          AND ledger.included = 1
+          AND ledger.community <> ''
+          AND ledger.community <> '社区'
+          AND ledger.community <> '下发社区'
+          AND (
+              person.id IS NULL
+              OR person.position IN ({placeholders})
+          )
+        GROUP BY ledger.community
+        ORDER BY ledger.community
+        """,
+        (report_date, parser_type, *positions),
+    )
+    await cur.execute(
+        f"""
+        INSERT INTO {community_table}
+            (社区, 数据总数, 未核查, 已核查, 已完成,
+             核查完成率, 无法见底数, 核查见底率)
+        SELECT
+            report_row.社区,
+            0, 0, 0, 0, 0, 0, 0
+        FROM {inspector_table} AS report_row
+        LEFT JOIN OnlineData._grid_members AS person
+          ON LOWER(TRIM(person.name)) = LOWER(TRIM(report_row.姓名))
+        LEFT JOIN {community_table} AS existing
+          ON existing.社区 = report_row.社区
+        WHERE report_row.数据总数 = 0
+          AND existing.社区 IS NULL
+          AND (
+              person.id IS NULL
+              OR person.position IN ({placeholders})
+          )
+        GROUP BY report_row.社区
+        ORDER BY report_row.社区
+        """,
+        positions,
+    )
