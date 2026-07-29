@@ -60,13 +60,13 @@ class BaseReportBuilder:
     def ledger_unable_sql(self, alias: str) -> str:
         return (
             f"CASE WHEN IFNULL({alias}.`{self.result_column}`, '') "
-            "LIKE '%无法核实%' THEN 1 ELSE 0 END"
+            "LIKE '%%无法核实%%' THEN 1 ELSE 0 END"
         )
 
     def ledger_reached_bottom_sql(self, alias: str) -> str:
         conditions = " OR ".join(
             f"IFNULL({alias}.`{self.result_column}`, '') "
-            f"LIKE '%{keyword}%'"
+            f"LIKE '%%{keyword}%%'"
             for keyword in self.see_base_keywords
         )
         if not conditions:
