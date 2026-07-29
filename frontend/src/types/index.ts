@@ -228,6 +228,7 @@ export type Role = 'super_admin' | 'admin' | 'leader' | 'member'
 export type TableDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
 export type MobileNavigationMode = 'sidebar' | 'dock'
+export type ThemeMode = 'light' | 'dark' | 'system'
 export type MobileNavigationGroupId = 'workspace' | 'resources' | 'system'
 export type MobileNavigationItemId =
   | 'online_summary'
@@ -253,6 +254,7 @@ export interface UserPreferences {
   report_column_mode?: ReportColumnMode
   mobile_navigation_mode?: MobileNavigationMode
   mobile_dock_config?: MobileDockConfig
+  theme_mode?: ThemeMode
 }
 
 export interface User extends UserPreferences {
@@ -263,6 +265,7 @@ export interface User extends UserPreferences {
   report_column_mode: ReportColumnMode
   mobile_navigation_mode: MobileNavigationMode
   mobile_dock_config: MobileDockConfig
+  theme_mode: ThemeMode
   created_at?: string
   updated_at?: string
 }

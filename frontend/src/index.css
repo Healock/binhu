@@ -3,6 +3,7 @@
 :root {
   color: #172033;
   background: #f4f6f9;
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --app-primary: #1d4ed8;
@@ -10,14 +11,46 @@
   --app-primary-soft: #eff6ff;
   --app-bg: #f4f6f9;
   --app-surface: #ffffff;
+  --app-surface-muted: #f8fafc;
+  --app-surface-subtle: #f1f5f9;
   --app-border: #e2e8f0;
+  --app-border-strong: #cbd5e1;
   --app-text: #172033;
+  --app-text-strong: #0f172a;
   --app-text-secondary: #64748b;
+  --app-text-muted: #94a3b8;
+  --app-primary-border: #bfdbfe;
+  --app-primary-text: #1e3a8a;
   --app-success: #15803d;
   --app-warning: #c2410c;
   --app-danger: #b91c1c;
   --app-radius: 10px;
   --app-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+}
+
+html[data-theme='dark'] {
+  color: #e5edf7;
+  background: #080d17;
+  color-scheme: dark;
+  --app-primary: #60a5fa;
+  --app-primary-hover: #93c5fd;
+  --app-primary-soft: #172d50;
+  --app-bg: #080d17;
+  --app-surface: #101826;
+  --app-surface-muted: #151f2e;
+  --app-surface-subtle: #1a2638;
+  --app-border: #253247;
+  --app-border-strong: #34445c;
+  --app-text: #e5edf7;
+  --app-text-strong: #f3f7fc;
+  --app-text-secondary: #94a3b8;
+  --app-text-muted: #78879d;
+  --app-primary-border: #28538a;
+  --app-primary-text: #bfdbfe;
+  --app-success: #4ade80;
+  --app-warning: #fb923c;
+  --app-danger: #f87171;
+  --app-shadow: 0 1px 3px rgb(0 0 0 / 0.34);
 }
 
 * {
@@ -63,6 +96,15 @@ button:disabled {
   color: #1e3a8a;
 }
 
+html[data-theme='dark'] ::selection {
+  background: #1e3a5f;
+  color: #dbeafe;
+}
+
+.login-page {
+  background: var(--app-bg);
+}
+
 .app-shell {
   min-height: 100vh;
   background: var(--app-bg);
@@ -90,7 +132,7 @@ button:disabled {
 
 .page-header__title {
   margin: 0;
-  color: #0f172a;
+  color: var(--app-text-strong);
   font-size: 22px;
   font-weight: 650;
   line-height: 1.35;
@@ -139,7 +181,7 @@ button:disabled {
 
 .app-card__title {
   margin: 0;
-  color: #1e293b;
+  color: var(--app-text);
   font-size: 16px;
   font-weight: 600;
 }
@@ -214,12 +256,12 @@ button:disabled {
 .app-data-table .ant-table-title {
   padding: 11px 16px;
   border-bottom: 1px solid var(--app-border);
-  background: #f8fafc;
+  background: var(--app-surface-muted);
 }
 
 .app-data-table .ant-table-thead > tr > th {
   padding: 10px 14px;
-  color: #475569;
+  color: var(--app-text-secondary);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -231,7 +273,7 @@ button:disabled {
 .app-data-table--report-grid .ant-table-thead > tr > th:not(:last-child),
 .app-data-table--report-grid .ant-table-tbody > tr > td:not(:last-child),
 .app-data-table--report-grid .ant-table-summary > tr > td:not(:last-child) {
-  border-inline-end: 1px dashed #cbd5e1 !important;
+  border-inline-end: 1px dashed var(--app-border-strong) !important;
 }
 
 .app-data-table .ant-table-column-sorters {
@@ -256,23 +298,23 @@ button:disabled {
 }
 
 .app-data-table .ant-table-row.app-table-row--muted > td {
-  background: #f8fafc;
+  background: var(--app-surface-muted);
 }
 
 .app-data-table .ant-table-row.app-table-row--muted:hover > td {
-  background: #f1f5f9;
+  background: var(--app-surface-subtle);
 }
 
 .app-data-table .ant-table-summary > tr.app-report-total-row > td {
-  border-top: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1e3a8a;
+  border-top: 1px solid var(--app-primary-border);
+  background: var(--app-primary-soft);
+  color: var(--app-primary-text);
   font-weight: 600;
 }
 
 .app-report-total-card {
-  border-color: #bfdbfe;
-  background: #eff6ff;
+  border-color: var(--app-primary-border);
+  background: var(--app-primary-soft);
 }
 
 .mobile-dock-root {
@@ -395,6 +437,46 @@ button:disabled {
   border-color: #bfdbfe;
   color: #1d4ed8;
   background: #eff6ff;
+}
+
+html[data-theme='dark'] .mobile-dock-bar {
+  border-color: rgb(148 163 184 / 0.22);
+  background: rgb(16 24 38 / 0.88);
+  box-shadow:
+    0 18px 42px rgb(0 0 0 / 0.42),
+    0 3px 10px rgb(0 0 0 / 0.24);
+}
+
+html[data-theme='dark'] .mobile-dock-bar__item {
+  color: #94a3b8;
+}
+
+html[data-theme='dark'] .mobile-dock-bar__item.is-active,
+html[data-theme='dark'] .mobile-dock-bar__item[aria-expanded='true'] {
+  color: #93c5fd;
+  background: rgb(23 45 80 / 0.94);
+}
+
+html[data-theme='dark'] .mobile-dock-menu {
+  border-color: rgb(148 163 184 / 0.22);
+  background: rgb(16 24 38 / 0.92);
+  box-shadow: 0 16px 38px rgb(0 0 0 / 0.4);
+}
+
+html[data-theme='dark'] .mobile-dock-menu__title {
+  color: #94a3b8;
+}
+
+html[data-theme='dark'] .mobile-dock-menu__item {
+  border-color: #2b3a4f;
+  color: #cbd5e1;
+  background: rgb(21 31 46 / 0.92);
+}
+
+html[data-theme='dark'] .mobile-dock-menu__item.is-active {
+  border-color: #28538a;
+  color: #93c5fd;
+  background: #172d50;
 }
 
 .dock-config-preview {
@@ -572,6 +654,140 @@ button:disabled {
 .settings-content {
   width: 100%;
   max-width: 960px;
+}
+
+html[data-theme='dark'] .text-slate-900,
+html[data-theme='dark'] .text-gray-900 {
+  color: var(--app-text-strong) !important;
+}
+
+html[data-theme='dark'] .text-slate-800,
+html[data-theme='dark'] .text-slate-700,
+html[data-theme='dark'] .text-gray-800,
+html[data-theme='dark'] .text-gray-700 {
+  color: var(--app-text) !important;
+}
+
+html[data-theme='dark'] .text-slate-600,
+html[data-theme='dark'] .text-slate-500,
+html[data-theme='dark'] .text-gray-600,
+html[data-theme='dark'] .text-gray-500 {
+  color: var(--app-text-secondary) !important;
+}
+
+html[data-theme='dark'] .text-slate-400,
+html[data-theme='dark'] .text-slate-300,
+html[data-theme='dark'] .text-gray-400 {
+  color: var(--app-text-muted) !important;
+}
+
+html[data-theme='dark'] .text-blue-700 {
+  color: #93c5fd !important;
+}
+
+html[data-theme='dark'] .text-blue-600,
+html[data-theme='dark'] .text-blue-900,
+html[data-theme='dark'] .text-blue-950 {
+  color: #93c5fd !important;
+}
+
+html[data-theme='dark'] .text-green-600,
+html[data-theme='dark'] .text-green-700,
+html[data-theme='dark'] .text-emerald-700 {
+  color: #4ade80 !important;
+}
+
+html[data-theme='dark'] .text-amber-700,
+html[data-theme='dark'] .text-orange-600,
+html[data-theme='dark'] .text-orange-700 {
+  color: #fdba74 !important;
+}
+
+html[data-theme='dark'] .text-red-500,
+html[data-theme='dark'] .text-red-600,
+html[data-theme='dark'] .text-red-700 {
+  color: #f87171 !important;
+}
+
+html[data-theme='dark'] .app-shell .bg-white {
+  background-color: var(--app-surface) !important;
+}
+
+html[data-theme='dark'] .app-shell .bg-slate-50,
+html[data-theme='dark'] .app-shell .bg-gray-50 {
+  background-color: var(--app-surface-muted) !important;
+}
+
+html[data-theme='dark'] .app-shell .bg-slate-100,
+html[data-theme='dark'] .app-shell .bg-slate-100\/70,
+html[data-theme='dark'] .app-shell .bg-gray-100 {
+  background-color: var(--app-surface-subtle) !important;
+}
+
+html[data-theme='dark'] .app-shell .bg-slate-200 {
+  background-color: #243249 !important;
+}
+
+html[data-theme='dark'] .app-shell .bg-blue-50 {
+  background-color: var(--app-primary-soft) !important;
+}
+
+html[data-theme='dark'] .app-shell .border-slate-100,
+html[data-theme='dark'] .app-shell .border-slate-200,
+html[data-theme='dark'] .app-shell .border-slate-300,
+html[data-theme='dark'] .app-shell .border-gray-200,
+html[data-theme='dark'] .app-shell .border-gray-300 {
+  border-color: var(--app-border) !important;
+}
+
+html[data-theme='dark'] .app-shell .hover\:bg-slate-50:hover,
+html[data-theme='dark'] .app-shell .hover\:bg-gray-50:hover,
+html[data-theme='dark'] .app-shell .hover\:bg-slate-100:hover {
+  background-color: var(--app-surface-subtle) !important;
+}
+
+html[data-theme='dark'] .app-shell .hover\:text-slate-900:hover {
+  color: var(--app-text-strong) !important;
+}
+
+html[data-theme='dark'] .dock-config-preview__screen {
+  background:
+    radial-gradient(circle at 15% 15%, rgb(30 58 95 / 0.72), transparent 40%),
+    linear-gradient(160deg, #101826 20%, #1a2638 100%);
+}
+
+html[data-theme='dark'] .dock-config-preview__menu,
+html[data-theme='dark'] .dock-config-preview__bar {
+  border-color: rgb(148 163 184 / 0.2);
+  background: rgb(16 24 38 / 0.84);
+}
+
+html[data-theme='dark'] .dock-config-preview__menu.is-over,
+html[data-theme='dark'] .dock-config-preview__bar.is-over {
+  border-color: #60a5fa;
+  background: rgb(23 45 80 / 0.94);
+}
+
+html[data-theme='dark'] .dock-config-group {
+  color: #94a3b8;
+  background: rgb(21 31 46 / 0.86);
+}
+
+html[data-theme='dark'] .dock-config-group.is-selected {
+  border-color: #3b82c4;
+  color: #93c5fd;
+  background: #172d50;
+}
+
+html[data-theme='dark'] .dock-config-page {
+  border-color: var(--app-border);
+  color: #cbd5e1;
+  background: rgb(16 24 38 / 0.92);
+}
+
+html[data-theme='dark'] .dock-config-item-actions .compact-action:hover,
+html[data-theme='dark'] .dock-config-drag-handle:hover {
+  background: rgb(51 65 85 / 0.72);
 }
 
 @media (max-width: 767px) {

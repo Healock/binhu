@@ -9,6 +9,7 @@ from services.mobile_navigation import (
     normalize_mobile_dock_config,
     normalize_mobile_navigation_mode,
 )
+from services.theme_preferences import normalize_theme_mode
 
 
 async def get_current_user(request: Request) -> dict:
@@ -24,7 +25,8 @@ async def get_current_user(request: Request) -> dict:
             await cur.execute(
                 "SELECT u.id, u.username, u.role, "
                 "u.table_display_mode, u.report_column_mode, "
-                "u.mobile_navigation_mode, u.mobile_dock_config "
+                "u.mobile_navigation_mode, u.mobile_dock_config, "
+                "u.theme_mode "
                 "FROM _sessions s JOIN _users u ON s.user_id = u.id "
                 "WHERE s.session_id = %s AND s.expires_at > NOW()",
                 (session_id,),
@@ -45,6 +47,7 @@ async def get_current_user(request: Request) -> dict:
                     row[6],
                     str(row[2]),
                 ),
+                "theme_mode": normalize_theme_mode(row[7]),
             }
     finally:
         pool.release(conn)

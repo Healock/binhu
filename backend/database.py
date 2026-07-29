@@ -523,6 +523,7 @@ class DatabaseManager:
                         report_column_mode VARCHAR(10) NOT NULL DEFAULT 'three',
                         mobile_navigation_mode VARCHAR(10) NOT NULL DEFAULT 'dock',
                         mobile_dock_config JSON DEFAULT NULL,
+                        theme_mode VARCHAR(10) NOT NULL DEFAULT 'light',
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -544,6 +545,10 @@ class DatabaseManager:
                     (
                         "mobile_dock_config",
                         "JSON DEFAULT NULL",
+                    ),
+                    (
+                        "theme_mode",
+                        "VARCHAR(10) NOT NULL DEFAULT 'light'",
                     ),
                 ]:
                     await cur.execute(
