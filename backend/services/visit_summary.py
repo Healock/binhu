@@ -136,6 +136,30 @@ def _build_total(
     return {column: total[column] for column in COMMUNITY_COLUMNS}
 
 
+def _build_overview(
+    inspector_rows: list[dict[str, Any]],
+    community_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    total = _build_total(inspector_rows, inspector=True)
+    visits = _int(total["走访户数"])
+    ratings = _int(total["星级评定数"])
+    return {
+        "visit_records": visits,
+        "participant_count": len({
+            str(row.get("姓名") or "未填写姓名")
+            for row in inspector_rows
+        }),
+        "community_count": len(community_rows),
+        "added_count": _int(total["新增"]),
+        "changed_count": _int(total["变更"]),
+        "cancelled_count": _int(total["注销"]),
+        "total_changes": _int(total["总变动数"]),
+        "rated_records": ratings,
+        "unrated_records": max(visits - ratings, 0),
+        "rating_rate": _rating_rate(ratings, visits),
+    }
+
+
 async def get_visit_summary(
     conn,
     start_date: date,
@@ -242,6 +266,10 @@ async def get_visit_summary(
         "category_label": VISIT_CATEGORY_LABELS[category],
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
+        "overview": _build_overview(
+            inspector_rows,
+            community_rows,
+        ),
         "inspector": {
             "columns": INSPECTOR_COLUMNS,
             "data": inspector_rows,

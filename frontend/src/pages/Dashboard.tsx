@@ -1,12 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Button, DatePicker, Segmented, Select, Table, Tag } from 'antd'
+import { Alert, Button, DatePicker, Segmented, Select, Table, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
+import DataOverview from '../components/DataOverview'
 import MobileReportTable from '../components/MobileReportTable'
 import SyncPanel from '../components/SyncPanel'
-import { EmptyState, PageHeader } from '../components/ui'
-import { buildReport, formatDateInTimezone, getReport, getReportRange, getReportTypes, getSystemConfig } from '../api/client'
+import { EmptyState, PageHeader, Panel } from '../components/ui'
+import {
+  buildReport,
+  formatDateInTimezone,
+  getOnlineDataOverview,
+  getReport,
+  getReportRange,
+  getReportTypes,
+  getSystemConfig,
+  type OnlineDataOverview,
+} from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useSync } from '../hooks/useSync'
 import { buildReportTableTotal } from '../utils/tableTotals'
@@ -106,6 +116,9 @@ export default function Dashboard() {
   const [types, setTypes] = useState<string[]>([])
   const [implemented, setImplemented] = useState<string[]>([])
   const [report, setReport] = useState<any>({ exists: false })
+  const [overview, setOverview] = useState<OnlineDataOverview | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(false)
+  const [overviewError, setOverviewError] = useState('')
   const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
@@ -115,18 +128,38 @@ export default function Dashboard() {
   // 日期或业务类型变化时读取报表；同步任务结束时也会调用同一函数。
   const fetchReport = useCallback(async () => {
     if (startDate > endDate) return
+    setOverviewLoading(true)
+    setOverviewError('')
     try {
       // 同一天走单日查询（查日报表，工作量口径）；不同天走区间查询（查快照存量）
-      const res = startDate === endDate
-        ? await getReport(startDate, reportType, reportColumnMode)
-        : await getReportRange(startDate, endDate, reportType, reportColumnMode)
+      const reportRequest = startDate === endDate
+        ? getReport(startDate, reportType, reportColumnMode)
+        : getReportRange(startDate, endDate, reportType, reportColumnMode)
+      const [reportResult, overviewResult] = await Promise.allSettled([
+        reportRequest,
+        getOnlineDataOverview(startDate, endDate, reportType),
+      ])
+      if (reportResult.status === 'rejected') {
+        throw reportResult.reason
+      }
+      const res = reportResult.value
       setReport(res)
       setMsg(!res.exists ? (res.message || `${startDate} 暂无「${reportType}」日报`) : '')
+      if (overviewResult.status === 'fulfilled') {
+        setOverview(overviewResult.value)
+      } else {
+        setOverview(null)
+        setOverviewError('数据概览读取失败，汇总表仍可正常查看')
+      }
     } catch (e: any) {
       const status = e?.response?.status
       const detail = e?.response?.data?.detail || e?.message
       setMsg(`查询失败(${status || '?'})：${detail || '网络错误'}`)
       setReport({ exists: false })
+      setOverview(null)
+      setOverviewError('数据概览读取失败，请稍后重试')
+    } finally {
+      setOverviewLoading(false)
     }
   }, [startDate, endDate, reportType, reportColumnMode])
 
@@ -191,6 +224,10 @@ export default function Dashboard() {
     : ['社区']
   const inspectorTitle = isSummary ? '总汇总 · 网格员明细' : '核查人明细统计'
   const communityTitle = isSummary ? '总汇总 · 社区汇总' : '社区汇总统计'
+  const availableRange = overview?.available_start_date
+    && overview?.available_end_date
+    ? `${overview.available_start_date} 至 ${overview.available_end_date}`
+    : '暂无可用数据'
 
   // 卡片渲染辅助
   const renderCard = (
@@ -303,6 +340,77 @@ export default function Dashboard() {
           )}
         </div>
       </section>
+
+      {isImplemented && (
+        <Panel
+          title="在线数据概览"
+          description={`${reportType} · ${startDate} 至 ${endDate}，概览与当前查询条件保持一致`}
+        >
+          {overviewError && (
+            <Alert
+              className="mb-4"
+              type="warning"
+              showIcon
+              message={overviewError}
+            />
+          )}
+          <DataOverview
+            loading={overviewLoading}
+            rangeTitle="可用日报日期范围"
+            rangeValue={availableRange}
+            rangeDescription={overview?.available_data_days
+              ? `共 ${overview.available_data_days} 个可用日期；当前选中 ${overview.selected_data_days} 天`
+              : '完成一次成功同步后，这里会显示可用范围'}
+            metrics={[
+              {
+                key: 'total',
+                title: '任务总数',
+                value: overview?.total_tasks || 0,
+                suffix: '条',
+                help: '所选区间内同一业务任务去重后的数量',
+              },
+              {
+                key: 'carryover',
+                title: '结转数据',
+                value: overview?.carryover_tasks || 0,
+                suffix: '条',
+                help: '进入所选区间时已经存在、尚未完成的任务',
+                valueStyle: { color: '#d97706' },
+              },
+              {
+                key: 'new',
+                title: '新下发数据',
+                value: overview?.new_tasks || 0,
+                suffix: '条',
+                help: '任务首次进入区间时，前一张快照中还不存在',
+                valueStyle: { color: '#1d4ed8' },
+              },
+              {
+                key: 'changed',
+                title: '已有任务变化',
+                value: overview?.changed_tasks || 0,
+                suffix: '条',
+                help: '前一张快照中已经存在，但发生了有效业务变化',
+              },
+              {
+                key: 'pending',
+                title: '待完成',
+                value: overview?.pending_tasks || 0,
+                suffix: '条',
+                valueStyle: { color: '#dc2626' },
+              },
+              {
+                key: 'completed',
+                title: '已完成',
+                value: overview?.completed_tasks || 0,
+                suffix: '条',
+                help: `完成率 ${((overview?.completion_rate || 0) * 100).toFixed(1)}%`,
+                valueStyle: { color: '#047857' },
+              },
+            ]}
+          />
+        </Panel>
+      )}
 
       {!isImplemented ? (
         <section className="app-card">
