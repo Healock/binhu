@@ -1,27 +1,18 @@
-"""日报生成器基类 - 工作量统计（对比快照检测状态变更）
+"""在线数据日报生成器基类。
 
-工作量口径：
-- 数据总数 = 当天新入库 + 当天状态变更的数据
-- 进入当天工作量的数据统一按当天最终状态归类
-- 未核查、已核查、已完成三列之和必须等于数据总数
-
-当天没有快照时不生成日报，避免把当前全量数据写到错误的历史日期。
-当天有快照、但没有前一天快照时，只统计当天实际发生变化的数据。
+单日数据由逐任务流水聚合：前期未完成且仍在线的任务会结转，当天新增或
+地址、核查结果发生变化的任务会作为当天活动纳入。同一任务当天最多一条。
 """
 
-from datetime import date, timedelta
 from database import db_manager
-from services.business_time import get_business_date_range_utc_bounds
-from services.report_members import (
-    insert_zero_member_rows,
-    rebuild_community_report_table,
-)
 
 
 class BaseReportBuilder:
     parser_type: str = ""
     source_table: str = ""
     table_suffix: str = ""
+    community_column: str = "社区"
+    inspector_column: str = "核查人"
     see_base_keywords: list[str] = []
     result_column: str = "核查结果"
 
@@ -49,15 +40,43 @@ class BaseReportBuilder:
         核查见底率 DECIMAL(5,2) DEFAULT 0.00
     """
 
+    def ledger_state_sql(self, alias: str) -> str:
+        result = f"IFNULL({alias}.`{self.result_column}`, '')"
+        address = f"IFNULL({alias}.`现住址`, '')"
+        return (
+            f"CASE WHEN {result} <> '' THEN 'completed' "
+            f"WHEN {address} <> '' THEN 'checked' "
+            "ELSE 'unchecked' END"
+        )
+
+    def ledger_change_sql(self, today_alias: str, previous_alias: str) -> str:
+        return (
+            f"IFNULL({previous_alias}.`现住址`, '') "
+            f"<> IFNULL({today_alias}.`现住址`, '') "
+            f"OR IFNULL({previous_alias}.`{self.result_column}`, '') "
+            f"<> IFNULL({today_alias}.`{self.result_column}`, '')"
+        )
+
+    def ledger_unable_sql(self, alias: str) -> str:
+        return (
+            f"CASE WHEN IFNULL({alias}.`{self.result_column}`, '') "
+            "LIKE '%无法核实%' THEN 1 ELSE 0 END"
+        )
+
+    def ledger_reached_bottom_sql(self, alias: str) -> str:
+        conditions = " OR ".join(
+            f"IFNULL({alias}.`{self.result_column}`, '') "
+            f"LIKE '%{keyword}%'"
+            for keyword in self.see_base_keywords
+        )
+        if not conditions:
+            return "0"
+        return f"CASE WHEN {conditions} THEN 1 ELSE 0 END"
+
     async def build(self, date_str: str) -> dict:
-        """生成工作量日报（对比前一天和当天快照检测状态变更）"""
+        """生成包含跨日结转的当天任务日报。"""
         t_inspector = f"`{date_str}_daily_{self.table_suffix}_inspector`"
         t_community = f"`{date_str}_daily_{self.table_suffix}_community`"
-        today_snap = f"`{date_str}_snapshot_{self.table_suffix}`"
-
-        d = date.fromisoformat(date_str)
-        prev_date = (d - timedelta(days=1)).isoformat()
-        prev_snap = f"`{prev_date}_snapshot_{self.table_suffix}`"
 
         pool = db_manager.get_pool("daily_report")
         conn = await pool.acquire()
@@ -75,41 +94,23 @@ class BaseReportBuilder:
                         "message": f"{date_str} 没有同步快照，不能生成日报",
                     }
 
-                # 检查前一天快照是否存在
-                await cur.execute(
-                    "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
-                    (f"{prev_date}_snapshot_{self.table_suffix}",),
-                )
-                has_prev = await cur.fetchone() is not None
-
                 await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
                 await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-                await cur.execute(f"TRUNCATE TABLE {t_inspector}")
-                await cur.execute(f"TRUNCATE TABLE {t_community}")
+                from services.report_ledger import (
+                    aggregate_ledger_into_reports,
+                    refresh_daily_ledger,
+                )
 
-                if has_prev:
-                    # 工作量统计：对比快照检测状态变更
-                    insp_sql, comm_sql = self._build_workload_sql(today_snap, prev_snap)
-                    sql_params = None
-                    print(f"[BUILD] {self.parser_type} {date_str}: 工作量统计（对比 {prev_date} 快照）")
-                else:
-                    # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据
-                    insp_sql, comm_sql = self._build_workload_sql(today_snap, None)
-                    sql_params = await get_business_date_range_utc_bounds(
-                        cur, date_str, date_str
-                    )
-                    print(f"[BUILD] {self.parser_type} {date_str}: 首日统计（用 _last_updated_at 筛选当天活动）")
-
-                if sql_params:
-                    await cur.execute(f"INSERT INTO {t_inspector} (社区, 姓名, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {insp_sql}", sql_params)
-                    await cur.execute(f"INSERT INTO {t_community} (社区, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {comm_sql}", sql_params)
-                else:
-                    await cur.execute(f"INSERT INTO {t_inspector} (社区, 姓名, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {insp_sql}")
-                    await cur.execute(f"INSERT INTO {t_community} (社区, 数据总数, 未核查, 已核查, 已完成, 核查完成率, 无法见底数, 核查见底率) {comm_sql}")
-
-                await insert_zero_member_rows(cur, t_inspector, date_str)
-                await rebuild_community_report_table(
+                ledger_result = await refresh_daily_ledger(
                     cur,
+                    self,
+                    date_str,
+                    generation_method="sync",
+                )
+                await aggregate_ledger_into_reports(
+                    cur,
+                    self,
+                    date_str,
                     t_inspector,
                     t_community,
                 )
@@ -126,7 +127,14 @@ class BaseReportBuilder:
                         (tname, date_str, self.parser_type),
                     )
 
-            return {"date": date_str, "type": self.parser_type, "inspector_rows": insp_count, "community_rows": comm_count}
+            return {
+                "date": date_str,
+                "type": self.parser_type,
+                "inspector_rows": insp_count,
+                "community_rows": comm_count,
+                "ledger_rows": ledger_result["ledger_rows"],
+                "included_rows": ledger_result["included_rows"],
+            }
         finally:
             pool.release(conn)
 

@@ -73,16 +73,13 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value=["全链条"]),
         ), patch.object(
             report_range,
-            "_find_snapshots",
-            new=AsyncMock(return_value=["2026-07-27_snapshot_fullChain"]),
+            "_validate_ledger_coverage",
+            new=AsyncMock(return_value=(["2026-07-27"], [])),
         ), patch.object(
             report_range,
-            "get_business_date_range_utc_bounds",
+            "_aggregate_range_ledger",
             new=AsyncMock(
-                return_value=(
-                    "2026-07-27 00:00:00",
-                    "2026-07-28 00:00:00",
-                )
+                return_value=[("长板", "张三", 12, 0, 0, 10, 0.83, 2, 0.67)]
             ),
         ), patch.object(
             report_range,

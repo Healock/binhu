@@ -506,3 +506,35 @@ CREATE TABLE IF NOT EXISTS _daily_report_meta (
     INDEX idx_date (report_date),
     INDEX idx_type (parser_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _daily_task_ledger (
+    report_date       DATE NOT NULL,
+    parser_type       VARCHAR(50) NOT NULL,
+    row_key           VARCHAR(200) NOT NULL,
+    source            VARCHAR(20) NOT NULL,
+    included          TINYINT(1) NOT NULL DEFAULT 1,
+    online_present    TINYINT(1) NOT NULL DEFAULT 1,
+    community         VARCHAR(200) DEFAULT '',
+    inspector         VARCHAR(100) DEFAULT '',
+    task_state        VARCHAR(20) NOT NULL,
+    unable_to_verify  TINYINT(1) NOT NULL DEFAULT 0,
+    reached_bottom    TINYINT(1) NOT NULL DEFAULT 0,
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (report_date, parser_type, row_key),
+    INDEX idx_ledger_type_date (parser_type, report_date),
+    INDEX idx_ledger_person (report_date, community, inspector)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _daily_task_ledger_runs (
+    report_date             DATE NOT NULL,
+    parser_type             VARCHAR(50) NOT NULL,
+    snapshot_table          VARCHAR(100) NOT NULL,
+    previous_snapshot_table VARCHAR(100) DEFAULT NULL,
+    ledger_rows             INT NOT NULL DEFAULT 0,
+    included_rows           INT NOT NULL DEFAULT 0,
+    generation_method       VARCHAR(20) NOT NULL DEFAULT 'sync',
+    generated_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (report_date, parser_type),
+    INDEX idx_ledger_run_date (report_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

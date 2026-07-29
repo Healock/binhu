@@ -3,7 +3,6 @@ import sqlite3
 import sys
 import types
 import unittest
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -156,13 +155,13 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("OnlineData.t_fullchain" in sql for sql in executed_sql))
         self.assertEqual(len(executed_sql), 1)
 
-    async def test_range_with_snapshot_still_uses_snapshot_query(self):
-        snapshot = "2026-07-27_snapshot_fullChain"
+    async def test_range_with_snapshot_uses_task_ledger(self):
+        snapshot_date = "2026-07-27"
         inspector_row = ("社区甲", "张三", 1, 1, 0, 0, 0, 1, 0)
-        community_row = ("社区甲", 1, 1, 0, 0, 0, 1, 0)
         pool, cursor = make_database(
             fetchall_values=[
-                [(snapshot,)],
+                [(snapshot_date,)],
+                [(snapshot_date,)],
                 [inspector_row],
             ]
         )
@@ -183,20 +182,30 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["exists"])
         self.assertEqual(result["range"]["days"], 1)
         executed_sql = [call.args[0] for call in cursor.execute.await_args_list]
-        self.assertTrue(any(snapshot in sql for sql in executed_sql))
+        self.assertTrue(any("_daily_task_ledger" in sql for sql in executed_sql))
         self.assertTrue(
             any(
-                "_first_seen_at >= %s AND _first_seen_at < %s" in sql
+                "PARTITION BY ledger.parser_type, ledger.row_key" in sql
                 for sql in executed_sql
             )
         )
         self.assertEqual(
             cursor.execute.await_args_list[-1].args[1],
-            (
-                datetime(2026, 7, 26, 16, 0),
-                datetime(2026, 7, 28, 16, 0),
-            ),
+            ("2026-07-27", "2026-07-28", "全链条"),
         )
+
+    async def test_range_with_snapshot_but_without_ledger_requests_backfill(self):
+        pool, _ = make_database(
+            fetchall_values=[[("2026-07-27",)], []]
+        )
+
+        with patch.object(report_range.db_manager, "get_pool", return_value=pool):
+            result = await report_range.get_report_range(
+                "2026-07-27", "2026-07-27", "全链条"
+            )
+
+        self.assertFalse(result["exists"])
+        self.assertIn("任务流水尚未生成", result["message"])
 
     async def test_build_without_today_snapshot_creates_no_report_tables(self):
         pool, cursor = make_database(fetchone_values=[None])
