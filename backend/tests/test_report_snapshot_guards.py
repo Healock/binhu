@@ -174,6 +174,12 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
             report_range,
             "complete_inspector_rows",
             new=AsyncMock(return_value=[inspector_row]),
+        ), patch.object(
+            report_range,
+            "_aggregate_range_community_ledger",
+            new=AsyncMock(
+                return_value=[("社区甲", 1, 1, 0, 0, 0, 1, 0)]
+            ),
         ):
             result = await report_range.get_report_range(
                 "2026-07-27", "2026-07-28", "全链条"
@@ -189,10 +195,32 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
                 for sql in executed_sql
             )
         )
-        self.assertEqual(
-            cursor.execute.await_args_list[-1].args[1],
-            ("2026-07-27", "2026-07-28", "全链条"),
+        self.assertTrue(result["community"]["data"])
+
+    async def test_range_community_keeps_tasks_without_inspector(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=('["组长", "组员"]',))
+        cursor.fetchall = AsyncMock(
+            return_value=[("阅湖", 7, 7, 0, 0, 0, 0, 0)]
         )
+
+        rows = await report_range._aggregate_range_community_ledger(
+            cursor,
+            "2026-07-29",
+            "2026-07-29",
+            "寄递业",
+        )
+
+        sql, params = cursor.execute.await_args.args
+        normalized = " ".join(sql.split())
+        self.assertNotIn("latest.inspector <>", normalized)
+        self.assertIn("person.id IS NULL", normalized)
+        self.assertEqual(
+            params,
+            ("2026-07-29", "2026-07-29", "寄递业", "组长", "组员"),
+        )
+        self.assertEqual(rows[0][1], 7)
 
     async def test_range_with_snapshot_but_without_ledger_requests_backfill(self):
         pool, _ = make_database(
@@ -241,6 +269,66 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["exists"])
         self.assertIn("没有同步快照", result["message"])
         self.assertEqual(cursor.execute.await_count, 1)
+
+    async def test_single_day_reads_persisted_community_report(self):
+        inspector_row = ("阅湖", "张三", 0, 0, 0, 0, 0, 0, 0)
+        community_row = ("阅湖", 7, 7, 0, 0, 0, 0, 0)
+        pool, cursor = make_database(
+            fetchone_values=[("snapshot",), ("inspector",)],
+            fetchall_values=[
+                [inspector_row],
+                [
+                    ("社区",),
+                    ("姓名",),
+                    ("数据总数",),
+                    ("未核查",),
+                    ("已核查",),
+                    ("已完成",),
+                    ("核查完成率",),
+                    ("无法见底数",),
+                    ("核查见底率",),
+                ],
+                [community_row],
+                [
+                    ("社区",),
+                    ("数据总数",),
+                    ("未核查",),
+                    ("已核查",),
+                    ("已完成",),
+                    ("核查完成率",),
+                    ("无法见底数",),
+                    ("核查见底率",),
+                ],
+            ],
+        )
+
+        with patch.object(
+            stats_calculator.db_manager,
+            "get_pool",
+            return_value=pool,
+        ), patch.object(
+            stats_calculator,
+            "complete_inspector_rows",
+            new=AsyncMock(return_value=[inspector_row]),
+        ):
+            result = await DailyReportBuilder().get_report(
+                "2026-07-29",
+                "寄递业",
+            )
+
+        self.assertEqual(
+            result["community"]["data"][0]["数据总数"],
+            7,
+        )
+        executed_sql = [
+            " ".join(call.args[0].split())
+            for call in cursor.execute.await_args_list
+        ]
+        self.assertIn(
+            "SELECT * FROM `2026-07-29_daily_deliveryIndustry_community` "
+            "ORDER BY 社区",
+            executed_sql,
+        )
 
     async def test_summary_report_requires_at_least_one_same_day_snapshot(self):
         pool, cursor = make_database(fetchone_values=[None])
