@@ -431,6 +431,7 @@ flowchart LR
 - 登录保护：`frontend/src/components/ProtectedRoute.tsx`。
 - 统一表格：`frontend/src/components/AppTable.tsx`。电脑端的汇总、原始数据和管理页面使用 Ant Design Table；在线与走访汇总会额外启用浅灰色竖向虚线。
 - 手机导航：`frontend/src/components/MobileDock.tsx` 和 `frontend/src/navigation/mobileNavigation.ts`。手机默认显示浮空 Dock，电脑始终显示左侧栏；账号可以改回手机侧边栏，也可以调整 Dock 分类和页面顺序。
+- 外观主题：账号可以选择浅色、深色或跟随系统。后端把选择保存在 `_users.theme_mode`，前端统一由主题容器切换 Ant Design 和平台自有样式；旧账号默认保持浅色。
 - 响应式显示：在线汇总手机端使用精简列表，并保留临时查看完整表格的入口；走访汇总、社区管理和用户管理手机端使用卡片。页面不再读取旧的表格/卡片偏好。
 - 走访汇总页面：`frontend/src/pages/VisitSummary.tsx`。按日期查看网格员和社区汇总，并列上传走访明细和星级评定，显示数据范围、上传结果和导入问题。
 

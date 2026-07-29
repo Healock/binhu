@@ -17,6 +17,7 @@ from services.mobile_navigation import (
     validate_mobile_dock_config,
 )
 from services.ops_redaction import redact_text
+from services.theme_preferences import normalize_theme_mode
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -31,6 +32,7 @@ class UserPreferencesRequest(BaseModel):
     report_column_mode: Literal["two", "three"] | None = None
     mobile_navigation_mode: Literal["sidebar", "dock"] | None = None
     mobile_dock_config: dict[str, Any] | None = None
+    theme_mode: Literal["light", "dark", "system"] | None = None
 
 
 @router.post("/login")
@@ -43,7 +45,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
             await cur.execute(
                 "SELECT id, username, password_hash, role, "
                 "table_display_mode, report_column_mode, "
-                "mobile_navigation_mode, mobile_dock_config "
+                "mobile_navigation_mode, mobile_dock_config, theme_mode "
                 "FROM _users WHERE username = %s",
                 (req.username,),
             )
@@ -59,6 +61,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 report_column_mode,
                 mobile_navigation_mode,
                 mobile_dock_config,
+                theme_mode,
             ) = row
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
@@ -89,6 +92,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 mobile_dock_config,
                 str(role),
             ),
+            "theme_mode": normalize_theme_mode(theme_mode),
         },
     }
 
@@ -156,6 +160,10 @@ async def update_preferences(
         updates.append("mobile_dock_config=%s")
         values.append(serialize_mobile_dock_config(dock_config))
         updated_user["mobile_dock_config"] = dock_config
+    if req.theme_mode is not None:
+        updates.append("theme_mode=%s")
+        values.append(req.theme_mode)
+        updated_user["theme_mode"] = req.theme_mode
 
     if not updates:
         raise HTTPException(status_code=400, detail="没有需要保存的个性化设置")
@@ -178,6 +186,9 @@ async def update_preferences(
             "mobile_dock_config": normalize_mobile_dock_config(
                 updated_user.get("mobile_dock_config"),
                 str(user["role"]),
+            ),
+            "theme_mode": normalize_theme_mode(
+                updated_user.get("theme_mode"),
             ),
         },
     }

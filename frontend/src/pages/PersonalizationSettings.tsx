@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Radio } from 'antd'
+import {
+  DesktopOutlined,
+  MoonOutlined,
+  SunOutlined,
+} from '@ant-design/icons'
 import DockConfigurator from '../components/DockConfigurator'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
@@ -11,6 +16,7 @@ import type {
   MobileDockConfig,
   MobileNavigationMode,
   ReportColumnMode,
+  ThemeMode,
 } from '../types'
 
 export default function PersonalizationSettings() {
@@ -22,6 +28,7 @@ export default function PersonalizationSettings() {
   const [dockConfig, setDockConfig] = useState<MobileDockConfig>({
     groups: [],
   })
+  const [themeMode, setThemeMode] = useState<ThemeMode>('light')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -29,6 +36,7 @@ export default function PersonalizationSettings() {
     if (!user) return
     setColumnMode(user.report_column_mode || 'three')
     setNavigationMode(user.mobile_navigation_mode || 'dock')
+    setThemeMode(user.theme_mode || 'light')
     setDockConfig(normalizeMobileDockConfig(
       user.mobile_dock_config || defaultMobileDockConfig(user.role),
       user.role,
@@ -40,11 +48,12 @@ export default function PersonalizationSettings() {
     setMsg('')
     try {
       await updatePreferences({
+        theme_mode: themeMode,
         report_column_mode: columnMode,
         mobile_navigation_mode: navigationMode,
         mobile_dock_config: dockConfig,
       })
-      setMsg('保存成功，手机导航和汇总表设置已更新')
+      setMsg('保存成功，外观、手机导航和汇总表设置已更新')
     } catch {
       setMsg('保存失败，请稍后重试')
     } finally {
@@ -58,6 +67,35 @@ export default function PersonalizationSettings() {
       description="这些设置跟随当前账号，在其他电脑登录后也会保持一致。"
     >
       <div className="space-y-6">
+        <div>
+          <div className="mb-2 text-sm font-medium text-slate-800">
+            外观模式
+          </div>
+          <Radio.Group
+            value={themeMode}
+            onChange={event => setThemeMode(event.target.value)}
+            optionType="button"
+            buttonStyle="solid"
+            options={[
+              {
+                label: <span className="inline-flex items-center gap-1.5"><SunOutlined />浅色</span>,
+                value: 'light',
+              },
+              {
+                label: <span className="inline-flex items-center gap-1.5"><MoonOutlined />深色</span>,
+                value: 'dark',
+              },
+              {
+                label: <span className="inline-flex items-center gap-1.5"><DesktopOutlined />跟随系统</span>,
+                value: 'system',
+              },
+            ]}
+          />
+          <p className="mt-2 text-sm text-slate-500">
+            “跟随系统”会随着电脑或手机的外观设置自动切换。
+          </p>
+        </div>
+
         <div>
           <div className="mb-2 text-sm font-medium text-slate-800">
             手机导航方式

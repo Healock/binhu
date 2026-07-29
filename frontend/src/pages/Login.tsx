@@ -31,7 +31,7 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="login-page flex min-h-screen">
       <section className="hidden w-[44%] flex-col bg-[#17335c] p-10 text-white md:flex lg:p-14">
         <div className="flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-lg font-semibold text-[#17335c]">
