@@ -765,12 +765,12 @@ function AuditTab() {
   }, [action, page, pageSize])
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <Alert type="info" showIcon message="操作记录不保存密码、令牌、Cookie 或请求正文" />
       <Input.Search
         allowClear
         placeholder="按操作代码精确筛选，例如 backup.create"
-        className="max-w-md"
+        className="w-full max-w-md"
         onSearch={value => {
           setPage(1)
           setAction(value.trim())

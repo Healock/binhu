@@ -236,7 +236,7 @@ html[data-theme='dark'] ::selection {
   border-radius: 8px;
 }
 
-.app-shell button:not(.ant-btn):not(.compact-action) {
+.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action) {
   min-height: 36px;
   border-radius: 8px;
 }
