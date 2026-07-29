@@ -1,0 +1,132 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  defaultMobileDockConfig,
+  normalizeMobileDockConfig,
+  reorderMobileDockGroups,
+  reorderMobileDockItems,
+} from '../src/navigation/mobileNavigation.ts'
+
+test('普通账号默认 Dock 隐藏超级管理员页面', () => {
+  const config = defaultMobileDockConfig('member')
+
+  assert.deepEqual(
+    config.groups.map(group => group.id),
+    ['workspace', 'resources', 'system'],
+  )
+  assert.equal(
+    config.groups.some(group => group.items.includes('users')),
+    false,
+  )
+  assert.equal(
+    config.groups.some(group => group.items.includes('operations')),
+    false,
+  )
+})
+
+test('超级管理员默认 Dock 包含用户管理和运维中心', () => {
+  const config = defaultMobileDockConfig('super_admin')
+
+  assert.equal(
+    config.groups.some(group => group.items.includes('users')),
+    true,
+  )
+  assert.equal(
+    config.groups.some(group => group.items.includes('operations')),
+    true,
+  )
+})
+
+test('读取配置时去重、过滤未知项和无权限页面并保留顺序', () => {
+  const config = normalizeMobileDockConfig({
+    groups: [
+      {
+        id: 'resources',
+        items: ['communities', 'users', 'communities', 'online_query'],
+      },
+      {
+        id: 'workspace',
+        items: ['visit_summary', 'online_summary'],
+      },
+      {
+        id: 'resources',
+        items: ['grid_members'],
+      },
+    ],
+  }, 'member')
+
+  assert.deepEqual(config, {
+    groups: [
+      {
+        id: 'resources',
+        items: ['communities'],
+      },
+      {
+        id: 'workspace',
+        items: ['visit_summary', 'online_summary'],
+      },
+    ],
+  })
+})
+
+test('角色变化后配置全部失效时恢复该角色默认 Dock', () => {
+  const config = normalizeMobileDockConfig({
+    groups: [
+      {
+        id: 'resources',
+        items: ['users'],
+      },
+      {
+        id: 'system',
+        items: ['operations'],
+      },
+    ],
+  }, 'member')
+
+  assert.deepEqual(config, defaultMobileDockConfig('member'))
+})
+
+test('读取配置时丢弃空分类并保留其余有效分类', () => {
+  const config = normalizeMobileDockConfig({
+    groups: [
+      { id: 'workspace', items: [] },
+      { id: 'resources', items: ['grid_members'] },
+      { id: 'system', items: ['settings'] },
+    ],
+  }, 'member')
+
+  assert.deepEqual(config, {
+    groups: [
+      { id: 'resources', items: ['grid_members'] },
+      { id: 'system', items: ['settings'] },
+    ],
+  })
+})
+
+test('拖动分类和页面后按目标位置保存顺序', () => {
+  const original = defaultMobileDockConfig('member')
+  const movedGroups = reorderMobileDockGroups(
+    original,
+    'system',
+    'workspace',
+  )
+  assert.deepEqual(
+    movedGroups.groups.map(group => group.id),
+    ['system', 'workspace', 'resources'],
+  )
+
+  const movedItems = reorderMobileDockItems(
+    movedGroups,
+    'workspace',
+    'visit_summary',
+    'online_summary',
+  )
+  assert.deepEqual(
+    movedItems.groups.find(group => group.id === 'workspace')?.items,
+    ['visit_summary', 'online_summary', 'online_query'],
+  )
+  assert.deepEqual(
+    original.groups.map(group => group.id),
+    ['workspace', 'resources', 'system'],
+  )
+})

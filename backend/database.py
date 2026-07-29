@@ -521,6 +521,8 @@ class DatabaseManager:
                         role ENUM('super_admin','admin','leader','member') NOT NULL DEFAULT 'member',
                         table_display_mode VARCHAR(10) NOT NULL DEFAULT 'table',
                         report_column_mode VARCHAR(10) NOT NULL DEFAULT 'three',
+                        mobile_navigation_mode VARCHAR(10) NOT NULL DEFAULT 'dock',
+                        mobile_dock_config JSON DEFAULT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -534,6 +536,14 @@ class DatabaseManager:
                     (
                         "report_column_mode",
                         "VARCHAR(10) NOT NULL DEFAULT 'three'",
+                    ),
+                    (
+                        "mobile_navigation_mode",
+                        "VARCHAR(10) NOT NULL DEFAULT 'dock'",
+                    ),
+                    (
+                        "mobile_dock_config",
+                        "JSON DEFAULT NULL",
                     ),
                 ]:
                     await cur.execute(

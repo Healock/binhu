@@ -239,7 +239,10 @@ flowchart LR
 “已核查 ÷ 数据总数”，所以数值与三列模式的“已完成 ÷ 数据总数”相同。转换逻辑统一放在
 后端，网页和以后增加的 XLSX 导出都要调用同一套规则，不能各自计算一遍。
 
-表格/卡片模式和两列/三列模式都保存在当前用户账号中，同一账号换电脑登录后仍保持一致。
+页面不再让用户选择“表格/卡片模式”。电脑端固定使用表格，手机端由页面自动使用卡片或
+精简列表；在线汇总在手机端仍可临时切换到完整表格。旧的 `table_display_mode` 字段和接口
+参数暂时保留，只用于兼容旧版本，不再影响新版页面。两列/三列模式仍保存在当前用户账号中，
+同一账号换电脑登录后会保持一致。
 
 每张核查人明细、社区汇总和总汇总的底部都有一行“总计”。数量字段直接相加；
 核查完成率、核查见底率和当日人均核查数使用合计后的数量重新计算，不能把每行的百分比或
@@ -346,6 +349,7 @@ flowchart LR
 | `backend/services/report_range.py` | 负责计算一段时间的统计 |
 | `backend/migrations/backfill_daily_task_ledger.py` | 审计并安全回算历史任务流水和日报 |
 | `backend/services/report_view.py` | 统一转换汇总表的两列或三列输出 |
+| `backend/services/mobile_navigation.py` | 校验账号的手机 Dock 分类、页面顺序和角色权限 |
 | `backend/services/visit_import.py` | 校验、去重并导入走访明细，计算已有数据范围 |
 | `backend/services/star_rating_import.py` | 校验星级评定并在 24 小时内关联走访记录 |
 | `backend/services/visit_summary.py` | 按日期区间计算网格员和社区走访汇总 |
@@ -422,7 +426,9 @@ flowchart LR
 - 接口调用：`frontend/src/api/client.ts`。
 - 登录状态：`frontend/src/context/`。
 - 登录保护：`frontend/src/components/ProtectedRoute.tsx`。
-- 统一表格：`frontend/src/components/AppTable.tsx`。汇总、原始数据和管理页面都使用 Ant Design Table；手机端原有卡片模式继续保留。
+- 统一表格：`frontend/src/components/AppTable.tsx`。电脑端的汇总、原始数据和管理页面使用 Ant Design Table；在线与走访汇总会额外启用浅灰色竖向虚线。
+- 手机导航：`frontend/src/components/MobileDock.tsx` 和 `frontend/src/navigation/mobileNavigation.ts`。手机默认显示浮空 Dock，电脑始终显示左侧栏；账号可以改回手机侧边栏，也可以调整 Dock 分类和页面顺序。
+- 响应式显示：在线汇总手机端使用精简列表，并保留临时查看完整表格的入口；走访汇总、社区管理和用户管理手机端使用卡片。页面不再读取旧的表格/卡片偏好。
 - 走访汇总页面：`frontend/src/pages/VisitSummary.tsx`。按日期查看网格员和社区汇总，并列上传走访明细和星级评定，显示数据范围、上传结果和导入问题。
 
 前端构建结果放在 `frontend/dist/`，这个目录不会上传 Git。修改前端后要重新运行：

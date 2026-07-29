@@ -1,7 +1,7 @@
 """认证 API - 登录/登出/当前用户 + OAuth 凭据管理"""
 
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 import bcrypt
 from fastapi import APIRouter, Request, Response, HTTPException, status, Depends
@@ -10,6 +10,12 @@ from database import db_manager
 from config import settings
 from deps import get_current_user, require_super_admin, create_session, get_session_cookie_config
 from services.audit import record_admin_audit, request_audit_fields
+from services.mobile_navigation import (
+    normalize_mobile_dock_config,
+    normalize_mobile_navigation_mode,
+    serialize_mobile_dock_config,
+    validate_mobile_dock_config,
+)
 from services.ops_redaction import redact_text
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
@@ -21,8 +27,10 @@ class LoginRequest(BaseModel):
 
 
 class UserPreferencesRequest(BaseModel):
-    table_display_mode: Literal["table", "card"]
-    report_column_mode: Literal["two", "three"]
+    table_display_mode: Literal["table", "card"] | None = None
+    report_column_mode: Literal["two", "three"] | None = None
+    mobile_navigation_mode: Literal["sidebar", "dock"] | None = None
+    mobile_dock_config: dict[str, Any] | None = None
 
 
 @router.post("/login")
@@ -34,7 +42,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, username, password_hash, role, "
-                "table_display_mode, report_column_mode "
+                "table_display_mode, report_column_mode, "
+                "mobile_navigation_mode, mobile_dock_config "
                 "FROM _users WHERE username = %s",
                 (req.username,),
             )
@@ -48,6 +57,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 role,
                 table_display_mode,
                 report_column_mode,
+                mobile_navigation_mode,
+                mobile_dock_config,
             ) = row
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
@@ -71,6 +82,13 @@ async def login(req: LoginRequest, request: Request, response: Response):
             "role": role,
             "table_display_mode": table_display_mode or "table",
             "report_column_mode": report_column_mode or "three",
+            "mobile_navigation_mode": normalize_mobile_navigation_mode(
+                mobile_navigation_mode,
+            ),
+            "mobile_dock_config": normalize_mobile_dock_config(
+                mobile_dock_config,
+                str(role),
+            ),
         },
     }
 
@@ -111,18 +129,44 @@ async def update_preferences(
     user: dict = Depends(get_current_user),
 ):
     """保存当前账号的个性化设置。"""
+    updates: list[str] = []
+    values: list[Any] = []
+    updated_user = dict(user)
+
+    if req.table_display_mode is not None:
+        updates.append("table_display_mode=%s")
+        values.append(req.table_display_mode)
+        updated_user["table_display_mode"] = req.table_display_mode
+    if req.report_column_mode is not None:
+        updates.append("report_column_mode=%s")
+        values.append(req.report_column_mode)
+        updated_user["report_column_mode"] = req.report_column_mode
+    if req.mobile_navigation_mode is not None:
+        updates.append("mobile_navigation_mode=%s")
+        values.append(req.mobile_navigation_mode)
+        updated_user["mobile_navigation_mode"] = req.mobile_navigation_mode
+    if req.mobile_dock_config is not None:
+        try:
+            dock_config = validate_mobile_dock_config(
+                req.mobile_dock_config,
+                str(user["role"]),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        updates.append("mobile_dock_config=%s")
+        values.append(serialize_mobile_dock_config(dock_config))
+        updated_user["mobile_dock_config"] = dock_config
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="没有需要保存的个性化设置")
+
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE _users SET table_display_mode=%s, report_column_mode=%s "
-                "WHERE id=%s",
-                (
-                    req.table_display_mode,
-                    req.report_column_mode,
-                    user["id"],
-                ),
+                f"UPDATE _users SET {', '.join(updates)} WHERE id=%s",
+                (*values, user["id"]),
             )
     finally:
         pool.release(conn)
@@ -130,9 +174,11 @@ async def update_preferences(
     return {
         "message": "个性化设置已保存",
         "user": {
-            **user,
-            "table_display_mode": req.table_display_mode,
-            "report_column_mode": req.report_column_mode,
+            **updated_user,
+            "mobile_dock_config": normalize_mobile_dock_config(
+                updated_user.get("mobile_dock_config"),
+                str(user["role"]),
+            ),
         },
     }
 
