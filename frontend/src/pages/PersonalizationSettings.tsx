@@ -1,20 +1,38 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Radio } from 'antd'
+import DockConfigurator from '../components/DockConfigurator'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
-import type { ReportColumnMode, TableDisplayMode } from '../types'
+import {
+  defaultMobileDockConfig,
+  normalizeMobileDockConfig,
+} from '../navigation/mobileNavigation'
+import type {
+  MobileDockConfig,
+  MobileNavigationMode,
+  ReportColumnMode,
+} from '../types'
 
 export default function PersonalizationSettings() {
   const { user, updatePreferences } = useAuth()
-  const [displayMode, setDisplayMode] = useState<TableDisplayMode>('table')
   const [columnMode, setColumnMode] = useState<ReportColumnMode>('three')
+  const [navigationMode, setNavigationMode] = (
+    useState<MobileNavigationMode>('dock')
+  )
+  const [dockConfig, setDockConfig] = useState<MobileDockConfig>({
+    groups: [],
+  })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
   useEffect(() => {
     if (!user) return
-    setDisplayMode(user.table_display_mode || 'table')
     setColumnMode(user.report_column_mode || 'three')
+    setNavigationMode(user.mobile_navigation_mode || 'dock')
+    setDockConfig(normalizeMobileDockConfig(
+      user.mobile_dock_config || defaultMobileDockConfig(user.role),
+      user.role,
+    ))
   }, [user])
 
   const handleSave = async () => {
@@ -22,11 +40,11 @@ export default function PersonalizationSettings() {
     setMsg('')
     try {
       await updatePreferences({
-        table_display_mode: displayMode,
         report_column_mode: columnMode,
+        mobile_navigation_mode: navigationMode,
+        mobile_dock_config: dockConfig,
       })
-      localStorage.removeItem('table_display_mode')
-      setMsg('保存成功，汇总页面会按新的方式显示')
+      setMsg('保存成功，手机导航和汇总表设置已更新')
     } catch {
       setMsg('保存失败，请稍后重试')
     } finally {
@@ -41,21 +59,49 @@ export default function PersonalizationSettings() {
     >
       <div className="space-y-6">
         <div>
-          <div className="mb-2 text-sm font-medium text-slate-800">数据列表显示方式</div>
+          <div className="mb-2 text-sm font-medium text-slate-800">
+            手机导航方式
+          </div>
           <Radio.Group
-            value={displayMode}
-            onChange={event => setDisplayMode(event.target.value)}
+            value={navigationMode}
+            onChange={event => setNavigationMode(event.target.value)}
             optionType="button"
             buttonStyle="solid"
             options={[
-              { label: '表格模式', value: 'table' },
-              { label: '卡片模式', value: 'card' },
+              { label: '浮空 Dock', value: 'dock' },
+              { label: '侧边栏', value: 'sidebar' },
             ]}
           />
           <p className="mt-2 text-sm text-slate-500">
-            该选项主要控制电脑端；在线数据汇总在手机端会自动使用精简列表，也可以临时切换为完整表格。
+            电脑端始终使用左侧栏；这里仅控制手机端导航。
           </p>
         </div>
+
+        {navigationMode === 'dock' && user && (
+          <div>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium text-slate-800">
+                Dock 分类和页面
+              </div>
+              <Button
+                size="small"
+                onClick={() => setDockConfig(
+                  defaultMobileDockConfig(user.role),
+                )}
+              >
+                恢复默认
+              </Button>
+            </div>
+            <p className="mb-3 text-sm text-slate-500">
+              把分类和页面拖进预览区即可调整；加号、移除和上下移动按钮也能完成相同操作。
+            </p>
+            <DockConfigurator
+              value={dockConfig}
+              role={user.role}
+              onChange={setDockConfig}
+            />
+          </div>
+        )}
 
         <div>
           <div className="mb-2 text-sm font-medium text-slate-800">汇总表统计列</div>

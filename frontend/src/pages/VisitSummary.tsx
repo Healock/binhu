@@ -538,7 +538,6 @@ export default function VisitSummary() {
   ]
 
   const shownMissingDates = coverage?.missing_dates.slice(0, 10) || []
-  const cardMode = user?.table_display_mode === 'card'
   const inspectorRows = (summaryReport?.inspector.data || []) as VisitSummaryRow[]
   const communityRows = (summaryReport?.community.data || []) as VisitSummaryRow[]
   const countCommunityMembers = useCallback((
@@ -789,96 +788,99 @@ export default function VisitSummary() {
         <Panel>
           <EmptyState label={`${shownResultLabel} 暂无走访数据`} />
         </Panel>
-      ) : summaryReport && cardMode ? (
-        <div className="space-y-6">
-          <div className="space-y-3">
-            <h2 className="px-1 text-sm font-semibold text-gray-700">
-              人员汇总（{inspectorRows.length} 行）
-              <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
-            </h2>
-            <div className="grid grid-cols-1 gap-3">
-              {inspectorRows.map((row, index) => (
-                <SummaryCard
-                  key={`${row.社区}-${row.姓名}-${index}`}
-                  row={row}
-                  columns={summaryReport.inspector.columns}
-                  titleColumns={['社区', '姓名']}
-                />
-              ))}
-              <SummaryCard
-                row={summaryReport.inspector.summary as VisitSummaryRow}
-                columns={summaryReport.inspector.columns}
-                titleColumns={['社区', '姓名']}
-                total
-              />
-            </div>
-          </div>
-          <div className="space-y-3">
-            <h2 className="px-1 text-sm font-semibold text-gray-700">
-              社区汇总（{communityRows.length} 个社区）
-              <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
-            </h2>
-            <div className="grid grid-cols-1 gap-3">
-              {communityRows.map((row, index) => (
-                <SummaryCard
-                  key={`${row.社区}-${index}`}
-                  row={row}
-                  columns={summaryReport.community.columns}
-                  titleColumns={['社区']}
-                />
-              ))}
-              <SummaryCard
-                row={summaryReport.community.summary as VisitSummaryRow}
-                columns={summaryReport.community.columns}
-                titleColumns={['社区']}
-                total
-              />
-            </div>
-          </div>
-        </div>
       ) : summaryReport ? (
         <>
-          <AppTable<VisitSummaryRow>
-            key={`visit-inspector-${shownSummaryCategory}-${shownRangeLabel}`}
-            columns={visitSummaryColumns(
-              summaryReport.inspector.columns,
-              inspectorRows,
-            )}
-            dataSource={inspectorRows}
-            rowKey={(row, index) => `${row.社区}-${row.姓名}-${index}`}
-            loading={summaryLoading}
-            sticky
-            summary={visitSummaryTotal(
-              summaryReport.inspector.columns,
-            )}
-            title={currentRows => (
-              <h2 className="text-sm font-semibold text-gray-700">
-                人员汇总（{currentRows.length} 行）
+          <div className="space-y-6 md:hidden">
+            <div className="space-y-3">
+              <h2 className="px-1 text-sm font-semibold text-gray-700">
+                人员汇总（{inspectorRows.length} 行）
                 <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
               </h2>
-            )}
-          />
-          <AppTable<VisitSummaryRow>
-            key={`visit-community-${shownSummaryCategory}-${shownRangeLabel}`}
-            columns={visitSummaryColumns(
-              summaryReport.community.columns,
-              communityRows,
-            )}
-            dataSource={communityRows}
-            rowKey={(row, index) => `${row.社区}-${index}`}
-            loading={summaryLoading}
-            sticky
-            summary={visitSummaryTotal(
-              summaryReport.community.columns,
-              countCommunityMembers,
-            )}
-            title={currentRows => (
-              <h2 className="text-sm font-semibold text-gray-700">
-                社区汇总（{currentRows.length} 个社区）
+              <div className="grid grid-cols-1 gap-3">
+                {inspectorRows.map((row, index) => (
+                  <SummaryCard
+                    key={`${row.社区}-${row.姓名}-${index}`}
+                    row={row}
+                    columns={summaryReport.inspector.columns}
+                    titleColumns={['社区', '姓名']}
+                  />
+                ))}
+                <SummaryCard
+                  row={summaryReport.inspector.summary as VisitSummaryRow}
+                  columns={summaryReport.inspector.columns}
+                  titleColumns={['社区', '姓名']}
+                  total
+                />
+              </div>
+            </div>
+            <div className="space-y-3">
+              <h2 className="px-1 text-sm font-semibold text-gray-700">
+                社区汇总（{communityRows.length} 个社区）
                 <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
               </h2>
-            )}
-          />
+              <div className="grid grid-cols-1 gap-3">
+                {communityRows.map((row, index) => (
+                  <SummaryCard
+                    key={`${row.社区}-${index}`}
+                    row={row}
+                    columns={summaryReport.community.columns}
+                    titleColumns={['社区']}
+                  />
+                ))}
+                <SummaryCard
+                  row={summaryReport.community.summary as VisitSummaryRow}
+                  columns={summaryReport.community.columns}
+                  titleColumns={['社区']}
+                  total
+                />
+              </div>
+            </div>
+          </div>
+          <div className="hidden space-y-6 md:block">
+            <AppTable<VisitSummaryRow>
+              key={`visit-inspector-${shownSummaryCategory}-${shownRangeLabel}`}
+              columns={visitSummaryColumns(
+                summaryReport.inspector.columns,
+                inspectorRows,
+              )}
+              dataSource={inspectorRows}
+              reportGrid
+              rowKey={(row, index) => `${row.社区}-${row.姓名}-${index}`}
+              loading={summaryLoading}
+              sticky
+              summary={visitSummaryTotal(
+                summaryReport.inspector.columns,
+              )}
+              title={currentRows => (
+                <h2 className="text-sm font-semibold text-gray-700">
+                  人员汇总（{currentRows.length} 行）
+                  <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
+                </h2>
+              )}
+            />
+            <AppTable<VisitSummaryRow>
+              key={`visit-community-${shownSummaryCategory}-${shownRangeLabel}`}
+              columns={visitSummaryColumns(
+                summaryReport.community.columns,
+                communityRows,
+              )}
+              dataSource={communityRows}
+              reportGrid
+              rowKey={(row, index) => `${row.社区}-${index}`}
+              loading={summaryLoading}
+              sticky
+              summary={visitSummaryTotal(
+                summaryReport.community.columns,
+                countCommunityMembers,
+              )}
+              title={currentRows => (
+                <h2 className="text-sm font-semibold text-gray-700">
+                  社区汇总（{currentRows.length} 个社区）
+                  <span className="ml-2 font-normal text-gray-400">{shownResultLabel}</span>
+                </h2>
+              )}
+            />
+          </div>
         </>
       ) : null}
 

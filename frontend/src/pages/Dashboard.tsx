@@ -205,7 +205,6 @@ export default function Dashboard() {
   const isSummary = reportType === '总汇总表'
   const isRange = startDate !== endDate
   const rangeInfo = report.range
-  const cardMode = user?.table_display_mode === 'card'
   const inspectorTable = report.inspector || { columns: [], data: [] }
   const communityTable = report.community || (
     isSummary
@@ -228,32 +227,6 @@ export default function Dashboard() {
     && overview?.available_end_date
     ? `${overview.available_start_date} 至 ${overview.available_end_date}`
     : '暂无可用数据'
-
-  // 卡片渲染辅助
-  const renderCard = (
-    row: Record<string, any>,
-    columns: string[],
-    titleCols: string[],
-    key: string | number,
-    isTotal = false,
-  ) => (
-    <div
-      key={key}
-      className={`app-card app-card--padded space-y-1.5${isTotal ? ' app-report-total-card' : ''}`}
-    >
-      <div className="flex items-center justify-between border-b pb-2 mb-1">
-        <span className="font-semibold text-gray-800">{titleCols.map(c => row[c]).filter(Boolean).join(' · ')}</span>
-      </div>
-      <div className="grid grid-cols-3 gap-2 text-sm">
-        {columns.filter(c => !titleCols.includes(c) && c !== 'id').map(col => (
-          <div key={col}>
-            <span className="text-gray-400 text-xs block">{col}</span>
-            <span className="text-gray-800">{fmt(row[col], col)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
 
   return (
     <div className="app-page">
@@ -458,95 +431,44 @@ export default function Dashboard() {
             />
           </div>
 
-          <div className="hidden md:block">
-            {cardMode ? (
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-700 px-1">
-                    {inspectorTitle}（{inspectorTable.data.length} 人）
-                    {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-                  </h3>
-                  <div className="grid grid-cols-1 gap-3">
-                    {inspectorTable.data.map((row: Record<string, any>, i: number) => (
-                      renderCard(
-                        row,
-                        inspectorTable.columns,
-                        ['社区', '姓名'],
-                        row.id || `${row.社区}-${row.姓名}-${i}`,
-                      )
-                    ))}
-                    {inspectorTable.summary && renderCard(
-                      inspectorTable.summary,
-                      inspectorTable.columns,
-                      ['社区', '姓名'],
-                      'inspector-summary-total',
-                      true,
-                    )}
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-700 px-1">
-                    {communityTitle}（{communityTable.data.length} 个社区）
-                    {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-                  </h3>
-                  <div className="grid grid-cols-1 gap-3">
-                    {communityTable.data.map((row: Record<string, any>, i: number) => (
-                      renderCard(
-                        row,
-                        communityTable.columns,
-                        ['社区'],
-                        row.id || row.社区 || i,
-                      )
-                    ))}
-                    {communityTable.summary && renderCard(
-                      communityTable.summary,
-                      communityTable.columns,
-                      ['社区'],
-                      'community-summary-total',
-                      true,
-                    )}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <>
-                <AppTable<Record<string, any>>
-                  key={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-                  columns={reportTableColumns(inspectorTable.columns, inspectorTable.data)}
-                  dataSource={inspectorTable.data}
-                  rowKey={row => row.id || `${row.社区}-${row.姓名}`}
-                  summary={inspectorTable.summary
-                    ? reportTableSummary(
-                        inspectorTable.columns,
-                      )
-                    : undefined}
-                  title={currentRows => (
-                    <h3 className="text-sm font-semibold text-gray-700">
-                      {inspectorTitle}（{currentRows.length} 人）
-                      {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-                    </h3>
-                  )}
-                />
+          <div className="hidden space-y-6 md:block">
+            <AppTable<Record<string, any>>
+              key={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+              columns={reportTableColumns(inspectorTable.columns, inspectorTable.data)}
+              dataSource={inspectorTable.data}
+              reportGrid
+              rowKey={row => row.id || `${row.社区}-${row.姓名}`}
+              summary={inspectorTable.summary
+                ? reportTableSummary(
+                    inspectorTable.columns,
+                  )
+                : undefined}
+              title={currentRows => (
+                <h3 className="text-sm font-semibold text-gray-700">
+                  {inspectorTitle}（{currentRows.length} 人）
+                  {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                </h3>
+              )}
+            />
 
-                <AppTable<Record<string, any>>
-                  key={`community-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-                  columns={reportTableColumns(communityTable.columns, communityTable.data)}
-                  dataSource={communityTable.data}
-                  rowKey={row => row.id || row.社区}
-                  summary={communityTable.summary
-                    ? reportTableSummary(
-                        communityTable.columns,
-                      )
-                    : undefined}
-                  title={currentRows => (
-                    <h3 className="text-sm font-semibold text-gray-700">
-                      {communityTitle}（{currentRows.length} 个社区）
-                      {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
-                    </h3>
-                  )}
-                />
-              </>
-            )}
+            <AppTable<Record<string, any>>
+              key={`community-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+              columns={reportTableColumns(communityTable.columns, communityTable.data)}
+              dataSource={communityTable.data}
+              reportGrid
+              rowKey={row => row.id || row.社区}
+              summary={communityTable.summary
+                ? reportTableSummary(
+                    communityTable.columns,
+                  )
+                : undefined}
+              title={currentRows => (
+                <h3 className="text-sm font-semibold text-gray-700">
+                  {communityTitle}（{currentRows.length} 个社区）
+                  {isRange && <span className="text-gray-400 font-normal ml-2">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+                </h3>
+              )}
+            />
           </div>
         </>
       )}

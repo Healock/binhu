@@ -10,11 +10,9 @@ import {
   type GridCommunity,
 } from '../api/client'
 import AppTable from '../components/AppTable'
-import { useAuth } from '../context/AuthContext'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
 export default function Communities() {
-  const { user } = useAuth()
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [newName, setNewName] = useState('')
   const [msg, setMsg] = useState('')
@@ -177,35 +175,38 @@ export default function Communities() {
         <div className="app-table-wrap">
           <EmptyState label="暂无社区，可在上方输入社区名称后添加" />
         </div>
-      ) : user?.table_display_mode === 'card' ? (
-        <div className="app-table-wrap">
-          <div className="grid grid-cols-1 gap-3 p-4">
-            {communities.map((c) => (
-              <div key={c.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-gray-800">{c.name}</div>
-                  <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {c.aliases?.length > 0
-                      ? c.aliases.map(alias => <Tag key={alias}>{alias}</Tag>)
-                      : <span className="text-xs text-slate-400">暂无别名</span>}
+      ) : (
+        <>
+          <div className="app-table-wrap md:hidden">
+            <div className="grid grid-cols-1 gap-3 p-4">
+              {communities.map((c) => (
+                <div key={c.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium text-gray-800">{c.name}</div>
+                    <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {c.aliases?.length > 0
+                        ? c.aliases.map(alias => <Tag key={alias}>{alias}</Tag>)
+                        : <span className="text-xs text-slate-400">暂无别名</span>}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end">
+                    <Button type="link" size="small" onClick={() => openAliasEditor(c)}>编辑别名</Button>
+                    <Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button>
                   </div>
                 </div>
-                <div className="flex flex-col items-end">
-                  <Button type="link" size="small" onClick={() => openAliasEditor(c)}>编辑别名</Button>
-                  <Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      ) : (
-        <AppTable<GridCommunity>
-          columns={communityColumns}
-          dataSource={communities}
-          rowKey="id"
-          scroll={{ x: 520 }}
-        />
+          <div className="hidden md:block">
+            <AppTable<GridCommunity>
+              columns={communityColumns}
+              dataSource={communities}
+              rowKey="id"
+              scroll={{ x: 520 }}
+            />
+          </div>
+        </>
       )}
       <p className="text-xs text-slate-500">人员数量会根据“人员管理”中的所属社区自动统计，无需手动填写。</p>
 

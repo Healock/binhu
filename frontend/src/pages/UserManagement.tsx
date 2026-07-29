@@ -5,7 +5,6 @@ import { PlusOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { ROLE_LABELS } from '../types'
 import type { Role } from '../types'
-import { useAuth } from '../context/AuthContext'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 
 interface UserItem {
@@ -17,7 +16,6 @@ interface UserItem {
 }
 
 export default function UserManagement() {
-  const { user } = useAuth()
   const [users, setUsers] = useState<UserItem[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -116,7 +114,6 @@ export default function UserManagement() {
   }
 
   const roleOptions: Role[] = ['super_admin', 'admin', 'leader', 'member']
-  const cardMode = user?.table_display_mode === 'card'
   const userColumns: TableColumnsType<UserItem> = [
     {
       title: '用户名',
@@ -231,31 +228,34 @@ export default function UserManagement() {
         <div className="app-table-wrap">
           <EmptyState label="暂无用户" />
         </div>
-      ) : cardMode ? (
-        <div className="app-table-wrap">
-          <div className="grid grid-cols-1 gap-3 p-4">
-            {users.map((u) => (
-              <div key={u.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-gray-800">{u.username}</div>
-                  <div className="text-sm text-gray-500">{ROLE_LABELS[u.role] || u.role}</div>
-                  {u.created_at && <div className="text-xs text-gray-400">创建于 {u.created_at}</div>}
-                </div>
-                <div className="flex gap-2">
-                  <Button type="link" size="small" onClick={() => handleEdit(u)}>编辑</Button>
-                  <Button type="link" danger size="small" onClick={() => handleDelete(u.id, u.username)}>删除</Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
       ) : (
-        <AppTable<UserItem>
-          columns={userColumns}
-          dataSource={users}
-          rowKey="id"
-          scroll={{ x: 690 }}
-        />
+        <>
+          <div className="app-table-wrap md:hidden">
+            <div className="grid grid-cols-1 gap-3 p-4">
+              {users.map((u) => (
+                <div key={u.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium text-gray-800">{u.username}</div>
+                    <div className="text-sm text-gray-500">{ROLE_LABELS[u.role] || u.role}</div>
+                    {u.created_at && <div className="text-xs text-gray-400">创建于 {u.created_at}</div>}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="link" size="small" onClick={() => handleEdit(u)}>编辑</Button>
+                    <Button type="link" danger size="small" onClick={() => handleDelete(u.id, u.username)}>删除</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="hidden md:block">
+            <AppTable<UserItem>
+              columns={userColumns}
+              dataSource={users}
+              rowKey="id"
+              scroll={{ x: 690 }}
+            />
+          </div>
+        </>
       )}
     </div>
   )

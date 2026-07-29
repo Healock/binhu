@@ -1,71 +1,41 @@
-import { useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
-  ApartmentOutlined,
-  BarChartOutlined,
   CloseOutlined,
-  DatabaseOutlined,
   LogoutOutlined,
   MenuOutlined,
-  MonitorOutlined,
-  ReadOutlined,
-  SearchOutlined,
-  SettingOutlined,
-  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons'
+import { Button, Popover } from 'antd'
 import { useAuth } from '../context/AuthContext'
 import { ROLE_LABELS } from '../types'
+import {
+  accessibleNavigationGroups,
+  normalizeMobileDockConfig,
+} from '../navigation/mobileNavigation'
+import MobileDock from './MobileDock'
+import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
-
-interface MenuItem {
-  path: string
-  label: string
-  icon: ReactNode
-  end?: boolean
-}
-
-interface MenuGroup {
-  label: string
-  items: MenuItem[]
-}
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
   const { user, logout } = useAuth()
   const navigate = useNavigate()
-
-  const menuGroups: MenuGroup[] = [
-    {
-      label: '数据工作台',
-      items: [
-        { path: '/', label: '在线数据汇总', icon: <BarChartOutlined />, end: true },
-        { path: '/query', label: '在线数据查询', icon: <SearchOutlined /> },
-        { path: '/visit-summary', label: '走访汇总', icon: <ReadOutlined /> },
-      ],
-    },
-    {
-      label: '基础资料',
-      items: [
-        { path: '/grid-members', label: '人员管理', icon: <TeamOutlined /> },
-        { path: '/communities', label: '社区管理', icon: <ApartmentOutlined /> },
-        ...(user?.role === 'super_admin'
-          ? [{ path: '/users', label: '用户管理', icon: <UserOutlined /> }]
-          : []),
-      ],
-    },
-    {
-      label: '系统',
-      items: [
-        ...(user?.role === 'super_admin'
-          ? [{ path: '/operations', label: '运维中心', icon: <MonitorOutlined /> }]
-          : []),
-        { path: '/settings', label: '设置', icon: <SettingOutlined /> },
-      ],
-    },
-  ]
+  const menuGroups = useMemo(
+    () => user ? accessibleNavigationGroups(user.role) : [],
+    [user],
+  )
+  const mobileNavigationMode = user?.mobile_navigation_mode || 'dock'
+  const dockConfig = useMemo(
+    () => user
+      ? normalizeMobileDockConfig(user.mobile_dock_config, user.role)
+      : { groups: [] },
+    [user],
+  )
 
   const handleLogout = async () => {
+    setAccountOpen(false)
     await logout()
     navigate('/login', { replace: true })
   }
@@ -73,22 +43,57 @@ export default function Layout() {
   return (
     <div className="app-shell flex">
       <header className="md:hidden fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-4">
-        <button
-          type="button"
-          onClick={() => setSidebarOpen(true)}
-          aria-label="打开导航菜单"
-          className="flex h-10 w-10 items-center justify-center text-slate-600"
-        >
-          <MenuOutlined />
-        </button>
+        {mobileNavigationMode === 'sidebar' && (
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="打开导航菜单"
+            className="flex h-10 w-10 items-center justify-center text-slate-600"
+          >
+            <MenuOutlined />
+          </button>
+        )}
         <div className="flex items-center gap-2">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">滨</span>
           <span className="font-semibold text-slate-800">滨湖智慧平台</span>
         </div>
         {user && (
-          <span className={`ml-auto text-xs text-slate-500 ${user.role === 'super_admin' ? 'mr-11' : ''}`}>
-            {ROLE_LABELS[user.role] || user.role}
-          </span>
+          <Popover
+            open={accountOpen}
+            onOpenChange={setAccountOpen}
+            trigger="click"
+            placement="bottomRight"
+            content={(
+              <div className="w-48 space-y-3 p-1">
+                <div>
+                  <div className="font-medium text-slate-900">{user.username}</div>
+                  <div className="text-xs text-slate-500">
+                    {ROLE_LABELS[user.role] || user.role}
+                  </div>
+                </div>
+                <Button
+                  block
+                  onClick={() => {
+                    setAccountOpen(false)
+                    navigate('/settings/personalization')
+                  }}
+                >
+                  个性化设置
+                </Button>
+                <Button block icon={<LogoutOutlined />} onClick={handleLogout}>
+                  退出登录
+                </Button>
+              </div>
+            )}
+          >
+            <button
+              type="button"
+              aria-label="打开账号菜单"
+              className={`ml-auto rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 ${user.role === 'super_admin' ? 'mr-11' : ''}`}
+            >
+              {ROLE_LABELS[user.role] || user.role}
+            </button>
+          </Popover>
         )}
       </header>
 
@@ -146,7 +151,9 @@ export default function Layout() {
                       }`
                     }
                   >
-                    <span className="flex w-5 justify-center text-base">{item.icon}</span>
+                    <span className="flex w-5 justify-center text-base">
+                      <NavigationIcon name={item.icon} />
+                    </span>
                     <span>{item.label}</span>
                   </NavLink>
                 ))}
@@ -181,10 +188,18 @@ export default function Layout() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-auto">
-        <div className="app-content p-4 pt-[72px] md:p-6">
+        <div className={`app-content p-4 pt-[72px] md:p-6 ${
+          mobileNavigationMode === 'dock'
+            ? 'app-content--mobile-dock'
+            : ''
+        }`}>
           <Outlet />
         </div>
       </main>
+
+      {user && mobileNavigationMode === 'dock' && (
+        <MobileDock config={dockConfig} role={user.role} />
+      )}
     </div>
   )
 }

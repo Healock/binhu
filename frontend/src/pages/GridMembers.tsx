@@ -687,7 +687,10 @@ function LeaveModal({
   )
 
   const handleSave = async () => {
-    if (mode === 'temporary' && !leaveRange) {
+    if (
+      mode === 'temporary'
+      && (!leaveRange?.[0] || !leaveRange?.[1])
+    ) {
       setFormError('请选择临时请假日期')
       return
     }
@@ -725,20 +728,28 @@ function LeaveModal({
     <Modal
       open
       title={`${member.name} · 请假设置`}
+      className="leave-settings-modal"
       maskClosable={!saving}
       onCancel={onClose}
+      styles={{
+        body: {
+          maxHeight: 'calc(100dvh - 190px)',
+          overflowY: 'auto',
+        },
+      }}
       footer={(
-        <div className="flex justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button
+            className="min-h-11 w-full sm:min-h-0 sm:w-auto"
             disabled={!hasLeave}
             loading={saving}
             onClick={handleClear}
           >
             恢复正常
           </Button>
-          <div className="flex gap-2">
-            <Button disabled={saving} onClick={onClose}>取消</Button>
-            <Button type="primary" loading={saving} onClick={handleSave}>
+          <div className="grid grid-cols-2 gap-2 sm:flex">
+            <Button className="min-h-11 sm:min-h-0" disabled={saving} onClick={onClose}>取消</Button>
+            <Button className="min-h-11 sm:min-h-0" type="primary" loading={saving} onClick={handleSave}>
               保存
             </Button>
           </div>
@@ -767,21 +778,68 @@ function LeaveModal({
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               请假日期
             </label>
-            <DatePicker.RangePicker
-              value={leaveRange
-                ? [dayjs(leaveRange[0]), dayjs(leaveRange[1])]
-                : null}
-              onChange={(_, dateStrings) => {
-                setLeaveRange(
-                  dateStrings[0] && dateStrings[1]
-                    ? [dateStrings[0], dateStrings[1]]
-                    : null,
-                )
-              }}
-              format="YYYY-MM-DD"
-              placeholder={['开始日期', '结束日期']}
-              className="w-full"
-            />
+            <div className="grid grid-cols-2 gap-2 md:hidden">
+              <label className="min-w-0 text-xs text-slate-500">
+                <span className="mb-1 block">开始日期</span>
+                <input
+                  aria-label="请假开始日期"
+                  className="h-11 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  type="date"
+                  value={leaveRange?.[0] || ''}
+                  onChange={event => {
+                    const nextStart = event.target.value
+                    if (!nextStart) {
+                      setLeaveRange(null)
+                      return
+                    }
+                    const currentEnd = leaveRange?.[1] || nextStart
+                    setLeaveRange([
+                      nextStart,
+                      currentEnd < nextStart ? nextStart : currentEnd,
+                    ])
+                  }}
+                />
+              </label>
+              <label className="min-w-0 text-xs text-slate-500">
+                <span className="mb-1 block">结束日期</span>
+                <input
+                  aria-label="请假结束日期"
+                  className="h-11 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  min={leaveRange?.[0] || undefined}
+                  type="date"
+                  value={leaveRange?.[1] || ''}
+                  onChange={event => {
+                    const nextEnd = event.target.value
+                    const currentStart = leaveRange?.[0] || nextEnd
+                    if (!nextEnd || !currentStart) {
+                      setLeaveRange(null)
+                      return
+                    }
+                    setLeaveRange([
+                      currentStart,
+                      nextEnd < currentStart ? currentStart : nextEnd,
+                    ])
+                  }}
+                />
+              </label>
+            </div>
+            <div className="hidden md:block">
+              <DatePicker.RangePicker
+                value={leaveRange
+                  ? [dayjs(leaveRange[0]), dayjs(leaveRange[1])]
+                  : null}
+                onChange={(_, dateStrings) => {
+                  setLeaveRange(
+                    dateStrings[0] && dateStrings[1]
+                      ? [dateStrings[0], dateStrings[1]]
+                      : null,
+                  )
+                }}
+                format="YYYY-MM-DD"
+                placeholder={['开始日期', '结束日期']}
+                className="w-full"
+              />
+            </div>
             <p className="mt-1.5 text-xs text-slate-500">
               日期结束后会自动恢复正常。
             </p>

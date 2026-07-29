@@ -227,16 +227,42 @@ export interface OAuthStatus {
 export type Role = 'super_admin' | 'admin' | 'leader' | 'member'
 export type TableDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
+export type MobileNavigationMode = 'sidebar' | 'dock'
+export type MobileNavigationGroupId = 'workspace' | 'resources' | 'system'
+export type MobileNavigationItemId =
+  | 'online_summary'
+  | 'online_query'
+  | 'visit_summary'
+  | 'grid_members'
+  | 'communities'
+  | 'users'
+  | 'settings'
+  | 'operations'
+
+export interface MobileDockGroupConfig {
+  id: MobileNavigationGroupId
+  items: MobileNavigationItemId[]
+}
+
+export interface MobileDockConfig {
+  groups: MobileDockGroupConfig[]
+}
 
 export interface UserPreferences {
-  table_display_mode: TableDisplayMode
-  report_column_mode: ReportColumnMode
+  table_display_mode?: TableDisplayMode
+  report_column_mode?: ReportColumnMode
+  mobile_navigation_mode?: MobileNavigationMode
+  mobile_dock_config?: MobileDockConfig
 }
 
 export interface User extends UserPreferences {
   id: number
   username: string
   role: Role
+  table_display_mode: TableDisplayMode
+  report_column_mode: ReportColumnMode
+  mobile_navigation_mode: MobileNavigationMode
+  mobile_dock_config: MobileDockConfig
   created_at?: string
   updated_at?: string
 }

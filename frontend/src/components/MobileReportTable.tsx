@@ -227,6 +227,7 @@ export default function MobileReportTable({
           columns={fixedFullColumns}
           dataSource={filteredRows}
           rowKey={rowKey}
+          reportGrid
           sticky
           summary={fullSummary}
           scroll={{ x: Math.max(visibleColumns.length * 112, 720) }}

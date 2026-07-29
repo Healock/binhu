@@ -5,6 +5,10 @@ from datetime import datetime, timedelta
 from fastapi import Request, HTTPException, status, Depends
 from database import db_manager
 from config import settings
+from services.mobile_navigation import (
+    normalize_mobile_dock_config,
+    normalize_mobile_navigation_mode,
+)
 
 
 async def get_current_user(request: Request) -> dict:
@@ -19,7 +23,8 @@ async def get_current_user(request: Request) -> dict:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT u.id, u.username, u.role, "
-                "u.table_display_mode, u.report_column_mode "
+                "u.table_display_mode, u.report_column_mode, "
+                "u.mobile_navigation_mode, u.mobile_dock_config "
                 "FROM _sessions s JOIN _users u ON s.user_id = u.id "
                 "WHERE s.session_id = %s AND s.expires_at > NOW()",
                 (session_id,),
@@ -33,6 +38,13 @@ async def get_current_user(request: Request) -> dict:
                 "role": row[2],
                 "table_display_mode": row[3] or "table",
                 "report_column_mode": row[4] or "three",
+                "mobile_navigation_mode": normalize_mobile_navigation_mode(
+                    row[5],
+                ),
+                "mobile_dock_config": normalize_mobile_dock_config(
+                    row[6],
+                    str(row[2]),
+                ),
             }
     finally:
         pool.release(conn)
