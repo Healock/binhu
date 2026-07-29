@@ -292,11 +292,16 @@ export default function Dashboard() {
             </span>
           )}
         </div>
-        {isRange && (
-          <p className="border-t border-slate-100 px-5 py-2.5 text-xs text-slate-500">
-            区间模式下，“生成日报”只会生成起始日期（{startDate}）的日报。
-          </p>
-        )}
+        <div className="border-t border-slate-100 px-5 py-2.5 text-xs leading-5 text-slate-500">
+          {isRange ? (
+            <>
+              <p>区间内同一任务只计算一次，并按区间结束时的状态归类。</p>
+              <p>“生成日报”只会生成起始日期（{startDate}）的日报。</p>
+            </>
+          ) : (
+            <p>单日数据总数包含前期未完成任务和当天新增、变更的任务。</p>
+          )}
+        </div>
       </section>
 
       {!isImplemented ? (

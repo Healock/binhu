@@ -17,6 +17,24 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
     valid_results = ("近期反吴", "在吴", "离吴")
     see_base_keywords = list(valid_results)
 
+    def ledger_state_sql(self, alias: str) -> str:
+        return (
+            f"CASE WHEN {self._valid_result_sql(alias)} THEN 'completed' "
+            "ELSE 'unchecked' END"
+        )
+
+    def ledger_change_sql(self, today_alias: str, previous_alias: str) -> str:
+        return (
+            f"TRIM(IFNULL({previous_alias}.`{self.result_column}`, '')) "
+            f"<> TRIM(IFNULL({today_alias}.`{self.result_column}`, ''))"
+        )
+
+    def ledger_unable_sql(self, alias: str) -> str:
+        return "0"
+
+    def ledger_reached_bottom_sql(self, alias: str) -> str:
+        return f"CASE WHEN {self._valid_result_sql(alias)} THEN 1 ELSE 0 END"
+
     def _valid_result_sql(self, alias: str) -> str:
         values = ", ".join(f"'{value}'" for value in self.valid_results)
         return (

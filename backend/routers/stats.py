@@ -80,7 +80,7 @@ async def get_report_range_endpoint(
     column_mode: Optional[Literal["two", "three"]] = Query(None),
     user: dict = Depends(get_current_user),
 ):
-    """按时间区间聚合查看分汇总表或总汇总表（跨日 SUM + 比率重算）"""
+    """按时间区间查看汇总表（任务流水去重后重算比例）。"""
     try:
         if start_date > end_date:
             return {"exists": False, "message": "起始日期不能晚于结束日期"}
