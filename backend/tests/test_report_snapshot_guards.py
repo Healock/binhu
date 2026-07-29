@@ -92,7 +92,7 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
             normalized_sql,
         )
 
-    def test_address_correction_still_counts_as_checked(self):
+    def test_completed_address_correction_does_not_repeat_workload(self):
         connection = sqlite3.connect(":memory:")
         try:
             for table in ("today_snapshot", "previous_snapshot"):
@@ -111,12 +111,20 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
                 ("checked", "社区甲", "吕强", "旧地址", ""),
                 ("done_address", "社区甲", "吕强", "旧地址", "已登记"),
                 ("done_result", "社区甲", "吕强", "地址三", "已登记"),
+                ("done_note", "社区甲", "吕强", "地址五", "移交"),
                 ("unchanged", "社区甲", "吕强", "地址四", "已登记"),
             ]
             today_rows = [
                 ("checked", "社区甲", "吕强", "新地址", ""),
                 ("done_address", "社区甲", "吕强", "新地址", "已登记"),
                 ("done_result", "社区甲", "吕强", "地址三", "移交"),
+                (
+                    "done_note",
+                    "社区甲",
+                    "吕强",
+                    "地址五",
+                    "移交，补充说明",
+                ),
                 ("unchanged", "社区甲", "吕强", "地址四", "已登记"),
                 ("new_unchecked", "社区甲", "吕强", "", ""),
             ]
@@ -136,7 +144,7 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
             row = connection.execute(inspector_sql).fetchone()
 
             self.assertIsNotNone(row)
-            self.assertEqual(row[2:6], (4, 1, 1, 2))
+            self.assertEqual(row[2:6], (3, 1, 1, 1))
             self.assertEqual(sum(row[3:6]), row[2])
         finally:
             connection.close()

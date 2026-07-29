@@ -31,6 +31,22 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("%%无法核实%%", builder.ledger_unable_sql("task"))
         self.assertIn("%%已登记%%", builder.ledger_reached_bottom_sql("task"))
 
+    def test_completed_task_ignores_address_and_same_category_notes(self):
+        sql = FullChainBuilder().ledger_change_sql("today", "previous")
+        normalized = " ".join(sql.split())
+
+        self.assertIn(
+            "WHEN (CASE WHEN IFNULL(previous.`核查结果`, '') "
+            "<> '' THEN 'completed'",
+            normalized,
+        )
+        self.assertIn("LIKE '%%移交%%' THEN '移交'", normalized)
+        self.assertIn(
+            "ELSE TRIM(IFNULL(previous.`现住址`, '')) "
+            "<> TRIM(IFNULL(today.`现住址`, ''))",
+            normalized,
+        )
+
     def test_model_three_has_only_unchecked_and_completed(self):
         builder = SuspectUnrevokedBuilder()
         self.assertIn("'completed'", builder.ledger_state_sql("task"))

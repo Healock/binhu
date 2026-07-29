@@ -15,6 +15,16 @@ class BaseReportBuilder:
     inspector_column: str = "核查人"
     see_base_keywords: list[str] = []
     result_column: str = "核查结果"
+    result_category_keywords = (
+        "无法核实",
+        "移交",
+        "已登记",
+        "无需登记",
+        "通勤",
+        "离苏",
+        "常口",
+        "身份错误",
+    )
 
     INSPECTOR_COLS = """
         社区 VARCHAR(100) NOT NULL,
@@ -50,11 +60,39 @@ class BaseReportBuilder:
         )
 
     def ledger_change_sql(self, today_alias: str, previous_alias: str) -> str:
+        previous_state = self.ledger_state_sql(previous_alias)
+        today_state = self.ledger_state_sql(today_alias)
+        previous_result = (
+            f"TRIM(IFNULL({previous_alias}.`{self.result_column}`, ''))"
+        )
+        today_result = (
+            f"TRIM(IFNULL({today_alias}.`{self.result_column}`, ''))"
+        )
+        previous_address = (
+            f"TRIM(IFNULL({previous_alias}.`现住址`, ''))"
+        )
+        today_address = f"TRIM(IFNULL({today_alias}.`现住址`, ''))"
         return (
-            f"IFNULL({previous_alias}.`现住址`, '') "
-            f"<> IFNULL({today_alias}.`现住址`, '') "
-            f"OR IFNULL({previous_alias}.`{self.result_column}`, '') "
-            f"<> IFNULL({today_alias}.`{self.result_column}`, '')"
+            "CASE "
+            f"WHEN ({previous_state}) = 'completed' "
+            f"AND ({today_state}) = 'completed' "
+            f"THEN ({self.ledger_result_category_sql(previous_alias)}) "
+            f"<> ({self.ledger_result_category_sql(today_alias)}) "
+            f"ELSE {previous_address} <> {today_address} "
+            f"OR {previous_result} <> {today_result} "
+            "END"
+        )
+
+    def ledger_result_category_sql(self, alias: str) -> str:
+        """把核查结果归为业务类别，忽略同类别中的备注文字变化。"""
+        result = f"TRIM(IFNULL({alias}.`{self.result_column}`, ''))"
+        category_cases = " ".join(
+            f"WHEN {result} LIKE '%%{keyword}%%' THEN '{keyword}'"
+            for keyword in self.result_category_keywords
+        )
+        return (
+            f"CASE WHEN {result} = '' THEN '' "
+            f"{category_cases} ELSE {result} END"
         )
 
     def ledger_unable_sql(self, alias: str) -> str:
@@ -150,12 +188,11 @@ class BaseReportBuilder:
 
         if prev:
             join_clause = f"LEFT JOIN {prev} prev ON t._row_key = prev._row_key"
-            # 只统计有变更的数据：新增 或 现住址变更 或 核查结果变更
-            change_filter = """(
-                prev._row_key IS NULL
-                OR IFNULL(prev.现住址, '') <> IFNULL(t.现住址, '')
-                OR IFNULL(prev.{rc}, '') <> IFNULL(t.{rc}, '')
-            )""".format(rc=rc)
+            # 已完成任务只补充地址或同类别备注时不重复计算工作量。
+            change_filter = (
+                "(prev._row_key IS NULL OR "
+                f"({self.ledger_change_sql('t', 'prev')}))"
+            )
             # 只用前一天快照判断“今天是否发生变化”；一旦进入当天工作量，
             # 必须按今天的最终状态归类。否则地址从一个非空值改成另一个
             # 非空值时会进入数据总数，却不会进入任何状态列。
