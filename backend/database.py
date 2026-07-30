@@ -159,7 +159,8 @@ class DatabaseManager:
                     "INSERT IGNORE INTO _system_config "
                     "(config_key, config_value) VALUES "
                     "('online_summary_positions', '[\"组长\", \"组员\"]'), "
-                    "('visit_summary_positions', '[\"组长\", \"组员\"]')"
+                    "('visit_summary_positions', '[\"组长\", \"组员\"]'), "
+                    "('weekend_duty_positions', '[\"组长\", \"组员\"]')"
                 )
                 await cur.execute(
                     "SELECT config_value FROM _system_config "

@@ -234,6 +234,7 @@ export type MobileNavigationItemId =
   | 'online_summary'
   | 'online_query'
   | 'visit_summary'
+  | 'data_upload'
   | 'grid_members'
   | 'communities'
   | 'users'

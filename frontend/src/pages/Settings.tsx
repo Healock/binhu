@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react'
 import type { SpreadsheetCreate, OAuthConfig } from '../types'
 import { useSpreadsheets } from '../hooks/useSpreadsheets'
-import { saveOAuth, testOAuth, getAuthStatus, getSystemConfig, updateSystemConfig, getReportTypes } from '../api/client'
+import { saveOAuth, testOAuth, getAuthStatus } from '../api/client'
 
 export default function Settings() {
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <SpreadsheetSection />
-      <SummaryConfigSection />
       <OAuthSection />
     </div>
   )
@@ -95,62 +94,6 @@ function SpreadsheetSection() {
           ))}
         </ul>
       )}
-    </div>
-  )
-}
-
-// ---- OAuth 设置 ----
-function SummaryConfigSection() {
-  const [allTypes, setAllTypes] = useState<string[]>([])
-  const [selected, setSelected] = useState<string[]>([])
-  const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState('')
-
-  useEffect(() => {
-    Promise.all([getReportTypes(), getSystemConfig()]).then(([types, config]) => {
-      // 只取已实现的分表类型（排除总汇总表）
-      const subTypes = types.implemented.filter((t: string) => t !== '总汇总表')
-      setAllTypes(subTypes)
-      try {
-        const saved = JSON.parse(config.summary_types || '[]')
-        setSelected(saved.length > 0 ? saved : subTypes)
-      } catch {
-        setSelected(subTypes)
-      }
-    }).catch(() => {})
-  }, [])
-
-  const handleToggle = (type: string) => {
-    setSelected(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type])
-  }
-
-  const handleSave = async () => {
-    setSaving(true); setMsg('')
-    try {
-      await updateSystemConfig({ summary_types: JSON.stringify(selected) })
-      setMsg('保存成功')
-    } catch (e: any) {
-      setMsg(e?.response?.data?.detail || '保存失败')
-    } finally { setSaving(false) }
-  }
-
-  return (
-    <div className="bg-white rounded-lg shadow p-5">
-      <h2 className="text-base font-semibold text-gray-800 mb-2">总汇总表配置</h2>
-      <p className="text-xs text-gray-400 mb-4">选择哪些分表类型参与总汇总表的数据合并</p>
-      <div className="flex flex-wrap gap-3 mb-4">
-        {allTypes.map((t) => (
-          <label key={t} className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={selected.includes(t)} onChange={() => handleToggle(t)} className="rounded" />
-            <span className="text-sm text-gray-700">{t}</span>
-          </label>
-        ))}
-      </div>
-      <button onClick={handleSave} disabled={saving || selected.length === 0}
-        className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-        {saving ? '保存中...' : '保存配置'}
-      </button>
-      {msg && <span className={`text-sm ml-3 ${msg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{msg}</span>}
     </div>
   )
 }

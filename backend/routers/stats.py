@@ -1,10 +1,14 @@
 """日报 API - 生成和查看分汇总表 + 总汇总表"""
 
+import json
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
-from deps import get_current_user
+from database import get_db
+from deps import get_current_user, require_admin
+from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
@@ -25,6 +29,48 @@ REPORT_TYPES = ["全链条", "出租房屋核查", "寄递业", "疑似未注销
 IMPLEMENTED_SUBTYPES = [t for t in IMPLEMENTED_TYPES] + ["总汇总表"]
 
 
+class SummaryConfigUpdate(BaseModel):
+    types: list[str] = Field(min_length=1)
+
+
+def _normalize_summary_types(raw_types: list[str]) -> list[str]:
+    selected: list[str] = []
+    for raw_type in raw_types:
+        parser_type = str(raw_type).strip()
+        if parser_type not in IMPLEMENTED_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"“{parser_type}”不支持生成分汇总表",
+            )
+        if parser_type not in selected:
+            selected.append(parser_type)
+    if not selected:
+        raise HTTPException(status_code=400, detail="至少选择一种分汇总表")
+    return selected
+
+
+async def _read_summary_types(cur) -> list[str]:
+    await cur.execute(
+        "SELECT config_value FROM _system_config "
+        "WHERE config_key='summary_types'"
+    )
+    row = await cur.fetchone()
+    if not row or not row[0]:
+        return list(IMPLEMENTED_TYPES)
+    try:
+        value = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return list(IMPLEMENTED_TYPES)
+    if not isinstance(value, list):
+        return list(IMPLEMENTED_TYPES)
+    valid = [
+        parser_type
+        for parser_type in IMPLEMENTED_TYPES
+        if parser_type in value
+    ]
+    return valid or list(IMPLEMENTED_TYPES)
+
+
 def _column_mode(
     requested_mode: Optional[Literal["two", "three"]],
     user: dict,
@@ -38,6 +84,53 @@ def _column_mode(
 async def get_types():
     """获取分汇总表类型列表"""
     return {"data": REPORT_TYPES, "implemented": IMPLEMENTED_SUBTYPES}
+
+
+@router.get("/summary-config")
+async def get_summary_config(
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    """读取总汇总表包含的分表类型，管理员和超级管理员可用。"""
+    del user
+    async with conn.cursor() as cur:
+        selected = await _read_summary_types(cur)
+    return {
+        "available_types": list(IMPLEMENTED_TYPES),
+        "selected_types": selected,
+    }
+
+
+@router.put("/summary-config")
+async def update_summary_config(
+    data: SummaryConfigUpdate,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    """保存总汇总表包含的分表类型。"""
+    selected = _normalize_summary_types(data.types)
+    serialized = json.dumps(selected, ensure_ascii=False)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO _system_config (config_key, config_value) "
+            "VALUES ('summary_types', %s) "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (serialized,),
+        )
+    await record_admin_audit(
+        user,
+        "report.summary_config.update",
+        target_type="system_config",
+        target_name="summary_types",
+        detail={"types": selected},
+        **request_audit_fields(request),
+    )
+    return {
+        "available_types": list(IMPLEMENTED_TYPES),
+        "selected_types": selected,
+        "message": "总汇总表配置已保存",
+    }
 
 
 @router.get("/overview")

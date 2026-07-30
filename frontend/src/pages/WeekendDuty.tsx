@@ -29,7 +29,7 @@ import {
   Tag,
 } from 'antd'
 import dayjs from 'dayjs'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getWeekendDuty,
   saveWeekendDuty,
@@ -50,12 +50,16 @@ function DutyMemberCard({
   member,
   selected,
   editable,
+  draggable,
+  selectable,
   onToggle,
   onAssign,
 }: {
   member: WeekendDutyMember
   selected: boolean
   editable: boolean
+  draggable: boolean
+  selectable: boolean
   onToggle: () => void
   onAssign: (day: WeekendDutyDay) => void
 }) {
@@ -67,11 +71,13 @@ function DutyMemberCard({
     isDragging,
   } = useDraggable({
     id: `member:${member.id}`,
-    disabled: !editable || member.exempt,
+    disabled: !editable || member.exempt || !draggable,
   })
   return (
     <div
       ref={setNodeRef}
+      {...(draggable ? attributes : {})}
+      {...(draggable ? listeners : {})}
       style={{
         transform: transform
           ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
@@ -82,14 +88,19 @@ function DutyMemberCard({
         'rounded-xl border bg-white p-3 shadow-sm transition-colors',
         selected ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200',
         member.exempt ? 'bg-slate-50 opacity-75' : '',
+        draggable && editable && !member.exempt
+          ? 'cursor-grab touch-none active:cursor-grabbing'
+          : '',
       ].join(' ')}
     >
-      <div className="flex items-start gap-2">
+      <div>
         <button
           type="button"
-          className="min-w-0 flex-1 text-left"
+          className="w-full min-w-0 text-left"
           disabled={!editable || member.exempt}
-          onClick={onToggle}
+          tabIndex={selectable ? 0 : -1}
+          aria-disabled={!selectable || !editable || member.exempt}
+          onClick={selectable ? onToggle : undefined}
         >
           <span className="block truncate font-medium text-slate-800">
             {member.name}
@@ -98,18 +109,12 @@ function DutyMemberCard({
             {member.community} · {member.position}
           </span>
         </button>
-        {editable && !member.exempt && (
-          <button
-            type="button"
-            aria-label={`拖动${member.name}`}
-            className="cursor-grab rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-100 active:cursor-grabbing"
-            {...attributes}
-            {...listeners}
-          >
-            ⋮⋮
-          </button>
-        )}
       </div>
+      {draggable && editable && !member.exempt && (
+        <div className="mt-1 hidden text-[11px] text-slate-400 md:block">
+          拖动整张卡片调整分组，点击姓名可批量选择
+        </div>
+      )}
       {member.exempt ? (
         <div className="mt-2">
           <Tag>周末请假，无需排班</Tag>
@@ -121,6 +126,7 @@ function DutyMemberCard({
             type={member.assignment === 'saturday' ? 'primary' : 'default'}
             disabled={!editable || member.unavailable_days.includes('saturday')}
             onClick={() => onAssign('saturday')}
+            className="min-h-11"
           >
             周六
           </Button>
@@ -129,6 +135,7 @@ function DutyMemberCard({
             type={member.assignment === 'sunday' ? 'primary' : 'default'}
             disabled={!editable || member.unavailable_days.includes('sunday')}
             onClick={() => onAssign('sunday')}
+            className="min-h-11"
           >
             周日
           </Button>
@@ -151,6 +158,8 @@ function DutyColumn({
   members,
   selected,
   editable,
+  draggable,
+  selectable,
   onToggle,
   onAssign,
 }: {
@@ -160,6 +169,8 @@ function DutyColumn({
   members: WeekendDutyMember[]
   selected: Set<number>
   editable: boolean
+  draggable: boolean
+  selectable: boolean
   onToggle: (id: number) => void
   onAssign: (id: number, day: WeekendDutyDay) => void
 }) {
@@ -188,13 +199,17 @@ function DutyColumn({
             member={member}
             selected={selected.has(member.id)}
             editable={editable}
+            draggable={draggable}
+            selectable={selectable}
             onToggle={() => onToggle(member.id)}
             onAssign={day => onAssign(member.id, day)}
           />
         )) : (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={id === 'unassigned' ? '本周都已安排' : '可拖动人员到这里'}
+            description={id === 'unassigned'
+              ? '本周都已安排'
+              : draggable ? '可拖动人员到这里' : '使用卡片按钮安排'}
           />
         )}
       </div>
@@ -204,9 +219,20 @@ function DutyColumn({
 
 export default function WeekendDuty() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { user } = useAuth()
   const editable = user?.role === 'admin' || user?.role === 'super_admin'
-  const [weekStart, setWeekStart] = useState(mondayOf())
+  const isSuperAdmin = user?.role === 'super_admin'
+  const [isMobile, setIsMobile] = useState(() => (
+    typeof window !== 'undefined'
+    && window.matchMedia('(max-width: 767px)').matches
+  ))
+  const [weekStart, setWeekStart] = useState(() => {
+    const requestedWeek = searchParams.get('week')
+    return requestedWeek && dayjs(requestedWeek).isValid()
+      ? mondayOf(dayjs(requestedWeek))
+      : mondayOf()
+  })
   const [board, setBoard] = useState<WeekendDutyBoard | null>(null)
   const [members, setMembers] = useState<WeekendDutyMember[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -220,6 +246,21 @@ export default function WeekendDuty() {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor),
   )
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)')
+    const update = () => setIsMobile(media.matches)
+    update()
+    if (media.addEventListener) {
+      media.addEventListener('change', update)
+      return () => media.removeEventListener('change', update)
+    }
+    media.addListener(update)
+    return () => media.removeListener(update)
+  }, [])
+  useEffect(() => {
+    if (isMobile) setSelected(new Set())
+  }, [isMobile])
 
   const load = useCallback(async (targetWeek: string) => {
     setLoading(true)
@@ -338,7 +379,7 @@ export default function WeekendDuty() {
     <div className="app-page">
       <PageHeader
         title="双休日备勤"
-        description="每名组长和组员每周选择周六或周日一天在岗；请假日期优先"
+        description="为系统设置中选定的备勤岗位安排周六或周日一天在岗；请假日期优先"
         actions={(
           <Button onClick={() => navigate('/grid-members')}>
             返回人员管理
@@ -355,11 +396,24 @@ export default function WeekendDuty() {
               dayjs(weekStart).subtract(7, 'day').format('YYYY-MM-DD'),
             )}
           />
-          <DatePicker
-            picker="week"
-            allowClear={false}
-            value={dayjs(weekStart)}
-            onChange={value => value && setWeekStart(mondayOf(value))}
+          <div className="hidden md:block">
+            <DatePicker
+              picker="week"
+              allowClear={false}
+              value={dayjs(weekStart)}
+              onChange={value => value && setWeekStart(mondayOf(value))}
+            />
+          </div>
+          <input
+            type="date"
+            value={weekStart}
+            aria-label="选择双休日所在周"
+            onChange={event => {
+              if (event.target.value) {
+                setWeekStart(mondayOf(dayjs(event.target.value)))
+              }
+            }}
+            className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 text-sm md:hidden"
           />
           <Button
             icon={<RightOutlined />}
@@ -380,6 +434,24 @@ export default function WeekendDuty() {
             {exemptCount > 0 && <Tag>请假免排 {exemptCount} 人</Tag>}
           </div>
         </div>
+        {board && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <span className="text-slate-500">当前排班岗位</span>
+            {board.positions.map(position => (
+              <Tag key={position} color="blue">{position}</Tag>
+            ))}
+            {isSuperAdmin && (
+              <Button
+                type="link"
+                size="small"
+                className="ml-auto"
+                onClick={() => navigate('/settings/system')}
+              >
+                修改岗位
+              </Button>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2">
           <Input
@@ -404,21 +476,29 @@ export default function WeekendDuty() {
               <Button
                 icon={<CalendarOutlined />}
                 onClick={copyPrevious}
+                className="hidden md:inline-flex"
               >
                 沿用上周
               </Button>
-              <Button icon={<RetweetOutlined />} onClick={swapAll}>
+              <Button
+                icon={<RetweetOutlined />}
+                onClick={swapAll}
+                className="hidden md:inline-flex"
+              >
                 周六周日对调
               </Button>
               {selected.size > 0 && (
-                <>
+                <div className="hidden flex-wrap gap-2 md:flex">
                   <Button onClick={() => assignMembers(selected, 'saturday')}>
                     选中人员排周六
                   </Button>
                   <Button onClick={() => assignMembers(selected, 'sunday')}>
                     选中人员排周日
                   </Button>
-                </>
+                  <Button onClick={() => assignMembers(selected, 'unassigned')}>
+                    移回待安排
+                  </Button>
+                </div>
               )}
               <Button
                 type="primary"
@@ -461,6 +541,8 @@ export default function WeekendDuty() {
               members={groups.unassigned}
               selected={selected}
               editable={editable}
+              draggable={!isMobile}
+              selectable={!isMobile}
               onToggle={id => setSelected(current => {
                 const next = new Set(current)
                 if (next.has(id)) next.delete(id)
@@ -476,6 +558,8 @@ export default function WeekendDuty() {
               members={groups.saturday}
               selected={selected}
               editable={editable}
+              draggable={!isMobile}
+              selectable={!isMobile}
               onToggle={id => setSelected(current => {
                 const next = new Set(current)
                 if (next.has(id)) next.delete(id)
@@ -491,6 +575,8 @@ export default function WeekendDuty() {
               members={groups.sunday}
               selected={selected}
               editable={editable}
+              draggable={!isMobile}
+              selectable={!isMobile}
               onToggle={id => setSelected(current => {
                 const next = new Set(current)
                 if (next.has(id)) next.delete(id)

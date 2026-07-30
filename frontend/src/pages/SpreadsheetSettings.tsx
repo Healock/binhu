@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Alert, Button, Checkbox, Input } from 'antd'
-import { getSpreadsheetsConfig, saveSpreadsheetsConfig, getSystemConfig, updateSystemConfig, getReportTypes } from '../api/client'
+import { Alert, Button, Input } from 'antd'
+import {
+  getSpreadsheetsConfig,
+  saveSpreadsheetsConfig,
+} from '../api/client'
 import { LoadingState, Panel } from '../components/ui'
 
 const FIXED_TYPES = [
@@ -20,28 +23,11 @@ export default function SpreadsheetSettings() {
   const [msg, setMsg] = useState('')
   const [loadError, setLoadError] = useState('')
 
-  // 总汇总表类型配置
-  const [allTypes, setAllTypes] = useState<string[]>([])
-  const [selectedTypes, setSelectedTypes] = useState<string[]>([])
-  const [savingTypes, setSavingTypes] = useState(false)
-  const [typeMsg, setTypeMsg] = useState('')
-  const [typeLoadError, setTypeLoadError] = useState('')
-
   useEffect(() => {
     getSpreadsheetsConfig()
       .then((map) => setConfigs(map))
       .catch(() => setLoadError('表格配置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
-
-    // 加载总汇总表类型配置
-    Promise.all([getSystemConfig(), getReportTypes()]).then(([config, types]) => {
-      const subTypes = types.implemented.filter((t: string) => t !== '总汇总表')
-      setAllTypes(subTypes)
-      try {
-        const saved = JSON.parse(config.summary_types || '[]')
-        setSelectedTypes(saved.length > 0 ? saved : subTypes)
-      } catch { setSelectedTypes(subTypes) }
-    }).catch(() => setTypeLoadError('汇总类型加载失败，请稍后重试'))
   }, [])
 
   const handleSave = async () => {
@@ -55,21 +41,6 @@ export default function SpreadsheetSettings() {
     } finally {
       setSaving(false)
     }
-  }
-
-  const handleToggleType = (type: string) => {
-    setSelectedTypes(prev =>
-      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
-    )
-  }
-
-  const handleSaveTypes = async () => {
-    setSavingTypes(true); setTypeMsg('')
-    try {
-      await updateSystemConfig({ summary_types: JSON.stringify(selectedTypes) })
-      setTypeMsg('保存成功')
-    } catch { setTypeMsg('保存失败') }
-    finally { setSavingTypes(false) }
   }
 
   return (
@@ -108,29 +79,6 @@ export default function SpreadsheetSettings() {
         )}
       </Panel>
 
-      <Panel
-        title="总汇总表配置"
-        description="选择哪些业务类型参与总汇总表的数据合并"
-      >
-        {typeLoadError && <Alert className="mb-4" type="error" showIcon message={typeLoadError} />}
-        <div className="mb-5 flex flex-wrap gap-4">
-          {allTypes.map((t) => (
-            <Checkbox key={t} checked={selectedTypes.includes(t)} onChange={() => handleToggleType(t)}>
-              {t}
-            </Checkbox>
-          ))}
-        </div>
-
-        <Button
-          type="primary"
-          onClick={handleSaveTypes}
-          loading={savingTypes}
-          disabled={selectedTypes.length === 0}
-        >
-          保存配置
-        </Button>
-        {typeMsg && <Alert className="mt-4" type={typeMsg.includes('成功') ? 'success' : 'error'} showIcon message={typeMsg} />}
-      </Panel>
     </div>
   )
 }

@@ -5,42 +5,28 @@ import {
   DatePicker,
   Modal,
   Select,
-  Statistic,
   Table,
   Tag,
-  Tooltip,
-  Upload,
 } from 'antd'
-import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
+import type { TableColumnsType } from 'antd'
 import {
   CalendarOutlined,
-  InboxOutlined,
   SearchOutlined,
-  UploadOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import { EmptyState, LoadingState, PageHeader, Panel } from '../components/ui'
-import { useAuth } from '../context/AuthContext'
 import {
   formatUTCTime,
   getVisitCoverage,
-  getVisitImportIssues,
   getVisitSummary,
-  uploadStarRating,
-  uploadVisitDetail,
   type VisitCoverage,
-  type VisitImportIssue,
-  type VisitImportResult,
   type VisitSummaryReport,
   type VisitSummaryCategory,
 } from '../api/client'
 import { buildVisitTableTotal } from '../utils/tableTotals'
 
-const { Dragger } = Upload
-const MAX_FILE_BYTES = 20 * 1024 * 1024
-const ISSUE_PAGE_SIZE = 50
 const EMPTY_FILTER_VALUE = '__binhu_empty_visit_summary_value__'
 const SUMMARY_RATE_COLUMNS = new Set(['星级评定率'])
 const SUMMARY_DECIMAL_COLUMNS = new Set([
@@ -57,13 +43,6 @@ const VISIT_CATEGORY_OPTIONS: Array<{
   { value: 'rental', label: '出租房' },
   { value: 'self_owned', label: '自购房' },
 ]
-
-const statusMeta = {
-  success: { color: 'success', label: '导入成功' },
-  partial: { color: 'warning', label: '部分成功' },
-  failed: { color: 'error', label: '导入失败' },
-  duplicate: { color: 'default', label: '文件已导入' },
-} as const
 
 function DateRange({ start, end }: { start: string | null; end: string | null }) {
   if (!start || !end) return <span className="text-slate-400">暂无数据</span>
@@ -194,25 +173,10 @@ function SummaryCard({
 }
 
 export default function VisitSummary() {
-  const { user } = useAuth()
-  const canUpload = user?.role === 'super_admin' || user?.role === 'admin'
   const [coverage, setCoverage] = useState<VisitCoverage | null>(null)
   const [coverageLoading, setCoverageLoading] = useState(false)
   const [coverageError, setCoverageError] = useState('')
   const [missingOpen, setMissingOpen] = useState(false)
-  const [fileList, setFileList] = useState<UploadFile[]>([])
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [importError, setImportError] = useState('')
-  const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])
-  const [selectedRatingFile, setSelectedRatingFile] = useState<File | null>(null)
-  const [ratingImporting, setRatingImporting] = useState(false)
-  const [ratingImportError, setRatingImportError] = useState('')
-  const [result, setResult] = useState<VisitImportResult | null>(null)
-  const [issues, setIssues] = useState<VisitImportIssue[]>([])
-  const [issueTotal, setIssueTotal] = useState(0)
-  const [issuePage, setIssuePage] = useState(1)
-  const [issueLoading, setIssueLoading] = useState(false)
   const [summaryRange, setSummaryRange] = useState<[string, string] | null>(null)
   const [summaryCategory, setSummaryCategory] = useState<VisitSummaryCategory>('rental')
   const [shownSummaryRange, setShownSummaryRange] = useState<[string, string] | null>(null)
@@ -277,265 +241,6 @@ export default function VisitSummary() {
     loadCoverage()
   }, [loadCoverage])
 
-  const beforeUpload: UploadProps['beforeUpload'] = file => {
-    setImportError('')
-    setResult(null)
-    setSelectedFile(null)
-    setFileList([])
-    setIssues([])
-    setIssueTotal(0)
-    if (!file.name.toLowerCase().endsWith('.xlsx')) {
-      setImportError('只支持 .xlsx 文件')
-      return Upload.LIST_IGNORE
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      setImportError('XLSX 文件不能超过 20MB')
-      return Upload.LIST_IGNORE
-    }
-    setSelectedFile(file)
-    setFileList([{
-      uid: file.uid,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      status: 'done',
-      originFileObj: file,
-    }])
-    return false
-  }
-
-  const handleImport = async () => {
-    if (!selectedFile) return
-    setImporting(true)
-    setImportError('')
-    try {
-      const nextResult = await uploadVisitDetail(selectedFile)
-      setResult(nextResult)
-      setCoverage(nextResult.coverage)
-      setIssues(nextResult.issues.data)
-      setIssueTotal(nextResult.issues.total)
-      setIssuePage(1)
-      if (shownSummaryRange) {
-        const previouslyCoveredAllDates = (
-          shownSummaryRange[0] === coverage?.start_date
-          && shownSummaryRange[1] === coverage?.end_date
-        )
-        const refreshedRange: [string, string] = previouslyCoveredAllDates
-          && nextResult.coverage.start_date
-          && nextResult.coverage.end_date
-          ? [
-              nextResult.coverage.start_date,
-              nextResult.coverage.end_date,
-            ]
-          : shownSummaryRange
-        setSummaryRange(refreshedRange)
-        await loadSummary(
-          refreshedRange,
-          shownSummaryCategory || summaryCategory,
-        )
-      }
-    } catch (error: any) {
-      setImportError(
-        error?.response?.data?.detail
-          || (error?.code === 'ECONNABORTED' ? '导入处理超时，请稍后确认数据范围' : '上传失败，请稍后重试'),
-      )
-    } finally {
-      setImporting(false)
-    }
-  }
-
-  const beforeRatingUpload: UploadProps['beforeUpload'] = file => {
-    setRatingImportError('')
-    setResult(null)
-    setSelectedRatingFile(null)
-    setRatingFileList([])
-    setIssues([])
-    setIssueTotal(0)
-    if (!file.name.toLowerCase().endsWith('.xlsx')) {
-      setRatingImportError('只支持 .xlsx 文件')
-      return Upload.LIST_IGNORE
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      setRatingImportError('XLSX 文件不能超过 20MB')
-      return Upload.LIST_IGNORE
-    }
-    setSelectedRatingFile(file)
-    setRatingFileList([{
-      uid: file.uid,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      status: 'done',
-      originFileObj: file,
-    }])
-    return false
-  }
-
-  const handleRatingImport = async () => {
-    if (!selectedRatingFile) return
-    setRatingImporting(true)
-    setRatingImportError('')
-    try {
-      const nextResult = await uploadStarRating(selectedRatingFile)
-      setResult(nextResult)
-      setCoverage(nextResult.coverage)
-      setIssues(nextResult.issues.data)
-      setIssueTotal(nextResult.issues.total)
-      setIssuePage(1)
-      if (shownSummaryRange) {
-        const previouslyCoveredAllDates = (
-          shownSummaryRange[0] === coverage?.start_date
-          && shownSummaryRange[1] === coverage?.end_date
-        )
-        const refreshedRange: [string, string] = previouslyCoveredAllDates
-          && nextResult.coverage.start_date
-          && nextResult.coverage.end_date
-          ? [
-              nextResult.coverage.start_date,
-              nextResult.coverage.end_date,
-            ]
-          : shownSummaryRange
-        setSummaryRange(refreshedRange)
-        await loadSummary(
-          refreshedRange,
-          shownSummaryCategory || summaryCategory,
-        )
-      }
-    } catch (error: any) {
-      setRatingImportError(
-        error?.response?.data?.detail
-          || (error?.code === 'ECONNABORTED' ? '导入处理超时，请稍后刷新查看' : '上传失败，请稍后重试'),
-      )
-    } finally {
-      setRatingImporting(false)
-    }
-  }
-
-  const loadIssuePage = async (page: number) => {
-    if (!result || (result.status === 'duplicate' && issueTotal === 0)) return
-    setIssueLoading(true)
-    try {
-      const response = await getVisitImportIssues(result.batch_id, page, ISSUE_PAGE_SIZE)
-      setIssues(response.data)
-      setIssueTotal(response.total)
-      setIssuePage(page)
-    } catch {
-      setImportError('导入问题明细读取失败，请稍后重试')
-    } finally {
-      setIssueLoading(false)
-    }
-  }
-
-  const detailIssueColumns: TableColumnsType<VisitImportIssue> = [
-    {
-      title: '类型',
-      dataIndex: 'severity',
-      width: 90,
-      render: value => (
-        <Tag color={value === 'error' ? 'error' : 'warning'}>
-          {value === 'error' ? '错误' : '提醒'}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Excel 行',
-      dataIndex: 'row_number',
-      width: 100,
-      render: value => value || '-',
-    },
-    {
-      title: '原因',
-      dataIndex: 'message',
-      width: 300,
-      render: value => <span className="text-slate-700">{value}</span>,
-    },
-    {
-      title: '社区',
-      render: (_, item) => item.row_preview['村社区'] || '-',
-      width: 130,
-    },
-    {
-      title: '操作人',
-      render: (_, item) => item.row_preview['操作人'] || '-',
-      width: 110,
-    },
-    {
-      title: '入户时间',
-      render: (_, item) => item.row_preview['入户时间'] || '-',
-      width: 170,
-    },
-    {
-      title: '地址',
-      width: 280,
-      ellipsis: { showTitle: false },
-      render: (_, item) => (
-        <Tooltip title={item.row_preview['地址'] || '-'}>
-          <span>{item.row_preview['地址'] || '-'}</span>
-        </Tooltip>
-      ),
-    },
-    {
-      title: '操作人账号',
-      render: (_, item) => item.row_preview['操作人账号'] || '-',
-      width: 180,
-    },
-  ]
-
-  const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
-    {
-      title: '类型',
-      dataIndex: 'severity',
-      width: 90,
-      render: value => (
-        <Tag color={value === 'error' ? 'error' : 'warning'}>
-          {value === 'error' ? '错误' : '提醒'}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Excel 行',
-      dataIndex: 'row_number',
-      width: 100,
-      render: value => value || '-',
-    },
-    {
-      title: '原因',
-      dataIndex: 'message',
-      width: 340,
-      render: value => <span className="text-slate-700">{value}</span>,
-    },
-    {
-      title: '社区',
-      width: 130,
-      render: (_, item) => item.row_preview['所属社区'] || '-',
-    },
-    {
-      title: '星级',
-      width: 130,
-      render: (_, item) => item.row_preview['星级'] || '-',
-    },
-    {
-      title: '得分',
-      width: 100,
-      render: (_, item) => item.row_preview['得分'] || '-',
-    },
-    {
-      title: '采集时间',
-      width: 180,
-      render: (_, item) => item.row_preview['采集时间'] || '-',
-    },
-    {
-      title: '地址',
-      width: 300,
-      ellipsis: { showTitle: false },
-      render: (_, item) => (
-        <Tooltip title={item.row_preview['地址'] || '-'}>
-          <span>{item.row_preview['地址'] || '-'}</span>
-        </Tooltip>
-      ),
-    },
-  ]
-
   const shownMissingDates = coverage?.missing_dates.slice(0, 10) || []
   const inspectorRows = (summaryReport?.inspector.data || []) as VisitSummaryRow[]
   const communityRows = (summaryReport?.community.data || []) as VisitSummaryRow[]
@@ -555,7 +260,7 @@ export default function VisitSummary() {
     <div className="app-page min-w-0">
       <PageHeader
         title="走访汇总"
-        description="分别上传走访明细和星级评定，系统按地址和前后 24 小时自动关联"
+        description="按日期查看走访、信息变动和星级评定结果"
       />
 
       <Panel
@@ -767,14 +472,6 @@ export default function VisitSummary() {
       {summaryError && (
         <Alert type="error" showIcon message={summaryError} />
       )}
-      {summaryReport && !summaryReport.attendance.complete && (
-        <Alert
-          type="warning"
-          showIcon
-          message="所选区间还有双休日未排班"
-          description={`请先补齐这些周的排班：${summaryReport.attendance.missing_week_starts.join('、')}。补齐前“人均日走访户数”和“人均日变动数”不显示。`}
-        />
-      )}
       {summaryReport?.attendance.legacy_history_incomplete && (
         <Alert
           type="info"
@@ -895,175 +592,6 @@ export default function VisitSummary() {
           </div>
         </>
       ) : null}
-
-      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
-        <Panel
-          title="上传走访明细"
-          description="先导入走访明细；重叠日期会自动去重"
-        >
-          {!canUpload ? (
-            <Alert
-              type="info"
-              showIcon
-              message="只有超级管理员和管理员可以上传"
-              description="你仍然可以查看上方数据库日期范围。"
-            />
-          ) : (
-            <>
-              <Dragger
-                accept=".xlsx"
-                maxCount={1}
-                fileList={fileList}
-                beforeUpload={beforeUpload}
-                onRemove={() => {
-                  setSelectedFile(null)
-                  setFileList([])
-                  setResult(null)
-                  setIssues([])
-                  setIssueTotal(0)
-                }}
-                disabled={importing || ratingImporting}
-              >
-                <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                <p className="ant-upload-text">拖入走访明细，或点击选择 XLSX</p>
-                <p className="ant-upload-hint">同一网格员同日同地址取时间最晚的一条，不同网格员分别保留。</p>
-              </Dragger>
-              <div className="mt-4 flex justify-end">
-                <Button
-                  type="primary"
-                  icon={<UploadOutlined />}
-                  loading={importing}
-                  disabled={!selectedFile || ratingImporting}
-                  onClick={handleImport}
-                >
-                  {importing ? '正在校验并入库' : '导入走访明细'}
-                </Button>
-              </div>
-            </>
-          )}
-          {importError && <Alert className="mt-4" type="error" showIcon message={importError} />}
-        </Panel>
-
-        <Panel
-          title="上传星级评定"
-          description="按地址匹配采集时间前后 24 小时内最接近的走访"
-        >
-          {!canUpload ? (
-            <Alert
-              type="info"
-              showIcon
-              message="只有超级管理员和管理员可以上传"
-              description="你仍然可以查看上方评定数量。"
-            />
-          ) : (
-            <>
-              <Dragger
-                accept=".xlsx"
-                maxCount={1}
-                fileList={ratingFileList}
-                beforeUpload={beforeRatingUpload}
-                onRemove={() => {
-                  setSelectedRatingFile(null)
-                  setRatingFileList([])
-                  setResult(null)
-                  setIssues([])
-                  setIssueTotal(0)
-                }}
-                disabled={ratingImporting || importing}
-              >
-                <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                <p className="ant-upload-text">拖入星级评定，或点击选择 XLSX</p>
-                <p className="ant-upload-hint">星级评定必须匹配已有走访；无法判断时不会强行关联。</p>
-              </Dragger>
-              <div className="mt-4 flex justify-end">
-                <Button
-                  type="primary"
-                  icon={<UploadOutlined />}
-                  loading={ratingImporting}
-                  disabled={!selectedRatingFile || importing}
-                  onClick={handleRatingImport}
-                >
-                  {ratingImporting ? '正在匹配并关联' : '导入星级评定'}
-                </Button>
-              </div>
-            </>
-          )}
-          {ratingImportError && <Alert className="mt-4" type="error" showIcon message={ratingImportError} />}
-        </Panel>
-      </div>
-
-      {result && (
-        <Panel
-          title="本次导入结果"
-          extra={<Tag color={statusMeta[result.status].color}>{statusMeta[result.status].label}</Tag>}
-        >
-          <Alert
-            className="mb-4"
-            type={result.status === 'failed' ? 'error' : result.status === 'partial' ? 'warning' : 'success'}
-            showIcon
-            message={result.message}
-            description={
-              <span>
-                文件范围：<DateRange start={result.file_start_date} end={result.file_end_date} />
-                {result.overlap_start_date && (
-                  <>；与旧数据重叠：<DateRange start={result.overlap_start_date} end={result.overlap_end_date} /></>
-                )}
-                ；导入后数据库：<DateRange start={result.coverage.start_date} end={result.coverage.end_date} />
-              </span>
-            }
-          />
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
-            {(result.import_type === 'rating'
-              ? [
-                ['新增评定', result.inserted_rows],
-                ['更新评定', result.updated_rows],
-                ['重复未变', result.unchanged_rows],
-                ['无法匹配', result.unmatched_rows || 0],
-                ['匹配有歧义', result.ambiguous_rows || 0],
-                ['未采用', result.ignored_rows],
-                ['错误/提醒', result.error_count + result.warning_count],
-              ]
-              : [
-                ['新增', result.inserted_rows],
-                ['更新', result.updated_rows],
-                ['重复未变', result.unchanged_rows],
-                ['忽略', result.ignored_rows],
-                ['错误', result.error_count],
-                ['提醒', result.warning_count],
-              ]).map(([label, value]) => (
-              <div key={String(label)} className="rounded-lg border border-slate-200 p-4">
-                <Statistic title={label} value={value} suffix="条" />
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
-
-      {result && issueTotal > 0 && (
-        <Panel
-          title={`错误和提醒（${issueTotal} 条）`}
-          description={result.import_type === 'rating'
-            ? '无法匹配或存在歧义的星级评定不会强行写入走访记录'
-            : '身份证号已经遮盖；错误行未入库，提醒行不影响有效数据入库'}
-          padded={false}
-        >
-          <AppTable<VisitImportIssue>
-            columns={result.import_type === 'rating' ? ratingIssueColumns : detailIssueColumns}
-            dataSource={issues}
-            rowKey="id"
-            loading={issueLoading}
-            pagination={{
-              current: issuePage,
-              pageSize: ISSUE_PAGE_SIZE,
-              total: issueTotal,
-              showSizeChanger: false,
-              showTotal: total => `共 ${total} 条`,
-              onChange: loadIssuePage,
-            }}
-            scroll={{ x: 1360 }}
-          />
-        </Panel>
-      )}
 
       <Modal
         open={missingOpen}

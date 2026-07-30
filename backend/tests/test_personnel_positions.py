@@ -2,6 +2,8 @@ import unittest
 
 from services.personnel_positions import (
     DEFAULT_SUMMARY_POSITIONS,
+    POSITION_CONFIG_KEYS,
+    WEEKEND_DUTY_POSITION_CONFIG_KEY,
     filter_person_rows,
     normalize_position,
     parse_position_config,
@@ -15,6 +17,10 @@ class PersonnelPositionTests(unittest.TestCase):
         self.assertEqual(
             parse_position_config(None),
             list(DEFAULT_SUMMARY_POSITIONS),
+        )
+        self.assertIn(
+            WEEKEND_DUTY_POSITION_CONFIG_KEY,
+            POSITION_CONFIG_KEYS,
         )
 
     def test_configuration_rejects_empty_or_unknown_positions(self):

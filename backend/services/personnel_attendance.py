@@ -7,7 +7,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Iterable
 
-WEEKEND_DUTY_POSITIONS = {"组长", "组员"}
+from services.personnel_positions import (
+    DEFAULT_SUMMARY_POSITIONS,
+    WEEKEND_DUTY_POSITION_CONFIG_KEY,
+    get_configured_positions,
+)
+
+DEFAULT_WEEKEND_DUTY_POSITIONS = set(DEFAULT_SUMMARY_POSITIONS)
 
 
 def normalize_week_start(value: date) -> date:
@@ -96,13 +102,19 @@ async def list_attendance_periods(
 async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
     week_start = normalize_week_start(requested_date)
     saturday, sunday = weekend_dates(week_start)
+    duty_positions = await get_configured_positions(
+        cur,
+        WEEKEND_DUTY_POSITION_CONFIG_KEY,
+    )
+    placeholders = ", ".join(["%s"] * len(duty_positions))
     await cur.execute(
-        """
+        f"""
         SELECT id, name, community, position
         FROM _grid_members
-        WHERE position IN ('组长', '组员')
+        WHERE position IN ({placeholders})
         ORDER BY community, position, name
-        """
+        """,
+        duty_positions,
     )
     members = [
         {
@@ -191,6 +203,7 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
         "week_start": week_start.isoformat(),
         "saturday": saturday.isoformat(),
         "sunday": sunday.isoformat(),
+        "positions": duty_positions,
         "members": result_members,
         "complete": unassigned_count == 0,
         "unassigned_count": unassigned_count,
@@ -307,10 +320,14 @@ async def get_attendance_context(
         member_ids=[member["id"] for member in members.values()],
     )
 
+    configured_duty_positions = set(await get_configured_positions(
+        cur,
+        WEEKEND_DUTY_POSITION_CONFIG_KEY,
+    ))
     duty_members = [
         member
         for member in members.values()
-        if member["position"] in WEEKEND_DUTY_POSITIONS
+        if member["position"] in configured_duty_positions
     ]
     week_starts = sorted({
         normalize_week_start(target_date)
@@ -369,6 +386,7 @@ async def get_attendance_context(
         "members": members,
         "periods": periods,
         "duties": duties,
+        "weekend_duty_positions": configured_duty_positions,
         "missing_week_starts": missing_weeks,
         "history_started_on": history_started_on,
         "legacy_history_incomplete": legacy_history_incomplete,
@@ -387,7 +405,11 @@ def is_member_on_duty(
         return False
     if target_date.weekday() < 5:
         return True
-    if member["position"] not in WEEKEND_DUTY_POSITIONS:
+    duty_positions = context.get(
+        "weekend_duty_positions",
+        DEFAULT_WEEKEND_DUTY_POSITIONS,
+    )
+    if member["position"] not in duty_positions:
         return False
     week_start = normalize_week_start(target_date)
     return context["duties"].get((member["id"], week_start)) == target_date

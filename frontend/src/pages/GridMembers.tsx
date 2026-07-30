@@ -34,6 +34,7 @@ import {
   createGridMember,
   deleteGridMember,
   exportGridMembersUrl,
+  getAttendanceScheduleStatus,
   getGridCommunities,
   getAttendanceHistory,
   listGridMembers,
@@ -42,12 +43,13 @@ import {
   type GridCommunity,
   type GridMember,
   type AttendanceHistoryItem,
+  type AttendanceScheduleStatus,
 } from '../api/client'
 import {
   PERSONNEL_POSITIONS,
   type PersonnelPosition,
 } from '../constants/personnel'
-import { PageHeader } from '../components/ui'
+import { PageHeader, Panel } from '../components/ui'
 
 export default function GridMembers() {
   const navigate = useNavigate()
@@ -69,6 +71,13 @@ export default function GridMembers() {
   const [showAddForm, setShowAddForm] = useState(false)
   const [msg, setMsg] = useState('')
   const [loadError, setLoadError] = useState('')
+  const [scheduleRange, setScheduleRange] = useState<[string, string]>(() => [
+    dayjs().startOf('month').format('YYYY-MM-DD'),
+    dayjs().endOf('month').format('YYYY-MM-DD'),
+  ])
+  const [scheduleStatus, setScheduleStatus] = useState<AttendanceScheduleStatus | null>(null)
+  const [scheduleLoading, setScheduleLoading] = useState(false)
+  const [scheduleError, setScheduleError] = useState('')
   const pageSize = 100
 
   const fetch = useCallback(async () => {
@@ -101,6 +110,23 @@ export default function GridMembers() {
 
   useEffect(() => { fetch() }, [fetch])
   useEffect(() => { fetchCommunities() }, [fetchCommunities])
+  const checkSchedule = useCallback(async (
+    range: [string, string] = scheduleRange,
+  ) => {
+    setScheduleLoading(true)
+    setScheduleError('')
+    try {
+      setScheduleStatus(await getAttendanceScheduleStatus(range[0], range[1]))
+    } catch (error: any) {
+      setScheduleStatus(null)
+      setScheduleError(
+        error?.response?.data?.detail || '排班状态读取失败，请稍后重试',
+      )
+    } finally {
+      setScheduleLoading(false)
+    }
+  }, [scheduleRange])
+  useEffect(() => { void checkSchedule() }, [checkSchedule])
   useEffect(() => {
     if (!historyOpen) return
     setHistoryLoading(true)
@@ -269,6 +295,91 @@ export default function GridMembers() {
           </>
         )}
       />
+
+      <Panel
+        title="双休日排班检查"
+        description="选择一个日期区间，集中查看哪些周还没有完成组长和组员排班"
+      >
+        <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
+            <div className="flex w-full items-center gap-1.5 md:hidden">
+              <input
+                type="date"
+                value={scheduleRange[0]}
+                onChange={(event) => {
+                  const start = event.target.value
+                  if (!start) return
+                  setScheduleRange([
+                    start,
+                    start > scheduleRange[1] ? start : scheduleRange[1],
+                  ])
+                }}
+                className="min-h-11 min-w-0 flex-1 rounded border border-gray-300 px-2 text-sm"
+              />
+              <span className="text-xs text-gray-400">至</span>
+              <input
+                type="date"
+                value={scheduleRange[1]}
+                onChange={(event) => {
+                  const end = event.target.value
+                  if (!end) return
+                  setScheduleRange([
+                    end < scheduleRange[0] ? end : scheduleRange[0],
+                    end,
+                  ])
+                }}
+                className="min-h-11 min-w-0 flex-1 rounded border border-gray-300 px-2 text-sm"
+              />
+            </div>
+            <DatePicker.RangePicker
+              className="hidden w-[300px] md:flex"
+              value={[dayjs(scheduleRange[0]), dayjs(scheduleRange[1])]}
+              allowClear={false}
+              onChange={(_, dateStrings) => {
+                if (dateStrings[0] && dateStrings[1]) {
+                  setScheduleRange([dateStrings[0], dateStrings[1]])
+                }
+              }}
+            />
+            <Button
+              icon={<CalendarOutlined />}
+              loading={scheduleLoading}
+              onClick={() => checkSchedule()}
+            >
+              检查排班
+            </Button>
+          </div>
+
+          {scheduleError && (
+            <Alert type="error" showIcon message={scheduleError} />
+          )}
+          {scheduleStatus && !scheduleStatus.complete && (
+            <Alert
+              type="warning"
+              showIcon
+              message="所选区间还有双休日未排班"
+              description={`请补齐这些周的排班：${scheduleStatus.missing_week_starts.join('、')}。补齐前，走访汇总中的人均日数据不会显示。`}
+              action={(
+                <Button
+                  size="small"
+                  onClick={() => navigate(
+                    `/grid-members/weekend-duty?week=${scheduleStatus.missing_week_starts[0]}`,
+                  )}
+                >
+                  去补排班
+                </Button>
+              )}
+            />
+          )}
+          {scheduleStatus?.complete && (
+            <Alert
+              type="success"
+              showIcon
+              message="所选区间的双休日排班已完整"
+            />
+          )}
+        </div>
+      </Panel>
 
       <section className="app-card">
         <div className="app-toolbar">
