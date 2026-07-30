@@ -288,25 +288,62 @@ export type WorkLogFieldType =
   | 'textarea'
   | 'table'
 
+export interface WorkLogColumn {
+  key?: string
+  label: string
+  type?: Exclude<WorkLogFieldType, 'table'>
+  width?: number
+  required?: boolean
+  children?: WorkLogColumn[]
+}
+
 export interface WorkLogField {
   id: string
   label: string
   type: WorkLogFieldType
-  source: 'system' | 'manual'
+  source: 'system' | 'manual' | 'derived'
   required: boolean
+  width?: number
+  source_key?: string
   help?: string
-  columns?: Array<{ key: string; label: string }>
+  columns?: WorkLogColumn[]
+  row_mode?: 'detail' | 'community' | 'fixed' | 'system'
+  community_key?: string
+  fixed_rows?: Array<Record<string, unknown>>
 }
+
+export type WorkLogBlock =
+  | {
+      type: 'heading'
+      title: string
+      level: number
+    }
+  | {
+      type: 'sentence'
+      title?: string
+      segments: Array<string | WorkLogField>
+    }
+  | {
+      type: 'textarea'
+      field: WorkLogField
+      rows?: number
+    }
+  | {
+      type: 'table'
+      field: WorkLogField
+      help?: string
+    }
 
 export interface WorkLogSection {
   id: string
   title: string
   description?: string
-  fields: WorkLogField[]
+  blocks: WorkLogBlock[]
 }
 
 export interface WorkLogSchema {
   template_version: string
+  document_title: string
   report_types: Array<{
     value: 'daily' | 'weekly' | 'monthly'
     label: string
@@ -321,6 +358,8 @@ export interface WorkLogSystemSnapshot {
   issue_date: string
   month: number
   filename_prefix: string
+  communities?: string[]
+  legacy_v1?: Record<string, unknown>
   values: Record<string, unknown>
   sources: Record<string, {
     label: string

@@ -1,4 +1,4 @@
-"""工作日志草稿与 DOCX 导出。"""
+"""工作日志草稿与 PDF 导出。"""
 
 from __future__ import annotations
 
@@ -16,12 +16,14 @@ from database import get_db
 from deps import require_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.work_log_data import build_system_snapshot
-from services.work_log_document import build_daily_document
+from services.work_log_pdf import build_daily_pdf
 from services.work_log_schema import (
     TEMPLATE_VERSION,
     default_manual_values,
+    effective_values,
     field_definitions,
     get_schema,
+    leaf_columns,
     sanitize_values,
 )
 
@@ -99,6 +101,83 @@ def _draft_payload(row, user: dict) -> dict:
     }
 
 
+LEGACY_FIELD_MAP = {
+    "basic.total_population": "flow.population.total",
+    "basic.registered_population": "flow.population.registered",
+    "basic.floating_population": "flow.population.floating",
+    "basic.flow_added": "flow.registration.added",
+    "basic.active_cancelled": "flow.registration.active_cancelled",
+    "basic.passive_cancelled": "flow.registration.passive_cancelled",
+    "rental.current_stock": "rental.stock.rented",
+    "rental.reverse_checks": "rental.reverse.houses",
+    "rental.analysis": "rental.reverse_analysis",
+    "self_owned.analysis": "self_owned.analysis",
+    "priority.added": "priority.management.added",
+    "priority.removed": "priority.management.removed",
+    "disputes.stock": "disputes.stock.total",
+    "disputes.added": "disputes.daily.added",
+    "disputes.resolved": "disputes.daily.archive_resolved",
+    "fire.checked": "fire.daily.checked",
+    "fire.hazards": "fire.daily.hazards",
+    "fire.rectified": "fire.daily.rectified",
+    "security.venues_checked": "security.venues.checked",
+    "security.dogs": "security.dog.penalties",
+    "security.special_cases": "security.yellow_gamble.yellow_cases",
+    "security.analysis": "security.yellow_gamble_analysis",
+    "fraud.cases": "fraud.cases.daily",
+    "fraud.warnings": "fraud.warning.total",
+    "fraud.completed": "fraud.warning.met",
+    "fraud.analysis": "fraud.large_amount_case",
+}
+
+
+async def _upgrade_legacy_draft(conn, row, user: dict):
+    """把 daily-v1 草稿升级为 v2，并在快照中完整保留旧 JSON。"""
+    if not row or row[5] != "daily-v1":
+        return row
+    old_snapshot = _json_load(row[6], {})
+    old_manual = _json_load(row[7], {})
+    old_overrides = _json_load(row[8], {})
+    new_snapshot = await build_system_snapshot(conn, row[2])
+    new_snapshot["legacy_v1"] = {
+        "template_version": row[5],
+        "system_snapshot": old_snapshot,
+        "manual_values": old_manual,
+        "override_values": old_overrides,
+    }
+    manual_values = default_manual_values(
+        new_snapshot.get("communities") or []
+    )
+    for old_id, new_id in LEGACY_FIELD_MAP.items():
+        value = (
+            old_overrides.get(old_id)
+            if old_id in old_overrides
+            else old_manual.get(old_id)
+        )
+        if value not in (None, "", []):
+            manual_values[new_id] = value
+    manual_values = sanitize_values(manual_values, source="manual")
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE _work_log_drafts
+            SET template_version=%s, system_snapshot=%s, manual_values=%s,
+                override_values=%s, version=version+1, updated_by=%s
+            WHERE id=%s AND template_version<>%s
+            """,
+            (
+                TEMPLATE_VERSION,
+                json.dumps(new_snapshot, ensure_ascii=False),
+                json.dumps(manual_values, ensure_ascii=False),
+                "{}",
+                user["id"],
+                row[0],
+                TEMPLATE_VERSION,
+            ),
+        )
+        return await _select_draft(cur, draft_id=row[0])
+
+
 async def _select_draft(cur, *, draft_id=None, report_type=None, business_date=None):
     columns = (
         "id, report_type, business_date, owner_user_id, owner_username, "
@@ -120,12 +199,7 @@ async def _select_draft(cur, *, draft_id=None, report_type=None, business_date=N
 
 
 def _effective_values(draft: dict) -> dict:
-    snapshot = draft.get("system_snapshot") or {}
-    return {
-        **(snapshot.get("values") or {}),
-        **(draft.get("manual_values") or {}),
-        **(draft.get("override_values") or {}),
-    }
+    return effective_values(draft)
 
 
 def _missing_items(draft: dict) -> list[dict]:
@@ -136,18 +210,24 @@ def _missing_items(draft: dict) -> list[dict]:
         if not definition.get("required"):
             continue
         value = values.get(field_id)
-        empty = value is None or value == "" or (
-            definition["type"] == "table" and not value
-        )
+        empty = value is None or value == ""
+        if definition["type"] == "table":
+            rows = value if isinstance(value, list) else []
+            required_columns = [
+                item
+                for item in leaf_columns(definition["columns"])
+                if item.get("required", True)
+            ]
+            empty = not rows or any(
+                any(row.get(item["key"]) in (None, "") for item in required_columns)
+                for row in rows
+                if isinstance(row, dict)
+            )
         if not empty:
             continue
         source_message = ""
-        if definition["source"] == "system":
-            source_key = (
-                "model_three"
-                if field_id.startswith("priority.model3_")
-                else field_id.split(".", 1)[0]
-            )
+        if definition["source"] in {"system", "derived"}:
+            source_key = definition.get("source_key", "")
             source_message = (sources.get(source_key) or {}).get("message", "")
         missing.append({
             "field_id": field_id,
@@ -178,10 +258,11 @@ async def create_draft(
             business_date=data.business_date,
         )
     if row:
+        row = await _upgrade_legacy_draft(conn, row, user)
         return _draft_payload(row, user)
 
     snapshot = await build_system_snapshot(conn, data.business_date)
-    manual_values = default_manual_values()
+    manual_values = default_manual_values(snapshot.get("communities") or [])
     created = False
     async with conn.cursor() as cur:
         try:
@@ -244,6 +325,7 @@ async def get_draft(
             report_type=report_type,
             business_date=business_date,
         )
+    row = await _upgrade_legacy_draft(conn, row, user)
     return _draft_payload(row, user)
 
 
@@ -299,6 +381,8 @@ async def takeover_draft(
 ):
     async with conn.cursor() as cur:
         before = await _select_draft(cur, draft_id=draft_id)
+    before = await _upgrade_legacy_draft(conn, before, user)
+    async with conn.cursor() as cur:
         if not before:
             raise HTTPException(status_code=404, detail="日报草稿不存在")
         await cur.execute(
@@ -332,6 +416,7 @@ async def refresh_draft(
 ):
     async with conn.cursor() as cur:
         row = await _select_draft(cur, draft_id=draft_id)
+    row = await _upgrade_legacy_draft(conn, row, user)
     if not row:
         raise HTTPException(status_code=404, detail="日报草稿不存在")
     if int(row[3]) != int(user["id"]):
@@ -377,6 +462,7 @@ async def check_missing(
 ):
     async with conn.cursor() as cur:
         row = await _select_draft(cur, draft_id=draft_id)
+    row = await _upgrade_legacy_draft(conn, row, user)
     draft = _draft_payload(row, user)
     missing = _missing_items(draft)
     return {"missing": missing, "count": len(missing)}
@@ -391,8 +477,9 @@ async def export_draft(
 ):
     async with conn.cursor() as cur:
         row = await _select_draft(cur, draft_id=draft_id)
+    row = await _upgrade_legacy_draft(conn, row, user)
     draft = _draft_payload(row, user)
-    content, filename = build_daily_document(
+    content, filename = build_daily_pdf(
         draft,
         get_schema(),
         _effective_values(draft),
@@ -415,10 +502,7 @@ async def export_draft(
     )
     return Response(
         content=content,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument."
-            "wordprocessingml.document"
-        ),
+        media_type="application/pdf",
         headers={
             "Content-Disposition": (
                 "attachment; filename*=UTF-8''"
