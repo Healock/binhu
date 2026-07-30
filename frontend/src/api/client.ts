@@ -410,6 +410,79 @@ export function exportGridMembersUrl(): string {
   return '/api/grid-members/export'
 }
 
+export type WeekendDutyDay = 'saturday' | 'sunday'
+
+export interface WeekendDutyMember {
+  id: number
+  name: string
+  community: string
+  position: string
+  assignment: WeekendDutyDay | null
+  previous_assignment: WeekendDutyDay | null
+  unavailable_days: WeekendDutyDay[]
+  exempt: boolean
+  absence_reason: string
+}
+
+export interface WeekendDutyBoard {
+  week_start: string
+  saturday: string
+  sunday: string
+  members: WeekendDutyMember[]
+  complete: boolean
+  unassigned_count: number
+}
+
+export interface AttendanceHistoryItem {
+  id: number
+  member_id: number
+  member_name: string
+  absence_type: 'temporary_leave' | 'long_term_leave'
+  start_date: string
+  end_date: string | null
+  reason: string
+  source: string
+  is_active: boolean
+  created_at: string
+}
+
+export async function getAttendanceHistory(params?: {
+  member_id?: number
+  page?: number
+  page_size?: number
+}): Promise<{
+  data: AttendanceHistoryItem[]
+  total: number
+  page: number
+  page_size: number
+}> {
+  const { data } = await api.get('/personnel/attendance/history', { params })
+  return data
+}
+
+export async function getWeekendDuty(
+  weekStart: string,
+): Promise<WeekendDutyBoard> {
+  const { data } = await api.get('/personnel/attendance/weekend-duty', {
+    params: { week_start: weekStart },
+  })
+  return data
+}
+
+export async function saveWeekendDuty(
+  weekStart: string,
+  assignments: Array<{
+    member_id: number
+    duty_day: WeekendDutyDay | null
+  }>,
+): Promise<WeekendDutyBoard> {
+  const { data } = await api.put('/personnel/attendance/weekend-duty', {
+    week_start: weekStart,
+    assignments,
+  })
+  return data
+}
+
 // ---- Visit detail imports ----
 export interface VisitCoverage {
   start_date: string | null
@@ -466,8 +539,8 @@ export interface VisitImportResult {
 
 export interface VisitSummaryTable {
   columns: string[]
-  data: Array<Record<string, string | number>>
-  summary: Record<string, string | number>
+  data: Array<Record<string, string | number | null>>
+  summary: Record<string, string | number | null>
 }
 
 export type VisitSummaryCategory = 'rental' | 'self_owned'
@@ -477,9 +550,19 @@ export interface VisitSummaryReport {
   category_label: string
   start_date: string
   end_date: string
+  attendance: {
+    complete: boolean
+    person_days: number
+    missing_week_starts: string[]
+    history_started_on: string | null
+    legacy_history_incomplete: boolean
+    worked_while_off: number
+    unknown_participant_days: number
+  }
   overview: {
     visit_records: number
     participant_count: number
+    person_days: number
     community_count: number
     added_count: number
     changed_count: number

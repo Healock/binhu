@@ -7,6 +7,7 @@ import SettingsLayout from './components/SettingsLayout'
 import Dashboard from './pages/Dashboard'
 import DataQuery from './pages/DataQuery'
 import GridMembers from './pages/GridMembers'
+import WeekendDuty from './pages/WeekendDuty'
 import Communities from './pages/Communities'
 import UserManagement from './pages/UserManagement'
 import SpreadsheetSettings from './pages/SpreadsheetSettings'
@@ -32,6 +33,7 @@ function App() {
               <Route path="/query" element={<DataQuery />} />
               <Route path="/visit-summary" element={<VisitSummary />} />
               <Route path="/grid-members" element={<GridMembers />} />
+              <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />
               <Route path="/communities" element={<Communities />} />
 
               {/* 用户管理仅超管 */}

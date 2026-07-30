@@ -2,6 +2,7 @@
 
 import aiomysql
 from config import settings
+from services.business_time import current_business_date
 
 # 数据库名称映射
 DB_NAMES = {
@@ -80,6 +81,50 @@ class DatabaseManager:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
                 await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _personnel_attendance_history (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        member_id INT NOT NULL,
+                        absence_type VARCHAR(30) NOT NULL,
+                        start_date DATE NOT NULL,
+                        end_date DATE DEFAULT NULL,
+                        reason VARCHAR(200) DEFAULT '',
+                        source VARCHAR(30) NOT NULL DEFAULT 'manual',
+                        created_by INT DEFAULT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_attendance_member_dates (
+                            member_id, start_date, end_date
+                        ),
+                        INDEX idx_attendance_active (
+                            is_active, start_date, end_date
+                        )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _personnel_weekend_duty (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        week_start DATE NOT NULL,
+                        member_id INT NOT NULL,
+                        duty_date DATE DEFAULT NULL,
+                        member_name VARCHAR(100) NOT NULL,
+                        community_snapshot VARCHAR(200) DEFAULT '',
+                        position_snapshot VARCHAR(20) NOT NULL,
+                        updated_by INT DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_weekend_member (
+                            week_start, member_id
+                        ),
+                        INDEX idx_weekend_duty_date (duty_date),
+                        INDEX idx_weekend_week (week_start)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _communities (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         name VARCHAR(200) NOT NULL UNIQUE,
@@ -115,6 +160,20 @@ class DatabaseManager:
                     "(config_key, config_value) VALUES "
                     "('online_summary_positions', '[\"组长\", \"组员\"]'), "
                     "('visit_summary_positions', '[\"组长\", \"组员\"]')"
+                )
+                await cur.execute(
+                    "SELECT config_value FROM _system_config "
+                    "WHERE config_key='timezone'"
+                )
+                timezone_row = await cur.fetchone()
+                history_started_on = current_business_date(
+                    timezone_row[0] if timezone_row else None
+                )
+                await cur.execute(
+                    "INSERT IGNORE INTO _system_config "
+                    "(config_key, config_value) VALUES "
+                    "('attendance_history_started_on', %s)",
+                    (history_started_on.isoformat(),),
                 )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _sync_schedule (
@@ -496,6 +555,58 @@ class DatabaseManager:
                         "ALTER TABLE _grid_members "
                         "ADD INDEX idx_grid_position (position)"
                     )
+                await cur.execute("""
+                    INSERT INTO _personnel_attendance_history (
+                        member_id, absence_type, start_date, end_date,
+                        reason, source
+                    )
+                    SELECT
+                        g.id,
+                        CASE
+                            WHEN g.status = '离岗'
+                            THEN 'long_term_leave'
+                            ELSE 'temporary_leave'
+                        END,
+                        CASE
+                            WHEN g.status = '离岗'
+                            THEN COALESCE(DATE(g.updated_at), CURRENT_DATE)
+                            ELSE g.leave_start_date
+                        END,
+                        CASE
+                            WHEN g.status = '离岗'
+                            THEN NULL
+                            ELSE g.leave_end_date
+                        END,
+                        COALESCE(g.leave_reason, ''),
+                        'legacy_current_state'
+                    FROM _grid_members AS g
+                    WHERE (
+                        g.status = '离岗'
+                        OR (
+                            g.leave_start_date IS NOT NULL
+                            AND g.leave_end_date IS NOT NULL
+                        )
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM _personnel_attendance_history AS history
+                        WHERE history.member_id = g.id
+                          AND history.is_active=1
+                          AND (
+                              (
+                                  g.status = '离岗'
+                                  AND history.absence_type='long_term_leave'
+                                  AND history.end_date IS NULL
+                              )
+                              OR (
+                                  g.status <> '离岗'
+                                  AND history.absence_type='temporary_leave'
+                                  AND history.start_date=g.leave_start_date
+                                  AND history.end_date=g.leave_end_date
+                              )
+                          )
+                    )
+                """)
                 # 测试数据表（用于验证工作量统计逻辑）
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS t_test_mock (

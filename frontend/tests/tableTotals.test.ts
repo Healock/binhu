@@ -60,16 +60,17 @@ test('在线汇总两列模式按已核查计算完成率', () => {
   assert.equal(total.核查见底率, 0.75)
 })
 
-test('走访汇总总计按筛选行重算比率和人均数', () => {
+test('走访汇总总计按筛选行和在岗人日重算比率', () => {
   const columns = [
     '社区',
     '走访户数',
-    '人均走访户数',
+    '在岗人日',
+    '人均日走访户数',
     '新增',
     '变更',
     '注销',
     '总变动数',
-    '人均变动数',
+    '人均日变动数',
     '户均变动数',
     '星级评定数',
     '星级评定率',
@@ -78,20 +79,41 @@ test('走访汇总总计按筛选行重算比率和人均数', () => {
     {
       社区: '长板',
       走访户数: 9,
+      在岗人日: 3,
+      _person_days_exact: 2.95,
+      人均日走访户数: 3,
       新增: 2,
       变更: 3,
       注销: 1,
       总变动数: 6,
+      人均日变动数: 2,
       星级评定数: 3,
     },
-  ], 2)
+  ])
 
   assert.equal(total.走访户数, 9)
   assert.equal(total.总变动数, 6)
-  assert.equal(total.人均走访户数, 4.5)
-  assert.equal(total.人均变动数, 3)
+  assert.equal(total.在岗人日, 3)
+  assert.equal(total.人均日走访户数, 3.1)
+  assert.equal(total.人均日变动数, 2)
   assert.equal(total.户均变动数, 0.7)
   assert.equal(total.星级评定率, 0.3333)
+})
+
+test('周末排班不完整时筛选总计不伪造人均值', () => {
+  const total = buildVisitTableTotal(
+    ['社区', '走访户数', '在岗人日', '人均日走访户数', '人均日变动数'],
+    [{
+      社区: '长板',
+      走访户数: 9,
+      在岗人日: 2,
+      人均日走访户数: null,
+      人均日变动数: null,
+    }],
+  )
+  assert.equal(total.在岗人日, 2)
+  assert.equal(total.人均日走访户数, null)
+  assert.equal(total.人均日变动数, null)
 })
 
 test('空筛选结果显示全零总计', () => {

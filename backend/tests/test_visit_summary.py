@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 import unittest
 
 from fastapi import HTTPException
@@ -9,6 +10,7 @@ from services.visit_summary import (
     INSPECTOR_COLUMNS,
     VISIT_CATEGORY_RENTAL,
     VISIT_CATEGORY_SELF_OWNED,
+    _balanced_person_day_display,
     _round_ratio,
     get_visit_summary,
 )
@@ -28,23 +30,30 @@ class SummaryCursor:
     async def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.connection.calls.append((normalized, params))
-        if "COUNT(DISTINCT" not in normalized:
-            self.rows = list(self.connection.inspector_rows)
-        else:
-            self.rows = list(self.connection.community_rows)
+        self.rows = list(self.connection.inspector_rows)
 
     async def fetchall(self):
         return list(self.rows)
 
 
 class SummaryConnection:
-    def __init__(self, inspector_rows, community_rows):
+    def __init__(self, inspector_rows, community_rows=()):
         self.inspector_rows = inspector_rows
-        self.community_rows = community_rows
         self.calls = []
 
     def cursor(self):
         return SummaryCursor(self)
+
+
+def attendance_context(members=None):
+    return {
+        "members": members or {},
+        "periods": {},
+        "duties": {},
+        "missing_week_starts": set(),
+        "history_started_on": date(2026, 1, 1),
+        "legacy_history_incomplete": False,
+    }
 
 
 class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
@@ -52,14 +61,19 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_round_ratio(1, 4), 0.3)
         self.assertEqual(_round_ratio(0, 0), 0.0)
 
+    def test_person_day_display_keeps_community_sum_equal_to_total(self):
+        displayed = _balanced_person_day_display({
+            "长板": Decimal("0.333333"),
+            "水秀": Decimal("0.333333"),
+            "冬梅": Decimal("0.333334"),
+        })
+        self.assertEqual(sum(displayed.values()), Decimal("1.0"))
+
     async def test_builds_inspector_community_and_recalculated_totals(self):
         connection = SummaryConnection(
             inspector_rows=[
-                ("长板", "张三", 4, 1, 0, 0, 3),
-                ("长板", "李四", 2, 0, 1, 1, 1),
-            ],
-            community_rows=[
-                ("长板", 6, 2, 1, 1, 1, 4),
+                (date(2026, 7, 1), "长板", "张三", 4, 1, 0, 0, 3),
+                (date(2026, 7, 1), "长板", "李四", 2, 0, 1, 1, 1),
             ],
         )
 
@@ -69,6 +83,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             date(2026, 7, 31),
             selected_positions={"组长", "组员"},
             known_positions={},
+            attendance_context=attendance_context(),
         )
 
         self.assertEqual(result["inspector"]["columns"], INSPECTOR_COLUMNS)
@@ -101,13 +116,15 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 result["community"]["summary"][column],
             )
         community_total = result["community"]["summary"]
-        self.assertEqual(community_total["人均走访户数"], 3.0)
-        self.assertEqual(community_total["人均变动数"], 1.5)
+        self.assertEqual(community_total["人均日走访户数"], 3.0)
+        self.assertEqual(community_total["人均日变动数"], 1.5)
+        self.assertEqual(community_total["在岗人日"], 2.0)
         self.assertEqual(
             result["overview"],
             {
                 "visit_records": 6,
                 "participant_count": 2,
+                "person_days": 2.0,
                 "community_count": 1,
                 "added_count": 1,
                 "changed_count": 1,
@@ -131,25 +148,48 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             date(2026, 7, 1),
             selected_positions={"组长", "组员"},
             known_positions={},
+            attendance_context=attendance_context(),
         )
 
         self.assertEqual(result["inspector"]["data"], [])
         self.assertEqual(result["inspector"]["summary"]["走访户数"], 0)
         self.assertEqual(result["community"]["summary"]["星级评定率"], 0.0)
-        self.assertEqual(result["community"]["summary"]["人均走访户数"], 0.0)
+        self.assertEqual(result["community"]["summary"]["人均日走访户数"], 0.0)
         self.assertEqual(result["overview"]["visit_records"], 0)
         self.assertEqual(result["overview"]["unrated_records"], 0)
         self.assertEqual(result["overview"]["rating_rate"], 0.0)
 
+    async def test_missing_weekend_roster_hides_per_day_averages(self):
+        incomplete = attendance_context()
+        incomplete["missing_week_starts"] = {date(2026, 7, 27)}
+        result = await get_visit_summary(
+            SummaryConnection([
+                (date(2026, 8, 1), "长板", "张三", 2, 0, 1, 0, 1),
+            ]),
+            date(2026, 8, 1),
+            date(2026, 8, 2),
+            selected_positions={"组长", "组员"},
+            known_positions={},
+            attendance_context=incomplete,
+        )
+
+        self.assertFalse(result["attendance"]["complete"])
+        self.assertEqual(
+            result["attendance"]["missing_week_starts"],
+            ["2026-07-27"],
+        )
+        self.assertIsNone(
+            result["community"]["summary"]["人均日走访户数"]
+        )
+        self.assertIsNone(
+            result["community"]["summary"]["人均日变动数"]
+        )
+
     async def test_total_counts_cross_community_member_once(self):
         connection = SummaryConnection(
             inspector_rows=[
-                ("长板", "张三", 2, 0, 1, 0, 1),
-                ("水秀", "张三", 3, 0, 2, 0, 2),
-            ],
-            community_rows=[
-                ("长板", 2, 1, 0, 1, 0, 1),
-                ("水秀", 3, 1, 0, 2, 0, 2),
+                (date(2026, 7, 1), "长板", "张三", 2, 0, 1, 0, 1),
+                (date(2026, 7, 1), "水秀", "张三", 3, 0, 2, 0, 2),
             ],
         )
 
@@ -159,31 +199,32 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             date(2026, 7, 31),
             selected_positions={"组长", "组员"},
             known_positions={},
+            attendance_context=attendance_context(),
         )
 
         visit_averages = {
-            row["社区"]: row["人均走访户数"]
+            row["社区"]: row["人均日走访户数"]
             for row in result["community"]["data"]
         }
         self.assertEqual(
             visit_averages,
-            {"长板": 2.0, "水秀": 3.0},
+            {"长板": 5.0, "水秀": 5.0},
         )
         self.assertEqual(
-            result["community"]["summary"]["人均走访户数"],
+            result["community"]["summary"]["人均日走访户数"],
             5.0,
         )
         self.assertEqual(
-            result["community"]["summary"]["人均变动数"],
+            result["community"]["summary"]["人均日变动数"],
             3.0,
         )
 
     async def test_known_unselected_position_is_hidden_but_unknown_remains(self):
         connection = SummaryConnection(
             inspector_rows=[
-                ("长板", "组员甲", 2, 0, 1, 0, 1),
-                ("长板", "中队长乙", 5, 1, 1, 0, 2),
-                ("水秀", "名册外人员", 3, 0, 0, 1, 1),
+                (date(2026, 7, 1), "长板", "组员甲", 2, 0, 1, 0, 1),
+                (date(2026, 7, 1), "长板", "中队长乙", 5, 1, 1, 0, 2),
+                (date(2026, 7, 1), "水秀", "名册外人员", 3, 0, 0, 1, 1),
             ],
             community_rows=[],
         )
@@ -197,6 +238,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 "组员甲": "组员",
                 "中队长乙": "中队长",
             },
+            attendance_context=attendance_context(),
         )
 
         self.assertEqual(
@@ -212,9 +254,9 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         result = await get_visit_summary(
             SummaryConnection(
                 [
-                    ("长板", "组员甲", 2, 0, 1, 0, 1),
-                    ("长板", "自购房乙", 4, 1, 0, 0, 2),
-                    ("水秀", "名册外人员", 3, 0, 0, 1, 1),
+                    (date(2026, 7, 1), "长板", "组员甲", 2, 0, 1, 0, 1),
+                    (date(2026, 7, 1), "长板", "自购房乙", 4, 1, 0, 0, 2),
+                    (date(2026, 7, 1), "水秀", "名册外人员", 3, 0, 0, 1, 1),
                 ],
                 [],
             ),
@@ -226,6 +268,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 "组员甲": "组员",
                 "自购房乙": "自购房",
             },
+            attendance_context=attendance_context(),
         )
 
         self.assertEqual(result["category_label"], "出租房")
@@ -238,9 +281,9 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         result = await get_visit_summary(
             SummaryConnection(
                 [
-                    ("长板", "组员甲", 2, 0, 1, 0, 1),
-                    ("长板", "自购房乙", 4, 1, 0, 0, 2),
-                    ("水秀", "名册外人员", 3, 0, 0, 1, 1),
+                    (date(2026, 7, 1), "长板", "组员甲", 2, 0, 1, 0, 1),
+                    (date(2026, 7, 1), "长板", "自购房乙", 4, 1, 0, 0, 2),
+                    (date(2026, 7, 1), "水秀", "名册外人员", 3, 0, 0, 1, 1),
                 ],
                 [],
             ),
@@ -252,6 +295,14 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 "组员甲": "组员",
                 "自购房乙": "自购房",
             },
+            attendance_context=attendance_context({
+                "自购房乙": {
+                    "id": 1,
+                    "name": "自购房乙",
+                    "community": "长板",
+                    "position": "自购房",
+                },
+            }),
         )
 
         self.assertEqual(result["category"], "self_owned")
@@ -274,6 +325,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 category="other",
                 selected_positions={"组员"},
                 known_positions={},
+                attendance_context=attendance_context(),
             )
 
     async def test_rejects_reversed_date_range(self):
