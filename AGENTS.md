@@ -20,6 +20,14 @@
 
 主要技术：FastAPI、MySQL 8、React 18、Ant Design 6、Tailwind CSS 4、Vite 6、Docker Compose。
 
+## 本机和服务器的环境边界
+
+- 当前这台开发电脑只用于编辑代码、运行前端构建和不依赖真实数据库的测试。
+- 本机没有本项目的 Docker 运行环境，也没有本项目的 MySQL 服务或业务数据。不要重复运行 `docker info`、`docker compose ps`、本机 MySQL 连接或端口探测来确认这件事。
+- 本项目的 Docker 容器和三个 MySQL 数据库只在生产服务器上。容器状态、Compose 配置、数据库、备份和日志检查都应通过 SSH 在服务器上完成。
+- 生产服务器不能代替开发测试环境。需要真实 MySQL 才能验证、但当前没有独立测试库时，先运行现有自动化测试并明确标注“真实 MySQL 未验证”，不要为了补检查而在生产库制造测试数据。
+- 本机没有 Docker 时，Compose 改动可以先做文件检查；真正的 `docker compose config`、镜像构建和容器验证留到服务器部署前执行。不要反复探测或尝试启动本机不存在的服务。
+
 ## 不能随意改变的设计
 
 - 项目标识是 `binhu`，本地仓库目录继续使用 `Bhzh`，不要改目录名。
@@ -80,7 +88,7 @@
 - 所有改动：运行 `git diff --check`，查看 `git status`，并扫描待提交文件中是否有敏感信息。
 - 改了前端：在 `frontend/` 运行 `npm.cmd run build`。
 - 改了 Python：至少做语法或导入检查；涉及数据库时只能使用测试库或只读检查。
-- 改了 Compose：有 Docker 环境时运行 `docker compose config --quiet`。
+- 改了 Compose：本机只做文件检查；服务器部署前运行 `docker compose config --quiet`。
 - 改了文档：检查链接是否能打开，内容是否与代码一致。
 - 某一层没有变化时不要重复检查；复杂的远程 SQL 或命令必须提前写成脚本，同一种验证方式连续失败两次就停止临时拼命令。
 
