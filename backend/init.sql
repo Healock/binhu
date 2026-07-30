@@ -24,7 +24,6 @@ INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('timezone', 'Asia/Shanghai'),
     ('online_summary_positions', '["组长", "组员"]'),
     ('visit_summary_positions', '["组长", "组员"]');
-
 CREATE TABLE IF NOT EXISTS _grid_members (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,
@@ -44,6 +43,40 @@ CREATE TABLE IF NOT EXISTS _grid_members (
     UNIQUE KEY uk_name (name),
     UNIQUE KEY uk_grid_id_card (id_card_number),
     INDEX idx_grid_position (position)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _personnel_attendance_history (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    member_id       INT NOT NULL,
+    absence_type    VARCHAR(30) NOT NULL,
+    start_date      DATE NOT NULL,
+    end_date        DATE DEFAULT NULL,
+    reason          VARCHAR(200) DEFAULT '',
+    source          VARCHAR(30) NOT NULL DEFAULT 'manual',
+    created_by      INT DEFAULT NULL,
+    is_active       TINYINT(1) NOT NULL DEFAULT 1,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_attendance_member_dates (member_id, start_date, end_date),
+    INDEX idx_attendance_active (is_active, start_date, end_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _personnel_weekend_duty (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    week_start          DATE NOT NULL,
+    member_id           INT NOT NULL,
+    duty_date           DATE DEFAULT NULL,
+    member_name         VARCHAR(100) NOT NULL,
+    community_snapshot  VARCHAR(200) DEFAULT '',
+    position_snapshot   VARCHAR(20) NOT NULL,
+    updated_by          INT DEFAULT NULL,
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_weekend_member (week_start, member_id),
+    INDEX idx_weekend_duty_date (duty_date),
+    INDEX idx_weekend_week (week_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 配置表（从 binhu 库迁移）

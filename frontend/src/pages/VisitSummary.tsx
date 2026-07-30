@@ -44,11 +44,12 @@ const ISSUE_PAGE_SIZE = 50
 const EMPTY_FILTER_VALUE = '__binhu_empty_visit_summary_value__'
 const SUMMARY_RATE_COLUMNS = new Set(['星级评定率'])
 const SUMMARY_DECIMAL_COLUMNS = new Set([
-  '人均走访户数',
-  '人均变动数',
+  '在岗人日',
+  '人均日走访户数',
+  '人均日变动数',
   '户均变动数',
 ])
-type VisitSummaryRow = Record<string, string | number>
+type VisitSummaryRow = Record<string, string | number | null>
 const VISIT_CATEGORY_OPTIONS: Array<{
   value: VisitSummaryCategory
   label: string
@@ -140,13 +141,11 @@ function visitSummaryColumns(
 
 function visitSummaryTotal(
   columns: string[],
-  memberCount?: (rows: readonly VisitSummaryRow[]) => number,
 ) {
   return (currentRows: readonly VisitSummaryRow[]) => {
     const summary = buildVisitTableTotal(
       columns,
       currentRows,
-      memberCount?.(currentRows) || 0,
     )
     return (
       <Table.Summary.Row className="app-report-total-row">
@@ -540,18 +539,6 @@ export default function VisitSummary() {
   const shownMissingDates = coverage?.missing_dates.slice(0, 10) || []
   const inspectorRows = (summaryReport?.inspector.data || []) as VisitSummaryRow[]
   const communityRows = (summaryReport?.community.data || []) as VisitSummaryRow[]
-  const countCommunityMembers = useCallback((
-    visibleRows: readonly VisitSummaryRow[],
-  ) => {
-    const visibleCommunities = new Set(
-      visibleRows.map(row => String(row.社区 || '未分配社区')),
-    )
-    return new Set(
-      inspectorRows
-        .filter(row => visibleCommunities.has(String(row.社区 || '未分配社区')))
-        .map(row => String(row.姓名 || '未填写姓名')),
-    ).size
-  }, [inspectorRows])
   const selectedStartDate = summaryRange?.[0] || ''
   const selectedEndDate = summaryRange?.[1] || ''
   const shownRangeLabel = shownSummaryRange
@@ -720,7 +707,7 @@ export default function VisitSummary() {
           </span>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          出租房按系统设置中的岗位统计；自购房固定统计“自购房”岗位。走访户数按去重后的走访记录计算。
+          出租房按系统设置中的岗位统计；自购房固定统计“自购房”岗位。社区人均值按区间内实际在岗人日计算，请假和周末休息不进入分母。
         </p>
         {summaryReport && (
           <div className="mt-5 border-t border-slate-100 pt-5">
@@ -741,6 +728,13 @@ export default function VisitSummary() {
                   title: '参与人员',
                   value: summaryReport.overview.participant_count,
                   suffix: '人',
+                },
+                {
+                  key: 'person-days',
+                  title: '在岗人日',
+                  value: summaryReport.overview.person_days,
+                  suffix: '人日',
+                  help: '把区间内每天实际在岗人数相加',
                 },
                 {
                   key: 'changes',
@@ -764,12 +758,6 @@ export default function VisitSummary() {
                   suffix: '户',
                   valueStyle: { color: '#d97706' },
                 },
-                {
-                  key: 'communities',
-                  title: '涉及社区',
-                  value: summaryReport.overview.community_count,
-                  suffix: '个',
-                },
               ]}
             />
           </div>
@@ -779,12 +767,37 @@ export default function VisitSummary() {
       {summaryError && (
         <Alert type="error" showIcon message={summaryError} />
       )}
+      {summaryReport && !summaryReport.attendance.complete && (
+        <Alert
+          type="warning"
+          showIcon
+          message="所选区间还有双休日未排班"
+          description={`请先补齐这些周的排班：${summaryReport.attendance.missing_week_starts.join('、')}。补齐前“人均日走访户数”和“人均日变动数”不显示。`}
+        />
+      )}
+      {summaryReport?.attendance.legacy_history_incomplete && (
+        <Alert
+          type="info"
+          showIcon
+          message="部分日期早于系统开始保存出勤历史的时间"
+          description={`出勤历史从 ${summaryReport.attendance.history_started_on || '本版本上线日'} 开始完整保存；更早的请假记录如果没有补录，人均值只能作为参考。`}
+        />
+      )}
+      {summaryReport && summaryReport.attendance.worked_while_off > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={`发现 ${summaryReport.attendance.worked_while_off} 个人日虽排休或请假但有真实走访，系统已按实际出勤计入`}
+        />
+      )}
 
       {summaryLoading && !summaryReport ? (
         <Panel>
           <LoadingState label="正在计算走访汇总..." />
         </Panel>
-      ) : summaryReport && inspectorRows.length === 0 ? (
+      ) : summaryReport
+        && inspectorRows.length === 0
+        && communityRows.length === 0 ? (
         <Panel>
           <EmptyState label={`${shownResultLabel} 暂无走访数据`} />
         </Panel>
@@ -871,7 +884,6 @@ export default function VisitSummary() {
               sticky
               summary={visitSummaryTotal(
                 summaryReport.community.columns,
-                countCommunityMembers,
               )}
               title={currentRows => (
                 <h2 className="text-sm font-semibold text-gray-700">

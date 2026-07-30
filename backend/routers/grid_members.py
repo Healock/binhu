@@ -2,12 +2,13 @@
 
 import csv
 import io
-from datetime import date
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional
 from database import get_db
+from deps import require_admin
 from services.grid_member_status import (
     get_business_date,
     get_status_snapshot,
@@ -453,9 +454,12 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
 async def update_member_leave(
     member_id: int,
     data: GridMemberLeaveUpdate,
+    user: dict = Depends(require_admin),
     conn=Depends(get_db),
 ):
-    """独立设置临时请假、长期或恢复正常。"""
+    """更新当前状态，同时把过去的请假记录保留在出勤历史中。"""
+    async with conn.cursor() as cur:
+        business_date = await get_business_date(cur)
     if data.action == "temporary":
         updates = (
             "在岗",
@@ -468,20 +472,103 @@ async def update_member_leave(
         updates = ("离岗", None, None, data.leave_reason, "manual")
     else:
         updates = ("在岗", None, None, "", "manual")
+    historical_only = (
+        data.action == "temporary"
+        and data.leave_end_date is not None
+        and data.leave_end_date < business_date
+    )
 
-    async with conn.cursor() as cur:
-        await cur.execute(
-            """
-            UPDATE _grid_members
-            SET status=%s, leave_start_date=%s, leave_end_date=%s,
-                leave_reason=%s, leave_source=%s
-            WHERE id=%s
-            """,
-            (*updates, member_id),
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id FROM _grid_members WHERE id=%s FOR UPDATE",
+                (member_id,),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(404, "人员不存在")
+
+            if not historical_only:
+                await cur.execute(
+                    """
+                    UPDATE _personnel_attendance_history
+                    SET is_active=0
+                    WHERE member_id=%s
+                      AND is_active=1
+                      AND start_date >= %s
+                    """,
+                    (member_id, business_date),
+                )
+                await cur.execute(
+                    """
+                    UPDATE _personnel_attendance_history
+                    SET end_date=%s
+                    WHERE member_id=%s
+                      AND is_active=1
+                      AND start_date < %s
+                      AND (end_date IS NULL OR end_date >= %s)
+                    """,
+                    (
+                        business_date - timedelta(days=1),
+                        member_id,
+                        business_date,
+                        business_date,
+                    ),
+                )
+
+            if data.action == "temporary":
+                await cur.execute(
+                    """
+                    INSERT INTO _personnel_attendance_history (
+                        member_id, absence_type, start_date, end_date,
+                        reason, source, created_by
+                    ) VALUES (%s, 'temporary_leave', %s, %s, %s, 'manual', %s)
+                    """,
+                    (
+                        member_id,
+                        data.leave_start_date,
+                        data.leave_end_date,
+                        data.leave_reason,
+                        user["id"],
+                    ),
+                )
+            elif data.action == "long_term":
+                await cur.execute(
+                    """
+                    INSERT INTO _personnel_attendance_history (
+                        member_id, absence_type, start_date, end_date,
+                        reason, source, created_by
+                    ) VALUES (%s, 'long_term_leave', %s, NULL, %s, 'manual', %s)
+                    """,
+                    (
+                        member_id,
+                        business_date,
+                        data.leave_reason,
+                        user["id"],
+                    ),
+                )
+
+            if not historical_only:
+                await cur.execute(
+                    """
+                    UPDATE _grid_members
+                    SET status=%s, leave_start_date=%s, leave_end_date=%s,
+                        leave_reason=%s, leave_source=%s
+                    WHERE id=%s
+                    """,
+                    (*updates, member_id),
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {
+        "message": (
+            "过去的请假记录已补录"
+            if historical_only
+            else "请假状态已更新"
         )
-        if cur.rowcount == 0:
-            raise HTTPException(404, "人员不存在")
-    return {"message": "请假状态已更新"}
+    }
 
 
 @router.delete("/{member_id}")

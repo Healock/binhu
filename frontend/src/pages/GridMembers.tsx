@@ -4,8 +4,10 @@ import {
   Button,
   Card,
   DatePicker,
+  Drawer,
   Empty,
   Input,
+  List,
   Modal,
   Pagination,
   Radio,
@@ -20,22 +22,26 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  HistoryOutlined,
   InfoCircleOutlined,
   PlusOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import {
   createGridMember,
   deleteGridMember,
   exportGridMembersUrl,
   getGridCommunities,
+  getAttendanceHistory,
   listGridMembers,
   updateGridMember,
   updateGridMemberLeave,
   type GridCommunity,
   type GridMember,
+  type AttendanceHistoryItem,
 } from '../api/client'
 import {
   PERSONNEL_POSITIONS,
@@ -44,6 +50,7 @@ import {
 import { PageHeader } from '../components/ui'
 
 export default function GridMembers() {
+  const navigate = useNavigate()
   const [members, setMembers] = useState<GridMember[]>([])
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [total, setTotal] = useState(0)
@@ -55,6 +62,10 @@ export default function GridMembers() {
   const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState<GridMember | null>(null)
   const [leaveEditing, setLeaveEditing] = useState<GridMember | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyRows, setHistoryRows] = useState<AttendanceHistoryItem[]>([])
+  const [historyTotal, setHistoryTotal] = useState(0)
   const [showAddForm, setShowAddForm] = useState(false)
   const [msg, setMsg] = useState('')
   const [loadError, setLoadError] = useState('')
@@ -90,6 +101,20 @@ export default function GridMembers() {
 
   useEffect(() => { fetch() }, [fetch])
   useEffect(() => { fetchCommunities() }, [fetchCommunities])
+  useEffect(() => {
+    if (!historyOpen) return
+    setHistoryLoading(true)
+    getAttendanceHistory({ page: 1, page_size: 200 })
+      .then(response => {
+        setHistoryRows(response.data)
+        setHistoryTotal(response.total)
+      })
+      .catch(() => {
+        setHistoryRows([])
+        setHistoryTotal(0)
+      })
+      .finally(() => setHistoryLoading(false))
+  }, [historyOpen])
 
   const refresh = () => {
     fetch()
@@ -216,6 +241,18 @@ export default function GridMembers() {
         description="维护人员资料和岗位；请假、长期与恢复正常使用独立按钮"
         actions={(
           <>
+            <Button
+              icon={<HistoryOutlined />}
+              onClick={() => setHistoryOpen(true)}
+            >
+              出勤记录
+            </Button>
+            <Button
+              icon={<CalendarOutlined />}
+              onClick={() => navigate('/grid-members/weekend-duty')}
+            >
+              双休日备勤
+            </Button>
             <Button
               icon={<DownloadOutlined />}
               onClick={() => window.open(exportGridMembersUrl(), '_blank')}
@@ -393,6 +430,55 @@ export default function GridMembers() {
           }}
         />
       )}
+
+      <Drawer
+        open={historyOpen}
+        width={720}
+        title={`出勤记录（共 ${historyTotal} 条）`}
+        onClose={() => setHistoryOpen(false)}
+      >
+        <Alert
+          showIcon
+          type="info"
+          message="这里保留临时请假和长期离岗历史；双休日在岗安排请到“双休日备勤”查看"
+          className="mb-4"
+        />
+        <List
+          loading={historyLoading}
+          dataSource={historyRows}
+          locale={{ emptyText: '暂无出勤变动记录' }}
+          renderItem={item => (
+            <List.Item>
+              <div className="w-full min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-slate-800">
+                    {item.member_name}
+                  </span>
+                  <Tag color={item.absence_type === 'long_term_leave' ? 'default' : 'orange'}>
+                    {item.absence_type === 'long_term_leave' ? '长期离岗' : '临时请假'}
+                  </Tag>
+                  {!item.is_active && <Tag>已撤销</Tag>}
+                </div>
+                <div className="mt-1 text-sm text-slate-600">
+                  {item.start_date}
+                  {' 至 '}
+                  {item.end_date || '长期'}
+                </div>
+                {item.reason && (
+                  <div className="mt-1 text-sm text-slate-500">
+                    原因：{item.reason}
+                  </div>
+                )}
+              </div>
+            </List.Item>
+          )}
+        />
+        {historyTotal > historyRows.length && (
+          <p className="mt-3 text-center text-xs text-slate-500">
+            当前显示最近 {historyRows.length} 条记录
+          </p>
+        )}
+      </Drawer>
     </div>
   )
 }

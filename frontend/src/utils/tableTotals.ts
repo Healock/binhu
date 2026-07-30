@@ -16,6 +16,7 @@ const VISIT_SUM_COLUMNS = new Set([
   '注销',
   '总变动数',
   '星级评定数',
+  '在岗人日',
 ])
 
 function numeric(value: unknown): number {
@@ -115,6 +116,29 @@ export function buildVisitTableTotal(
   }
   if (columns.includes('人均变动数')) {
     total['人均变动数'] = roundRatio(totalChanges, memberCount, 1)
+  }
+  const attendanceIncomplete = rows.some(row => (
+    row['人均日走访户数'] == null
+    || row['人均日变动数'] == null
+  ))
+  const hasExactPersonDays = rows.some(row => (
+    row['_person_days_exact'] != null
+  ))
+  const personDays = hasExactPersonDays
+    ? sumColumn(rows, '_person_days_exact')
+    : numeric(total['在岗人日'])
+  if (columns.includes('在岗人日')) {
+    total['在岗人日'] = roundRatio(personDays, 1, 1)
+  }
+  if (columns.includes('人均日走访户数')) {
+    total['人均日走访户数'] = attendanceIncomplete
+      ? null
+      : roundRatio(visits, personDays, 1)
+  }
+  if (columns.includes('人均日变动数')) {
+    total['人均日变动数'] = attendanceIncomplete
+      ? null
+      : roundRatio(totalChanges, personDays, 1)
   }
   return total
 }

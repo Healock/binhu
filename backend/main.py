@@ -24,6 +24,7 @@ from routers.users import router as users_router
 from routers.notifications import router as notifications_router
 from routers.admin_ops import router as admin_ops_router
 from routers.visits import router as visits_router
+from routers.personnel_attendance import router as personnel_attendance_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
@@ -105,6 +106,7 @@ app.include_router(grid_members_router, dependencies=auth_dep)
 app.include_router(system_router, dependencies=auth_dep)
 app.include_router(notifications_router, dependencies=auth_dep)
 app.include_router(visits_router, dependencies=auth_dep)
+app.include_router(personnel_attendance_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)
