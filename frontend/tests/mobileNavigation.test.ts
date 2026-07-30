@@ -55,6 +55,25 @@ test('数据上传中心只出现在管理员和超级管理员导航中', () =>
   )
 })
 
+test('工作日志只出现在管理员和超级管理员导航中', () => {
+  const member = defaultMobileDockConfig('member')
+  const admin = defaultMobileDockConfig('admin')
+  const superAdmin = defaultMobileDockConfig('super_admin')
+
+  assert.equal(
+    member.groups.some(group => group.items.includes('work_log')),
+    false,
+  )
+  assert.equal(
+    admin.groups.some(group => group.items.includes('work_log')),
+    true,
+  )
+  assert.equal(
+    superAdmin.groups.some(group => group.items.includes('work_log')),
+    true,
+  )
+})
+
 test('读取配置时去重、过滤未知项和无权限页面并保留顺序', () => {
   const config = normalizeMobileDockConfig({
     groups: [

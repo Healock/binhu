@@ -15,6 +15,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
         "online_query",
         "visit_summary",
         "data_upload",
+        "work_log",
     ),
     "resources": (
         "grid_members",
@@ -28,7 +29,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
 }
 
 SUPER_ADMIN_ITEMS = {"users", "operations"}
-ADMIN_ITEMS = {"data_upload"}
+ADMIN_ITEMS = {"data_upload", "work_log"}
 
 
 def normalize_mobile_navigation_mode(value: Any) -> str:

@@ -18,6 +18,7 @@ import OperationsCenter from './pages/OperationsCenter'
 import VisitSummary from './pages/VisitSummary'
 import DataUploadCenter from './pages/DataUploadCenter'
 import Login from './pages/Login'
+import WorkLog from './pages/WorkLog'
 
 function App() {
   return (
@@ -34,6 +35,9 @@ function App() {
               <Route path="/query" element={<DataQuery />} />
               <Route path="/visit-summary" element={<VisitSummary />} />
               <Route path="/data-upload" element={<DataUploadCenter />} />
+              <Route element={<ProtectedRoute requireRoles={['admin', 'super_admin']} />}>
+                <Route path="/work-log" element={<WorkLog />} />
+              </Route>
               <Route path="/grid-members" element={<GridMembers />} />
               <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />
               <Route path="/communities" element={<Communities />} />

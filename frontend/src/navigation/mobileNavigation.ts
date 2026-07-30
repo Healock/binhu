@@ -13,6 +13,7 @@ export type NavigationIconName =
   | 'query'
   | 'visit'
   | 'upload'
+  | 'worklog'
   | 'members'
   | 'communities'
   | 'users'
@@ -72,6 +73,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '数据上传中心',
         shortLabel: '数据上传',
         icon: 'upload',
+        roles: ['super_admin', 'admin'],
+      },
+      {
+        id: 'work_log',
+        path: '/work-log',
+        label: '工作日志生成',
+        shortLabel: '工作日志',
+        icon: 'worklog',
         roles: ['super_admin', 'admin'],
       },
     ],

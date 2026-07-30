@@ -9,6 +9,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     default-mysql-client \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

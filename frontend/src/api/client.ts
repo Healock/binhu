@@ -4,6 +4,7 @@ import type {
   SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
   OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
   BackupJob, AuditEvent, User, UserPreferences, ReportColumnMode,
+  WorkLogDraft, WorkLogMissingItem, WorkLogSchema,
 } from '../types'
 
 const api = axios.create({
@@ -178,6 +179,78 @@ export async function getAuditEvents(params: {
 export async function downloadDiagnostics(): Promise<Blob> {
   const { data } = await api.post(
     '/admin/ops/diagnostics',
+    null,
+    { responseType: 'blob', timeout: 120000 },
+  )
+  return data
+}
+
+// ---- Work logs / 工作日志 ----
+export async function getWorkLogSchema(): Promise<WorkLogSchema> {
+  const { data } = await api.get('/work-logs/schema')
+  return data
+}
+
+export async function getWorkLogDraft(
+  reportType: 'daily',
+  businessDate: string,
+): Promise<WorkLogDraft> {
+  const { data } = await api.get(
+    `/work-logs/drafts/by-date/${reportType}/${businessDate}`,
+  )
+  return data
+}
+
+export async function createWorkLogDraft(
+  reportType: 'daily',
+  businessDate: string,
+): Promise<WorkLogDraft> {
+  const { data } = await api.post('/work-logs/drafts', {
+    report_type: reportType,
+    business_date: businessDate,
+  })
+  return data
+}
+
+export async function saveWorkLogDraft(
+  draftId: number,
+  payload: {
+    version: number
+    manual_values: Record<string, unknown>
+    override_values: Record<string, unknown>
+  },
+): Promise<WorkLogDraft> {
+  const { data } = await api.put(`/work-logs/drafts/${draftId}`, payload)
+  return data
+}
+
+export async function takeoverWorkLogDraft(
+  draftId: number,
+): Promise<WorkLogDraft> {
+  const { data } = await api.post(`/work-logs/drafts/${draftId}/takeover`)
+  return data
+}
+
+export async function refreshWorkLogDraft(
+  draftId: number,
+  version: number,
+): Promise<WorkLogDraft> {
+  const { data } = await api.post(`/work-logs/drafts/${draftId}/refresh`, {
+    version,
+  })
+  return data
+}
+
+export async function getWorkLogMissing(
+  draftId: number,
+): Promise<{ missing: WorkLogMissingItem[]; count: number }> {
+  const { data } = await api.get(`/work-logs/drafts/${draftId}/missing`)
+  return data
+}
+
+export async function exportWorkLog(draftId: number): Promise<Blob> {
+  const { data } = await api.post(
+    `/work-logs/drafts/${draftId}/export`,
     null,
     { responseType: 'blob', timeout: 120000 },
   )
