@@ -61,7 +61,7 @@ function DutyMemberCard({
   draggable: boolean
   selectable: boolean
   onToggle: () => void
-  onAssign: (day: WeekendDutyDay) => void
+  onAssign: (target: DutyTarget) => void
 }) {
   const {
     attributes,
@@ -120,7 +120,7 @@ function DutyMemberCard({
           <Tag>周末请假，无需排班</Tag>
         </div>
       ) : (
-        <div className="mt-2 grid grid-cols-2 gap-2 md:hidden">
+        <div className="mt-2 grid grid-cols-3 gap-2 md:hidden">
           <Button
             size="small"
             type={member.assignment === 'saturday' ? 'primary' : 'default'}
@@ -139,6 +139,20 @@ function DutyMemberCard({
           >
             周日
           </Button>
+          <Button
+            size="small"
+            type={!member.assignment && member.recorded ? 'primary' : 'default'}
+            disabled={!editable}
+            onClick={() => onAssign('unassigned')}
+            className="min-h-11"
+          >
+            双休
+          </Button>
+        </div>
+      )}
+      {!member.exempt && !member.assignment && member.recorded && (
+        <div className="mt-2 text-xs text-slate-500">
+          已确认周六、周日都休息
         </div>
       )}
       {member.unavailable_days.length > 0 && !member.exempt && (
@@ -172,7 +186,7 @@ function DutyColumn({
   draggable: boolean
   selectable: boolean
   onToggle: (id: number) => void
-  onAssign: (id: number, day: WeekendDutyDay) => void
+  onAssign: (id: number, target: DutyTarget) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `column:${id}` })
   return (
@@ -294,8 +308,11 @@ export default function WeekendDuty() {
     sunday: filtered.filter(item => item.assignment === 'sunday'),
   }), [filtered])
   const exemptCount = members.filter(item => item.exempt).length
-  const unassignedCount = members.filter(item => (
-    !item.exempt && !item.assignment
+  const pendingCount = members.filter(item => (
+    !item.exempt && !item.assignment && !item.recorded
+  )).length
+  const restCount = members.filter(item => (
+    !item.exempt && !item.assignment && item.recorded
   )).length
 
   const assignMembers = (ids: Iterable<number>, target: DutyTarget) => {
@@ -310,6 +327,7 @@ export default function WeekendDuty() {
       return {
         ...member,
         assignment: target === 'unassigned' ? null : target,
+        recorded: true,
       }
     }))
     setSelected(new Set())
@@ -334,7 +352,7 @@ export default function WeekendDuty() {
       if (assignment && member.unavailable_days.includes(assignment)) {
         assignment = assignment === 'saturday' ? 'sunday' : 'saturday'
       }
-      return { ...member, assignment }
+      return { ...member, assignment, recorded: true }
     }))
     setMessage('已沿用上周安排，保存后生效')
   }
@@ -350,7 +368,7 @@ export default function WeekendDuty() {
   }
 
   const save = async () => {
-    if (!board || unassignedCount > 0) return
+    if (!board) return
     setSaving(true)
     setError('')
     try {
@@ -369,7 +387,7 @@ export default function WeekendDuty() {
       const detail = (
         reason as { response?: { data?: { detail?: string } } }
       ).response?.data?.detail
-      setError(detail || '保存失败，请检查是否还有未安排或请假冲突')
+      setError(detail || '保存失败，请检查人员名单或请假冲突')
     } finally {
       setSaving(false)
     }
@@ -428,9 +446,10 @@ export default function WeekendDuty() {
             </span>
           )}
           <div className="flex w-full flex-wrap gap-2 md:ml-auto md:w-auto">
-            <Tag color={unassignedCount ? 'warning' : 'success'}>
-              {unassignedCount ? `待安排 ${unassignedCount} 人` : '已全部安排'}
+            <Tag color={pendingCount ? 'warning' : 'success'}>
+              {pendingCount ? `待确认 ${pendingCount} 人` : '已确认全部人员'}
             </Tag>
+            {restCount > 0 && <Tag>两天休息 {restCount} 人</Tag>}
             {exemptCount > 0 && <Tag>请假免排 {exemptCount} 人</Tag>}
           </div>
         </div>
@@ -504,7 +523,7 @@ export default function WeekendDuty() {
                 type="primary"
                 icon={<SaveOutlined />}
                 loading={saving}
-                disabled={unassignedCount > 0}
+                disabled={!board}
                 className="md:ml-auto"
                 onClick={save}
               >
@@ -514,6 +533,13 @@ export default function WeekendDuty() {
           )}
         </div>
 
+        {editable && pendingCount > 0 && (
+          <Alert
+            showIcon
+            type="info"
+            message={`保存时，仍在待安排区的 ${pendingCount} 人将记为周六、周日都休息`}
+          />
+        )}
         {!editable && (
           <Alert
             showIcon
@@ -536,8 +562,8 @@ export default function WeekendDuty() {
           <div className="grid gap-4 lg:grid-cols-3">
             <DutyColumn
               id="unassigned"
-              title="待安排"
-              subtitle="先把本周人员分到周六或周日"
+              title="待安排 / 两天休息"
+              subtitle="未选择人员在保存后记为周六、周日都休息"
               members={groups.unassigned}
               selected={selected}
               editable={editable}
