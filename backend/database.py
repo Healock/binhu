@@ -275,7 +275,7 @@ class DatabaseManager:
                         business_date DATE NOT NULL,
                         owner_user_id INT NOT NULL,
                         owner_username VARCHAR(50) NOT NULL DEFAULT '',
-                        template_version VARCHAR(30) NOT NULL DEFAULT 'daily-v1',
+                        template_version VARCHAR(30) NOT NULL DEFAULT 'daily-v2',
                         system_snapshot JSON NOT NULL,
                         manual_values JSON NOT NULL,
                         override_values JSON NOT NULL,
