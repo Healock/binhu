@@ -3,6 +3,7 @@
 from collections.abc import Iterable, Sequence
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+import unicodedata
 
 from services.grid_member_status import active_member_sql
 from services.personnel_positions import (
@@ -18,6 +19,97 @@ ZERO_METRICS = (0, 0, 0, 0, 0, 0, 0)
 
 def _normalized_name(value: Any) -> str:
     return str(value or "").strip().casefold()
+
+
+def _normalized_community(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip()
+
+
+async def get_community_alias_lookup(cur) -> dict[str, str]:
+    """读取社区正式名称和别名，返回“来源名称 -> 正式名称”映射。"""
+    await cur.execute(
+        """
+        SELECT community.name, alias.alias
+        FROM OnlineData._communities AS community
+        LEFT JOIN OnlineData._community_aliases AS alias
+          ON alias.community_id = community.id
+        """
+    )
+    lookup: dict[str, str] = {}
+    for formal_name, alias in await cur.fetchall():
+        formal = _normalized_community(formal_name)
+        if not formal:
+            continue
+        lookup[formal] = formal
+        normalized_alias = _normalized_community(alias)
+        if normalized_alias:
+            lookup[normalized_alias] = formal
+    return lookup
+
+
+def canonical_community(
+    value: Any,
+    alias_lookup: dict[str, str],
+) -> str:
+    """按当前别名配置返回正式社区名，未匹配时保留来源名称。"""
+    normalized = _normalized_community(value)
+    return alias_lookup.get(normalized, normalized or "未分配社区")
+
+
+def canonicalize_inspector_rows(
+    rows: Iterable[Sequence[Any]],
+    alias_lookup: dict[str, str],
+) -> list[tuple[Any, ...]]:
+    """合并“正式社区 + 别名社区”下的同一人员统计行。"""
+    totals: dict[tuple[str, str], list[int]] = {}
+    names: dict[tuple[str, str], str] = {}
+    for row in rows:
+        if len(row) < 9:
+            continue
+        community = canonical_community(row[0], alias_lookup)
+        name = str(row[1] or "").strip()
+        key = (community, _normalized_name(name))
+        if not key[1]:
+            continue
+        bucket = totals.setdefault(key, [0, 0, 0, 0, 0])
+        bucket[0] += int(row[2] or 0)
+        bucket[1] += int(row[3] or 0)
+        bucket[2] += int(row[4] or 0)
+        bucket[3] += int(row[5] or 0)
+        bucket[4] += int(row[7] or 0)
+        names.setdefault(key, name)
+
+    result = []
+    for (community, normalized_name), counts in totals.items():
+        total, unchecked, checked, completed, unable = counts
+        result.append(
+            (
+                community,
+                names[(community, normalized_name)],
+                total,
+                unchecked,
+                checked,
+                completed,
+                calculate_ratio(completed, total),
+                unable,
+                calculate_ratio(max(completed - unable, 0), completed),
+            )
+        )
+    result.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
+    return result
+
+
+def canonicalize_community_rows(
+    rows: Iterable[Sequence[Any]],
+    alias_lookup: dict[str, str],
+) -> list[tuple[Any, ...]]:
+    """按别名把社区统计行归并到正式社区，并重新计算比例。"""
+    normalized_rows = [
+        (canonical_community(row[0], alias_lookup), *row[1:8])
+        for row in rows
+        if len(row) >= 8
+    ]
+    return merge_community_rows(normalized_rows)
 
 
 def _is_zero_metric(value: Any) -> bool:
@@ -341,7 +433,7 @@ async def rebuild_community_report_from_ledger(
             (社区, 数据总数, 未核查, 已核查, 已完成,
              核查完成率, 无法见底数, 核查见底率)
         SELECT
-            ledger.community,
+            COALESCE(formal_community.name, ledger.community),
             COUNT(*),
             SUM(ledger.task_state = 'unchecked'),
             SUM(ledger.task_state = 'checked'),
@@ -356,6 +448,10 @@ async def rebuild_community_report_from_ledger(
                  )
                  ELSE 0 END
         FROM _daily_task_ledger AS ledger
+        LEFT JOIN OnlineData._community_aliases AS community_alias
+          ON community_alias.alias = ledger.community
+        LEFT JOIN OnlineData._communities AS formal_community
+          ON formal_community.id = community_alias.community_id
         LEFT JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(ledger.inspector))
         WHERE ledger.report_date = %s
@@ -368,8 +464,8 @@ async def rebuild_community_report_from_ledger(
               person.id IS NULL
               OR person.position IN ({placeholders})
           )
-        GROUP BY ledger.community
-        ORDER BY ledger.community
+        GROUP BY COALESCE(formal_community.name, ledger.community)
+        ORDER BY COALESCE(formal_community.name, ledger.community)
         """,
         (report_date, parser_type, *positions),
     )
