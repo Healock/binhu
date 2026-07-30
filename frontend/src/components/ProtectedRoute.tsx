@@ -4,9 +4,10 @@ import type { Role } from '../types'
 
 interface Props {
   requireRole?: Role
+  requireRoles?: Role[]
 }
 
-export default function ProtectedRoute({ requireRole }: Props) {
+export default function ProtectedRoute({ requireRole, requireRoles }: Props) {
   const { user, loading } = useAuth()
 
   if (loading) {
@@ -21,7 +22,10 @@ export default function ProtectedRoute({ requireRole }: Props) {
     return <Navigate to="/login" replace />
   }
 
-  if (requireRole && user.role !== requireRole) {
+  if (
+    (requireRole && user.role !== requireRole)
+    || (requireRoles && !requireRoles.includes(user.role))
+  ) {
     return <Navigate to="/" replace />
   }
 

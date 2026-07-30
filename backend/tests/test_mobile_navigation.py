@@ -37,16 +37,19 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertNotIn("users", member_items)
         self.assertNotIn("operations", member_items)
         self.assertNotIn("data_upload", member_items)
+        self.assertNotIn("work_log", member_items)
         admin_items = {
             item
             for group in admin["groups"]
             for item in group["items"]
         }
         self.assertIn("data_upload", admin_items)
+        self.assertIn("work_log", admin_items)
         self.assertNotIn("users", admin_items)
         self.assertIn("users", super_items)
         self.assertIn("operations", super_items)
         self.assertIn("data_upload", super_items)
+        self.assertIn("work_log", super_items)
 
     def test_normalize_filters_unknown_duplicate_and_forbidden_items(self):
         result = normalize_mobile_dock_config(

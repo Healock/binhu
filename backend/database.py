@@ -269,6 +269,33 @@ class DatabaseManager:
                       COLLATE=utf8mb4_unicode_ci
                 """)
                 await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _work_log_drafts (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        report_type VARCHAR(20) NOT NULL DEFAULT 'daily',
+                        business_date DATE NOT NULL,
+                        owner_user_id INT NOT NULL,
+                        owner_username VARCHAR(50) NOT NULL DEFAULT '',
+                        template_version VARCHAR(30) NOT NULL DEFAULT 'daily-v1',
+                        system_snapshot JSON NOT NULL,
+                        manual_values JSON NOT NULL,
+                        override_values JSON NOT NULL,
+                        version INT UNSIGNED NOT NULL DEFAULT 1,
+                        last_export_at DATETIME DEFAULT NULL,
+                        created_by INT NOT NULL,
+                        updated_by INT NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_work_log_type_date (
+                            report_type, business_date
+                        ),
+                        INDEX idx_work_log_owner_date (
+                            owner_user_id, business_date
+                        )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _visit_import_batches (
                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         import_type VARCHAR(20) NOT NULL DEFAULT 'detail',

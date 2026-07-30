@@ -235,6 +235,7 @@ export type MobileNavigationItemId =
   | 'online_query'
   | 'visit_summary'
   | 'data_upload'
+  | 'work_log'
   | 'grid_members'
   | 'communities'
   | 'users'
@@ -276,4 +277,77 @@ export const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
   leader: '组长',
   member: '组员',
+}
+
+// 工作日志
+export type WorkLogFieldType =
+  | 'number'
+  | 'decimal'
+  | 'percent'
+  | 'text'
+  | 'textarea'
+  | 'table'
+
+export interface WorkLogField {
+  id: string
+  label: string
+  type: WorkLogFieldType
+  source: 'system' | 'manual'
+  required: boolean
+  help?: string
+  columns?: Array<{ key: string; label: string }>
+}
+
+export interface WorkLogSection {
+  id: string
+  title: string
+  description?: string
+  fields: WorkLogField[]
+}
+
+export interface WorkLogSchema {
+  template_version: string
+  report_types: Array<{
+    value: 'daily' | 'weekly' | 'monthly'
+    label: string
+    enabled: boolean
+    hint?: string
+  }>
+  sections: WorkLogSection[]
+}
+
+export interface WorkLogSystemSnapshot {
+  business_date: string
+  issue_date: string
+  month: number
+  filename_prefix: string
+  values: Record<string, unknown>
+  sources: Record<string, {
+    label: string
+    available: boolean
+    message: string
+  }>
+}
+
+export interface WorkLogDraft {
+  id: number
+  report_type: 'daily'
+  business_date: string
+  owner: { id: number; username: string }
+  can_edit: boolean
+  template_version: string
+  system_snapshot: WorkLogSystemSnapshot
+  manual_values: Record<string, unknown>
+  override_values: Record<string, unknown>
+  version: number
+  last_export_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkLogMissingItem {
+  field_id: string
+  label: string
+  section: string
+  reason: string
 }
