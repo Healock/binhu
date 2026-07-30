@@ -142,6 +142,7 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
         (week_start,),
     )
     assignments = {int(row[0]): row[1] for row in await cur.fetchall()}
+    recorded_member_ids = set(assignments)
 
     previous_week = week_start - timedelta(days=7)
     previous_saturday, previous_sunday = weekend_dates(previous_week)
@@ -178,7 +179,8 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
         )
         if assignment in unavailable:
             assignment = None
-        if not exempt and assignment is None:
+        recorded = member["id"] in recorded_member_ids
+        if not exempt and not recorded:
             unassigned_count += 1
         reasons = sorted({
             str(period.get("reason") or "请假")
@@ -192,6 +194,7 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
             {
                 **member,
                 "assignment": assignment,
+                "recorded": recorded,
                 "previous_assignment": previous_assignments.get(member["id"]),
                 "unavailable_days": unavailable,
                 "exempt": exempt,
@@ -229,7 +232,7 @@ async def save_weekend_board(
             if unknown_ids:
                 raise ValueError("排班中包含不存在或不参与排班的人员")
             if missing_ids:
-                raise ValueError("请为本周全部组长和组员完成排班")
+                raise ValueError("请提交本周全部备勤人员的安排")
 
             rows: list[tuple[Any, ...]] = []
             for member_id, member in members.items():
@@ -240,11 +243,15 @@ async def save_weekend_board(
                         raise ValueError(f"{member['name']}周末两天都请假，无需排班")
                     duty_date = None
                 else:
-                    if assignment not in {"saturday", "sunday"}:
-                        raise ValueError(f"请为{member['name']}选择周六或周日")
-                    if assignment in unavailable:
+                    if assignment not in {None, "saturday", "sunday"}:
+                        raise ValueError(f"{member['name']}的备勤选项无效")
+                    if assignment is not None and assignment in unavailable:
                         raise ValueError(f"{member['name']}所选日期处于请假状态")
-                    duty_date = saturday if assignment == "saturday" else sunday
+                    duty_date = (
+                        saturday
+                        if assignment == "saturday"
+                        else sunday if assignment == "sunday" else None
+                    )
                 rows.append(
                     (
                         week_start,

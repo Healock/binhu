@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 import os
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -22,6 +23,7 @@ from services.personnel_attendance import (
     is_member_on_duty,
     normalize_week_start,
     period_covers,
+    save_weekend_board,
     weekend_dates,
 )
 
@@ -236,6 +238,123 @@ class PersonnelAttendanceRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(board["positions"], ["中队长"])
         self.assertEqual(board["unassigned_count"], 1)
+
+    async def test_saved_null_duty_means_two_rest_days_and_is_complete(self):
+        class Cursor:
+            def __init__(self):
+                self.last_sql = ""
+                self.last_params = None
+
+            async def execute(self, sql, params=None):
+                self.last_sql = " ".join(str(sql).split())
+                self.last_params = params
+
+            async def fetchone(self):
+                if "FROM OnlineData._system_config" in self.last_sql:
+                    return ('["组员"]',)
+                return None
+
+            async def fetchall(self):
+                if "FROM _grid_members" in self.last_sql:
+                    return [(1, "张三", "长板", "组员")]
+                if (
+                    "FROM _personnel_weekend_duty" in self.last_sql
+                    and self.last_params == (date(2026, 7, 27),)
+                ):
+                    return [(1, None)]
+                return []
+
+        board = await get_weekend_board(Cursor(), date(2026, 7, 27))
+
+        self.assertTrue(board["complete"])
+        self.assertEqual(board["unassigned_count"], 0)
+        self.assertIsNone(board["members"][0]["assignment"])
+        self.assertTrue(board["members"][0]["recorded"])
+
+    async def test_save_accepts_null_duty_but_requires_every_member(self):
+        initial_board = {
+            "members": [{
+                "id": 1,
+                "name": "张三",
+                "community": "长板",
+                "position": "组员",
+                "unavailable_days": [],
+                "exempt": False,
+            }],
+        }
+        saved_board = {
+            **initial_board,
+            "complete": True,
+            "unassigned_count": 0,
+        }
+
+        class Cursor:
+            def __init__(self):
+                self.rows = []
+
+            async def executemany(self, _sql, rows):
+                self.rows = list(rows)
+
+        class CursorContext:
+            def __init__(self, cursor):
+                self.cursor = cursor
+
+            async def __aenter__(self):
+                return self.cursor
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Connection:
+            def __init__(self):
+                self.test_cursor = Cursor()
+                self.committed = False
+                self.rolled_back = False
+
+            async def begin(self):
+                return None
+
+            def cursor(self):
+                return CursorContext(self.test_cursor)
+
+            async def commit(self):
+                self.committed = True
+
+            async def rollback(self):
+                self.rolled_back = True
+
+        conn = Connection()
+        board_loader = AsyncMock(side_effect=[initial_board, saved_board])
+        with patch(
+            "services.personnel_attendance.get_weekend_board",
+            board_loader,
+        ):
+            result = await save_weekend_board(
+                conn,
+                requested_date=date(2026, 7, 27),
+                raw_assignments={1: None},
+                updated_by=9,
+            )
+
+        self.assertIs(result, saved_board)
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        self.assertEqual(len(conn.test_cursor.rows), 1)
+        self.assertIsNone(conn.test_cursor.rows[0][2])
+
+        missing_conn = Connection()
+        with patch(
+            "services.personnel_attendance.get_weekend_board",
+            AsyncMock(return_value=initial_board),
+        ):
+            with self.assertRaisesRegex(ValueError, "全部备勤人员"):
+                await save_weekend_board(
+                    missing_conn,
+                    requested_date=date(2026, 7, 27),
+                    raw_assignments={},
+                    updated_by=9,
+                )
+        self.assertTrue(missing_conn.rolled_back)
 
 
 if __name__ == "__main__":

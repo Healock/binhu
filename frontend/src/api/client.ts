@@ -509,6 +509,7 @@ export interface WeekendDutyMember {
   community: string
   position: string
   assignment: WeekendDutyDay | null
+  recorded: boolean
   previous_assignment: WeekendDutyDay | null
   unavailable_days: WeekendDutyDay[]
   exempt: boolean
