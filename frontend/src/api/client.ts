@@ -190,6 +190,24 @@ export async function getReportTypes(): Promise<{ data: string[]; implemented: s
   return data
 }
 
+export interface SummaryReportConfig {
+  available_types: string[]
+  selected_types: string[]
+  message?: string
+}
+
+export async function getSummaryReportConfig(): Promise<SummaryReportConfig> {
+  const { data } = await api.get('/stats/summary-config')
+  return data
+}
+
+export async function updateSummaryReportConfig(
+  types: string[],
+): Promise<SummaryReportConfig> {
+  const { data } = await api.put('/stats/summary-config', { types })
+  return data
+}
+
 export interface OnlineDataOverview {
   exists: boolean
   parser_type: string
@@ -428,9 +446,17 @@ export interface WeekendDutyBoard {
   week_start: string
   saturday: string
   sunday: string
+  positions: string[]
   members: WeekendDutyMember[]
   complete: boolean
   unassigned_count: number
+}
+
+export interface AttendanceScheduleStatus {
+  start_date: string
+  end_date: string
+  complete: boolean
+  missing_week_starts: string[]
 }
 
 export interface AttendanceHistoryItem {
@@ -465,6 +491,19 @@ export async function getWeekendDuty(
 ): Promise<WeekendDutyBoard> {
   const { data } = await api.get('/personnel/attendance/weekend-duty', {
     params: { week_start: weekStart },
+  })
+  return data
+}
+
+export async function getAttendanceScheduleStatus(
+  startDate: string,
+  endDate: string,
+): Promise<AttendanceScheduleStatus> {
+  const { data } = await api.get('/personnel/attendance/status', {
+    params: {
+      start_date: startDate,
+      end_date: endDate,
+    },
   })
   return data
 }

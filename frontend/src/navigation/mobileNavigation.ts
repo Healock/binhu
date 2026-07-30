@@ -12,6 +12,7 @@ export type NavigationIconName =
   | 'summary'
   | 'query'
   | 'visit'
+  | 'upload'
   | 'members'
   | 'communities'
   | 'users'
@@ -64,6 +65,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '走访汇总',
         shortLabel: '走访汇总',
         icon: 'visit',
+      },
+      {
+        id: 'data_upload',
+        path: '/data-upload',
+        label: '数据上传中心',
+        shortLabel: '数据上传',
+        icon: 'upload',
+        roles: ['super_admin', 'admin'],
       },
     ],
   },

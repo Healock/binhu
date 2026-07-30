@@ -35,6 +35,24 @@ test('超级管理员默认 Dock 包含用户管理和运维中心', () => {
     config.groups.some(group => group.items.includes('operations')),
     true,
   )
+  assert.equal(
+    config.groups.some(group => group.items.includes('data_upload')),
+    true,
+  )
+})
+
+test('数据上传中心只出现在管理员和超级管理员导航中', () => {
+  const member = defaultMobileDockConfig('member')
+  const admin = defaultMobileDockConfig('admin')
+
+  assert.equal(
+    member.groups.some(group => group.items.includes('data_upload')),
+    false,
+  )
+  assert.equal(
+    admin.groups.some(group => group.items.includes('data_upload')),
+    true,
+  )
 })
 
 test('读取配置时去重、过滤未知项和无权限页面并保留顺序', () => {

@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import MobileReportTable from '../components/MobileReportTable'
+import SummaryReportConfigButton from '../components/SummaryReportConfigButton'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader, Panel } from '../components/ui'
 import {
@@ -291,6 +292,7 @@ export default function Dashboard() {
           >
             生成日报
           </Button>
+          {canManualSync && <SummaryReportConfigButton />}
           {msg && report.exists && (
             <span className={`text-sm ${msg.includes('成功') ? 'text-green-700' : 'text-orange-700'}`}>
               {msg}

@@ -3,6 +3,7 @@ from decimal import Decimal
 import os
 import unittest
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -12,10 +13,12 @@ from deps import require_admin
 from routers.personnel_attendance import (
     WeekendAssignment,
     WeekendDutyUpdate,
+    read_attendance_status,
     router as attendance_router,
 )
 from services.personnel_attendance import (
     allocate_person_days,
+    get_weekend_board,
     is_member_on_duty,
     normalize_week_start,
     period_covers,
@@ -63,6 +66,15 @@ class PersonnelAttendanceTests(unittest.TestCase):
         self.assertFalse(any(
             dependency.call is require_admin
             for dependency in get_route.dependant.dependencies
+        ))
+        status_route = next(
+            route
+            for route in attendance_router.routes
+            if route.path == "/api/personnel/attendance/status"
+        )
+        self.assertFalse(any(
+            dependency.call is require_admin
+            for dependency in status_route.dependant.dependencies
         ))
 
     def test_week_is_always_normalized_to_monday(self):
@@ -177,6 +189,53 @@ class PersonnelAttendanceTests(unittest.TestCase):
             result["missing_week_starts"],
             [date(2026, 7, 27)],
         )
+
+
+class PersonnelAttendanceRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_status_rejects_invalid_range_before_query(self):
+        with self.assertRaises(HTTPException) as raised:
+            await read_attendance_status(
+                start_date=date(2026, 8, 2),
+                end_date=date(2026, 8, 1),
+                conn=None,
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_weekend_board_uses_configured_positions(self):
+        class Cursor:
+            def __init__(self):
+                self.last_sql = ""
+                self.last_params = None
+
+            async def execute(self, sql, params=None):
+                self.last_sql = " ".join(str(sql).split())
+                self.last_params = params
+
+            async def fetchone(self):
+                if "FROM OnlineData._system_config" in self.last_sql:
+                    return ('["中队长"]',)
+                return None
+
+            async def fetchall(self):
+                if "FROM _grid_members" in self.last_sql:
+                    self.assert_configured_position_query()
+                    return [(1, "队长甲", "长板", "中队长")]
+                return []
+
+            def assert_configured_position_query(self):
+                if self.last_params != ["中队长"]:
+                    raise AssertionError(
+                        f"unexpected position params: {self.last_params!r}"
+                    )
+
+        board = await get_weekend_board(Cursor(), date(2026, 7, 27))
+
+        self.assertEqual(
+            [member["position"] for member in board["members"]],
+            ["中队长"],
+        )
+        self.assertEqual(board["positions"], ["中队长"])
+        self.assertEqual(board["unassigned_count"], 1)
 
 
 if __name__ == "__main__":

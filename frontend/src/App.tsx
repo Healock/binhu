@@ -16,6 +16,7 @@ import SystemSettings from './pages/SystemSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
 import OperationsCenter from './pages/OperationsCenter'
 import VisitSummary from './pages/VisitSummary'
+import DataUploadCenter from './pages/DataUploadCenter'
 import Login from './pages/Login'
 
 function App() {
@@ -32,6 +33,7 @@ function App() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/query" element={<DataQuery />} />
               <Route path="/visit-summary" element={<VisitSummary />} />
+              <Route path="/data-upload" element={<DataUploadCenter />} />
               <Route path="/grid-members" element={<GridMembers />} />
               <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />
               <Route path="/communities" element={<Communities />} />

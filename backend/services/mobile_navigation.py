@@ -14,6 +14,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
         "online_summary",
         "online_query",
         "visit_summary",
+        "data_upload",
     ),
     "resources": (
         "grid_members",
@@ -27,6 +28,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
 }
 
 SUPER_ADMIN_ITEMS = {"users", "operations"}
+ADMIN_ITEMS = {"data_upload"}
 
 
 def normalize_mobile_navigation_mode(value: Any) -> str:
@@ -38,7 +40,11 @@ def normalize_mobile_navigation_mode(value: Any) -> str:
 
 
 def _item_is_accessible(item_id: str, role: str) -> bool:
-    return item_id not in SUPER_ADMIN_ITEMS or role == "super_admin"
+    if item_id in SUPER_ADMIN_ITEMS:
+        return role == "super_admin"
+    if item_id in ADMIN_ITEMS:
+        return role in {"admin", "super_admin"}
+    return True
 
 
 def default_mobile_dock_config(role: str) -> dict[str, list[dict[str, Any]]]:

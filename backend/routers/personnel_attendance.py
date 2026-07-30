@@ -10,9 +10,14 @@ from database import get_db
 from deps import require_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.personnel_attendance import (
+    get_attendance_context,
     get_weekend_board,
     normalize_week_start,
     save_weekend_board,
+)
+from services.personnel_positions import (
+    WEEKEND_DUTY_POSITION_CONFIG_KEY,
+    get_configured_positions,
 )
 
 router = APIRouter(
@@ -45,6 +50,40 @@ async def read_weekend_duty(
 ):
     async with conn.cursor() as cur:
         return await get_weekend_board(cur, week_start)
+
+
+@router.get("/status")
+async def read_attendance_status(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    conn=Depends(get_db),
+):
+    """检查所选区间内是否还有双休日未排班。"""
+    if start_date > end_date:
+        raise HTTPException(400, "起始日期不能晚于结束日期")
+    if (end_date - start_date).days > 366:
+        raise HTTPException(400, "排班检查区间不能超过 366 天")
+    async with conn.cursor() as cur:
+        duty_positions = await get_configured_positions(
+            cur,
+            WEEKEND_DUTY_POSITION_CONFIG_KEY,
+        )
+        context = await get_attendance_context(
+            cur,
+            start_date=start_date,
+            end_date=end_date,
+            selected_positions=set(duty_positions),
+        )
+    missing_weeks = sorted(context["missing_week_starts"])
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "complete": not missing_weeks,
+        "missing_week_starts": [
+            week_start.isoformat()
+            for week_start in missing_weeks
+        ],
+    }
 
 
 @router.put("/weekend-duty")

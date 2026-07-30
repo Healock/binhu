@@ -79,6 +79,9 @@ export default function SystemSettings() {
   const [visitPositions, setVisitPositions] = useState<PersonnelPosition[]>(
     [...DEFAULT_SUMMARY_POSITIONS],
   )
+  const [weekendDutyPositions, setWeekendDutyPositions] = useState<
+    PersonnelPosition[]
+  >([...DEFAULT_SUMMARY_POSITIONS])
   const [savingPositions, setSavingPositions] = useState(false)
   const [positionsMsg, setPositionsMsg] = useState('')
   const [clock, setClock] = useState(Date.now())
@@ -97,6 +100,9 @@ export default function SystemSettings() {
           configuredVisitPositions.length
             ? configuredVisitPositions
             : [...DEFAULT_SUMMARY_POSITIONS],
+        )
+        setWeekendDutyPositions(
+          parseSummaryPositions(config.weekend_duty_positions),
         )
         setSchedule(currentSchedule)
         setEnabled(currentSchedule.enabled)
@@ -167,8 +173,12 @@ export default function SystemSettings() {
   }
 
   const handleSavePositions = async () => {
-    if (!onlinePositions.length || !visitPositions.length) {
-      setPositionsMsg('在线汇总和出租房走访汇总都至少选择一个岗位')
+    if (
+      !onlinePositions.length
+      || !visitPositions.length
+      || !weekendDutyPositions.length
+    ) {
+      setPositionsMsg('每项岗位范围都至少选择一个岗位')
       return
     }
     setSavingPositions(true)
@@ -177,8 +187,9 @@ export default function SystemSettings() {
       await updateSystemConfig({
         online_summary_positions: JSON.stringify(onlinePositions),
         visit_summary_positions: JSON.stringify(visitPositions),
+        weekend_duty_positions: JSON.stringify(weekendDutyPositions),
       })
-      setPositionsMsg('统计岗位已保存，重新查询汇总后生效')
+      setPositionsMsg('岗位范围已保存，重新打开相关页面后生效')
     } catch (error: any) {
       setPositionsMsg(error?.response?.data?.detail || '保存失败')
     } finally {
@@ -280,11 +291,11 @@ export default function SystemSettings() {
       </Panel>
 
       <Panel
-        title="汇总统计岗位"
-        description="人员仍会保留在人员管理中，只有这里选中的岗位才进入对应汇总"
+        title="岗位范围"
+        description="配置参与汇总和双休日备勤的岗位；人员资料本身不会被删除"
       >
         <div className="flex flex-col gap-5">
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className="grid gap-5 md:grid-cols-3">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-slate-700">
                 在线数据汇总
@@ -319,12 +330,29 @@ export default function SystemSettings() {
                 maxTagCount="responsive"
               />
             </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                双休日备勤
+              </label>
+              <Select<PersonnelPosition[]>
+                mode="multiple"
+                value={weekendDutyPositions}
+                onChange={setWeekendDutyPositions}
+                options={PERSONNEL_POSITIONS.map(position => ({
+                  value: position,
+                  label: position,
+                }))}
+                placeholder="选择需要每周排班的岗位"
+                className="w-full"
+                maxTagCount="responsive"
+              />
+            </div>
           </div>
           <Alert
             type="info"
             showIcon
             message="默认统计组长和组员"
-            description="这里配置的是出租房汇总。自购房汇总固定统计“自购房”岗位；人员管理中没有登记的姓名暂时归入出租房，避免未知数据被直接隐藏。"
+            description="出租房走访和双休日备勤可以分别配置；自购房汇总仍固定统计“自购房”岗位。修改双休日备勤岗位后，排班页面和人均值计算都会使用新范围。"
           />
           <div className="flex justify-end">
             <Button
@@ -334,10 +362,11 @@ export default function SystemSettings() {
                 loading
                 || !onlinePositions.length
                 || !visitPositions.length
+                || !weekendDutyPositions.length
               }
               onClick={handleSavePositions}
             >
-              保存统计岗位
+              保存岗位范围
             </Button>
           </div>
           {positionsMsg && (

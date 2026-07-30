@@ -10,6 +10,7 @@ import {
   SearchOutlined,
   SettingOutlined,
   TeamOutlined,
+  UploadOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import type { NavigationIconName } from '../navigation/mobileNavigation'
@@ -21,6 +22,7 @@ const ICONS = {
   summary: BarChartOutlined,
   query: SearchOutlined,
   visit: ReadOutlined,
+  upload: UploadOutlined,
   members: TeamOutlined,
   communities: ApartmentOutlined,
   users: UserOutlined,
