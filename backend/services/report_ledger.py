@@ -160,7 +160,11 @@ async def refresh_daily_ledger(
     inner_sql = f"""
         SELECT
             t._row_key AS row_key,
-            COALESCE(NULLIF(TRIM(t.`{community}`), ''), '未分配社区')
+            COALESCE(
+                NULLIF(TRIM(formal_community.name), ''),
+                NULLIF(TRIM(t.`{community}`), ''),
+                '未分配社区'
+            )
                 AS community,
             TRIM(IFNULL(t.`{inspector}`, '')) AS inspector,
             {state_sql} AS task_state,
@@ -171,6 +175,10 @@ async def refresh_daily_ledger(
             {previous_unfinished_sql} AS previous_unfinished
         FROM {today} t
         {join_sql}
+        LEFT JOIN OnlineData._community_aliases AS community_alias
+          ON community_alias.alias = TRIM(t.`{community}`)
+        LEFT JOIN OnlineData._communities AS formal_community
+          ON formal_community.id = community_alias.community_id
     """
     if not previous:
         derived_sql = f"""
@@ -257,6 +265,7 @@ async def refresh_daily_ledger(
                 0,
                 0,
                 COALESCE(
+                    NULLIF(TRIM(formal_community.name), ''),
                     NULLIF(TRIM(p.`{previous_community}`), ''),
                     '未分配社区'
                 ),
@@ -266,6 +275,10 @@ async def refresh_daily_ledger(
                 {builder.ledger_reached_bottom_sql("p")}
             FROM {previous} p
             LEFT JOIN {today} t ON t._row_key=p._row_key
+            LEFT JOIN OnlineData._community_aliases AS community_alias
+              ON community_alias.alias = TRIM(p.`{previous_community}`)
+            LEFT JOIN OnlineData._communities AS formal_community
+              ON formal_community.id = community_alias.community_id
             WHERE t._row_key IS NULL
               AND ({previous_state}) <> 'completed'
             ON DUPLICATE KEY UPDATE
@@ -359,7 +372,7 @@ async def aggregate_ledger_into_reports(
             核查完成率, 无法见底数, 核查见底率
         )
         SELECT
-            community,
+            COALESCE(formal_community.name, ledger.community),
             inspector,
             COUNT(*),
             SUM(task_state='unchecked'),
@@ -373,17 +386,23 @@ async def aggregate_ledger_into_reports(
                     2
                  )
                  ELSE 0 END
-        FROM _daily_task_ledger
-        WHERE report_date=%s
-          AND parser_type=%s
-          AND included=1
-          AND inspector <> ''
-          AND inspector <> '核查人'
-          AND community <> ''
-          AND community <> '社区'
-          AND community <> '下发社区'
-        GROUP BY community, inspector
-        ORDER BY community, inspector
+        FROM _daily_task_ledger AS ledger
+        LEFT JOIN OnlineData._community_aliases AS community_alias
+          ON community_alias.alias = ledger.community
+        LEFT JOIN OnlineData._communities AS formal_community
+          ON formal_community.id = community_alias.community_id
+        WHERE ledger.report_date=%s
+          AND ledger.parser_type=%s
+          AND ledger.included=1
+          AND ledger.inspector <> ''
+          AND ledger.inspector <> '核查人'
+          AND ledger.community <> ''
+          AND ledger.community <> '社区'
+          AND ledger.community <> '下发社区'
+        GROUP BY COALESCE(formal_community.name, ledger.community),
+                 ledger.inspector
+        ORDER BY COALESCE(formal_community.name, ledger.community),
+                 ledger.inspector
         """,
         (report_date, builder.parser_type),
     )

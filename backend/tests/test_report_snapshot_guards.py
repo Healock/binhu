@@ -171,6 +171,7 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
                 [(snapshot_date,)],
                 [(snapshot_date,)],
                 [inspector_row],
+                [],
             ]
         )
 
@@ -281,8 +282,8 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.execute.await_count, 1)
 
     async def test_single_day_reads_persisted_community_report(self):
-        inspector_row = ("阅湖", "张三", 0, 0, 0, 0, 0, 0, 0)
-        community_row = ("阅湖", 7, 7, 0, 0, 0, 0, 0)
+        inspector_row = ("南厍村", "张三", 0, 0, 0, 0, 0, 0, 0)
+        community_row = ("南厍村", 7, 7, 0, 0, 0, 0, 0)
         pool, cursor = make_database(
             fetchone_values=[("snapshot",), ("inspector",)],
             fetchall_values=[
@@ -309,6 +310,7 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
                     ("无法见底数",),
                     ("核查见底率",),
                 ],
+                [("南厍", "南厍村")],
             ],
         )
 
@@ -329,6 +331,10 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["community"]["data"][0]["数据总数"],
             7,
+        )
+        self.assertEqual(
+            result["community"]["data"][0]["社区"],
+            "南厍",
         )
         executed_sql = [
             " ".join(call.args[0].split())

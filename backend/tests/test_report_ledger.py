@@ -109,6 +109,14 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("candidate.previous_unfinished=1", sql)
         self.assertIn("THEN 'carryover'", sql)
         self.assertIn("ON DUPLICATE KEY UPDATE", sql)
+        self.assertIn(
+            "LEFT JOIN OnlineData._community_aliases AS community_alias",
+            sql,
+        )
+        self.assertIn(
+            "NULLIF(TRIM(formal_community.name), '')",
+            sql,
+        )
 
     async def test_removed_unfinished_task_is_kept_as_excluded_tombstone(self):
         cursor = make_cursor(

@@ -45,6 +45,20 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["implemented"])
+        insert_sql = next(
+            call.args[0]
+            for call in cursor.execute.await_args_list
+            if "INSERT INTO `2026-07-27_daily_summary`" in call.args[0]
+        )
+        normalized_insert = " ".join(insert_sql.split())
+        self.assertIn(
+            "LEFT JOIN OnlineData._community_aliases",
+            normalized_insert,
+        )
+        self.assertIn(
+            "GROUP BY COALESCE(formal_community.name, t.社区)",
+            normalized_insert,
+        )
         update_sql = next(
             call.args[0]
             for call in cursor.execute.await_args_list

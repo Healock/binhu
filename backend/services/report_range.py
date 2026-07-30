@@ -17,8 +17,12 @@ from services.personnel_positions import (
 from services.report_members import (
     aggregate_community_rows,
     calculate_ratio,
+    canonical_community,
+    canonicalize_community_rows,
+    canonicalize_inspector_rows,
     complete_inspector_rows,
     get_active_members,
+    get_community_alias_lookup,
     merge_community_rows,
     merge_inspector_rows,
 )
@@ -315,16 +319,29 @@ async def get_report_range(
                 end_date,
                 parser_type,
             )
+            alias_lookup = await get_community_alias_lookup(cur)
+            inspector_rows = canonicalize_inspector_rows(
+                inspector_rows,
+                alias_lookup,
+            )
             inspector_rows = await complete_inspector_rows(
                 cur,
                 inspector_rows,
                 end_date,
+            )
+            inspector_rows = canonicalize_inspector_rows(
+                inspector_rows,
+                alias_lookup,
             )
             community_rows = await _aggregate_range_community_ledger(
                 cur,
                 start_date,
                 end_date,
                 parser_type,
+            )
+            community_rows = canonicalize_community_rows(
+                community_rows,
+                alias_lookup,
             )
             community_rows = _add_missing_zero_communities(
                 community_rows,
@@ -364,6 +381,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
     try:
         async with conn.cursor() as cur:
             summary_types = await _get_summary_types(cur)
+            alias_lookup = await get_community_alias_lookup(cur)
             all_inspector_rows = []
             all_community_rows = []
             covered_dates: set[str] = set()
@@ -395,18 +413,30 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                     end_date,
                     parser_type,
                 )
+                rows = canonicalize_inspector_rows(
+                    rows,
+                    alias_lookup,
+                )
                 rows = await complete_inspector_rows(
                     cur,
                     rows,
                     end_date,
                 )
+                rows = canonicalize_inspector_rows(
+                    rows,
+                    alias_lookup,
+                )
                 all_inspector_rows.extend(rows)
+                community_rows = await _aggregate_range_community_ledger(
+                    cur,
+                    start_date,
+                    end_date,
+                    parser_type,
+                )
                 all_community_rows.extend(
-                    await _aggregate_range_community_ledger(
-                        cur,
-                        start_date,
-                        end_date,
-                        parser_type,
+                    canonicalize_community_rows(
+                        community_rows,
+                        alias_lookup,
                     )
                 )
 
@@ -419,7 +449,16 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                     ),
                 }
 
-            active_members = await get_active_members(cur, end_date)
+            active_members = [
+                (
+                    canonical_community(community, alias_lookup),
+                    name,
+                )
+                for community, name in await get_active_members(
+                    cur,
+                    end_date,
+                )
+            ]
             inspector_rows = merge_inspector_rows(
                 all_inspector_rows,
                 active_members,

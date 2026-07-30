@@ -15,6 +15,9 @@ except ModuleNotFoundError:
     sys.modules["aiomysql"] = aiomysql_stub
 
 from services.report_members import (
+    canonical_community,
+    canonicalize_community_rows,
+    canonicalize_inspector_rows,
     complete_inspector_rows,
     get_active_members,
     get_missing_zero_rows,
@@ -26,6 +29,33 @@ from services.report_members import (
 
 
 class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
+    def test_community_alias_combines_historical_report_rows(self):
+        aliases = {"南厍": "南厍", "南厍村": "南厍"}
+        inspector_rows = canonicalize_inspector_rows(
+            [
+                ("南厍村", "张三", 5, 0, 0, 5, 1, 0, 1),
+                ("南厍", "张三", 1, 1, 0, 0, 0, 0, 0),
+            ],
+            aliases,
+        )
+        community_rows = canonicalize_community_rows(
+            [
+                ("南厍村", 5, 0, 0, 5, 1, 0, 1),
+                ("南厍", 1, 1, 0, 0, 0, 0, 0),
+            ],
+            aliases,
+        )
+
+        self.assertEqual(canonical_community(" 南厍村 ", aliases), "南厍")
+        self.assertEqual(
+            inspector_rows,
+            [("南厍", "张三", 6, 1, 0, 5, 0.83, 0, 1.0)],
+        )
+        self.assertEqual(
+            community_rows,
+            [("南厍", 6, 1, 0, 5, 0.83, 0, 1.0)],
+        )
+
     def test_missing_active_member_gets_zero_row_without_duplicates(self):
         existing = [
             ("业务社区", "张三", 2, 0, 0, 2, 1, 0, 1),
@@ -214,6 +244,14 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         sql, params = ledger_call.args
         normalized = " ".join(sql.split())
         self.assertIn("FROM _daily_task_ledger AS ledger", normalized)
+        self.assertIn(
+            "LEFT JOIN OnlineData._community_aliases",
+            normalized,
+        )
+        self.assertIn(
+            "COALESCE(formal_community.name, ledger.community)",
+            normalized,
+        )
         self.assertNotIn("ledger.inspector <>", normalized)
         self.assertIn("person.id IS NULL", normalized)
         self.assertIn("person.position IN (%s, %s)", normalized)

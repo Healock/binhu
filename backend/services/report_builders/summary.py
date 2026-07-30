@@ -12,8 +12,13 @@ from services.personnel_positions import (
 )
 from services.report_builders import BUILDERS
 from services.report_members import (
+    calculate_ratio,
+    canonical_community,
+    canonicalize_community_rows,
+    canonicalize_inspector_rows,
     complete_inspector_rows,
     get_active_members,
+    get_community_alias_lookup,
     merge_inspector_rows,
 )
 
@@ -181,20 +186,38 @@ async def build_summary(
             await cur.execute(f"""
                 INSERT INTO {t_summary} (社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数, 网格员人数)
                 SELECT
-                    t.社区,
-                    SUM(t.数据总数),
-                    SUM(t.未核查),
-                    SUM(t.已核查),
-                    SUM(t.已完成),
-                    SUM(t.无法见底数),
-                    COALESCE((
-                        SELECT COUNT(*) FROM OnlineData._grid_members
-                        WHERE community = t.社区
-                          AND position IN ({position_placeholders})
-                          AND {active_condition}
-                    ), 0)
-                FROM ({union_sql}) t
-                GROUP BY t.社区
+                    report_rows.社区,
+                    report_rows.数据总数,
+                    report_rows.未核查,
+                    report_rows.已核查,
+                    report_rows.已完成,
+                    report_rows.无法见底数,
+                    COALESCE(member_counts.网格员人数, 0)
+                FROM (
+                    SELECT
+                        COALESCE(formal_community.name, t.社区) AS 社区,
+                        SUM(t.数据总数) AS 数据总数,
+                        SUM(t.未核查) AS 未核查,
+                        SUM(t.已核查) AS 已核查,
+                        SUM(t.已完成) AS 已完成,
+                        SUM(t.无法见底数) AS 无法见底数
+                    FROM ({union_sql}) t
+                    LEFT JOIN OnlineData._community_aliases
+                        AS community_alias
+                      ON community_alias.alias = t.社区
+                    LEFT JOIN OnlineData._communities
+                        AS formal_community
+                      ON formal_community.id = community_alias.community_id
+                    GROUP BY COALESCE(formal_community.name, t.社区)
+                ) AS report_rows
+                LEFT JOIN (
+                    SELECT community, COUNT(*) AS 网格员人数
+                    FROM OnlineData._grid_members
+                    WHERE position IN ({position_placeholders})
+                      AND {active_condition}
+                    GROUP BY community
+                ) AS member_counts
+                  ON member_counts.community = report_rows.社区
             """, (*positions, date_str))
 
             await cur.execute(f"""
@@ -248,6 +271,7 @@ async def get_summary(date_str: str) -> dict:
                 }
 
             summary_types = await _get_summary_types(cur)
+            alias_lookup = await get_community_alias_lookup(cur)
             all_inspector_rows = []
             for parser_type in summary_types:
                 builder = BUILDERS.get(parser_type)
@@ -267,12 +291,21 @@ async def get_summary(date_str: str) -> dict:
                 await cur.execute(
                     f"SELECT * FROM {inspector_table} ORDER BY 社区, 姓名"
                 )
+                raw_inspector_rows = canonicalize_inspector_rows(
+                    await cur.fetchall(),
+                    alias_lookup,
+                )
                 inspector_rows = await complete_inspector_rows(
                     cur,
-                    await cur.fetchall(),
+                    raw_inspector_rows,
                     date_str,
                 )
-                all_inspector_rows.extend(inspector_rows)
+                all_inspector_rows.extend(
+                    canonicalize_inspector_rows(
+                        inspector_rows,
+                        alias_lookup,
+                    )
+                )
 
             if not all_inspector_rows:
                 return {
@@ -280,7 +313,16 @@ async def get_summary(date_str: str) -> dict:
                     "message": f"{date_str} 没有可用的分汇总表",
                 }
 
-            active_members = await get_active_members(cur, date_str)
+            active_members = [
+                (
+                    canonical_community(community, alias_lookup),
+                    name,
+                )
+                for community, name in await get_active_members(
+                    cur,
+                    date_str,
+                )
+            ]
             inspector_rows = merge_inspector_rows(
                 all_inspector_rows,
                 active_members,
@@ -289,7 +331,30 @@ async def get_summary(date_str: str) -> dict:
                 f"SELECT {', '.join(SUMMARY_OUTPUT_COLS)} "
                 f"FROM {t_summary} ORDER BY 社区"
             )
-            community_rows = await cur.fetchall()
+            community_rows = canonicalize_community_rows(
+                await cur.fetchall(),
+                alias_lookup,
+            )
+            member_counts: dict[str, int] = {}
+            for community, _ in active_members:
+                formal_community = canonical_community(
+                    community,
+                    alias_lookup,
+                )
+                member_counts[formal_community] = (
+                    member_counts.get(formal_community, 0) + 1
+                )
+            community_rows = [
+                (
+                    *row,
+                    member_counts.get(str(row[0]), 0),
+                    calculate_ratio(
+                        int(row[4] or 0),
+                        member_counts.get(str(row[0]), 0),
+                    ),
+                )
+                for row in community_rows
+            ]
 
         inspector_table = {
             "columns": SUMMARY_INSPECTOR_OUTPUT_COLS,
