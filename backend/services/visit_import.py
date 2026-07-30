@@ -135,12 +135,8 @@ def _text(value: Any) -> str:
 
 
 def normalize_community(value: Any) -> str:
-    text = unicodedata.normalize("NFKC", _text(value)).strip()
-    for suffix in ("社区", "村"):
-        if text.endswith(suffix):
-            text = text[: -len(suffix)].strip()
-            break
-    return text
+    """保留来源中的完整社区名称，只统一字符形态并清理首尾空格。"""
+    return unicodedata.normalize("NFKC", _text(value)).strip()
 
 
 def normalize_address(value: Any) -> str:
@@ -366,7 +362,7 @@ def parse_visit_workbook(
                 raw_community = _require_text(raw, "村社区", max_length=200)
                 community = normalize_community(raw_community)
                 if not community:
-                    raise ValueError("村社区去除“社区”或“村”后不能为空")
+                    raise ValueError("村社区不能为空")
                 entry_method = _require_text(raw, "进入方式", max_length=20)
                 if entry_method not in ALLOWED_ENTRY_METHODS:
                     raise ValueError("进入方式只能是“扫码”或“搜索”")

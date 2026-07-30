@@ -223,7 +223,7 @@ export default function Communities() {
         }}
       >
         <p className="mb-3 text-sm text-slate-500">
-          输入来源数据里可能出现的其他名称，按回车添加。末尾的“社区”或“村”会自动去掉。
+          按来源数据中的完整名称填写，按回车添加。例如正式名称为“南厍”时，可以添加别名“南厍村”。系统不会自动删除“社区”或“村”。
         </p>
         <Select
           mode="tags"

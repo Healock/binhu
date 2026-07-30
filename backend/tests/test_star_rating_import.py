@@ -24,7 +24,7 @@ def rating_row(
 ):
     return [
         "滨湖派出所",
-        "长板社区",
+        "长板",
         address,
         score,
         star_level,

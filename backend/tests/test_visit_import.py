@@ -26,7 +26,7 @@ VALID_IDENTITY = "00000000000000000X"
 
 def visit_row(
     *,
-    community="长板社区",
+    community="长板",
     address="长板路 1 号",
     operator="张三",
     identity=VALID_IDENTITY,
@@ -321,17 +321,28 @@ class VisitIdentityTests(unittest.TestCase):
         self.assertTrue(masked.startswith("000000"))
         self.assertTrue(masked.endswith("000X"))
 
-    def test_community_suffix_is_removed_once(self):
-        self.assertEqual(normalize_community(" 长板社区 "), "长板")
-        self.assertEqual(normalize_community(" 南厍村 "), "南厍")
-        self.assertEqual(normalize_community("社区"), "")
-        self.assertEqual(normalize_community("村"), "")
+    def test_community_suffix_is_preserved(self):
+        self.assertEqual(normalize_community(" 长板社区 "), "长板社区")
+        self.assertEqual(normalize_community(" 南厍村 "), "南厍村")
+        self.assertEqual(normalize_community("社区"), "社区")
+        self.assertEqual(normalize_community("村"), "村")
 
-    def test_community_aliases_are_normalized_and_deduplicated(self):
+    def test_community_aliases_keep_full_names_and_deduplicate(self):
         payload = CommunityAliasesUpdate(
-            aliases=[" 芦荡社区 ", "芦荡", "长板村"],
+            aliases=[" 芦荡社区 ", "芦荡", "长板村", "芦荡社区"],
         )
-        self.assertEqual(payload.aliases, ["芦荡", "长板"])
+        self.assertEqual(
+            payload.aliases,
+            ["芦荡社区", "芦荡", "长板村"],
+        )
+
+    def test_suffix_alias_is_distinct_from_formal_name(self):
+        payload = CommunityAliasesUpdate(aliases=[" 南厍村 "])
+        self.assertEqual(payload.aliases, ["南厍村"])
+        self.assertNotEqual(
+            payload.aliases[0],
+            normalize_community("南厍"),
+        )
 
 
 class CoverageCursor:
@@ -558,7 +569,7 @@ class VisitImportFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         connection = ImportFlowConnection(
             communities=["长板"],
-            community_aliases=[("芦荡", "长板")],
+            community_aliases=[("芦荡社区", "长板")],
             members=[(1, "陈亚平", "其他社区", None)],
         )
 

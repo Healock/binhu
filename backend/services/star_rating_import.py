@@ -257,9 +257,7 @@ def parse_star_rating_workbook(
                 )
                 community = normalize_community(raw_community)
                 if not community:
-                    raise ValueError(
-                        "所属社区去除“社区”或“村”后不能为空"
-                    )
+                    raise ValueError("所属社区不能为空")
                 address = _require_text(raw, "地址", max_length=1000)
                 normalized_address = normalize_address(address)
                 if not normalized_address:
