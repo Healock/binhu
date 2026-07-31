@@ -12,13 +12,30 @@ import os
 from pathlib import Path
 from typing import Any
 
-import bcrypt
 from openpyxl import load_workbook
 
-from database import close_db, db_manager, init_db
+
+REQUIRED_HEADERS = {"用户名", "姓名", "职位"}
+
+UNLINKED_POSITION_GROUPS = {
+    "社区民警": "admin",
+    "所（队）领导": "admin",
+    "所队领导": "admin",
+    "内勤岗": "internal_business",
+}
+PLACEHOLDER_POSITIONS = {
+    "流口岗": "组员",
+}
 
 
-REQUIRED_HEADERS = {"用户名", "姓名"}
+def _legacy_role(group_code: str) -> str:
+    if group_code == "super_admin":
+        return "super_admin"
+    if group_code in {"admin", "internal_business"}:
+        return "admin"
+    if group_code == "global_viewer":
+        return "leader"
+    return "member"
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -36,15 +53,21 @@ def read_rows(path: Path) -> list[dict[str, str]]:
             raise ValueError(f"名单缺少列：{'、'.join(sorted(missing))}")
         username_index = headers.index("用户名")
         name_index = headers.index("姓名")
+        position_index = headers.index("职位")
         rows: list[dict[str, str]] = []
         for source_row, values_row in enumerate(values, start=2):
             username = str(values_row[username_index] or "").strip()
             name = str(values_row[name_index] or "").strip()
-            if not username and not name:
+            position = str(values_row[position_index] or "").strip()
+            if not username and not name and not position:
                 continue
             if not username or not name:
                 raise ValueError(f"第 {source_row} 行用户名或姓名为空")
-            rows.append({"username": username, "name": name})
+            rows.append({
+                "username": username,
+                "name": name,
+                "position": position,
+            })
         if not rows:
             raise ValueError("名单没有有效数据")
         return rows
@@ -70,7 +93,8 @@ async def build_preview(cur, rows: list[dict[str, str]]) -> list[dict[str, Any]]
         """
         SELECT member.id, member.name, member.position,
                department.name, mapping.permission_group_id,
-               permission_group.name, department.department_type
+               permission_group.name, department.department_type,
+               permission_group.code
         FROM _grid_members AS member
         LEFT JOIN _departments AS department
           ON department.id=member.department_id
@@ -100,63 +124,184 @@ async def build_preview(cur, rows: list[dict[str, str]]) -> list[dict[str, Any]]
         for row in users.values()
         if row[2] is not None
     }
+
+    await cur.execute(
+        "SELECT id, code, name FROM _permission_groups"
+    )
+    permission_groups = {
+        str(row[1]): {
+            "id": int(row[0]),
+            "code": str(row[1]),
+            "name": str(row[2]),
+        }
+        for row in await cur.fetchall()
+    }
+    permission_groups_by_id = {
+        group["id"]: group for group in permission_groups.values()
+    }
+    await cur.execute(
+        "SELECT position, permission_group_id "
+        "FROM _position_permission_groups"
+    )
+    position_groups = {
+        str(row[0]): int(row[1]) for row in await cur.fetchall()
+    }
+
     preview: list[dict[str, Any]] = []
     errors: list[str] = []
     for item in rows:
+        existing = users.get(item["username"])
+        if existing:
+            preview.append({
+                "action": "skip_existing",
+                "username": item["username"],
+                "member_id": existing[2],
+                "name": item["name"],
+                "position": item["position"],
+                "department": "保持原账号不变",
+                "permission_group_id": existing[4],
+                "permission_group_code": None,
+                "permission_group": str(existing[6] or "沿用原权限"),
+                "assignment_mode": str(existing[5] or "inherited"),
+                "legacy_role": str(existing[3]),
+                "create_member": False,
+            })
+            continue
+
         matches = members_by_name.get(item["name"], [])
-        if len(matches) != 1:
+        if len(matches) > 1:
             errors.append(
-                f"{item['name']}："
-                + ("找不到人员" if not matches else "人员姓名不唯一")
+                f"{item['name']}：人员姓名不唯一"
             )
             continue
-        member = matches[0]
-        if member[4] is None:
-            errors.append(f"{item['name']}：岗位“{member[2]}”没有默认权限组")
+        if matches:
+            member = matches[0]
+            if member[4] is None or member[7] is None:
+                errors.append(
+                    f"{item['name']}：岗位“{member[2]}”没有默认权限组"
+                )
+                continue
+            if member[2] in {"组长", "组员"} and member[6] != "community":
+                errors.append(f"{item['name']}：组长或组员尚未选择社区部门")
+                continue
+            if (
+                member[2] in {"片长", "中队长", "基础管控"}
+                and member[6] != "internal"
+            ):
+                errors.append(f"{item['name']}：内勤岗位的所属部门不正确")
+                continue
+            owner = linked_members.get(int(member[0]))
+            if owner:
+                errors.append(f"{item['name']}：已经关联账号 {owner}")
+                continue
+            group_code = str(member[7])
+            preview.append({
+                "action": "create",
+                "username": item["username"],
+                "member_id": int(member[0]),
+                "name": item["name"],
+                "position": str(member[2]),
+                "department": str(member[3] or "未分配部门"),
+                "permission_group_id": int(member[4]),
+                "permission_group_code": group_code,
+                "permission_group": str(member[5]),
+                "assignment_mode": "inherited",
+                "legacy_role": _legacy_role(group_code),
+                "create_member": False,
+            })
             continue
-        if member[2] in {"组长", "组员"} and member[6] != "community":
-            errors.append(f"{item['name']}：组长或组员尚未选择社区部门")
+
+        special_group_code = UNLINKED_POSITION_GROUPS.get(item["position"])
+        placeholder_position = PLACEHOLDER_POSITIONS.get(item["position"])
+        if special_group_code:
+            group = permission_groups.get(special_group_code)
+            if not group:
+                errors.append(
+                    f"{item['name']}：权限组“{special_group_code}”不存在"
+                )
+                continue
+            preview.append({
+                "action": "create_unlinked",
+                "username": item["username"],
+                "member_id": None,
+                "name": item["name"],
+                "position": item["position"],
+                "department": "不关联人员资料",
+                "permission_group_id": group["id"],
+                "permission_group_code": group["code"],
+                "permission_group": group["name"],
+                "assignment_mode": "custom",
+                "legacy_role": _legacy_role(group["code"]),
+                "create_member": False,
+            })
             continue
-        if member[2] in {"片长", "中队长", "基础管控"} and member[6] != "internal":
-            errors.append(f"{item['name']}：内勤岗位的所属部门不正确")
+        if placeholder_position:
+            group_id = position_groups.get(placeholder_position)
+            group = permission_groups_by_id.get(group_id) if group_id else None
+            if not group:
+                errors.append(
+                    f"{item['name']}：岗位“{placeholder_position}”没有默认权限组"
+                )
+                continue
+            preview.append({
+                "action": "create_placeholder",
+                "username": item["username"],
+                "member_id": None,
+                "name": item["name"],
+                "position": placeholder_position,
+                "department": "待分配部门",
+                "permission_group_id": group["id"],
+                "permission_group_code": group["code"],
+                "permission_group": group["name"],
+                "assignment_mode": "inherited",
+                "legacy_role": _legacy_role(group["code"]),
+                "create_member": True,
+            })
             continue
-        existing = users.get(item["username"])
-        owner = linked_members.get(int(member[0]))
-        if owner and owner != item["username"]:
-            errors.append(f"{item['name']}：已经关联账号 {owner}")
-            continue
-        if existing and existing[2] not in (None, member[0]):
-            errors.append(f"{item['username']}：已关联其他人员")
-            continue
-        keep_existing_group = bool(
-            existing
-            and existing[4] is not None
-            and existing[5] == "custom"
+        errors.append(
+            f"{item['name']}：找不到人员，且职位“{item['position']}”没有导入规则"
         )
-        preview.append({
-            "action": (
-                "link_keep_group"
-                if keep_existing_group
-                else ("link" if existing else "create")
-            ),
-            "username": item["username"],
-            "member_id": int(member[0]),
-            "name": item["name"],
-            "position": str(member[2]),
-            "department": str(member[3] or "未分配部门"),
-            "permission_group_id": int(
-                existing[4] if keep_existing_group else member[4]
-            ),
-            "permission_group": str(
-                existing[6] if keep_existing_group else member[5]
-            ),
-        })
     if errors:
         raise ValueError("名单校验失败：\n- " + "\n- ".join(errors))
     return preview
 
 
+async def apply_preview(
+    cur,
+    preview: list[dict[str, Any]],
+    password_hash: str,
+) -> None:
+    for item in preview:
+        if item["action"] == "skip_existing":
+            continue
+        member_id = item["member_id"]
+        if item["create_member"]:
+            await cur.execute(
+                "INSERT INTO _grid_members "
+                "(name, community, department_id, position) "
+                "VALUES (%s, '', NULL, %s)",
+                (item["name"], item["position"]),
+            )
+            member_id = int(cur.lastrowid)
+        await cur.execute(
+            """
+            INSERT INTO _users (
+                username, password_hash, role, member_id,
+                permission_group_id, group_assignment_mode,
+                password_is_temporary
+            ) VALUES (%s, %s, %s, %s, %s, %s, 1)
+            """,
+            (
+                item["username"], password_hash, item["legacy_role"],
+                member_id, item["permission_group_id"],
+                item["assignment_mode"],
+            ),
+        )
+
+
 async def run(args) -> None:
+    from database import close_db, db_manager, init_db
+
     rows = read_rows(Path(args.file).resolve())
     reject_duplicates(rows)
     await init_db()
@@ -173,13 +318,18 @@ async def run(args) -> None:
                     f"{item['permission_group']}"
                 )
             print(
-                f"预览完成：新增 {sum(item['action'] == 'create' for item in preview)}，"
-                "关联 "
-                f"{sum(item['action'].startswith('link') for item in preview)}"
+                "预览完成：新增 "
+                f"{sum(item['action'].startswith('create') for item in preview)}，"
+                "其中待分配部门 "
+                f"{sum(item['action'] == 'create_placeholder' for item in preview)}，"
+                "跳过已有账号 "
+                f"{sum(item['action'] == 'skip_existing' for item in preview)}"
             )
             if not args.apply:
                 print("当前为预览模式，数据库未修改。")
                 return
+
+            import bcrypt
 
             password = os.environ.get(args.password_env, "")
             if len(password) < 8:
@@ -192,41 +342,7 @@ async def run(args) -> None:
             ).decode()
             await conn.begin()
             try:
-                for item in preview:
-                    if item["action"] == "create":
-                        await cur.execute(
-                            """
-                            INSERT INTO _users (
-                                username, password_hash, role, member_id,
-                                permission_group_id, group_assignment_mode,
-                                password_is_temporary
-                            ) VALUES (%s, %s, 'member', %s, %s, 'inherited', 1)
-                            """,
-                            (
-                                item["username"], password_hash,
-                                item["member_id"],
-                                item["permission_group_id"],
-                            ),
-                        )
-                    elif item["action"] == "link_keep_group":
-                        await cur.execute(
-                            "UPDATE _users SET member_id=%s WHERE username=%s",
-                            (item["member_id"], item["username"]),
-                        )
-                    else:
-                        await cur.execute(
-                            """
-                            UPDATE _users
-                            SET member_id=%s, permission_group_id=%s,
-                                group_assignment_mode='inherited'
-                            WHERE username=%s
-                            """,
-                            (
-                                item["member_id"],
-                                item["permission_group_id"],
-                                item["username"],
-                            ),
-                        )
+                await apply_preview(cur, preview, password_hash)
                 if args.publish_announcement:
                     await cur.execute(
                         """
