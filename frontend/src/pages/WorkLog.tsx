@@ -109,7 +109,7 @@ function FieldInput({
       value={value == null || value === '' ? null : Number(value)}
       disabled={disabled}
       min={0}
-      precision={field.type === 'number' ? 0 : 1}
+      precision={field.precision ?? (field.type === 'number' ? 0 : 1)}
       suffix={field.type === 'percent' ? '%' : undefined}
       style={{ width: compact ? field.width || 88 : '100%' }}
       onChange={onChange}

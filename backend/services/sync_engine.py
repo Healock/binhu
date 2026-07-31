@@ -10,9 +10,9 @@ from services.schema_compat import get_database_column_map, quote_identifier
 
 
 def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int]:
-    """按业务主键去重；不同内容撞键时立即停止，避免静默覆盖。"""
+    """按业务主键去重；只有解析器明确允许时才合并不同内容。"""
     online: dict[str, dict] = {}
-    exact_duplicate_count = 0
+    duplicate_count = 0
     conflicts: list[set[str]] = []
 
     for raw in raw_rows:
@@ -27,7 +27,13 @@ def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int
 
         previous = online[key]
         if previous == parsed:
-            exact_duplicate_count += 1
+            duplicate_count += 1
+            continue
+
+        merged = parser.merge_duplicate_row(previous, parsed)
+        if merged is not None:
+            online[key] = merged
+            duplicate_count += 1
             continue
 
         conflicts.append(
@@ -46,7 +52,7 @@ def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int
             "已停止该表同步，未覆盖任何冲突行"
         )
 
-    return online, exact_duplicate_count
+    return online, duplicate_count
 
 
 class SyncEngine:
@@ -239,11 +245,11 @@ class SyncEngine:
             sp["file_id"], sp["data_sheet_id"], sp["header_row"], cols
         )
 
-        # 2. 解析 + 生成业务主键。仅完全相同的行可以自动去重。
-        online, exact_duplicate_count = deduplicate_rows(parser, raw_rows)
+        # 2. 解析 + 生成业务主键。业务明确允许时可合并同一对象的重复行。
+        online, duplicate_count = deduplicate_rows(parser, raw_rows)
         print(
             f"[SYNC] {sp['name']}: API返回{len(raw_rows)}行, "
-            f"有效{len(online)}行, 完全重复{exact_duplicate_count}行"
+            f"有效{len(online)}行, 去重{duplicate_count}行"
         )
 
         # 3. 读取数据库现有数据

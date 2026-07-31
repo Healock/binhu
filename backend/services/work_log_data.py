@@ -8,7 +8,11 @@ from typing import Any
 
 from services.report_builders.summary import get_summary
 from services.report_view import project_report_payload
-from services.visit_summary import VISIT_CATEGORY_RENTAL, get_visit_summary
+from services.visit_summary import (
+    VISIT_CATEGORY_RENTAL,
+    VISIT_CATEGORY_SELF_OWNED,
+    get_visit_summary,
+)
 
 
 def _number(value: Any) -> int:
@@ -138,11 +142,45 @@ async def _rental_snapshot(conn, business_date: date) -> dict:
     }
 
 
+async def _self_owned_snapshot(conn, business_date: date) -> dict:
+    result = await get_visit_summary(
+        conn,
+        business_date,
+        business_date,
+        category=VISIT_CATEGORY_SELF_OWNED,
+    )
+    rows = (result.get("inspector") or {}).get("data") or []
+    table_rows = [
+        {
+            "grid_member": str(row.get("姓名") or ""),
+            "visits": _number(row.get("走访户数")),
+            "changed": _number(row.get("变更")),
+            "cancelled": _number(row.get("注销")),
+        }
+        for row in rows
+        if str(row.get("姓名") or "").strip()
+    ]
+    return {
+        "available": bool(table_rows),
+        "message": (
+            ""
+            if table_rows
+            else "该日期没有可用的自购房走访数据"
+        ),
+        "values": (
+            {"self_owned.visit_table": table_rows}
+            if table_rows
+            else {}
+        ),
+    }
+
+
 async def build_system_snapshot(conn, business_date: date) -> dict:
     """读取一次系统数据，返回可长期保存的普通 JSON 对象。"""
     communities = await _community_names(conn)
     online = await _online_summary_snapshot(business_date)
     rental = await _rental_snapshot(conn, business_date)
+    self_owned = await _self_owned_snapshot(conn, business_date)
     issue_date = business_date + timedelta(days=1)
     return {
         "business_date": business_date.isoformat(),
@@ -151,10 +189,12 @@ async def build_system_snapshot(conn, business_date: date) -> dict:
         "filename_prefix": business_date.strftime("%m%d"),
         "communities": communities,
         "values": {
+            "meta.year": business_date.year,
             "meta.month": business_date.month,
             "meta.day": business_date.day,
             **online["values"],
             **rental["values"],
+            **self_owned["values"],
         },
         "sources": {
             "online_summary": {
@@ -166,6 +206,11 @@ async def build_system_snapshot(conn, business_date: date) -> dict:
                 "label": "出租房走访",
                 "available": rental["available"],
                 "message": rental["message"],
+            },
+            "self_owned_visit": {
+                "label": "自购房走访",
+                "available": self_owned["available"],
+                "message": self_owned["message"],
             },
         },
     }
