@@ -89,7 +89,7 @@ export default function Layout() {
             <button
               type="button"
               aria-label="打开账号菜单"
-              className={`ml-auto rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 ${user.role === 'super_admin' ? 'mr-11' : ''}`}
+              className="ml-auto mr-11 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
             >
               {ROLE_LABELS[user.role] || user.role}
             </button>
@@ -172,7 +172,7 @@ export default function Layout() {
                   {ROLE_LABELS[user.role] || user.role}
                 </div>
               </div>
-              {user.role === 'super_admin' && <NotificationCenter />}
+              <NotificationCenter />
             </div>
             <button
               type="button"

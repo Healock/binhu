@@ -14,12 +14,16 @@ from fastapi import HTTPException
 from routers.work_logs import (
     DraftSave,
     _draft_payload,
+    _draft_summary,
     _missing_items,
     _upgrade_legacy_draft,
+    delete_draft,
+    list_drafts,
     router,
     save_draft,
 )
 from services.work_log_data import (
+    _community_grid_member_counts,
     _online_summary_snapshot,
     _rental_snapshot,
     _self_owned_snapshot,
@@ -32,6 +36,7 @@ from services.work_log_schema import (
     derive_values,
     effective_values,
     field_definitions,
+    fill_community_grid_member_counts,
     get_schema,
     sanitize_values,
 )
@@ -95,6 +100,11 @@ class DraftCursor:
                 row[9] += 1
                 self.connection.row = tuple(row)
                 self.rowcount = 1
+            return
+        if normalized.startswith("DELETE FROM _work_log_drafts"):
+            if self.connection.row and self.connection.row[0] == params[0]:
+                self.connection.row = None
+                self.rowcount = 1
 
     async def fetchone(self):
         return self.result
@@ -106,6 +116,42 @@ class DraftConnection:
 
     def cursor(self):
         return DraftCursor(self)
+
+
+class DraftListCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.result = None
+        self.results = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("SELECT COUNT(*)"):
+            self.result = (len(self.connection.rows),)
+            return
+        if normalized.startswith("SELECT d.id"):
+            page_size, offset = params[-2:]
+            self.results = self.connection.rows[offset:offset + page_size]
+
+    async def fetchone(self):
+        return self.result
+
+    async def fetchall(self):
+        return self.results
+
+
+class DraftListConnection:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def cursor(self):
+        return DraftListCursor(self)
 
 
 class LegacyCursor:
@@ -305,6 +351,7 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         values = default_manual_values(
             ["冬梅", "长板"],
             {"冬梅": "张三、李四"},
+            {"冬梅": 6, "长板": 4},
         )
         self.assertEqual(
             [row["responsibility_area"] for row in values["fire.table"]],
@@ -318,10 +365,88 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             values["fire.table"][1]["community_officer"],
             "",
         )
+        registration_rows = values["flow.registration_table"]
+        self.assertEqual(registration_rows[0]["grid_member_count"], 6)
+        self.assertEqual(registration_rows[1]["grid_member_count"], 4)
         self.assertEqual(
             [row["venue_type"] for row in values["security.venues_table"]],
             ["足浴", "浴室", "酒吧/KTV", "宾馆", "网约房/民宿", "其他单位"],
         )
+
+    def test_grid_member_count_refresh_only_fills_blank_cells(self):
+        values = {
+            "flow.registration_table": [
+                {"responsibility_area": "冬梅", "grid_member_count": ""},
+                {"responsibility_area": "长板", "grid_member_count": 9},
+            ],
+        }
+        refreshed = fill_community_grid_member_counts(
+            values,
+            {"冬梅": 6, "长板": 4},
+        )
+        self.assertEqual(
+            refreshed["flow.registration_table"][0]["grid_member_count"],
+            6,
+        )
+        self.assertEqual(
+            refreshed["flow.registration_table"][1]["grid_member_count"],
+            9,
+        )
+
+    async def test_grid_member_counts_use_positions_attendance_and_community(self):
+        context = {
+            "members": {
+                "甲": {"id": 1, "community": "冬梅", "position": "组员"},
+                "乙": {"id": 2, "community": "冬梅", "position": "组长"},
+                "丙": {"id": 3, "community": "长板", "position": "组员"},
+            },
+            "missing_week_starts": set(),
+            "legacy_history_incomplete": False,
+        }
+        with (
+            patch(
+                "services.work_log_data.get_configured_positions",
+                new=AsyncMock(return_value=["组长", "组员"]),
+            ),
+            patch(
+                "services.work_log_data.get_attendance_context",
+                new=AsyncMock(return_value=context),
+            ),
+            patch(
+                "services.work_log_data.is_member_on_duty",
+                side_effect=lambda member, *_: member["id"] != 2,
+            ),
+        ):
+            result = await _community_grid_member_counts(
+                CountConnection(),
+                date(2026, 7, 31),
+                ["冬梅", "长板"],
+            )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["counts"], {"冬梅": 1, "长板": 1})
+
+    async def test_grid_member_counts_stay_blank_when_weekend_duty_is_missing(self):
+        with (
+            patch(
+                "services.work_log_data.get_configured_positions",
+                new=AsyncMock(return_value=["组长", "组员"]),
+            ),
+            patch(
+                "services.work_log_data.get_attendance_context",
+                new=AsyncMock(return_value={
+                    "members": {},
+                    "missing_week_starts": {date(2026, 7, 27)},
+                    "legacy_history_incomplete": False,
+                }),
+            ),
+        ):
+            result = await _community_grid_member_counts(
+                CountConnection(),
+                date(2026, 8, 1),
+                ["冬梅"],
+            )
+        self.assertFalse(result["available"])
+        self.assertEqual(result["counts"], {})
 
     async def test_online_summary_uses_total_report_and_fixed_two_columns(self):
         report = {
@@ -360,10 +485,12 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             result = await _online_summary_snapshot(
                 date(2026, 7, 14),
                 {"长板": "张三、李四"},
+                {"长板": 5},
             )
         row = result["values"]["flow.instruction_table"][0]
         self.assertTrue(result["available"])
         self.assertEqual(row["community_officer"], "张三、李四")
+        self.assertEqual(row["grid_member_count"], 5)
         self.assertEqual(row["unchecked"], 5)
         self.assertEqual(row["checked"], 5)
         self.assertEqual(row["completion_rate"], 50.0)
@@ -395,9 +522,11 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
                 CountConnection(count=1),
                 date(2026, 7, 14),
                 {"长板": "张三、李四"},
+                {"长板": 5},
             )
         row = result["values"]["rental.visit_table"][0]
         self.assertEqual(row["community_officer"], "张三、李四")
+        self.assertEqual(row["grid_member_count"], 5)
         self.assertEqual(row["total_changes"], 7)
         self.assertEqual(row["rating_rate"], 75.0)
 
@@ -445,6 +574,14 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={"长板": "张三、李四"}),
             ),
             patch(
+                "services.work_log_data._community_grid_member_counts",
+                new=AsyncMock(return_value={
+                    "available": True,
+                    "message": "",
+                    "counts": {"长板": 2},
+                }),
+            ),
+            patch(
                 "services.work_log_data._online_summary_snapshot",
                 new=AsyncMock(return_value={
                     "available": False,
@@ -479,6 +616,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["community_officers"],
             {"长板": "张三、李四"},
+        )
+        self.assertEqual(
+            result["community_grid_member_counts"],
+            {"长板": 2},
         )
         self.assertEqual(result["values"]["meta.year"], 2026)
         self.assertFalse(result["sources"]["online_summary"]["available"])
@@ -547,6 +688,75 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         other = _draft_payload(tuple(row), {"id": 8})
         self.assertTrue(own["can_edit"])
         self.assertFalse(other["can_edit"])
+
+    def test_draft_summary_includes_creator_and_current_editor(self):
+        row = (
+            4,
+            "daily",
+            date(2026, 7, 14),
+            7,
+            "current-editor",
+            TEMPLATE_VERSION,
+            3,
+            None,
+            datetime(2026, 7, 14),
+            datetime(2026, 7, 15),
+            8,
+            "creator",
+        )
+        summary = _draft_summary(row)
+        self.assertEqual(summary["business_date"], "2026-07-14")
+        self.assertEqual(summary["owner"]["username"], "current-editor")
+        self.assertEqual(summary["creator"]["username"], "creator")
+        self.assertEqual(summary["version"], 3)
+
+    async def test_admin_can_delete_draft_without_touching_source_data(self):
+        connection = DraftConnection(self.sample_row())
+        request = SimpleNamespace(headers={}, client=None)
+        audit = AsyncMock()
+        with patch("routers.work_logs.record_admin_audit", new=audit):
+            result = await delete_draft(
+                4,
+                request,
+                user={"id": 8, "username": "another-admin"},
+                conn=connection,
+            )
+        self.assertEqual(result, {"message": "草稿已删除", "id": 4})
+        self.assertIsNone(connection.row)
+        audit.assert_awaited_once()
+        self.assertEqual(audit.await_args.args[1], "work_log.delete")
+        self.assertEqual(
+            audit.await_args.kwargs["detail"]["business_date"],
+            "2026-07-14",
+        )
+
+    async def test_draft_list_returns_paginated_summaries(self):
+        rows = [(
+            4,
+            "daily",
+            date(2026, 7, 14),
+            7,
+            "current-editor",
+            TEMPLATE_VERSION,
+            3,
+            None,
+            datetime(2026, 7, 14),
+            datetime(2026, 7, 15),
+            8,
+            "creator",
+        )]
+        result = await list_drafts(
+            start_date=None,
+            end_date=None,
+            keyword=None,
+            page=1,
+            page_size=20,
+            user={"id": 7},
+            conn=DraftListConnection(rows),
+        )
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["data"][0]["business_date"], "2026-07-14")
+        self.assertEqual(result["data"][0]["creator"]["username"], "creator")
 
     async def test_legacy_draft_is_backed_up_before_v2_mapping(self):
         row = list(self.sample_row())

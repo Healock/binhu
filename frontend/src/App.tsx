@@ -19,6 +19,7 @@ import VisitSummary from './pages/VisitSummary'
 import DataUploadCenter from './pages/DataUploadCenter'
 import Login from './pages/Login'
 import WorkLog from './pages/WorkLog'
+import WorkLogDrafts from './pages/WorkLogDrafts'
 
 function App() {
   return (
@@ -37,6 +38,7 @@ function App() {
               <Route path="/data-upload" element={<DataUploadCenter />} />
               <Route element={<ProtectedRoute requireRoles={['admin', 'super_admin']} />}>
                 <Route path="/work-log" element={<WorkLog />} />
+                <Route path="/work-log/drafts" element={<WorkLogDrafts />} />
               </Route>
               <Route path="/grid-members" element={<GridMembers />} />
               <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />

@@ -8,7 +8,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import aiomysql
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,7 @@ from services.work_log_schema import (
     default_manual_values,
     effective_values,
     field_definitions,
+    fill_community_grid_member_counts,
     get_schema,
     leaf_columns,
     sanitize_values,
@@ -101,6 +102,41 @@ def _draft_payload(row, user: dict) -> dict:
     }
 
 
+def _draft_summary(row) -> dict:
+    (
+        draft_id,
+        report_type,
+        business_date,
+        owner_user_id,
+        owner_username,
+        template_version,
+        version,
+        last_export_at,
+        created_at,
+        updated_at,
+        created_by,
+        creator_username,
+    ) = row
+    return {
+        "id": draft_id,
+        "report_type": report_type,
+        "business_date": _date_text(business_date),
+        "owner": {
+            "id": owner_user_id,
+            "username": owner_username,
+        },
+        "creator": {
+            "id": created_by,
+            "username": creator_username or f"用户#{created_by}",
+        },
+        "template_version": template_version,
+        "version": version,
+        "last_export_at": _date_text(last_export_at),
+        "created_at": _date_text(created_at),
+        "updated_at": _date_text(updated_at),
+    }
+
+
 LEGACY_FIELD_MAP = {
     "basic.total_population": "flow.population.total",
     "basic.registered_population": "flow.population.registered",
@@ -148,6 +184,7 @@ async def _upgrade_legacy_draft(conn, row, user: dict):
     manual_values = default_manual_values(
         new_snapshot.get("communities") or [],
         new_snapshot.get("community_officers") or {},
+        new_snapshot.get("community_grid_member_counts") or {},
     )
     for old_id, new_id in LEGACY_FIELD_MAP.items():
         value = (
@@ -245,6 +282,71 @@ async def schema(user: dict = Depends(require_admin)):
     return get_schema()
 
 
+@router.get("/drafts")
+async def list_drafts(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    keyword: str | None = Query(default=None, max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    del user
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if start_date:
+        clauses.append("d.business_date >= %s")
+        params.append(start_date)
+    if end_date:
+        clauses.append("d.business_date <= %s")
+        params.append(end_date)
+    normalized_keyword = (keyword or "").strip()
+    if normalized_keyword:
+        clauses.append(
+            "(d.owner_username LIKE %s OR COALESCE(creator.username, '') LIKE %s)"
+        )
+        pattern = f"%{normalized_keyword}%"
+        params.extend([pattern, pattern])
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    from_clause = """
+        FROM _work_log_drafts d
+        LEFT JOIN _users creator ON creator.id = d.created_by
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"SELECT COUNT(*) {from_clause} {where_clause}",
+            tuple(params),
+        )
+        total_row = await cur.fetchone()
+        total = int(total_row[0] or 0)
+        await cur.execute(
+            f"""
+            SELECT
+                d.id, d.report_type, d.business_date,
+                d.owner_user_id, d.owner_username, d.template_version,
+                d.version, d.last_export_at, d.created_at, d.updated_at,
+                d.created_by, creator.username
+            {from_clause}
+            {where_clause}
+            ORDER BY d.business_date DESC, d.updated_at DESC, d.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            (*params, page_size, (page - 1) * page_size),
+        )
+        rows = await cur.fetchall()
+    return {
+        "data": [_draft_summary(row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
 @router.post("/drafts")
 async def create_draft(
     data: DraftCreate,
@@ -266,6 +368,7 @@ async def create_draft(
     manual_values = default_manual_values(
         snapshot.get("communities") or [],
         snapshot.get("community_officers") or {},
+        snapshot.get("community_grid_member_counts") or {},
     )
     created = False
     async with conn.cursor() as cur:
@@ -331,6 +434,39 @@ async def get_draft(
         )
     row = await _upgrade_legacy_draft(conn, row, user)
     return _draft_payload(row, user)
+
+
+@router.delete("/drafts/{draft_id}")
+async def delete_draft(
+    draft_id: int,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    async with conn.cursor() as cur:
+        row = await _select_draft(cur, draft_id=draft_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="日报草稿不存在")
+        await cur.execute(
+            "DELETE FROM _work_log_drafts WHERE id=%s",
+            (draft_id,),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="草稿状态已变化，请刷新后重试")
+    await record_admin_audit(
+        user,
+        "work_log.delete",
+        target_type="work_log_draft",
+        target_name=str(draft_id),
+        detail={
+            "report_type": row[1],
+            "business_date": _date_text(row[2]),
+            "previous_owner": row[4],
+            "version": row[9],
+        },
+        **request_audit_fields(request),
+    )
+    return {"message": "草稿已删除", "id": draft_id}
 
 
 @router.put("/drafts/{draft_id}")
@@ -426,15 +562,21 @@ async def refresh_draft(
     if int(row[3]) != int(user["id"]):
         raise HTTPException(status_code=403, detail="只有当前编辑人可以刷新系统数据")
     snapshot = await build_system_snapshot(conn, row[2])
+    manual_values = fill_community_grid_member_counts(
+        _json_load(row[7], {}),
+        snapshot.get("community_grid_member_counts") or {},
+    )
     async with conn.cursor() as cur:
         await cur.execute(
             """
             UPDATE _work_log_drafts
-            SET system_snapshot=%s, version=version+1, updated_by=%s
+            SET system_snapshot=%s, manual_values=%s,
+                version=version+1, updated_by=%s
             WHERE id=%s AND owner_user_id=%s AND version=%s
             """,
             (
                 json.dumps(snapshot, ensure_ascii=False),
+                json.dumps(manual_values, ensure_ascii=False),
                 user["id"],
                 draft_id,
                 user["id"],

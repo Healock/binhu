@@ -18,6 +18,7 @@ import {
   CloudDownloadOutlined,
   CopyOutlined,
   DeleteOutlined,
+  FolderOpenOutlined,
   PlusOutlined,
   ReloadOutlined,
   SwapOutlined,
@@ -26,7 +27,7 @@ import {
 import axios from 'axios'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   createWorkLogDraft,
   exportWorkLog,
@@ -432,9 +433,17 @@ function WorkLogBlockView({
 
 export default function WorkLog() {
   const { user } = useAuth()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [schema, setSchema] = useState<WorkLogSchema | null>(null)
   const [reportType, setReportType] = useState('daily')
-  const [businessDate, setBusinessDate] = useState<Dayjs>(dayjs())
+  const [businessDate, setBusinessDate] = useState<Dayjs>(() => {
+    const queryDate = searchParams.get('date') || ''
+    const parsed = dayjs(queryDate)
+    return /^\d{4}-\d{2}-\d{2}$/.test(queryDate) && parsed.isValid()
+      ? parsed
+      : dayjs()
+  })
   const [draft, setDraft] = useState<WorkLogDraft | null>(null)
   const [manualValues, setManualValues] = useState<Values>({})
   const [overrideValues, setOverrideValues] = useState<Values>({})
@@ -671,38 +680,48 @@ export default function WorkLog() {
       <PageHeader
         title="工作日志生成"
         description="按原工作日志顺序填写全部内容，确认后导出固定版式 PDF"
-        actions={draft && (
+        actions={(
           <Space wrap>
-            <Tag color={
-              saveState === 'failed' || saveState === 'conflict'
-                ? 'error'
-                : saveState === 'saving'
-                  ? 'processing'
-                  : 'success'
-            }>
-              {saveLabel}
-            </Tag>
-            {draft.can_edit ? (
-              <Button
-                icon={<ReloadOutlined />}
-                disabled={dirty || saveState === 'saving'}
-                onClick={refreshSystemData}
-              >
-                刷新系统数据
-              </Button>
-            ) : (
-              <Button icon={<SwapOutlined />} onClick={takeover}>
-                接管编辑
-              </Button>
-            )}
             <Button
-              type="primary"
-              icon={<CloudDownloadOutlined />}
-              loading={exporting}
-              onClick={prepareExport}
+              icon={<FolderOpenOutlined />}
+              onClick={() => navigate('/work-log/drafts')}
             >
-              导出 PDF
+              草稿管理
             </Button>
+            {draft && (
+              <>
+                <Tag color={
+                  saveState === 'failed' || saveState === 'conflict'
+                    ? 'error'
+                    : saveState === 'saving'
+                      ? 'processing'
+                      : 'success'
+                }>
+                  {saveLabel}
+                </Tag>
+                {draft.can_edit ? (
+                  <Button
+                    icon={<ReloadOutlined />}
+                    disabled={dirty || saveState === 'saving'}
+                    onClick={refreshSystemData}
+                  >
+                    刷新系统数据
+                  </Button>
+                ) : (
+                  <Button icon={<SwapOutlined />} onClick={takeover}>
+                    接管编辑
+                  </Button>
+                )}
+                <Button
+                  type="primary"
+                  icon={<CloudDownloadOutlined />}
+                  loading={exporting}
+                  onClick={prepareExport}
+                >
+                  导出 PDF
+                </Button>
+              </>
+            )}
           </Space>
         )}
       />

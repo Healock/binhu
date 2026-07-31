@@ -1,47 +1,106 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Badge,
   Button,
   Drawer,
   Empty,
+  Form,
+  Input,
   List,
+  Modal,
+  Radio,
+  Space,
+  Tabs,
   Tag,
+  Tooltip,
   Typography,
+  message,
 } from 'antd'
-import { BellOutlined, CheckOutlined } from '@ant-design/icons'
+import {
+  BellOutlined,
+  CheckOutlined,
+  DeleteOutlined,
+  NotificationOutlined,
+} from '@ant-design/icons'
 import type { AppNotification } from '../types'
 import {
+  createAnnouncement,
+  deleteAnnouncement,
   formatUTCTime,
+  getNotificationUnreadCount,
   getNotifications,
   markAllNotificationsRead,
   markNotificationRead,
 } from '../api/client'
+import { useAuth } from '../context/AuthContext'
+
+interface AnnouncementFormValues {
+  title: string
+  content: string
+  severity: 'info' | 'warning'
+}
 
 export default function NotificationCenter() {
+  const { user } = useAuth()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
+  const [personalUnread, setPersonalUnread] = useState(0)
+  const [announcementUnread, setAnnouncementUnread] = useState(0)
+  const [publishOpen, setPublishOpen] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [form] = Form.useForm<AnnouncementFormValues>()
+  const [modal, contextHolder] = Modal.useModal()
+  const isSuperAdmin = user?.role === 'super_admin'
 
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
     try {
-      const result = await getNotifications(30)
+      const result = await getNotifications(50)
       setNotifications(result.data)
       setUnreadCount(result.unread_count)
+      setPersonalUnread(result.personal_unread_count)
+      setAnnouncementUnread(result.announcement_unread_count)
     } catch {
-      // 全局通知不打断当前页面，下一轮轮询会重试。
+      // 消息中心不打断当前页面，下一轮轮询会重试。
     } finally {
       if (showLoading) setLoading(false)
     }
   }, [])
 
+  const loadUnreadCount = useCallback(async () => {
+    try {
+      const result = await getNotificationUnreadCount()
+      setUnreadCount(result.unread_count)
+      setPersonalUnread(result.personal_unread_count)
+      setAnnouncementUnread(result.announcement_unread_count)
+    } catch {
+      // 未读数轮询失败时保留当前显示，下一轮继续重试。
+    }
+  }, [])
+
   useEffect(() => {
-    void load()
-    const timer = window.setInterval(() => void load(), 30000)
+    void loadUnreadCount()
+    const timer = window.setInterval(() => {
+      if (open) {
+        void load()
+      } else {
+        void loadUnreadCount()
+      }
+    }, 30000)
     return () => window.clearInterval(timer)
-  }, [load])
+  }, [load, loadUnreadCount, open])
+
+  const announcements = useMemo(
+    () => notifications.filter(item => item.source === 'announcement'),
+    [notifications],
+  )
+  const personalNotifications = useMemo(
+    () => notifications.filter(item => item.source === 'personal'),
+    [notifications],
+  )
 
   const handleOpen = () => {
     setOpen(true)
@@ -50,17 +109,88 @@ export default function NotificationCenter() {
 
   const handleRead = async (notification: AppNotification) => {
     if (notification.is_read) return
-    await markNotificationRead(notification.id)
-    setNotifications(current => current.map(item => (
-      item.id === notification.id ? { ...item, is_read: true } : item
-    )))
-    setUnreadCount(current => Math.max(0, current - 1))
+    try {
+      await markNotificationRead(notification)
+      setNotifications(current => current.map(item => (
+        item.id === notification.id && item.source === notification.source
+          ? { ...item, is_read: true }
+          : item
+      )))
+      setUnreadCount(current => Math.max(0, current - 1))
+      if (notification.source === 'announcement') {
+        setAnnouncementUnread(current => Math.max(0, current - 1))
+      } else {
+        setPersonalUnread(current => Math.max(0, current - 1))
+      }
+    } catch {
+      message.error('消息状态更新失败，请稍后重试')
+    }
   }
 
   const handleReadAll = async () => {
-    await markAllNotificationsRead()
-    setNotifications(current => current.map(item => ({ ...item, is_read: true })))
-    setUnreadCount(0)
+    try {
+      await markAllNotificationsRead()
+      setNotifications(current => current.map(item => ({
+        ...item,
+        is_read: true,
+      })))
+      setUnreadCount(0)
+      setPersonalUnread(0)
+      setAnnouncementUnread(0)
+    } catch {
+      message.error('全部已读操作失败，请稍后重试')
+    }
+  }
+
+  const publishAnnouncement = async () => {
+    try {
+      const values = await form.validateFields()
+      setPublishing(true)
+      await createAnnouncement({
+        title: values.title.trim(),
+        content: values.content.trim(),
+        severity: values.severity,
+      })
+      message.success('公告已发布，所有登录用户都可以看到')
+      setPublishOpen(false)
+      form.resetFields()
+      await load()
+    } catch (error) {
+      if (
+        error
+        && typeof error === 'object'
+        && 'errorFields' in error
+      ) {
+        return
+      }
+      message.error('公告发布失败，请稍后重试')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  const confirmDelete = (
+    event: React.MouseEvent,
+    notification: AppNotification,
+  ) => {
+    event.stopPropagation()
+    modal.confirm({
+      title: `删除公告“${notification.title}”？`,
+      content: '删除后所有用户都不再看到这条公告，操作会记录到系统操作记录。',
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteAnnouncement(notification.id)
+          message.success('公告已删除')
+          await load()
+        } catch {
+          message.error('公告删除失败，请稍后重试')
+          throw new Error('delete announcement failed')
+        }
+      },
+    })
   }
 
   const renderTrigger = () => (
@@ -68,15 +198,83 @@ export default function NotificationCenter() {
       <Button
         type="text"
         shape="circle"
-        aria-label="打开站内通知"
+        aria-label="打开消息中心"
         icon={<BellOutlined />}
         onClick={handleOpen}
       />
     </Badge>
   )
 
+  const renderList = (
+    items: AppNotification[],
+    emptyText: string,
+  ) => (
+    <List
+      loading={loading}
+      dataSource={items}
+      locale={{ emptyText: <Empty description={emptyText} /> }}
+      renderItem={item => (
+        <List.Item
+          className={
+            !item.is_read
+              ? 'rounded-lg bg-blue-50/70 px-3 dark:bg-blue-950/30'
+              : 'px-3'
+          }
+          onClick={() => void handleRead(item)}
+          style={{ cursor: item.is_read ? 'default' : 'pointer' }}
+          actions={
+            isSuperAdmin && item.source === 'announcement'
+              ? [(
+                  <Tooltip key="delete" title="删除公告">
+                    <Button
+                      danger
+                      type="text"
+                      size="small"
+                      aria-label={`删除公告 ${item.title}`}
+                      icon={<DeleteOutlined />}
+                      onClick={event => confirmDelete(event, item)}
+                    />
+                  </Tooltip>
+                )]
+              : undefined
+          }
+        >
+          <List.Item.Meta
+            title={(
+              <div className="flex flex-wrap items-center gap-2">
+                <Typography.Text strong={!item.is_read}>
+                  {item.title}
+                </Typography.Text>
+                <Tag color={item.source === 'announcement' ? 'blue' : 'default'}>
+                  {item.source === 'announcement' ? '公告' : '个人提示'}
+                </Tag>
+                {item.severity === 'warning' && <Tag color="orange">重要</Tag>}
+                {item.severity === 'error' && <Tag color="red">异常</Tag>}
+                {!item.is_read && <Tag color="blue">未读</Tag>}
+              </div>
+            )}
+            description={(
+              <div>
+                <Typography.Paragraph
+                  className="mb-1 text-sm"
+                  ellipsis={{ rows: 5, expandable: true, symbol: '展开' }}
+                >
+                  {item.content}
+                </Typography.Paragraph>
+                <span className="text-xs text-slate-400">
+                  {formatUTCTime(item.created_at)}
+                </span>
+              </div>
+            )}
+          />
+        </List.Item>
+      )}
+    />
+  )
+
   return (
     <>
+      {contextHolder}
       {typeof document !== 'undefined' && createPortal(
         <div className="fixed right-3 top-2.5 z-[60] md:hidden">
           {renderTrigger()}
@@ -89,60 +287,125 @@ export default function NotificationCenter() {
       </div>
 
       <Drawer
-        title="站内通知"
+        title="消息中心"
         open={open}
         onClose={() => setOpen(false)}
-        width="min(420px, 100vw)"
-        extra={
-          unreadCount > 0 ? (
-            <Button
-              type="link"
-              size="small"
-              icon={<CheckOutlined />}
-              onClick={handleReadAll}
-            >
-              全部已读
-            </Button>
-          ) : null
-        }
+        width="min(460px, 100vw)"
+        extra={(
+          <Space size="small">
+            {isSuperAdmin && (
+              <Button
+                type="link"
+                size="small"
+                icon={<NotificationOutlined />}
+                onClick={() => setPublishOpen(true)}
+              >
+                发布公告
+              </Button>
+            )}
+            {unreadCount > 0 && (
+              <Button
+                type="link"
+                size="small"
+                icon={<CheckOutlined />}
+                onClick={handleReadAll}
+              >
+                全部已读
+              </Button>
+            )}
+          </Space>
+        )}
       >
-        <List
-          loading={loading}
-          dataSource={notifications}
-          locale={{ emptyText: <Empty description="暂无通知" /> }}
-          renderItem={item => (
-            <List.Item
-              className={!item.is_read ? 'rounded-lg bg-blue-50/70 px-3' : 'px-3'}
-              onClick={() => void handleRead(item)}
-              style={{ cursor: item.is_read ? 'default' : 'pointer' }}
-            >
-              <List.Item.Meta
-                title={
-                  <div className="flex items-center gap-2">
-                    <Typography.Text strong={!item.is_read}>
-                      {item.title}
-                    </Typography.Text>
-                    {!item.is_read && <Tag color="blue">未读</Tag>}
-                  </div>
-                }
-                description={
-                  <div>
-                    <Typography.Paragraph
-                      className="mb-1 text-sm"
-                      ellipsis={{ rows: 4, expandable: true, symbol: '展开' }}
-                    >
-                      {item.content}
-                    </Typography.Paragraph>
-                    <span className="text-xs text-slate-400">
-                      {formatUTCTime(item.created_at)}
-                    </span>
-                  </div>
-                }
-              />
-            </List.Item>
-          )}
+        <Tabs
+          items={[
+            {
+              key: 'announcements',
+              label: (
+                <span>
+                  公告
+                  {announcementUnread > 0 && (
+                    <Badge
+                      className="ml-2"
+                      count={announcementUnread}
+                      size="small"
+                    />
+                  )}
+                </span>
+              ),
+              children: renderList(announcements, '暂无公告'),
+            },
+            {
+              key: 'personal',
+              label: (
+                <span>
+                  个人提示
+                  {personalUnread > 0 && (
+                    <Badge
+                      className="ml-2"
+                      count={personalUnread}
+                      size="small"
+                    />
+                  )}
+                </span>
+              ),
+              children: renderList(personalNotifications, '暂无个人提示'),
+            },
+          ]}
         />
       </Drawer>
+
+      <Modal
+        title="发布公告"
+        open={publishOpen}
+        okText="发布"
+        cancelText="取消"
+        confirmLoading={publishing}
+        onOk={() => void publishAnnouncement()}
+        onCancel={() => {
+          setPublishOpen(false)
+          form.resetFields()
+        }}
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          initialValues={{ severity: 'info' }}
+        >
+          <Form.Item
+            name="title"
+            label="公告标题"
+            rules={[
+              { required: true, whitespace: true, message: '请输入公告标题' },
+              { max: 100, message: '标题不能超过 100 个字' },
+            ]}
+          >
+            <Input placeholder="例如：数据统计口径说明" />
+          </Form.Item>
+          <Form.Item
+            name="content"
+            label="公告内容"
+            rules={[
+              { required: true, whitespace: true, message: '请输入公告内容' },
+              { max: 2000, message: '内容不能超过 2000 个字' },
+            ]}
+          >
+            <Input.TextArea
+              rows={5}
+              showCount
+              maxLength={2000}
+              placeholder="所有登录用户都能看到这条公告"
+            />
+          </Form.Item>
+          <Form.Item name="severity" label="公告级别">
+            <Radio.Group
+              options={[
+                { label: '普通公告', value: 'info' },
+                { label: '重要提醒', value: 'warning' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </>
   )
 }

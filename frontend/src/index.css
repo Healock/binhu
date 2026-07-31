@@ -21,7 +21,7 @@
   --app-text-muted: #94a3b8;
   --app-primary-border: #bfdbfe;
   --app-primary-text: #1e3a8a;
-  --app-success: #15803d;
+  --app-success: #16a34a;
   --app-warning: #c2410c;
   --app-danger: #b91c1c;
   --app-radius: 10px;
@@ -47,7 +47,7 @@ html[data-theme='dark'] {
   --app-text-muted: #78879d;
   --app-primary-border: #28538a;
   --app-primary-text: #bfdbfe;
-  --app-success: #4ade80;
+  --app-success: #34d399;
   --app-warning: #fb923c;
   --app-danger: #f87171;
   --app-shadow: 0 1px 3px rgb(0 0 0 / 0.34);

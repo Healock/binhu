@@ -93,6 +93,7 @@ export interface SyncTriggerResponse {
 
 export interface AppNotification {
   id: number
+  source: 'announcement' | 'personal'
   category: string
   severity: 'error' | 'warning' | 'info'
   title: string
@@ -360,6 +361,7 @@ export interface WorkLogSystemSnapshot {
   month: number
   filename_prefix: string
   communities?: string[]
+  community_grid_member_counts?: Record<string, number>
   legacy_v1?: Record<string, unknown>
   values: Record<string, unknown>
   sources: Record<string, {
@@ -379,6 +381,19 @@ export interface WorkLogDraft {
   system_snapshot: WorkLogSystemSnapshot
   manual_values: Record<string, unknown>
   override_values: Record<string, unknown>
+  version: number
+  last_export_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkLogDraftSummary {
+  id: number
+  report_type: 'daily'
+  business_date: string
+  owner: { id: number; username: string }
+  creator: { id: number; username: string }
+  template_version: string
   version: number
   last_export_at: string | null
   created_at: string

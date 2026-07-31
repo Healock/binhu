@@ -4,7 +4,7 @@ import type {
   SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
   OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
   BackupJob, AuditEvent, User, UserPreferences, ReportColumnMode,
-  WorkLogDraft, WorkLogMissingItem, WorkLogSchema,
+  WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
 } from '../types'
 
 const api = axios.create({
@@ -89,23 +89,47 @@ export async function updateSyncSchedule(payload: {
 // ---- Notifications / 站内信 ----
 export async function getNotifications(limit = 20): Promise<{
   unread_count: number
+  personal_unread_count: number
+  announcement_unread_count: number
   data: AppNotification[]
 }> {
   const { data } = await api.get('/notifications', { params: { limit } })
   return data
 }
 
-export async function getNotificationUnreadCount(): Promise<number> {
+export async function getNotificationUnreadCount(): Promise<{
+  unread_count: number
+  personal_unread_count: number
+  announcement_unread_count: number
+}> {
   const { data } = await api.get('/notifications/unread-count')
-  return data.unread_count
+  return data
 }
 
-export async function markNotificationRead(id: number): Promise<void> {
-  await api.post(`/notifications/${id}/read`)
+export async function markNotificationRead(
+  notification: Pick<AppNotification, 'id' | 'source'>,
+): Promise<void> {
+  if (notification.source === 'announcement') {
+    await api.post(`/notifications/announcements/${notification.id}/read`)
+    return
+  }
+  await api.post(`/notifications/${notification.id}/read`)
 }
 
 export async function markAllNotificationsRead(): Promise<void> {
   await api.post('/notifications/read-all')
+}
+
+export async function createAnnouncement(payload: {
+  title: string
+  content: string
+  severity: 'info' | 'warning'
+}): Promise<void> {
+  await api.post('/notifications/announcements', payload)
+}
+
+export async function deleteAnnouncement(id: number): Promise<void> {
+  await api.delete(`/notifications/announcements/${id}`)
 }
 
 // ---- Super-admin operations center ----
@@ -191,6 +215,22 @@ export async function getWorkLogSchema(): Promise<WorkLogSchema> {
   return data
 }
 
+export async function listWorkLogDrafts(params: {
+  page: number
+  page_size: number
+  start_date?: string
+  end_date?: string
+  keyword?: string
+}): Promise<{
+  data: WorkLogDraftSummary[]
+  total: number
+  page: number
+  page_size: number
+}> {
+  const { data } = await api.get('/work-logs/drafts', { params })
+  return data
+}
+
 export async function getWorkLogDraft(
   reportType: 'daily',
   businessDate: string,
@@ -222,6 +262,10 @@ export async function saveWorkLogDraft(
 ): Promise<WorkLogDraft> {
   const { data } = await api.put(`/work-logs/drafts/${draftId}`, payload)
   return data
+}
+
+export async function deleteWorkLogDraft(draftId: number): Promise<void> {
+  await api.delete(`/work-logs/drafts/${draftId}`)
 }
 
 export async function takeoverWorkLogDraft(

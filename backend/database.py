@@ -185,6 +185,16 @@ class DatabaseManager:
                     "('attendance_history_started_on', %s)",
                     (history_started_on.isoformat(),),
                 )
+                await cur.execute(
+                    "SELECT config_value FROM _system_config "
+                    "WHERE config_key='attendance_history_started_on'"
+                )
+                history_started_row = await cur.fetchone()
+                history_started_text = (
+                    str(history_started_row[0])
+                    if history_started_row and history_started_row[0]
+                    else history_started_on.isoformat()
+                )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _sync_schedule (
                         id TINYINT NOT NULL PRIMARY KEY,
@@ -221,6 +231,55 @@ class DatabaseManager:
                         )
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _announcements (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        system_key VARCHAR(100) DEFAULT NULL,
+                        severity VARCHAR(20) NOT NULL DEFAULT 'info',
+                        title VARCHAR(100) NOT NULL,
+                        content TEXT NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        expires_at DATETIME DEFAULT NULL,
+                        created_by INT DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_announcement_system_key (system_key),
+                        INDEX idx_announcement_active_time (
+                            is_active, published_at, expires_at
+                        )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _announcement_reads (
+                        announcement_id BIGINT NOT NULL,
+                        user_id INT NOT NULL,
+                        read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (announcement_id, user_id),
+                        INDEX idx_announcement_read_user (
+                            user_id, read_at
+                        )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute(
+                    """
+                    INSERT IGNORE INTO _announcements (
+                        system_key, severity, title, content,
+                        is_active, published_at
+                    ) VALUES (%s, 'warning', %s, %s, 1, UTC_TIMESTAMP())
+                    """,
+                    (
+                        "attendance-history-started-on",
+                        "部分日期早于系统开始保存出勤历史的时间",
+                        (
+                            f"出勤历史从 {history_started_text} 开始完整保存；"
+                            "更早的请假记录如果没有补录，人均值只能作为参考。"
+                        ),
+                    ),
+                )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _backup_schedule (
                         id TINYINT NOT NULL PRIMARY KEY,
