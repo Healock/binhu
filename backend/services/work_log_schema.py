@@ -42,10 +42,16 @@ def field(
     return result
 
 
-def sentence(*segments: str | dict, title: str = "") -> dict:
+def sentence(
+    *segments: str | dict,
+    title: str = "",
+    style: str = "",
+) -> dict:
     result = {"type": "sentence", "segments": list(segments)}
     if title:
         result["title"] = title
+    if style:
+        result["style"] = style
     return result
 
 
@@ -69,8 +75,18 @@ def text_block(
     }
 
 
-def heading(title: str, level: int = 2) -> dict:
-    return {"type": "heading", "title": title, "level": level}
+def heading(
+    title: str,
+    level: int = 2,
+    *,
+    combine_with_next: bool = True,
+) -> dict:
+    return {
+        "type": "heading",
+        "title": title,
+        "level": level,
+        "combine_with_next": combine_with_next,
+    }
 
 
 def column(
@@ -222,15 +238,15 @@ SCHEMA = {
                 sentence(*rank_fields(
                     "flow.analysis.workload_bottom",
                     "人均工作量比率",
-                )),
+                ), style="analysis"),
                 sentence(*rank_fields(
                     "flow.analysis.added_bottom",
                     "新增比率",
-                )),
+                ), style="analysis"),
                 sentence(*rank_fields(
                     "flow.analysis.active_cancelled_bottom",
                     "主动注销比率",
-                )),
+                ), style="analysis"),
                 sentence(
                     "被动注销占比前三位：",
                     field(
@@ -254,6 +270,7 @@ SCHEMA = {
                         width=92,
                     ),
                     "。",
+                    style="analysis",
                 ),
                 heading("2. 指令核查", 3),
                 sentence(
@@ -352,11 +369,11 @@ SCHEMA = {
                 sentence(*rank_fields(
                     "flow.instruction.completion_bottom",
                     "核查完成率",
-                )),
+                ), style="analysis"),
                 sentence(*rank_fields(
                     "flow.instruction.ground_bottom",
                     "核查见底率",
-                )),
+                ), style="analysis"),
             ],
         },
         {
@@ -470,15 +487,15 @@ SCHEMA = {
                 sentence(*rank_fields(
                     "rental.analysis.average_visits_bottom",
                     "人均走访户数",
-                )),
+                ), style="analysis"),
                 sentence(*rank_fields(
                     "rental.analysis.average_changes_bottom",
                     "人均变动数",
-                )),
+                ), style="analysis"),
                 sentence(*rank_fields(
                     "rental.analysis.household_changes_bottom",
                     "户均变动数",
-                )),
+                ), style="analysis"),
                 heading("2. 倒查质态", 3),
                 sentence(
                     *report_date_segments("", "，倒查出租房"),
@@ -496,6 +513,7 @@ SCHEMA = {
                     "户、手机号码错误",
                     field("rental.reverse.phone_errors", "手机号码错误"),
                     "人。",
+                    style="analysis",
                 ),
                 table(
                     "rental.reverse_table",
@@ -536,7 +554,7 @@ SCHEMA = {
                     "指令抽查问题分析",
                     rows=4,
                 ),
-                heading("4. 责任落实", 3),
+                heading("责任落实", 3),
                 sentence(
                     "本月房东处罚任务",
                     field("rental.landlord_penalty.target", "处罚任务"),
@@ -547,9 +565,9 @@ SCHEMA = {
                     field("rental.police_related_houses", "涉警出租房"),
                     "户。",
                 ),
-                heading("5. 管理手段", 3),
+                heading("4. 管理手段", 3, combine_with_next=False),
                 sentence(
-                    "平安码：",
+                    "（1）平安码：",
                     *report_date_segments("", "扫码总数"),
                     field("rental.safe_code.total_scans", "扫码总数"),
                     "次，其中巡逻",
@@ -569,9 +587,10 @@ SCHEMA = {
                     "人，有效扫码率",
                     field("rental.safe_code.valid_rate", "有效扫码率", "percent"),
                     "。",
+                    style="strong",
                 ),
                 sentence(
-                    "管家码：累计注册出租户",
+                    "（2）管家码：累计注册出租户",
                     field("rental.manager_code.registered", "累计注册"),
                     "户，",
                     *report_date_segments("", "新增注册"),
@@ -585,6 +604,7 @@ SCHEMA = {
                     "条，预警率",
                     field("rental.manager_code.warning_rate", "预警率", "percent"),
                     "。",
+                    style="strong",
                 ),
             ],
         },
@@ -725,6 +745,7 @@ SCHEMA = {
                     "起，实际组织调解",
                     field("disputes.daily.mediations", "组织调解"),
                     "起。",
+                    style="analysis",
                 ),
                 table(
                     "disputes.table",
@@ -973,7 +994,7 @@ SCHEMA = {
             "id": "notices",
             "title": "九、通知通报",
             "blocks": [
-                heading("三单一报进度", 3),
+                heading("一、三单一报进度", 3),
                 table(
                     "notices.table",
                     "三单一报进度",
@@ -999,7 +1020,7 @@ SCHEMA = {
             "id": "special",
             "title": "十、专项工作",
             "blocks": [
-                heading("1. 叮咛行动", 3),
+                heading("叮咛行动", 3, combine_with_next=False),
                 sentence(
                     "待核查",
                     field("special.dingning.pending", "待核查数"),
@@ -1044,7 +1065,7 @@ SCHEMA = {
                         {"department": "综合指挥室、辅警办公室"},
                     ],
                 ),
-                heading("2. 监控推广", 3),
+                heading("监控推广", 3),
                 table(
                     "special.monitor_table",
                     "监控推广进度",
