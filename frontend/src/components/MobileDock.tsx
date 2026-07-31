@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import type { MobileDockConfig, Role } from '../types'
+import type { MobileDockConfig, PermissionCode, Role } from '../types'
 import {
   navigationGroupById,
   navigationItemById,
@@ -57,9 +57,11 @@ function useVirtualKeyboardOpen() {
 export default function MobileDock({
   config,
   role,
+  permissions,
 }: {
   config: MobileDockConfig
   role: Role
+  permissions: PermissionCode[]
 }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -67,8 +69,8 @@ export default function MobileDock({
   const [openGroupId, setOpenGroupId] = useState<string | null>(null)
   const keyboardOpen = useVirtualKeyboardOpen()
   const normalized = useMemo(
-    () => normalizeMobileDockConfig(config, role),
-    [config, role],
+    () => normalizeMobileDockConfig(config, role, permissions),
+    [config, permissions, role],
   )
   const groups = normalized.groups.flatMap((groupConfig) => {
     const definition = navigationGroupById(groupConfig.id)

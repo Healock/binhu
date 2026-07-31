@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import get_current_user, require_admin
+from deps import get_current_user, require_permission
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
@@ -19,6 +19,16 @@ from services.report_builders.summary import (
 from services.report_range import get_report_range, get_summary_range
 from services.report_overview import get_online_overview
 from services.report_view import project_report_payload
+from services.data_scope import (
+    allowed_community_names,
+    community_scope,
+    filter_report_payload,
+)
+from services.permissions import (
+    ONLINE_SUMMARY_VIEW,
+    REPORT_BUILD,
+    REPORT_CONFIG_MANAGE,
+)
 
 router = APIRouter(prefix="/api/stats", tags=["统计查询"])
 builder = DailyReportBuilder()
@@ -81,14 +91,17 @@ def _column_mode(
 
 
 @router.get("/types")
-async def get_types():
+async def get_types(
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+):
     """获取分汇总表类型列表"""
+    del user
     return {"data": REPORT_TYPES, "implemented": IMPLEMENTED_SUBTYPES}
 
 
 @router.get("/summary-config")
 async def get_summary_config(
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(REPORT_CONFIG_MANAGE)),
     conn=Depends(get_db),
 ):
     """读取总汇总表包含的分表类型，管理员和超级管理员可用。"""
@@ -105,7 +118,7 @@ async def get_summary_config(
 async def update_summary_config(
     data: SummaryConfigUpdate,
     request: Request,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(REPORT_CONFIG_MANAGE)),
     conn=Depends(get_db),
 ):
     """保存总汇总表包含的分表类型。"""
@@ -138,6 +151,7 @@ async def get_overview(
     start_date: str = Query(..., description="yyyy-MM-dd"),
     end_date: str = Query(..., description="yyyy-MM-dd"),
     parser_type: str = Query("全链条"),
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
 ):
     """读取跟随当前业务类型和日期区间变化的数据概览。"""
     try:
@@ -145,6 +159,7 @@ async def get_overview(
             start_date,
             end_date,
             parser_type,
+            community_scope(user),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -154,8 +169,10 @@ async def get_overview(
 async def build_report(
     report_date: Optional[str] = Query(None, description="yyyy-MM-dd，默认今天"),
     parser_type: str = Query("全链条"),
+    user: dict = Depends(require_permission(REPORT_BUILD)),
 ):
     """手动触发日报生成"""
+    del user
     d = report_date or (await get_business_date_from_db()).isoformat()
     if parser_type == "总汇总表":
         result = await build_summary_with_subreports(d)
@@ -173,13 +190,18 @@ async def get_report(
     report_date: str = Query(..., description="yyyy-MM-dd"),
     parser_type: str = Query("全链条"),
     column_mode: Optional[Literal["two", "three"]] = Query(None),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
 ):
     """查看指定日期的分汇总表或总汇总表"""
     if parser_type == "总汇总表":
         result = await get_summary(report_date)
     else:
         result = await builder.get_report(report_date, parser_type)
+    result = filter_report_payload(
+        result,
+        user,
+        await allowed_community_names(user),
+    )
     return project_report_payload(result, _column_mode(column_mode, user))
 
 
@@ -189,7 +211,7 @@ async def get_report_range_endpoint(
     end_date: str = Query(..., description="yyyy-MM-dd"),
     parser_type: str = Query("全链条"),
     column_mode: Optional[Literal["two", "three"]] = Query(None),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
 ):
     """按时间区间查看汇总表（任务流水去重后重算比例）。"""
     try:
@@ -199,6 +221,11 @@ async def get_report_range_endpoint(
             result = await get_summary_range(start_date, end_date)
         else:
             result = await get_report_range(start_date, end_date, parser_type)
+        result = filter_report_payload(
+            result,
+            user,
+            await allowed_community_names(user),
+        )
         return project_report_payload(result, _column_mode(column_mode, user))
     except Exception as e:
         import traceback
@@ -207,8 +234,11 @@ async def get_report_range_endpoint(
 
 
 @router.get("/reports")
-async def list_reports():
+async def list_reports(
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+):
     """列出所有已生成的日报"""
+    del user
     return {"data": await builder.list_reports()}
 
 
@@ -216,7 +246,7 @@ async def list_reports():
 async def get_today_report(
     parser_type: str = Query("全链条"),
     column_mode: Optional[Literal["two", "three"]] = Query(None),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
 ):
     """获取今天的日报"""
     today = (await get_business_date_from_db()).isoformat()
@@ -224,4 +254,9 @@ async def get_today_report(
         result = await get_summary(today)
     else:
         result = await builder.get_report(today, parser_type)
+    result = filter_report_payload(
+        result,
+        user,
+        await allowed_community_names(user),
+    )
     return project_report_payload(result, _column_mode(column_mode, user))

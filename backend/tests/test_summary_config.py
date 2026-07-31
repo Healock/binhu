@@ -11,7 +11,7 @@ from routers.stats import _normalize_summary_types, router as stats_router
 
 
 class SummaryConfigTests(unittest.TestCase):
-    def test_summary_config_routes_require_admin(self):
+    def test_summary_config_routes_require_report_config_permission(self):
         routes = [
             route
             for route in stats_router.routes
@@ -20,7 +20,7 @@ class SummaryConfigTests(unittest.TestCase):
         self.assertEqual(len(routes), 2)
         for route in routes:
             self.assertTrue(any(
-                dependency.call is require_admin
+                dependency.call.__name__ == "require_report_config_manage"
                 for dependency in route.dependant.dependencies
             ))
 

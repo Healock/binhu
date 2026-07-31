@@ -38,8 +38,9 @@ export default function PersonalizationSettings() {
     setNavigationMode(user.mobile_navigation_mode || 'dock')
     setThemeMode(user.theme_mode || 'light')
     setDockConfig(normalizeMobileDockConfig(
-      user.mobile_dock_config || defaultMobileDockConfig(user.role),
+      user.mobile_dock_config || defaultMobileDockConfig(user.role, user.permissions),
       user.role,
+      user.permissions,
     ))
   }, [user])
 
@@ -128,7 +129,7 @@ export default function PersonalizationSettings() {
               <Button
                 size="small"
                 onClick={() => setDockConfig(
-                  defaultMobileDockConfig(user.role),
+                  defaultMobileDockConfig(user.role, user.permissions),
                 )}
               >
                 恢复默认
@@ -140,6 +141,7 @@ export default function PersonalizationSettings() {
             <DockConfigurator
               value={dockConfig}
               role={user.role}
+              permissions={user.permissions}
               onChange={setDockConfig}
             />
           </div>

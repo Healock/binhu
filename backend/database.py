@@ -3,6 +3,12 @@
 import aiomysql
 from config import settings
 from services.business_time import current_business_date
+from services.permissions import (
+    ALL_PERMISSIONS,
+    DEFAULT_PERMISSION_GROUPS,
+    POSITION_DEFAULT_GROUP,
+    serialize_permissions,
+)
 
 # 数据库名称映射
 DB_NAMES = {
@@ -10,6 +16,254 @@ DB_NAMES = {
     "archive": settings.MYSQL_ARCHIVE_DB,
     "daily_report": settings.MYSQL_DAILY_REPORT_DB,
 }
+
+
+async def _ensure_column(cur, table: str, column: str, definition: str) -> None:
+    await cur.execute(f"SHOW COLUMNS FROM `{table}` LIKE %s", (column,))
+    if not await cur.fetchone():
+        await cur.execute(
+            f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}"
+        )
+
+
+async def _ensure_index(
+    cur,
+    table: str,
+    index_name: str,
+    definition: str,
+) -> None:
+    await cur.execute(f"SHOW INDEX FROM `{table}` WHERE Key_name=%s", (index_name,))
+    if not await cur.fetchone():
+        await cur.execute(
+            f"ALTER TABLE `{table}` ADD {definition}"
+        )
+
+
+async def ensure_permission_schema(cur) -> None:
+    """增加 0.9.0 权限和部门结构，全部保持旧版本可忽略。"""
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _departments (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(200) NOT NULL UNIQUE,
+            department_type VARCHAR(20) NOT NULL,
+            community_id INT DEFAULT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_department_community (community_id),
+            INDEX idx_department_type_active (department_type, is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute(
+        "INSERT IGNORE INTO _departments "
+        "(name, department_type, community_id) "
+        "VALUES ('内勤', 'internal', NULL)"
+    )
+    await cur.execute("""
+        INSERT INTO _departments (name, department_type, community_id)
+        SELECT community.name, 'community', community.id
+        FROM _communities AS community
+        LEFT JOIN _departments AS department
+          ON department.community_id=community.id
+        WHERE department.id IS NULL
+        ON DUPLICATE KEY UPDATE
+          department_type='community',
+          community_id=VALUES(community_id),
+          is_active=1
+    """)
+
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _permission_groups (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(50) NOT NULL UNIQUE,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            description VARCHAR(500) NOT NULL DEFAULT '',
+            permissions JSON NOT NULL,
+            data_scope VARCHAR(30) NOT NULL DEFAULT 'own_department',
+            is_system TINYINT(1) NOT NULL DEFAULT 0,
+            is_locked TINYINT(1) NOT NULL DEFAULT 0,
+            sort_order INT NOT NULL DEFAULT 100,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    for code, group in DEFAULT_PERMISSION_GROUPS.items():
+        await cur.execute(
+            "INSERT IGNORE INTO _permission_groups "
+            "(code, name, description, permissions, data_scope, "
+            "is_system, is_locked, sort_order) "
+            "VALUES (%s, %s, %s, %s, %s, 1, %s, %s)",
+            (
+                code,
+                group["name"],
+                group["description"],
+                serialize_permissions(group["permissions"]),
+                group["data_scope"],
+                1 if code == "super_admin" else 0,
+                group["sort_order"],
+            ),
+        )
+    await cur.execute(
+        "UPDATE _permission_groups SET permissions=%s, data_scope='all', "
+        "is_system=1, is_locked=1 WHERE code='super_admin'",
+        (serialize_permissions(ALL_PERMISSIONS),),
+    )
+
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _position_permission_groups (
+            position VARCHAR(20) NOT NULL PRIMARY KEY,
+            permission_group_id INT NOT NULL,
+            updated_by INT DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_position_permission_group (permission_group_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _permission_change_log (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            action VARCHAR(100) NOT NULL,
+            target_type VARCHAR(50) NOT NULL,
+            target_id VARCHAR(100) NOT NULL,
+            detail JSON DEFAULT NULL,
+            changed_by INT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_permission_change_target (target_type, target_id),
+            INDEX idx_permission_change_time (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    for position, group_code in POSITION_DEFAULT_GROUP.items():
+        await cur.execute(
+            "INSERT IGNORE INTO _position_permission_groups "
+            "(position, permission_group_id) "
+            "SELECT %s, id FROM _permission_groups WHERE code=%s",
+            (position, group_code),
+        )
+
+    await _ensure_column(
+        cur,
+        "_grid_members",
+        "department_id",
+        "INT DEFAULT NULL AFTER community",
+    )
+    await _ensure_index(
+        cur,
+        "_grid_members",
+        "idx_grid_department",
+        "INDEX idx_grid_department (department_id)",
+    )
+    await cur.execute("""
+        UPDATE _grid_members AS member
+        JOIN _departments AS department
+          ON department.name='内勤' AND department.department_type='internal'
+        SET member.department_id=department.id,
+            member.community=''
+        WHERE member.position IN ('片长', '中队长', '基础管控')
+          AND (member.department_id IS NULL OR member.department_id<>department.id)
+    """)
+    await cur.execute("""
+        UPDATE _grid_members AS member
+        JOIN _departments AS department
+          ON department.name=member.community
+         AND department.department_type='community'
+        SET member.department_id=department.id
+        WHERE member.department_id IS NULL
+          AND member.community IS NOT NULL
+          AND member.community<>''
+    """)
+
+    for column_name, definition in [
+        ("member_id", "INT DEFAULT NULL AFTER role"),
+        ("permission_group_id", "INT DEFAULT NULL AFTER member_id"),
+        (
+            "group_assignment_mode",
+            "VARCHAR(20) NOT NULL DEFAULT 'inherited' AFTER permission_group_id",
+        ),
+        (
+            "password_is_temporary",
+            "TINYINT(1) NOT NULL DEFAULT 0 AFTER group_assignment_mode",
+        ),
+        (
+            "active_session_id",
+            "VARCHAR(64) DEFAULT NULL AFTER password_is_temporary",
+        ),
+    ]:
+        await _ensure_column(cur, "_users", column_name, definition)
+    await _ensure_index(
+        cur,
+        "_users",
+        "uk_users_member",
+        "UNIQUE INDEX uk_users_member (member_id)",
+    )
+    await _ensure_index(
+        cur,
+        "_users",
+        "idx_users_permission_group",
+        "INDEX idx_users_permission_group (permission_group_id)",
+    )
+    await _ensure_index(
+        cur,
+        "_users",
+        "idx_users_active_session",
+        "INDEX idx_users_active_session (active_session_id)",
+    )
+    await cur.execute("""
+        UPDATE _users AS user
+        JOIN _permission_groups AS permission_group
+          ON permission_group.code=CASE
+            WHEN user.role='super_admin' THEN 'super_admin'
+            WHEN user.role='admin' THEN 'admin'
+            ELSE NULL
+          END
+        SET user.permission_group_id=permission_group.id,
+            user.group_assignment_mode='custom'
+        WHERE user.permission_group_id IS NULL
+          AND user.role IN ('super_admin', 'admin')
+    """)
+
+    await _ensure_column(
+        cur,
+        "_sessions",
+        "last_activity_at",
+        "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER created_at",
+    )
+    await _ensure_index(
+        cur,
+        "_sessions",
+        "idx_session_user_activity",
+        "INDEX idx_session_user_activity (user_id, last_activity_at)",
+    )
+    await cur.execute("""
+        UPDATE _users AS user
+        LEFT JOIN (
+            SELECT session.user_id,
+                   SUBSTRING_INDEX(
+                       GROUP_CONCAT(
+                           session.session_id
+                           ORDER BY session.created_at DESC,
+                                    session.session_id DESC
+                       ),
+                       ',', 1
+                   ) AS session_id
+            FROM _sessions AS session
+            WHERE session.expires_at>UTC_TIMESTAMP()
+            GROUP BY session.user_id
+        ) AS latest ON latest.user_id=user.id
+        SET user.active_session_id=latest.session_id
+        WHERE user.active_session_id IS NULL
+          AND latest.session_id IS NOT NULL
+    """)
+    await cur.execute(
+        "INSERT IGNORE INTO _system_config (config_key, config_value) "
+        "VALUES ('session_idle_minutes', '30'), "
+        "('permission_enforcement_enabled', '0')"
+    )
 
 
 async def ensure_bootstrap_admin(cur) -> bool:
@@ -30,8 +284,11 @@ async def ensure_bootstrap_admin(cur) -> bool:
 
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     await cur.execute(
-        "INSERT INTO _users (username, password_hash, role) "
-        "VALUES (%s, %s, 'super_admin')",
+        "INSERT INTO _users "
+        "(username, password_hash, role, permission_group_id, "
+        "group_assignment_mode) "
+        "SELECT %s, %s, 'super_admin', id, 'custom' "
+        "FROM _permission_groups WHERE code='super_admin'",
         (username, password_hash),
     )
     print(f"[DB] 初始超级管理员已创建: {username}")
@@ -773,11 +1030,14 @@ class DatabaseManager:
                         session_id VARCHAR(64) PRIMARY KEY,
                         user_id INT NOT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        last_activity_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         expires_at DATETIME NOT NULL,
                         INDEX idx_user (user_id),
-                        INDEX idx_expires (expires_at)
+                        INDEX idx_expires (expires_at),
+                        INDEX idx_session_user_activity (user_id, last_activity_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
+                await ensure_permission_schema(cur)
                 await ensure_bootstrap_admin(cur)
 
         async with cls._pools["daily_report"].acquire() as conn:

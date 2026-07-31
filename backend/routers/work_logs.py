@@ -13,7 +13,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import require_admin
+from deps import require_permission
+from services.permissions import WORK_LOG_MANAGE
 from services.audit import record_admin_audit, request_audit_fields
 from services.work_log_data import build_system_snapshot
 from services.work_log_pdf import build_daily_pdf
@@ -30,6 +31,7 @@ from services.work_log_schema import (
 
 
 router = APIRouter(prefix="/api/work-logs", tags=["工作日志"])
+require_admin = require_permission(WORK_LOG_MANAGE)
 
 
 class DraftCreate(BaseModel):

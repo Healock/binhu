@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Iterable
 
 
 DEFAULT_MOBILE_NAVIGATION_MODE = "dock"
@@ -21,6 +21,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
         "grid_members",
         "communities",
         "users",
+        "permission_groups",
     ),
     "system": (
         "settings",
@@ -28,8 +29,21 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-SUPER_ADMIN_ITEMS = {"users", "operations"}
+SUPER_ADMIN_ITEMS = {"users", "permission_groups", "operations"}
 ADMIN_ITEMS = {"data_upload", "work_log"}
+
+ITEM_PERMISSIONS: dict[str, str] = {
+    "online_summary": "online.summary.view",
+    "online_query": "online.raw.view",
+    "visit_summary": "visit.summary.view",
+    "data_upload": "visit.import",
+    "work_log": "worklog.manage",
+    "grid_members": "personnel.basic.view",
+    "communities": "community.view",
+    "users": "user.manage",
+    "permission_groups": "permission.manage",
+    "operations": "ops.manage",
+}
 
 
 def normalize_mobile_navigation_mode(value: Any) -> str:
@@ -40,7 +54,14 @@ def normalize_mobile_navigation_mode(value: Any) -> str:
     )
 
 
-def _item_is_accessible(item_id: str, role: str) -> bool:
+def _item_is_accessible(
+    item_id: str,
+    role: str,
+    permissions: Iterable[str] | None = None,
+) -> bool:
+    if permissions is not None:
+        required = ITEM_PERMISSIONS.get(item_id)
+        return required is None or required in permissions
     if item_id in SUPER_ADMIN_ITEMS:
         return role == "super_admin"
     if item_id in ADMIN_ITEMS:
@@ -48,7 +69,10 @@ def _item_is_accessible(item_id: str, role: str) -> bool:
     return True
 
 
-def default_mobile_dock_config(role: str) -> dict[str, list[dict[str, Any]]]:
+def default_mobile_dock_config(
+    role: str,
+    permissions: Iterable[str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """返回当前角色默认可见的全部分类和页面。"""
     return {
         "groups": [
@@ -57,7 +81,7 @@ def default_mobile_dock_config(role: str) -> dict[str, list[dict[str, Any]]]:
                 "items": [
                     item_id
                     for item_id in item_ids
-                    if _item_is_accessible(item_id, role)
+                    if _item_is_accessible(item_id, role, permissions)
                 ],
             }
             for group_id, item_ids in GROUP_ITEMS.items()
@@ -83,6 +107,7 @@ def _load_config(value: Any) -> dict[str, Any] | None:
 def normalize_mobile_dock_config(
     value: Any,
     role: str,
+    permissions: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """读取配置时过滤未知、重复和无权限入口。
 
@@ -91,7 +116,7 @@ def normalize_mobile_dock_config(
     parsed = _load_config(value)
     raw_groups = parsed.get("groups") if parsed else None
     if not isinstance(raw_groups, list):
-        return default_mobile_dock_config(role)
+        return default_mobile_dock_config(role, permissions)
 
     groups: list[dict[str, Any]] = []
     seen_groups: set[str] = set()
@@ -113,7 +138,7 @@ def normalize_mobile_dock_config(
             if (
                 item_id not in allowed
                 or item_id in seen_items
-                or not _item_is_accessible(item_id, role)
+                or not _item_is_accessible(item_id, role, permissions)
             ):
                 continue
             seen_items.add(item_id)
@@ -123,12 +148,17 @@ def normalize_mobile_dock_config(
         seen_groups.add(group_id)
         groups.append({"id": group_id, "items": items})
 
-    return {"groups": groups} if groups else default_mobile_dock_config(role)
+    return (
+        {"groups": groups}
+        if groups
+        else default_mobile_dock_config(role, permissions)
+    )
 
 
 def validate_mobile_dock_config(
     value: Any,
     role: str,
+    permissions: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """保存配置前做严格校验，避免静默接受错误或越权入口。"""
     parsed = _load_config(value)
@@ -161,7 +191,7 @@ def validate_mobile_dock_config(
                 raise ValueError(f"页面不属于当前分类：{item_id or '空值'}")
             if item_id in seen_items:
                 raise ValueError("同一分类中的页面不能重复")
-            if not _item_is_accessible(item_id, role):
+            if not _item_is_accessible(item_id, role, permissions):
                 raise ValueError("Dock 配置包含当前账号无权访问的页面")
             seen_items.add(item_id)
             items.append(item_id)

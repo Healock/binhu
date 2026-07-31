@@ -279,6 +279,8 @@ async def get_visit_summary(
     selected_positions: set[str] | None = None,
     known_positions: dict[str, str] | None = None,
     attendance_context: dict[str, Any] | None = None,
+    community_scope: str | None = None,
+    community_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """查询闭区间内的走访，并按真实在岗人日计算社区人均值。"""
     if category not in VISIT_CATEGORY_LABELS:
@@ -301,8 +303,18 @@ async def get_visit_summary(
             selected_positions = {"自购房"}
             include_unknown = False
 
+        community_clause = ""
+        query_params: tuple[Any, ...] = (start_date, end_date)
+        if community_scope is not None:
+            allowed = community_names if community_names is not None else [community_scope]
+            if allowed:
+                placeholders = ",".join(["%s"] * len(allowed))
+                community_clause = f"AND TRIM(`社区`) IN ({placeholders})"
+                query_params = (*query_params, *allowed)
+            else:
+                community_clause = "AND 1=0"
         await cur.execute(
-            """
+            f"""
             SELECT
                 `业务日期`,
                 COALESCE(NULLIF(TRIM(`社区`), ''), '未分配社区'),
@@ -314,13 +326,14 @@ async def get_visit_summary(
                 COUNT(`星级采集时间`)
             FROM t_visit_details
             WHERE `业务日期` BETWEEN %s AND %s
+              {community_clause}
             GROUP BY
                 `业务日期`,
                 COALESCE(NULLIF(TRIM(`社区`), ''), '未分配社区'),
                 COALESCE(NULLIF(TRIM(`操作人`), ''), '未填写姓名')
             ORDER BY 1, 2, 3
             """,
-            (start_date, end_date),
+            query_params,
         )
         raw_daily_rows = filter_person_rows(
             await cur.fetchall(),
@@ -335,6 +348,7 @@ async def get_visit_summary(
                 start_date=start_date,
                 end_date=end_date,
                 selected_positions=selected_positions,
+                community_scope=community_scope,
             )
 
     inspector_totals: dict[tuple[str, str], dict[str, int]] = {}
@@ -419,7 +433,7 @@ async def get_visit_summary(
             "unknown_participant_days"
         ],
     }
-    return {
+    result = {
         "category": category,
         "category_label": VISIT_CATEGORY_LABELS[category],
         "start_date": start_date.isoformat(),
@@ -445,3 +459,6 @@ async def get_visit_summary(
             ),
         },
     }
+    if community_scope == "":
+        result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
+    return result

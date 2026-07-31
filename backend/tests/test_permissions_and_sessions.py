@@ -1,0 +1,160 @@
+import os
+import unittest
+from datetime import datetime, timedelta
+from unittest.mock import patch
+
+from fastapi import HTTPException
+from starlette.requests import Request
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
+
+from deps import get_current_user, require_admin, require_super_admin
+from services.data_scope import filter_report_payload
+from services.permissions import (
+    DEFAULT_PERMISSION_GROUPS,
+    ONLINE_SUMMARY_VIEW,
+    SYNC_TRIGGER,
+    permitted_community,
+)
+
+
+class FakeCursor:
+    def __init__(self, row, config=None):
+        self.row = row
+        self.config = config or [("session_idle_minutes", "30"), ("permission_enforcement_enabled", "1")]
+        self.result = None
+        self.updates = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+    async def execute(self, sql, params=None):
+        if "FROM _sessions AS session" in sql:
+            self.result = self.row
+        elif "SELECT config_key" in sql:
+            self.result = list(self.config)
+        elif "UPDATE _sessions SET last_activity_at" in sql:
+            self.updates.append((sql, params))
+            self.result = None
+
+    async def fetchone(self):
+        return self.result
+
+    async def fetchall(self):
+        return self.result or []
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+class FakePool:
+    def __init__(self, cursor):
+        self.conn = FakeConnection(cursor)
+
+    async def acquire(self):
+        return self.conn
+
+    def release(self, _conn):
+        return None
+
+
+def request(*, activity=False):
+    headers = [(b"cookie", b"binhu_session=session-a")]
+    if activity:
+        headers.append((b"x-user-activity", b"1"))
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": headers})
+
+
+def user_row(*, active_session="session-a", last_activity=None, now=None):
+    now = now or datetime(2026, 7, 31, 8, 0, 0)
+    created = now - timedelta(minutes=10)
+    return (
+        1, "tester", "member", "table", "three", "dock", None, "light",
+        8, 0, active_session,
+        2, "flow_post", "流口岗", '["online.summary.view"]', "own_department",
+        "张三", "组员", 5, "长板", "community", "长板",
+        created, last_activity or created, now + timedelta(hours=20), now,
+    )
+
+
+class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
+    def test_position_default_groups_have_requested_boundaries(self):
+        self.assertIn(ONLINE_SUMMARY_VIEW, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
+        self.assertNotIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["global_viewer"]["permissions"])
+        self.assertIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
+
+    def test_own_department_requires_community_department(self):
+        self.assertEqual(permitted_community({
+            "data_scope": "own_department",
+            "department": {"type": "community", "community_name": "长板"},
+        }), "长板")
+        self.assertEqual(permitted_community({
+            "data_scope": "own_department",
+            "department": {"type": "internal", "name": "内勤"},
+        }), "")
+
+    def test_report_filter_keeps_alias_and_recalculates_later(self):
+        payload = {
+            "exists": True,
+            "inspector": {"columns": ["社区", "数据总数"], "data": [
+                {"社区": "南厍村", "数据总数": 2},
+                {"社区": "长板", "数据总数": 3},
+            ], "summary": {"数据总数": 5}},
+        }
+        user = {"data_scope": "own_department", "department": {
+            "type": "community", "community_name": "南厍",
+        }}
+        result = filter_report_payload(payload, user, ["南厍", "南厍村"])
+        self.assertEqual(result["inspector"]["data"], [{"社区": "南厍村", "数据总数": 2}])
+        self.assertNotIn("summary", result["inspector"])
+
+    async def test_legacy_dependency_calls_still_work_in_unit_tests(self):
+        legacy_admin = {"id": 1, "role": "admin"}
+        self.assertEqual(await require_admin(legacy_admin), legacy_admin)
+        legacy_super = {"id": 2, "role": "super_admin"}
+        self.assertEqual(await require_super_admin(legacy_super), legacy_super)
+
+
+class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_login_replaces_old_session(self):
+        cursor = FakeCursor(user_row(active_session="session-b"))
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            with self.assertRaises(HTTPException) as raised:
+                await get_current_user(request())
+        self.assertEqual(raised.exception.detail["code"], "session_replaced")
+
+    async def test_idle_session_expires_without_polling_refresh(self):
+        now = datetime(2026, 7, 31, 8, 0, 0)
+        cursor = FakeCursor(user_row(
+            now=now,
+            last_activity=now - timedelta(minutes=31),
+        ))
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            with self.assertRaises(HTTPException) as raised:
+                await get_current_user(request())
+        self.assertEqual(raised.exception.detail["code"], "session_idle_timeout")
+        self.assertEqual(cursor.updates, [])
+
+    async def test_explicit_activity_refreshes_session(self):
+        now = datetime(2026, 7, 31, 8, 0, 0)
+        cursor = FakeCursor(user_row(
+            now=now,
+            last_activity=now - timedelta(minutes=20),
+        ))
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            user = await get_current_user(request(activity=True))
+        self.assertEqual(len(cursor.updates), 1)
+        self.assertEqual(user["session_policy"]["last_activity_at"], now.isoformat() + "Z")
+
+
+if __name__ == "__main__":
+    unittest.main()

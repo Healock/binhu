@@ -211,11 +211,15 @@ async def build_summary(
                     GROUP BY COALESCE(formal_community.name, t.社区)
                 ) AS report_rows
                 LEFT JOIN (
-                    SELECT community, COUNT(*) AS 网格员人数
-                    FROM OnlineData._grid_members
-                    WHERE position IN ({position_placeholders})
+                    SELECT community.name AS community, COUNT(*) AS 网格员人数
+                    FROM OnlineData._grid_members AS member
+                    JOIN OnlineData._departments AS department
+                      ON department.id=member.department_id
+                    JOIN OnlineData._communities AS community
+                      ON community.id=department.community_id
+                    WHERE member.position IN ({position_placeholders})
                       AND {active_condition}
-                    GROUP BY community
+                    GROUP BY community.name
                 ) AS member_counts
                   ON member_counts.community = report_rows.社区
             """, (*positions, date_str))

@@ -11,14 +11,18 @@ import {
 } from '../api/client'
 import AppTable from '../components/AppTable'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
+import { useAuth } from '../context/AuthContext'
 
 export default function Communities() {
+  const { user } = useAuth()
+  const canManage = Boolean(user?.permissions.includes('community.manage'))
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [newName, setNewName] = useState('')
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [editingCommunity, setEditingCommunity] = useState<GridCommunity | null>(null)
+  const [nameDraft, setNameDraft] = useState('')
   const [aliasDraft, setAliasDraft] = useState<string[]>([])
   const [officerDraft, setOfficerDraft] = useState<string[]>([])
   const [savingDetails, setSavingDetails] = useState(false)
@@ -64,6 +68,7 @@ export default function Communities() {
 
   const openCommunityEditor = (community: GridCommunity) => {
     setEditingCommunity(community)
+    setNameDraft(community.name)
     setAliasDraft(community.aliases || [])
     setOfficerDraft(community.police_officers || [])
   }
@@ -74,6 +79,7 @@ export default function Communities() {
     try {
       const result = await updateGridCommunityDetails(
         editingCommunity.id,
+        nameDraft.trim(),
         aliasDraft,
         officerDraft,
       )
@@ -82,6 +88,7 @@ export default function Communities() {
         : ''
       setMsg(`“${editingCommunity.name}”的社区资料已保存${matchedText}`)
       setEditingCommunity(null)
+      setNameDraft('')
       setAliasDraft([])
       setOfficerDraft([])
       await fetch()
@@ -130,7 +137,7 @@ export default function Communities() {
         )
         : <span className="text-slate-400">暂无别名</span>,
     },
-    {
+    ...(canManage ? [{
       title: '操作',
       key: 'actions',
       width: 190,
@@ -149,7 +156,7 @@ export default function Communities() {
           </Button>
         </div>
       ),
-    },
+    }] : []),
   ]
 
   return (
@@ -160,7 +167,7 @@ export default function Communities() {
         actions={<Tag color="blue">共 {communities.length} 个社区</Tag>}
       />
 
-      <section className="app-card">
+      {canManage && <section className="app-card">
         <div className="app-toolbar">
           <Input
             value={newName}
@@ -174,7 +181,7 @@ export default function Communities() {
           </Button>
         </div>
         {msg && <Alert type={msg.includes('失败') ? 'error' : 'success'} showIcon message={msg} />}
-      </section>
+      </section>}
 
       {loading ? (
         <div className="app-table-wrap">
@@ -208,10 +215,10 @@ export default function Communities() {
                         : <span className="text-xs text-slate-400">暂无别名</span>}
                     </div>
                   </div>
-                  <div className="flex flex-col items-end">
+                  {canManage && <div className="flex flex-col items-end">
                     <Button type="link" size="small" onClick={() => openCommunityEditor(c)}>编辑资料</Button>
                     <Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button>
-                  </div>
+                  </div>}
                 </div>
               ))}
             </div>
@@ -226,9 +233,9 @@ export default function Communities() {
           </div>
         </>
       )}
-      <p className="text-xs text-slate-500">人员数量会根据“人员管理”中的所属社区自动统计，无需手动填写。</p>
+      <p className="text-xs text-slate-500">人员数量会根据“人员管理”中的社区部门自动统计，无需手动填写。</p>
 
-      <Modal
+      {canManage && <Modal
         open={Boolean(editingCommunity)}
         title={editingCommunity ? `编辑“${editingCommunity.name}”` : '编辑社区资料'}
         okText="保存"
@@ -237,11 +244,23 @@ export default function Communities() {
         onOk={handleSaveDetails}
         onCancel={() => {
           setEditingCommunity(null)
+          setNameDraft('')
           setAliasDraft([])
           setOfficerDraft([])
         }}
       >
         <div className="space-y-5">
+          <div>
+            <div className="mb-2 font-medium text-slate-700">社区正式名称</div>
+            <Input
+              value={nameDraft}
+              onChange={event => setNameDraft(event.target.value)}
+              placeholder="请输入社区正式名称"
+            />
+            <p className="mt-2 text-sm text-slate-500">
+              修改后所属部门会同步改名，旧名称会自动保留为别名。
+            </p>
+          </div>
           <div>
             <div className="mb-2 font-medium text-slate-700">社区民警</div>
             <p className="mb-3 text-sm text-slate-500">
@@ -275,7 +294,7 @@ export default function Communities() {
             />
           </div>
         </div>
-      </Modal>
+      </Modal>}
     </div>
   )
 }

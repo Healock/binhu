@@ -11,7 +11,7 @@ import { PageHeader } from './ui'
 export default function SettingsLayout() {
   const { user } = useAuth()
   const location = useLocation()
-  const isSuperAdmin = user?.role === 'super_admin'
+  const canManageSystem = user?.permissions?.includes('system.manage')
 
   const allMenuItems = [
     { path: '/settings/spreadsheets', label: '在线表格配置', icon: <FileTextOutlined />, superOnly: true },
@@ -20,10 +20,10 @@ export default function SettingsLayout() {
     { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
   ]
 
-  const menuItems = allMenuItems.filter(item => !item.superOnly || isSuperAdmin)
+  const menuItems = allMenuItems.filter(item => !item.superOnly || canManageSystem)
   const restrictedPaths = allMenuItems.filter(item => item.superOnly).map(item => item.path)
 
-  if (!isSuperAdmin && restrictedPaths.some(path => location.pathname.startsWith(path))) {
+  if (!canManageSystem && restrictedPaths.some(path => location.pathname.startsWith(path))) {
     return <Navigate to="/settings/personalization" replace />
   }
 

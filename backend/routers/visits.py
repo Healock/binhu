@@ -9,7 +9,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
 from database import get_db
-from deps import require_admin
+from deps import require_permission
+from services.data_scope import community_names_for_scope, community_scope
+from services.permissions import VISIT_IMPORT, VISIT_SUMMARY_VIEW
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_timezone_name
 from services.star_rating_import import (
@@ -79,8 +81,17 @@ async def _release_import_lock(conn) -> None:
 
 
 @router.get("/coverage")
-async def coverage(conn=Depends(get_db)):
-    return await get_visit_coverage(conn)
+async def coverage(
+    user: dict = Depends(require_permission(VISIT_SUMMARY_VIEW)),
+    conn=Depends(get_db),
+):
+    scope = community_scope(user)
+    names = (
+        await community_names_for_scope(conn, scope)
+        if scope is not None
+        else None
+    )
+    return await get_visit_coverage(conn, scope, names)
 
 
 @router.get("/summary")
@@ -88,6 +99,7 @@ async def summary(
     start_date: date = Query(...),
     end_date: date = Query(...),
     category: Literal["rental", "self_owned"] = Query("rental"),
+    user: dict = Depends(require_permission(VISIT_SUMMARY_VIEW)),
     conn=Depends(get_db),
 ):
     if start_date > end_date:
@@ -95,11 +107,19 @@ async def summary(
             status_code=400,
             detail="开始日期不能晚于结束日期",
         )
+    scope = community_scope(user)
+    names = (
+        await community_names_for_scope(conn, scope)
+        if scope is not None
+        else None
+    )
     return await get_visit_summary(
         conn,
         start_date,
         end_date,
         category=category,
+        community_scope=scope,
+        community_names=names,
     )
 
 
@@ -107,7 +127,7 @@ async def summary(
 async def import_visit_detail(
     request: Request,
     file: UploadFile = File(...),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(VISIT_IMPORT)),
     conn=Depends(get_db),
 ):
     filename = _safe_filename(file.filename)
@@ -229,7 +249,7 @@ async def import_visit_detail(
 async def import_star_rating(
     request: Request,
     file: UploadFile = File(...),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(VISIT_IMPORT)),
     conn=Depends(get_db),
 ):
     filename = _safe_filename(file.filename)
@@ -363,7 +383,7 @@ async def import_issues(
     batch_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(VISIT_IMPORT)),
     conn=Depends(get_db),
 ):
     del user

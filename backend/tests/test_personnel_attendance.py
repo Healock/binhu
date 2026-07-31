@@ -46,12 +46,12 @@ def context(*, periods=None, duties=None, missing=()):
 
 
 class PersonnelAttendanceTests(unittest.TestCase):
-    def test_weekend_save_requires_admin_but_board_is_readable(self):
+    def test_weekend_save_requires_attendance_permission(self):
         protected_paths = {
             route.path
             for route in attendance_router.routes
             if any(
-                dependency.call is require_admin
+                dependency.call.__name__ == "require_attendance_manage"
                 for dependency in route.dependant.dependencies
             )
         }
@@ -66,7 +66,7 @@ class PersonnelAttendanceTests(unittest.TestCase):
             and "GET" in route.methods
         )
         self.assertFalse(any(
-            dependency.call is require_admin
+            dependency.call.__name__ == "require_attendance_manage"
             for dependency in get_route.dependant.dependencies
         ))
         status_route = next(
@@ -75,7 +75,7 @@ class PersonnelAttendanceTests(unittest.TestCase):
             if route.path == "/api/personnel/attendance/status"
         )
         self.assertFalse(any(
-            dependency.call is require_admin
+            dependency.call.__name__ == "require_attendance_manage"
             for dependency in status_route.dependant.dependencies
         ))
 

@@ -36,6 +36,7 @@ import {
   exportGridMembersUrl,
   getAttendanceScheduleStatus,
   getGridCommunities,
+  getDepartments,
   getAttendanceHistory,
   listGridMembers,
   updateGridMember,
@@ -44,17 +45,21 @@ import {
   type GridMember,
   type AttendanceHistoryItem,
   type AttendanceScheduleStatus,
+  type DepartmentOption,
 } from '../api/client'
 import {
   PERSONNEL_POSITIONS,
   type PersonnelPosition,
 } from '../constants/personnel'
 import { PageHeader, Panel } from '../components/ui'
+import { useAuth } from '../context/AuthContext'
 
 export default function GridMembers() {
+  const { user } = useAuth()
   const navigate = useNavigate()
   const [members, setMembers] = useState<GridMember[]>([])
   const [communities, setCommunities] = useState<GridCommunity[]>([])
+  const [departments, setDepartments] = useState<DepartmentOption[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
@@ -79,6 +84,9 @@ export default function GridMembers() {
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState('')
   const pageSize = 100
+  const canManage = Boolean(user?.permissions.includes('personnel.manage'))
+  const canManageAttendance = Boolean(user?.permissions.includes('attendance.manage'))
+  const canViewSensitive = Boolean(user?.permissions.includes('personnel.sensitive.view'))
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -102,7 +110,12 @@ export default function GridMembers() {
 
   const fetchCommunities = useCallback(async () => {
     try {
-      setCommunities(await getGridCommunities())
+      const [communityRows, departmentRows] = await Promise.all([
+        getGridCommunities(),
+        getDepartments(),
+      ])
+      setCommunities(communityRows)
+      setDepartments(departmentRows)
     } catch {
       // 人员列表仍然可以独立显示。
     }
@@ -126,9 +139,11 @@ export default function GridMembers() {
       setScheduleLoading(false)
     }
   }, [scheduleRange])
-  useEffect(() => { void checkSchedule() }, [checkSchedule])
   useEffect(() => {
-    if (!historyOpen) return
+    if (canManageAttendance) void checkSchedule()
+  }, [canManageAttendance, checkSchedule])
+  useEffect(() => {
+    if (!historyOpen || !canViewSensitive) return
     setHistoryLoading(true)
     getAttendanceHistory({ page: 1, page_size: 200 })
       .then(response => {
@@ -140,7 +155,7 @@ export default function GridMembers() {
         setHistoryTotal(0)
       })
       .finally(() => setHistoryLoading(false))
-  }, [historyOpen])
+  }, [canViewSensitive, historyOpen])
 
   const refresh = () => {
     fetch()
@@ -181,11 +196,10 @@ export default function GridMembers() {
       ),
     },
     {
-      title: '所属社区',
-      dataIndex: 'community',
-      key: 'community',
-      width: 125,
-      render: value => value || '-',
+      title: '所属部门',
+      key: 'department',
+      width: 150,
+      render: (_, member) => `${member.department?.name || '未分配部门'} · ${member.position}`,
     },
     {
       title: '岗位',
@@ -241,20 +255,20 @@ export default function GridMembers() {
       fixed: 'right',
       render: (_, member) => (
         <div className="whitespace-nowrap">
-          <Button type="link" size="small" onClick={() => setEditing(member)}>
+          {canManage && <Button type="link" size="small" onClick={() => setEditing(member)}>
             编辑
-          </Button>
-          <Button type="link" size="small" onClick={() => setLeaveEditing(member)}>
+          </Button>}
+          {canManageAttendance && <Button type="link" size="small" onClick={() => setLeaveEditing(member)}>
             请假
-          </Button>
-          <Button
+          </Button>}
+          {canManage && <Button
             type="link"
             danger
             size="small"
             onClick={() => handleDelete(member.id, member.name)}
           >
             删除
-          </Button>
+          </Button>}
         </div>
       ),
     },
@@ -264,39 +278,39 @@ export default function GridMembers() {
     <div className="app-page">
       <PageHeader
         title="人员管理"
-        description="维护人员资料和岗位；请假、长期与恢复正常使用独立按钮"
+        description="查看人员所属部门、岗位和在岗状态；有权限的账号可以维护资料与出勤"
         actions={(
           <>
-            <Button
+            {canViewSensitive && <Button
               icon={<HistoryOutlined />}
               onClick={() => setHistoryOpen(true)}
             >
               出勤记录
-            </Button>
-            <Button
+            </Button>}
+            {canManageAttendance && <Button
               icon={<CalendarOutlined />}
               onClick={() => navigate('/grid-members/weekend-duty')}
             >
               双休日备勤
-            </Button>
-            <Button
+            </Button>}
+            {canViewSensitive && <Button
               icon={<DownloadOutlined />}
               onClick={() => window.open(exportGridMembersUrl(), '_blank')}
             >
               导出 CSV
-            </Button>
-            <Button
+            </Button>}
+            {canManage && <Button
               type="primary"
               icon={<PlusOutlined />}
               onClick={() => setShowAddForm(true)}
             >
               添加人员
-            </Button>
+            </Button>}
           </>
         )}
       />
 
-      <Panel
+      {canManageAttendance && <Panel
         title="双休日排班检查"
         description="选择一个日期区间，集中查看哪些周还没有完成组长和组员排班"
       >
@@ -379,7 +393,7 @@ export default function GridMembers() {
             />
           )}
         </div>
-      </Panel>
+      </Panel>}
 
       <section className="app-card">
         <div className="app-toolbar">
@@ -403,7 +417,7 @@ export default function GridMembers() {
             }}
             className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
-              { value: '', label: '全部社区' },
+              { value: '', label: '全部社区部门' },
               ...communityNames.map(community => ({
                 value: community,
                 label: community,
@@ -452,7 +466,9 @@ export default function GridMembers() {
 
       <div className="hidden md:block">
         <AppTable<GridMember>
-          columns={memberColumns}
+          columns={memberColumns.filter(column => (
+            canViewSensitive || !['phone', 'id_card_masked', 'notes'].includes(String(column.key))
+          ))}
           dataSource={members}
           emptyText={loadError || '暂无人员，可点击“添加人员”手动添加'}
           loading={loading}
@@ -487,6 +503,9 @@ export default function GridMembers() {
                 onEdit={() => setEditing(member)}
                 onLeave={() => setLeaveEditing(member)}
                 onDelete={() => handleDelete(member.id, member.name)}
+                canManage={canManage}
+                canManageAttendance={canManageAttendance}
+                canViewSensitive={canViewSensitive}
               />
             ))}
           </div>
@@ -513,10 +532,10 @@ export default function GridMembers() {
         )}
       </div>
 
-      {(showAddForm || editing) && (
+      {canManage && (showAddForm || editing) && (
         <MemberForm
           member={editing}
-          communities={communityNames}
+          departments={departments}
           onClose={() => {
             setShowAddForm(false)
             setEditing(null)
@@ -663,11 +682,17 @@ function MobileMemberCard({
   onEdit,
   onLeave,
   onDelete,
+  canManage,
+  canManageAttendance,
+  canViewSensitive,
 }: {
   member: GridMember
   onEdit: () => void
   onLeave: () => void
   onDelete: () => void
+  canManage: boolean
+  canManageAttendance: boolean
+  canViewSensitive: boolean
 }) {
   const { label, color, detail, reason } = getMemberStatusMeta(member)
 
@@ -688,7 +713,7 @@ function MobileMemberCard({
             </Tag>
           </div>
           <div className="mt-1 truncate text-sm text-slate-500">
-            {member.community || '未分配社区'}
+            {member.department?.name || '未分配部门'}
           </div>
         </div>
         <Tag color={color} className="m-0 shrink-0">
@@ -703,7 +728,7 @@ function MobileMemberCard({
         </div>
       )}
 
-      <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
+      {canViewSensitive && <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
         <div className="flex min-w-0 gap-3">
           <span className="w-16 shrink-0 text-slate-500">电话</span>
           <span className="min-w-0 truncate text-slate-700" title={member.phone || '-'}>
@@ -727,36 +752,38 @@ function MobileMemberCard({
             </span>
           </div>
         )}
-      </div>
+      </div>}
 
-      <div className="mt-4 grid grid-cols-3 gap-2 border-t border-slate-200 pt-3">
-        <Button block icon={<EditOutlined />} onClick={onEdit}>
+      {(canManage || canManageAttendance) && <div className="mt-4 flex gap-2 border-t border-slate-200 pt-3">
+        {canManage && <Button block icon={<EditOutlined />} onClick={onEdit}>
           编辑
-        </Button>
-        <Button block icon={<CalendarOutlined />} onClick={onLeave}>
+        </Button>}
+        {canManageAttendance && <Button block icon={<CalendarOutlined />} onClick={onLeave}>
           请假
-        </Button>
-        <Button block danger icon={<DeleteOutlined />} onClick={onDelete}>
+        </Button>}
+        {canManage && <Button block danger icon={<DeleteOutlined />} onClick={onDelete}>
           删除
-        </Button>
-      </div>
+        </Button>}
+      </div>}
     </Card>
   )
 }
 
 function MemberForm({
   member,
-  communities,
+  departments,
   onClose,
   onSaved,
 }: {
   member: GridMember | null
-  communities: string[]
+  departments: DepartmentOption[]
   onClose: () => void
   onSaved: () => void
 }) {
   const [name, setName] = useState(member?.name || '')
-  const [community, setCommunity] = useState(member?.community || '')
+  const [departmentId, setDepartmentId] = useState<number | null>(
+    member?.department_id || null,
+  )
   const [position, setPosition] = useState<PersonnelPosition>(
     (member?.position as PersonnelPosition) || '组员',
   )
@@ -774,7 +801,7 @@ function MemberForm({
     setFormError('')
     try {
       const payload = {
-        community,
+        department_id: departmentId,
         position,
         phone,
         notes,
@@ -816,14 +843,17 @@ function MemberForm({
         </div>
         <div>
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
-            所属社区
+            所属部门
           </label>
           <Select
-            value={community || undefined}
-            onChange={setCommunity}
-            placeholder="请选择社区"
+            value={departmentId || undefined}
+            onChange={setDepartmentId}
+            placeholder="请选择部门"
             className="w-full"
-            options={communities.map(item => ({ value: item, label: item }))}
+            disabled={['片长', '中队长', '基础管控'].includes(position)}
+            options={departments
+              .filter(item => item.type === 'community')
+              .map(item => ({ value: item.id, label: item.name }))}
           />
         </div>
         <div>

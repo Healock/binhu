@@ -2,6 +2,7 @@ import type {
   MobileDockConfig,
   MobileNavigationGroupId,
   MobileNavigationItemId,
+  PermissionCode,
   Role,
 } from '../types'
 
@@ -28,6 +29,7 @@ export interface NavigationItemDefinition {
   icon: NavigationIconName
   end?: boolean
   roles?: Role[]
+  permission?: PermissionCode
 }
 
 export interface NavigationGroupDefinition {
@@ -52,6 +54,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '在线汇总',
         icon: 'summary',
         end: true,
+        permission: 'online.summary.view',
       },
       {
         id: 'online_query',
@@ -59,6 +62,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '在线数据查询',
         shortLabel: '在线查询',
         icon: 'query',
+        permission: 'online.raw.view',
       },
       {
         id: 'visit_summary',
@@ -66,6 +70,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '走访汇总',
         shortLabel: '走访汇总',
         icon: 'visit',
+        permission: 'visit.summary.view',
       },
       {
         id: 'data_upload',
@@ -73,6 +78,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '数据上传中心',
         shortLabel: '数据上传',
         icon: 'upload',
+        permission: 'visit.import',
         roles: ['super_admin', 'admin'],
       },
       {
@@ -81,6 +87,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '工作日志生成',
         shortLabel: '工作日志',
         icon: 'worklog',
+        permission: 'worklog.manage',
         roles: ['super_admin', 'admin'],
       },
     ],
@@ -97,6 +104,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '人员管理',
         shortLabel: '人员管理',
         icon: 'members',
+        permission: 'personnel.basic.view',
       },
       {
         id: 'communities',
@@ -104,6 +112,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '社区管理',
         shortLabel: '社区管理',
         icon: 'communities',
+        permission: 'community.view',
       },
       {
         id: 'users',
@@ -111,6 +120,16 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '用户管理',
         shortLabel: '用户管理',
         icon: 'users',
+        permission: 'user.manage',
+        roles: ['super_admin'],
+      },
+      {
+        id: 'permission_groups',
+        path: '/permission-groups',
+        label: '权限组管理',
+        shortLabel: '权限组',
+        icon: 'users',
+        permission: 'permission.manage',
         roles: ['super_admin'],
       },
     ],
@@ -134,6 +153,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '运维中心',
         shortLabel: '运维中心',
         icon: 'operations',
+        permission: 'ops.manage',
         roles: ['super_admin'],
       },
     ],
@@ -145,24 +165,30 @@ export const MAX_DOCK_GROUPS = 4
 export function isNavigationItemAccessible(
   item: NavigationItemDefinition,
   role: Role,
+  permissions?: PermissionCode[],
 ): boolean {
+  if (item.permission && permissions) return permissions.includes(item.permission)
   return !item.roles || item.roles.includes(role)
 }
 
 export function accessibleNavigationGroups(
   role: Role,
+  permissions?: PermissionCode[],
 ): NavigationGroupDefinition[] {
   return NAVIGATION_GROUPS.map(group => ({
     ...group,
     items: group.items.filter(item => (
-      isNavigationItemAccessible(item, role)
+      isNavigationItemAccessible(item, role, permissions)
     )),
   })).filter(group => group.items.length > 0)
 }
 
-export function defaultMobileDockConfig(role: Role): MobileDockConfig {
+export function defaultMobileDockConfig(
+  role: Role,
+  permissions?: PermissionCode[],
+): MobileDockConfig {
   return {
-    groups: accessibleNavigationGroups(role).map(group => ({
+    groups: accessibleNavigationGroups(role, permissions).map(group => ({
       id: group.id,
       items: group.items.map(item => item.id),
     })),
@@ -172,13 +198,14 @@ export function defaultMobileDockConfig(role: Role): MobileDockConfig {
 export function normalizeMobileDockConfig(
   value: MobileDockConfig | null | undefined,
   role: Role,
+  permissions?: PermissionCode[],
 ): MobileDockConfig {
   if (!value || !Array.isArray(value.groups)) {
-    return defaultMobileDockConfig(role)
+    return defaultMobileDockConfig(role, permissions)
   }
 
   const definitions = new Map(
-    accessibleNavigationGroups(role).map(group => [group.id, group]),
+    accessibleNavigationGroups(role, permissions).map(group => [group.id, group]),
   )
   const seenGroups = new Set<MobileNavigationGroupId>()
   const groups = value.groups.slice(0, MAX_DOCK_GROUPS).flatMap((rawGroup) => {
@@ -199,7 +226,7 @@ export function normalizeMobileDockConfig(
 
   return groups.length > 0
     ? { groups }
-    : defaultMobileDockConfig(role)
+    : defaultMobileDockConfig(role, permissions)
 }
 
 function moveEntry<T>(items: T[], fromIndex: number, toIndex: number): T[] {

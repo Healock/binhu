@@ -826,14 +826,14 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(instruction["reason"], "该日期没有可用数据")
 
-    def test_every_work_log_route_requires_admin(self):
+    def test_every_work_log_route_requires_work_log_permission(self):
         for route in router.routes:
             dependency_names = {
                 dependency.call.__name__
                 for dependency in route.dependant.dependencies
                 if dependency.call
             }
-            self.assertIn("require_admin", dependency_names, route.path)
+            self.assertIn("require_worklog_manage", dependency_names, route.path)
 
     def test_pdf_export_uses_pdf_filename_and_clean_html(self):
         captured = {}

@@ -23,11 +23,15 @@ CREATE TABLE IF NOT EXISTS _system_config (
 INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('timezone', 'Asia/Shanghai'),
     ('online_summary_positions', '["组长", "组员"]'),
-    ('visit_summary_positions', '["组长", "组员"]');
+    ('visit_summary_positions', '["组长", "组员"]'),
+    ('weekend_duty_positions', '["组长", "组员"]'),
+    ('session_idle_minutes', '30'),
+    ('permission_enforcement_enabled', '0');
 CREATE TABLE IF NOT EXISTS _grid_members (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,
     community        VARCHAR(200) DEFAULT '',
+    department_id    INT DEFAULT NULL,
     position         VARCHAR(20) NOT NULL DEFAULT '组员',
     phone            VARCHAR(50) DEFAULT '',
     notes            VARCHAR(500) DEFAULT '',
@@ -42,7 +46,8 @@ CREATE TABLE IF NOT EXISTS _grid_members (
                      ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_name (name),
     UNIQUE KEY uk_grid_id_card (id_card_number),
-    INDEX idx_grid_position (position)
+    INDEX idx_grid_position (position),
+    INDEX idx_grid_department (department_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _personnel_attendance_history (
@@ -240,6 +245,96 @@ CREATE TABLE IF NOT EXISTS _community_aliases (
         FOREIGN KEY (community_id)
         REFERENCES _communities(id)
         ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _departments (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    name            VARCHAR(200) NOT NULL UNIQUE,
+    department_type VARCHAR(20) NOT NULL,
+    community_id    INT DEFAULT NULL,
+    is_active       TINYINT(1) NOT NULL DEFAULT 1,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_department_community (community_id),
+    INDEX idx_department_type_active (department_type, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO _departments (name, department_type)
+VALUES ('内勤', 'internal');
+
+INSERT IGNORE INTO _departments (name, department_type, community_id)
+SELECT name, 'community', id FROM _communities;
+
+CREATE TABLE IF NOT EXISTS _permission_groups (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    code        VARCHAR(50) NOT NULL UNIQUE,
+    name        VARCHAR(100) NOT NULL UNIQUE,
+    description VARCHAR(500) NOT NULL DEFAULT '',
+    permissions JSON NOT NULL,
+    data_scope  VARCHAR(30) NOT NULL DEFAULT 'own_department',
+    is_system   TINYINT(1) NOT NULL DEFAULT 0,
+    is_locked   TINYINT(1) NOT NULL DEFAULT 0,
+    sort_order  INT NOT NULL DEFAULT 100,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _position_permission_groups (
+    position            VARCHAR(20) NOT NULL PRIMARY KEY,
+    permission_group_id INT NOT NULL,
+    updated_by          INT DEFAULT NULL,
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_position_permission_group (permission_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _permission_change_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    action VARCHAR(100) NOT NULL,
+    target_type VARCHAR(50) NOT NULL,
+    target_id VARCHAR(100) NOT NULL,
+    detail JSON DEFAULT NULL,
+    changed_by INT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_permission_change_target (target_type, target_id),
+    INDEX idx_permission_change_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _users (
+    id                       INT AUTO_INCREMENT PRIMARY KEY,
+    username                 VARCHAR(50) NOT NULL UNIQUE,
+    password_hash            VARCHAR(255) NOT NULL,
+    role                     ENUM('super_admin','admin','leader','member')
+                             NOT NULL DEFAULT 'member',
+    member_id                INT DEFAULT NULL,
+    permission_group_id      INT DEFAULT NULL,
+    group_assignment_mode    VARCHAR(20) NOT NULL DEFAULT 'inherited',
+    password_is_temporary    TINYINT(1) NOT NULL DEFAULT 0,
+    active_session_id        VARCHAR(64) DEFAULT NULL,
+    table_display_mode       VARCHAR(10) NOT NULL DEFAULT 'table',
+    report_column_mode       VARCHAR(10) NOT NULL DEFAULT 'three',
+    mobile_navigation_mode   VARCHAR(10) NOT NULL DEFAULT 'dock',
+    mobile_dock_config       JSON DEFAULT NULL,
+    theme_mode               VARCHAR(10) NOT NULL DEFAULT 'light',
+    created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
+                             ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_users_member (member_id),
+    INDEX idx_users_permission_group (permission_group_id),
+    INDEX idx_users_active_session (active_session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _sessions (
+    session_id       VARCHAR(64) PRIMARY KEY,
+    user_id          INT NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_activity_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at       DATETIME NOT NULL,
+    INDEX idx_user (user_id),
+    INDEX idx_expires (expires_at),
+    INDEX idx_session_user_activity (user_id, last_activity_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _visit_import_batches (

@@ -6,7 +6,7 @@ import {
   MenuOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Button, Popover } from 'antd'
+import { Alert, Button, Input, Modal, Popover, message } from 'antd'
 import { useAuth } from '../context/AuthContext'
 import { ROLE_LABELS } from '../types'
 import {
@@ -16,20 +16,29 @@ import {
 import MobileDock from './MobileDock'
 import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
+import SessionTimeoutGuard from './SessionTimeoutGuard'
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
-  const { user, logout } = useAuth()
+  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const { user, logout, changePassword } = useAuth()
   const navigate = useNavigate()
   const menuGroups = useMemo(
-    () => user ? accessibleNavigationGroups(user.role) : [],
+    () => user ? accessibleNavigationGroups(user.role, user.permissions) : [],
     [user],
   )
   const mobileNavigationMode = user?.mobile_navigation_mode || 'dock'
   const dockConfig = useMemo(
     () => user
-      ? normalizeMobileDockConfig(user.mobile_dock_config, user.role)
+      ? normalizeMobileDockConfig(
+          user.mobile_dock_config,
+          user.role,
+          user.permissions,
+        )
       : { groups: [] },
     [user],
   )
@@ -38,6 +47,25 @@ export default function Layout() {
     setAccountOpen(false)
     await logout()
     navigate('/login', { replace: true })
+  }
+
+  const handlePasswordChange = async () => {
+    if (newPassword.length < 8) {
+      message.error('新密码至少 8 个字符')
+      return
+    }
+    setPasswordSaving(true)
+    try {
+      await changePassword(currentPassword, newPassword)
+      message.success('密码已修改')
+      setPasswordOpen(false)
+      setCurrentPassword('')
+      setNewPassword('')
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '密码修改失败')
+    } finally {
+      setPasswordSaving(false)
+    }
   }
 
   return (
@@ -68,7 +96,7 @@ export default function Layout() {
                 <div>
                   <div className="font-medium text-slate-900">{user.username}</div>
                   <div className="text-xs text-slate-500">
-                    {ROLE_LABELS[user.role] || user.role}
+                    {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                   </div>
                 </div>
                 <Button
@@ -79,6 +107,12 @@ export default function Layout() {
                   }}
                 >
                   个性化设置
+                </Button>
+                <Button block onClick={() => {
+                  setAccountOpen(false)
+                  setPasswordOpen(true)
+                }}>
+                  修改密码
                 </Button>
                 <Button block icon={<LogoutOutlined />} onClick={handleLogout}>
                   退出登录
@@ -91,7 +125,7 @@ export default function Layout() {
               aria-label="打开账号菜单"
               className="ml-auto mr-11 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
             >
-              {ROLE_LABELS[user.role] || user.role}
+              {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
             </button>
           </Popover>
         )}
@@ -169,7 +203,7 @@ export default function Layout() {
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-semibold text-slate-800">{user.username}</div>
                 <div className="mt-0.5 truncate text-xs text-slate-500">
-                  {ROLE_LABELS[user.role] || user.role}
+                  {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                 </div>
               </div>
               <NotificationCenter />
@@ -192,13 +226,55 @@ export default function Layout() {
             ? 'app-content--mobile-dock'
             : ''
         }`}>
+          {user?.password_is_temporary && (
+            <Alert
+              className="mb-4"
+              type="warning"
+              showIcon
+              message="当前账号仍在使用临时密码"
+              description="请从右上角账号菜单进入“修改密码”。系统不会强制修改，但会持续提醒。"
+              action={<Button size="small" onClick={() => setPasswordOpen(true)}>修改密码</Button>}
+            />
+          )}
           <Outlet />
+          <SessionTimeoutGuard />
         </div>
       </main>
 
       {user && mobileNavigationMode === 'dock' && (
-        <MobileDock config={dockConfig} role={user.role} />
+        <MobileDock
+          config={dockConfig}
+          role={user.role}
+          permissions={user.permissions}
+        />
       )}
+      <Modal
+        open={passwordOpen}
+        title="修改密码"
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={passwordSaving}
+        onOk={handlePasswordChange}
+        onCancel={() => setPasswordOpen(false)}
+      >
+        {user?.password_is_temporary && (
+          <p className="mb-4 text-sm text-amber-600">
+            当前账号仍在使用临时密码，建议尽快修改。
+          </p>
+        )}
+        <div className="space-y-3">
+          <Input.Password
+            value={currentPassword}
+            onChange={event => setCurrentPassword(event.target.value)}
+            placeholder="当前密码"
+          />
+          <Input.Password
+            value={newPassword}
+            onChange={event => setNewPassword(event.target.value)}
+            placeholder="新密码（至少 8 个字符）"
+          />
+        </div>
+      </Modal>
     </div>
   )
 }

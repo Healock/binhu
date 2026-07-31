@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Input } from 'antd'
 import {
@@ -14,6 +14,18 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem('auth_exit_reason')
+    if (!raw) return
+    sessionStorage.removeItem('auth_exit_reason')
+    try {
+      const reason = JSON.parse(raw)
+      setError(reason.message || '登录状态已失效，请重新登录')
+    } catch {
+      setError('登录状态已失效，请重新登录')
+    }
+  }, [])
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()

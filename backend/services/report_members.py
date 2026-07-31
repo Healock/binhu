@@ -138,13 +138,17 @@ async def get_active_members(
     await cur.execute(
         f"""
         SELECT
-            COALESCE(NULLIF(TRIM(g.community), ''), '未分配社区'),
+            COALESCE(NULLIF(TRIM(community.name), ''), '未分配社区'),
             TRIM(g.name)
         FROM OnlineData._grid_members g
+        LEFT JOIN OnlineData._departments AS department
+          ON department.id=g.department_id
+        LEFT JOIN OnlineData._communities AS community
+          ON community.id=department.community_id
         WHERE TRIM(g.name) <> ''
           AND g.position IN ({placeholders})
           AND {active_condition}
-        ORDER BY g.community, g.name
+        ORDER BY community.name, g.name
         """,
         (*positions, as_of_date),
     )

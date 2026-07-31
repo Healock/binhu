@@ -85,11 +85,15 @@ export default function SystemSettings() {
   const [savingPositions, setSavingPositions] = useState(false)
   const [positionsMsg, setPositionsMsg] = useState('')
   const [clock, setClock] = useState(Date.now())
+  const [idleMinutes, setIdleMinutes] = useState(30)
+  const [savingIdle, setSavingIdle] = useState(false)
+  const [idleMsg, setIdleMsg] = useState('')
 
   useEffect(() => {
     Promise.all([getSystemConfig(), getSyncSchedule()])
       .then(([config, currentSchedule]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
+        setIdleMinutes(Number(config.session_idle_minutes || 30))
         setOnlinePositions(
           parseSummaryPositions(config.online_summary_positions),
         )
@@ -197,6 +201,19 @@ export default function SystemSettings() {
     }
   }
 
+  const handleSaveIdle = async () => {
+    setSavingIdle(true)
+    setIdleMsg('')
+    try {
+      await updateSystemConfig({ session_idle_minutes: String(idleMinutes) })
+      setIdleMsg('空闲退出时间已保存，并立即对现有登录生效')
+    } catch (error: any) {
+      setIdleMsg(error?.response?.data?.detail || '保存失败')
+    } finally {
+      setSavingIdle(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Panel
@@ -285,6 +302,47 @@ export default function SystemSettings() {
               type={scheduleMsg.includes('失败') ? 'error' : 'success'}
               showIcon
               message={scheduleMsg}
+            />
+          )}
+        </div>
+      </Panel>
+
+      <Panel
+        title="登录安全"
+        description="连续一段时间没有页面跳转、查询或保存操作后，需要重新登录"
+      >
+        <div className="flex flex-col gap-4">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">
+              空闲退出时间
+            </label>
+            <InputNumber
+              min={5}
+              max={1440}
+              value={idleMinutes}
+              onChange={value => setIdleMinutes(value || 30)}
+              addonAfter="分钟"
+              className="w-56"
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              可设置 5 分钟至 24 小时；到期前 2 分钟会弹出提醒。
+            </p>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              loading={savingIdle}
+              disabled={idleMinutes < 5 || idleMinutes > 1440}
+              onClick={handleSaveIdle}
+            >
+              保存登录安全设置
+            </Button>
+          </div>
+          {idleMsg && (
+            <Alert
+              type={idleMsg.includes('已保存') ? 'success' : 'error'}
+              showIcon
+              message={idleMsg}
             />
           )}
         </div>

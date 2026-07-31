@@ -158,7 +158,7 @@ const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
 
 export default function DataUploadCenter() {
   const { user } = useAuth()
-  const canUpload = user?.role === 'super_admin' || user?.role === 'admin'
+  const canUpload = Boolean(user?.permissions.includes('visit.import'))
   const [detailFileList, setDetailFileList] = useState<UploadFile[]>([])
   const [detailFile, setDetailFile] = useState<File | null>(null)
   const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])

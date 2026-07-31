@@ -6,10 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import get_current_user, require_super_admin
+from deps import require_permission
+from services.permissions import ANNOUNCEMENT_MANAGE, NOTIFICATION_VIEW
 from services.audit import record_admin_audit, request_audit_fields
 
 router = APIRouter(prefix="/api/notifications", tags=["消息中心"])
+require_notification_view = require_permission(NOTIFICATION_VIEW)
+require_announcement_manage = require_permission(ANNOUNCEMENT_MANAGE)
 
 
 class AnnouncementCreate(BaseModel):
@@ -51,7 +54,7 @@ async def _unread_counts(cur, user_id: int) -> tuple[int, int]:
 
 @router.get("/unread-count")
 async def get_unread_count(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_notification_view),
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
@@ -66,7 +69,7 @@ async def get_unread_count(
 @router.get("")
 async def list_notifications(
     limit: int = Query(30, ge=1, le=100),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_notification_view),
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
@@ -151,7 +154,7 @@ async def list_notifications(
 
 @router.post("/read-all")
 async def mark_all_read(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_notification_view),
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
@@ -183,7 +186,7 @@ async def mark_all_read(
 async def create_announcement(
     data: AnnouncementCreate,
     request: Request,
-    user: dict = Depends(require_super_admin),
+    user: dict = Depends(require_announcement_manage),
     conn=Depends(get_db),
 ):
     title = data.title.strip()
@@ -214,7 +217,7 @@ async def create_announcement(
 @router.post("/announcements/{announcement_id}/read")
 async def mark_announcement_read(
     announcement_id: int,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_notification_view),
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
@@ -250,7 +253,7 @@ async def mark_announcement_read(
 async def delete_announcement(
     announcement_id: int,
     request: Request,
-    user: dict = Depends(require_super_admin),
+    user: dict = Depends(require_announcement_manage),
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
@@ -277,7 +280,7 @@ async def delete_announcement(
 @router.post("/{notification_id}/read")
 async def mark_read(
     notification_id: int,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_notification_view),
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:

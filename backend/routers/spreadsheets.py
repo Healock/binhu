@@ -20,7 +20,11 @@ FIXED_TYPES = [
     "群租房核查",
 ]
 
-router = APIRouter(prefix="/api/spreadsheets", tags=["在线表格管理"])
+router = APIRouter(
+    prefix="/api/spreadsheets",
+    tags=["在线表格管理"],
+    dependencies=[Depends(require_super_admin)],
+)
 
 # SELECT 列列表（复用）
 _COLS = """id, name, url, file_id, data_sheet_id, summary_sheet_id,

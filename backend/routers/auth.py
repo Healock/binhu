@@ -27,6 +27,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class UserPreferencesRequest(BaseModel):
     table_display_mode: Literal["table", "card"] | None = None
     report_column_mode: Literal["two", "three"] | None = None
@@ -37,7 +42,7 @@ class UserPreferencesRequest(BaseModel):
 
 @router.post("/login")
 async def login(req: LoginRequest, request: Request, response: Response):
-    """用户登录"""
+    """登录并把该账号之前的设备会话替换为当前会话。"""
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
@@ -66,12 +71,32 @@ async def login(req: LoginRequest, request: Request, response: Response):
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+            await conn.begin()
+            await cur.execute(
+                "SELECT id FROM _users WHERE id=%s FOR UPDATE",
+                (user_id,),
+            )
             session_id = create_session(user_id)
             expires_at = datetime.utcnow() + timedelta(hours=settings.SESSION_EXPIRE_HOURS)
             await cur.execute(
-                "INSERT INTO _sessions (session_id, user_id, expires_at) VALUES (%s, %s, %s)",
+                "INSERT INTO _sessions "
+                "(session_id, user_id, last_activity_at, expires_at) "
+                "VALUES (%s, %s, UTC_TIMESTAMP(), %s)",
                 (session_id, user_id, expires_at),
             )
+            await cur.execute(
+                "UPDATE _users SET active_session_id=%s WHERE id=%s",
+                (session_id, user_id),
+            )
+            await cur.execute(
+                "DELETE FROM _sessions WHERE user_id=%s "
+                "AND expires_at<=UTC_TIMESTAMP() AND session_id<>%s",
+                (user_id, session_id),
+            )
+            await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     finally:
         pool.release(conn)
 
@@ -79,6 +104,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
     response.set_cookie(value=session_id, **cookie_cfg)
     return {
         "message": "登录成功",
+        "session_refresh_required": True,
         "user": {
             "id": user_id,
             "username": username,
@@ -106,6 +132,11 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
         conn = await pool.acquire()
         try:
             async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE _users SET active_session_id=NULL "
+                    "WHERE id=%s AND active_session_id=%s",
+                    (user["id"], session_id),
+                )
                 await cur.execute("DELETE FROM _sessions WHERE session_id = %s", (session_id,))
         finally:
             pool.release(conn)
@@ -125,6 +156,60 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
 async def get_me(user: dict = Depends(get_current_user)):
     """获取当前用户信息"""
     return {"user": user}
+
+
+@router.post("/activity")
+async def record_activity(user: dict = Depends(get_current_user)):
+    """由前端在页面跳转、查询或提交时显式刷新空闲时间。"""
+    return {
+        "message": "活动时间已更新",
+        "user": user,
+        "session_policy": user["session_policy"],
+    }
+
+
+@router.put("/password")
+async def change_password(
+    req: ChangePasswordRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    if len(req.new_password) < 8:
+        raise HTTPException(status_code=400, detail="新密码至少需要 8 位")
+    if req.new_password == req.current_password:
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT password_hash FROM _users WHERE id=%s",
+                (user["id"],),
+            )
+            row = await cur.fetchone()
+            if not row or not bcrypt.checkpw(
+                req.current_password.encode(), str(row[0]).encode()
+            ):
+                raise HTTPException(status_code=400, detail="当前密码不正确")
+            password_hash = bcrypt.hashpw(
+                req.new_password.encode(), bcrypt.gensalt()
+            ).decode()
+            await cur.execute(
+                "UPDATE _users SET password_hash=%s, "
+                "password_is_temporary=0 WHERE id=%s",
+                (password_hash, user["id"]),
+            )
+    finally:
+        pool.release(conn)
+    await record_admin_audit(
+        user,
+        "account.password.change",
+        target_type="user",
+        target_name=str(user["id"]),
+        detail={"temporary_password_cleared": True},
+        **request_audit_fields(request),
+    )
+    return {"message": "密码已修改", "password_is_temporary": False}
 
 
 @router.put("/preferences")
@@ -154,6 +239,7 @@ async def update_preferences(
             dock_config = validate_mobile_dock_config(
                 req.mobile_dock_config,
                 str(user["role"]),
+                user.get("permissions"),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -186,6 +272,7 @@ async def update_preferences(
             "mobile_dock_config": normalize_mobile_dock_config(
                 updated_user.get("mobile_dock_config"),
                 str(user["role"]),
+                user.get("permissions"),
             ),
             "theme_mode": normalize_theme_mode(
                 updated_user.get("theme_mode"),

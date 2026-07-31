@@ -53,7 +53,7 @@ export default function NotificationCenter() {
   const [publishing, setPublishing] = useState(false)
   const [form] = Form.useForm<AnnouncementFormValues>()
   const [modal, contextHolder] = Modal.useModal()
-  const isSuperAdmin = user?.role === 'super_admin'
+  const canPublishAnnouncements = Boolean(user?.permissions.includes('announcement.manage'))
 
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
@@ -262,7 +262,7 @@ export default function NotificationCenter() {
                 {formatUTCTime(item.created_at)}
               </span>
             </div>
-            {isSuperAdmin && item.source === 'announcement' && (
+            {canPublishAnnouncements && item.source === 'announcement' && (
               <Tooltip title="删除公告">
                 <Button
                   danger
@@ -301,7 +301,7 @@ export default function NotificationCenter() {
         width="min(460px, 100vw)"
         extra={(
           <Space size="small">
-            {isSuperAdmin && (
+            {canPublishAnnouncements && (
               <Button
                 type="link"
                 size="small"

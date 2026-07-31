@@ -1,13 +1,14 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import type { Role } from '../types'
+import type { PermissionCode, Role } from '../types'
 
 interface Props {
   requireRole?: Role
   requireRoles?: Role[]
+  requirePermission?: PermissionCode
 }
 
-export default function ProtectedRoute({ requireRole, requireRoles }: Props) {
+export default function ProtectedRoute({ requireRole, requireRoles, requirePermission }: Props) {
   const { user, loading } = useAuth()
 
   if (loading) {
@@ -27,6 +28,9 @@ export default function ProtectedRoute({ requireRole, requireRoles }: Props) {
     || (requireRoles && !requireRoles.includes(user.role))
   ) {
     return <Navigate to="/" replace />
+  }
+  if (requirePermission && !user.permissions?.includes(requirePermission)) {
+    return <Navigate to="/settings/personalization" replace />
   }
 
   return <Outlet />

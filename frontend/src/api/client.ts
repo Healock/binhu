@@ -12,17 +12,123 @@ const api = axios.create({
   timeout: 30000,
   withCredentials: true,
 })
+const activeRequest = { headers: { 'X-User-Activity': '1' } }
+
+api.interceptors.request.use((config) => {
+  const method = (config.method || 'get').toLowerCase()
+  if (
+    ['post', 'put', 'patch', 'delete'].includes(method)
+    && config.headers.get('X-User-Activity') !== '0'
+  ) {
+    config.headers.set('X-User-Activity', '1')
+  }
+  return config
+})
 
 // 401 拦截器：跳转登录页
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error?.response?.status === 401 && !window.location.pathname.includes('/login')) {
+      const detail = error?.response?.data?.detail
+      const code = typeof detail === 'object' ? detail?.code : 'session_expired'
+      const message = typeof detail === 'object' ? detail?.message : '登录状态已失效'
+      sessionStorage.setItem('auth_exit_reason', JSON.stringify({ code, message }))
       window.location.href = '/login'
     }
     return Promise.reject(error)
   }
 )
+
+export async function getCurrentUser(): Promise<User> {
+  const { data } = await api.get('/auth/me')
+  return data.user
+}
+
+export async function recordSessionActivity(): Promise<User> {
+  const { data } = await api.post('/auth/activity')
+  return data.user
+}
+
+export async function changeOwnPassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await api.put('/auth/password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  })
+}
+
+export interface PermissionCatalogItem {
+  code: string
+  category: string
+  label: string
+}
+
+export interface PermissionGroupItem {
+  id: number
+  code: string
+  name: string
+  description: string
+  permissions: string[]
+  data_scope: 'all' | 'own_department'
+  is_system: boolean
+  is_locked: boolean
+  user_count: number
+  positions: string[]
+}
+
+export async function getPermissionCatalog(): Promise<{
+  permissions: PermissionCatalogItem[]
+  data_scopes: Array<{ value: string; label: string }>
+}> {
+  const { data } = await api.get('/permission-groups/catalog')
+  return data
+}
+
+export async function getPermissionGroups(): Promise<{
+  data: PermissionGroupItem[]
+  position_mappings: Record<string, number>
+}> {
+  const { data } = await api.get('/permission-groups')
+  return data
+}
+
+export async function createPermissionGroup(payload: {
+  name: string
+  description: string
+  permissions: string[]
+  data_scope: string
+}): Promise<void> {
+  await api.post('/permission-groups', payload)
+}
+
+export async function updatePermissionGroup(
+  id: number,
+  payload: {
+    name: string
+    description: string
+    permissions: string[]
+    data_scope: string
+  },
+): Promise<{ affected_users: number }> {
+  const { data } = await api.put(`/permission-groups/groups/${id}`, payload)
+  return data
+}
+
+export async function deletePermissionGroup(id: number): Promise<void> {
+  await api.delete(`/permission-groups/groups/${id}`)
+}
+
+export async function updatePositionPermissionMappings(
+  mappings: Record<string, number>,
+): Promise<{ affected_users: number }> {
+  const { data } = await api.put('/permission-groups/position-mappings/all', {
+    mappings,
+  })
+  return data
+}
 
 // ---- Spreadsheets ----
 export async function listSpreadsheets(): Promise<Spreadsheet[]> {
@@ -260,7 +366,9 @@ export async function saveWorkLogDraft(
     override_values: Record<string, unknown>
   },
 ): Promise<WorkLogDraft> {
-  const { data } = await api.put(`/work-logs/drafts/${draftId}`, payload)
+  const { data } = await api.put(`/work-logs/drafts/${draftId}`, payload, {
+    headers: { 'X-User-Activity': '0' },
+  })
   return data
 }
 
@@ -420,8 +528,16 @@ export async function queryData(params: {
   sort_by?: string
   sort_order?: string
   filters?: Record<string, string[]>
-}): Promise<{ data: Record<string, string>[]; total: number; page: number; page_size: number; columns: string[] }> {
+}): Promise<{
+  data: Record<string, string>[]
+  total: number
+  page: number
+  page_size: number
+  columns: string[]
+  scope_message?: string
+}> {
   const { data } = await api.get(`/query/${params.type}`, {
+    ...activeRequest,
     params: {
       source: params.source || 'online',
       page: params.page || 1,
@@ -441,23 +557,31 @@ export interface GridMember {
   name: string
   community: string
   position: string
-  phone: string
-  notes: string
+  phone?: string
+  notes?: string
   status: string
   effective_status: string
   status_detail: string
-  leave_start_date: string | null
-  leave_end_date: string | null
-  leave_reason: string
-  leave_source: string
+  leave_start_date?: string | null
+  leave_end_date?: string | null
+  leave_reason?: string
+  leave_source?: string
   leave_state: 'active' | 'upcoming' | 'expired' | null
-  has_id_card: boolean
-  id_card_masked: string
+  has_id_card?: boolean
+  id_card_masked?: string
+  department_id: number | null
+  department: {
+    id: number
+    name: string
+    type: 'community' | 'internal'
+    community_name: string | null
+  } | null
 }
 
 export interface GridMemberPayload {
   name?: string
   community?: string
+  department_id?: number | null
   position?: string
   phone?: string
   notes?: string
@@ -474,6 +598,18 @@ export interface GridCommunity {
   grid_count: number
   aliases: string[]
   police_officers: string[]
+}
+
+export interface DepartmentOption {
+  id: number
+  name: string
+  type: 'community' | 'internal'
+  community_name: string | null
+}
+
+export async function getDepartments(): Promise<DepartmentOption[]> {
+  const { data } = await api.get('/grid-members/departments')
+  return data.data
 }
 
 export async function listGridMembers(params: {
@@ -502,14 +638,17 @@ export async function deleteGridCommunity(id: number): Promise<void> {
 
 export async function updateGridCommunityDetails(
   id: number,
+  name: string,
   aliases: string[],
   policeOfficers: string[],
 ): Promise<{
+  name: string
   aliases: string[]
   police_officers: string[]
   matched_visit_rows: number
 }> {
   const { data } = await api.put(`/grid-members/communities/${id}/aliases`, {
+    name,
     aliases,
     police_officers: policeOfficers,
   })
@@ -651,6 +790,7 @@ export async function saveWeekendDuty(
 
 // ---- Visit detail imports ----
 export interface VisitCoverage {
+  scope_message?: string
   start_date: string | null
   end_date: string | null
   total_records: number
@@ -712,6 +852,7 @@ export interface VisitSummaryTable {
 export type VisitSummaryCategory = 'rental' | 'self_owned'
 
 export interface VisitSummaryReport {
+  scope_message?: string
   category: VisitSummaryCategory
   category_label: string
   start_date: string
@@ -753,6 +894,7 @@ export async function getVisitSummary(
   category: VisitSummaryCategory = 'rental',
 ): Promise<VisitSummaryReport> {
   const { data } = await api.get('/visits/summary', {
+    ...activeRequest,
     params: {
       start_date: startDate,
       end_date: endDate,

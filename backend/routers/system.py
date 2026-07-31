@@ -37,6 +37,15 @@ async def update_config(
     """更新系统配置"""
     async with conn.cursor() as cur:
         for k, v in config.items():
+            if k == "session_idle_minutes":
+                try:
+                    v = int(v)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(400, "空闲超时时间必须是分钟数") from exc
+                if v < 5 or v > 1440:
+                    raise HTTPException(400, "空闲超时时间必须在 5 分钟至 24 小时之间")
+            if k == "permission_enforcement_enabled":
+                raise HTTPException(400, "权限启用状态只能通过迁移工具修改")
             if k in POSITION_CONFIG_KEYS:
                 try:
                     v = (
