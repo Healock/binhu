@@ -429,6 +429,7 @@ export interface GridCommunity {
   name: string
   grid_count: number
   aliases: string[]
+  police_officers: string[]
 }
 
 export async function listGridMembers(params: {
@@ -455,11 +456,19 @@ export async function deleteGridCommunity(id: number): Promise<void> {
   await api.delete(`/grid-members/communities/${id}`)
 }
 
-export async function updateGridCommunityAliases(
+export async function updateGridCommunityDetails(
   id: number,
   aliases: string[],
-): Promise<{ aliases: string[]; matched_visit_rows: number }> {
-  const { data } = await api.put(`/grid-members/communities/${id}/aliases`, { aliases })
+  policeOfficers: string[],
+): Promise<{
+  aliases: string[]
+  police_officers: string[]
+  matched_visit_rows: number
+}> {
+  const { data } = await api.put(`/grid-members/communities/${id}/aliases`, {
+    aliases,
+    police_officers: policeOfficers,
+  })
   return data
 }
 

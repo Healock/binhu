@@ -6,7 +6,7 @@ import unittest
 from openpyxl import Workbook
 
 from deps import require_admin
-from routers.grid_members import CommunityAliasesUpdate
+from routers.grid_members import CommunityAliasesUpdate, _parse_police_officers
 from routers.visits import router as visits_router
 from services.privacy import mask_identity_number
 from services.visit_import import (
@@ -343,6 +343,26 @@ class VisitIdentityTests(unittest.TestCase):
             payload.aliases[0],
             normalize_community("南厍"),
         )
+
+    def test_community_police_officers_trim_and_deduplicate(self):
+        payload = CommunityAliasesUpdate(
+            aliases=[],
+            police_officers=[" 张三 ", "李四", "张三"],
+        )
+        self.assertEqual(payload.police_officers, ["张三", "李四"])
+        with self.assertRaises(ValueError):
+            CommunityAliasesUpdate(
+                aliases=[],
+                police_officers=["张三、李四"],
+            )
+
+    def test_community_police_officers_parse_database_json(self):
+        self.assertEqual(
+            _parse_police_officers('["张三", "李四"]'),
+            ["张三", "李四"],
+        )
+        self.assertEqual(_parse_police_officers(None), [])
+        self.assertEqual(_parse_police_officers("{invalid"), [])
 
 
 class CoverageCursor:

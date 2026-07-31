@@ -223,9 +223,10 @@ CREATE TABLE IF NOT EXISTS _work_log_drafts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _communities (
-    id         INT AUTO_INCREMENT PRIMARY KEY,
-    name       VARCHAR(200) NOT NULL UNIQUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    name            VARCHAR(200) NOT NULL UNIQUE,
+    police_officers JSON DEFAULT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _community_aliases (

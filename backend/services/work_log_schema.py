@@ -1208,8 +1208,12 @@ def _empty_row(columns: list[dict]) -> dict:
     return {item["key"]: "" for item in leaf_columns(columns)}
 
 
-def default_manual_values(communities: list[str] | None = None) -> dict:
+def default_manual_values(
+    communities: list[str] | None = None,
+    community_officers: dict[str, str] | None = None,
+) -> dict:
     communities = communities or []
+    community_officers = community_officers or {}
     result: dict[str, Any] = {}
     for field_id, definition in field_definitions().items():
         if definition["source"] != "manual":
@@ -1224,10 +1228,23 @@ def default_manual_values(communities: list[str] | None = None) -> dict:
                 "community_key",
                 "responsibility_area",
             )
-            result[field_id] = [
-                {**_empty_row(columns), community_key: community}
-                for community in communities
-            ] or [_empty_row(columns)]
+            column_keys = {
+                item["key"]
+                for item in leaf_columns(columns)
+            }
+            rows = []
+            for community in communities:
+                row = {
+                    **_empty_row(columns),
+                    community_key: community,
+                }
+                if "community_officer" in column_keys:
+                    row["community_officer"] = community_officers.get(
+                        community,
+                        "",
+                    )
+                rows.append(row)
+            result[field_id] = rows or [_empty_row(columns)]
         elif mode == "fixed":
             result[field_id] = [
                 {**_empty_row(columns), **row}
