@@ -128,9 +128,18 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS _communities (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         name VARCHAR(200) NOT NULL UNIQUE,
+                        police_officers JSON DEFAULT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
+                await cur.execute(
+                    "SHOW COLUMNS FROM _communities LIKE 'police_officers'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _communities "
+                        "ADD COLUMN police_officers JSON DEFAULT NULL AFTER name"
+                    )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _community_aliases (
                         id INT AUTO_INCREMENT PRIMARY KEY,

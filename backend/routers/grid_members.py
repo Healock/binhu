@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
@@ -89,6 +90,7 @@ class GridMemberLeaveUpdate(BaseModel):
 
 class CommunityAliasesUpdate(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=30)
+    police_officers: Optional[list[str]] = Field(default=None, max_length=20)
 
     @field_validator("aliases")
     @classmethod
@@ -103,6 +105,45 @@ class CommunityAliasesUpdate(BaseModel):
             if alias not in normalized:
                 normalized.append(alias)
         return normalized
+
+    @field_validator("police_officers")
+    @classmethod
+    def normalize_police_officers(
+        cls,
+        police_officers: Optional[list[str]],
+    ) -> Optional[list[str]]:
+        if police_officers is None:
+            return None
+        normalized: list[str] = []
+        for raw_name in police_officers:
+            name = str(raw_name).strip()
+            if not name:
+                raise ValueError("社区民警姓名不能为空")
+            if len(name) > 100:
+                raise ValueError("社区民警姓名不能超过 100 个字符")
+            if "、" in name:
+                raise ValueError("请把多位社区民警分别添加，不要在姓名中使用顿号")
+            if name not in normalized:
+                normalized.append(name)
+        return normalized
+
+
+def _parse_police_officers(value) -> list[str]:
+    if value in (None, ""):
+        return []
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+    if not isinstance(parsed, list):
+        return []
+    return [
+        str(name).strip()
+        for name in parsed
+        if str(name).strip()
+    ]
 
 
 def _member_to_dict(row, business_date: date) -> dict:
@@ -183,11 +224,14 @@ async def list_communities(conn=Depends(get_db)):
     """获取社区列表（人员数量由 _grid_members 表实时统计）"""
     async with conn.cursor() as cur:
         await cur.execute(f"""
-            SELECT c.id, c.name, COUNT(g.id) as grid_count
+            SELECT c.id, c.name, c.police_officers,
+                   COALESCE(g.grid_count, 0) AS grid_count
             FROM _communities c
-            LEFT JOIN _grid_members g
-              ON g.community = c.name
-            GROUP BY c.id, c.name
+            LEFT JOIN (
+                SELECT community, COUNT(*) AS grid_count
+                FROM _grid_members
+                GROUP BY community
+            ) AS g ON g.community = c.name
             ORDER BY c.name
         """)
         rows = await cur.fetchall()
@@ -204,7 +248,8 @@ async def list_communities(conn=Depends(get_db)):
             {
                 "id": row[0],
                 "name": row[1],
-                "grid_count": row[2],
+                "police_officers": _parse_police_officers(row[2]),
+                "grid_count": row[3],
                 "aliases": aliases_by_community.get(row[0], []),
             }
             for row in rows
@@ -258,7 +303,7 @@ async def update_community_aliases(
     data: CommunityAliasesUpdate,
     conn=Depends(get_db),
 ):
-    """设置社区别名，并把已导入走访数据归到社区正式名称。"""
+    """设置社区别名和民警，并把已导入走访数据归到正式名称。"""
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -317,6 +362,18 @@ async def update_community_aliases(
                     [(community_id, alias) for alias in data.aliases],
                 )
 
+            if data.police_officers is not None:
+                await cur.execute(
+                    "UPDATE _communities SET police_officers=%s WHERE id=%s",
+                    (
+                        json.dumps(
+                            data.police_officers,
+                            ensure_ascii=False,
+                        ),
+                        community_id,
+                    ),
+                )
+
             matched_rows = 0
             for alias in data.aliases:
                 await cur.execute(
@@ -330,8 +387,9 @@ async def update_community_aliases(
         raise
 
     return {
-        "message": "社区别名已保存",
+        "message": "社区资料已保存",
         "aliases": data.aliases,
+        "police_officers": data.police_officers,
         "matched_visit_rows": matched_rows,
     }
 

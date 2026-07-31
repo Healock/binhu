@@ -302,10 +302,21 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_manual_tables_prefill_communities_and_fixed_categories(self):
-        values = default_manual_values(["冬梅", "长板"])
+        values = default_manual_values(
+            ["冬梅", "长板"],
+            {"冬梅": "张三、李四"},
+        )
         self.assertEqual(
             [row["responsibility_area"] for row in values["fire.table"]],
             ["冬梅", "长板"],
+        )
+        self.assertEqual(
+            values["fire.table"][0]["community_officer"],
+            "张三、李四",
+        )
+        self.assertEqual(
+            values["fire.table"][1]["community_officer"],
+            "",
         )
         self.assertEqual(
             [row["venue_type"] for row in values["security.venues_table"]],
@@ -346,9 +357,13 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             "services.work_log_data.get_summary",
             new=AsyncMock(return_value=report),
         ):
-            result = await _online_summary_snapshot(date(2026, 7, 14))
+            result = await _online_summary_snapshot(
+                date(2026, 7, 14),
+                {"长板": "张三、李四"},
+            )
         row = result["values"]["flow.instruction_table"][0]
         self.assertTrue(result["available"])
+        self.assertEqual(row["community_officer"], "张三、李四")
         self.assertEqual(row["unchecked"], 5)
         self.assertEqual(row["checked"], 5)
         self.assertEqual(row["completion_rate"], 50.0)
@@ -379,8 +394,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             result = await _rental_snapshot(
                 CountConnection(count=1),
                 date(2026, 7, 14),
+                {"长板": "张三、李四"},
             )
         row = result["values"]["rental.visit_table"][0]
+        self.assertEqual(row["community_officer"], "张三、李四")
         self.assertEqual(row["total_changes"], 7)
         self.assertEqual(row["rating_rate"], 75.0)
 
@@ -424,6 +441,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=["长板"]),
             ),
             patch(
+                "services.work_log_data._community_officers",
+                new=AsyncMock(return_value={"长板": "张三、李四"}),
+            ),
+            patch(
                 "services.work_log_data._online_summary_snapshot",
                 new=AsyncMock(return_value={
                     "available": False,
@@ -455,6 +476,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["business_date"], "2026-07-14")
         self.assertEqual(result["issue_date"], "2026-07-15")
         self.assertEqual(result["communities"], ["长板"])
+        self.assertEqual(
+            result["community_officers"],
+            {"长板": "张三、李四"},
+        )
         self.assertEqual(result["values"]["meta.year"], 2026)
         self.assertFalse(result["sources"]["online_summary"]["available"])
 

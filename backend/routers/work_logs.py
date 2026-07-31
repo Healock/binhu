@@ -146,7 +146,8 @@ async def _upgrade_legacy_draft(conn, row, user: dict):
         "override_values": old_overrides,
     }
     manual_values = default_manual_values(
-        new_snapshot.get("communities") or []
+        new_snapshot.get("communities") or [],
+        new_snapshot.get("community_officers") or {},
     )
     for old_id, new_id in LEGACY_FIELD_MAP.items():
         value = (
@@ -262,7 +263,10 @@ async def create_draft(
         return _draft_payload(row, user)
 
     snapshot = await build_system_snapshot(conn, data.business_date)
-    manual_values = default_manual_values(snapshot.get("communities") or [])
+    manual_values = default_manual_values(
+        snapshot.get("communities") or [],
+        snapshot.get("community_officers") or {},
+    )
     created = False
     async with conn.cursor() as cur:
         try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -47,7 +48,38 @@ async def _community_names(conn) -> list[str]:
     return [str(row[0]).strip() for row in rows if str(row[0]).strip()]
 
 
-async def _online_summary_snapshot(business_date: date) -> dict:
+async def _community_officers(conn) -> dict[str, str]:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT name, police_officers FROM _communities "
+            "WHERE name IS NOT NULL AND TRIM(name) <> '' "
+            "ORDER BY name"
+        )
+        rows = await cur.fetchall()
+    result: dict[str, str] = {}
+    for community, raw_officers in rows:
+        officers = raw_officers
+        if isinstance(raw_officers, str):
+            try:
+                officers = json.loads(raw_officers)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                officers = []
+        if not isinstance(officers, list):
+            officers = []
+        names = [
+            str(name).strip()
+            for name in officers
+            if str(name).strip()
+        ]
+        result[str(community).strip()] = "、".join(names)
+    return result
+
+
+async def _online_summary_snapshot(
+    business_date: date,
+    community_officers: dict[str, str] | None = None,
+) -> dict:
+    community_officers = community_officers or {}
     result = await get_summary(business_date.isoformat())
     if not result.get("exists"):
         return {
@@ -61,7 +93,10 @@ async def _online_summary_snapshot(business_date: date) -> dict:
     for row in rows:
         table_rows.append({
             "responsibility_area": str(row.get("社区") or ""),
-            "community_officer": "",
+            "community_officer": community_officers.get(
+                str(row.get("社区") or ""),
+                "",
+            ),
             "grid_member_count": _number(row.get("网格员人数")),
             "total": _number(row.get("数据总数")),
             "unchecked": _number(row.get("未核查")),
@@ -84,7 +119,12 @@ async def _online_summary_snapshot(business_date: date) -> dict:
     }
 
 
-async def _rental_snapshot(conn, business_date: date) -> dict:
+async def _rental_snapshot(
+    conn,
+    business_date: date,
+    community_officers: dict[str, str] | None = None,
+) -> dict:
+    community_officers = community_officers or {}
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT COUNT(*) FROM t_visit_details WHERE `业务日期`=%s",
@@ -113,7 +153,10 @@ async def _rental_snapshot(conn, business_date: date) -> dict:
         cancelled = _number(row.get("注销"))
         table_rows.append({
             "responsibility_area": str(row.get("社区") or ""),
-            "community_officer": "",
+            "community_officer": community_officers.get(
+                str(row.get("社区") or ""),
+                "",
+            ),
             "grid_member_count": _decimal(row.get("在岗人日")),
             "visits": visits,
             "average_visits": _decimal(row.get("人均日走访户数")),
@@ -178,8 +221,16 @@ async def _self_owned_snapshot(conn, business_date: date) -> dict:
 async def build_system_snapshot(conn, business_date: date) -> dict:
     """读取一次系统数据，返回可长期保存的普通 JSON 对象。"""
     communities = await _community_names(conn)
-    online = await _online_summary_snapshot(business_date)
-    rental = await _rental_snapshot(conn, business_date)
+    community_officers = await _community_officers(conn)
+    online = await _online_summary_snapshot(
+        business_date,
+        community_officers,
+    )
+    rental = await _rental_snapshot(
+        conn,
+        business_date,
+        community_officers,
+    )
     self_owned = await _self_owned_snapshot(conn, business_date)
     issue_date = business_date + timedelta(days=1)
     return {
@@ -188,6 +239,7 @@ async def build_system_snapshot(conn, business_date: date) -> dict:
         "month": business_date.month,
         "filename_prefix": business_date.strftime("%m%d"),
         "communities": communities,
+        "community_officers": community_officers,
         "values": {
             "meta.year": business_date.year,
             "meta.month": business_date.month,

@@ -6,7 +6,7 @@ import {
   getGridCommunities,
   addGridCommunity,
   deleteGridCommunity,
-  updateGridCommunityAliases,
+  updateGridCommunityDetails,
   type GridCommunity,
 } from '../api/client'
 import AppTable from '../components/AppTable'
@@ -18,9 +18,10 @@ export default function Communities() {
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [editingAliases, setEditingAliases] = useState<GridCommunity | null>(null)
+  const [editingCommunity, setEditingCommunity] = useState<GridCommunity | null>(null)
   const [aliasDraft, setAliasDraft] = useState<string[]>([])
-  const [savingAliases, setSavingAliases] = useState(false)
+  const [officerDraft, setOfficerDraft] = useState<string[]>([])
+  const [savingDetails, setSavingDetails] = useState(false)
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -61,30 +62,33 @@ export default function Communities() {
     })
   }
 
-  const openAliasEditor = (community: GridCommunity) => {
-    setEditingAliases(community)
+  const openCommunityEditor = (community: GridCommunity) => {
+    setEditingCommunity(community)
     setAliasDraft(community.aliases || [])
+    setOfficerDraft(community.police_officers || [])
   }
 
-  const handleSaveAliases = async () => {
-    if (!editingAliases) return
-    setSavingAliases(true)
+  const handleSaveDetails = async () => {
+    if (!editingCommunity) return
+    setSavingDetails(true)
     try {
-      const result = await updateGridCommunityAliases(
-        editingAliases.id,
+      const result = await updateGridCommunityDetails(
+        editingCommunity.id,
         aliasDraft,
+        officerDraft,
       )
       const matchedText = result.matched_visit_rows > 0
         ? `，同时归类 ${result.matched_visit_rows} 条已有走访数据`
         : ''
-      setMsg(`“${editingAliases.name}”的别名已保存${matchedText}`)
-      setEditingAliases(null)
+      setMsg(`“${editingCommunity.name}”的社区资料已保存${matchedText}`)
+      setEditingCommunity(null)
       setAliasDraft([])
+      setOfficerDraft([])
       await fetch()
     } catch (error: any) {
       setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
     } finally {
-      setSavingAliases(false)
+      setSavingDetails(false)
     }
   }
 
@@ -103,6 +107,15 @@ export default function Communities() {
       key: 'grid_count',
       width: 160,
       sorter: (left, right) => left.grid_count - right.grid_count,
+    },
+    {
+      title: '社区民警',
+      dataIndex: 'police_officers',
+      key: 'police_officers',
+      width: 260,
+      render: officers => officers?.length > 0
+        ? <span>{officers.join('、')}</span>
+        : <span className="text-slate-400">暂未填写</span>,
     },
     {
       title: '别名',
@@ -127,9 +140,9 @@ export default function Communities() {
             type="link"
             size="small"
             icon={<EditOutlined />}
-            onClick={() => openAliasEditor(community)}
+            onClick={() => openCommunityEditor(community)}
           >
-            编辑别名
+            编辑资料
           </Button>
           <Button type="link" danger size="small" onClick={() => handleDelete(community.id, community.name)}>
             删除
@@ -143,7 +156,7 @@ export default function Communities() {
     <div className="app-page">
       <PageHeader
         title="社区管理"
-        description="维护社区名单，并查看每个社区的人员数量"
+        description="维护社区名单、别名和社区民警，工作日志会自动读取这里的信息"
         actions={<Tag color="blue">共 {communities.length} 个社区</Tag>}
       />
 
@@ -184,6 +197,11 @@ export default function Communities() {
                   <div>
                     <div className="font-medium text-gray-800">{c.name}</div>
                     <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
+                    <div className="mt-1 text-sm text-slate-600">
+                      社区民警：{c.police_officers?.length > 0
+                        ? c.police_officers.join('、')
+                        : '暂未填写'}
+                    </div>
                     <div className="mt-2 flex flex-wrap gap-1">
                       {c.aliases?.length > 0
                         ? c.aliases.map(alias => <Tag key={alias}>{alias}</Tag>)
@@ -191,7 +209,7 @@ export default function Communities() {
                     </div>
                   </div>
                   <div className="flex flex-col items-end">
-                    <Button type="link" size="small" onClick={() => openAliasEditor(c)}>编辑别名</Button>
+                    <Button type="link" size="small" onClick={() => openCommunityEditor(c)}>编辑资料</Button>
                     <Button type="link" danger size="small" onClick={() => handleDelete(c.id, c.name)}>删除</Button>
                   </div>
                 </div>
@@ -203,7 +221,7 @@ export default function Communities() {
               columns={communityColumns}
               dataSource={communities}
               rowKey="id"
-              scroll={{ x: 520 }}
+              scroll={{ x: 900 }}
             />
           </div>
         </>
@@ -211,30 +229,52 @@ export default function Communities() {
       <p className="text-xs text-slate-500">人员数量会根据“人员管理”中的所属社区自动统计，无需手动填写。</p>
 
       <Modal
-        open={Boolean(editingAliases)}
-        title={editingAliases ? `编辑“${editingAliases.name}”的别名` : '编辑社区别名'}
+        open={Boolean(editingCommunity)}
+        title={editingCommunity ? `编辑“${editingCommunity.name}”` : '编辑社区资料'}
         okText="保存"
         cancelText="取消"
-        confirmLoading={savingAliases}
-        onOk={handleSaveAliases}
+        confirmLoading={savingDetails}
+        onOk={handleSaveDetails}
         onCancel={() => {
-          setEditingAliases(null)
+          setEditingCommunity(null)
           setAliasDraft([])
+          setOfficerDraft([])
         }}
       >
-        <p className="mb-3 text-sm text-slate-500">
-          按来源数据中的完整名称填写，按回车添加。例如正式名称为“南厍”时，可以添加别名“南厍村”。系统不会自动删除“社区”或“村”。
-        </p>
-        <Select
-          mode="tags"
-          value={aliasDraft}
-          onChange={setAliasDraft}
-          tokenSeparators={[',', '，']}
-          placeholder="例如：芦荡"
-          className="w-full"
-          maxTagCount="responsive"
-          options={[]}
-        />
+        <div className="space-y-5">
+          <div>
+            <div className="mb-2 font-medium text-slate-700">社区民警</div>
+            <p className="mb-3 text-sm text-slate-500">
+              输入姓名后按回车添加。可以添加多位，工作日志中会用“、”连接。
+            </p>
+            <Select
+              mode="tags"
+              value={officerDraft}
+              onChange={setOfficerDraft}
+              tokenSeparators={[',', '，', '、']}
+              placeholder="例如：张三"
+              className="w-full"
+              maxTagCount="responsive"
+              options={[]}
+            />
+          </div>
+          <div>
+            <div className="mb-2 font-medium text-slate-700">社区别名</div>
+            <p className="mb-3 text-sm text-slate-500">
+              按来源数据中的完整名称填写，按回车添加。例如正式名称为“南厍”时，可以添加别名“南厍村”。系统不会自动删除“社区”或“村”。
+            </p>
+            <Select
+              mode="tags"
+              value={aliasDraft}
+              onChange={setAliasDraft}
+              tokenSeparators={[',', '，']}
+              placeholder="例如：芦荡"
+              className="w-full"
+              maxTagCount="responsive"
+              options={[]}
+            />
+          </div>
+        </div>
       </Modal>
     </div>
   )
