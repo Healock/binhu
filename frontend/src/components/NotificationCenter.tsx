@@ -210,63 +210,71 @@ export default function NotificationCenter() {
     emptyText: string,
   ) => (
     <List
+      className="notification-list"
       loading={loading}
       dataSource={items}
       locale={{ emptyText: <Empty description={emptyText} /> }}
       renderItem={item => (
         <List.Item
-          className={
-            !item.is_read
-              ? 'rounded-lg bg-blue-50/70 px-3 dark:bg-blue-950/30'
-              : 'px-3'
-          }
+          className={[
+            'notification-list__item',
+            !item.is_read ? 'notification-list__item--unread' : '',
+          ].filter(Boolean).join(' ')}
           onClick={() => void handleRead(item)}
           style={{ cursor: item.is_read ? 'default' : 'pointer' }}
-          actions={
-            isSuperAdmin && item.source === 'announcement'
-              ? [(
-                  <Tooltip key="delete" title="删除公告">
-                    <Button
-                      danger
-                      type="text"
-                      size="small"
-                      aria-label={`删除公告 ${item.title}`}
-                      icon={<DeleteOutlined />}
-                      onClick={event => confirmDelete(event, item)}
-                    />
-                  </Tooltip>
-                )]
-              : undefined
-          }
         >
-          <List.Item.Meta
-            title={(
-              <div className="flex flex-wrap items-center gap-2">
-                <Typography.Text strong={!item.is_read}>
-                  {item.title}
-                </Typography.Text>
-                <Tag color={item.source === 'announcement' ? 'blue' : 'default'}>
+          <div className="flex w-full min-w-0 items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                <Tag
+                  bordered={false}
+                  className="m-0"
+                  color={item.source === 'announcement' ? 'blue' : 'default'}
+                >
                   {item.source === 'announcement' ? '公告' : '个人提示'}
                 </Tag>
-                {item.severity === 'warning' && <Tag color="orange">重要</Tag>}
-                {item.severity === 'error' && <Tag color="red">异常</Tag>}
-                {!item.is_read && <Tag color="blue">未读</Tag>}
+                {item.severity === 'warning' && (
+                  <Tag bordered={false} className="m-0" color="orange">重要</Tag>
+                )}
+                {item.severity === 'error' && (
+                  <Tag bordered={false} className="m-0" color="red">异常</Tag>
+                )}
+                {!item.is_read && (
+                  <span className="notification-list__unread-label">
+                    <span aria-hidden="true" className="notification-list__unread-dot" />
+                    未读
+                  </span>
+                )}
               </div>
+              <Typography.Text
+                className="notification-list__title block text-[15px] leading-6"
+                strong={!item.is_read}
+              >
+                {item.title}
+              </Typography.Text>
+              <Typography.Paragraph
+                className="notification-list__content mb-2 mt-1 text-sm"
+                ellipsis={{ rows: 5, expandable: true, symbol: '展开' }}
+              >
+                {item.content}
+              </Typography.Paragraph>
+              <span className="notification-list__time text-xs">
+                {formatUTCTime(item.created_at)}
+              </span>
+            </div>
+            {isSuperAdmin && item.source === 'announcement' && (
+              <Tooltip title="删除公告">
+                <Button
+                  danger
+                  type="text"
+                  size="small"
+                  aria-label={`删除公告 ${item.title}`}
+                  icon={<DeleteOutlined />}
+                  onClick={event => confirmDelete(event, item)}
+                />
+              </Tooltip>
             )}
-            description={(
-              <div>
-                <Typography.Paragraph
-                  className="mb-1 text-sm"
-                  ellipsis={{ rows: 5, expandable: true, symbol: '展开' }}
-                >
-                  {item.content}
-                </Typography.Paragraph>
-                <span className="text-xs text-slate-400">
-                  {formatUTCTime(item.created_at)}
-                </span>
-              </div>
-            )}
-          />
+          </div>
         </List.Item>
       )}
     />
