@@ -1211,9 +1211,11 @@ def _empty_row(columns: list[dict]) -> dict:
 def default_manual_values(
     communities: list[str] | None = None,
     community_officers: dict[str, str] | None = None,
+    community_grid_member_counts: dict[str, int] | None = None,
 ) -> dict:
     communities = communities or []
     community_officers = community_officers or {}
+    community_grid_member_counts = community_grid_member_counts or {}
     result: dict[str, Any] = {}
     for field_id, definition in field_definitions().items():
         if definition["source"] != "manual":
@@ -1243,6 +1245,13 @@ def default_manual_values(
                         community,
                         "",
                     )
+                if (
+                    "grid_member_count" in column_keys
+                    and community in community_grid_member_counts
+                ):
+                    row["grid_member_count"] = (
+                        community_grid_member_counts[community]
+                    )
                 rows.append(row)
             result[field_id] = rows or [_empty_row(columns)]
         elif mode == "fixed":
@@ -1252,6 +1261,47 @@ def default_manual_values(
             ]
         else:
             result[field_id] = [_empty_row(columns)]
+    return result
+
+
+def fill_community_grid_member_counts(
+    values: dict | None,
+    community_grid_member_counts: dict[str, int] | None,
+) -> dict:
+    """只补齐社区表中尚未填写的网格员数，不覆盖人工修改。"""
+    result = deepcopy(values) if isinstance(values, dict) else {}
+    counts = community_grid_member_counts or {}
+    if not counts:
+        return result
+    for field_id, definition in field_definitions().items():
+        if (
+            definition["source"] != "manual"
+            or definition["type"] != "table"
+            or definition.get("row_mode") != "community"
+        ):
+            continue
+        column_keys = {
+            item["key"]
+            for item in leaf_columns(definition["columns"])
+        }
+        if "grid_member_count" not in column_keys:
+            continue
+        community_key = definition.get(
+            "community_key",
+            "responsibility_area",
+        )
+        rows = result.get(field_id)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            community = str(row.get(community_key) or "").strip()
+            if (
+                community in counts
+                and row.get("grid_member_count") in (None, "")
+            ):
+                row["grid_member_count"] = counts[community]
     return result
 
 

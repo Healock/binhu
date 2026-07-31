@@ -13,8 +13,8 @@ export interface DataOverviewMetric {
 }
 
 interface DataOverviewProps {
-  rangeTitle: string
-  rangeValue: ReactNode
+  rangeTitle?: string
+  rangeValue?: ReactNode
   rangeDescription?: ReactNode
   metrics: DataOverviewMetric[]
   loading?: boolean
@@ -27,25 +27,34 @@ export default function DataOverview({
   metrics,
   loading = false,
 }: DataOverviewProps) {
+  const hasRange = Boolean(rangeTitle)
+  const layoutClass = hasRange
+    ? metrics.length <= 2
+      ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4'
+      : 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8'
+    : 'grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6'
+
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 sm:col-span-2">
-        <div className="text-xs text-slate-500">{rangeTitle}</div>
-        {loading ? (
-          <Skeleton className="mt-2" active paragraph={false} />
-        ) : (
-          <>
-            <div className="mt-2 text-lg font-semibold text-slate-900">
-              {rangeValue}
-            </div>
-            {rangeDescription && (
-              <div className="mt-1 text-xs text-slate-500">
-                {rangeDescription}
+    <div className={layoutClass}>
+      {hasRange && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 sm:col-span-2">
+          <div className="text-xs text-slate-500">{rangeTitle}</div>
+          {loading ? (
+            <Skeleton className="mt-2" active paragraph={false} />
+          ) : (
+            <>
+              <div className="mt-2 text-lg font-semibold text-slate-900">
+                {rangeValue}
               </div>
-            )}
-          </>
-        )}
-      </div>
+              {rangeDescription && (
+                <div className="mt-1 text-xs text-slate-500">
+                  {rangeDescription}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {metrics.map(metric => (
         <div

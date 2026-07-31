@@ -155,6 +155,10 @@ async def delete_user(
                 "DELETE FROM _notifications WHERE user_id = %s",
                 (user_id,),
             )
+            await cur.execute(
+                "DELETE FROM _announcement_reads WHERE user_id = %s",
+                (user_id,),
+            )
     finally:
         pool.release(conn)
 

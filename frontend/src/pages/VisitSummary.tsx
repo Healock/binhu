@@ -264,8 +264,8 @@ export default function VisitSummary() {
       />
 
       <Panel
-        title="走访数据概览"
-        description="展示数据库现有范围、星级关联情况和缺少数据的日期"
+        title="数据库覆盖情况"
+        description="用于判断下次需要补充或更新哪个日期的数据"
         extra={
           <Button
             icon={<CalendarOutlined />}
@@ -286,28 +286,8 @@ export default function VisitSummary() {
               end={coverage?.end_date || null}
             />
           )}
-          rangeDescription="重复日期会在导入时自动合并去重"
+          rangeDescription="重复区间导入会自动合并去重"
           metrics={[
-            {
-              key: 'records',
-              title: '有效走访记录',
-              value: coverage?.total_records || 0,
-              suffix: '条',
-            },
-            {
-              key: 'rated',
-              title: '已星级评定',
-              value: coverage?.rated_records || 0,
-              suffix: '条',
-              valueStyle: { color: '#047857' },
-            },
-            {
-              key: 'unrated',
-              title: '仅走访未评定',
-              value: coverage?.unrated_records || 0,
-              suffix: '条',
-              valueStyle: { color: '#d97706' },
-            },
             {
               key: 'data-days',
               title: '有数据日期',
@@ -322,16 +302,21 @@ export default function VisitSummary() {
             },
           ]}
         />
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+        <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-500">
           <span>最近走访导入：{formatUTCTime(coverage?.last_detail_import_at)}</span>
           <span>最近星级导入：{formatUTCTime(coverage?.last_rating_import_at)}</span>
-          {shownMissingDates.map(item => <Tag key={item}>{item}</Tag>)}
-          {(coverage?.missing_date_count || 0) > 10 && (
-            <Button type="link" size="small" onClick={() => setMissingOpen(true)}>
-              查看全部
-            </Button>
-          )}
         </div>
+        {(coverage?.missing_date_count || 0) > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+            <span>无数据日期：</span>
+            {shownMissingDates.map(item => <Tag key={item}>{item}</Tag>)}
+            {(coverage?.missing_date_count || 0) > 10 && (
+              <Button type="link" size="small" onClick={() => setMissingOpen(true)}>
+                查看全部
+              </Button>
+            )}
+          </div>
+        )}
       </Panel>
 
       <Panel
@@ -416,11 +401,11 @@ export default function VisitSummary() {
         </p>
         {summaryReport && (
           <div className="mt-5 border-t border-slate-100 pt-5">
+            <div className="mb-3 text-sm font-medium text-slate-700">
+              当前查询概览
+            </div>
             <DataOverview
               loading={summaryLoading}
-              rangeTitle="当前汇总范围"
-              rangeValue={shownRangeLabel}
-              rangeDescription={`${shownCategoryLabel} · 跟随上方查询条件`}
               metrics={[
                 {
                   key: 'visits',
@@ -471,14 +456,6 @@ export default function VisitSummary() {
 
       {summaryError && (
         <Alert type="error" showIcon message={summaryError} />
-      )}
-      {summaryReport?.attendance.legacy_history_incomplete && (
-        <Alert
-          type="info"
-          showIcon
-          message="部分日期早于系统开始保存出勤历史的时间"
-          description={`出勤历史从 ${summaryReport.attendance.history_started_on || '本版本上线日'} 开始完整保存；更早的请假记录如果没有补录，人均值只能作为参考。`}
-        />
       )}
       {summaryReport && summaryReport.attendance.worked_while_off > 0 && (
         <Alert
