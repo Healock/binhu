@@ -526,6 +526,17 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("7", captured["html"])
         self.assertIn("14", captured["html"])
         self.assertIn("123", captured["html"])
+        self.assertIn('class="document-title"', captured["html"])
+        self.assertIn('<div class="document-number">一</div>', captured["html"])
+        self.assertIn("color: #ff0000", captured["html"])
+        self.assertIn("margin: 37mm 27mm 35mm", captured["html"])
+        self.assertIn("<strong>问题分析：</strong>", captured["html"])
+        self.assertIn('class="blank blank-filled"', captured["html"])
+        self.assertLess(
+            captured["html"].index("基础数据"),
+            captured["html"].index("一、流动人口采集"),
+        )
+        self.assertNotIn("background: #eef2f6", captured["html"])
         self.assertNotIn("{{", captured["html"])
         self.assertNotIn("PRIVATE_MARKER_SHOULD_NOT_RENDER", captured["html"])
 

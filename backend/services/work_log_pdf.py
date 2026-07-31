@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from html import escape
+import re
 from typing import Any
 
 from services.work_log_schema import leaf_columns
@@ -29,21 +30,52 @@ def _display(value: Any, definition: dict | None = None) -> str:
 def _input_span(definition: dict, values: dict) -> str:
     value = _display(values.get(definition["id"]), definition)
     width = max(42, min(int(definition.get("width", 88)), 280))
-    text = escape(value) if value else "&nbsp;"
+    if value:
+        return (
+            f'<span class="blank blank-filled" '
+            f'title="{escape(definition["label"])}">{escape(value)}</span>'
+        )
     return (
-        f'<span class="blank" style="min-width:{width}px" '
-        f'title="{escape(definition["label"])}">{text}</span>'
+        f'<span class="blank blank-empty" style="min-width:{width}px" '
+        f'title="{escape(definition["label"])}">&nbsp;</span>'
     )
 
 
-def _sentence_html(block: dict, values: dict) -> str:
+def _sentence_inner(block: dict, values: dict) -> str:
     parts: list[str] = []
     for segment in block["segments"]:
         if isinstance(segment, str):
             parts.append(escape(segment))
         else:
             parts.append(_input_span(segment, values))
-    return f'<p class="sentence">{"".join(parts)}</p>'
+    return "".join(parts)
+
+
+def _sentence_html(
+    block: dict,
+    values: dict,
+    *,
+    prefix: str = "",
+) -> str:
+    style = escape(block.get("style", ""))
+    classes = f"sentence {style}".strip()
+    return f'<p class="{classes}">{prefix}{_sentence_inner(block, values)}</p>'
+
+
+def _analysis_html(blocks: list[dict], values: dict) -> str:
+    parts = []
+    for block in blocks:
+        content = _sentence_inner(block, values)
+        parts.append(content[:-1] if content.endswith("。") else content)
+    return (
+        '<p class="sentence analysis">'
+        '<strong>问题分析：</strong>'
+        f'{"；".join(parts)}。</p>'
+    )
+
+
+def _subheading_title(title: str) -> str:
+    return re.sub(r"^(\d+)\.\s*", r"\1、", title)
 
 
 def _table_header(columns: list[dict]) -> str:
@@ -101,15 +133,8 @@ def _table_html(block: dict, values: dict) -> str:
                 f"{escape(value).replace(chr(10), '<br>')}</td>"
             )
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
-    help_text = (
-        f'<div class="table-help">{escape(block["help"])}</div>'
-        if block.get("help")
-        else ""
-    )
     return (
         '<div class="table-block">'
-        f'<div class="table-title">{escape(definition["label"])}</div>'
-        f"{help_text}"
         '<table class="report-table">'
         f"{colgroup}"
         f"{_table_header(columns)}"
@@ -120,30 +145,84 @@ def _table_html(block: dict, values: dict) -> str:
 
 def _section_html(section: dict, values: dict) -> str:
     blocks = []
-    for block in section["blocks"]:
+    if section["id"] in {"notices", "special"}:
+        title = section["title"].split("、", 1)[-1]
+        blocks.append(
+            f'<h1 class="division-title">{escape(title)}</h1>'
+        )
+    else:
+        blocks.append(
+            f'<h1 class="section-title">{escape(section["title"])}</h1>'
+        )
+
+    source_blocks = section["blocks"]
+    index = 0
+    while index < len(source_blocks):
+        block = source_blocks[index]
         block_type = block["type"]
         if block_type == "heading":
-            level = 3 if block.get("level", 2) >= 3 else 2
+            if block["title"] == "基础数据":
+                index += 1
+                continue
+            title = _subheading_title(block["title"])
+            if (
+                block.get("combine_with_next", True)
+                and index + 1 < len(source_blocks)
+                and source_blocks[index + 1]["type"] == "sentence"
+            ):
+                sentence_block = source_blocks[index + 1]
+                prefix = (
+                    '<strong class="subsection-label">'
+                    f"{escape(title)}：</strong>"
+                )
+                blocks.append(
+                    _sentence_html(sentence_block, values, prefix=prefix)
+                )
+                index += 2
+                continue
             blocks.append(
-                f'<h{level}>{escape(block["title"])}</h{level}>'
+                '<p class="subsection-heading">'
+                f"<strong>{escape(title)}</strong></p>"
             )
         elif block_type == "sentence":
+            if block.get("style") == "analysis":
+                analysis_blocks = [block]
+                next_index = index + 1
+                while (
+                    next_index < len(source_blocks)
+                    and source_blocks[next_index]["type"] == "sentence"
+                    and source_blocks[next_index].get("style") == "analysis"
+                ):
+                    analysis_blocks.append(source_blocks[next_index])
+                    next_index += 1
+                blocks.append(_analysis_html(analysis_blocks, values))
+                index = next_index
+                continue
             blocks.append(_sentence_html(block, values))
         elif block_type == "textarea":
             definition = block["field"]
             content = _display(values.get(definition["id"]), definition)
-            blocks.append(
-                '<div class="long-text">'
-                f'<div class="long-text-title">{escape(definition["label"])}</div>'
-                f'<div class="long-text-content">'
-                f'{escape(content).replace(chr(10), "<br>") or "&nbsp;"}</div>'
-                "</div>"
+            displayed = (
+                escape(content).replace(chr(10), "<br>")
+                if content
+                else '<span class="blank blank-empty long-blank">&nbsp;</span>'
             )
+            if "问题分析" in definition["label"]:
+                blocks.append(
+                    '<p class="sentence analysis">'
+                    f"<strong>问题分析：</strong>{displayed}</p>"
+                )
+            else:
+                blocks.append(
+                    '<p class="sentence long-text">'
+                    f'<strong>{escape(definition["label"])}：</strong>'
+                    f"{displayed}</p>"
+                )
         elif block_type == "table":
             blocks.append(_table_html(block, values))
+        index += 1
     return (
         '<section class="report-section">'
-        f'<h1 class="section-title">{escape(section["title"])}</h1>'
         f'{"".join(blocks)}</section>'
     )
 
@@ -172,82 +251,112 @@ def build_daily_pdf(
 <style>
 @page {{
   size: A4;
-  margin: 22mm 18mm 20mm;
-  @bottom-center {{
-    content: counter(page);
-    font-size: 9pt;
-    color: #555;
-  }}
+  margin: 37mm 27mm 35mm;
 }}
 * {{ box-sizing: border-box; }}
 body {{
   margin: 0;
   color: #111;
-  font-family: "Noto Serif CJK SC", "Noto Serif CJK", "SimSun", serif;
-  font-size: 12pt;
-  line-height: 1.75;
+  font-family: "方正仿宋_GBK", "FangSong", "仿宋",
+    "Noto Serif CJK SC", "Noto Serif CJK", serif;
+  font-size: 14pt;
+  line-height: 22pt;
+}}
+.document-head {{
+  margin: 0;
+  border-bottom: 1.5pt solid #ff0000;
 }}
 .document-title {{
-  margin: 0 0 8mm;
+  margin: 0;
   text-align: center;
   font-size: 22pt;
+  font-weight: 400;
+  line-height: 25pt;
+  color: #ff0000;
+  font-family: "方正小标宋_GBK", "FZXiaoBiaoSong-B05S",
+    "Noto Serif CJK SC", "Noto Serif CJK", serif;
+}}
+.document-number {{
+  margin: 0;
+  text-align: center;
+  font-size: 16pt;
   font-weight: 700;
-  letter-spacing: 1.5pt;
+  line-height: 25pt;
 }}
 .document-meta {{
-  margin-bottom: 8mm;
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  padding: 0 1mm;
+  font-size: 14pt;
+  line-height: 25pt;
+}}
+.basic-data-title,
+.division-title {{
+  margin: 0;
   text-align: center;
-  font-size: 13pt;
+  font-size: 16pt;
+  font-weight: 700;
+  line-height: 26pt;
 }}
 .section-title {{
-  margin: 7mm 0 3mm;
-  font-size: 16pt;
-  line-height: 1.35;
-}}
-h2 {{
-  margin: 4mm 0 2mm;
+  margin: 0;
   font-size: 14pt;
+  font-weight: 700;
+  line-height: 26pt;
+  break-after: avoid;
 }}
-h3 {{
-  margin: 3mm 0 1.5mm;
-  font-size: 12.5pt;
+.division-title {{
+  break-after: avoid;
 }}
-.sentence {{
-  margin: 1.5mm 0;
+.sentence,
+.subsection-heading {{
+  margin: 0;
   text-indent: 2em;
   text-align: justify;
+  font-size: 14pt;
+  line-height: 22pt;
+  orphans: 2;
+  widows: 2;
+}}
+.subsection-heading {{
+  break-after: avoid;
+}}
+.subsection-label {{
+  font-weight: 700;
+}}
+.analysis {{
+  color: #ff0000;
+}}
+.strong {{
+  font-weight: 700;
 }}
 .blank {{
+  text-indent: 0;
+}}
+.blank-filled {{
+  display: inline;
+}}
+.blank-empty {{
   display: inline-block;
-  margin: 0 1.5mm;
-  padding: 0 .8mm;
+  margin: 0 .6mm;
+  padding: 0 .5mm;
   border-bottom: .35mm solid #222;
   text-align: center;
-  text-indent: 0;
-  line-height: 1.35;
+  line-height: 18pt;
   overflow-wrap: anywhere;
 }}
 .table-block {{
-  margin: 3mm 0 5mm;
-}}
-.table-title {{
-  margin-bottom: 1.5mm;
-  text-align: center;
-  font-weight: 700;
-  font-size: 11pt;
-}}
-.table-help {{
-  margin-bottom: 1.2mm;
-  color: #555;
-  font-size: 8.5pt;
+  margin: 1.5mm 0 3mm;
 }}
 .report-table {{
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-family: "Noto Sans CJK SC", "Noto Sans CJK", "Microsoft YaHei", sans-serif;
-  font-size: 7.6pt;
-  line-height: 1.25;
+  font-family: "SimSun", "宋体", "Noto Serif CJK SC",
+    "Noto Serif CJK", serif;
+  font-size: 7.2pt;
+  line-height: 1.15;
 }}
 .report-table thead {{
   display: table-header-group;
@@ -257,44 +366,45 @@ h3 {{
 }}
 .report-table th,
 .report-table td {{
-  padding: 1.2mm .8mm;
-  border: .25mm solid #333;
+  height: 7mm;
+  padding: .7mm .45mm;
+  border: .3mm solid #111;
   text-align: center;
   vertical-align: middle;
   overflow-wrap: anywhere;
 }}
 .report-table th {{
-  background: #eef2f6;
+  background: #fff;
   font-weight: 700;
 }}
 .report-table td.cell-textarea {{
   text-align: left;
 }}
 .long-text {{
-  margin: 2mm 0 4mm;
+  text-align: left;
 }}
-.long-text-title {{
-  margin-bottom: 1mm;
-  font-weight: 700;
-}}
-.long-text-content {{
-  min-height: 16mm;
-  padding: 2mm;
-  border: .25mm solid #333;
-  white-space: normal;
-  overflow-wrap: anywhere;
+.long-blank {{
+  min-width: 68%;
 }}
 .issue-date {{
-  margin-top: 8mm;
+  margin-top: 6mm;
   text-align: right;
+  font-size: 14pt;
+  line-height: 22pt;
 }}
 </style>
 </head>
 <body>
-  <div class="document-title">{escape(schema["document_title"])}</div>
-  <div class="document-meta">防控治理岗&nbsp;&nbsp;
-    {business_date.year}年{business_date.month}月{business_date.day}日
-  </div>
+  <header class="document-head">
+    <div class="document-title">{escape(schema["document_title"])}</div>
+    <div class="document-number">一</div>
+    <div class="document-meta">
+      <span>防控治理岗</span>
+      <span>{business_date.year} 年 {business_date.month} 月
+        {business_date.day} 日</span>
+    </div>
+  </header>
+  <div class="basic-data-title">基础数据</div>
   {sections}
   <div class="issue-date">滨湖新城派出所&nbsp;&nbsp;
     {issue_date.year}年{issue_date.month}月{issue_date.day}日
