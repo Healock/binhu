@@ -4,14 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import require_admin, require_super_admin
+from deps import require_permission, require_super_admin
 from schemas.sync import SyncStatusResponse, SyncTriggerResponse
+from services.permissions import ONLINE_SUMMARY_VIEW, SYNC_TRIGGER
 from services.sync_tasks import (
     create_sync_task,
     get_schedule,
     update_schedule,
 )
 from services.audit import record_admin_audit, request_audit_fields
+
+require_admin = require_permission(SYNC_TRIGGER)
 
 router = APIRouter(prefix="/api/sync", tags=["数据同步"])
 
@@ -35,15 +38,14 @@ async def trigger_sync(
         "manual",
         requested_by=user["id"],
     )
-    if user["role"] == "super_admin":
-        await record_admin_audit(
-            user,
-            "sync.trigger",
-            target_type="sync",
-            target_name=str(task_id) if task_id else "",
-            result=status,
-            **request_audit_fields(request),
-        )
+    await record_admin_audit(
+        user,
+        "sync.trigger",
+        target_type="sync",
+        target_name=str(task_id) if task_id else "",
+        result=status,
+        **request_audit_fields(request),
+    )
     return SyncTriggerResponse(
         task_id=task_id,
         status=status,
@@ -52,8 +54,12 @@ async def trigger_sync(
 
 
 @router.get("/status", response_model=SyncStatusResponse)
-async def sync_status(conn=Depends(get_db)):
+async def sync_status(
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    conn=Depends(get_db),
+):
     """获取最近任务、真实步骤进度和定时同步状态。"""
+    del user
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -141,9 +147,11 @@ async def save_schedule(
 async def sync_history(
     page: int = 1,
     page_size: int = 20,
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
     conn=Depends(get_db),
 ):
     """同步历史记录。"""
+    del user
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
     offset = (page - 1) * page_size

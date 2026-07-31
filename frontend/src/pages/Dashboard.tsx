@@ -109,7 +109,7 @@ const reportTableSummary = (
 }
 
 export default function Dashboard() {
-  const { user } = useAuth()
+  const { user, recordActivity } = useAuth()
   const reportColumnMode = user?.report_column_mode || 'three'
   const today = formatDateInTimezone()
   const [dateRange, setDateRange] = useState<[string, string]>([today, today])
@@ -170,7 +170,9 @@ export default function Dashboard() {
     error: syncError,
     startSync: handleSync,
   } = useSync(fetchReport)
-  const canManualSync = user?.role === 'admin' || user?.role === 'super_admin'
+  const canManualSync = Boolean(user?.permissions.includes('sync.trigger'))
+  const canBuildReport = Boolean(user?.permissions.includes('report.build'))
+  const canConfigureReport = Boolean(user?.permissions.includes('report.config.manage'))
 
   useEffect(() => {
     getSystemConfig().then(c => {
@@ -255,7 +257,10 @@ export default function Dashboard() {
           <Select
             size="large"
             value={reportType}
-            onChange={setReportType}
+            onChange={(value) => {
+              void recordActivity().catch(() => {})
+              setReportType(value)
+            }}
             className="w-full md:w-40"
             options={types.map(type => ({
               value: type,
@@ -264,10 +269,16 @@ export default function Dashboard() {
           />
           {/* 移动端：原生 date input */}
           <div className="md:hidden flex items-center gap-1.5 w-full">
-            <input type="date" value={startDate} onChange={(e) => setDateRange([e.target.value, e.target.value > endDate ? e.target.value : endDate])}
+            <input type="date" value={startDate} onChange={(e) => {
+              void recordActivity().catch(() => {})
+              setDateRange([e.target.value, e.target.value > endDate ? e.target.value : endDate])
+            }}
               className="border border-gray-300 rounded px-2 py-1.5 text-sm flex-1" />
             <span className="text-gray-400 text-xs">至</span>
-            <input type="date" value={endDate} onChange={(e) => setDateRange([e.target.value > startDate ? e.target.value : startDate, e.target.value])}
+            <input type="date" value={endDate} onChange={(e) => {
+              void recordActivity().catch(() => {})
+              setDateRange([e.target.value > startDate ? e.target.value : startDate, e.target.value])
+            }}
               className="border border-gray-300 rounded px-2 py-1.5 text-sm flex-1" />
           </div>
           {/* 桌面端：Ant Design RangePicker */}
@@ -277,12 +288,15 @@ export default function Dashboard() {
               className="w-full"
               value={[dayjs(startDate), dayjs(endDate)]}
               onChange={(_, dateStrings) => {
-                if (dateStrings[0] && dateStrings[1]) setDateRange([dateStrings[0], dateStrings[1]])
+                if (dateStrings[0] && dateStrings[1]) {
+                  void recordActivity().catch(() => {})
+                  setDateRange([dateStrings[0], dateStrings[1]])
+                }
               }}
               allowClear={false}
             />
           </div>
-          <Button
+          {canBuildReport && <Button
             type="primary"
             size="large"
             className="dashboard-report-toolbar__build"
@@ -291,8 +305,8 @@ export default function Dashboard() {
             disabled={!isImplemented}
           >
             生成日报
-          </Button>
-          {canManualSync && <SummaryReportConfigButton />}
+          </Button>}
+          {canConfigureReport && <SummaryReportConfigButton />}
           {msg && report.exists && (
             <span className={`text-sm ${msg.includes('成功') ? 'text-green-700' : 'text-orange-700'}`}>
               {msg}
@@ -385,6 +399,10 @@ export default function Dashboard() {
             ]}
           />
         </Panel>
+      )}
+
+      {report.scope_message && (
+        <Alert type="info" showIcon message={report.scope_message} />
       )}
 
       {!isImplemented ? (

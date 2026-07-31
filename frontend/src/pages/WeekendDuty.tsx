@@ -235,8 +235,8 @@ export default function WeekendDuty() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { user } = useAuth()
-  const editable = user?.role === 'admin' || user?.role === 'super_admin'
-  const isSuperAdmin = user?.role === 'super_admin'
+  const editable = Boolean(user?.permissions.includes('attendance.manage'))
+  const canManageSystem = Boolean(user?.permissions.includes('system.manage'))
   const [isMobile, setIsMobile] = useState(() => (
     typeof window !== 'undefined'
     && window.matchMedia('(max-width: 767px)').matches
@@ -459,7 +459,7 @@ export default function WeekendDuty() {
             {board.positions.map(position => (
               <Tag key={position} color="blue">{position}</Tag>
             ))}
-            {isSuperAdmin && (
+            {canManageSystem && (
               <Button
                 type="link"
                 size="small"

@@ -1,11 +1,15 @@
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 import bcrypt
 from fastapi import HTTPException

@@ -20,6 +20,7 @@ import DataUploadCenter from './pages/DataUploadCenter'
 import Login from './pages/Login'
 import WorkLog from './pages/WorkLog'
 import WorkLogDrafts from './pages/WorkLogDrafts'
+import PermissionGroups from './pages/PermissionGroups'
 
 function App() {
   return (
@@ -32,31 +33,52 @@ function App() {
           {/* 其他页面需要登录 */}
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/query" element={<DataQuery />} />
-              <Route path="/visit-summary" element={<VisitSummary />} />
-              <Route path="/data-upload" element={<DataUploadCenter />} />
-              <Route element={<ProtectedRoute requireRoles={['admin', 'super_admin']} />}>
+              <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
+                <Route path="/" element={<Dashboard />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
+                <Route path="/query" element={<DataQuery />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
+                <Route path="/visit-summary" element={<VisitSummary />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="visit.import" />}>
+                <Route path="/data-upload" element={<DataUploadCenter />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="worklog.manage" />}>
                 <Route path="/work-log" element={<WorkLog />} />
                 <Route path="/work-log/drafts" element={<WorkLogDrafts />} />
               </Route>
-              <Route path="/grid-members" element={<GridMembers />} />
-              <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />
-              <Route path="/communities" element={<Communities />} />
+              <Route element={<ProtectedRoute requirePermission="personnel.basic.view" />}>
+                <Route path="/grid-members" element={<GridMembers />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="attendance.manage" />}>
+                <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="community.view" />}>
+                <Route path="/communities" element={<Communities />} />
+              </Route>
 
               {/* 用户管理仅超管 */}
-              <Route element={<ProtectedRoute requireRole="super_admin" />}>
+              <Route element={<ProtectedRoute requirePermission="user.manage" />}>
                 <Route path="/users" element={<UserManagement />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="permission.manage" />}>
+                <Route path="/permission-groups" element={<PermissionGroups />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="ops.manage" />}>
                 <Route path="/operations" element={<OperationsCenter />} />
                 <Route path="/settings/operations" element={<Navigate to="/operations" replace />} />
               </Route>
 
               <Route path="/settings" element={<SettingsLayout />}>
                 <Route index element={<Navigate to="/settings/personalization" replace />} />
-                <Route path="spreadsheets" element={<SpreadsheetSettings />} />
-                <Route path="oauth" element={<OAuthSettings />} />
-                <Route path="system" element={<SystemSettings />} />
                 <Route path="personalization" element={<PersonalizationSettings />} />
+                <Route element={<ProtectedRoute requirePermission="system.manage" />}>
+                  <Route path="spreadsheets" element={<SpreadsheetSettings />} />
+                  <Route path="oauth" element={<OAuthSettings />} />
+                  <Route path="system" element={<SystemSettings />} />
+                </Route>
               </Route>
             </Route>
           </Route>

@@ -569,7 +569,7 @@ export default function WorkLog() {
     }
   }, [draft, manualValues, overrideValues])
 
-  if (user && !['admin', 'super_admin'].includes(user.role)) {
+  if (user && !user.permissions.includes('worklog.manage')) {
     return <Navigate to="/" replace />
   }
 

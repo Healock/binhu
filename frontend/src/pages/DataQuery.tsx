@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Button, Input, Segmented, Select, Tag, Tooltip } from 'antd'
+import { Alert, Button, Input, Segmented, Select, Tag, Tooltip } from 'antd'
 import type { TableColumnsType, TableProps } from 'antd'
 import { FilterOutlined, SearchOutlined } from '@ant-design/icons'
 import { getQueryTypes, queryData } from '../api/client'
@@ -23,6 +23,7 @@ export default function DataQuery() {
   const [pageSize] = useState(50)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [scopeMessage, setScopeMessage] = useState('')
   const [sortCol, setSortCol] = useState<string | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [filters, setFilters] = useState<Record<string, string[]>>({})
@@ -46,12 +47,16 @@ export default function DataQuery() {
         sort_by: sortCol || undefined, sort_order: sortDir,
         filters: activeFilterCount > 0 ? activeFilters : undefined,
       })
-      setData(result.data); setColumns(result.columns); setTotal(result.total)
+      setData(result.data)
+      setColumns(result.columns)
+      setTotal(result.total)
+      setScopeMessage(result.scope_message || '')
     } catch (e) {
       console.error('查询失败', e)
       setError('查询失败，请检查网络后重试')
       setData([])
       setTotal(0)
+      setScopeMessage('')
     }
     finally { setLoading(false) }
   }, [selectedType, source, page, pageSize, keyword, sortCol, sortDir, filters, activeFilterCount])
@@ -181,6 +186,8 @@ export default function DataQuery() {
           )}
         </div>
       </section>
+
+      {scopeMessage && <Alert type="info" showIcon message={scopeMessage} />}
 
       <AppTable<QueryRow>
         columns={tableColumns}

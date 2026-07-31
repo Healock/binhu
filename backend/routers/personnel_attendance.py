@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 
 from database import get_db
-from deps import require_admin
+from deps import require_permission
+from services.permissions import (
+    ATTENDANCE_MANAGE,
+    PERSONNEL_BASIC_VIEW,
+    PERSONNEL_SENSITIVE_VIEW,
+)
 from services.audit import record_admin_audit, request_audit_fields
 from services.personnel_attendance import (
     get_attendance_context,
@@ -46,8 +51,10 @@ class WeekendDutyUpdate(BaseModel):
 @router.get("/weekend-duty")
 async def read_weekend_duty(
     week_start: date = Query(...),
+    user: dict = Depends(require_permission(PERSONNEL_BASIC_VIEW)),
     conn=Depends(get_db),
 ):
+    del user
     async with conn.cursor() as cur:
         return await get_weekend_board(cur, week_start)
 
@@ -56,9 +63,11 @@ async def read_weekend_duty(
 async def read_attendance_status(
     start_date: date = Query(...),
     end_date: date = Query(...),
+    user: dict = Depends(require_permission(PERSONNEL_BASIC_VIEW)),
     conn=Depends(get_db),
 ):
     """检查所选区间内是否还有双休日未排班。"""
+    del user
     if start_date > end_date:
         raise HTTPException(400, "起始日期不能晚于结束日期")
     if (end_date - start_date).days > 366:
@@ -90,7 +99,7 @@ async def read_attendance_status(
 async def update_weekend_duty(
     data: WeekendDutyUpdate,
     request: Request,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(ATTENDANCE_MANAGE)),
     conn=Depends(get_db),
 ):
     normalized_week = normalize_week_start(data.week_start)
@@ -125,8 +134,10 @@ async def read_attendance_history(
     member_id: int | None = Query(default=None, gt=0),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    user: dict = Depends(require_permission(PERSONNEL_SENSITIVE_VIEW)),
     conn=Depends(get_db),
 ):
+    del user
     where = ""
     params: list[object] = []
     if member_id is not None:

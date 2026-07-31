@@ -226,6 +226,14 @@ export interface OAuthStatus {
 
 // 用户与认证
 export type Role = 'super_admin' | 'admin' | 'leader' | 'member'
+export type PermissionCode =
+  | 'online.summary.view' | 'online.raw.view' | 'visit.summary.view'
+  | 'personnel.basic.view' | 'personnel.sensitive.view' | 'community.view'
+  | 'notification.view' | 'preferences.manage' | 'sync.trigger'
+  | 'report.build' | 'report.config.manage' | 'visit.import'
+  | 'worklog.manage' | 'attendance.manage' | 'personnel.manage'
+  | 'community.manage' | 'user.manage' | 'permission.manage'
+  | 'announcement.manage' | 'system.manage' | 'ops.manage'
 export type TableDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
 export type MobileNavigationMode = 'sidebar' | 'dock'
@@ -240,6 +248,7 @@ export type MobileNavigationItemId =
   | 'grid_members'
   | 'communities'
   | 'users'
+  | 'permission_groups'
   | 'settings'
   | 'operations'
 
@@ -269,8 +278,33 @@ export interface User extends UserPreferences {
   mobile_navigation_mode: MobileNavigationMode
   mobile_dock_config: MobileDockConfig
   theme_mode: ThemeMode
+  permissions: PermissionCode[]
+  data_scope: 'all' | 'own_department'
+  member: { id: number; name: string; position: string } | null
+  department: {
+    id: number
+    name: string
+    type: 'community' | 'internal'
+    community_name: string | null
+  } | null
+  permission_group: { id: number | null; code: string; name: string }
+  password_is_temporary: boolean
+  session_policy: {
+    idle_timeout_minutes: number
+    warning_seconds: number
+    last_activity_at: string
+    absolute_expires_at: string
+    server_time: string
+  }
   created_at?: string
   updated_at?: string
+}
+
+export function hasPermission(
+  user: User | null | undefined,
+  permission: PermissionCode,
+): boolean {
+  return Boolean(user?.permissions?.includes(permission))
 }
 
 export const ROLE_LABELS: Record<string, string> = {

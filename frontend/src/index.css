@@ -197,6 +197,57 @@ html[data-theme='dark'] ::selection {
   padding: 20px;
 }
 
+.notification-list .ant-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notification-list__item {
+  align-items: flex-start !important;
+  padding: 12px !important;
+  border: 1px solid var(--app-border) !important;
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.notification-list__item--unread {
+  border-color: var(--app-primary-border) !important;
+  background: var(--app-surface) !important;
+  box-shadow: inset 3px 0 0 var(--app-primary);
+}
+
+.notification-list__item:hover {
+  background: var(--app-surface-muted) !important;
+}
+
+.notification-list__title,
+.notification-list__content {
+  color: var(--app-text) !important;
+}
+
+.notification-list__time {
+  color: var(--app-text-muted);
+}
+
+.notification-list__unread-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--app-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.notification-list__unread-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
 .app-toolbar {
   display: flex;
   flex-wrap: wrap;

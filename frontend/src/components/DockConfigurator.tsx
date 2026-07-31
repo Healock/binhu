@@ -32,6 +32,7 @@ import type {
   MobileNavigationGroupId,
   MobileNavigationItemId,
   Role,
+  PermissionCode,
 } from '../types'
 import {
   MAX_DOCK_GROUPS,
@@ -292,19 +293,21 @@ function ItemDropZone({ children }: { children: React.ReactNode }) {
 export default function DockConfigurator({
   value,
   role,
+  permissions,
   onChange,
 }: {
   value: MobileDockConfig
   role: Role
+  permissions: PermissionCode[]
   onChange: (value: MobileDockConfig) => void
 }) {
   const normalized = useMemo(
-    () => normalizeMobileDockConfig(value, role),
-    [role, value],
+    () => normalizeMobileDockConfig(value, role, permissions),
+    [permissions, role, value],
   )
   const definitions = useMemo(
-    () => accessibleNavigationGroups(role),
-    [role],
+    () => accessibleNavigationGroups(role, permissions),
+    [permissions, role],
   )
   const [selectedGroupId, setSelectedGroupId] = (
     useState<MobileNavigationGroupId>(

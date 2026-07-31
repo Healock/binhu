@@ -102,6 +102,36 @@ class MobileNavigationConfigTests(unittest.TestCase):
         )
         self.assertEqual(result, default_mobile_dock_config("member"))
 
+    def test_permission_list_overrides_legacy_role_navigation(self):
+        permissions = [
+            "online.summary.view",
+            "visit.import",
+            "worklog.manage",
+        ]
+        config = default_mobile_dock_config("member", permissions)
+        items = {
+            item
+            for group in config["groups"]
+            for item in group["items"]
+        }
+
+        self.assertIn("online_summary", items)
+        self.assertIn("data_upload", items)
+        self.assertIn("work_log", items)
+        self.assertNotIn("online_query", items)
+        self.assertNotIn("users", items)
+
+        with self.assertRaisesRegex(ValueError, "无权访问"):
+            validate_mobile_dock_config(
+                {
+                    "groups": [
+                        {"id": "resources", "items": ["users"]},
+                    ],
+                },
+                "super_admin",
+                permissions,
+            )
+
     def test_strict_validation_rejects_duplicates_and_forbidden_items(self):
         with self.assertRaisesRegex(ValueError, "分类不能重复"):
             validate_mobile_dock_config(

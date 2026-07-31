@@ -109,10 +109,16 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
     placeholders = ", ".join(["%s"] * len(duty_positions))
     await cur.execute(
         f"""
-        SELECT id, name, community, position
-        FROM _grid_members
-        WHERE position IN ({placeholders})
-        ORDER BY community, position, name
+        SELECT member.id, member.name,
+               COALESCE(community.name, member.community), member.position
+        FROM _grid_members AS member
+        LEFT JOIN _departments AS department
+          ON department.id=member.department_id
+        LEFT JOIN _communities AS community
+          ON community.id=department.community_id
+        WHERE member.position IN ({placeholders})
+        ORDER BY COALESCE(community.name, member.community),
+                 member.position, member.name
         """,
         duty_positions,
     )
@@ -296,17 +302,27 @@ async def get_attendance_context(
     start_date: date,
     end_date: date,
     selected_positions: set[str],
+    community_scope: str | None = None,
 ) -> dict[str, Any]:
     if selected_positions:
         placeholders = ", ".join(["%s"] * len(selected_positions))
         await cur.execute(
             f"""
-            SELECT id, name, community, position
-            FROM _grid_members
-            WHERE position IN ({placeholders})
-            ORDER BY community, name
+            SELECT member.id, member.name,
+                   COALESCE(community.name, member.community), member.position
+            FROM _grid_members AS member
+            LEFT JOIN _departments AS department
+              ON department.id=member.department_id
+            LEFT JOIN _communities AS community
+              ON community.id=department.community_id
+            WHERE member.position IN ({placeholders})
+              {"AND community.name=%s" if community_scope is not None else ""}
+            ORDER BY COALESCE(community.name, member.community), member.name
             """,
-            sorted(selected_positions),
+            [
+                *sorted(selected_positions),
+                *([community_scope] if community_scope is not None else []),
+            ],
         )
         member_rows = await cur.fetchall()
     else:

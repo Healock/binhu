@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional
 from database import get_db
-from deps import require_admin
+from deps import require_permission
 from services.grid_member_status import (
     get_business_date,
     get_status_snapshot,
@@ -18,6 +18,17 @@ from services.grid_member_status import (
 from services.personnel_positions import normalize_position
 from services.privacy import mask_identity_number
 from services.visit_import import normalize_community
+from services.permissions import (
+    ATTENDANCE_MANAGE,
+    COMMUNITY_MANAGE,
+    COMMUNITY_POSITIONS,
+    COMMUNITY_VIEW,
+    INTERNAL_POSITIONS,
+    PERSONNEL_BASIC_VIEW,
+    PERSONNEL_MANAGE,
+    PERSONNEL_SENSITIVE_VIEW,
+    has_permission,
+)
 
 router = APIRouter(prefix="/api/grid-members", tags=["人员管理"])
 
@@ -31,6 +42,7 @@ TABLES_WITH_INSPECTOR = [
 class GridMemberCreate(BaseModel):
     name: str
     community: str = ""
+    department_id: Optional[int] = None
     position: str = "组员"
     phone: str = ""
     notes: str = ""
@@ -53,6 +65,7 @@ class GridMemberCreate(BaseModel):
 
 class GridMemberUpdate(BaseModel):
     community: Optional[str] = None
+    department_id: Optional[int] = None
     position: Optional[str] = None
     phone: Optional[str] = None
     notes: Optional[str] = None
@@ -89,8 +102,19 @@ class GridMemberLeaveUpdate(BaseModel):
 
 
 class CommunityAliasesUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
     aliases: list[str] = Field(default_factory=list, max_length=30)
     police_officers: Optional[list[str]] = Field(default=None, max_length=20)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = normalize_community(value)
+        if not normalized:
+            raise ValueError("社区名不能为空")
+        return normalized
 
     @field_validator("aliases")
     @classmethod
@@ -146,9 +170,63 @@ def _parse_police_officers(value) -> list[str]:
     ]
 
 
-def _member_to_dict(row, business_date: date) -> dict:
+async def _resolve_department(cur, position: str, department_id: int | None):
+    """按岗位规则确定部门，并返回 (部门 ID, 兼容社区字段)。"""
+    if position in INTERNAL_POSITIONS:
+        await cur.execute(
+            "SELECT id FROM _departments "
+            "WHERE department_type='internal' ORDER BY id LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(500, "内勤部门尚未初始化")
+        return int(row[0]), ""
+    if department_id is None:
+        if position in COMMUNITY_POSITIONS:
+            raise HTTPException(400, "组长和组员必须选择社区部门")
+        return None, ""
+    await cur.execute(
+        """
+        SELECT department.id, department.department_type, community.name
+        FROM _departments AS department
+        LEFT JOIN _communities AS community
+          ON community.id=department.community_id
+        WHERE department.id=%s
+        """,
+        (department_id,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(400, "所属部门不存在")
+    if row[1] != "community":
+        raise HTTPException(400, "该岗位只能选择社区部门")
+    return int(row[0]), str(row[2] or "")
+
+
+async def _refresh_inherited_account_group(cur, member_id: int) -> None:
+    await cur.execute(
+        """
+        UPDATE _users AS user
+        JOIN _grid_members AS member ON member.id=user.member_id
+        JOIN _position_permission_groups AS mapping
+          ON mapping.position=member.position
+        SET user.permission_group_id=mapping.permission_group_id,
+            user.role=CASE
+                WHEN user.role='super_admin' THEN user.role
+                WHEN (SELECT code FROM _permission_groups
+                      WHERE id=mapping.permission_group_id)='admin' THEN 'admin'
+                ELSE 'member'
+            END
+        WHERE user.member_id=%s
+          AND user.group_assignment_mode='inherited'
+        """,
+        (member_id,),
+    )
+
+
+def _member_to_dict(row, business_date: date, *, sensitive: bool) -> dict:
     snapshot = get_status_snapshot(row[6], row[7], row[8], business_date)
-    return {
+    result = {
         "id": row[0],
         "name": row[1],
         "community": row[2],
@@ -160,10 +238,37 @@ def _member_to_dict(row, business_date: date) -> dict:
         "leave_end_date": row[8],
         "leave_reason": row[9],
         "leave_source": row[10],
-        "has_id_card": bool(row[11]),
-        "id_card_masked": mask_identity_number(row[11]),
+        "department": (
+            {
+                "id": row[12],
+                "name": row[13],
+                "type": row[14],
+                "community_name": row[15],
+            }
+            if row[12] is not None
+            else None
+        ),
+        "department_id": row[12],
         **snapshot,
     }
+    if sensitive:
+        result.update({
+            "phone": row[4],
+            "notes": row[5],
+            "leave_start_date": row[7],
+            "leave_end_date": row[8],
+            "leave_reason": row[9],
+            "leave_source": row[10],
+            "has_id_card": bool(row[11]),
+            "id_card_masked": mask_identity_number(row[11]),
+        })
+    else:
+        for field in (
+            "phone", "notes", "leave_start_date", "leave_end_date",
+            "leave_reason", "leave_source", "has_id_card", "id_card_masked",
+        ):
+            result.pop(field, None)
+    return result
 
 
 @router.get("")
@@ -173,45 +278,72 @@ async def list_members(
     position: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(require_permission(PERSONNEL_BASIC_VIEW)),
     conn=Depends(get_db),
 ):
     """列表查询"""
     where_parts = []
     params = []
+    can_view_sensitive = has_permission(user, PERSONNEL_SENSITIVE_VIEW)
     if keyword:
-        where_parts.append(
-            "(name LIKE %s OR phone LIKE %s OR notes LIKE %s OR position LIKE %s)"
-        )
-        params.extend([f"%{keyword}%"] * 4)
+        if can_view_sensitive:
+            where_parts.append(
+                "(member.name LIKE %s OR member.phone LIKE %s OR "
+                "member.notes LIKE %s OR member.position LIKE %s)"
+            )
+            params.extend([f"%{keyword}%"] * 4)
+        else:
+            where_parts.append(
+                "(member.name LIKE %s OR member.position LIKE %s OR "
+                "department.name LIKE %s)"
+            )
+            params.extend([f"%{keyword}%"] * 3)
     if community:
-        where_parts.append("community = %s")
+        where_parts.append("COALESCE(community.name, member.community) = %s")
         params.append(community)
     if position:
         try:
             position = normalize_position(position)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        where_parts.append("position = %s")
+        where_parts.append("member.position = %s")
         params.append(position)
     where = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     async with conn.cursor() as cur:
         business_date = await get_business_date(cur)
-        await cur.execute(f"SELECT COUNT(*) FROM _grid_members{where}", params)
+        joins = """
+            FROM _grid_members AS member
+            LEFT JOIN _departments AS department
+              ON department.id=member.department_id
+            LEFT JOIN _communities AS community
+              ON community.id=department.community_id
+        """
+        await cur.execute(f"SELECT COUNT(*) {joins}{where}", params)
         total = (await cur.fetchone())[0]
         offset = (page - 1) * page_size
         await cur.execute(
-            f"SELECT id, name, community, position, phone, notes, status, "
-            f"leave_start_date, leave_end_date, leave_reason, leave_source, "
-            f"id_card_number "
-            f"FROM _grid_members{where} "
-            f"ORDER BY community, name LIMIT %s OFFSET %s",
+            f"SELECT member.id, member.name, "
+            f"COALESCE(community.name, member.community), member.position, "
+            f"member.phone, member.notes, member.status, "
+            f"member.leave_start_date, member.leave_end_date, "
+            f"member.leave_reason, member.leave_source, member.id_card_number, "
+            f"department.id, department.name, department.department_type, "
+            f"community.name {joins}{where} "
+            f"ORDER BY department.name, member.name LIMIT %s OFFSET %s",
             params + [page_size, offset],
         )
         rows = await cur.fetchall()
 
     return {
-        "data": [_member_to_dict(row, business_date) for row in rows],
+        "data": [
+            _member_to_dict(
+                row,
+                business_date,
+                sensitive=can_view_sensitive,
+            )
+            for row in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -219,19 +351,53 @@ async def list_members(
     }
 
 
+@router.get("/departments")
+async def list_departments(
+    user: dict = Depends(require_permission(PERSONNEL_BASIC_VIEW)),
+    conn=Depends(get_db),
+):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT department.id, department.name,
+                   department.department_type, community.name
+            FROM _departments AS department
+            LEFT JOIN _communities AS community
+              ON community.id=department.community_id
+            ORDER BY department.department_type, department.name
+            """
+        )
+        rows = await cur.fetchall()
+    return {"data": [
+        {
+            "id": row[0], "name": row[1], "type": row[2],
+            "community_name": row[3],
+        }
+        for row in rows
+    ]}
+
+
 @router.get("/communities")
-async def list_communities(conn=Depends(get_db)):
+async def list_communities(
+    user: dict = Depends(require_permission(COMMUNITY_VIEW)),
+    conn=Depends(get_db),
+):
     """获取社区列表（人员数量由 _grid_members 表实时统计）"""
+    del user
     async with conn.cursor() as cur:
         await cur.execute(f"""
             SELECT c.id, c.name, c.police_officers,
                    COALESCE(g.grid_count, 0) AS grid_count
             FROM _communities c
             LEFT JOIN (
-                SELECT community, COUNT(*) AS grid_count
-                FROM _grid_members
-                GROUP BY community
-            ) AS g ON g.community = c.name
+                SELECT department.community_id, COUNT(*) AS grid_count
+                FROM _grid_members AS member
+                JOIN _departments AS department
+                  ON department.id=member.department_id
+                WHERE department.department_type='community'
+                GROUP BY department.community_id
+            ) AS g ON g.community_id = c.id
             ORDER BY c.name
         """)
         rows = await cur.fetchall()
@@ -258,8 +424,13 @@ async def list_communities(conn=Depends(get_db)):
 
 
 @router.post("/communities")
-async def add_community(name: str = Query(...), conn=Depends(get_db)):
+async def add_community(
+    name: str = Query(...),
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
     """添加社区"""
+    del user
     name = normalize_community(name)
     if not name:
         raise HTTPException(400, "社区名不能为空")
@@ -280,6 +451,13 @@ async def add_community(name: str = Query(...), conn=Depends(get_db)):
             raise HTTPException(400, "该名称已经是其他社区的别名")
         try:
             await cur.execute("INSERT INTO _communities (name) VALUES (%s)", (name,))
+            community_id = int(cur.lastrowid)
+            await cur.execute(
+                "INSERT INTO _departments "
+                "(name, department_type, community_id) "
+                "VALUES (%s, 'community', %s)",
+                (name, community_id),
+            )
         except Exception as e:
             if "Duplicate" in str(e):
                 raise HTTPException(400, "该社区已存在")
@@ -288,9 +466,30 @@ async def add_community(name: str = Query(...), conn=Depends(get_db)):
 
 
 @router.delete("/communities/{community_id}")
-async def delete_community(community_id: int, conn=Depends(get_db)):
+async def delete_community(
+    community_id: int,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
     """删除社区"""
+    del user
     async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM _grid_members AS member
+            JOIN _departments AS department
+              ON department.id=member.department_id
+            WHERE department.community_id=%s
+            """,
+            (community_id,),
+        )
+        if int((await cur.fetchone())[0] or 0):
+            raise HTTPException(409, "该社区部门仍有人员，不能删除")
+        await cur.execute(
+            "DELETE FROM _departments WHERE community_id=%s",
+            (community_id,),
+        )
         await cur.execute("DELETE FROM _communities WHERE id=%s", (community_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "社区不存在")
@@ -301,9 +500,11 @@ async def delete_community(community_id: int, conn=Depends(get_db)):
 async def update_community_aliases(
     community_id: int,
     data: CommunityAliasesUpdate,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
     conn=Depends(get_db),
 ):
     """设置社区别名和民警，并把已导入走访数据归到正式名称。"""
+    del user
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -320,8 +521,25 @@ async def update_community_aliases(
             if not current:
                 raise HTTPException(404, "社区不存在")
 
-            for alias in data.aliases:
-                if alias == current["normalized_name"]:
+            target_name = data.name or current["name"]
+            target_normalized_name = normalize_community(target_name)
+            aliases = list(data.aliases)
+            if target_name != current["name"]:
+                aliases.append(current["name"])
+            aliases = list(dict.fromkeys(
+                alias for alias in aliases
+                if alias != target_normalized_name
+            ))
+
+            for other_id, other in communities.items():
+                if (
+                    other_id != community_id
+                    and target_normalized_name == other["normalized_name"]
+                ):
+                    raise HTTPException(400, "该社区名称已存在")
+
+            for alias in aliases:
+                if alias == target_normalized_name:
                     raise HTTPException(400, "别名不能与社区正式名称相同")
                 for other_id, other in communities.items():
                     if (
@@ -333,8 +551,8 @@ async def update_community_aliases(
                             f"别名“{alias}”与社区“{other['name']}”的正式名称冲突",
                         )
 
-            if data.aliases:
-                placeholders = ", ".join(["%s"] * len(data.aliases))
+            if aliases:
+                placeholders = ", ".join(["%s"] * len(aliases))
                 await cur.execute(
                     f"""
                     SELECT a.alias, c.id, c.name
@@ -342,7 +560,7 @@ async def update_community_aliases(
                     JOIN _communities AS c ON c.id = a.community_id
                     WHERE a.alias IN ({placeholders})
                     """,
-                    data.aliases,
+                    aliases,
                 )
                 for alias, owner_id, owner_name in await cur.fetchall():
                     if owner_id != community_id:
@@ -355,12 +573,36 @@ async def update_community_aliases(
                 "DELETE FROM _community_aliases WHERE community_id=%s",
                 (community_id,),
             )
-            if data.aliases:
+            if aliases:
                 await cur.executemany(
                     "INSERT INTO _community_aliases (community_id, alias) "
                     "VALUES (%s, %s)",
-                    [(community_id, alias) for alias in data.aliases],
+                    [(community_id, alias) for alias in aliases],
                 )
+
+            if target_name != current["name"]:
+                try:
+                    await cur.execute(
+                        "UPDATE _communities SET name=%s WHERE id=%s",
+                        (target_name, community_id),
+                    )
+                    await cur.execute(
+                        "UPDATE _departments SET name=%s "
+                        "WHERE community_id=%s",
+                        (target_name, community_id),
+                    )
+                    await cur.execute(
+                        "UPDATE _grid_members AS member "
+                        "JOIN _departments AS department "
+                        "ON department.id=member.department_id "
+                        "SET member.community=%s "
+                        "WHERE department.community_id=%s",
+                        (target_name, community_id),
+                    )
+                except Exception as exc:
+                    if "Duplicate" in str(exc):
+                        raise HTTPException(400, "该社区名称已存在") from exc
+                    raise
 
             if data.police_officers is not None:
                 await cur.execute(
@@ -375,10 +617,10 @@ async def update_community_aliases(
                 )
 
             matched_rows = 0
-            for alias in data.aliases:
+            for alias in aliases:
                 await cur.execute(
                     "UPDATE t_visit_details SET 社区=%s WHERE 社区=%s",
-                    (current["name"], alias),
+                    (target_name, alias),
                 )
                 matched_rows += cur.rowcount
         await conn.commit()
@@ -388,15 +630,20 @@ async def update_community_aliases(
 
     return {
         "message": "社区资料已保存",
-        "aliases": data.aliases,
+        "name": target_name,
+        "aliases": aliases,
         "police_officers": data.police_officers,
         "matched_visit_rows": matched_rows,
     }
 
 
 @router.post("/communities/import-from-data")
-async def import_communities_from_data(conn=Depends(get_db)):
+async def import_communities_from_data(
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
     """从原始数据提取社区名，去重后导入 _communities 表"""
+    del user
     raw = set()
     async with conn.cursor() as cur:
         for table in TABLES_WITH_INSPECTOR:
@@ -422,23 +669,43 @@ async def import_communities_from_data(conn=Depends(get_db)):
         new = raw - existing - aliases
         for name in new:
             await cur.execute("INSERT IGNORE INTO _communities (name) VALUES (%s)", (name,))
+            await cur.execute(
+                """
+                INSERT IGNORE INTO _departments
+                    (name, department_type, community_id)
+                SELECT name, 'community', id
+                FROM _communities WHERE name=%s
+                """,
+                (name,),
+            )
     return {"message": f"导入完成，新增 {len(new)} 个社区", "new_count": len(new), "new_names": sorted(new)}
 
 
 @router.post("")
-async def create_member(data: GridMemberCreate, conn=Depends(get_db)):
+async def create_member(
+    data: GridMemberCreate,
+    user: dict = Depends(require_permission(PERSONNEL_MANAGE)),
+    conn=Depends(get_db),
+):
     """手动添加"""
+    del user
     async with conn.cursor() as cur:
         try:
+            department_id, community = await _resolve_department(
+                cur,
+                data.position,
+                data.department_id,
+            )
             await cur.execute(
                 "INSERT INTO _grid_members "
-                "(name, community, position, phone, notes, status, "
+                "(name, community, department_id, position, phone, notes, status, "
                 "leave_start_date, "
                 "leave_end_date, leave_reason, leave_source) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     data.name,
-                    data.community,
+                    community,
+                    department_id,
                     data.position,
                     data.phone,
                     data.notes,
@@ -457,11 +724,17 @@ async def create_member(data: GridMemberCreate, conn=Depends(get_db)):
 
 
 @router.put("/{member_id}")
-async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get_db)):
+async def update_member(
+    member_id: int,
+    data: GridMemberUpdate,
+    user: dict = Depends(require_permission(PERSONNEL_MANAGE)),
+    conn=Depends(get_db),
+):
     """修改"""
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT status, leave_start_date, leave_end_date "
+            "SELECT status, leave_start_date, leave_end_date, "
+            "position, department_id "
             "FROM _grid_members WHERE id=%s",
             (member_id,),
         )
@@ -470,6 +743,7 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
             raise HTTPException(404, "人员不存在")
 
     fields_set = data.model_fields_set
+    del user
     next_start = (
         data.leave_start_date
         if "leave_start_date" in fields_set
@@ -486,7 +760,7 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
         raise HTTPException(400, str(exc)) from exc
 
     updates = {}
-    for field in ["community", "position", "phone", "notes", "leave_reason"]:
+    for field in ["position", "phone", "notes", "leave_reason"]:
         if field in fields_set:
             updates[field] = getattr(data, field) or ""
     for field in ["leave_start_date", "leave_end_date"]:
@@ -501,10 +775,27 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
         if next_start is None and next_end is None:
             updates.setdefault("leave_reason", "")
     if not updates:
-        raise HTTPException(400, "没有要更新的字段")
+        if not ({"department_id", "community"} & fields_set):
+            raise HTTPException(400, "没有要更新的字段")
+    if {"department_id", "community", "position"} & fields_set:
+        next_position = str(updates.get("position") or existing[3])
+        requested_department_id = (
+            data.department_id
+            if "department_id" in fields_set
+            else existing[4]
+        )
+        async with conn.cursor() as cur:
+            department_id, community = await _resolve_department(
+                cur,
+                next_position,
+                requested_department_id,
+            )
+        updates["department_id"] = department_id
+        updates["community"] = community
     set_clause = ", ".join(f"{k}=%s" for k in updates)
     async with conn.cursor() as cur:
         await cur.execute(f"UPDATE _grid_members SET {set_clause} WHERE id=%s", list(updates.values()) + [member_id])
+        await _refresh_inherited_account_group(cur, member_id)
     return {"message": "修改成功"}
 
 
@@ -512,7 +803,7 @@ async def update_member(member_id: int, data: GridMemberUpdate, conn=Depends(get
 async def update_member_leave(
     member_id: int,
     data: GridMemberLeaveUpdate,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission(ATTENDANCE_MANAGE)),
     conn=Depends(get_db),
 ):
     """更新当前状态，同时把过去的请假记录保留在出勤历史中。"""
@@ -630,9 +921,20 @@ async def update_member_leave(
 
 
 @router.delete("/{member_id}")
-async def delete_member(member_id: int, conn=Depends(get_db)):
+async def delete_member(
+    member_id: int,
+    user: dict = Depends(require_permission(PERSONNEL_MANAGE)),
+    conn=Depends(get_db),
+):
     """删除"""
+    del user
     async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COUNT(*) FROM _users WHERE member_id=%s",
+            (member_id,),
+        )
+        if int((await cur.fetchone())[0] or 0):
+            raise HTTPException(409, "该人员已关联账号，请先解除关联")
         await cur.execute("DELETE FROM _grid_members WHERE id=%s", (member_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "人员不存在")
@@ -640,8 +942,12 @@ async def delete_member(member_id: int, conn=Depends(get_db)):
 
 
 @router.post("/extract")
-async def extract_from_data(conn=Depends(get_db)):
+async def extract_from_data(
+    user: dict = Depends(require_permission(PERSONNEL_MANAGE)),
+    conn=Depends(get_db),
+):
     """从原始数据提取人员，同时提取社区候选列表"""
+    del user
     name_communities: dict[str, set[str]] = {}
     async with conn.cursor() as cur:
         for table in TABLES_WITH_INSPECTOR:
@@ -680,15 +986,23 @@ async def extract_from_data(conn=Depends(get_db)):
 
 
 @router.get("/export")
-async def export_csv(conn=Depends(get_db)):
+async def export_csv(
+    user: dict = Depends(require_permission(PERSONNEL_SENSITIVE_VIEW)),
+    conn=Depends(get_db),
+):
     """导出 CSV"""
     async with conn.cursor() as cur:
         business_date = await get_business_date(cur)
+        del user
         await cur.execute(
-            "SELECT name, community, position, phone, notes, status, "
+            "SELECT member.name, COALESCE(department.name, member.community), "
+            "member.position, member.phone, member.notes, member.status, "
             "leave_start_date, "
             "leave_end_date, leave_reason, leave_source "
-            "FROM _grid_members ORDER BY community, name"
+            "FROM _grid_members AS member "
+            "LEFT JOIN _departments AS department "
+            "ON department.id=member.department_id "
+            "ORDER BY department.name, member.name"
         )
         rows = await cur.fetchall()
 
@@ -697,7 +1011,7 @@ async def export_csv(conn=Depends(get_db)):
     writer = csv.writer(output)
     writer.writerow([
         "姓名",
-        "所属社区",
+        "所属部门",
         "岗位",
         "电话",
         "备注",

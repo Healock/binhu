@@ -36,8 +36,33 @@ test('超级管理员默认 Dock 包含用户管理和运维中心', () => {
     true,
   )
   assert.equal(
+    config.groups.some(group => group.items.includes('permission_groups')),
+    true,
+  )
+  assert.equal(
     config.groups.some(group => group.items.includes('data_upload')),
     true,
+  )
+})
+
+test('新权限列表优先于旧角色决定 Dock 页面', () => {
+  const config = defaultMobileDockConfig('member', [
+    'online.summary.view',
+    'visit.import',
+    'worklog.manage',
+  ])
+
+  assert.equal(
+    config.groups.some(group => group.items.includes('data_upload')),
+    true,
+  )
+  assert.equal(
+    config.groups.some(group => group.items.includes('work_log')),
+    true,
+  )
+  assert.equal(
+    config.groups.some(group => group.items.includes('online_query')),
+    false,
   )
 })
 

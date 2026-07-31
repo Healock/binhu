@@ -225,9 +225,9 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
                 route.path == "/api/notifications/announcements/{announcement_id}"
                 and "DELETE" in route.methods
             ):
-                self.assertIn("require_super_admin", dependency_names)
+                self.assertIn("require_announcement_manage", dependency_names)
             else:
-                self.assertIn("get_current_user", dependency_names)
+                self.assertIn("require_notification_view", dependency_names)
 
 
 if __name__ == "__main__":

@@ -420,12 +420,12 @@ class VisitCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(coverage["last_import_at"].endswith("Z"))
         self.assertTrue(coverage["last_rating_import_at"].endswith("Z"))
 
-    def test_upload_and_issue_routes_require_admin(self):
+    def test_upload_and_issue_routes_require_visit_import_permission(self):
         protected_paths = {
             route.path
             for route in visits_router.routes
             if any(
-                dependency.call is require_admin
+                dependency.call.__name__ == "require_visit_import"
                 for dependency in route.dependant.dependencies
             )
         }

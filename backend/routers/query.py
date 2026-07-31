@@ -6,6 +6,9 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from database import get_db
 from services.parsers import PARSER_REGISTRY, get_parser
 from services.schema_compat import get_database_column_map, quote_identifier
+from deps import require_permission
+from services.data_scope import community_names_for_scope, community_scope
+from services.permissions import ONLINE_RAW_VIEW
 
 router = APIRouter(prefix="/api/query", tags=["数据查询"])
 
@@ -13,7 +16,10 @@ QUERY_TYPES = [t for t in PARSER_REGISTRY.keys() if t != "default"]
 
 
 @router.get("/types")
-async def get_query_types():
+async def get_query_types(
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+):
+    del user
     return {"data": QUERY_TYPES}
 
 
@@ -27,6 +33,7 @@ async def query_data(
     sort_by: Optional[str] = Query(None),
     sort_order: str = Query("desc"),
     filters: Optional[str] = Query(None, description='JSON: {"列名": ["值1","值2"]}'),
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
     conn=Depends(get_db),
 ):
     """分页查询，支持关键词搜索 + 按列筛选 + 排序"""
@@ -50,6 +57,20 @@ async def query_data(
     # 构建 WHERE
     where_parts = []
     params = []
+
+    if not isinstance(user, dict):
+        user = {"data_scope": "all"}
+    scope = community_scope(user)
+    if scope is not None:
+        allowed_communities = await community_names_for_scope(conn, scope)
+        if not allowed_communities or "社区" not in columns:
+            where_parts.append("1=0")
+        else:
+            placeholders = ",".join(["%s"] * len(allowed_communities))
+            where_parts.append(
+                f"{database_column('社区')} IN ({placeholders})"
+            )
+            params.extend(allowed_communities)
 
     if keyword:
         like_conditions = " OR ".join(
@@ -99,4 +120,13 @@ async def query_data(
             record[col] = str(row[i]) if row[i] is not None else ""
         data.append(record)
 
-    return {"data": data, "total": total, "page": page, "page_size": page_size, "columns": columns}
+    result = {
+        "data": data,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "columns": columns,
+    }
+    if scope == "":
+        result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
+    return result

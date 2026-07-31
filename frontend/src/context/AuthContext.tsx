@@ -1,5 +1,10 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { saveUserPreferences } from '../api/client'
+import {
+  changeOwnPassword,
+  getCurrentUser,
+  recordSessionActivity,
+  saveUserPreferences,
+} from '../api/client'
 import type { User, UserPreferences } from '../types'
 
 interface AuthContextValue {
@@ -8,6 +13,9 @@ interface AuthContextValue {
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   updatePreferences: (preferences: UserPreferences) => Promise<void>
+  refreshUser: () => Promise<void>
+  recordActivity: () => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -16,6 +24,9 @@ const AuthContext = createContext<AuthContextValue>({
   login: async () => {},
   logout: async () => {},
   updatePreferences: async () => {},
+  refreshUser: async () => {},
+  recordActivity: async () => {},
+  changePassword: async () => {},
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -23,9 +34,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/auth/me', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.user) setUser(data.user) })
+    getCurrentUser()
+      .then(setUser)
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
@@ -39,10 +49,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      throw new Error(data.detail || '登录失败')
+      const detail = data.detail
+      throw new Error(
+        typeof detail === 'object' ? detail.message : detail || '登录失败',
+      )
     }
-    const data = await res.json()
-    setUser(data.user)
+    await res.json()
+    setUser(await getCurrentUser())
   }
 
   const logout = async () => {
@@ -55,8 +68,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(updatedUser)
   }
 
+  const refreshUser = async () => {
+    setUser(await getCurrentUser())
+  }
+
+  const recordActivity = async () => {
+    setUser(await recordSessionActivity())
+  }
+
+  const changePassword = async (currentPassword: string, newPassword: string) => {
+    await changeOwnPassword(currentPassword, newPassword)
+    await refreshUser()
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, updatePreferences }}>
+    <AuthContext.Provider value={{
+      user,
+      loading,
+      login,
+      logout,
+      updatePreferences,
+      refreshUser,
+      recordActivity,
+      changePassword,
+    }}>
       {children}
     </AuthContext.Provider>
   )

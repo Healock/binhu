@@ -530,16 +530,32 @@ def _utc_iso(value: datetime | None) -> str | None:
     return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-async def get_visit_coverage(conn) -> dict[str, Any]:
+async def get_visit_coverage(
+    conn,
+    community_scope: str | None = None,
+    community_names: list[str] | None = None,
+) -> dict[str, Any]:
     async with conn.cursor() as cur:
+        where = ""
+        params: list[str] = []
+        if community_scope is not None:
+            allowed = community_names if community_names is not None else [community_scope]
+            if allowed:
+                placeholders = ",".join(["%s"] * len(allowed))
+                where = f" WHERE TRIM(`社区`) IN ({placeholders})"
+                params.extend(allowed)
+            else:
+                where = " WHERE 1=0"
         await cur.execute(
-            """
+            f"""
             SELECT MIN(`业务日期`), MAX(`业务日期`), COUNT(*),
                    COUNT(DISTINCT `业务日期`),
                    SUM(`星级采集时间` IS NOT NULL),
                    SUM(`星级采集时间` IS NULL)
             FROM t_visit_details
-            """
+            {where}
+            """,
+            params,
         )
         (
             start_date,
@@ -553,7 +569,8 @@ async def get_visit_coverage(conn) -> dict[str, Any]:
         if start_date and end_date:
             await cur.execute(
                 "SELECT DISTINCT `业务日期` FROM t_visit_details "
-                "ORDER BY `业务日期`"
+                f"{where} ORDER BY `业务日期`",
+                params,
             )
             existing_dates = {row[0] for row in await cur.fetchall()}
             current = start_date
@@ -577,7 +594,7 @@ async def get_visit_coverage(conn) -> dict[str, Any]:
             (value for value in last_imports.values() if value),
             default=None,
         )
-    return {
+    result = {
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "total_records": int(total_records or 0),
@@ -590,6 +607,9 @@ async def get_visit_coverage(conn) -> dict[str, Any]:
         "last_detail_import_at": _utc_iso(last_imports.get("detail")),
         "last_rating_import_at": _utc_iso(last_imports.get("rating")),
     }
+    if community_scope == "":
+        result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
+    return result
 
 
 async def recover_interrupted_visit_imports() -> int:

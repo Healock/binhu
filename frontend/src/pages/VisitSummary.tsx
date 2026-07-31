@@ -277,6 +277,9 @@ export default function VisitSummary() {
         }
       >
         {coverageError && <Alert className="mb-4" type="error" showIcon message={coverageError} />}
+        {coverage?.scope_message && (
+          <Alert className="mb-4" type="info" showIcon message={coverage.scope_message} />
+        )}
         <DataOverview
           loading={coverageLoading}
           rangeTitle="数据库日期范围"
@@ -456,6 +459,9 @@ export default function VisitSummary() {
 
       {summaryError && (
         <Alert type="error" showIcon message={summaryError} />
+      )}
+      {summaryReport?.scope_message && (
+        <Alert type="info" showIcon message={summaryReport.scope_message} />
       )}
       {summaryReport && summaryReport.attendance.worked_while_off > 0 && (
         <Alert

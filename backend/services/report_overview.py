@@ -113,6 +113,7 @@ async def _load_effective_tasks(
     start_date: str,
     end_date: str,
     parser_types: list[str],
+    communities: list[str] | None = None,
 ) -> list[tuple[Any, ...]]:
     positions = await get_configured_positions(
         cur,
@@ -120,6 +121,17 @@ async def _load_effective_tasks(
     )
     type_placeholders = ", ".join(["%s"] * len(parser_types))
     position_placeholders = ", ".join(["%s"] * len(positions))
+    community_clause = ""
+    community_params: list[str] = []
+    if communities is not None:
+        if communities:
+            community_placeholders = ", ".join(["%s"] * len(communities))
+            community_clause = (
+                f"AND latest.community IN ({community_placeholders})"
+            )
+            community_params = communities
+        else:
+            community_clause = "AND 1=0"
     await cur.execute(
         f"""
         WITH latest_ranked AS (
@@ -166,6 +178,7 @@ async def _load_effective_tasks(
           AND latest.community <> ''
           AND latest.community <> '社区'
           AND latest.community <> '下发社区'
+          {community_clause}
           AND (
               person.id IS NULL
               OR person.position IN ({position_placeholders})
@@ -178,6 +191,7 @@ async def _load_effective_tasks(
             start_date,
             end_date,
             *parser_types,
+            *community_params,
             *positions,
         ),
     )
@@ -247,6 +261,7 @@ async def get_online_overview(
     start_date: str,
     end_date: str,
     parser_type: str,
+    community: str | None = None,
 ) -> dict[str, Any]:
     """返回跟随业务类型和日期区间变化的在线数据概览。"""
     if start_date > end_date:
@@ -299,11 +314,35 @@ async def get_online_overview(
                     "completion_rate": 0.0,
                 }
 
+            communities = None
+            if community is not None:
+                if not community:
+                    communities = []
+                else:
+                    await cur.execute(
+                        """
+                        SELECT c.name
+                        FROM OnlineData._communities AS c
+                        WHERE c.name=%s
+                        UNION
+                        SELECT a.alias
+                        FROM OnlineData._community_aliases AS a
+                        JOIN OnlineData._communities AS c
+                          ON c.id=a.community_id
+                        WHERE c.name=%s
+                        """,
+                        (community, community),
+                    )
+                    communities = [
+                        str(row[0]).strip()
+                        for row in await cur.fetchall()
+                    ] or [community]
             tasks = await _load_effective_tasks(
                 cur,
                 start_date,
                 end_date,
                 parser_types,
+                communities,
             )
             new_keys = await _find_new_activity_keys(cur, tasks, runs)
 
