@@ -304,6 +304,7 @@ export interface WorkLogField {
   source: 'system' | 'manual' | 'derived'
   required: boolean
   width?: number
+  precision?: number
   source_key?: string
   help?: string
   columns?: WorkLogColumn[]

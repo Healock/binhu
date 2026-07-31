@@ -28,6 +28,7 @@ def field(
     required: bool = True,
     source_key: str = "",
     width: int = 88,
+    precision: int | None = None,
 ) -> dict:
     result = {
         "id": field_id,
@@ -39,6 +40,8 @@ def field(
     }
     if source_key:
         result["source_key"] = source_key
+    if precision is not None:
+        result["precision"] = precision
     return result
 
 
@@ -180,6 +183,24 @@ def report_date_segments(
             width=64,
         ),
         f"日{suffix}",
+    ]
+
+
+def report_full_date_segments(
+    prefix: str = "",
+    suffix: str = "",
+) -> list[str | dict]:
+    return [
+        prefix,
+        field(
+            "meta.year",
+            "年份",
+            source="system",
+            source_key="calendar",
+            width=72,
+        ),
+        "年",
+        *report_date_segments("", suffix),
     ]
 
 
@@ -556,14 +577,55 @@ SCHEMA = {
                 ),
                 heading("责任落实", 3),
                 sentence(
-                    "本月房东处罚任务",
+                    field(
+                        "meta.month",
+                        "月份",
+                        source="system",
+                        source_key="calendar",
+                        width=64,
+                    ),
+                    "月须完成房东处罚",
                     field("rental.landlord_penalty.target", "处罚任务"),
-                    "起，已完成",
+                    "起，截止",
+                    field(
+                        "meta.month",
+                        "月份",
+                        source="system",
+                        source_key="calendar",
+                        width=64,
+                    ),
+                    "月",
+                    field(
+                        "meta.day",
+                        "日期",
+                        source="system",
+                        source_key="calendar",
+                        width=64,
+                    ),
+                    "日，已完成",
                     field("rental.landlord_penalty.completed", "已完成"),
-                    "起；",
-                    *report_date_segments("", "涉警出租房"),
+                    "起，",
+                    field(
+                        "rental.landlord_penalty.note",
+                        "处罚任务补充说明",
+                        "text",
+                        required=False,
+                        width=300,
+                    ),
+                    "。",
+                ),
+                sentence(
+                    "当日涉警房源",
                     field("rental.police_related_houses", "涉警出租房"),
-                    "户。",
+                    "户，",
+                    field(
+                        "rental.police_related_detail",
+                        "涉警房源补充说明",
+                        "text",
+                        required=False,
+                        width=360,
+                    ),
+                    "。",
                 ),
                 heading("4. 管理手段", 3, combine_with_next=False),
                 sentence(
@@ -622,7 +684,10 @@ SCHEMA = {
                         column("changed", "变更"),
                         column("cancelled", "注销"),
                     ],
-                    help_text="第一版暂不自动取数，待业务口径确认后接入。",
+                    source="system",
+                    source_key="self_owned_visit",
+                    row_mode="system",
+                    help_text="按所选日期读取入户走访中的自购房网格员汇总，仍可人工修改。",
                 ),
                 heading("2. 抽查房屋问题", 3),
                 table(
@@ -721,8 +786,11 @@ SCHEMA = {
             "title": "五、矛盾纠纷化解",
             "blocks": [
                 sentence(
-                    *report_date_segments("截至", "24时，未化解矛盾纠纷存量"),
-                    field("disputes.stock.total", "未化解存量"),
+                    *report_full_date_segments(
+                        "截至",
+                        "24时，辖区存量未决矛盾纠纷档案",
+                    ),
+                    field("disputes.stock.total", "存量未决档案"),
                     "起，其中高度关注",
                     field("disputes.stock.high", "高度关注"),
                     "起、重点关注",
@@ -732,16 +800,18 @@ SCHEMA = {
                     "起。",
                 ),
                 sentence(
-                    *report_date_segments("", "，新增纠纷"),
-                    field("disputes.daily.added", "新增纠纷"),
-                    "起，新建未决档案",
+                    *report_date_segments("", "，新下发矛盾纠纷"),
+                    field("disputes.daily.added", "新下发矛盾纠纷"),
+                    "起、新建立未决档案",
                     field("disputes.daily.archived", "新建未决档案"),
-                    "起；通过回访化解",
+                    "起；化解矛盾纠纷",
+                    field("disputes.daily.resolved_total", "化解矛盾纠纷"),
+                    "起，其中回访化解",
                     field("disputes.daily.revisit_resolved", "回访化解"),
-                    "起、调解化解",
-                    field("disputes.daily.mediation_resolved", "调解化解"),
-                    "起、档案化解",
-                    field("disputes.daily.archive_resolved", "档案化解"),
+                    "起、工作化解",
+                    field("disputes.daily.mediation_resolved", "工作化解"),
+                    "起、未决档案化解",
+                    field("disputes.daily.archive_resolved", "未决档案化解"),
                     "起，实际组织调解",
                     field("disputes.daily.mediations", "组织调解"),
                     "起。",
@@ -1022,25 +1092,39 @@ SCHEMA = {
             "blocks": [
                 heading("叮咛行动", 3, combine_with_next=False),
                 sentence(
-                    "待核查",
-                    field("special.dingning.pending", "待核查数"),
-                    "人，已核查",
-                    field("special.dingning.checked", "已核查人数"),
-                    "人，有效核查",
-                    field("special.dingning.valid", "有效核查数"),
-                    "人，见面宣传",
-                    field("special.dingning.promoted", "见面宣传数"),
-                    "人，无需宣传",
-                    field("special.dingning.unneeded", "无需宣传数"),
-                    "人，暂不返吴",
-                    field("special.dingning.not_returning", "暂不返吴数"),
-                    "人，其他情况",
-                    field("special.dingning.other", "其他情况数"),
-                    "人，有效核查率",
+                    "第三批次任务总数",
+                    field("special.dingning.batch_total", "第三批次任务总数"),
+                    "人，已核查未见面",
                     field(
-                        "special.dingning.valid_rate",
-                        "有效核查率",
+                        "special.dingning.checked_not_met",
+                        "已核查未见面数",
+                    ),
+                    "人，下发",
+                    field(
+                        "special.dingning.issued_pending",
+                        "下发待核查见面数",
+                    ),
+                    "人待核查见面，已核查",
+                    field("special.dingning.checked", "已核查人数"),
+                    "人，见面宣导",
+                    field("special.dingning.promoted", "见面宣导数"),
+                    "人（暂不离吴",
+                    field("special.dingning.not_returning", "暂不离吴数"),
+                    "人，拒绝配合等其他特殊情况",
+                    field("special.dingning.other", "其他特殊情况数"),
+                    "人），其中社区警务队宣传完成率为",
+                    field(
+                        "special.dingning.community_completion_rate",
+                        "社区警务队宣传完成率",
                         "percent",
+                        precision=2,
+                    ),
+                    "，综合指挥室+辅警办公室宣传完成率为",
+                    field(
+                        "special.dingning.command_completion_rate",
+                        "综合指挥室和辅警办公室宣传完成率",
+                        "percent",
+                        precision=2,
                     ),
                     "。",
                 ),
@@ -1052,10 +1136,10 @@ SCHEMA = {
                         column("pending", "待核查数"),
                         column("checked", "已核查人数"),
                         column("valid", "有效核查数"),
-                        column("promoted", "见面宣传数"),
+                        column("promoted", "见面宣导数"),
                         column("unneeded", "无需宣传数"),
-                        column("not_returning", "暂不返吴数"),
-                        column("other", "其他情况数"),
+                        column("not_returning", "暂不离吴数"),
+                        column("other", "其他特殊情况数"),
                         column("valid_rate", "有效核查率", "percent"),
                     ],
                     row_mode="fixed",
@@ -1296,7 +1380,17 @@ def derive_values(values: dict[str, Any]) -> dict[str, Any]:
 
 def effective_values(draft: dict) -> dict[str, Any]:
     snapshot = draft.get("system_snapshot") or {}
-    system_values = snapshot.get("values") or {}
+    system_values = dict(snapshot.get("values") or {})
+    if system_values.get("meta.year") in (None, ""):
+        business_date = str(
+            snapshot.get("business_date")
+            or draft.get("business_date")
+            or ""
+        )
+        try:
+            system_values["meta.year"] = int(business_date[:4])
+        except (TypeError, ValueError):
+            pass
     manual_values = draft.get("manual_values") or {}
     overrides = draft.get("override_values") or {}
     table_inputs = {**system_values, **manual_values, **overrides}

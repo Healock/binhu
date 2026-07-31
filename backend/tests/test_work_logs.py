@@ -22,9 +22,10 @@ from routers.work_logs import (
 from services.work_log_data import (
     _online_summary_snapshot,
     _rental_snapshot,
+    _self_owned_snapshot,
     build_system_snapshot,
 )
-from services.work_log_pdf import build_daily_pdf
+from services.work_log_pdf import _display, build_daily_pdf
 from services.work_log_schema import (
     TEMPLATE_VERSION,
     default_manual_values,
@@ -153,6 +154,7 @@ def snapshot(values=None):
         "filename_prefix": "0714",
         "communities": ["长板", "冬梅"],
         "values": {
+            "meta.year": 2026,
             "meta.month": 7,
             "meta.day": 14,
             **(values or {}),
@@ -165,6 +167,11 @@ def snapshot(values=None):
             },
             "rental_visit": {
                 "label": "出租房走访",
+                "available": False,
+                "message": "该日期没有可用数据",
+            },
+            "self_owned_visit": {
+                "label": "自购房走访",
                 "available": False,
                 "message": "该日期没有可用数据",
             },
@@ -237,6 +244,62 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("flow.instruction_table", tables)
         self.assertIn("rental.visit_table", tables)
         self.assertIn("special.monitor_table", tables)
+
+    def test_requested_work_log_sentences_and_sources(self):
+        schema = get_schema()
+        blocks = {
+            section["id"]: section["blocks"]
+            for section in schema["sections"]
+        }
+        dingning = blocks["special"][1]
+        dingning_text = "".join(
+            segment
+            for segment in dingning["segments"]
+            if isinstance(segment, str)
+        )
+        self.assertIn("第三批次任务总数", dingning_text)
+        self.assertIn("已核查未见面", dingning_text)
+        self.assertIn("人待核查见面，已核查", dingning_text)
+        self.assertIn("综合指挥室+辅警办公室宣传完成率为", dingning_text)
+        rates = [
+            segment
+            for segment in dingning["segments"]
+            if isinstance(segment, dict)
+            and segment["id"].endswith("completion_rate")
+        ]
+        self.assertEqual([item["precision"] for item in rates], [2, 2])
+
+        dispute_sentences = [
+            block
+            for block in blocks["disputes"]
+            if block["type"] == "sentence"
+        ]
+        dispute_text = "".join(
+            segment
+            for block in dispute_sentences
+            for segment in block["segments"]
+            if isinstance(segment, str)
+        )
+        self.assertIn("辖区存量未决矛盾纠纷档案", dispute_text)
+        self.assertIn("新下发矛盾纠纷", dispute_text)
+        self.assertIn("化解矛盾纠纷", dispute_text)
+        self.assertIn("未决档案化解", dispute_text)
+
+        self_owned_table = next(
+            block["field"]
+            for block in blocks["self_owned"]
+            if block["type"] == "table"
+            and block["field"]["id"] == "self_owned.visit_table"
+        )
+        self.assertEqual(self_owned_table["source"], "system")
+        self.assertEqual(
+            self_owned_table["source_key"],
+            "self_owned_visit",
+        )
+        self.assertEqual(
+            _display(2.2, {"type": "percent", "precision": 2}),
+            "2.20%",
+        )
 
     def test_manual_tables_prefill_communities_and_fixed_categories(self):
         values = default_manual_values(["冬梅", "长板"])
@@ -321,6 +384,39 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["total_changes"], 7)
         self.assertEqual(row["rating_rate"], 75.0)
 
+    async def test_self_owned_snapshot_maps_inspector_rows(self):
+        visit_result = {
+            "inspector": {
+                "data": [{
+                    "社区": "社区甲",
+                    "姓名": "网格员甲",
+                    "走访户数": 11,
+                    "新增": 2,
+                    "变更": 5,
+                    "注销": 1,
+                }],
+            },
+        }
+        with patch(
+            "services.work_log_data.get_visit_summary",
+            new=AsyncMock(return_value=visit_result),
+        ) as summary:
+            result = await _self_owned_snapshot(
+                CountConnection(),
+                date(2026, 7, 14),
+            )
+        summary.assert_awaited_once()
+        row = result["values"]["self_owned.visit_table"][0]
+        self.assertEqual(
+            row,
+            {
+                "grid_member": "网格员甲",
+                "visits": 11,
+                "changed": 5,
+                "cancelled": 1,
+            },
+        )
+
     async def test_snapshot_dates_and_missing_sources_are_explicit(self):
         with (
             patch(
@@ -343,6 +439,14 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
                     "values": {},
                 }),
             ),
+            patch(
+                "services.work_log_data._self_owned_snapshot",
+                new=AsyncMock(return_value={
+                    "available": False,
+                    "message": "无自购房走访",
+                    "values": {},
+                }),
+            ),
         ):
             result = await build_system_snapshot(
                 CountConnection(),
@@ -351,6 +455,7 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["business_date"], "2026-07-14")
         self.assertEqual(result["issue_date"], "2026-07-15")
         self.assertEqual(result["communities"], ["长板"])
+        self.assertEqual(result["values"]["meta.year"], 2026)
         self.assertFalse(result["sources"]["online_summary"]["available"])
 
     def test_edited_tables_recalculate_overview_until_overridden(self):

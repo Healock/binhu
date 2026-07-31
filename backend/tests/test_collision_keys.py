@@ -18,6 +18,7 @@ from migrations.rekey_collision_tables import ExistingRow, build_rekey_plan
 from services.parsers.base import BaseParser
 from services.parsers.fullchain import FullChainParser
 from services.parsers.police_stats import PoliceStatsParser
+from services.parsers.rental_check import RentalCheckParser
 from services.sync_engine import deduplicate_rows
 
 
@@ -96,6 +97,53 @@ class CollisionKeyTests(unittest.TestCase):
                     {"编号": "1", "内容": "第二条"},
                 ],
             )
+
+    def test_rental_same_person_rows_are_merged_once(self):
+        parser = RentalCheckParser()
+        first = make_row(
+            parser,
+            下发时间="2026-07-31",
+            截止时间="2026-07-31",
+            社区="社区甲",
+            姓名="核查对象甲",
+            身份证号="identity-a",
+            手机号码="phone-a",
+            房屋地址="地址一",
+            核查结果="已完成",
+        )
+        second = {
+            **first,
+            "房屋地址": "地址二",
+            "核查结果": "",
+        }
+
+        online, duplicate_count = deduplicate_rows(
+            parser,
+            [first, second],
+        )
+
+        self.assertEqual(len(online), 1)
+        self.assertEqual(duplicate_count, 1)
+        merged = next(iter(online.values()))
+        self.assertEqual(merged["房屋地址"], "地址二")
+        self.assertEqual(merged["核查结果"], "已完成")
+
+    def test_rental_blank_identity_collision_still_stops_sync(self):
+        parser = RentalCheckParser()
+        first = make_row(
+            parser,
+            社区="社区甲",
+            姓名="对象甲",
+            房屋地址="地址一",
+        )
+        second = {
+            **first,
+            "姓名": "对象乙",
+            "房屋地址": "地址二",
+        }
+
+        with self.assertRaisesRegex(ValueError, "未覆盖任何冲突行"):
+            deduplicate_rows(parser, [first, second])
 
     def test_fullchain_plan_rekeys_existing_and_inserts_missing_row(self):
         parser = FullChainParser()

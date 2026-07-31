@@ -59,3 +59,16 @@ class BaseParser:
         """从行数据生成业务主键 MD5"""
         key_parts = [str(row.get(k, "")) for k in self.get_business_key()]
         return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+    def merge_duplicate_row(
+        self,
+        previous: dict,
+        incoming: dict,
+    ) -> dict | None:
+        """处理同一业务主键的不同内容。
+
+        默认不允许合并，由同步引擎停止该表同步。只有业务规则已经明确的
+        解析器才应覆盖此方法。
+        """
+        del previous, incoming
+        return None

@@ -16,6 +16,9 @@ def _display(value: Any, definition: dict | None = None) -> str:
     field_type = (definition or {}).get("type", "text")
     if field_type == "percent":
         try:
+            precision = (definition or {}).get("precision")
+            if precision is not None:
+                return f"{float(value):.{int(precision)}f}%"
             return f"{float(value):g}%"
         except (TypeError, ValueError):
             return str(value)
