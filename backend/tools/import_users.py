@@ -315,6 +315,13 @@ async def apply_preview(
                 item["assignment_mode"],
             ),
         )
+        created_user_id = int(cur.lastrowid)
+        if item["assignment_mode"] == "custom":
+            await cur.execute(
+                "INSERT INTO _user_permission_group_links "
+                "(user_id, permission_group_id) VALUES (%s, %s)",
+                (created_user_id, item["permission_group_id"]),
+            )
 
 
 async def build_display_name_sync_preview(

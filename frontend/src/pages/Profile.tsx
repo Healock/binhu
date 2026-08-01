@@ -49,7 +49,15 @@ export default function Profile() {
               <span className="font-medium">{getUserDisplayName(user)}</span>
             </Descriptions.Item>
             <Descriptions.Item label="登录用户名">{user.username}</Descriptions.Item>
-            <Descriptions.Item label="权限组">{user.permission_group?.name || '-'}</Descriptions.Item>
+            <Descriptions.Item label="权限组">
+              <div className="flex flex-wrap gap-1.5">
+                {(user.permission_groups?.length
+                  ? user.permission_groups
+                  : user.permission_group ? [user.permission_group] : []
+                ).map(group => <Tag key={group.id ?? group.code}>{group.name}</Tag>)}
+                {!user.permission_groups?.length && !user.permission_group && '-'}
+              </div>
+            </Descriptions.Item>
             <Descriptions.Item label="所属部门">{user.department?.name || '未分配'}</Descriptions.Item>
             <Descriptions.Item label="岗位">{user.member?.position || '-'}</Descriptions.Item>
             <Descriptions.Item label="密码状态">

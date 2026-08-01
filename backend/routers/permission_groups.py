@@ -31,7 +31,43 @@ class PermissionGroupPayload(BaseModel):
 
 
 class PositionMappingsPayload(BaseModel):
-    mappings: dict[str, int]
+    mappings: dict[str, int | list[int]]
+
+
+def _normalize_mapping_values(
+    mappings: dict[str, int | list[int]],
+) -> dict[str, list[int]]:
+    normalized: dict[str, list[int]] = {}
+    for position, raw_value in mappings.items():
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        group_ids = list(dict.fromkeys(int(value) for value in values))
+        if not group_ids or any(value <= 0 for value in group_ids):
+            raise HTTPException(400, f"岗位“{position}”至少选择一个权限组")
+        normalized[position] = group_ids
+    return normalized
+
+
+async def _effective_group_user_counts(cur) -> dict[int, int]:
+    await cur.execute(
+        """
+        SELECT assignment.permission_group_id,
+               COUNT(DISTINCT assignment.user_id)
+        FROM (
+            SELECT link.permission_group_id, user.id AS user_id
+            FROM _user_permission_group_links AS link
+            JOIN _users AS user ON user.id=link.user_id
+            WHERE user.group_assignment_mode='custom'
+            UNION ALL
+            SELECT link.permission_group_id, user.id AS user_id
+            FROM _position_permission_group_links AS link
+            JOIN _grid_members AS member ON member.position=link.position
+            JOIN _users AS user ON user.member_id=member.id
+            WHERE user.group_assignment_mode='inherited'
+        ) AS assignment
+        GROUP BY assignment.permission_group_id
+        """
+    )
+    return {int(row[0]): int(row[1]) for row in await cur.fetchall()}
 
 
 def _normalize_payload(data: PermissionGroupPayload) -> tuple[str, str, list[str]]:
@@ -111,21 +147,33 @@ async def list_groups(
                    permission_group.permissions,
                    permission_group.data_scope,
                    permission_group.is_system, permission_group.is_locked,
-                   permission_group.sort_order,
-                   COUNT(DISTINCT user.id) AS user_count
+                   permission_group.sort_order
             FROM _permission_groups AS permission_group
-            LEFT JOIN _users AS user
-              ON user.permission_group_id=permission_group.id
-            GROUP BY permission_group.id
             ORDER BY permission_group.sort_order, permission_group.id
         """)
         rows = await cur.fetchall()
         await cur.execute("""
             SELECT mapping.position, mapping.permission_group_id
-            FROM _position_permission_groups AS mapping
-            ORDER BY mapping.position
+            FROM _position_permission_group_links AS mapping
+            JOIN _permission_groups AS permission_group
+              ON permission_group.id=mapping.permission_group_id
+            ORDER BY mapping.position, permission_group.sort_order,
+                     permission_group.id
         """)
         mapping_rows = await cur.fetchall()
+        user_counts = await _effective_group_user_counts(cur)
+        await cur.execute(
+            """
+            SELECT member.position, COUNT(DISTINCT user.id)
+            FROM _users AS user
+            JOIN _grid_members AS member ON member.id=user.member_id
+            WHERE user.group_assignment_mode='inherited'
+            GROUP BY member.position
+            """
+        )
+        position_user_counts = {
+            str(row[0]): int(row[1]) for row in await cur.fetchall()
+        }
     positions: dict[int, list[str]] = {}
     for position, group_id in mapping_rows:
         positions.setdefault(int(group_id), []).append(str(position))
@@ -141,15 +189,20 @@ async def list_groups(
                 "is_system": bool(row[6]),
                 "is_locked": bool(row[7]),
                 "sort_order": row[8],
-                "user_count": row[9],
+                "user_count": user_counts.get(int(row[0]), 0),
                 "positions": positions.get(int(row[0]), []),
             }
             for row in rows
         ],
         "position_mappings": {
-            str(position): int(group_id)
-            for position, group_id in mapping_rows
+            position: [
+                int(group_id)
+                for mapped_position, group_id in mapping_rows
+                if str(mapped_position) == position
+            ]
+            for position in sorted({str(row[0]) for row in mapping_rows})
         },
+        "position_user_counts": position_user_counts,
     }
 
 
@@ -240,11 +293,10 @@ async def update_group(
             if "Duplicate" in str(exc):
                 raise HTTPException(400, "权限组名称已存在") from exc
             raise
-        await cur.execute(
-            "SELECT COUNT(*) FROM _users WHERE permission_group_id=%s",
-            (group_id,),
+        affected_users = (await _effective_group_user_counts(cur)).get(
+            group_id,
+            0,
         )
-        affected_users = int((await cur.fetchone())[0])
         await _record_change(
             cur, "update", "permission_group", group_id,
             {"permissions": permissions, "data_scope": data_scope}, user["id"],
@@ -280,14 +332,10 @@ async def delete_group(
             raise HTTPException(404, "权限组不存在")
         if row[0]:
             raise HTTPException(400, "预设权限组不能删除")
-        await cur.execute(
-            "SELECT COUNT(*) FROM _users WHERE permission_group_id=%s",
-            (group_id,),
-        )
-        if (await cur.fetchone())[0]:
+        if (await _effective_group_user_counts(cur)).get(group_id, 0):
             raise HTTPException(400, "仍有账号使用该权限组")
         await cur.execute(
-            "SELECT COUNT(*) FROM _position_permission_groups "
+            "SELECT COUNT(*) FROM _position_permission_group_links "
             "WHERE permission_group_id=%s",
             (group_id,),
         )
@@ -317,38 +365,90 @@ async def update_position_mappings(
     expected = set(POSITION_DEFAULT_GROUP)
     if set(data.mappings) != expected:
         raise HTTPException(400, "必须为全部岗位设置默认权限组")
-    group_ids = sorted(set(data.mappings.values()))
+    normalized = _normalize_mapping_values(data.mappings)
+    group_ids = sorted({
+        group_id
+        for values in normalized.values()
+        for group_id in values
+    })
     placeholders = ", ".join(["%s"] * len(group_ids))
     await conn.begin()
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                f"SELECT id FROM _permission_groups WHERE id IN ({placeholders})",
+                f"SELECT id, code, sort_order FROM _permission_groups "
+                f"WHERE id IN ({placeholders})",
                 group_ids,
             )
-            if len(await cur.fetchall()) != len(group_ids):
+            group_rows = await cur.fetchall()
+            if len(group_rows) != len(group_ids):
                 raise HTTPException(400, "岗位映射包含不存在的权限组")
-            for position, group_id in data.mappings.items():
+            if any(str(row[1]) == "super_admin" for row in group_rows):
+                raise HTTPException(400, "超级管理员组不能作为岗位默认权限")
+            group_meta = {
+                int(row[0]): {"code": str(row[1]), "sort_order": int(row[2])}
+                for row in group_rows
+            }
+            affected_users = 0
+            for position, selected_ids in normalized.items():
+                selected_ids.sort(
+                    key=lambda group_id: (
+                        group_meta[group_id]["sort_order"],
+                        group_id,
+                    )
+                )
+                await cur.execute(
+                    "DELETE FROM _position_permission_group_links "
+                    "WHERE position=%s",
+                    (position,),
+                )
+                await cur.executemany(
+                    "INSERT INTO _position_permission_group_links "
+                    "(position, permission_group_id, updated_by) "
+                    "VALUES (%s, %s, %s)",
+                    [
+                        (position, group_id, user["id"])
+                        for group_id in selected_ids
+                    ],
+                )
+                primary_group_id = selected_ids[0]
                 await cur.execute(
                     "INSERT INTO _position_permission_groups "
                     "(position, permission_group_id, updated_by) "
                     "VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE "
                     "permission_group_id=VALUES(permission_group_id), "
                     "updated_by=VALUES(updated_by)",
-                    (position, group_id, user["id"]),
+                    (position, primary_group_id, user["id"]),
                 )
-            await cur.execute("""
-                UPDATE _users AS user
-                JOIN _grid_members AS member ON member.id=user.member_id
-                JOIN _position_permission_groups AS mapping
-                  ON mapping.position=member.position
-                SET user.permission_group_id=mapping.permission_group_id
-                WHERE user.group_assignment_mode='inherited'
-            """)
-            affected_users = cur.rowcount
+                codes = {
+                    group_meta[group_id]["code"] for group_id in selected_ids
+                }
+                legacy_role = (
+                    "admin"
+                    if codes & {"admin", "internal_business"}
+                    else "leader"
+                    if "global_viewer" in codes
+                    else "member"
+                )
+                await cur.execute(
+                    """
+                    UPDATE _users AS account
+                    JOIN _grid_members AS member
+                      ON member.id=account.member_id
+                    SET account.permission_group_id=%s,
+                        account.role=CASE
+                            WHEN account.role='super_admin' THEN account.role
+                            ELSE %s
+                        END
+                    WHERE account.group_assignment_mode='inherited'
+                      AND member.position=%s
+                    """,
+                    (primary_group_id, legacy_role, position),
+                )
+                affected_users += max(cur.rowcount, 0)
             await _record_change(
                 cur, "update", "position_mapping", "all",
-                {"mappings": data.mappings}, user["id"],
+                {"mappings": normalized}, user["id"],
             )
         await conn.commit()
     except Exception:

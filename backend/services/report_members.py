@@ -7,10 +7,7 @@ import unicodedata
 
 from services.grid_member_status import active_member_sql
 from services.personnel_positions import (
-    ONLINE_POSITION_CONFIG_KEY,
-    filter_person_rows,
-    get_configured_positions,
-    get_known_personnel_positions,
+    get_eligible_online_personnel,
 )
 
 
@@ -126,34 +123,30 @@ def _is_persisted_zero_row(row: Sequence[Any]) -> bool:
 async def get_active_members(
     cur,
     as_of_date: str,
-    positions: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """读取指定日期实际在岗的网格员，返回（社区，姓名）。"""
-    positions = positions or await get_configured_positions(
-        cur,
-        ONLINE_POSITION_CONFIG_KEY,
-    )
-    placeholders = ", ".join(["%s"] * len(positions))
     active_condition = active_member_sql("g")
     await cur.execute(
         f"""
         SELECT
-            COALESCE(NULLIF(TRIM(community.name), ''), '未分配社区'),
+            TRIM(community.name),
             TRIM(g.name)
         FROM OnlineData._grid_members g
-        LEFT JOIN OnlineData._departments AS department
+        JOIN OnlineData._departments AS department
           ON department.id=g.department_id
-        LEFT JOIN OnlineData._communities AS community
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS community
           ON community.id=department.community_id
         WHERE TRIM(g.name) <> ''
-          AND g.position IN ({placeholders})
+          AND TRIM(community.name) <> ''
+          AND g.position IN ('组长', '组员')
           AND {active_condition}
         ORDER BY community.name, g.name
         """,
-        (*positions, as_of_date),
+        (as_of_date,),
     )
     return [
-        (str(community or "未分配社区"), str(name).strip())
+        (str(community).strip(), str(name).strip())
         for community, name in await cur.fetchall()
     ]
 
@@ -184,17 +177,12 @@ async def complete_inspector_rows(
     as_of_date: str,
 ) -> list[tuple[Any, ...]]:
     """查询日报时补全旧报表，不修改历史日报表。"""
-    selected_positions = await get_configured_positions(
-        cur,
-        ONLINE_POSITION_CONFIG_KEY,
-    )
-    known_positions = await get_known_personnel_positions(cur)
-    scoped_rows = filter_person_rows(
-        existing_rows,
-        name_index=1,
-        selected_positions=set(selected_positions),
-        known_positions=known_positions,
-    )
+    eligible = await get_eligible_online_personnel(cur)
+    scoped_rows = [
+        tuple(row)
+        for row in existing_rows
+        if len(row) > 1 and _normalized_name(row[1]) in eligible
+    ]
     rows = [
         tuple(row)
         for row in scoped_rows
@@ -203,7 +191,6 @@ async def complete_inspector_rows(
     active_members = await get_active_members(
         cur,
         as_of_date,
-        selected_positions,
     )
     rows.extend(get_missing_zero_rows(rows, active_members))
     rows.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
@@ -370,12 +357,7 @@ async def rebuild_community_report_table(
     inspector_table: str,
     community_table: str,
 ) -> None:
-    """保留完整人员日报，只在重建社区表时应用当前岗位范围。"""
-    positions = await get_configured_positions(
-        cur,
-        ONLINE_POSITION_CONFIG_KEY,
-    )
-    placeholders = ", ".join(["%s"] * len(positions))
+    """只按已登记且有社区部门的组长、组员重建社区表。"""
     await cur.execute(f"TRUNCATE TABLE {community_table}")
     await cur.execute(
         f"""
@@ -407,13 +389,16 @@ async def rebuild_community_report_table(
                  )
                  ELSE 0 END
         FROM {inspector_table} AS report_row
-        LEFT JOIN OnlineData._grid_members AS person
+        JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(report_row.姓名))
-        WHERE person.id IS NULL
-           OR person.position IN ({placeholders})
+        JOIN OnlineData._departments AS department
+          ON department.id=person.department_id
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS person_community
+          ON person_community.id=department.community_id
+        WHERE person.position IN ('组长', '组员')
         GROUP BY report_row.社区
-        """,
-        positions,
+        """
     )
 
 
@@ -424,12 +409,7 @@ async def rebuild_community_report_from_ledger(
     report_date: str,
     parser_type: str,
 ) -> None:
-    """直接从任务流水重建社区表，避免漏掉尚未填写核查人的任务。"""
-    positions = await get_configured_positions(
-        cur,
-        ONLINE_POSITION_CONFIG_KEY,
-    )
-    placeholders = ", ".join(["%s"] * len(positions))
+    """从任务流水重建社区表，并应用固定人员资格口径。"""
     await cur.execute(f"TRUNCATE TABLE {community_table}")
     await cur.execute(
         f"""
@@ -456,22 +436,24 @@ async def rebuild_community_report_from_ledger(
           ON community_alias.alias = ledger.community
         LEFT JOIN OnlineData._communities AS formal_community
           ON formal_community.id = community_alias.community_id
-        LEFT JOIN OnlineData._grid_members AS person
+        JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(ledger.inspector))
+        JOIN OnlineData._departments AS department
+          ON department.id=person.department_id
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS person_community
+          ON person_community.id=department.community_id
         WHERE ledger.report_date = %s
           AND ledger.parser_type = %s
           AND ledger.included = 1
           AND ledger.community <> ''
           AND ledger.community <> '社区'
           AND ledger.community <> '下发社区'
-          AND (
-              person.id IS NULL
-              OR person.position IN ({placeholders})
-          )
+          AND person.position IN ('组长', '组员')
         GROUP BY COALESCE(formal_community.name, ledger.community)
         ORDER BY COALESCE(formal_community.name, ledger.community)
         """,
-        (report_date, parser_type, *positions),
+        (report_date, parser_type),
     )
     await cur.execute(
         f"""
@@ -482,18 +464,19 @@ async def rebuild_community_report_from_ledger(
             report_row.社区,
             0, 0, 0, 0, 0, 0, 0
         FROM {inspector_table} AS report_row
-        LEFT JOIN OnlineData._grid_members AS person
+        JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(report_row.姓名))
+        JOIN OnlineData._departments AS department
+          ON department.id=person.department_id
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS person_community
+          ON person_community.id=department.community_id
         LEFT JOIN {community_table} AS existing
           ON existing.社区 = report_row.社区
         WHERE report_row.数据总数 = 0
           AND existing.社区 IS NULL
-          AND (
-              person.id IS NULL
-              OR person.position IN ({placeholders})
-          )
+          AND person.position IN ('组长', '组员')
         GROUP BY report_row.社区
         ORDER BY report_row.社区
-        """,
-        positions,
+        """
     )

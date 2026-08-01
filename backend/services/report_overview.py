@@ -18,10 +18,6 @@ import re
 from typing import Any
 
 from database import db_manager
-from services.personnel_positions import (
-    ONLINE_POSITION_CONFIG_KEY,
-    get_configured_positions,
-)
 from services.report_builders import BUILDERS
 
 
@@ -115,12 +111,7 @@ async def _load_effective_tasks(
     parser_types: list[str],
     communities: list[str] | None = None,
 ) -> list[tuple[Any, ...]]:
-    positions = await get_configured_positions(
-        cur,
-        ONLINE_POSITION_CONFIG_KEY,
-    )
     type_placeholders = ", ".join(["%s"] * len(parser_types))
-    position_placeholders = ", ".join(["%s"] * len(positions))
     community_clause = ""
     community_params: list[str] = []
     if communities is not None:
@@ -171,18 +162,20 @@ async def _load_effective_tasks(
           ON first_event.parser_type = latest.parser_type
          AND first_event.row_key = latest.row_key
          AND first_event.event_rank = 1
-        LEFT JOIN OnlineData._grid_members AS person
+        JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(latest.inspector))
+        JOIN OnlineData._departments AS department
+          ON department.id=person.department_id
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS person_community
+          ON person_community.id=department.community_id
         WHERE latest.ledger_rank = 1
           AND latest.included = 1
           AND latest.community <> ''
           AND latest.community <> '社区'
           AND latest.community <> '下发社区'
           {community_clause}
-          AND (
-              person.id IS NULL
-              OR person.position IN ({position_placeholders})
-          )
+          AND person.position IN ('组长', '组员')
         """,
         (
             start_date,
@@ -192,7 +185,6 @@ async def _load_effective_tasks(
             end_date,
             *parser_types,
             *community_params,
-            *positions,
         ),
     )
     return list(await cur.fetchall())

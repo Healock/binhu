@@ -290,6 +290,24 @@ CREATE TABLE IF NOT EXISTS _position_permission_groups (
     INDEX idx_position_permission_group (permission_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _position_permission_group_links (
+    position            VARCHAR(20) NOT NULL,
+    permission_group_id INT NOT NULL,
+    updated_by          INT DEFAULT NULL,
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (position, permission_group_id),
+    INDEX idx_position_group_link_group (permission_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _user_permission_group_links (
+    user_id             INT NOT NULL,
+    permission_group_id INT NOT NULL,
+    assigned_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, permission_group_id),
+    INDEX idx_user_group_link_group (permission_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _permission_change_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     action VARCHAR(100) NOT NULL,

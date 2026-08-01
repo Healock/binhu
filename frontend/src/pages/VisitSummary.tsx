@@ -326,7 +326,7 @@ export default function VisitSummary() {
         title="走访数据汇总"
         description="按入户业务日期统计；社区使用走访记录中的实际走访社区"
       >
-        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center">
+        <div className="flex min-w-0 flex-col gap-2.5 md:flex-row md:items-center">
           <Select<VisitSummaryCategory>
             size="large"
             value={summaryCategory}
@@ -399,12 +399,12 @@ export default function VisitSummary() {
             当前结果：{shownResultLabel}
           </span>
         </div>
-        <p className="mt-3 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-slate-500">
           出租房按系统设置中的岗位统计；自购房固定统计“自购房”岗位。社区人均值按区间内实际在岗人日计算，请假和周末休息不进入分母。
         </p>
         {summaryReport && (
-          <div className="mt-5 border-t border-slate-100 pt-5">
-            <div className="mb-3 text-sm font-medium text-slate-700">
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <div className="mb-2 text-sm font-medium text-slate-700">
               当前查询概览
             </div>
             <DataOverview

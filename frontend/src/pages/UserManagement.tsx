@@ -22,6 +22,7 @@ interface UserItem {
     department_name: string | null
   } | null
   permission_group: { id: number; code: string; name: string } | null
+  permission_groups: Array<{ id: number; code: string; name: string }>
 }
 
 interface MemberOption {
@@ -48,7 +49,7 @@ export default function UserManagement() {
   const [password, setPassword] = useState('')
   const [memberId, setMemberId] = useState<number | null>(null)
   const [mode, setMode] = useState<'inherited' | 'custom'>('inherited')
-  const [groupId, setGroupId] = useState<number | null>(null)
+  const [groupIds, setGroupIds] = useState<number[]>([])
   const [temporary, setTemporary] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -85,7 +86,7 @@ export default function UserManagement() {
     setPassword('')
     setMemberId(null)
     setMode('inherited')
-    setGroupId(null)
+    setGroupIds([])
     setTemporary(true)
     setOpen(true)
   }
@@ -97,7 +98,10 @@ export default function UserManagement() {
     setPassword('')
     setMemberId(user.member_id)
     setMode(user.assignment_mode)
-    setGroupId(user.permission_group?.id || null)
+    setGroupIds(
+      user.permission_groups?.map(group => group.id)
+      || (user.permission_group ? [user.permission_group.id] : []),
+    )
     setTemporary(user.password_is_temporary)
     setOpen(true)
   }
@@ -115,7 +119,7 @@ export default function UserManagement() {
       message.error('继承岗位权限时必须关联人员')
       return
     }
-    if (mode === 'custom' && !groupId) {
+    if (mode === 'custom' && !groupIds.length) {
       message.error('请选择权限组')
       return
     }
@@ -125,7 +129,7 @@ export default function UserManagement() {
         display_name: displayName.trim(),
         member_id: memberId,
         assignment_mode: mode,
-        permission_group_id: mode === 'custom' ? groupId : null,
+        permission_group_ids: mode === 'custom' ? groupIds : null,
         password_is_temporary: temporary,
       }
       if (password) payload.password = password
@@ -192,7 +196,13 @@ export default function UserManagement() {
       title: '权限组', width: 180,
       render: (_, user) => (
         <div>
-          <div>{user.permission_group?.name || '待分配'}</div>
+          <div className="flex flex-wrap gap-1">
+            {(user.permission_groups?.length
+              ? user.permission_groups
+              : user.permission_group ? [user.permission_group] : []
+            ).map(group => <Tag key={group.id} className="m-0">{group.name}</Tag>)}
+            {!user.permission_groups?.length && !user.permission_group && '待分配'}
+          </div>
           <div className="text-xs text-slate-500">{user.assignment_mode === 'inherited' ? '继承岗位' : '单独指定'}</div>
         </div>
       ),
@@ -283,10 +293,21 @@ export default function UserManagement() {
             <div>
               <label className="mb-1.5 block text-sm font-medium">权限组</label>
               <Select
-                value={groupId}
-                onChange={setGroupId}
+                mode="multiple"
+                value={groupIds}
+                onChange={setGroupIds}
                 className="w-full"
-                options={groups.map(group => ({ value: group.id, label: group.name }))}
+                options={groups.map(group => ({
+                  value: group.id,
+                  label: group.name,
+                  disabled: group.code === 'super_admin'
+                    ? groupIds.some(id => id !== group.id)
+                    : groups.some(candidate => (
+                        candidate.code === 'super_admin'
+                        && groupIds.includes(candidate.id)
+                      )),
+                }))}
+                maxTagCount="responsive"
               />
             </div>
           )}

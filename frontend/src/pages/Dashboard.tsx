@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Alert, Button, DatePicker, Segmented, Select, Table, Tag } from 'antd'
+import { Alert, DatePicker, Segmented, Select, Table, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
@@ -9,7 +9,6 @@ import SummaryReportConfigButton from '../components/SummaryReportConfigButton'
 import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader, Panel } from '../components/ui'
 import {
-  buildReport,
   formatDateInTimezone,
   getOnlineDataOverview,
   getReport,
@@ -120,7 +119,6 @@ export default function Dashboard() {
   const [overview, setOverview] = useState<OnlineDataOverview | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [overviewError, setOverviewError] = useState('')
-  const [building, setBuilding] = useState(false)
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
   const [mobileReportSection, setMobileReportSection] = useState<'inspector' | 'community'>('inspector')
@@ -167,11 +165,12 @@ export default function Dashboard() {
   const {
     syncing,
     status: syncStatus,
-    error: syncError,
+    taskError: syncTaskError,
+    statusError: syncStatusError,
+    actionError: syncActionError,
     startSync: handleSync,
   } = useSync(fetchReport)
   const canManualSync = Boolean(user?.permissions.includes('sync.trigger'))
-  const canBuildReport = Boolean(user?.permissions.includes('report.build'))
   const canConfigureReport = Boolean(user?.permissions.includes('report.config.manage'))
 
   useEffect(() => {
@@ -187,22 +186,6 @@ export default function Dashboard() {
   }, [])
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
   useEffect(() => { fetchReport() }, [fetchReport])
-
-  const handleBuild = async () => {
-    setBuilding(true); setMsg('')
-    try {
-      const res = await buildReport({ date: startDate, parser_type: reportType })
-      if (res.implemented === false) { setMsg(res.message); return }
-      if (reportType === '总汇总表') {
-        const rebuilt = res.subreports?.length || 0
-        setMsg(`生成成功：已更新 ${rebuilt} 张分汇总表和总汇总表`)
-      } else {
-        setMsg(`生成成功：${startDate} · 核查人 ${res.inspector_rows} 行，社区 ${res.community_rows} 行`)
-      }
-      fetchReport()
-    } catch (e: any) { setMsg('生成失败') }
-    finally { setBuilding(false) }
-  }
 
   const isImplemented = implemented.includes(reportType)
   const isSummary = reportType === '总汇总表'
@@ -246,11 +229,45 @@ export default function Dashboard() {
       <SyncPanel
         syncing={syncing}
         status={syncStatus}
-        error={syncError}
+        taskError={syncTaskError}
+        statusError={syncStatusError}
+        actionError={syncActionError}
         onSync={handleSync}
         canManualSync={canManualSync}
         timezone={timezone}
       />
+
+      {isImplemented && (
+        <Panel
+          title="在线数据概览"
+          description={`${reportType} · ${startDate} 至 ${endDate}，概览与当前查询条件保持一致`}
+        >
+          {overviewError && (
+            <Alert
+              className="mb-3"
+              type="warning"
+              showIcon
+              message={overviewError}
+            />
+          )}
+          <DataOverview
+            loading={overviewLoading}
+            rangeTitle="可用日报日期范围"
+            rangeValue={availableRange}
+            rangeDescription={overview?.available_data_days
+              ? `共 ${overview.available_data_days} 个可用日期；当前选中 ${overview.selected_data_days} 天`
+              : '完成一次成功同步后，这里会显示可用范围'}
+            metrics={[
+              { key: 'total', title: '任务总数', value: overview?.total_tasks || 0, suffix: '条', help: '所选区间内同一业务任务去重后的数量' },
+              { key: 'carryover', title: '结转数据', value: overview?.carryover_tasks || 0, suffix: '条', help: '进入所选区间时已经存在、尚未完成的任务', valueStyle: { color: '#d97706' } },
+              { key: 'new', title: '新下发数据', value: overview?.new_tasks || 0, suffix: '条', help: '任务首次进入区间时，前一张快照中还不存在', valueStyle: { color: '#1d4ed8' } },
+              { key: 'changed', title: '已有任务变化', value: overview?.changed_tasks || 0, suffix: '条', help: '前一张快照中已经存在，但发生了有效业务变化' },
+              { key: 'pending', title: '待完成', value: overview?.pending_tasks || 0, suffix: '条', valueStyle: { color: '#dc2626' } },
+              { key: 'completed', title: '已完成', value: overview?.completed_tasks || 0, suffix: '条', help: `完成率 ${((overview?.completion_rate || 0) * 100).toFixed(1)}%`, valueStyle: { color: '#047857' } },
+            ]}
+          />
+        </Panel>
+      )}
 
       <section className="app-card">
         <div className="app-toolbar dashboard-report-toolbar">
@@ -296,16 +313,6 @@ export default function Dashboard() {
               allowClear={false}
             />
           </div>
-          {canBuildReport && <Button
-            type="primary"
-            size="large"
-            className="dashboard-report-toolbar__build"
-            onClick={handleBuild}
-            loading={building}
-            disabled={!isImplemented}
-          >
-            生成日报
-          </Button>}
           {canConfigureReport && <SummaryReportConfigButton />}
           {msg && report.exists && (
             <span className={`text-sm ${msg.includes('成功') ? 'text-green-700' : 'text-orange-700'}`}>
@@ -320,86 +327,12 @@ export default function Dashboard() {
         </div>
         <div className="border-t border-slate-100 px-5 py-2.5 text-xs leading-5 text-slate-500">
           {isRange ? (
-            <>
-              <p>区间内同一任务只计算一次，并按区间结束时的状态归类。</p>
-              <p>“生成日报”只会生成起始日期（{startDate}）的日报。</p>
-            </>
+            <p>区间内同一任务只计算一次，并按区间结束时的状态归类。</p>
           ) : (
-            <p>单日数据总数包含前期未完成任务和当天新增、变更的任务。</p>
+            <p>单日数据总数包含前期未完成任务和当天新增、变更的任务；日报随同步自动生成。</p>
           )}
         </div>
       </section>
-
-      {isImplemented && (
-        <Panel
-          title="在线数据概览"
-          description={`${reportType} · ${startDate} 至 ${endDate}，概览与当前查询条件保持一致`}
-        >
-          {overviewError && (
-            <Alert
-              className="mb-4"
-              type="warning"
-              showIcon
-              message={overviewError}
-            />
-          )}
-          <DataOverview
-            loading={overviewLoading}
-            rangeTitle="可用日报日期范围"
-            rangeValue={availableRange}
-            rangeDescription={overview?.available_data_days
-              ? `共 ${overview.available_data_days} 个可用日期；当前选中 ${overview.selected_data_days} 天`
-              : '完成一次成功同步后，这里会显示可用范围'}
-            metrics={[
-              {
-                key: 'total',
-                title: '任务总数',
-                value: overview?.total_tasks || 0,
-                suffix: '条',
-                help: '所选区间内同一业务任务去重后的数量',
-              },
-              {
-                key: 'carryover',
-                title: '结转数据',
-                value: overview?.carryover_tasks || 0,
-                suffix: '条',
-                help: '进入所选区间时已经存在、尚未完成的任务',
-                valueStyle: { color: '#d97706' },
-              },
-              {
-                key: 'new',
-                title: '新下发数据',
-                value: overview?.new_tasks || 0,
-                suffix: '条',
-                help: '任务首次进入区间时，前一张快照中还不存在',
-                valueStyle: { color: '#1d4ed8' },
-              },
-              {
-                key: 'changed',
-                title: '已有任务变化',
-                value: overview?.changed_tasks || 0,
-                suffix: '条',
-                help: '前一张快照中已经存在，但发生了有效业务变化',
-              },
-              {
-                key: 'pending',
-                title: '待完成',
-                value: overview?.pending_tasks || 0,
-                suffix: '条',
-                valueStyle: { color: '#dc2626' },
-              },
-              {
-                key: 'completed',
-                title: '已完成',
-                value: overview?.completed_tasks || 0,
-                suffix: '条',
-                help: `完成率 ${((overview?.completion_rate || 0) * 100).toFixed(1)}%`,
-                valueStyle: { color: '#047857' },
-              },
-            ]}
-          />
-        </Panel>
-      )}
 
       {report.scope_message && (
         <Alert type="info" showIcon message={report.scope_message} />

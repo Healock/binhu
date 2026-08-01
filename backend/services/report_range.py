@@ -10,20 +10,14 @@ import json
 
 from database import db_manager
 from services.report_builders import BUILDERS
-from services.personnel_positions import (
-    ONLINE_POSITION_CONFIG_KEY,
-    get_configured_positions,
-)
 from services.report_members import (
     aggregate_community_rows,
     calculate_ratio,
     canonical_community,
-    canonicalize_community_rows,
     canonicalize_inspector_rows,
     complete_inspector_rows,
     get_active_members,
     get_community_alias_lookup,
-    merge_community_rows,
     merge_inspector_rows,
 )
 
@@ -192,88 +186,6 @@ async def _aggregate_range_ledger(
     return list(await cur.fetchall())
 
 
-async def _aggregate_range_community_ledger(
-    cur,
-    start_date: str,
-    end_date: str,
-    parser_type: str,
-) -> list[tuple]:
-    """按任务最后状态直接聚合社区，保留尚未填写核查人的任务。"""
-    positions = await get_configured_positions(
-        cur,
-        ONLINE_POSITION_CONFIG_KEY,
-    )
-    placeholders = ", ".join(["%s"] * len(positions))
-    await cur.execute(
-        f"""
-        SELECT
-            latest.community,
-            COUNT(*) AS total_count,
-            SUM(latest.task_state = 'unchecked') AS unchecked_count,
-            SUM(latest.task_state = 'checked') AS checked_count,
-            SUM(latest.task_state = 'completed') AS completed_count,
-            CASE WHEN COUNT(*) > 0
-                 THEN ROUND(
-                    SUM(latest.task_state = 'completed') / COUNT(*),
-                    2
-                 )
-                 ELSE 0 END AS completion_rate,
-            SUM(latest.unable_to_verify) AS unable_count,
-            CASE WHEN SUM(latest.task_state = 'completed') > 0
-                 THEN ROUND(
-                    SUM(latest.reached_bottom)
-                    / SUM(latest.task_state = 'completed'),
-                    2
-                 )
-                 ELSE 0 END AS reached_bottom_rate
-        FROM (
-            SELECT ranked.*
-            FROM (
-                SELECT
-                    ledger.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY ledger.parser_type, ledger.row_key
-                        ORDER BY ledger.report_date DESC, ledger.updated_at DESC
-                    ) AS ledger_rank
-                FROM _daily_task_ledger ledger
-                WHERE ledger.report_date BETWEEN %s AND %s
-                  AND ledger.parser_type = %s
-            ) ranked
-            WHERE ranked.ledger_rank = 1
-              AND ranked.included = 1
-        ) latest
-        LEFT JOIN OnlineData._grid_members AS person
-          ON LOWER(TRIM(person.name)) = LOWER(TRIM(latest.inspector))
-        WHERE latest.community <> ''
-          AND latest.community <> '社区'
-          AND latest.community <> '下发社区'
-          AND (
-              person.id IS NULL
-              OR person.position IN ({placeholders})
-          )
-        GROUP BY latest.community
-        ORDER BY latest.community
-        """,
-        (start_date, end_date, parser_type, *positions),
-    )
-    return list(await cur.fetchall())
-
-
-def _add_missing_zero_communities(
-    community_rows: list[tuple],
-    inspector_rows: list[tuple],
-) -> list[tuple]:
-    """保留没有任务、但有应统计人员的全零社区。"""
-    result = list(community_rows)
-    existing = {str(row[0]) for row in result}
-    for row in aggregate_community_rows(inspector_rows):
-        if str(row[0]) not in existing:
-            result.append(row)
-            existing.add(str(row[0]))
-    result.sort(key=lambda row: str(row[0] or ""))
-    return result
-
-
 async def get_report_range(
     start_date: str,
     end_date: str,
@@ -333,20 +245,7 @@ async def get_report_range(
                 inspector_rows,
                 alias_lookup,
             )
-            community_rows = await _aggregate_range_community_ledger(
-                cur,
-                start_date,
-                end_date,
-                parser_type,
-            )
-            community_rows = canonicalize_community_rows(
-                community_rows,
-                alias_lookup,
-            )
-            community_rows = _add_missing_zero_communities(
-                community_rows,
-                inspector_rows,
-            )
+            community_rows = aggregate_community_rows(inspector_rows)
 
         return {
             "exists": True,
@@ -383,7 +282,6 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
             summary_types = await _get_summary_types(cur)
             alias_lookup = await get_community_alias_lookup(cur)
             all_inspector_rows = []
-            all_community_rows = []
             covered_dates: set[str] = set()
 
             for parser_type in summary_types:
@@ -427,18 +325,6 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                     alias_lookup,
                 )
                 all_inspector_rows.extend(rows)
-                community_rows = await _aggregate_range_community_ledger(
-                    cur,
-                    start_date,
-                    end_date,
-                    parser_type,
-                )
-                all_community_rows.extend(
-                    canonicalize_community_rows(
-                        community_rows,
-                        alias_lookup,
-                    )
-                )
 
             if not covered_dates:
                 return {
@@ -463,11 +349,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 all_inspector_rows,
                 active_members,
             )
-            merged_rows = merge_community_rows(all_community_rows)
-            merged_rows = _add_missing_zero_communities(
-                merged_rows,
-                inspector_rows,
-            )
+            merged_rows = aggregate_community_rows(inspector_rows)
 
             member_counts: dict[str, int] = {}
             for community, _ in active_members:

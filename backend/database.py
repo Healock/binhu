@@ -125,6 +125,28 @@ async def ensure_permission_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _position_permission_group_links (
+            position VARCHAR(20) NOT NULL,
+            permission_group_id INT NOT NULL,
+            updated_by INT DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (position, permission_group_id),
+            INDEX idx_position_group_link_group (permission_group_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _user_permission_group_links (
+            user_id INT NOT NULL,
+            permission_group_id INT NOT NULL,
+            assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, permission_group_id),
+            INDEX idx_user_group_link_group (permission_group_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS _permission_change_log (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             action VARCHAR(100) NOT NULL,
@@ -145,6 +167,12 @@ async def ensure_permission_schema(cur) -> None:
             "SELECT %s, id FROM _permission_groups WHERE code=%s",
             (position, group_code),
         )
+    await cur.execute("""
+        INSERT IGNORE INTO _position_permission_group_links
+            (position, permission_group_id, updated_by)
+        SELECT position, permission_group_id, updated_by
+        FROM _position_permission_groups
+    """)
 
     await _ensure_column(
         cur,
@@ -164,7 +192,7 @@ async def ensure_permission_schema(cur) -> None:
           ON department.name='内勤' AND department.department_type='internal'
         SET member.department_id=department.id,
             member.community=''
-        WHERE member.position IN ('片长', '中队长', '基础管控')
+        WHERE member.position IN ('片长', '中队长', '基础管控', '所队领导')
           AND (member.department_id IS NULL OR member.department_id<>department.id)
     """)
     await cur.execute("""
@@ -229,6 +257,14 @@ async def ensure_permission_schema(cur) -> None:
             user.group_assignment_mode='custom'
         WHERE user.permission_group_id IS NULL
           AND user.role IN ('super_admin', 'admin')
+    """)
+    await cur.execute("""
+        INSERT IGNORE INTO _user_permission_group_links
+            (user_id, permission_group_id)
+        SELECT id, permission_group_id
+        FROM _users
+        WHERE group_assignment_mode='custom'
+          AND permission_group_id IS NOT NULL
     """)
 
     await _ensure_column(

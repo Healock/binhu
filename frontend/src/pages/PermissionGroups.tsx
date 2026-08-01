@@ -25,12 +25,21 @@ import {
   type PermissionGroupItem,
 } from '../api/client'
 
-const POSITIONS = ['中队长', '基础管控', '片长', '自购房', '组长', '组员']
+const POSITION_CATEGORIES = [
+  { name: '流口工作', positions: ['组员', '组长', '自购房', '片长'] },
+  { name: '内勤业务', positions: ['基础管控', '中队长'] },
+  { name: '民警与领导', positions: ['社区民警', '所队领导'] },
+] as const
+const POSITIONS = POSITION_CATEGORIES.flatMap(item => [...item.positions])
+const positionCategory = (position: string) => (
+  POSITION_CATEGORIES.find(item => item.positions.includes(position as never))?.name || '-'
+)
 
 export default function PermissionGroups() {
   const [groups, setGroups] = useState<PermissionGroupItem[]>([])
   const [catalog, setCatalog] = useState<PermissionCatalogItem[]>([])
-  const [mappings, setMappings] = useState<Record<string, number>>({})
+  const [mappings, setMappings] = useState<Record<string, number[]>>({})
+  const [positionUserCounts, setPositionUserCounts] = useState<Record<string, number>>({})
   const [editing, setEditing] = useState<PermissionGroupItem | null>(null)
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -49,6 +58,7 @@ export default function PermissionGroups() {
       ])
       setGroups(groupResult.data)
       setMappings(groupResult.position_mappings)
+      setPositionUserCounts(groupResult.position_user_counts || {})
       setCatalog(catalogResult.permissions)
     } catch (error: any) {
       message.error(error?.response?.data?.detail || '权限组加载失败')
@@ -128,7 +138,7 @@ export default function PermissionGroups() {
   }
 
   const saveMappings = async () => {
-    if (POSITIONS.some(position => !mappings[position])) {
+    if (POSITIONS.some(position => !mappings[position]?.length)) {
       message.error('请为每个岗位选择默认权限组')
       return
     }
@@ -179,6 +189,36 @@ export default function PermissionGroups() {
       ),
     },
   ]
+  const positionColumns: TableColumnsType<{ position: string }> = [
+    {
+      title: '岗位', dataIndex: 'position', width: 140,
+      render: value => <span className="font-medium text-slate-900">{value}</span>,
+    },
+    {
+      title: '人员分类', dataIndex: 'position', width: 140,
+      render: value => <Tag>{positionCategory(value)}</Tag>,
+    },
+    {
+      title: '默认权限组', dataIndex: 'position',
+      render: position => (
+        <Select
+          mode="multiple"
+          value={mappings[position] || []}
+          onChange={value => setMappings(current => ({ ...current, [position]: value }))}
+          options={groups
+            .filter(group => !group.is_locked)
+            .map(group => ({ value: group.id, label: group.name }))}
+          placeholder="至少选择一个权限组"
+          className="w-full min-w-64"
+          maxTagCount="responsive"
+        />
+      ),
+    },
+    {
+      title: '继承账号', dataIndex: 'position', width: 110,
+      render: value => `${positionUserCounts[value] || 0} 个`,
+    },
+  ]
 
   return (
     <div className="app-page space-y-5">
@@ -188,19 +228,13 @@ export default function PermissionGroups() {
         actions={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建权限组</Button>}
       />
       <Panel title="岗位默认权限" description="人员岗位变化后，继承岗位的账号会自动跟随">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {POSITIONS.map(position => (
-            <div key={position}>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">{position}</label>
-              <Select
-                value={mappings[position]}
-                onChange={value => setMappings(current => ({ ...current, [position]: value }))}
-                options={groups.filter(group => !group.is_locked).map(group => ({ value: group.id, label: group.name }))}
-                className="w-full"
-              />
-            </div>
-          ))}
-        </div>
+        <AppTable
+          columns={positionColumns}
+          dataSource={POSITIONS.map(position => ({ position }))}
+          rowKey="position"
+          pagination={false}
+          scroll={{ x: 760 }}
+        />
         <div className="mt-4 flex justify-end">
           <Button type="primary" onClick={saveMappings}>保存岗位默认权限</Button>
         </div>

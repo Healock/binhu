@@ -15,7 +15,6 @@ COMMUNITY_VIEW = "community.view"
 NOTIFICATION_VIEW = "notification.view"
 PREFERENCES_MANAGE = "preferences.manage"
 SYNC_TRIGGER = "sync.trigger"
-REPORT_BUILD = "report.build"
 REPORT_CONFIG_MANAGE = "report.config.manage"
 VISIT_IMPORT = "visit.import"
 WORK_LOG_MANAGE = "worklog.manage"
@@ -38,7 +37,6 @@ PERMISSION_CATALOG = [
     (NOTIFICATION_VIEW, "个人功能", "查看公告和个人提示"),
     (PREFERENCES_MANAGE, "个人功能", "修改个人设置和密码"),
     (SYNC_TRIGGER, "业务操作", "手动同步在线数据"),
-    (REPORT_BUILD, "业务操作", "生成在线日报"),
     (REPORT_CONFIG_MANAGE, "业务操作", "修改总汇总表配置"),
     (VISIT_IMPORT, "业务操作", "上传走访和星级评定"),
     (WORK_LOG_MANAGE, "业务操作", "管理和导出工作日志"),
@@ -67,7 +65,6 @@ COMMON_VIEW_PERMISSIONS = {
 INTERNAL_BUSINESS_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
     PERSONNEL_SENSITIVE_VIEW,
     SYNC_TRIGGER,
-    REPORT_BUILD,
     REPORT_CONFIG_MANAGE,
     VISIT_IMPORT,
     WORK_LOG_MANAGE,
@@ -120,10 +117,12 @@ POSITION_DEFAULT_GROUP = {
     "片长": "global_viewer",
     "中队长": "internal_business",
     "基础管控": "internal_business",
+    "社区民警": "admin",
+    "所队领导": "admin",
 }
 
-INTERNAL_POSITIONS = {"片长", "中队长", "基础管控"}
-COMMUNITY_POSITIONS = {"组长", "组员"}
+INTERNAL_POSITIONS = {"片长", "中队长", "基础管控", "所队领导"}
+COMMUNITY_POSITIONS = {"组长", "组员", "社区民警"}
 
 
 def serialize_permissions(values: set[str] | list[str]) -> str:
@@ -157,8 +156,17 @@ def has_permission(user: dict[str, Any], permission: str) -> bool:
     return permission in set(user.get("permissions") or [])
 
 
-def permitted_community(user: dict[str, Any]) -> str | None:
-    if user.get("data_scope") == "all":
+def permitted_community(
+    user: dict[str, Any],
+    permission: str | None = None,
+) -> str | None:
+    scope = user.get("data_scope")
+    if permission:
+        scope = (user.get("permission_scopes") or {}).get(
+            permission,
+            scope,
+        )
+    if scope == "all":
         return None
     department = user.get("department") or {}
     if department.get("type") != "community":

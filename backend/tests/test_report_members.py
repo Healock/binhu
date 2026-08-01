@@ -26,9 +26,22 @@ from services.report_members import (
     rebuild_community_report_from_ledger,
     rebuild_community_report_table,
 )
+from services.personnel_positions import get_eligible_online_personnel
 
 
 class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_online_scope_requires_registered_group_member_and_community(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(return_value=[("张三", "组员", "长板")])
+
+        result = await get_eligible_online_personnel(cursor)
+
+        sql = " ".join(cursor.execute.await_args.args[0].split())
+        self.assertIn("department.department_type='community'", sql)
+        self.assertIn("member.position IN ('组长', '组员')", sql)
+        self.assertEqual(result["张三"]["community"], "长板")
+
     def test_community_alias_combines_historical_report_rows(self):
         aliases = {"南厍": "南厍", "南厍村": "南厍"}
         inspector_rows = canonicalize_inspector_rows(
@@ -78,13 +91,12 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
         cursor.fetchall = AsyncMock(
-            return_value=[("", "王五"), ("社区甲", "赵六")]
+            return_value=[("社区甲", "赵六")]
         )
 
         members = await get_active_members(
             cursor,
             "2026-07-28",
-            ["组长", "组员"],
         )
 
         sql, params = cursor.execute.await_args.args
@@ -93,11 +105,12 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             "%s BETWEEN g.leave_start_date AND g.leave_end_date",
             sql,
         )
-        self.assertIn("g.position IN (%s, %s)", sql)
-        self.assertEqual(params, ("组长", "组员", "2026-07-28"))
+        self.assertIn("g.position IN ('组长', '组员')", sql)
+        self.assertIn("department.department_type='community'", sql)
+        self.assertEqual(params, ("2026-07-28",))
         self.assertEqual(
             members,
-            [("未分配社区", "王五"), ("社区甲", "赵六")],
+            [("社区甲", "赵六")],
         )
 
     async def test_old_report_is_completed_without_losing_real_rows(self):
@@ -111,17 +124,11 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "services.report_members.get_configured_positions",
-            new=AsyncMock(return_value=["组长", "组员"]),
-        ), patch(
-            "services.report_members.get_known_personnel_positions",
-            new=AsyncMock(
-                return_value={
-                    "张三": "组员",
-                    "后来请假的人员": "组员",
-                    "不参与统计的人": "中队长",
-                }
-            ),
+            "services.report_members.get_eligible_online_personnel",
+            new=AsyncMock(return_value={
+                "张三": {"position": "组员", "community": "社区甲"},
+                "后来请假的人员": {"position": "组员", "community": "社区丙"},
+            }),
         ), patch(
             "services.report_members.get_active_members",
             new=AsyncMock(return_value=[("社区乙", "李四")]),
@@ -132,9 +139,9 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
                 "2026-07-28",
             )
 
-        self.assertEqual(len(completed), 3)
+        self.assertEqual(len(completed), 2)
         self.assertIn(existing[0], completed)
-        self.assertIn(existing[1], completed)
+        self.assertNotIn(existing[1], completed)
         self.assertIn(
             ("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0),
             completed,
@@ -169,7 +176,7 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             [("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0)],
         )
 
-    async def test_known_unselected_person_is_hidden_but_unknown_person_remains(self):
+    async def test_only_registered_eligible_people_remain(self):
         cursor = MagicMock()
         existing = [
             ("社区甲", "组员甲", 1, 0, 0, 1, 1, 0, 1),
@@ -178,16 +185,10 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "services.report_members.get_configured_positions",
-            new=AsyncMock(return_value=["组长", "组员"]),
-        ), patch(
-            "services.report_members.get_known_personnel_positions",
-            new=AsyncMock(
-                return_value={
-                    "组员甲": "组员",
-                    "中队长乙": "中队长",
-                }
-            ),
+            "services.report_members.get_eligible_online_personnel",
+            new=AsyncMock(return_value={
+                "组员甲": {"position": "组员", "community": "社区甲"},
+            }),
         ), patch(
             "services.report_members.get_active_members",
             new=AsyncMock(return_value=[]),
@@ -200,7 +201,7 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(existing[0], completed)
         self.assertNotIn(existing[1], completed)
-        self.assertIn(existing[2], completed)
+        self.assertNotIn(existing[2], completed)
 
     async def test_community_rebuild_filters_without_deleting_person_rows(self):
         cursor = MagicMock()
@@ -213,11 +214,11 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             "`2026-07-28_daily_fullChain_community`",
         )
 
-        sql, params = cursor.execute.await_args.args
+        sql = cursor.execute.await_args.args[0]
         normalized = " ".join(sql.split())
-        self.assertIn("LEFT JOIN OnlineData._grid_members", normalized)
-        self.assertIn("person.id IS NULL", normalized)
-        self.assertIn("person.position IN (%s, %s)", normalized)
+        self.assertIn("JOIN OnlineData._grid_members", normalized)
+        self.assertIn("department.department_type='community'", normalized)
+        self.assertIn("person.position IN ('组长', '组员')", normalized)
         self.assertIn(
             "GREATEST( SUM(report_row.已完成) "
             "- SUM(report_row.无法见底数), 0 ) "
@@ -225,9 +226,8 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             normalized,
         )
         self.assertNotIn("DELETE", normalized)
-        self.assertEqual(params, ["组长", "组员"])
 
-    async def test_ledger_community_rebuild_keeps_rows_without_inspector(self):
+    async def test_ledger_community_rebuild_only_keeps_eligible_inspectors(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
         cursor.fetchone = AsyncMock(return_value=('["组长", "组员"]',))
@@ -252,9 +252,9 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             "COALESCE(formal_community.name, ledger.community)",
             normalized,
         )
-        self.assertNotIn("ledger.inspector <>", normalized)
-        self.assertIn("person.id IS NULL", normalized)
-        self.assertIn("person.position IN (%s, %s)", normalized)
+        self.assertIn("JOIN OnlineData._grid_members", normalized)
+        self.assertIn("department.department_type='community'", normalized)
+        self.assertIn("person.position IN ('组长', '组员')", normalized)
         self.assertIn(
             "SUM(ledger.reached_bottom) "
             "/ SUM(ledger.task_state = 'completed')",
@@ -262,13 +262,12 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             params,
-            ("2026-07-29", "寄递业", "组长", "组员"),
+            ("2026-07-29", "寄递业"),
         )
-        zero_sql, zero_params = cursor.execute.await_args_list[-1].args
+        zero_sql = cursor.execute.await_args_list[-1].args[0]
         normalized_zero_sql = " ".join(zero_sql.split())
         self.assertIn("report_row.数据总数 = 0", normalized_zero_sql)
         self.assertIn("existing.社区 IS NULL", normalized_zero_sql)
-        self.assertEqual(zero_params, ["组长", "组员"])
 
     def test_total_summary_merges_same_person_across_business_tables(self):
         rows = [

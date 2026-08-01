@@ -16,7 +16,9 @@ import {
 interface Props {
   syncing: boolean
   status: SyncStatus | null
-  error: string | null
+  taskError: string | null
+  statusError: string | null
+  actionError: string | null
   onSync: () => void
   canManualSync: boolean
   timezone?: string
@@ -50,7 +52,9 @@ function intervalLabel(minutes?: number) {
 export default function SyncPanel({
   syncing,
   status,
-  error,
+  taskError,
+  statusError,
+  actionError,
   onSync,
   canManualSync,
   timezone = 'Asia/Shanghai',
@@ -93,7 +97,7 @@ export default function SyncPanel({
 
   return (
     <section className="app-card">
-      <div className="app-toolbar items-start justify-between gap-4">
+      <div className="app-toolbar items-start justify-between gap-3 py-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="app-card__title">数据同步</h2>
@@ -125,7 +129,7 @@ export default function SyncPanel({
         </Tooltip>
       </div>
 
-      <div className="grid gap-3 border-t border-slate-100 px-5 py-4 text-sm sm:grid-cols-3">
+      <div className="grid gap-2 border-t border-slate-100 px-4 py-3 text-sm sm:grid-cols-3">
         <div className="min-w-0">
           <div className="text-xs text-slate-400">下一次自动同步</div>
           <div className="mt-1 flex items-center gap-1.5 font-medium text-slate-700">
@@ -172,8 +176,8 @@ export default function SyncPanel({
         </div>
       )}
 
-      {error && (
-        <div className="border-t border-slate-100 p-4">
+      {taskError && (
+        <div className="border-t border-slate-100 px-4 py-2.5">
           <Alert
             type={status?.status === 'partial' ? 'warning' : 'error'}
             showIcon
@@ -182,7 +186,27 @@ export default function SyncPanel({
                 ? '部分数据同步失败，总汇总表未更新'
                 : '同步失败'
             }
-            description={error}
+            description={taskError}
+          />
+        </div>
+      )}
+      {statusError && (
+        <div className="border-t border-slate-100 px-4 py-2.5">
+          <Alert
+            type="warning"
+            showIcon
+            message="同步状态暂时不可用"
+            description={statusError}
+          />
+        </div>
+      )}
+      {actionError && (
+        <div className="border-t border-slate-100 px-4 py-2.5">
+          <Alert
+            type="warning"
+            showIcon
+            message="未能发起同步"
+            description={actionError}
           />
         </div>
       )}

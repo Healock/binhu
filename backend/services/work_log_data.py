@@ -13,10 +13,7 @@ from services.personnel_attendance import (
     get_attendance_context,
     is_member_on_duty,
 )
-from services.personnel_positions import (
-    ONLINE_POSITION_CONFIG_KEY,
-    get_configured_positions,
-)
+from services.personnel_positions import ONLINE_SUMMARY_POSITIONS
 from services.visit_summary import (
     VISIT_CATEGORY_RENTAL,
     VISIT_CATEGORY_SELF_OWNED,
@@ -89,10 +86,7 @@ async def _community_grid_member_counts(
     communities: list[str],
 ) -> dict:
     async with conn.cursor() as cur:
-        positions = set(await get_configured_positions(
-            cur,
-            ONLINE_POSITION_CONFIG_KEY,
-        ))
+        positions = set(ONLINE_SUMMARY_POSITIONS)
         context = await get_attendance_context(
             cur,
             start_date=business_date,

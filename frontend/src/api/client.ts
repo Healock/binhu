@@ -89,7 +89,8 @@ export async function getPermissionCatalog(): Promise<{
 
 export async function getPermissionGroups(): Promise<{
   data: PermissionGroupItem[]
-  position_mappings: Record<string, number>
+  position_mappings: Record<string, number[]>
+  position_user_counts: Record<string, number>
 }> {
   const { data } = await api.get('/permission-groups')
   return data
@@ -122,7 +123,7 @@ export async function deletePermissionGroup(id: number): Promise<void> {
 }
 
 export async function updatePositionPermissionMappings(
-  mappings: Record<string, number>,
+  mappings: Record<string, number[]>,
 ): Promise<{ affected_users: number }> {
   const { data } = await api.put('/permission-groups/position-mappings/all', {
     mappings,
@@ -471,11 +472,6 @@ export async function saveUserPreferences(payload: UserPreferences): Promise<Use
   return data.user
 }
 
-export async function buildReport(params: { date?: string; parser_type?: string }): Promise<{ message: string; implemented: boolean; inspector_rows?: number; community_rows?: number; rows?: number; date?: string; subreports?: Array<{ parser_type: string }> }> {
-  const { data } = await api.post('/stats/build', null, { params })
-  return data
-}
-
 export async function getReport(
   date: string,
   parser_type?: string,
@@ -616,9 +612,16 @@ export async function listGridMembers(params: {
   keyword?: string
   community?: string
   position?: string
+  category?: 'flow_work' | 'internal_business' | 'police_leadership'
   page?: number
   page_size?: number
-}): Promise<{ data: GridMember[]; total: number; page: number; page_size: number }> {
+}): Promise<{
+  data: GridMember[]
+  total: number
+  page: number
+  page_size: number
+  category_counts: Record<string, number>
+}> {
   const { data } = await api.get('/grid-members', { params })
   return data
 }

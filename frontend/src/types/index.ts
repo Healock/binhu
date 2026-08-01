@@ -230,7 +230,7 @@ export type PermissionCode =
   | 'online.summary.view' | 'online.raw.view' | 'visit.summary.view'
   | 'personnel.basic.view' | 'personnel.sensitive.view' | 'community.view'
   | 'notification.view' | 'preferences.manage' | 'sync.trigger'
-  | 'report.build' | 'report.config.manage' | 'visit.import'
+  | 'report.config.manage' | 'visit.import'
   | 'worklog.manage' | 'attendance.manage' | 'personnel.manage'
   | 'community.manage' | 'user.manage' | 'permission.manage'
   | 'announcement.manage' | 'system.manage' | 'ops.manage'
@@ -281,6 +281,7 @@ export interface User extends UserPreferences {
   theme_mode: ThemeMode
   permissions: PermissionCode[]
   data_scope: 'all' | 'own_department'
+  permission_scopes: Partial<Record<PermissionCode, 'all' | 'own_department'>>
   member: { id: number; name: string; position: string } | null
   department: {
     id: number
@@ -289,6 +290,7 @@ export interface User extends UserPreferences {
     community_name: string | null
   } | null
   permission_group: { id: number | null; code: string; name: string }
+  permission_groups: Array<{ id: number | null; code: string; name: string }>
   password_is_temporary: boolean
   session_policy: {
     idle_timeout_minutes: number

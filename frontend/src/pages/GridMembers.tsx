@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Collapse,
   DatePicker,
   Drawer,
   Empty,
@@ -57,16 +58,39 @@ import { useAuth } from '../context/AuthContext'
 export default function GridMembers() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const [members, setMembers] = useState<GridMember[]>([])
+  type PersonnelCategory = 'flow_work' | 'internal_business' | 'police_leadership'
+  type CategoryState = {
+    rows: GridMember[]
+    total: number
+    page: number
+    loading: boolean
+    error: string
+  }
+  const categories: Array<{
+    key: PersonnelCategory
+    label: string
+    description: string
+  }> = [
+    { key: 'flow_work', label: '流口工作', description: '组员、组长、自购房、片长' },
+    { key: 'internal_business', label: '内勤业务', description: '基础管控、中队长' },
+    { key: 'police_leadership', label: '民警与领导', description: '社区民警、所队领导' },
+  ]
+  const emptyCategoryState = (): CategoryState => ({
+    rows: [], total: 0, page: 1, loading: false, error: '',
+  })
+  const [categoryStates, setCategoryStates] = useState<
+    Record<PersonnelCategory, CategoryState>
+  >({
+    flow_work: emptyCategoryState(),
+    internal_business: emptyCategoryState(),
+    police_leadership: emptyCategoryState(),
+  })
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [departments, setDepartments] = useState<DepartmentOption[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [communityFilter, setCommunityFilter] = useState('')
   const [positionFilter, setPositionFilter] = useState('')
-  const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState<GridMember | null>(null)
   const [leaveEditing, setLeaveEditing] = useState<GridMember | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -75,7 +99,6 @@ export default function GridMembers() {
   const [historyTotal, setHistoryTotal] = useState(0)
   const [showAddForm, setShowAddForm] = useState(false)
   const [msg, setMsg] = useState('')
-  const [loadError, setLoadError] = useState('')
   const [scheduleRange, setScheduleRange] = useState<[string, string]>(() => [
     dayjs().startOf('month').format('YYYY-MM-DD'),
     dayjs().endOf('month').format('YYYY-MM-DD'),
@@ -83,30 +106,53 @@ export default function GridMembers() {
   const [scheduleStatus, setScheduleStatus] = useState<AttendanceScheduleStatus | null>(null)
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState('')
-  const pageSize = 100
+  const pageSize = 20
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
   const canManageAttendance = Boolean(user?.permissions.includes('attendance.manage'))
   const canViewSensitive = Boolean(user?.permissions.includes('personnel.sensitive.view'))
 
   const fetch = useCallback(async () => {
-    setLoading(true)
-    setLoadError('')
-    try {
-      const response = await listGridMembers({
-        keyword: keyword || undefined,
-        community: communityFilter || undefined,
-        position: positionFilter || undefined,
-        page,
-        page_size: pageSize,
-      })
-      setMembers(response.data)
-      setTotal(response.total)
-    } catch {
-      setLoadError('人员列表加载失败，请稍后重试')
-    } finally {
-      setLoading(false)
-    }
-  }, [keyword, communityFilter, positionFilter, page, pageSize])
+    setCategoryStates(previous => Object.fromEntries(
+      Object.entries(previous).map(([key, value]) => [
+        key,
+        { ...value, loading: true, error: '' },
+      ]),
+    ) as Record<PersonnelCategory, CategoryState>)
+    await Promise.all(categories.map(async ({ key }) => {
+      try {
+        const response = await listGridMembers({
+          keyword: keyword || undefined,
+          community: communityFilter || undefined,
+          position: positionFilter || undefined,
+          category: key,
+          page: categoryStates[key].page,
+          page_size: pageSize,
+        })
+        setCategoryStates(previous => ({
+          ...previous,
+          [key]: {
+            ...previous[key],
+            rows: response.data,
+            total: response.total,
+            loading: false,
+            error: '',
+          },
+        }))
+      } catch {
+        setCategoryStates(previous => ({
+          ...previous,
+          [key]: {
+            ...previous[key],
+            rows: [],
+            total: 0,
+            loading: false,
+            error: '人员列表加载失败，请稍后重试',
+          },
+        }))
+      }
+    }))
+  }, [keyword, communityFilter, positionFilter, categoryStates.flow_work.page,
+    categoryStates.internal_business.page, categoryStates.police_leadership.page])
 
   const fetchCommunities = useCallback(async () => {
     try {
@@ -158,8 +204,8 @@ export default function GridMembers() {
   }, [canViewSensitive, historyOpen])
 
   const refresh = () => {
-    fetch()
-    fetchCommunities()
+    void fetch()
+    void fetchCommunities()
   }
 
   const handleDelete = (id: number, name: string) => {
@@ -182,9 +228,10 @@ export default function GridMembers() {
   }
 
   const communityNames = communities.map(community => community.name)
-  const normalCount = members.filter(
-    member => member.effective_status === '在岗',
-  ).length
+  const total = categories.reduce(
+    (sum, category) => sum + categoryStates[category.key].total,
+    0,
+  )
   const memberColumns: TableColumnsType<GridMember> = [
     {
       title: '姓名',
@@ -312,7 +359,7 @@ export default function GridMembers() {
 
       {canManageAttendance && <Panel
         title="双休日排班检查"
-        description="选择一个日期区间，集中查看哪些周还没有完成组长和组员排班"
+        description="只检查所选区间内截至今天已经发生、但仍未完成的双休日排班"
       >
         <div className="flex flex-col gap-3">
           <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
@@ -371,8 +418,8 @@ export default function GridMembers() {
             <Alert
               type="warning"
               showIcon
-              message="所选区间还有双休日未排班"
-              description={`请补齐这些周的排班：${scheduleStatus.missing_week_starts.join('、')}。补齐前，走访汇总中的人均日数据不会显示。`}
+              message="截至今天仍有双休日未完成排班"
+              description={`涉及周次：${scheduleStatus.missing_week_starts.join('、')}。这些历史周次完成排班前，对应日期的走访人均日数据不会显示；未来周次不会提前提示。`}
               action={(
                 <Button
                   size="small"
@@ -380,7 +427,7 @@ export default function GridMembers() {
                     `/grid-members/weekend-duty?week=${scheduleStatus.missing_week_starts[0]}`,
                   )}
                 >
-                  去补排班
+                  去安排
                 </Button>
               )}
             />
@@ -405,7 +452,12 @@ export default function GridMembers() {
             onChange={event => setSearchInput(event.target.value)}
             onPressEnter={() => {
               setKeyword(searchInput)
-              setPage(1)
+              setCategoryStates(previous => ({
+                ...previous,
+                flow_work: { ...previous.flow_work, page: 1 },
+                internal_business: { ...previous.internal_business, page: 1 },
+                police_leadership: { ...previous.police_leadership, page: 1 },
+              }))
             }}
             className="w-full md:min-w-56 md:flex-1"
           />
@@ -413,7 +465,12 @@ export default function GridMembers() {
             value={communityFilter}
             onChange={value => {
               setCommunityFilter(value)
-              setPage(1)
+              setCategoryStates(previous => ({
+                ...previous,
+                flow_work: { ...previous.flow_work, page: 1 },
+                internal_business: { ...previous.internal_business, page: 1 },
+                police_leadership: { ...previous.police_leadership, page: 1 },
+              }))
             }}
             className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
@@ -428,7 +485,12 @@ export default function GridMembers() {
             value={positionFilter}
             onChange={value => {
               setPositionFilter(value)
-              setPage(1)
+              setCategoryStates(previous => ({
+                ...previous,
+                flow_work: { ...previous.flow_work, page: 1 },
+                internal_business: { ...previous.internal_business, page: 1 },
+                police_leadership: { ...previous.police_leadership, page: 1 },
+              }))
             }}
             className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
@@ -445,14 +507,18 @@ export default function GridMembers() {
             className="w-full md:w-auto"
             onClick={() => {
               setKeyword(searchInput)
-              setPage(1)
+              setCategoryStates(previous => ({
+                ...previous,
+                flow_work: { ...previous.flow_work, page: 1 },
+                internal_business: { ...previous.internal_business, page: 1 },
+                police_leadership: { ...previous.police_leadership, page: 1 },
+              }))
             }}
           >
             搜索
           </Button>
           <div className="flex w-full flex-wrap gap-2 md:ml-auto md:w-auto">
             <Tag color="blue">共 {total} 人</Tag>
-            <Tag color="green">当前页正常 {normalCount} 人</Tag>
           </div>
         </div>
         {msg && (
@@ -464,73 +530,91 @@ export default function GridMembers() {
         )}
       </section>
 
-      <div className="hidden md:block">
-        <AppTable<GridMember>
-          columns={memberColumns.filter(column => (
-            canViewSensitive || !['phone', 'id_card_masked', 'notes'].includes(String(column.key))
-          ))}
-          dataSource={members}
-          emptyText={loadError || '暂无人员，可点击“添加人员”手动添加'}
-          loading={loading}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            hideOnSinglePage: true,
-            showSizeChanger: false,
-            showTotal: count => `共 ${count} 人`,
-            onChange: setPage,
-          }}
-          rowClassName={member => (
-            member.effective_status === '离岗' ? 'app-table-row--muted' : ''
-          )}
-          rowKey="id"
-          scroll={{ x: 1250 }}
-        />
-      </div>
-
-      <div className="md:hidden">
-        {loading ? (
-          <Card size="small">
-            <Skeleton active paragraph={{ rows: 5 }} />
-          </Card>
-        ) : members.length > 0 ? (
-          <div className="space-y-3">
-            {members.map(member => (
-              <MobileMemberCard
-                key={member.id}
-                member={member}
-                onEdit={() => setEditing(member)}
-                onLeave={() => setLeaveEditing(member)}
-                onDelete={() => handleDelete(member.id, member.name)}
-                canManage={canManage}
-                canManageAttendance={canManageAttendance}
-                canViewSensitive={canViewSensitive}
-              />
-            ))}
-          </div>
-        ) : (
-          <Card size="small">
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={loadError || '暂无人员，可点击“添加人员”手动添加'}
-            />
-          </Card>
-        )}
-
-        {!loading && total > pageSize && (
-          <div className="mt-4 flex justify-center">
-            <Pagination
-              simple
-              current={page}
-              pageSize={pageSize}
-              total={total}
-              showSizeChanger={false}
-              onChange={setPage}
-            />
-          </div>
-        )}
-      </div>
+      <Collapse
+        defaultActiveKey={categories.map(category => category.key)}
+        className="personnel-category-list"
+        items={categories.map(category => {
+          const state = categoryStates[category.key]
+          const changePage = (page: number) => setCategoryStates(previous => ({
+            ...previous,
+            [category.key]: { ...previous[category.key], page },
+          }))
+          return {
+            key: category.key,
+            label: (
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="font-semibold text-slate-800">{category.label}</span>
+                <Tag>{state.total} 人</Tag>
+                <span className="text-xs text-slate-400">{category.description}</span>
+              </div>
+            ),
+            children: (
+              <>
+                <div className="hidden md:block">
+                  <AppTable<GridMember>
+                    columns={memberColumns.filter(column => (
+                      canViewSensitive || !['phone', 'id_card_masked', 'notes'].includes(String(column.key))
+                    ))}
+                    dataSource={state.rows}
+                    emptyText={state.error || '该分类暂无人员'}
+                    loading={state.loading}
+                    pagination={{
+                      current: state.page,
+                      pageSize,
+                      total: state.total,
+                      hideOnSinglePage: true,
+                      showSizeChanger: false,
+                      showTotal: count => `共 ${count} 人`,
+                      onChange: changePage,
+                    }}
+                    rowClassName={member => (
+                      member.effective_status === '离岗' ? 'app-table-row--muted' : ''
+                    )}
+                    rowKey="id"
+                    scroll={{ x: 1250 }}
+                  />
+                </div>
+                <div className="md:hidden">
+                  {state.loading ? (
+                    <Card size="small"><Skeleton active paragraph={{ rows: 4 }} /></Card>
+                  ) : state.rows.length ? (
+                    <div className="space-y-3">
+                      {state.rows.map(member => (
+                        <MobileMemberCard
+                          key={member.id}
+                          member={member}
+                          onEdit={() => setEditing(member)}
+                          onLeave={() => setLeaveEditing(member)}
+                          onDelete={() => handleDelete(member.id, member.name)}
+                          canManage={canManage}
+                          canManageAttendance={canManageAttendance}
+                          canViewSensitive={canViewSensitive}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <Card size="small">
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={state.error || '该分类暂无人员'} />
+                    </Card>
+                  )}
+                  {!state.loading && state.total > pageSize && (
+                    <div className="mt-4 flex justify-center">
+                      <Pagination
+                        simple
+                        current={state.page}
+                        pageSize={pageSize}
+                        total={state.total}
+                        showSizeChanger={false}
+                        onChange={changePage}
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
+            ),
+          }
+        })}
+      />
 
       {canManage && (showAddForm || editing) && (
         <MemberForm
@@ -791,6 +875,7 @@ function MemberForm({
   const [notes, setNotes] = useState(member?.notes || '')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -850,9 +935,11 @@ function MemberForm({
             onChange={setDepartmentId}
             placeholder="请选择部门"
             className="w-full"
-            disabled={['片长', '中队长', '基础管控'].includes(position)}
+            disabled={internalPosition}
             options={departments
-              .filter(item => item.type === 'community')
+              .filter(item => internalPosition
+                ? item.type === 'internal'
+                : item.type === 'community')
               .map(item => ({ value: item.id, label: item.name }))}
           />
         </div>
@@ -862,7 +949,18 @@ function MemberForm({
           </label>
           <Select
             value={position}
-            onChange={setPosition}
+            onChange={(value: PersonnelPosition) => {
+              setPosition(value)
+              const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
+              const currentDepartment = departments.find(item => item.id === departmentId)
+              if (nextIsInternal) {
+                setDepartmentId(
+                  departments.find(item => item.type === 'internal')?.id || null,
+                )
+              } else if (currentDepartment?.type === 'internal') {
+                setDepartmentId(null)
+              }
+            }}
             className="w-full"
             options={PERSONNEL_POSITIONS.map(item => ({
               value: item,
@@ -873,7 +971,7 @@ function MemberForm({
             <span className="flex items-start gap-1.5 leading-5">
               <InfoCircleOutlined className="mt-0.5 shrink-0" />
               <span>
-                出租房汇总岗位由超级管理员配置；“自购房”岗位进入单独的自购房汇总。
+                在线汇总固定统计有社区部门的组长和组员；出租房汇总岗位可配置，“自购房”岗位进入单独汇总。社区民警必须选择主要社区，所队领导固定归属内勤。
               </span>
             </span>
           </p>

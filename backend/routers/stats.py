@@ -12,10 +12,7 @@ from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
-from services.report_builders.summary import (
-    build_summary_with_subreports,
-    get_summary,
-)
+from services.report_builders.summary import get_summary
 from services.report_range import get_report_range, get_summary_range
 from services.report_overview import get_online_overview
 from services.report_view import project_report_payload
@@ -26,7 +23,6 @@ from services.data_scope import (
 )
 from services.permissions import (
     ONLINE_SUMMARY_VIEW,
-    REPORT_BUILD,
     REPORT_CONFIG_MANAGE,
 )
 
@@ -163,26 +159,6 @@ async def get_overview(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.post("/build")
-async def build_report(
-    report_date: Optional[str] = Query(None, description="yyyy-MM-dd，默认今天"),
-    parser_type: str = Query("全链条"),
-    user: dict = Depends(require_permission(REPORT_BUILD)),
-):
-    """手动触发日报生成"""
-    del user
-    d = report_date or (await get_business_date_from_db()).isoformat()
-    if parser_type == "总汇总表":
-        result = await build_summary_with_subreports(d)
-        if not result.get("implemented"):
-            return {"message": result.get("message", ""), "implemented": False}
-        return {"message": "分汇总表和总汇总表生成成功", **result}
-    result = await builder.build(d, parser_type)
-    if not result.get("implemented"):
-        return {"message": result.get("message", "未实现"), "implemented": False}
-    return {"message": "日报生成成功", **result}
 
 
 @router.get("/report")

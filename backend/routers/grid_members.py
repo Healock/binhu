@@ -15,7 +15,7 @@ from services.grid_member_status import (
     get_status_snapshot,
     validate_leave_period,
 )
-from services.personnel_positions import normalize_position
+from services.personnel_positions import POSITION_CATEGORIES, normalize_position
 from services.privacy import mask_identity_number
 from services.visit_import import normalize_community
 from services.permissions import (
@@ -183,7 +183,7 @@ async def _resolve_department(cur, position: str, department_id: int | None):
         return int(row[0]), ""
     if department_id is None:
         if position in COMMUNITY_POSITIONS:
-            raise HTTPException(400, "组长和组员必须选择社区部门")
+            raise HTTPException(400, "该岗位必须选择社区部门")
         return None, ""
     await cur.execute(
         """
@@ -276,6 +276,7 @@ async def list_members(
     keyword: Optional[str] = Query(None),
     community: Optional[str] = Query(None),
     position: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     user: dict = Depends(require_permission(PERSONNEL_BASIC_VIEW)),
@@ -308,6 +309,15 @@ async def list_members(
             raise HTTPException(400, str(exc)) from exc
         where_parts.append("member.position = %s")
         params.append(position)
+    base_where_parts = list(where_parts)
+    base_params = list(params)
+    if category:
+        category_positions = POSITION_CATEGORIES.get(category)
+        if not category_positions:
+            raise HTTPException(400, "未知的人员分类")
+        placeholders = ", ".join(["%s"] * len(category_positions))
+        where_parts.append(f"member.position IN ({placeholders})")
+        params.extend(category_positions)
     where = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     async with conn.cursor() as cur:
@@ -321,6 +331,31 @@ async def list_members(
         """
         await cur.execute(f"SELECT COUNT(*) {joins}{where}", params)
         total = (await cur.fetchone())[0]
+        base_where = (
+            f" WHERE {' AND '.join(base_where_parts)}"
+            if base_where_parts else ""
+        )
+        await cur.execute(
+            f"""
+            SELECT
+                CASE
+                    WHEN member.position IN ('组员','组长','自购房','片长')
+                        THEN 'flow_work'
+                    WHEN member.position IN ('基础管控','中队长')
+                        THEN 'internal_business'
+                    WHEN member.position IN ('社区民警','所队领导')
+                        THEN 'police_leadership'
+                    ELSE 'other'
+                END AS category_code,
+                COUNT(*)
+            {joins}{base_where}
+            GROUP BY category_code
+            """,
+            base_params,
+        )
+        category_counts = {
+            str(row[0]): int(row[1]) for row in await cur.fetchall()
+        }
         offset = (page - 1) * page_size
         await cur.execute(
             f"SELECT member.id, member.name, "
@@ -348,6 +383,7 @@ async def list_members(
         "page": page,
         "page_size": page_size,
         "as_of_date": business_date,
+        "category_counts": category_counts,
     }
 
 

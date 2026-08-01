@@ -1,4 +1,4 @@
-"""人员岗位和两套汇总的参与范围。"""
+"""人员岗位分类、固定在线口径及可配置的走访/备勤范围。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,16 @@ POSITION_OPTIONS = (
     "片长",
     "组长",
     "组员",
+    "社区民警",
+    "所队领导",
 )
 DEFAULT_SUMMARY_POSITIONS = ("组长", "组员")
+ONLINE_SUMMARY_POSITIONS = ("组长", "组员")
+POSITION_CATEGORIES = {
+    "flow_work": ("组员", "组长", "自购房", "片长"),
+    "internal_business": ("基础管控", "中队长"),
+    "police_leadership": ("社区民警", "所队领导"),
+}
 ONLINE_POSITION_CONFIG_KEY = "online_summary_positions"
 VISIT_POSITION_CONFIG_KEY = "visit_summary_positions"
 WEEKEND_DUTY_POSITION_CONFIG_KEY = "weekend_duty_positions"
@@ -107,6 +115,32 @@ async def get_known_personnel_positions(cur) -> dict[str, str]:
     return {
         normalized_person_name(name): str(position or "组员").strip() or "组员"
         for name, position in await cur.fetchall()
+    }
+
+
+async def get_eligible_online_personnel(cur) -> dict[str, dict[str, str]]:
+    """返回在线汇总允许统计的人员及其有效社区部门。"""
+    await cur.execute(
+        """
+        SELECT member.name, member.position, community.name
+        FROM OnlineData._grid_members AS member
+        JOIN OnlineData._departments AS department
+          ON department.id=member.department_id
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS community
+          ON community.id=department.community_id
+        WHERE member.position IN ('组长', '组员')
+          AND TRIM(member.name) <> ''
+          AND TRIM(community.name) <> ''
+        """
+    )
+    return {
+        normalized_person_name(name): {
+            "name": str(name).strip(),
+            "position": str(position).strip(),
+            "community": str(community).strip(),
+        }
+        for name, position, community in await cur.fetchall()
     }
 
 

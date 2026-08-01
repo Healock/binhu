@@ -17,12 +17,17 @@ from services.permissions import (
     SYNC_TRIGGER,
     permitted_community,
 )
+from routers.sync import router as sync_router
 
 
 class FakeCursor:
-    def __init__(self, row, config=None):
+    def __init__(self, row, config=None, group_rows=None):
         self.row = row
         self.config = config or [("session_idle_minutes", "30"), ("permission_enforcement_enabled", "1")]
+        self.group_rows = group_rows or [(
+            2, "flow_post", "流口岗",
+            '["online.summary.view"]', "own_department", 10,
+        )]
         self.result = None
         self.updates = []
 
@@ -37,6 +42,15 @@ class FakeCursor:
             self.result = self.row
         elif "SELECT config_key" in sql:
             self.result = list(self.config)
+        elif "FROM _grid_members AS member" in sql and "_position_permission_group_links" in sql:
+            self.result = list(self.group_rows)
+        elif "FROM _user_permission_group_links AS link" in sql:
+            self.result = list(self.group_rows)
+        elif "FROM _permission_groups WHERE id" in sql:
+            self.result = (
+                2, "flow_post", "流口岗",
+                '["online.summary.view"]', "own_department", 10,
+            )
         elif "UPDATE _sessions SET last_activity_at" in sql:
             self.updates.append((sql, params))
             self.result = None
@@ -81,13 +95,13 @@ def user_row(
     now=None,
     display_name="显示姓名",
     member_name="张三",
+    assignment_mode="inherited",
 ):
     now = now or datetime(2026, 7, 31, 8, 0, 0)
     created = now - timedelta(minutes=10)
     return (
         1, "tester", "member", "table", "three", "dock", None, "light",
-        8, 0, active_session,
-        2, "flow_post", "流口岗", '["online.summary.view"]', "own_department",
+        8, assignment_mode, 0, active_session, 2,
         member_name, "组员", 5, "长板", "community", "长板",
         created, last_activity or created, now + timedelta(hours=20), now,
         display_name,
@@ -95,6 +109,24 @@ def user_row(
 
 
 class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
+    def test_sync_status_only_requires_login_but_trigger_keeps_permission(self):
+        status_route = next(
+            route for route in sync_router.routes
+            if route.path == "/api/sync/status"
+        )
+        trigger_route = next(
+            route for route in sync_router.routes
+            if route.path == "/api/sync/trigger"
+        )
+        self.assertIn(
+            "get_current_user",
+            {dependency.call.__name__ for dependency in status_route.dependant.dependencies},
+        )
+        self.assertNotIn(
+            "get_current_user",
+            {dependency.call.__name__ for dependency in trigger_route.dependant.dependencies},
+        )
+
     def test_position_default_groups_have_requested_boundaries(self):
         self.assertIn(ONLINE_SUMMARY_VIEW, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
         self.assertNotIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["global_viewer"]["permissions"])
@@ -109,6 +141,18 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
             "data_scope": "own_department",
             "department": {"type": "internal", "name": "内勤"},
         }), "")
+
+    def test_permission_specific_scope_does_not_cross_expand(self):
+        user = {
+            "data_scope": "own_department",
+            "permission_scopes": {
+                ONLINE_SUMMARY_VIEW: "all",
+                SYNC_TRIGGER: "own_department",
+            },
+            "department": {"type": "community", "community_name": "长板"},
+        }
+        self.assertIsNone(permitted_community(user, ONLINE_SUMMARY_VIEW))
+        self.assertEqual(permitted_community(user, SYNC_TRIGGER), "长板")
 
     def test_report_filter_keeps_alias_and_recalculates_later(self):
         payload = {
@@ -169,6 +213,31 @@ class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
         with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
             user = await get_current_user(request())
         self.assertEqual(user["display_name"], "关联姓名")
+
+    async def test_multiple_groups_merge_permissions_without_cross_scope(self):
+        cursor = FakeCursor(
+            user_row(assignment_mode="custom"),
+            group_rows=[
+                (
+                    2, "flow_post", "流口岗",
+                    '["online.summary.view", "sync.trigger"]',
+                    "own_department", 10,
+                ),
+                (
+                    3, "global_viewer", "全局查看组",
+                    '["online.summary.view"]', "all", 20,
+                ),
+            ],
+        )
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            user = await get_current_user(request())
+
+        self.assertEqual(
+            [group["code"] for group in user["permission_groups"]],
+            ["flow_post", "global_viewer"],
+        )
+        self.assertEqual(user["permission_scopes"][ONLINE_SUMMARY_VIEW], "all")
+        self.assertEqual(user["permission_scopes"][SYNC_TRIGGER], "own_department")
 
 
 if __name__ == "__main__":
