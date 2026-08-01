@@ -160,6 +160,16 @@ def permitted_community(
     user: dict[str, Any],
     permission: str | None = None,
 ) -> str | None:
+    communities = permitted_communities(user, permission)
+    if communities is None:
+        return None
+    return communities[0] if communities else ""
+
+
+def permitted_communities(
+    user: dict[str, Any],
+    permission: str | None = None,
+) -> list[str] | None:
     scope = user.get("data_scope")
     if permission:
         scope = (user.get("permission_scopes") or {}).get(
@@ -168,10 +178,20 @@ def permitted_community(
         )
     if scope == "all":
         return None
-    department = user.get("department") or {}
-    if department.get("type") != "community":
-        return ""
-    return str(department.get("community_name") or department.get("name") or "")
+    departments = user.get("departments")
+    if not isinstance(departments, list):
+        department = user.get("department") or {}
+        departments = [department] if department else []
+    result: list[str] = []
+    for department in departments:
+        if not isinstance(department, dict) or department.get("type") != "community":
+            continue
+        name = str(
+            department.get("community_name") or department.get("name") or ""
+        ).strip()
+        if name and name not in result:
+            result.append(name)
+    return result
 
 
 def catalog_payload() -> list[dict[str, str]]:

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 
 from database import get_db
 from deps import require_permission
-from services.data_scope import community_names_for_scope, community_scope
+from services.data_scope import community_names_for_scopes, community_scopes
 from services.permissions import VISIT_IMPORT, VISIT_SUMMARY_VIEW
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_timezone_name
@@ -85,13 +85,13 @@ async def coverage(
     user: dict = Depends(require_permission(VISIT_SUMMARY_VIEW)),
     conn=Depends(get_db),
 ):
-    scope = community_scope(user, VISIT_SUMMARY_VIEW)
+    scopes = community_scopes(user, VISIT_SUMMARY_VIEW)
     names = (
-        await community_names_for_scope(conn, scope)
-        if scope is not None
+        await community_names_for_scopes(conn, scopes)
+        if scopes is not None
         else None
     )
-    return await get_visit_coverage(conn, scope, names)
+    return await get_visit_coverage(conn, scopes, names)
 
 
 @router.get("/summary")
@@ -107,10 +107,10 @@ async def summary(
             status_code=400,
             detail="开始日期不能晚于结束日期",
         )
-    scope = community_scope(user, VISIT_SUMMARY_VIEW)
+    scopes = community_scopes(user, VISIT_SUMMARY_VIEW)
     names = (
-        await community_names_for_scope(conn, scope)
-        if scope is not None
+        await community_names_for_scopes(conn, scopes)
+        if scopes is not None
         else None
     )
     return await get_visit_summary(
@@ -118,7 +118,7 @@ async def summary(
         start_date,
         end_date,
         category=category,
-        community_scope=scope,
+        community_scope=scopes,
         community_names=names,
     )
 

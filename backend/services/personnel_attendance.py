@@ -124,14 +124,21 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
     await cur.execute(
         f"""
         SELECT member.id, member.name,
-               COALESCE(community.name, member.community), member.position
+               GROUP_CONCAT(DISTINCT community.name
+                   ORDER BY link.sort_order, community.name SEPARATOR '、'),
+               member.position
         FROM _grid_members AS member
+        LEFT JOIN _grid_member_department_links AS link
+          ON link.member_id=member.id
         LEFT JOIN _departments AS department
-          ON department.id=member.department_id
+          ON department.id=link.department_id
         LEFT JOIN _communities AS community
           ON community.id=department.community_id
         WHERE member.position IN ({placeholders})
-        ORDER BY COALESCE(community.name, member.community),
+        GROUP BY member.id, member.name, member.position, member.community
+        ORDER BY COALESCE(GROUP_CONCAT(DISTINCT community.name
+                     ORDER BY link.sort_order, community.name SEPARATOR '、'),
+                 member.community),
                  member.position, member.name
         """,
         duty_positions,
@@ -316,40 +323,63 @@ async def get_attendance_context(
     start_date: date,
     end_date: date,
     selected_positions: set[str],
-    community_scope: str | None = None,
+    community_scope: list[str] | None = None,
 ) -> dict[str, Any]:
     if selected_positions:
         placeholders = ", ".join(["%s"] * len(selected_positions))
+        scope_clause = ""
+        scope_params: list[str] = []
+        if community_scope is not None:
+            if community_scope:
+                scope_placeholders = ", ".join(["%s"] * len(community_scope))
+                scope_clause = (
+                    "AND EXISTS (SELECT 1 "
+                    "FROM _grid_member_department_links AS scope_link "
+                    "JOIN _departments AS scope_department "
+                    "ON scope_department.id=scope_link.department_id "
+                    "JOIN _communities AS scope_community "
+                    "ON scope_community.id=scope_department.community_id "
+                    "WHERE scope_link.member_id=member.id "
+                    f"AND scope_community.name IN ({scope_placeholders}))"
+                )
+                scope_params = list(community_scope)
+            else:
+                scope_clause = "AND 1=0"
         await cur.execute(
             f"""
-            SELECT member.id, member.name,
-                   COALESCE(community.name, member.community), member.position
+            SELECT member.id, member.name, community.name, member.position,
+                   link.sort_order
             FROM _grid_members AS member
+            LEFT JOIN _grid_member_department_links AS link
+              ON link.member_id=member.id
             LEFT JOIN _departments AS department
-              ON department.id=member.department_id
+              ON department.id=link.department_id
             LEFT JOIN _communities AS community
               ON community.id=department.community_id
             WHERE member.position IN ({placeholders})
-              {"AND community.name=%s" if community_scope is not None else ""}
-            ORDER BY COALESCE(community.name, member.community), member.name
+              {scope_clause}
+            ORDER BY member.name, link.sort_order, community.name
             """,
-            [
-                *sorted(selected_positions),
-                *([community_scope] if community_scope is not None else []),
-            ],
+            [*sorted(selected_positions), *scope_params],
         )
         member_rows = await cur.fetchall()
     else:
         member_rows = []
-    members = {
-        str(row[1]): {
+    members: dict[str, dict[str, Any]] = {}
+    for row in member_rows:
+        name = str(row[1])
+        member = members.setdefault(name, {
             "id": int(row[0]),
-            "name": str(row[1]),
-            "community": str(row[2] or "未分配社区"),
+            "name": name,
+            "community": "未分配社区",
+            "communities": [],
             "position": str(row[3]),
-        }
-        for row in member_rows
-    }
+        })
+        community = str(row[2] or "").strip()
+        if community and community not in member["communities"]:
+            member["communities"].append(community)
+            if member["community"] == "未分配社区":
+                member["community"] = community
     periods = await list_attendance_periods(
         cur,
         start_date=start_date,
@@ -458,6 +488,7 @@ def allocate_person_days(
     include_unknown: bool,
 ) -> dict[str, Any]:
     allocations: dict[str, Decimal] = defaultdict(Decimal)
+    total_person_days = Decimal(0)
     worked_while_off = 0
     unknown_participant_days = 0
     members = context["members"]
@@ -471,6 +502,7 @@ def allocate_person_days(
                 worked_while_off += 1
             if not on_duty:
                 continue
+            total_person_days += Decimal(1)
             if visits:
                 visit_total = sum(visits.values())
                 for community, count in visits.items():
@@ -478,13 +510,16 @@ def allocate_person_days(
                         Decimal(count) / Decimal(visit_total)
                     )
             else:
-                allocations[member["community"]] += Decimal(1)
+                communities = member.get("communities") or [member["community"]]
+                for community in communities:
+                    allocations[community] += Decimal(1)
 
     if include_unknown:
         for (target_date, name), visits in daily_visits.items():
             if name in members:
                 continue
             unknown_participant_days += 1
+            total_person_days += Decimal(1)
             visit_total = sum(visits.values())
             for community, count in visits.items():
                 allocations[community] += (
@@ -494,7 +529,7 @@ def allocate_person_days(
     complete = not context["missing_week_starts"]
     return {
         "community_person_days": dict(allocations),
-        "total_person_days": sum(allocations.values(), Decimal(0)),
+        "total_person_days": total_person_days,
         "complete": complete,
         "missing_week_starts": sorted(context["missing_week_starts"]),
         "history_started_on": context["history_started_on"],

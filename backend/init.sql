@@ -260,6 +260,23 @@ CREATE TABLE IF NOT EXISTS _departments (
     INDEX idx_department_type_active (department_type, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _grid_member_department_links (
+    member_id     INT NOT NULL,
+    department_id INT NOT NULL,
+    sort_order    INT NOT NULL DEFAULT 0,
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                  ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (member_id, department_id),
+    INDEX idx_member_department_department (department_id, member_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO _grid_member_department_links
+    (member_id, department_id, sort_order)
+SELECT id, department_id, 0
+FROM _grid_members
+WHERE department_id IS NOT NULL;
+
 INSERT IGNORE INTO _departments (name, department_type)
 VALUES ('内勤', 'internal');
 

@@ -289,6 +289,13 @@ export interface User extends UserPreferences {
     type: 'community' | 'internal'
     community_name: string | null
   } | null
+  departments: Array<{
+    id: number
+    name: string
+    type: 'community' | 'internal'
+    community_name: string | null
+  }>
+  community_names: string[]
   permission_group: { id: number | null; code: string; name: string }
   permission_groups: Array<{ id: number | null; code: string; name: string }>
   password_is_temporary: boolean

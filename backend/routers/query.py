@@ -7,7 +7,7 @@ from database import get_db
 from services.parsers import PARSER_REGISTRY, get_parser
 from services.schema_compat import get_database_column_map, quote_identifier
 from deps import require_permission
-from services.data_scope import community_names_for_scope, community_scope
+from services.data_scope import community_scopes, community_names_for_scopes
 from services.permissions import ONLINE_RAW_VIEW
 
 router = APIRouter(prefix="/api/query", tags=["数据查询"])
@@ -60,9 +60,9 @@ async def query_data(
 
     if not isinstance(user, dict):
         user = {"data_scope": "all"}
-    scope = community_scope(user, ONLINE_RAW_VIEW)
-    if scope is not None:
-        allowed_communities = await community_names_for_scope(conn, scope)
+    scopes = community_scopes(user, ONLINE_RAW_VIEW)
+    if scopes is not None:
+        allowed_communities = await community_names_for_scopes(conn, scopes)
         if not allowed_communities or "社区" not in columns:
             where_parts.append("1=0")
         else:
@@ -127,6 +127,6 @@ async def query_data(
         "page_size": page_size,
         "columns": columns,
     }
-    if scope == "":
+    if scopes == []:
         result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
     return result

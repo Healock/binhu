@@ -200,6 +200,20 @@ async def list_users(user: dict = Depends(require_super_admin)):
                 """
             )
             group_rows = await cur.fetchall()
+            await cur.execute(
+                """
+                SELECT link.member_id, department.id, department.name,
+                       department.department_type, community.name
+                FROM _grid_member_department_links AS link
+                JOIN _departments AS department
+                  ON department.id=link.department_id
+                LEFT JOIN _communities AS community
+                  ON community.id=department.community_id
+                ORDER BY link.member_id, link.sort_order,
+                         department.name, department.id
+                """
+            )
+            department_rows = await cur.fetchall()
     finally:
         pool.release(conn)
     groups_by_user: dict[int, list[dict]] = {}
@@ -208,6 +222,14 @@ async def list_users(user: dict = Depends(require_super_admin)):
             "id": int(group_id),
             "code": str(group_code),
             "name": str(group_name),
+        })
+    departments_by_member: dict[int, list[dict]] = {}
+    for member_id, department_id, name, department_type, community_name in department_rows:
+        departments_by_member.setdefault(int(member_id), []).append({
+            "id": int(department_id),
+            "name": str(name),
+            "type": str(department_type),
+            "community_name": str(community_name) if community_name else None,
         })
     return {"data": [
         {
@@ -223,7 +245,14 @@ async def list_users(user: dict = Depends(require_super_admin)):
             "member": (
                 {
                     "id": row[4], "name": row[9], "position": row[10],
-                    "department_name": row[11], "department_type": row[12],
+                    "department_name": (
+                        "、".join(
+                            item["name"]
+                            for item in departments_by_member.get(int(row[4]), [])
+                        ) or row[11]
+                    ),
+                    "department_type": row[12],
+                    "departments": departments_by_member.get(int(row[4]), []),
                 }
                 if row[4] is not None else None
             ),
@@ -371,6 +400,15 @@ async def update_user(
             ]
             fields = req.model_fields_set
             member_id = req.member_id if "member_id" in fields else existing[0]
+            if (
+                "member_id" in fields
+                and existing[0] is not None
+                and member_id != existing[0]
+            ):
+                raise HTTPException(
+                    409,
+                    "已关联账号不能在用户管理中解除或改绑，请到人员管理操作",
+                )
             assignment_mode = (
                 req.assignment_mode
                 if "assignment_mode" in fields
@@ -484,7 +522,7 @@ async def delete_user(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT permission_group.code
+                SELECT permission_group.code, user.member_id
                 FROM _users AS user
                 LEFT JOIN _permission_groups AS permission_group
                   ON permission_group.id=user.permission_group_id
@@ -497,6 +535,11 @@ async def delete_user(
                 raise HTTPException(404, "用户不存在")
             if existing[0] == "super_admin" and await _count_super_admins(cur) <= 1:
                 raise HTTPException(409, "必须至少保留一个超级管理员")
+            if existing[1] is not None:
+                raise HTTPException(
+                    409,
+                    "该账号已关联人员，请到人员管理联动删除",
+                )
             await cur.execute("DELETE FROM _sessions WHERE user_id=%s", (user_id,))
             await cur.execute("DELETE FROM _notifications WHERE user_id=%s", (user_id,))
             await cur.execute(

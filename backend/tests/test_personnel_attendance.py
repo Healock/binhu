@@ -184,6 +184,21 @@ class PersonnelAttendanceTests(unittest.TestCase):
         )
         self.assertEqual(result["total_person_days"], Decimal("1.00"))
 
+    def test_multi_community_member_counts_once_globally_and_once_per_community(self):
+        multi_context = context()
+        multi_context["members"]["张三"]["communities"] = ["长板", "阅湖"]
+        result = allocate_person_days(
+            start_date=date(2026, 7, 31),
+            end_date=date(2026, 7, 31),
+            daily_visits={},
+            context=multi_context,
+            include_unknown=True,
+        )
+
+        self.assertEqual(result["community_person_days"]["长板"], Decimal("1"))
+        self.assertEqual(result["community_person_days"]["阅湖"], Decimal("1"))
+        self.assertEqual(result["total_person_days"], Decimal("1"))
+
     def test_real_visit_overrides_rest_day_but_is_reported(self):
         result = allocate_person_days(
             start_date=date(2026, 8, 1),

@@ -56,13 +56,36 @@ async def _community_names(conn) -> list[str]:
 async def _community_officers(conn) -> dict[str, str]:
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT name, police_officers FROM _communities "
-            "WHERE name IS NOT NULL AND TRIM(name) <> '' "
-            "ORDER BY name"
+            """
+            SELECT community.name, member.name, community.police_officers
+            FROM _communities AS community
+            LEFT JOIN _departments AS department
+              ON department.community_id=community.id
+             AND department.department_type='community'
+            LEFT JOIN _grid_member_department_links AS link
+              ON link.department_id=department.id
+            LEFT JOIN _grid_members AS member
+              ON member.id=link.member_id
+             AND member.position='社区民警'
+            WHERE community.name IS NOT NULL
+              AND TRIM(community.name) <> ''
+            ORDER BY community.name, member.name
+            """
         )
         rows = await cur.fetchall()
     result: dict[str, str] = {}
-    for community, raw_officers in rows:
+    relation_names: dict[str, list[str]] = {}
+    legacy_values: dict[str, Any] = {}
+    for community, member_name, raw_officers in rows:
+        community_name = str(community).strip()
+        legacy_values[community_name] = raw_officers
+        name = str(member_name or "").strip()
+        if name and name not in relation_names.setdefault(community_name, []):
+            relation_names[community_name].append(name)
+    for community, raw_officers in legacy_values.items():
+        if relation_names.get(community):
+            result[community] = "、".join(relation_names[community])
+            continue
         officers = raw_officers
         if isinstance(raw_officers, str):
             try:
@@ -76,7 +99,7 @@ async def _community_officers(conn) -> dict[str, str]:
             for name in officers
             if str(name).strip()
         ]
-        result[str(community).strip()] = "、".join(names)
+        result[community] = "、".join(names)
     return result
 
 
