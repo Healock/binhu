@@ -83,7 +83,8 @@ def _draft_payload(row, user: dict) -> dict:
         last_export_at,
         created_at,
         updated_at,
-    ) = row
+    ) = row[:13]
+    owner_display_name = row[13] if len(row) > 13 else owner_username
     return {
         "id": draft_id,
         "report_type": report_type,
@@ -91,6 +92,7 @@ def _draft_payload(row, user: dict) -> dict:
         "owner": {
             "id": owner_user_id,
             "username": owner_username,
+            "display_name": owner_display_name or owner_username,
         },
         "can_edit": int(owner_user_id) == int(user["id"]),
         "template_version": template_version,
@@ -118,7 +120,9 @@ def _draft_summary(row) -> dict:
         updated_at,
         created_by,
         creator_username,
-    ) = row
+    ) = row[:12]
+    owner_display_name = row[12] if len(row) > 12 else owner_username
+    creator_display_name = row[13] if len(row) > 13 else creator_username
     return {
         "id": draft_id,
         "report_type": report_type,
@@ -126,10 +130,16 @@ def _draft_summary(row) -> dict:
         "owner": {
             "id": owner_user_id,
             "username": owner_username,
+            "display_name": owner_display_name or owner_username,
         },
         "creator": {
             "id": created_by,
             "username": creator_username or f"用户#{created_by}",
+            "display_name": (
+                creator_display_name
+                or creator_username
+                or f"用户#{created_by}"
+            ),
         },
         "template_version": template_version,
         "version": version,
@@ -222,7 +232,9 @@ async def _select_draft(cur, *, draft_id=None, report_type=None, business_date=N
     columns = (
         "id, report_type, business_date, owner_user_id, owner_username, "
         "template_version, system_snapshot, manual_values, override_values, "
-        "version, last_export_at, created_at, updated_at "
+        "version, last_export_at, created_at, updated_at, "
+        "COALESCE(NULLIF((SELECT display_name FROM _users "
+        "WHERE id=_work_log_drafts.owner_user_id), ''), owner_username) "
     )
     if draft_id is not None:
         await cur.execute(
@@ -309,14 +321,18 @@ async def list_drafts(
     normalized_keyword = (keyword or "").strip()
     if normalized_keyword:
         clauses.append(
-            "(d.owner_username LIKE %s OR COALESCE(creator.username, '') LIKE %s)"
+            "(d.owner_username LIKE %s OR "
+            "COALESCE(owner.display_name, '') LIKE %s OR "
+            "COALESCE(creator.username, '') LIKE %s OR "
+            "COALESCE(creator.display_name, '') LIKE %s)"
         )
         pattern = f"%{normalized_keyword}%"
-        params.extend([pattern, pattern])
+        params.extend([pattern, pattern, pattern, pattern])
     where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     from_clause = """
         FROM _work_log_drafts d
+        LEFT JOIN _users owner ON owner.id = d.owner_user_id
         LEFT JOIN _users creator ON creator.id = d.created_by
     """
     async with conn.cursor() as cur:
@@ -332,7 +348,9 @@ async def list_drafts(
                 d.id, d.report_type, d.business_date,
                 d.owner_user_id, d.owner_username, d.template_version,
                 d.version, d.last_export_at, d.created_at, d.updated_at,
-                d.created_by, creator.username
+                d.created_by, creator.username,
+                COALESCE(NULLIF(owner.display_name, ''), d.owner_username),
+                COALESCE(NULLIF(creator.display_name, ''), creator.username)
             {from_clause}
             {where_clause}
             ORDER BY d.business_date DESC, d.updated_at DESC, d.id DESC

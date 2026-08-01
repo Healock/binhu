@@ -9,6 +9,7 @@ import { getPermissionGroups, type PermissionGroupItem } from '../api/client'
 interface UserItem {
   id: number
   username: string
+  display_name: string
   role: string
   member_id: number | null
   assignment_mode: 'inherited' | 'custom'
@@ -43,6 +44,7 @@ export default function UserManagement() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<UserItem | null>(null)
   const [username, setUsername] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [memberId, setMemberId] = useState<number | null>(null)
   const [mode, setMode] = useState<'inherited' | 'custom'>('inherited')
@@ -79,6 +81,7 @@ export default function UserManagement() {
   const beginCreate = () => {
     setEditing(null)
     setUsername('')
+    setDisplayName('')
     setPassword('')
     setMemberId(null)
     setMode('inherited')
@@ -90,6 +93,7 @@ export default function UserManagement() {
   const beginEdit = (user: UserItem) => {
     setEditing(user)
     setUsername(user.username)
+    setDisplayName(user.display_name)
     setPassword('')
     setMemberId(user.member_id)
     setMode(user.assignment_mode)
@@ -99,6 +103,10 @@ export default function UserManagement() {
   }
 
   const save = async () => {
+    if (!displayName.trim()) {
+      message.error('请输入姓名')
+      return
+    }
     if (!editing && (!username.trim() || password.length < 8)) {
       message.error('请输入用户名和至少 8 个字符的初始密码')
       return
@@ -114,6 +122,7 @@ export default function UserManagement() {
     setSaving(true)
     try {
       const payload: Record<string, unknown> = {
+        display_name: displayName.trim(),
         member_id: memberId,
         assignment_mode: mode,
         permission_group_id: mode === 'custom' ? groupId : null,
@@ -164,7 +173,7 @@ export default function UserManagement() {
 
   const columns: TableColumnsType<UserItem> = [
     {
-      title: '账号', dataIndex: 'username', width: 160,
+      title: '姓名', dataIndex: 'display_name', width: 140,
       render: (value, user) => (
         <div>
           <div className="font-medium text-slate-900">{value}</div>
@@ -172,6 +181,7 @@ export default function UserManagement() {
         </div>
       ),
     },
+    { title: '登录用户名', dataIndex: 'username', width: 160 },
     {
       title: '关联人员', width: 220,
       render: (_, user) => user.member
@@ -221,7 +231,16 @@ export default function UserManagement() {
       >
         <div className="space-y-4 pt-2">
           <div>
-            <label className="mb-1.5 block text-sm font-medium">用户名</label>
+            <label className="mb-1.5 block text-sm font-medium">姓名</label>
+            <Input
+              value={displayName}
+              maxLength={100}
+              placeholder="用于平台内显示"
+              onChange={event => setDisplayName(event.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium">登录用户名</label>
             <Input value={username} disabled={Boolean(editing)} onChange={event => setUsername(event.target.value)} />
           </div>
           <div>
@@ -235,7 +254,12 @@ export default function UserManagement() {
               showSearch
               optionFilterProp="label"
               value={memberId}
-              onChange={setMemberId}
+              onChange={(value) => {
+                setMemberId(value)
+                if (!displayName.trim() && value) {
+                  setDisplayName(availableMembers.find(member => member.id === value)?.name || '')
+                }
+              }}
               className="w-full"
               options={availableMembers.map(member => ({
                 value: member.id,

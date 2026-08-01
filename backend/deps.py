@@ -62,7 +62,8 @@ async def get_current_user(request: Request) -> dict:
                        department.id, department.name,
                        department.department_type, community.name,
                        session.created_at, session.last_activity_at,
-                       session.expires_at, UTC_TIMESTAMP()
+                       session.expires_at, UTC_TIMESTAMP(),
+                       user.display_name
                 FROM _sessions AS session
                 JOIN _users AS user ON user.id=session.user_id
                 LEFT JOIN _permission_groups AS permission_group
@@ -163,6 +164,7 @@ async def get_current_user(request: Request) -> dict:
             return {
                 "id": row[0],
                 "username": row[1],
+                "display_name": str(row[26] or row[16] or row[1]),
                 "role": row[2],
                 "table_display_mode": row[3] or "table",
                 "report_column_mode": row[4] or "three",

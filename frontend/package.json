@@ -1,13 +1,13 @@
 {
   "name": "binhu-frontend",
   "private": true,
-  "version": "0.9.0",
+  "version": "0.9.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/themeMode.test.ts tests/workLog.test.ts",
+    "test": "node --experimental-strip-types --test tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/themeMode.test.ts tests/workLog.test.ts tests/userDisplayName.test.ts",
     "test:totals": "node --experimental-strip-types --test tests/tableTotals.test.ts"
   },
   "dependencies": {

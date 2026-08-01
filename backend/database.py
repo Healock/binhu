@@ -179,6 +179,10 @@ async def ensure_permission_schema(cur) -> None:
     """)
 
     for column_name, definition in [
+        (
+            "display_name",
+            "VARCHAR(100) NOT NULL DEFAULT '' AFTER username",
+        ),
         ("member_id", "INT DEFAULT NULL AFTER role"),
         ("permission_group_id", "INT DEFAULT NULL AFTER member_id"),
         (
@@ -981,6 +985,7 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS _users (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         username VARCHAR(50) NOT NULL UNIQUE,
+                        display_name VARCHAR(100) NOT NULL DEFAULT '',
                         password_hash VARCHAR(255) NOT NULL,
                         role ENUM('super_admin','admin','leader','member') NOT NULL DEFAULT 'member',
                         table_display_mode VARCHAR(10) NOT NULL DEFAULT 'table',
@@ -994,6 +999,10 @@ class DatabaseManager:
                 """)
                 # 旧用户表平滑补齐账号级个性化设置
                 for column_name, column_definition in [
+                    (
+                        "display_name",
+                        "VARCHAR(100) NOT NULL DEFAULT '' AFTER username",
+                    ),
                     (
                         "table_display_mode",
                         "VARCHAR(10) NOT NULL DEFAULT 'table'",

@@ -305,6 +305,7 @@ CREATE TABLE IF NOT EXISTS _permission_change_log (
 CREATE TABLE IF NOT EXISTS _users (
     id                       INT AUTO_INCREMENT PRIMARY KEY,
     username                 VARCHAR(50) NOT NULL UNIQUE,
+    display_name             VARCHAR(100) NOT NULL DEFAULT '',
     password_hash            VARCHAR(255) NOT NULL,
     role                     ENUM('super_admin','admin','leader','member')
                              NOT NULL DEFAULT 'member',

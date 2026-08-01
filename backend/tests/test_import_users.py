@@ -9,7 +9,9 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from tools.import_users import (
+    apply_display_name_sync,
     apply_preview,
+    build_display_name_sync_preview,
     build_preview,
     read_rows,
     reject_duplicates,
@@ -245,7 +247,80 @@ class UserImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INSERT INTO _grid_members", cursor.calls[0][0])
         self.assertEqual(cursor.calls[0][1], ("甲", "组员"))
         self.assertIn("INSERT INTO _users", cursor.calls[1][0])
-        self.assertEqual(cursor.calls[1][1][3], 88)
+        self.assertEqual(cursor.calls[1][1][4], 88)
+
+    async def test_new_accounts_store_their_display_name(self):
+        class ApplyCursor:
+            def __init__(self):
+                self.calls = []
+                self.lastrowid = 1
+
+            async def execute(self, sql, params=None):
+                self.calls.append((" ".join(sql.split()), params))
+
+        cursor = ApplyCursor()
+        await apply_preview(cursor, [{
+            "action": "create_unlinked",
+            "username": "police",
+            "member_id": None,
+            "name": "社区民警甲",
+            "position": "社区民警",
+            "department": "不关联人员资料",
+            "permission_group_id": 40,
+            "permission_group_code": "admin",
+            "permission_group": "管理员",
+            "assignment_mode": "custom",
+            "legacy_role": "admin",
+            "create_member": False,
+        }], "hashed-password")
+
+        self.assertIn("display_name", cursor.calls[0][0])
+        self.assertEqual(cursor.calls[0][1][1], "社区民警甲")
+
+    async def test_display_name_sync_only_fills_blank_names(self):
+        class SyncCursor:
+            def __init__(self):
+                self.result = []
+                self.updates = []
+
+            async def execute(self, sql, params=None):
+                if sql.startswith("SELECT id, username"):
+                    self.result = [
+                        (1, "blank", ""),
+                        (2, "kept", "已有姓名"),
+                    ]
+                else:
+                    self.updates.append((" ".join(sql.split()), params))
+
+            async def fetchall(self):
+                return list(self.result)
+
+        cursor = SyncCursor()
+        preview = await build_display_name_sync_preview(cursor, [
+            {"username": "blank", "name": "待补姓名", "position": ""},
+            {"username": "kept", "name": "名单姓名", "position": ""},
+        ])
+        self.assertEqual(
+            [item["action"] for item in preview],
+            ["fill_name", "skip_populated"],
+        )
+
+        await apply_display_name_sync(cursor, preview)
+        self.assertEqual(len(cursor.updates), 1)
+        self.assertEqual(cursor.updates[0][1], ("待补姓名", 1))
+
+    async def test_display_name_sync_rejects_unknown_accounts(self):
+        class EmptyCursor:
+            async def execute(self, *_):
+                return None
+
+            async def fetchall(self):
+                return []
+
+        with self.assertRaisesRegex(ValueError, "1 个用户名尚未创建"):
+            await build_display_name_sync_preview(EmptyCursor(), [{
+                "username": "missing", "name": "未创建", "position": "",
+            }])
 
 
 if __name__ == "__main__":

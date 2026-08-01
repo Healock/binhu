@@ -303,16 +303,59 @@ async def apply_preview(
         await cur.execute(
             """
             INSERT INTO _users (
-                username, password_hash, role, member_id,
+                username, display_name, password_hash, role, member_id,
                 permission_group_id, group_assignment_mode,
                 password_is_temporary
-            ) VALUES (%s, %s, %s, %s, %s, %s, 1)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
             """,
             (
-                item["username"], password_hash, item["legacy_role"],
+                item["username"], item["name"], password_hash,
+                item["legacy_role"],
                 member_id, item["permission_group_id"],
                 item["assignment_mode"],
             ),
+        )
+
+
+async def build_display_name_sync_preview(
+    cur,
+    rows: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """生成只补空姓名的预览，不改变账号的任何其他属性。"""
+    await cur.execute("SELECT id, username, display_name FROM _users")
+    users = {str(row[1]): row for row in await cur.fetchall()}
+    missing = sorted({item["username"] for item in rows} - set(users))
+    if missing:
+        raise ValueError(f"名单中有 {len(missing)} 个用户名尚未创建")
+
+    preview: list[dict[str, Any]] = []
+    for item in rows:
+        existing = users[item["username"]]
+        preview.append({
+            "action": (
+                "skip_populated"
+                if str(existing[2] or "").strip()
+                else "fill_name"
+            ),
+            "user_id": int(existing[0]),
+            "username": item["username"],
+            "display_name": item["name"],
+        })
+    return preview
+
+
+async def apply_display_name_sync(
+    cur,
+    preview: list[dict[str, Any]],
+) -> None:
+    """仅更新仍为空的姓名，避免预览后并发覆盖管理员修改。"""
+    for item in preview:
+        if item["action"] != "fill_name":
+            continue
+        await cur.execute(
+            "UPDATE _users SET display_name=%s WHERE id=%s "
+            "AND (display_name IS NULL OR TRIM(display_name)='')",
+            (item["display_name"], item["user_id"]),
         )
 
 
@@ -326,6 +369,28 @@ async def run(args) -> None:
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            if args.sync_display_names:
+                preview = await build_display_name_sync_preview(cur, rows)
+                fill_count = sum(
+                    item["action"] == "fill_name" for item in preview
+                )
+                skip_count = len(preview) - fill_count
+                print(
+                    f"姓名回填预览：待补 {fill_count}，已有姓名跳过 {skip_count}。"
+                )
+                if not args.apply:
+                    print("当前为预览模式，数据库未修改。")
+                    return
+                await conn.begin()
+                try:
+                    await apply_display_name_sync(cur, preview)
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
+                print("姓名回填完成；密码、权限、人员关联和会话均未修改。")
+                return
+
             preview = await build_preview(cur, rows)
             print("动作\t用户名\t姓名\t所属部门\t岗位\t权限组")
             for item in preview:
@@ -401,6 +466,11 @@ def main() -> None:
     parser.add_argument("--file", required=True, help="私密 XLSX 名单路径")
     parser.add_argument("--apply", action="store_true", help="正式写入数据库")
     parser.add_argument(
+        "--sync-display-names",
+        action="store_true",
+        help="只为名单中的已有账号补充空白姓名",
+    )
+    parser.add_argument(
         "--password-env",
         default="BINHU_INITIAL_PASSWORD",
         help="保存统一初始密码的环境变量名",
@@ -415,6 +485,10 @@ def main() -> None:
     args = parser.parse_args()
     if (args.publish_announcement or args.enable_permissions) and not args.apply:
         parser.error("发布公告或启用权限前必须同时提供 --apply")
+    if args.sync_display_names and (
+        args.publish_announcement or args.enable_permissions
+    ):
+        parser.error("姓名回填模式不能同时发布公告或启用权限")
     asyncio.run(run(args))
 
 
