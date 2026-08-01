@@ -124,8 +124,10 @@ async def get_eligible_online_personnel(cur) -> dict[str, dict[str, str]]:
         """
         SELECT member.name, member.position, community.name
         FROM OnlineData._grid_members AS member
+        JOIN OnlineData._grid_member_department_links AS link
+          ON link.member_id=member.id
         JOIN OnlineData._departments AS department
-          ON department.id=member.department_id
+          ON department.id=link.department_id
          AND department.department_type='community'
         JOIN OnlineData._communities AS community
           ON community.id=department.community_id

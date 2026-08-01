@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import {
   changeOwnPassword,
   getCurrentUser,
+  fetchWithAuth,
   recordSessionActivity,
   saveUserPreferences,
 } from '../api/client'
@@ -41,12 +42,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = async (username: string, password: string) => {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetchWithAuth('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ username, password }),
-    })
+    }, { handleUnauthorized: false, markActivity: false })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
       const detail = data.detail
@@ -59,7 +60,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
+    await fetchWithAuth(
+      '/api/auth/logout',
+      { method: 'POST' },
+      { handleUnauthorized: false, markActivity: false },
+    ).catch(() => {})
     setUser(null)
   }
 

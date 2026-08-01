@@ -58,7 +58,9 @@ export default function Profile() {
                 {!user.permission_groups?.length && !user.permission_group && '-'}
               </div>
             </Descriptions.Item>
-            <Descriptions.Item label="所属部门">{user.department?.name || '未分配'}</Descriptions.Item>
+            <Descriptions.Item label="所属部门">
+              {user.departments?.map(item => item.name).join('、') || user.department?.name || '未分配'}
+            </Descriptions.Item>
             <Descriptions.Item label="岗位">{user.member?.position || '-'}</Descriptions.Item>
             <Descriptions.Item label="密码状态">
               {user.password_is_temporary

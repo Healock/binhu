@@ -4,7 +4,11 @@ import type { TableColumnsType } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
-import { getPermissionGroups, type PermissionGroupItem } from '../api/client'
+import {
+  fetchWithAuth,
+  getPermissionGroups,
+  type PermissionGroupItem,
+} from '../api/client'
 
 interface UserItem {
   id: number
@@ -30,6 +34,7 @@ interface MemberOption {
   name: string
   position: string
   department?: { name: string } | null
+  departments?: Array<{ name: string }>
 }
 
 function detailMessage(value: any, fallback: string) {
@@ -57,8 +62,8 @@ export default function UserManagement() {
     setLoading(true)
     try {
       const [userResponse, memberResponse, groupResponse] = await Promise.all([
-        fetch('/api/users', { credentials: 'include' }),
-        fetch('/api/grid-members?page_size=200', { credentials: 'include' }),
+        fetchWithAuth('/api/users'),
+        fetchWithAuth('/api/grid-members?page_size=200'),
         getPermissionGroups(),
       ])
       if (!userResponse.ok || !memberResponse.ok) throw new Error('加载失败')
@@ -134,7 +139,7 @@ export default function UserManagement() {
       }
       if (password) payload.password = password
       if (!editing) payload.username = username.trim()
-      const response = await fetch(
+      const response = await fetchWithAuth(
         editing ? `/api/users/${editing.id}` : '/api/users',
         {
           method: editing ? 'PUT' : 'POST',
@@ -164,7 +169,7 @@ export default function UserManagement() {
     cancelText: '取消',
     okButtonProps: { danger: true },
     onOk: async () => {
-      const response = await fetch(`/api/users/${user.id}`, {
+      const response = await fetchWithAuth(`/api/users/${user.id}`, {
         method: 'DELETE',
         credentials: 'include',
         headers: { 'X-User-Activity': '1' },
@@ -213,7 +218,16 @@ export default function UserManagement() {
       render: (_, user) => (
         <>
           <Button type="link" size="small" onClick={() => beginEdit(user)}>编辑</Button>
-          <Button type="link" danger size="small" onClick={() => remove(user)}>删除</Button>
+          <Button
+            type="link"
+            danger
+            size="small"
+            disabled={user.member_id !== null}
+            title={user.member_id !== null ? '请到人员管理联动删除' : undefined}
+            onClick={() => remove(user)}
+          >
+            删除
+          </Button>
         </>
       ),
     },
@@ -223,7 +237,7 @@ export default function UserManagement() {
     <div className="app-page">
       <PageHeader
         title="用户管理"
-        description="关联人员后可继承岗位权限，也可以为单个账号指定权限组"
+        description="人员账号在人员管理中建立并保持一对一；这里仍可维护系统账号和自定义权限"
         actions={<Button type="primary" icon={<PlusOutlined />} onClick={beginCreate}>添加账号</Button>}
       />
       {loading ? <LoadingState /> : users.length === 0 ? <EmptyState label="暂无用户" /> : (
@@ -260,10 +274,11 @@ export default function UserManagement() {
           <div>
             <label className="mb-1.5 block text-sm font-medium">关联人员</label>
             <Select
-              allowClear
+              allowClear={!editing?.member_id}
               showSearch
               optionFilterProp="label"
               value={memberId}
+              disabled={Boolean(editing?.member_id)}
               onChange={(value) => {
                 setMemberId(value)
                 if (!displayName.trim() && value) {
@@ -273,9 +288,14 @@ export default function UserManagement() {
               className="w-full"
               options={availableMembers.map(member => ({
                 value: member.id,
-                label: `${member.department?.name || '未分配部门'} · ${member.name}（${member.position}）`,
+                label: `${member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'} · ${member.name}（${member.position}）`,
               }))}
             />
+            {editing?.member_id && (
+              <p className="mt-1.5 text-xs text-slate-500">
+                已关联账号不能在此解除或改绑；误建资料由超级管理员在人员管理中联动删除。
+              </p>
+            )}
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium">权限来源</label>

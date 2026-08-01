@@ -132,8 +132,10 @@ async def get_active_members(
             TRIM(community.name),
             TRIM(g.name)
         FROM OnlineData._grid_members g
+        JOIN OnlineData._grid_member_department_links AS link
+          ON link.member_id=g.id
         JOIN OnlineData._departments AS department
-          ON department.id=g.department_id
+          ON department.id=link.department_id
          AND department.department_type='community'
         JOIN OnlineData._communities AS community
           ON community.id=department.community_id
@@ -391,8 +393,10 @@ async def rebuild_community_report_table(
         FROM {inspector_table} AS report_row
         JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(report_row.姓名))
+        JOIN OnlineData._grid_member_department_links AS person_link
+          ON person_link.member_id=person.id
         JOIN OnlineData._departments AS department
-          ON department.id=person.department_id
+          ON department.id=person_link.department_id
          AND department.department_type='community'
         JOIN OnlineData._communities AS person_community
           ON person_community.id=department.community_id
@@ -438,8 +442,10 @@ async def rebuild_community_report_from_ledger(
           ON formal_community.id = community_alias.community_id
         JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(ledger.inspector))
+        JOIN OnlineData._grid_member_department_links AS person_link
+          ON person_link.member_id=person.id
         JOIN OnlineData._departments AS department
-          ON department.id=person.department_id
+          ON department.id=person_link.department_id
          AND department.department_type='community'
         JOIN OnlineData._communities AS person_community
           ON person_community.id=department.community_id
@@ -466,8 +472,10 @@ async def rebuild_community_report_from_ledger(
         FROM {inspector_table} AS report_row
         JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(report_row.姓名))
+        JOIN OnlineData._grid_member_department_links AS person_link
+          ON person_link.member_id=person.id
         JOIN OnlineData._departments AS department
-          ON department.id=person.department_id
+          ON department.id=person_link.department_id
          AND department.department_type='community'
         JOIN OnlineData._communities AS person_community
           ON person_community.id=department.community_id

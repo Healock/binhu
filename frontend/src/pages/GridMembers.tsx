@@ -39,6 +39,7 @@ import {
   getGridCommunities,
   getDepartments,
   getAttendanceHistory,
+  getUnlinkedAccountOptions,
   listGridMembers,
   updateGridMember,
   updateGridMemberLeave,
@@ -47,6 +48,7 @@ import {
   type AttendanceHistoryItem,
   type AttendanceScheduleStatus,
   type DepartmentOption,
+  type AccountOption,
 } from '../api/client'
 import {
   PERSONNEL_POSITIONS,
@@ -87,6 +89,7 @@ export default function GridMembers() {
   })
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [departments, setDepartments] = useState<DepartmentOption[]>([])
+  const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
   const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [communityFilter, setCommunityFilter] = useState('')
@@ -110,6 +113,9 @@ export default function GridMembers() {
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
   const canManageAttendance = Boolean(user?.permissions.includes('attendance.manage'))
   const canViewSensitive = Boolean(user?.permissions.includes('personnel.sensitive.view'))
+  const canDelete = Boolean(
+    user?.permission_groups.some(group => group.code === 'super_admin'),
+  )
 
   const fetch = useCallback(async () => {
     setCategoryStates(previous => Object.fromEntries(
@@ -156,16 +162,18 @@ export default function GridMembers() {
 
   const fetchCommunities = useCallback(async () => {
     try {
-      const [communityRows, departmentRows] = await Promise.all([
+      const [communityRows, departmentRows, accountRows] = await Promise.all([
         getGridCommunities(),
         getDepartments(),
+        canManage ? getUnlinkedAccountOptions() : Promise.resolve([]),
       ])
       setCommunities(communityRows)
       setDepartments(departmentRows)
+      setAccountOptions(accountRows)
     } catch {
       // 人员列表仍然可以独立显示。
     }
-  }, [])
+  }, [canManage])
 
   useEffect(() => { fetch() }, [fetch])
   useEffect(() => { fetchCommunities() }, [fetchCommunities])
@@ -211,7 +219,7 @@ export default function GridMembers() {
   const handleDelete = (id: number, name: string) => {
     Modal.confirm({
       title: '删除人员',
-      content: `确认删除人员“${name}”？`,
+      content: `确认联动删除人员“${name}”及其登录账号？相关会话会立即失效，此操作只应清理误建资料。`,
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -246,7 +254,7 @@ export default function GridMembers() {
       title: '所属部门',
       key: 'department',
       width: 150,
-      render: (_, member) => `${member.department?.name || '未分配部门'} · ${member.position}`,
+      render: (_, member) => `${member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'} · ${member.position}`,
     },
     {
       title: '岗位',
@@ -308,7 +316,7 @@ export default function GridMembers() {
           {canManageAttendance && <Button type="link" size="small" onClick={() => setLeaveEditing(member)}>
             请假
           </Button>}
-          {canManage && <Button
+          {canDelete && <Button
             type="link"
             danger
             size="small"
@@ -587,6 +595,7 @@ export default function GridMembers() {
                           onLeave={() => setLeaveEditing(member)}
                           onDelete={() => handleDelete(member.id, member.name)}
                           canManage={canManage}
+                          canDelete={canDelete}
                           canManageAttendance={canManageAttendance}
                           canViewSensitive={canViewSensitive}
                         />
@@ -620,6 +629,7 @@ export default function GridMembers() {
         <MemberForm
           member={editing}
           departments={departments}
+          accountOptions={accountOptions}
           onClose={() => {
             setShowAddForm(false)
             setEditing(null)
@@ -767,6 +777,7 @@ function MobileMemberCard({
   onLeave,
   onDelete,
   canManage,
+  canDelete,
   canManageAttendance,
   canViewSensitive,
 }: {
@@ -775,6 +786,7 @@ function MobileMemberCard({
   onLeave: () => void
   onDelete: () => void
   canManage: boolean
+  canDelete: boolean
   canManageAttendance: boolean
   canViewSensitive: boolean
 }) {
@@ -797,7 +809,7 @@ function MobileMemberCard({
             </Tag>
           </div>
           <div className="mt-1 truncate text-sm text-slate-500">
-            {member.department?.name || '未分配部门'}
+            {member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'}
           </div>
         </div>
         <Tag color={color} className="m-0 shrink-0">
@@ -838,14 +850,14 @@ function MobileMemberCard({
         )}
       </div>}
 
-      {(canManage || canManageAttendance) && <div className="mt-4 flex gap-2 border-t border-slate-200 pt-3">
+      {(canManage || canManageAttendance || canDelete) && <div className="mt-4 flex gap-2 border-t border-slate-200 pt-3">
         {canManage && <Button block icon={<EditOutlined />} onClick={onEdit}>
           编辑
         </Button>}
         {canManageAttendance && <Button block icon={<CalendarOutlined />} onClick={onLeave}>
           请假
         </Button>}
-        {canManage && <Button block danger icon={<DeleteOutlined />} onClick={onDelete}>
+        {canDelete && <Button block danger icon={<DeleteOutlined />} onClick={onDelete}>
           删除
         </Button>}
       </div>}
@@ -856,37 +868,61 @@ function MobileMemberCard({
 function MemberForm({
   member,
   departments,
+  accountOptions,
   onClose,
   onSaved,
 }: {
   member: GridMember | null
   departments: DepartmentOption[]
+  accountOptions: AccountOption[]
   onClose: () => void
   onSaved: () => void
 }) {
   const [name, setName] = useState(member?.name || '')
-  const [departmentId, setDepartmentId] = useState<number | null>(
-    member?.department_id || null,
+  const [departmentIds, setDepartmentIds] = useState<number[]>(
+    member?.department_ids || (member?.department_id ? [member.department_id] : []),
   )
   const [position, setPosition] = useState<PersonnelPosition>(
     (member?.position as PersonnelPosition) || '组员',
   )
   const [phone, setPhone] = useState(member?.phone || '')
   const [notes, setNotes] = useState(member?.notes || '')
+  const [accountMode, setAccountMode] = useState<'existing' | 'create'>('existing')
+  const [existingUserId, setExistingUserId] = useState<number | null>(null)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
+  const multipleCommunities = position === '社区民警'
+  const communityPosition = ['组长', '组员', '社区民警'].includes(position)
 
   const handleSave = async () => {
     if (!name.trim()) {
       setFormError('姓名不能为空')
       return
     }
+    if (communityPosition && departmentIds.length === 0) {
+      setFormError('该岗位必须选择社区部门')
+      return
+    }
+    if (!multipleCommunities && departmentIds.length > 1) {
+      setFormError('该岗位只能选择一个社区部门')
+      return
+    }
+    if (!member && accountMode === 'existing' && !existingUserId) {
+      setFormError('请选择要关联的已有账号')
+      return
+    }
+    if (!member && accountMode === 'create' && (!username.trim() || password.length < 8)) {
+      setFormError('请输入用户名和至少 8 个字符的初始密码')
+      return
+    }
     setSaving(true)
     setFormError('')
     try {
       const payload = {
-        department_id: departmentId,
+        department_ids: departmentIds,
         position,
         phone,
         notes,
@@ -894,11 +930,21 @@ function MemberForm({
       if (member) {
         await updateGridMember(member.id, payload)
       } else {
-        await createGridMember({ name: name.trim(), ...payload })
+        await createGridMember({
+          name: name.trim(),
+          ...payload,
+          account_mode: accountMode,
+          existing_user_id: accountMode === 'existing' ? existingUserId : null,
+          username: accountMode === 'create' ? username.trim() : undefined,
+          password: accountMode === 'create' ? password : undefined,
+        })
       }
       onSaved()
     } catch (error: any) {
-      setFormError(error?.response?.data?.detail || '保存失败')
+      const detail = error?.response?.data?.detail
+      setFormError(
+        typeof detail === 'object' ? detail?.message || '保存失败' : detail || '保存失败',
+      )
     } finally {
       setSaving(false)
     }
@@ -912,6 +958,7 @@ function MemberForm({
       cancelText="取消"
       confirmLoading={saving}
       maskClosable={!saving}
+      width={580}
       onOk={handleSave}
       onCancel={onClose}
     >
@@ -930,18 +977,33 @@ function MemberForm({
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             所属部门
           </label>
-          <Select
-            value={departmentId || undefined}
-            onChange={setDepartmentId}
-            placeholder="请选择部门"
-            className="w-full"
-            disabled={internalPosition}
-            options={departments
-              .filter(item => internalPosition
-                ? item.type === 'internal'
-                : item.type === 'community')
-              .map(item => ({ value: item.id, label: item.name }))}
-          />
+          {multipleCommunities ? (
+            <Select
+              mode="multiple"
+              value={departmentIds}
+              onChange={setDepartmentIds}
+              placeholder="可选择一个或多个社区"
+              className="w-full"
+              maxTagCount="responsive"
+              options={departments
+                .filter(item => item.type === 'community')
+                .map(item => ({ value: item.id, label: item.name }))}
+            />
+          ) : (
+            <Select
+              value={departmentIds[0]}
+              onChange={value => setDepartmentIds(value ? [value] : [])}
+              allowClear={!internalPosition && !communityPosition}
+              placeholder="请选择部门"
+              className="w-full"
+              disabled={internalPosition}
+              options={departments
+                .filter(item => internalPosition
+                  ? item.type === 'internal'
+                  : item.type === 'community')
+                .map(item => ({ value: item.id, label: item.name }))}
+            />
+          )}
         </div>
         <div>
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
@@ -952,13 +1014,14 @@ function MemberForm({
             onChange={(value: PersonnelPosition) => {
               setPosition(value)
               const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
-              const currentDepartment = departments.find(item => item.id === departmentId)
+              const currentDepartment = departments.find(item => item.id === departmentIds[0])
               if (nextIsInternal) {
-                setDepartmentId(
-                  departments.find(item => item.type === 'internal')?.id || null,
-                )
+                const internalId = departments.find(item => item.type === 'internal')?.id
+                setDepartmentIds(internalId ? [internalId] : [])
               } else if (currentDepartment?.type === 'internal') {
-                setDepartmentId(null)
+                setDepartmentIds([])
+              } else if (value !== '社区民警' && departmentIds.length > 1) {
+                setDepartmentIds(departmentIds.slice(0, 1))
               }
             }}
             className="w-full"
@@ -971,11 +1034,60 @@ function MemberForm({
             <span className="flex items-start gap-1.5 leading-5">
               <InfoCircleOutlined className="mt-0.5 shrink-0" />
               <span>
-                在线汇总固定统计有社区部门的组长和组员；出租房汇总岗位可配置，“自购房”岗位进入单独汇总。社区民警必须选择主要社区，所队领导固定归属内勤。
+                在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他社区岗位只能选择一个，内勤岗位自动归入内勤。
               </span>
             </span>
           </p>
         </div>
+        {!member && <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-2 font-medium text-slate-700">登录账号</div>
+          <Radio.Group
+            value={accountMode}
+            onChange={event => setAccountMode(event.target.value)}
+            options={[
+              { value: 'existing', label: '关联已有账号' },
+              { value: 'create', label: '同时创建账号' },
+            ]}
+          />
+          {accountMode === 'existing' ? (
+            <Select
+              showSearch
+              optionFilterProp="label"
+              value={existingUserId || undefined}
+              onChange={setExistingUserId}
+              placeholder="请选择尚未关联人员的账号"
+              className="mt-3 w-full"
+              options={accountOptions.map(account => ({
+                value: account.id,
+                label: `${account.display_name}（${account.username_masked}）`,
+              }))}
+            />
+          ) : (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Input
+                value={username}
+                onChange={event => setUsername(event.target.value)}
+                placeholder="登录用户名"
+                autoComplete="off"
+              />
+              <Input.Password
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                placeholder="至少 8 位初始密码"
+                autoComplete="new-password"
+              />
+            </div>
+          )}
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            账号姓名与人员姓名一致，默认继承该岗位的权限组；新账号会标记为临时密码。
+          </p>
+        </div>}
+        {member?.account && <Alert
+          type="info"
+          showIcon
+          message={`关联账号：${member.account.username_masked}`}
+          description="人员和账号保持一对一，不能在用户管理中单独解除关联。"
+        />}
         <div>
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             电话

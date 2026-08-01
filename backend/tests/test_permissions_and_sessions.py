@@ -15,6 +15,7 @@ from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_SUMMARY_VIEW,
     SYNC_TRIGGER,
+    permitted_communities,
     permitted_community,
 )
 from routers.sync import router as sync_router
@@ -51,6 +52,10 @@ class FakeCursor:
                 2, "flow_post", "流口岗",
                 '["online.summary.view"]', "own_department", 10,
             )
+        elif "FROM _grid_member_department_links AS link" in sql:
+            self.result = [
+                (8, 5, "长板", "community", "长板"),
+            ]
         elif "UPDATE _sessions SET last_activity_at" in sql:
             self.updates.append((sql, params))
             self.result = None
@@ -153,6 +158,16 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertIsNone(permitted_community(user, ONLINE_SUMMARY_VIEW))
         self.assertEqual(permitted_community(user, SYNC_TRIGGER), "长板")
+
+    def test_own_department_returns_all_linked_communities(self):
+        user = {
+            "data_scope": "own_department",
+            "departments": [
+                {"type": "community", "community_name": "南厍"},
+                {"type": "community", "community_name": "阅湖"},
+            ],
+        }
+        self.assertEqual(permitted_communities(user), ["南厍", "阅湖"])
 
     def test_report_filter_keeps_alias_and_recalculates_later(self):
         payload = {

@@ -164,8 +164,10 @@ async def _load_effective_tasks(
          AND first_event.event_rank = 1
         JOIN OnlineData._grid_members AS person
           ON LOWER(TRIM(person.name)) = LOWER(TRIM(latest.inspector))
+        JOIN OnlineData._grid_member_department_links AS person_link
+          ON person_link.member_id=person.id
         JOIN OnlineData._departments AS department
-          ON department.id=person.department_id
+          ON department.id=person_link.department_id
          AND department.department_type='community'
         JOIN OnlineData._communities AS person_community
           ON person_community.id=department.community_id
@@ -253,7 +255,7 @@ async def get_online_overview(
     start_date: str,
     end_date: str,
     parser_type: str,
-    community: str | None = None,
+    community: str | list[str] | None = None,
 ) -> dict[str, Any]:
     """返回跟随业务类型和日期区间变化的在线数据概览。"""
     if start_date > end_date:
@@ -306,8 +308,13 @@ async def get_online_overview(
                     "completion_rate": 0.0,
                 }
 
-            communities = None
-            if community is not None:
+            communities: list[str] | None = None
+            if isinstance(community, list):
+                communities = list(dict.fromkeys(
+                    str(value).strip() for value in community
+                    if str(value).strip()
+                ))
+            elif community is not None:
                 if not community:
                     communities = []
                 else:

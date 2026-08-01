@@ -279,7 +279,7 @@ async def get_visit_summary(
     selected_positions: set[str] | None = None,
     known_positions: dict[str, str] | None = None,
     attendance_context: dict[str, Any] | None = None,
-    community_scope: str | None = None,
+    community_scope: list[str] | str | None = None,
     community_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """查询闭区间内的走访，并按真实在岗人日计算社区人均值。"""
@@ -306,7 +306,10 @@ async def get_visit_summary(
         community_clause = ""
         query_params: tuple[Any, ...] = (start_date, end_date)
         if community_scope is not None:
-            allowed = community_names if community_names is not None else [community_scope]
+            allowed = community_names if community_names is not None else (
+                community_scope if isinstance(community_scope, list)
+                else [community_scope]
+            )
             if allowed:
                 placeholders = ",".join(["%s"] * len(allowed))
                 community_clause = f"AND TRIM(`社区`) IN ({placeholders})"
@@ -348,7 +351,10 @@ async def get_visit_summary(
                 start_date=start_date,
                 end_date=end_date,
                 selected_positions=selected_positions,
-                community_scope=community_scope,
+                community_scope=(
+                    community_scope if isinstance(community_scope, list)
+                    else ([community_scope] if community_scope else community_scope)
+                ),
             )
 
     inspector_totals: dict[tuple[str, str], dict[str, int]] = {}
@@ -459,6 +465,6 @@ async def get_visit_summary(
             ),
         },
     }
-    if community_scope == "":
+    if community_scope == "" or community_scope == []:
         result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
     return result

@@ -13,6 +13,63 @@ const api = axios.create({
   withCredentials: true,
 })
 const activeRequest = { headers: { 'X-User-Activity': '1' } }
+let unauthorizedRedirectStarted = false
+
+export function resetUnauthorizedRedirectForTests(): void {
+  unauthorizedRedirectStarted = false
+}
+
+export interface AuthFetchOptions {
+  handleUnauthorized?: boolean
+  markActivity?: boolean
+}
+
+export function handleUnauthorized(detail?: unknown): void {
+  if (window.location.pathname.includes('/login') || unauthorizedRedirectStarted) {
+    return
+  }
+  const payload = detail && typeof detail === 'object'
+    ? detail as { code?: unknown; message?: unknown }
+    : null
+  const code = typeof payload?.code === 'string'
+    ? payload.code
+    : 'session_expired'
+  const message = typeof payload?.message === 'string'
+    ? payload.message
+    : '登录状态已失效'
+  unauthorizedRedirectStarted = true
+  sessionStorage.setItem('auth_exit_reason', JSON.stringify({ code, message }))
+  window.location.href = '/login'
+}
+
+export async function fetchWithAuth(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  options: AuthFetchOptions = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const method = (init.method || 'GET').toUpperCase()
+  if (
+    options.markActivity !== false
+    && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+    && !headers.has('X-User-Activity')
+  ) {
+    headers.set('X-User-Activity', '1')
+  }
+  const response = await fetch(input, {
+    ...init,
+    credentials: init.credentials || 'include',
+    headers,
+  })
+  if (response.status === 401 && options.handleUnauthorized !== false) {
+    const body = await response.clone().json().catch(() => null)
+    const detail = body && typeof body === 'object'
+      ? (body as { detail?: unknown }).detail
+      : null
+    handleUnauthorized(detail)
+  }
+  return response
+}
 
 api.interceptors.request.use((config) => {
   const method = (config.method || 'get').toLowerCase()
@@ -29,12 +86,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error?.response?.status === 401 && !window.location.pathname.includes('/login')) {
-      const detail = error?.response?.data?.detail
-      const code = typeof detail === 'object' ? detail?.code : 'session_expired'
-      const message = typeof detail === 'object' ? detail?.message : '登录状态已失效'
-      sessionStorage.setItem('auth_exit_reason', JSON.stringify({ code, message }))
-      window.location.href = '/login'
+    if (error?.response?.status === 401) {
+      handleUnauthorized(error?.response?.data?.detail)
     }
     return Promise.reject(error)
   }
@@ -566,11 +619,14 @@ export interface GridMember {
   has_id_card?: boolean
   id_card_masked?: string
   department_id: number | null
-  department: {
+  department_ids: number[]
+  department: DepartmentOption | null
+  departments: DepartmentOption[]
+  community_names: string[]
+  account: {
     id: number
-    name: string
-    type: 'community' | 'internal'
-    community_name: string | null
+    username_masked: string
+    display_name: string
   } | null
 }
 
@@ -578,6 +634,7 @@ export interface GridMemberPayload {
   name?: string
   community?: string
   department_id?: number | null
+  department_ids?: number[]
   position?: string
   phone?: string
   notes?: string
@@ -594,6 +651,7 @@ export interface GridCommunity {
   grid_count: number
   aliases: string[]
   police_officers: string[]
+  police_officer_ids: number[]
 }
 
 export interface DepartmentOption {
@@ -605,6 +663,22 @@ export interface DepartmentOption {
 
 export async function getDepartments(): Promise<DepartmentOption[]> {
   const { data } = await api.get('/grid-members/departments')
+  return data.data
+}
+
+export interface AccountOption {
+  id: number
+  username_masked: string
+  display_name: string
+}
+
+export async function getUnlinkedAccountOptions(): Promise<AccountOption[]> {
+  const { data } = await api.get('/grid-members/unlinked-accounts')
+  return data.data
+}
+
+export async function getCommunityPoliceOptions(): Promise<Array<{ id: number; name: string }>> {
+  const { data } = await api.get('/grid-members/community-police-options')
   return data.data
 }
 
@@ -643,7 +717,7 @@ export async function updateGridCommunityDetails(
   id: number,
   name: string,
   aliases: string[],
-  policeOfficers: string[],
+  policeOfficerIds: number[],
 ): Promise<{
   name: string
   aliases: string[]
@@ -653,7 +727,7 @@ export async function updateGridCommunityDetails(
   const { data } = await api.put(`/grid-members/communities/${id}/aliases`, {
     name,
     aliases,
-    police_officers: policeOfficers,
+    police_officer_ids: policeOfficerIds,
   })
   return data
 }
@@ -663,7 +737,15 @@ export async function importCommunitiesFromData(): Promise<{ new_count: number; 
   return data
 }
 
-export async function createGridMember(payload: GridMemberPayload & { name: string }): Promise<void> {
+export type CreateGridMemberPayload = GridMemberPayload & {
+  name: string
+  account_mode: 'existing' | 'create'
+  existing_user_id?: number | null
+  username?: string
+  password?: string
+}
+
+export async function createGridMember(payload: CreateGridMemberPayload): Promise<void> {
   await api.post('/grid-members', payload)
 }
 

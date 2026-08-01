@@ -205,6 +205,36 @@ async def ensure_permission_schema(cur) -> None:
           AND member.community IS NOT NULL
           AND member.community<>''
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _grid_member_department_links (
+            member_id INT NOT NULL,
+            department_id INT NOT NULL,
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (member_id, department_id),
+            INDEX idx_member_department_department (department_id, member_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        DELETE link
+        FROM _grid_member_department_links AS link
+        JOIN _grid_members AS member ON member.id=link.member_id
+        WHERE member.position<>'社区民警'
+          AND (
+              member.department_id IS NULL
+              OR link.department_id<>member.department_id
+          )
+    """)
+    await cur.execute("""
+        INSERT IGNORE INTO _grid_member_department_links
+            (member_id, department_id, sort_order)
+        SELECT member.id, member.department_id, 0
+        FROM _grid_members AS member
+        WHERE member.department_id IS NOT NULL
+    """)
 
     for column_name, definition in [
         (

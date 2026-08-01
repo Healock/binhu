@@ -18,7 +18,6 @@ from services.report_overview import get_online_overview
 from services.report_view import project_report_payload
 from services.data_scope import (
     allowed_community_names,
-    community_scope,
     filter_report_payload,
 )
 from services.permissions import (
@@ -155,7 +154,7 @@ async def get_overview(
             start_date,
             end_date,
             parser_type,
-            community_scope(user),
+            await allowed_community_names(user),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

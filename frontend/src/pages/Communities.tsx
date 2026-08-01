@@ -6,6 +6,7 @@ import {
   getGridCommunities,
   addGridCommunity,
   deleteGridCommunity,
+  getCommunityPoliceOptions,
   updateGridCommunityDetails,
   type GridCommunity,
 } from '../api/client'
@@ -24,14 +25,20 @@ export default function Communities() {
   const [editingCommunity, setEditingCommunity] = useState<GridCommunity | null>(null)
   const [nameDraft, setNameDraft] = useState('')
   const [aliasDraft, setAliasDraft] = useState<string[]>([])
-  const [officerDraft, setOfficerDraft] = useState<string[]>([])
+  const [officerDraft, setOfficerDraft] = useState<number[]>([])
+  const [policeOptions, setPoliceOptions] = useState<Array<{ id: number; name: string }>>([])
   const [savingDetails, setSavingDetails] = useState(false)
 
   const fetch = useCallback(async () => {
     setLoading(true)
     setLoadError('')
     try {
-      setCommunities(await getGridCommunities())
+      const [communityRows, officerRows] = await Promise.all([
+        getGridCommunities(),
+        getCommunityPoliceOptions(),
+      ])
+      setCommunities(communityRows)
+      setPoliceOptions(officerRows)
     } catch {
       setLoadError('社区列表加载失败，请稍后重试')
     } finally {
@@ -70,7 +77,7 @@ export default function Communities() {
     setEditingCommunity(community)
     setNameDraft(community.name)
     setAliasDraft(community.aliases || [])
-    setOfficerDraft(community.police_officers || [])
+    setOfficerDraft(community.police_officer_ids || [])
   }
 
   const handleSaveDetails = async () => {
@@ -264,17 +271,19 @@ export default function Communities() {
           <div>
             <div className="mb-2 font-medium text-slate-700">社区民警</div>
             <p className="mb-3 text-sm text-slate-500">
-              输入姓名后按回车添加。可以添加多位，工作日志中会用“、”连接。
+              从人员管理中已登记的社区民警里选择。人员可以同时负责多个社区，工作日志中会用“、”连接。
             </p>
             <Select
-              mode="tags"
+              mode="multiple"
               value={officerDraft}
               onChange={setOfficerDraft}
-              tokenSeparators={[',', '，', '、']}
-              placeholder="例如：张三"
+              placeholder="请选择社区民警"
               className="w-full"
               maxTagCount="responsive"
-              options={[]}
+              options={policeOptions.map(item => ({
+                value: item.id,
+                label: item.name,
+              }))}
             />
           </div>
           <div>

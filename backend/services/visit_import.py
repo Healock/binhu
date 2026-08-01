@@ -532,14 +532,17 @@ def _utc_iso(value: datetime | None) -> str | None:
 
 async def get_visit_coverage(
     conn,
-    community_scope: str | None = None,
+    community_scope: list[str] | str | None = None,
     community_names: list[str] | None = None,
 ) -> dict[str, Any]:
     async with conn.cursor() as cur:
         where = ""
         params: list[str] = []
         if community_scope is not None:
-            allowed = community_names if community_names is not None else [community_scope]
+            allowed = community_names if community_names is not None else (
+                community_scope if isinstance(community_scope, list)
+                else [community_scope]
+            )
             if allowed:
                 placeholders = ",".join(["%s"] * len(allowed))
                 where = f" WHERE TRIM(`社区`) IN ({placeholders})"
@@ -607,7 +610,7 @@ async def get_visit_coverage(
         "last_detail_import_at": _utc_iso(last_imports.get("detail")),
         "last_rating_import_at": _utc_iso(last_imports.get("rating")),
     }
-    if community_scope == "":
+    if community_scope == "" or community_scope == []:
         result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
     return result
 

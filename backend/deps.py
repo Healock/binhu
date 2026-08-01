@@ -25,6 +25,7 @@ from services.permissions import (
     parse_permissions,
 )
 from services.theme_preferences import normalize_theme_mode
+from services.member_departments import get_member_departments
 
 
 def _auth_error(code: str, message: str) -> HTTPException:
@@ -247,14 +248,22 @@ async def get_current_user(request: Request) -> dict:
 
             primary_group = groups[0]
 
-            department = None
+            fallback_department = None
             if row[15] is not None:
-                department = {
+                fallback_department = {
                     "id": row[15],
                     "name": row[16],
                     "type": row[17],
                     "community_name": row[18],
                 }
+            departments = []
+            if row[8] is not None:
+                departments = (
+                    await get_member_departments(cur, [int(row[8])])
+                ).get(int(row[8]), [])
+            if not departments and fallback_department:
+                departments = [fallback_department]
+            department = departments[0] if departments else None
             member = None
             if row[8] is not None:
                 member = {
@@ -279,6 +288,11 @@ async def get_current_user(request: Request) -> dict:
                 "theme_mode": normalize_theme_mode(row[7]),
                 "member": member,
                 "department": department,
+                "departments": departments,
+                "community_names": [
+                    item["community_name"] for item in departments
+                    if item.get("community_name")
+                ],
                 "permission_group": {
                     "id": primary_group["id"],
                     "code": primary_group["code"],

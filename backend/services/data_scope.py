@@ -5,7 +5,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from services.permissions import ONLINE_SUMMARY_VIEW, permitted_community
+from services.permissions import (
+    ONLINE_SUMMARY_VIEW,
+    permitted_communities,
+    permitted_community,
+)
 from database import db_manager
 
 
@@ -17,18 +21,26 @@ def community_scope(
     return permitted_community(user, permission)
 
 
+def community_scopes(
+    user: dict[str, Any],
+    permission: str = ONLINE_SUMMARY_VIEW,
+) -> list[str] | None:
+    """None 表示全所；空列表表示没有社区业务范围。"""
+    return permitted_communities(user, permission)
+
+
 def filter_report_payload(
     payload: dict,
     user: dict,
     allowed_communities: list[str] | None = None,
 ) -> dict:
     """裁剪人员、社区和扁平汇总表；总计由展示层重新计算。"""
-    scope = community_scope(user, ONLINE_SUMMARY_VIEW)
-    if scope is None or not payload.get("exists"):
+    scopes = community_scopes(user, ONLINE_SUMMARY_VIEW)
+    if scopes is None or not payload.get("exists"):
         return payload
 
     result = deepcopy(payload)
-    accepted = set(allowed_communities or ([scope] if scope else []))
+    accepted = set(allowed_communities or scopes)
     for section_name in ("inspector", "community"):
         section = result.get(section_name)
         if not isinstance(section, dict):
@@ -37,7 +49,7 @@ def filter_report_payload(
             row
             for row in section.get("data") or []
             if str(row.get("社区") or "").strip() in accepted
-        ] if scope else []
+        ] if scopes else []
         section.pop("summary", None)
 
     if isinstance(result.get("data"), list):
@@ -45,10 +57,10 @@ def filter_report_payload(
             row
             for row in result["data"]
             if str(row.get("社区") or "").strip() in accepted
-        ] if scope else []
+        ] if scopes else []
         result.pop("summary", None)
 
-    if not scope:
+    if not scopes:
         result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
     return result
 
@@ -75,18 +87,27 @@ async def community_names_for_scope(conn, scope: str) -> list[str]:
     return names or [scope]
 
 
+async def community_names_for_scopes(conn, scopes: list[str]) -> list[str]:
+    names: list[str] = []
+    for scope in scopes:
+        for name in await community_names_for_scope(conn, scope):
+            if name not in names:
+                names.append(name)
+    return names
+
+
 async def allowed_community_names(
     user: dict,
     permission: str = ONLINE_SUMMARY_VIEW,
 ) -> list[str] | None:
-    scope = community_scope(user, permission)
-    if scope is None:
+    scopes = community_scopes(user, permission)
+    if scopes is None:
         return None
-    if not scope:
+    if not scopes:
         return []
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
-        return await community_names_for_scope(conn, scope)
+        return await community_names_for_scopes(conn, scopes)
     finally:
         pool.release(conn)
