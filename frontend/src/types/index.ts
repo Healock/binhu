@@ -272,6 +272,7 @@ export interface UserPreferences {
 export interface User extends UserPreferences {
   id: number
   username: string
+  display_name: string
   role: Role
   table_display_mode: TableDisplayMode
   report_column_mode: ReportColumnMode
@@ -298,6 +299,12 @@ export interface User extends UserPreferences {
   }
   created_at?: string
   updated_at?: string
+}
+
+export function getUserDisplayName(
+  user: Pick<User, 'username' | 'display_name' | 'member'>,
+): string {
+  return user.display_name?.trim() || user.member?.name || user.username
 }
 
 export function hasPermission(
@@ -409,7 +416,7 @@ export interface WorkLogDraft {
   id: number
   report_type: 'daily'
   business_date: string
-  owner: { id: number; username: string }
+  owner: { id: number; username: string; display_name: string }
   can_edit: boolean
   template_version: string
   system_snapshot: WorkLogSystemSnapshot
@@ -425,8 +432,8 @@ export interface WorkLogDraftSummary {
   id: number
   report_type: 'daily'
   business_date: string
-  owner: { id: number; username: string }
-  creator: { id: number; username: string }
+  owner: { id: number; username: string; display_name: string }
+  creator: { id: number; username: string; display_name: string }
   template_version: string
   version: number
   last_export_at: string | null

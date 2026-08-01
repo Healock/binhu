@@ -340,8 +340,8 @@ export default function WorkLogDrafts() {
                         <Tag>日报</Tag>
                       </div>
                       <div className="mt-2 space-y-1 text-sm text-slate-500">
-                        <div>创建人：{draft.creator.username}</div>
-                        <div>当前编辑人：{draft.owner.username}</div>
+                        <div>创建人：{draft.creator.display_name || draft.creator.username}</div>
+                        <div>当前编辑人：{draft.owner.display_name || draft.owner.username}</div>
                         <div>最后更新：{formatUTCTime(draft.updated_at)}</div>
                         <div>最近导出：{formatUTCTime(draft.last_export_at)}</div>
                       </div>

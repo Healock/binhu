@@ -21,6 +21,7 @@ import Login from './pages/Login'
 import WorkLog from './pages/WorkLog'
 import WorkLogDrafts from './pages/WorkLogDrafts'
 import PermissionGroups from './pages/PermissionGroups'
+import Profile from './pages/Profile'
 
 function App() {
   return (
@@ -33,6 +34,7 @@ function App() {
           {/* 其他页面需要登录 */}
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
+              <Route path="/profile" element={<Profile />} />
               <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
                 <Route path="/" element={<Dashboard />} />
               </Route>

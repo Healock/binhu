@@ -592,7 +592,7 @@ export default function WorkLog() {
     if (!draft) return
     modal.confirm({
       title: '接管编辑权？',
-      content: `接管后，“${draft.owner.username}”当前打开的页面将不能继续保存。`,
+      content: `接管后，“${draft.owner.display_name || draft.owner.username}”当前打开的页面将不能继续保存。`,
       okText: '确认接管',
       onOk: async () => {
         try {
@@ -778,7 +778,7 @@ export default function WorkLog() {
               className="mb-4"
               showIcon
               type="info"
-              message={`当前由 ${draft.owner.username} 编辑`}
+              message={`当前由 ${draft.owner.display_name || draft.owner.username} 编辑`}
               description="你可以查看和导出；需要修改时请主动接管编辑权。"
             />
           )}

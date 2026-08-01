@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/users", tags=["用户管理"])
 
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=2, max_length=100)
+    display_name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=8, max_length=200)
     member_id: Optional[int] = Field(default=None, gt=0)
     assignment_mode: Literal["inherited", "custom"] = "inherited"
@@ -27,6 +28,7 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     member_id: Optional[int] = Field(default=None, gt=0)
     assignment_mode: Optional[Literal["inherited", "custom"]] = None
     permission_group_id: Optional[int] = Field(default=None, gt=0)
@@ -118,7 +120,8 @@ async def list_users(user: dict = Depends(require_super_admin)):
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT user.id, user.username, user.role, user.member_id,
+                SELECT user.id, user.username, user.display_name,
+                       user.role, user.member_id,
                        user.group_assignment_mode,
                        user.password_is_temporary,
                        user.created_at, user.updated_at,
@@ -142,22 +145,23 @@ async def list_users(user: dict = Depends(require_super_admin)):
         {
             "id": row[0],
             "username": row[1],
-            "role": row[2],
-            "member_id": row[3],
-            "assignment_mode": row[4],
-            "password_is_temporary": bool(row[5]),
-            "created_at": str(row[6]) if row[6] else None,
-            "updated_at": str(row[7]) if row[7] else None,
+            "display_name": str(row[2] or row[9] or row[1]),
+            "role": row[3],
+            "member_id": row[4],
+            "assignment_mode": row[5],
+            "password_is_temporary": bool(row[6]),
+            "created_at": str(row[7]) if row[7] else None,
+            "updated_at": str(row[8]) if row[8] else None,
             "member": (
                 {
-                    "id": row[3], "name": row[8], "position": row[9],
-                    "department_name": row[10], "department_type": row[11],
+                    "id": row[4], "name": row[9], "position": row[10],
+                    "department_name": row[11], "department_type": row[12],
                 }
-                if row[3] is not None else None
+                if row[4] is not None else None
             ),
             "permission_group": (
-                {"id": row[12], "code": row[13], "name": row[14]}
-                if row[12] is not None else None
+                {"id": row[13], "code": row[14], "name": row[15]}
+                if row[13] is not None else None
             ),
         }
         for row in rows
@@ -173,6 +177,9 @@ async def create_user(
     username = req.username.strip()
     if not username:
         raise HTTPException(400, "用户名不能为空")
+    display_name = req.display_name.strip()
+    if not display_name:
+        raise HTTPException(400, "姓名不能为空")
     password_hash = bcrypt.hashpw(
         req.password.encode(), bcrypt.gensalt()
     ).decode()
@@ -192,13 +199,13 @@ async def create_user(
                 await cur.execute(
                     """
                     INSERT INTO _users (
-                        username, password_hash, role, member_id,
+                        username, display_name, password_hash, role, member_id,
                         permission_group_id, group_assignment_mode,
                         password_is_temporary
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        username, password_hash, _legacy_role(group_code),
+                        username, display_name, password_hash, _legacy_role(group_code),
                         req.member_id, group_id, req.assignment_mode,
                         int(req.password_is_temporary),
                     ),
@@ -299,6 +306,11 @@ async def update_user(
                 "permission_group_id": group_id,
                 "role": _legacy_role(group_code),
             }
+            if req.display_name is not None:
+                display_name = req.display_name.strip()
+                if not display_name:
+                    raise HTTPException(400, "姓名不能为空")
+                updates["display_name"] = display_name
             if req.password is not None:
                 updates["password_hash"] = bcrypt.hashpw(
                     req.password.encode(), bcrypt.gensalt()
