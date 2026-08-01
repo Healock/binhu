@@ -30,20 +30,20 @@ export default function DataOverview({
   const hasRange = Boolean(rangeTitle)
   const layoutClass = hasRange
     ? metrics.length <= 2
-      ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4'
-      : 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8'
-    : 'grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6'
+      ? 'grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4'
+      : 'grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8'
+    : 'grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6'
 
   return (
     <div className={layoutClass}>
       {hasRange && (
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 sm:col-span-2">
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 sm:col-span-2">
           <div className="text-xs text-slate-500">{rangeTitle}</div>
           {loading ? (
-            <Skeleton className="mt-2" active paragraph={false} />
+            <Skeleton className="mt-1.5" active paragraph={false} />
           ) : (
             <>
-              <div className="mt-2 text-lg font-semibold text-slate-900">
+              <div className="mt-1.5 text-base font-semibold text-slate-900 sm:text-lg">
                 {rangeValue}
               </div>
               {rangeDescription && (
@@ -59,7 +59,7 @@ export default function DataOverview({
       {metrics.map(metric => (
         <div
           key={metric.key}
-          className="min-w-0 rounded-lg border border-slate-200 bg-white p-4"
+          className="min-w-0 rounded-lg border border-slate-200 bg-white p-3"
         >
           {loading ? (
             <Skeleton active paragraph={false} />

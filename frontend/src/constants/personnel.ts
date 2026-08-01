@@ -5,6 +5,8 @@ export const PERSONNEL_POSITIONS = [
   '片长',
   '组长',
   '组员',
+  '社区民警',
+  '所队领导',
 ] as const
 
 export type PersonnelPosition = typeof PERSONNEL_POSITIONS[number]

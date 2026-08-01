@@ -23,6 +23,7 @@ from services.personnel_attendance import (
     is_member_on_duty,
     normalize_week_start,
     period_covers,
+    required_week_starts,
     save_weekend_board,
     weekend_dates,
 )
@@ -87,6 +88,24 @@ class PersonnelAttendanceTests(unittest.TestCase):
         self.assertEqual(
             weekend_dates(date(2026, 7, 29)),
             (date(2026, 8, 1), date(2026, 8, 2)),
+        )
+
+    def test_missing_schedule_only_checks_weekends_reached_by_today(self):
+        self.assertEqual(
+            required_week_starts(
+                date(2026, 8, 1),
+                date(2026, 8, 16),
+                date(2026, 8, 1),
+            ),
+            [date(2026, 7, 27)],
+        )
+        self.assertEqual(
+            required_week_starts(
+                date(2026, 8, 2),
+                date(2026, 8, 16),
+                date(2026, 8, 2),
+            ),
+            [date(2026, 7, 27)],
         )
 
     def test_weekend_payload_rejects_duplicate_people(self):

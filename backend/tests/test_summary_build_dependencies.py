@@ -117,28 +117,16 @@ class SummaryBuildDependenciesTests(unittest.IsolatedAsyncioTestCase):
         build_total.assert_not_awaited()
 
 
-class SummaryBuildRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_summary_endpoint_uses_dependency_build(self):
-        from routers.stats import build_report
+class SummaryBuildRouteTests(unittest.TestCase):
+    def test_manual_report_build_route_is_removed(self):
+        from routers.stats import router
 
-        result_value = {
-            "implemented": True,
-            "date": "2026-07-27",
-            "type": "总汇总表",
-            "rows": 13,
-            "subreports": [{"parser_type": "全链条"}],
+        paths = {
+            (route.path, method)
+            for route in router.routes
+            for method in (route.methods or set())
         }
-
-        with patch(
-            "routers.stats.build_summary_with_subreports",
-            new=AsyncMock(return_value=result_value),
-        ) as dependency_build:
-            result = await build_report("2026-07-27", "总汇总表")
-
-        dependency_build.assert_awaited_once_with("2026-07-27")
-        self.assertEqual(result["message"], "分汇总表和总汇总表生成成功")
-        self.assertEqual(result["rows"], 13)
-        self.assertEqual(len(result["subreports"]), 1)
+        self.assertNotIn(("/api/stats/build", "POST"), paths)
 
 
 if __name__ == "__main__":

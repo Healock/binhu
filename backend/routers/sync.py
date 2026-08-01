@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import require_permission, require_super_admin
+from deps import get_current_user, require_permission, require_super_admin
 from schemas.sync import SyncStatusResponse, SyncTriggerResponse
 from services.permissions import ONLINE_SUMMARY_VIEW, SYNC_TRIGGER
 from services.sync_tasks import (
@@ -55,7 +55,7 @@ async def trigger_sync(
 
 @router.get("/status", response_model=SyncStatusResponse)
 async def sync_status(
-    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
     """获取最近任务、真实步骤进度和定时同步状态。"""

@@ -60,7 +60,7 @@ async def query_data(
 
     if not isinstance(user, dict):
         user = {"data_scope": "all"}
-    scope = community_scope(user)
+    scope = community_scope(user, ONLINE_RAW_VIEW)
     if scope is not None:
         allowed_communities = await community_names_for_scope(conn, scope)
         if not allowed_communities or "社区" not in columns:

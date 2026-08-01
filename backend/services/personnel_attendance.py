@@ -12,6 +12,7 @@ from services.personnel_positions import (
     WEEKEND_DUTY_POSITION_CONFIG_KEY,
     get_configured_positions,
 )
+from services.business_time import get_business_date
 
 DEFAULT_WEEKEND_DUTY_POSITIONS = set(DEFAULT_SUMMARY_POSITIONS)
 
@@ -31,6 +32,19 @@ def iter_dates(start_date: date, end_date: date) -> Iterable[date]:
     while current <= end_date:
         yield current
         current += timedelta(days=1)
+
+
+def required_week_starts(
+    start_date: date,
+    end_date: date,
+    business_today: date,
+) -> list[date]:
+    """返回截至业务当天已经发生的双休日所在周。"""
+    return sorted({
+        normalize_week_start(target_date)
+        for target_date in iter_dates(start_date, end_date)
+        if target_date.weekday() >= 5 and target_date <= business_today
+    })
 
 
 def period_covers(
@@ -352,11 +366,8 @@ async def get_attendance_context(
         for member in members.values()
         if member["position"] in configured_duty_positions
     ]
-    week_starts = sorted({
-        normalize_week_start(target_date)
-        for target_date in iter_dates(start_date, end_date)
-        if target_date.weekday() >= 5
-    })
+    business_today = await get_business_date(cur)
+    week_starts = required_week_starts(start_date, end_date, business_today)
     duties: dict[tuple[int, date], date | None] = {}
     if week_starts and duty_members:
         placeholders = ", ".join(["%s"] * len(week_starts))

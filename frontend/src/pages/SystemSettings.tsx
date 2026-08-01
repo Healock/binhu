@@ -73,9 +73,6 @@ export default function SystemSettings() {
   const [savingSchedule, setSavingSchedule] = useState(false)
   const [timezoneMsg, setTimezoneMsg] = useState('')
   const [scheduleMsg, setScheduleMsg] = useState('')
-  const [onlinePositions, setOnlinePositions] = useState<PersonnelPosition[]>(
-    [...DEFAULT_SUMMARY_POSITIONS],
-  )
   const [visitPositions, setVisitPositions] = useState<PersonnelPosition[]>(
     [...DEFAULT_SUMMARY_POSITIONS],
   )
@@ -94,9 +91,6 @@ export default function SystemSettings() {
       .then(([config, currentSchedule]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
         setIdleMinutes(Number(config.session_idle_minutes || 30))
-        setOnlinePositions(
-          parseSummaryPositions(config.online_summary_positions),
-        )
         const configuredVisitPositions = parseSummaryPositions(
           config.visit_summary_positions,
         ).filter(position => position !== '自购房')
@@ -178,8 +172,7 @@ export default function SystemSettings() {
 
   const handleSavePositions = async () => {
     if (
-      !onlinePositions.length
-      || !visitPositions.length
+      !visitPositions.length
       || !weekendDutyPositions.length
     ) {
       setPositionsMsg('每项岗位范围都至少选择一个岗位')
@@ -189,7 +182,6 @@ export default function SystemSettings() {
     setPositionsMsg('')
     try {
       await updateSystemConfig({
-        online_summary_positions: JSON.stringify(onlinePositions),
         visit_summary_positions: JSON.stringify(visitPositions),
         weekend_duty_positions: JSON.stringify(weekendDutyPositions),
       })
@@ -350,27 +342,10 @@ export default function SystemSettings() {
 
       <Panel
         title="岗位范围"
-        description="配置参与汇总和双休日备勤的岗位；人员资料本身不会被删除"
+        description="配置参与走访汇总和双休日备勤的岗位；在线汇总固定统计有社区部门的组长和组员"
       >
         <div className="flex flex-col gap-5">
-          <div className="grid gap-5 md:grid-cols-3">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                在线数据汇总
-              </label>
-              <Select<PersonnelPosition[]>
-                mode="multiple"
-                value={onlinePositions}
-                onChange={setOnlinePositions}
-                options={PERSONNEL_POSITIONS.map(position => ({
-                  value: position,
-                  label: position,
-                }))}
-                placeholder="选择参与在线汇总的岗位"
-                className="w-full"
-                maxTagCount="responsive"
-              />
-            </div>
+          <div className="grid gap-5 md:grid-cols-2">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-slate-700">
                 出租房走访汇总
@@ -409,8 +384,8 @@ export default function SystemSettings() {
           <Alert
             type="info"
             showIcon
-            message="默认统计组长和组员"
-            description="出租房走访和双休日备勤可以分别配置；自购房汇总仍固定统计“自购房”岗位。修改双休日备勤岗位后，排班页面和人均值计算都会使用新范围。"
+            message="在线汇总口径已固定"
+            description="在线数据只统计人员管理中有有效社区部门的组长和组员。出租房走访和双休日备勤仍可分别配置；自购房汇总固定统计“自购房”岗位。"
           />
           <div className="flex justify-end">
             <Button
@@ -418,7 +393,6 @@ export default function SystemSettings() {
               loading={savingPositions}
               disabled={
                 loading
-                || !onlinePositions.length
                 || !visitPositions.length
                 || !weekendDutyPositions.length
               }

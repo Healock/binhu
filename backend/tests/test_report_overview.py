@@ -42,7 +42,33 @@ class NewKeyCursor:
         return list(self.rows)
 
 
+class EffectiveTaskCursor:
+    def __init__(self):
+        self.call = None
+
+    async def execute(self, sql, params=None):
+        self.call = (" ".join(sql.split()), params)
+
+    async def fetchall(self):
+        return []
+
+
 class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_effective_tasks_use_fixed_registered_person_scope(self):
+        cursor = EffectiveTaskCursor()
+
+        await report_overview._load_effective_tasks(
+            cursor,
+            "2026-07-29",
+            "2026-07-31",
+            ["全链条"],
+        )
+
+        sql, _ = cursor.call
+        self.assertIn("JOIN OnlineData._grid_members AS person", sql)
+        self.assertIn("department.department_type='community'", sql)
+        self.assertIn("person.position IN ('组长', '组员')", sql)
+
     async def test_classifies_carryover_new_and_changed_tasks(self):
         pool = FakePool()
         runs = [

@@ -309,12 +309,11 @@ function LogsTab() {
   const exportUrl = `/api/admin/ops/logs/export?source=${encodeURIComponent(source)}&since_minutes=${sinceMinutes}`
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <Alert
         type="info"
         showIcon
-        message="这里是只读日志，不是服务器终端"
-        description="密码、令牌、Cookie 和 Authorization 会在服务端自动遮盖。"
+        message="只读日志（非服务器终端）；密码、令牌、Cookie 和 Authorization 会在服务端自动遮盖。"
       />
       <div className="flex flex-wrap items-center gap-2">
         <Select

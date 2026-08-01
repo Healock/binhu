@@ -5,13 +5,16 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from services.permissions import permitted_community
+from services.permissions import ONLINE_SUMMARY_VIEW, permitted_community
 from database import db_manager
 
 
-def community_scope(user: dict[str, Any]) -> str | None:
+def community_scope(
+    user: dict[str, Any],
+    permission: str = ONLINE_SUMMARY_VIEW,
+) -> str | None:
     """None 表示全所；空字符串表示尚未分配社区、不能看业务数据。"""
-    return permitted_community(user)
+    return permitted_community(user, permission)
 
 
 def filter_report_payload(
@@ -20,7 +23,7 @@ def filter_report_payload(
     allowed_communities: list[str] | None = None,
 ) -> dict:
     """裁剪人员、社区和扁平汇总表；总计由展示层重新计算。"""
-    scope = community_scope(user)
+    scope = community_scope(user, ONLINE_SUMMARY_VIEW)
     if scope is None or not payload.get("exists"):
         return payload
 
@@ -72,8 +75,11 @@ async def community_names_for_scope(conn, scope: str) -> list[str]:
     return names or [scope]
 
 
-async def allowed_community_names(user: dict) -> list[str] | None:
-    scope = community_scope(user)
+async def allowed_community_names(
+    user: dict,
+    permission: str = ONLINE_SUMMARY_VIEW,
+) -> list[str] | None:
+    scope = community_scope(user, permission)
     if scope is None:
         return None
     if not scope:

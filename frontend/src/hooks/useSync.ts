@@ -7,7 +7,9 @@ const TERMINAL_STATUSES = new Set(['success', 'completed', 'partial', 'failed'])
 
 export function useSync(onComplete?: () => void) {
   const [status, setStatus] = useState<SyncStatus | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [taskError, setTaskError] = useState<string | null>(null)
+  const [statusError, setStatusError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const latestRef = useRef<SyncStatus | null>(null)
   const completeRef = useRef(onComplete)
 
@@ -21,13 +23,14 @@ export function useSync(onComplete?: () => void) {
       const previous = latestRef.current
       latestRef.current = next
       setStatus(next)
+      setStatusError(null)
 
       if (next.status === 'failed' || next.status === 'partial') {
-        setError(next.error_message || (
+        setTaskError(next.error_message || (
           next.status === 'partial' ? '部分数据同步失败' : '同步失败'
         ))
       } else {
-        setError(null)
+        setTaskError(null)
       }
 
       const isNewTerminalTask = Boolean(
@@ -40,8 +43,12 @@ export function useSync(onComplete?: () => void) {
       )
       if (isNewTerminalTask) completeRef.current?.()
       return next
-    } catch {
-      setError('无法获取同步状态，请稍后重试')
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail
+      const reason = typeof detail === 'string'
+        ? detail
+        : detail?.message || error?.message || '网络连接异常'
+      setStatusError(`无法获取同步状态：${reason}`)
       return null
     }
   }, [])
@@ -71,13 +78,18 @@ export function useSync(onComplete?: () => void) {
   }, [refresh])
 
   const startSync = useCallback(async () => {
-    setError(null)
+    setActionError(null)
     try {
       const result = await triggerSync()
-      if (result.status === 'conflict') setError(result.message)
+      if (result.status === 'conflict') setActionError(result.message)
       await refresh()
     } catch (e: any) {
-      setError(e?.response?.data?.detail || '触发同步失败')
+      const detail = e?.response?.data?.detail
+      setActionError(
+        typeof detail === 'string'
+          ? detail
+          : detail?.message || e?.message || '触发同步失败',
+      )
     }
   }, [refresh])
 
@@ -88,7 +100,9 @@ export function useSync(onComplete?: () => void) {
   return {
     syncing,
     status,
-    error,
+    taskError,
+    statusError,
+    actionError,
     startSync,
     refresh,
   }

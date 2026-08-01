@@ -85,7 +85,7 @@ async def coverage(
     user: dict = Depends(require_permission(VISIT_SUMMARY_VIEW)),
     conn=Depends(get_db),
 ):
-    scope = community_scope(user)
+    scope = community_scope(user, VISIT_SUMMARY_VIEW)
     names = (
         await community_names_for_scope(conn, scope)
         if scope is not None
@@ -107,7 +107,7 @@ async def summary(
             status_code=400,
             detail="开始日期不能晚于结束日期",
         )
-    scope = community_scope(user)
+    scope = community_scope(user, VISIT_SUMMARY_VIEW)
     names = (
         await community_names_for_scope(conn, scope)
         if scope is not None

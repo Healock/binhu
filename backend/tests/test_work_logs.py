@@ -405,10 +405,6 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch(
-                "services.work_log_data.get_configured_positions",
-                new=AsyncMock(return_value=["组长", "组员"]),
-            ),
-            patch(
                 "services.work_log_data.get_attendance_context",
                 new=AsyncMock(return_value=context),
             ),
@@ -427,10 +423,6 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_grid_member_counts_stay_blank_when_weekend_duty_is_missing(self):
         with (
-            patch(
-                "services.work_log_data.get_configured_positions",
-                new=AsyncMock(return_value=["组长", "组员"]),
-            ),
             patch(
                 "services.work_log_data.get_attendance_context",
                 new=AsyncMock(return_value={

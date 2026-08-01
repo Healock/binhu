@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   DndContext,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   closestCenter,
   useDraggable,
   useDroppable,
@@ -137,6 +138,8 @@ function SortableGroup({
         opacity: isDragging ? 0.6 : 1,
       }}
       className={`dock-config-group${selected ? ' is-selected' : ''}`}
+      {...attributes}
+      {...listeners}
     >
       <button
         type="button"
@@ -150,8 +153,6 @@ function SortableGroup({
         type="button"
         className="compact-action dock-config-drag-handle"
         aria-label={`拖动${definition.dockLabel}`}
-        {...attributes}
-        {...listeners}
       >
         <HolderOutlined />
       </button>
@@ -161,6 +162,7 @@ function SortableGroup({
           className="compact-action"
           disabled={index === 0}
           aria-label={`向前移动${definition.dockLabel}`}
+          onPointerDown={event => event.stopPropagation()}
           onClick={() => onMove(-1)}
         >
           <ArrowUpOutlined />
@@ -170,6 +172,7 @@ function SortableGroup({
           className="compact-action"
           disabled={index === total - 1}
           aria-label={`向后移动${definition.dockLabel}`}
+          onPointerDown={event => event.stopPropagation()}
           onClick={() => onMove(1)}
         >
           <ArrowDownOutlined />
@@ -179,6 +182,7 @@ function SortableGroup({
           className="compact-action text-rose-600"
           disabled={total <= 1}
           aria-label={`移除${definition.dockLabel}`}
+          onPointerDown={event => event.stopPropagation()}
           onClick={onRemove}
         >
           <CloseOutlined />
@@ -315,8 +319,11 @@ export default function DockConfigurator({
     )
   )
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    useSensor(MouseSensor, {
       activationConstraint: { distance: 6 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 180, tolerance: 6 },
     }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,

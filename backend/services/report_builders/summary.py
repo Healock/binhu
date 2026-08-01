@@ -6,15 +6,11 @@
 import json
 from database import db_manager
 from services.grid_member_status import active_member_sql
-from services.personnel_positions import (
-    ONLINE_POSITION_CONFIG_KEY,
-    get_configured_positions,
-)
 from services.report_builders import BUILDERS
 from services.report_members import (
+    aggregate_community_rows,
     calculate_ratio,
     canonical_community,
-    canonicalize_community_rows,
     canonicalize_inspector_rows,
     complete_inspector_rows,
     get_active_members,
@@ -177,12 +173,6 @@ async def build_summary(
                 )
             union_sql = " UNION ALL ".join(union_parts)
             active_condition = active_member_sql()
-            positions = await get_configured_positions(
-                cur,
-                ONLINE_POSITION_CONFIG_KEY,
-            )
-            position_placeholders = ", ".join(["%s"] * len(positions))
-
             await cur.execute(f"""
                 INSERT INTO {t_summary} (社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数, 网格员人数)
                 SELECT
@@ -217,12 +207,12 @@ async def build_summary(
                       ON department.id=member.department_id
                     JOIN OnlineData._communities AS community
                       ON community.id=department.community_id
-                    WHERE member.position IN ({position_placeholders})
+                    WHERE member.position IN ('组长', '组员')
                       AND {active_condition}
                     GROUP BY community.name
                 ) AS member_counts
                   ON member_counts.community = report_rows.社区
-            """, (*positions, date_str))
+            """, (date_str,))
 
             await cur.execute(f"""
                 UPDATE {t_summary} SET
@@ -233,7 +223,8 @@ async def build_summary(
 
             await cur.execute(
                 "INSERT INTO _daily_report_meta (table_name, report_date, parser_type, generation_method) "
-                "VALUES (%s, %s, '总汇总表', 'manual') ON DUPLICATE KEY UPDATE generated_at = NOW()",
+                "VALUES (%s, %s, '总汇总表', 'sync') ON DUPLICATE KEY UPDATE "
+                "generation_method='sync', generated_at=NOW()",
                 (f"{date_str}_daily_summary", date_str),
             )
 
@@ -331,14 +322,7 @@ async def get_summary(date_str: str) -> dict:
                 all_inspector_rows,
                 active_members,
             )
-            await cur.execute(
-                f"SELECT {', '.join(SUMMARY_OUTPUT_COLS)} "
-                f"FROM {t_summary} ORDER BY 社区"
-            )
-            community_rows = canonicalize_community_rows(
-                await cur.fetchall(),
-                alias_lookup,
-            )
+            community_rows = aggregate_community_rows(inspector_rows)
             member_counts: dict[str, int] = {}
             for community, _ in active_members:
                 formal_community = canonical_community(

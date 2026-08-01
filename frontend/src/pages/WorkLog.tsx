@@ -791,17 +791,22 @@ export default function WorkLog() {
               description="旧版字段和内容已完整保存在草稿快照中，不会因新版表单而丢失。"
             />
           )}
-          <div className="mb-4 grid gap-3 md:grid-cols-2">
+          <div className="mb-4 divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white px-3 dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-900">
             {Object.entries(draft.system_snapshot.sources).map(([key, source]) => (
-              <Alert
+              <div
                 key={key}
-                showIcon
-                type={source.available
-                  ? source.message ? 'warning' : 'success'
-                  : 'warning'}
-                message={`${source.label}：${source.available ? '已读取' : '无可用数据'}`}
-                description={source.message || '系统表格已保存到本次草稿快照'}
-              />
+                className="flex flex-col gap-1 py-2.5 sm:flex-row sm:items-center"
+              >
+                <div className="flex min-w-0 items-center gap-2 sm:w-56">
+                  <span className="truncate text-sm font-medium text-slate-700 dark:text-slate-200">{source.label}</span>
+                  <Tag color={source.available ? source.message ? 'orange' : 'green' : 'default'}>
+                    {source.available ? '已读取' : '无可用数据'}
+                  </Tag>
+                </div>
+                <span className="min-w-0 flex-1 text-xs text-slate-500">
+                  {source.message || '系统表格已保存到本次草稿快照'}
+                </span>
+              </div>
             ))}
           </div>
           <Panel className="mb-4">
