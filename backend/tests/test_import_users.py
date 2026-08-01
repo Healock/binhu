@@ -13,6 +13,7 @@ from tools.import_users import (
     build_preview,
     read_rows,
     reject_duplicates,
+    validate_initial_password,
 )
 
 
@@ -50,6 +51,13 @@ class PreviewCursor:
 
 
 class UserImportTests(unittest.IsolatedAsyncioTestCase):
+    def test_short_initial_password_requires_explicit_confirmation(self):
+        with self.assertRaisesRegex(ValueError, "至少需要 8 个字符"):
+            validate_initial_password("short")
+        validate_initial_password("short", allow_short_password=True)
+        with self.assertRaisesRegex(ValueError, "至少需要 5 个字符"):
+            validate_initial_password("tiny", allow_short_password=True)
+
     def test_private_xlsx_requires_username_and_name(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "users.xlsx"

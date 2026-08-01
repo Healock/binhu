@@ -26,6 +26,8 @@ UNLINKED_POSITION_GROUPS = {
 PLACEHOLDER_POSITIONS = {
     "流口岗": "组员",
 }
+DEFAULT_INITIAL_PASSWORD_LENGTH = 8
+CONFIRMED_SHORT_PASSWORD_LENGTH = 5
 
 
 def _legacy_role(group_code: str) -> str:
@@ -36,6 +38,21 @@ def _legacy_role(group_code: str) -> str:
     if group_code == "global_viewer":
         return "leader"
     return "member"
+
+
+def validate_initial_password(
+    password: str,
+    *,
+    allow_short_password: bool = False,
+) -> None:
+    minimum = (
+        CONFIRMED_SHORT_PASSWORD_LENGTH
+        if allow_short_password
+        else DEFAULT_INITIAL_PASSWORD_LENGTH
+    )
+    if len(password) < minimum:
+        qualifier = "（已启用短密码确认开关）" if allow_short_password else ""
+        raise ValueError(f"统一初始密码至少需要 {minimum} 个字符{qualifier}")
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -332,11 +349,15 @@ async def run(args) -> None:
             import bcrypt
 
             password = os.environ.get(args.password_env, "")
-            if len(password) < 8:
+            if not password:
                 raise ValueError(
                     f"正式执行前请通过环境变量 {args.password_env} "
-                    "提供至少 8 个字符的统一初始密码"
+                    "提供统一初始密码"
                 )
+            validate_initial_password(
+                password,
+                allow_short_password=args.allow_short_password,
+            )
             password_hash = bcrypt.hashpw(
                 password.encode(), bcrypt.gensalt()
             ).decode()
@@ -386,6 +407,11 @@ def main() -> None:
     )
     parser.add_argument("--publish-announcement", action="store_true")
     parser.add_argument("--enable-permissions", action="store_true")
+    parser.add_argument(
+        "--allow-short-password",
+        action="store_true",
+        help="仅在项目管理人明确确认后，允许 5 至 7 位统一初始密码",
+    )
     args = parser.parse_args()
     if (args.publish_announcement or args.enable_permissions) and not args.apply:
         parser.error("发布公告或启用权限前必须同时提供 --apply")
