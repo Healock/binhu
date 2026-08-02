@@ -208,9 +208,14 @@ class TxDocsClient:
         col_end = column_letter(col_count - 1)
         current_row = header_row + 1
         result_rows: list[dict] = []
+        row_total = await self.get_sheet_row_total(file_id, sheet_id)
 
         while True:
+            if row_total is not None and current_row > row_total:
+                break
             end_row = current_row + rows_per_page - 1
+            if row_total is not None:
+                end_row = min(end_row, row_total)
             response = await self.read_range(
                 file_id,
                 sheet_id,
@@ -236,7 +241,8 @@ class TxDocsClient:
                 })
 
             # 终止条件必须使用 API 原始行数，不能使用过滤空白行后的数量。
-            if raw_count < rows_per_page:
+            requested_rows = end_row - current_row + 1
+            if raw_count < requested_rows:
                 break
             current_row = end_row + 1
 
@@ -554,6 +560,34 @@ class TxDocsClient:
         """获取文件元数据（含所有子表信息）"""
         url = f"/files/{file_id}?concise=1"
         return await self._request_with_retry("GET", url, headers=self._headers())
+
+    async def get_sheet_row_total(self, file_id: str, sheet_id: str) -> int | None:
+        """读取工作表现有总行数，避免请求超出腾讯表格有效区域。"""
+        file_info = await self.get_file_info(file_id)
+        properties = file_info.get("properties")
+        sheets = (
+            properties
+            if isinstance(properties, list)
+            else file_info.get("sheets")
+            or (file_info.get("data") or {}).get("sheets")
+            or (properties or {}).get("sheets", [])
+        )
+        for sheet in sheets or []:
+            if not isinstance(sheet, dict):
+                continue
+            sheet_properties = sheet.get("properties") or sheet
+            candidate_id = sheet_properties.get("sheetId") or sheet_properties.get("id")
+            if str(candidate_id or "") != str(sheet_id):
+                continue
+            raw_total = sheet_properties.get("rowTotal")
+            if raw_total is None:
+                raw_total = sheet_properties.get("rowCount")
+            try:
+                total = int(raw_total)
+            except (TypeError, ValueError):
+                return None
+            return total if total > 0 else None
+        return None
 
     async def ensure_sheet(self, file_id: str, sheet_name: str) -> str:
         """
