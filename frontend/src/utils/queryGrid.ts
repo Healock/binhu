@@ -5,8 +5,9 @@ import type {
 } from '../api/client.ts'
 
 export type QueryDisplayRow = QueryDataRow & {
-  __kind: 'parent' | 'source'
+  __kind: 'parent' | 'source' | 'draft'
   __parent_key?: string
+  __draft_id?: string
 }
 
 export function normalizeQueryResponse(value: QueryResponse): QueryResponse {
@@ -21,8 +22,53 @@ export function normalizeQueryResponse(value: QueryResponse): QueryResponse {
     source_ready: Boolean(value.source_ready),
     writeback_enabled: Boolean(value.writeback_enabled),
     can_add: Boolean(value.can_add),
+    required_fields: Array.isArray(value.required_fields)
+      ? value.required_fields.map(String)
+      : [],
     pending_count: Number(value.pending_count || 0),
   }
+}
+
+export function createQueryDraftRow(
+  columns: string[],
+  draftId: string,
+): QueryDisplayRow {
+  return {
+    ...Object.fromEntries(columns.map(column => [column, ''])),
+    __kind: 'draft',
+    __draft_id: draftId,
+  }
+}
+
+export function isQueryDraftTouched(
+  row: QueryDisplayRow,
+  columns: string[],
+): boolean {
+  return row.__kind === 'draft' && columns.some(
+    column => String(row[column] ?? '').trim() !== '',
+  )
+}
+
+export function missingQueryDraftFields(
+  row: QueryDisplayRow,
+  requiredFields: string[],
+): string[] {
+  return requiredFields.filter(
+    field => String(row[field] ?? '').trim() === '',
+  )
+}
+
+export function ensureTrailingQueryDraft(
+  rows: QueryDisplayRow[],
+  columns: string[],
+  createId: () => string,
+): QueryDisplayRow[] {
+  const touched = rows.filter(row => isQueryDraftTouched(row, columns))
+  const existingBlank = rows.find(row => !isQueryDraftTouched(row, columns))
+  return [
+    ...touched,
+    existingBlank || createQueryDraftRow(columns, createId()),
+  ]
 }
 
 export function sourceToDisplay(
@@ -62,7 +108,11 @@ export function canEditQueryCell(
   source: 'online' | 'archive',
   row: QueryDisplayRow | undefined,
   column: string,
+  canAdd = false,
 ): boolean {
+  if (row?.__kind === 'draft') {
+    return source === 'online' && canAdd
+  }
   return Boolean(
     source === 'online'
     && row?.__source_id

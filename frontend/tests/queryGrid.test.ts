@@ -4,6 +4,10 @@ import test from 'node:test'
 import {
   buildQueryDisplayRows,
   canEditQueryCell,
+  createQueryDraftRow,
+  ensureTrailingQueryDraft,
+  isQueryDraftTouched,
+  missingQueryDraftFields,
   normalizeQueryResponse,
   saveChangedSourceFields,
 } from '../src/utils/queryGrid.ts'
@@ -30,6 +34,7 @@ test('查询响应缺省集合会被标准化', () => {
     source_ready: 0 as never,
     writeback_enabled: 1 as never,
     can_add: 0 as never,
+    required_fields: undefined as never,
     pending_count: undefined as never,
   })
 
@@ -38,6 +43,42 @@ test('查询响应缺省集合会被标准化', () => {
   assert.equal(result.total, 0)
   assert.equal(result.page, 1)
   assert.equal(result.writeback_enabled, true)
+  assert.deepEqual(result.required_fields, [])
+})
+
+test('行内新增始终保留一条尾部空行', () => {
+  const columns = ['社区', '身份证号', '核查结果']
+  let sequence = 0
+  const createId = () => `draft-${++sequence}`
+  const initial = ensureTrailingQueryDraft([], columns, createId)
+
+  assert.equal(initial.length, 1)
+  assert.equal(isQueryDraftTouched(initial[0], columns), false)
+
+  const filled = { ...initial[0], 社区: '长板' }
+  const next = ensureTrailingQueryDraft([filled], columns, createId)
+  assert.equal(next.length, 2)
+  assert.equal(next[0].社区, '长板')
+  assert.equal(isQueryDraftTouched(next[1], columns), false)
+
+  const withExtraBlanks = ensureTrailingQueryDraft(
+    [...next, createQueryDraftRow(columns, 'extra')],
+    columns,
+    createId,
+  )
+  assert.equal(withExtraBlanks.length, 2)
+})
+
+test('行内新增只在必填字段完整后允许提交', () => {
+  const row = createQueryDraftRow(['社区', '身份证号', '核查结果'], 'draft')
+  row.社区 = '长板'
+
+  assert.deepEqual(
+    missingQueryDraftFields(row, ['社区', '身份证号']),
+    ['身份证号'],
+  )
+  assert.equal(canEditQueryCell('online', row, '身份证号', true), true)
+  assert.equal(canEditQueryCell('archive', row, '身份证号', true), false)
 })
 
 test('重复父行展开后保留父子顺序和腾讯物理行号', () => {

@@ -57,6 +57,14 @@ def _json_path(column: str) -> str:
     return '$."' + column.replace('"', '\\"') + '"'
 
 
+def new_row_required_fields(parser) -> list[str]:
+    """返回行内新增提交前必须填写的字段，顺序与腾讯表一致。"""
+    required = set(parser.get_business_key())
+    if parser.COMMUNITY_COLUMN in parser.COLUMNS:
+        required.add(parser.COMMUNITY_COLUMN)
+    return [column for column in parser.COLUMNS if column in required]
+
+
 def _same_value(left: str, right: str, cell_type: str) -> bool:
     if cell_type == "number":
         try:
@@ -451,6 +459,7 @@ async def _legacy_query(
         "source_ready": False,
         "writeback_enabled": False,
         "can_add": False,
+        "required_fields": new_row_required_fields(parser),
         "pending_count": 0,
         "row_manage_message": "",
     }
@@ -616,6 +625,7 @@ async def _projection_query(
         "source_ready": True,
         "writeback_enabled": enabled,
         "can_add": bool(enabled and len(spreadsheets) == 1 and row_manage_allowed),
+        "required_fields": new_row_required_fields(parser),
         "pending_count": pending_count,
         "row_manage_message": row_manage_message,
         "scope_message": (

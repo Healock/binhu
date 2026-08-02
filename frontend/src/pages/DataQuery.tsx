@@ -55,6 +55,9 @@ import { PageHeader } from '../components/ui'
 import {
   buildQueryDisplayRows,
   canEditQueryCell,
+  ensureTrailingQueryDraft,
+  isQueryDraftTouched,
+  missingQueryDraftFields,
   normalizeQueryResponse,
   saveChangedSourceFields,
   sourceToDisplay,
@@ -110,6 +113,9 @@ export default function DataQuery() {
   const [sourceReady, setSourceReady] = useState(false)
   const [writebackEnabled, setWritebackEnabled] = useState(false)
   const [canAdd, setCanAdd] = useState(false)
+  const [requiredFields, setRequiredFields] = useState<string[]>([])
+  const [draftRows, setDraftRows] = useState<DisplayRow[]>([])
+  const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
   const [pendingCount, setPendingCount] = useState(0)
   const [expanded, setExpanded] = useState<Record<string, QuerySourceRow[]>>({})
   const [expanding, setExpanding] = useState<string>()
@@ -129,7 +135,13 @@ export default function DataQuery() {
   const [auditTotal, setAuditTotal] = useState(0)
   const gridApi = useRef<GridApi<DisplayRow> | null>(null)
   const fetchSequence = useRef(0)
+  const nextDraftId = useRef(0)
   const [messageApi, messageContext] = message.useMessage()
+
+  const makeDraftId = useCallback(
+    () => `new-${++nextDraftId.current}`,
+    [],
+  )
 
   const isSuperAdmin = user?.role === 'super_admin'
     || user?.permission_groups?.some(group => group.code === 'super_admin')
@@ -168,6 +180,7 @@ export default function DataQuery() {
       setSourceReady(Boolean(result.source_ready))
       setWritebackEnabled(Boolean(result.writeback_enabled))
       setCanAdd(Boolean(result.can_add))
+      setRequiredFields(result.required_fields || [])
       setPendingCount(Number(result.pending_count || 0))
       setExpanded({})
     } catch (requestError) {
@@ -178,6 +191,7 @@ export default function DataQuery() {
       setSourceReady(false)
       setWritebackEnabled(false)
       setCanAdd(false)
+      setRequiredFields([])
       setPendingCount(0)
       setScopeMessage('')
       setRowManageMessage('')
@@ -187,6 +201,14 @@ export default function DataQuery() {
   }, [selectedType, source, page, pageSize, keyword, sortBy, sortOrder, gridFilters])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  const columnsKey = columns.join('\u0001')
+  useEffect(() => {
+    setDraftRows(current => {
+      if (source !== 'online' || !canAdd || columns.length === 0) return []
+      return ensureTrailingQueryDraft(current, columns, makeDraftId)
+    })
+  }, [canAdd, columnsKey, makeDraftId, source])
 
   const displayRows = useMemo<DisplayRow[]>(() => {
     return buildQueryDisplayRows(rows, expanded)
@@ -229,9 +251,91 @@ export default function DataQuery() {
     }
   }, [fetchData, messageApi, selectedType])
 
+  const discardDraft = useCallback((draftId: string) => {
+    setDraftRows(current => ensureTrailingQueryDraft(
+      current.filter(row => row.__draft_id !== draftId),
+      columns,
+      makeDraftId,
+    ))
+  }, [columns, makeDraftId])
+
+  const submitDraft = useCallback(async (row: DisplayRow) => {
+    const draftId = String(row.__draft_id || '')
+    if (!draftId || savingDraftIds.has(draftId)) return
+    const missing = missingQueryDraftFields(row, requiredFields)
+    if (missing.length) {
+      messageApi.warning(`请先填写：${missing.join('、')}`)
+      return
+    }
+    setSavingDraftIds(current => new Set(current).add(draftId))
+    try {
+      const values = Object.fromEntries(
+        columns.map(column => [column, String(row[column] ?? '')]),
+      )
+      const result = await createQuerySourceRow(selectedType, values)
+      messageApi.success(result.message)
+      setDraftRows(current => ensureTrailingQueryDraft(
+        current.filter(item => item.__draft_id !== draftId),
+        columns,
+        makeDraftId,
+      ))
+      await fetchData()
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '新增失败，草稿已保留'))
+    } finally {
+      setSavingDraftIds(current => {
+        const next = new Set(current)
+        next.delete(draftId)
+        return next
+      })
+    }
+  }, [
+    columns,
+    fetchData,
+    makeDraftId,
+    messageApi,
+    requiredFields,
+    savingDraftIds,
+    selectedType,
+  ])
+
   const actionRenderer = useCallback((params: { data?: DisplayRow }) => {
     const row = params.data
     if (!row) return null
+    if (row.__kind === 'draft') {
+      const draftId = String(row.__draft_id || '')
+      const touched = isQueryDraftTouched(row, columns)
+      const missing = missingQueryDraftFields(row, requiredFields)
+      return (
+        <div className="flex h-full items-center gap-1.5">
+          {!touched ? (
+            <Tag color="green" icon={<PlusOutlined />}>在此新增</Tag>
+          ) : (
+            <>
+              <Tag color="gold">待提交</Tag>
+              <Button
+                type="link"
+                size="small"
+                disabled={missing.length > 0}
+                loading={savingDraftIds.has(draftId)}
+                title={missing.length ? `还需填写：${missing.join('、')}` : '写入腾讯表格'}
+                onClick={() => submitDraft(row)}
+              >
+                写入
+              </Button>
+              <Button
+                type="text"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                title="放弃这条草稿"
+                onClick={() => discardDraft(draftId)}
+              />
+            </>
+          )}
+        </div>
+      )
+    }
     const duplicate = row.__kind === 'parent' && Number(row.__source_count || 0) > 1
     const key = String(row.__row_key || '')
     return (
@@ -264,7 +368,17 @@ export default function DataQuery() {
         )}
       </div>
     )
-  }, [expanded, expanding, handleDelete, toggleSources])
+  }, [
+    columns,
+    discardDraft,
+    expanded,
+    expanding,
+    handleDelete,
+    requiredFields,
+    savingDraftIds,
+    submitDraft,
+    toggleSources,
+  ])
 
   const metaByColumn = useMemo(
     () => Object.fromEntries(columnMeta.map(meta => [meta.field, meta])),
@@ -275,8 +389,8 @@ export default function DataQuery() {
     {
       headerName: '来源 / 状态',
       colId: '__actions',
-      width: 190,
-      minWidth: 150,
+      width: 210,
+      minWidth: 180,
       pinned: 'left',
       sortable: false,
       filter: false,
@@ -287,7 +401,7 @@ export default function DataQuery() {
       const meta = metaByColumn[column] || { type: 'text' }
       const definition: ColDef<DisplayRow> = {
         field: column,
-        headerName: column,
+        headerName: requiredFields.includes(column) ? `${column} *` : column,
         minWidth: 150,
         width: 180,
         pinned: index === 0 ? 'left' : undefined,
@@ -295,12 +409,18 @@ export default function DataQuery() {
         filterParams: { debounceMs: 450, buttons: ['reset'] },
         sortable: true,
         resizable: true,
-        editable: params => canEditQueryCell(source, params.data, column),
+        editable: params => canEditQueryCell(source, params.data, column, canAdd),
         cellClassRules: {
           'binhu-grid-cell--editable': params => canEditQueryCell(
             source,
             params.data,
             column,
+            canAdd,
+          ),
+          'binhu-grid-cell--draft-required': params => Boolean(
+            params.data?.__kind === 'draft'
+            && requiredFields.includes(column)
+            && !String(params.value ?? '').trim()
           ),
         },
         tooltipValueGetter: params => String(params.value || ''),
@@ -318,12 +438,23 @@ export default function DataQuery() {
       }
       return definition
     }),
-  ], [actionRenderer, columns, metaByColumn, source])
+  ], [actionRenderer, canAdd, columns, metaByColumn, requiredFields, source])
 
   const handleCellChange = useCallback(async (event: CellValueChangedEvent<DisplayRow>) => {
     const row = event.data
     const column = event.colDef.field
     if (!row || !column || event.newValue === event.oldValue) return
+    if (row.__kind === 'draft') {
+      const draftId = String(row.__draft_id || '')
+      setDraftRows(current => ensureTrailingQueryDraft(
+        current.map(item => item.__draft_id === draftId
+          ? { ...item, [column]: String(event.newValue ?? '') }
+          : item),
+        columns,
+        makeDraftId,
+      ))
+      return
+    }
     const sourceId = Number(row.__source_id)
     const revision = Number(row.__revision)
     if (!sourceId || !revision) return
@@ -341,7 +472,7 @@ export default function DataQuery() {
       messageApi.error(errorText(requestError, '保存失败，已恢复原值'))
       if (errorStatus(requestError) === 409) await fetchData()
     }
-  }, [fetchData, messageApi, selectedType])
+  }, [columns, fetchData, makeDraftId, messageApi, selectedType])
 
   const handleSort = useCallback((event: SortChangedEvent<DisplayRow>) => {
     const sorted = event.api.getColumnState().find(column => column.sort)
@@ -458,6 +589,8 @@ export default function DataQuery() {
     setGridFilters({})
     setRows([])
     setCanAdd(false)
+    setRequiredFields([])
+    setDraftRows([])
     setExpanded({})
     gridApi.current?.setFilterModel(null)
   }
@@ -485,6 +618,8 @@ export default function DataQuery() {
               setPage(1)
               setRows([])
               setCanAdd(false)
+              setRequiredFields([])
+              setDraftRows([])
               setExpanded({})
             }}
             className="min-w-44"
@@ -515,7 +650,9 @@ export default function DataQuery() {
             搜索
           </Button>
           {source === 'online' && canAdd && (
-            <Button icon={<PlusOutlined />} onClick={openAdd}>新增原始行</Button>
+            <Button className="md:hidden" icon={<PlusOutlined />} onClick={openAdd}>
+              新增原始行
+            </Button>
           )}
           {isSuperAdmin && (
             <Button
@@ -549,14 +686,19 @@ export default function DataQuery() {
           <AgGridReact<DisplayRow>
             theme={gridTheme}
             rowData={displayRows}
+            pinnedBottomRowData={source === 'online' && canAdd ? draftRows : undefined}
             columnDefs={columnDefs}
             defaultColDef={{ suppressHeaderMenuButton: false }}
-            getRowId={params => params.data.__kind === 'source'
-              ? `source-${params.data.__source_id}`
-              : `parent-${params.data.__row_key}`}
-            getRowClass={params => params.data?.__kind === 'source'
-              ? 'binhu-grid-row--source'
-              : params.data?.__conflict ? 'binhu-grid-row--conflict' : undefined}
+            getRowId={params => params.data.__kind === 'draft'
+              ? `draft-${params.data.__draft_id}`
+              : params.data.__kind === 'source'
+                ? `source-${params.data.__source_id}`
+                : `parent-${params.data.__row_key}`}
+            getRowClass={params => params.data?.__kind === 'draft'
+              ? 'binhu-grid-row--draft'
+              : params.data?.__kind === 'source'
+                ? 'binhu-grid-row--source'
+                : params.data?.__conflict ? 'binhu-grid-row--conflict' : undefined}
             loading={loading}
             tooltipShowDelay={300}
             stopEditingWhenCellsLoseFocus
@@ -595,6 +737,11 @@ export default function DataQuery() {
             overlayNoRowsTemplate={error || '没有找到符合条件的数据'}
           />
         </div>
+        {source === 'online' && canAdd && (
+          <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
+            在表格最下方的新增空行中直接填写；开始录入后会自动补一条空行。草稿只保留在当前页面，点击“写入”后才会提交到腾讯表格。
+          </div>
+        )}
         <div className="flex justify-end border-t border-[var(--app-border)] px-4 py-3">
           <Pagination
             current={page}
