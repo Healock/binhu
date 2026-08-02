@@ -608,6 +608,7 @@ export interface QueryResponse {
   source_ready: boolean
   writeback_enabled: boolean
   can_add: boolean
+  required_fields: string[]
   pending_count: number
   scope_message?: string
   row_manage_message?: string

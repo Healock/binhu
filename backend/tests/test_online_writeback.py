@@ -9,7 +9,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from routers.grid_members import _replace_area_leaders
-from routers.query import CellUpdate, update_source_cell
+from routers.query import CellUpdate, new_row_required_fields, update_source_cell
 from services.online_edit_permissions import (
     can_manage_rows,
     editable_fields_for_row,
@@ -218,6 +218,14 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ValueError, "电话号码"):
             parser.validate_new_row(row)
+
+    def test_query_exposes_new_row_required_fields_in_sheet_order(self):
+        parser = get_parser("全链条")
+
+        self.assertEqual(
+            new_row_required_fields(parser),
+            ["下发日期", "社区", "身份证号", "电话号码"],
+        )
 
     def test_existing_incomplete_key_can_be_repaired_one_cell_at_a_time(self):
         parser = get_parser("出租房屋核查")
