@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   CloseOutlined,
   LogoutOutlined,
@@ -24,6 +24,7 @@ export default function Layout() {
   const [accountOpen, setAccountOpen] = useState(false)
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const menuGroups = useMemo(
     () => user ? accessibleNavigationGroups(user.role, user.permissions) : [],
     [user],
@@ -224,7 +225,9 @@ export default function Layout() {
               action={<Button size="small" onClick={() => navigate('/profile')}>前往修改</Button>}
             />
           )}
-          <Outlet />
+          <div key={location.pathname} className="app-route-transition">
+            <Outlet />
+          </div>
           <SessionTimeoutGuard />
         </div>
       </main>

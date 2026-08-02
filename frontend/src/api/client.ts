@@ -618,6 +618,7 @@ export interface GridMember {
   leave_state: 'active' | 'upcoming' | 'expired' | null
   has_id_card?: boolean
   id_card_masked?: string
+  id_card_number?: string
   department_id: number | null
   department_ids: number[]
   department: DepartmentOption | null
@@ -637,6 +638,8 @@ export interface GridMemberPayload {
   department_ids?: number[]
   position?: string
   phone?: string
+  id_card_number?: string | null
+  account_id?: number
   notes?: string
   status?: '在岗' | '离岗'
   leave_start_date?: string | null
@@ -670,10 +673,20 @@ export interface AccountOption {
   id: number
   username_masked: string
   display_name: string
+  linked_member_id?: number | null
+  linked_member_name?: string
+  is_current?: boolean
 }
 
 export async function getUnlinkedAccountOptions(): Promise<AccountOption[]> {
   const { data } = await api.get('/grid-members/unlinked-accounts')
+  return data.data
+}
+
+export async function getMemberAccountOptions(memberId: number): Promise<AccountOption[]> {
+  const { data } = await api.get('/grid-members/account-options', {
+    params: { member_id: memberId },
+  })
   return data.data
 }
 

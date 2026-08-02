@@ -25,7 +25,7 @@ from services.member_departments import (
     resolve_departments,
     sync_community_police_compat,
 )
-from services.visit_import import normalize_community
+from services.visit_import import normalize_community, normalize_identity
 from services.permissions import (
     ATTENDANCE_MANAGE,
     COMMUNITY_MANAGE,
@@ -54,6 +54,7 @@ class GridMemberCreate(BaseModel):
     department_ids: Optional[list[int]] = Field(default=None, max_length=30)
     position: str = "组员"
     phone: str = ""
+    id_card_number: Optional[str] = Field(default=None, max_length=50)
     notes: str = ""
     status: Literal["在岗", "离岗"] = "在岗"
     leave_start_date: Optional[date] = None
@@ -88,6 +89,16 @@ class GridMemberCreate(BaseModel):
     def validate_position(cls, value: str) -> str:
         return normalize_position(value)
 
+    @field_validator("id_card_number")
+    @classmethod
+    def validate_id_card_number(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not value.strip():
+            return None
+        normalized, valid, _ = normalize_identity(value)
+        if not valid:
+            raise ValueError("身份证号必须是有效的 15 位或 18 位号码")
+        return normalized
+
     @model_validator(mode="after")
     def validate_leave_dates(self):
         validate_leave_period(self.leave_start_date, self.leave_end_date)
@@ -104,6 +115,8 @@ class GridMemberUpdate(BaseModel):
     department_ids: Optional[list[int]] = Field(default=None, max_length=30)
     position: Optional[str] = None
     phone: Optional[str] = None
+    id_card_number: Optional[str] = Field(default=None, max_length=50)
+    account_id: Optional[int] = Field(default=None, gt=0)
     notes: Optional[str] = None
     status: Optional[Literal["在岗", "离岗"]] = None
     leave_start_date: Optional[date] = None
@@ -115,6 +128,16 @@ class GridMemberUpdate(BaseModel):
     @classmethod
     def validate_position(cls, value: Optional[str]) -> Optional[str]:
         return normalize_position(value) if value is not None else None
+
+    @field_validator("id_card_number")
+    @classmethod
+    def validate_id_card_number(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not value.strip():
+            return None
+        normalized, valid, _ = normalize_identity(value)
+        if not valid:
+            raise ValueError("身份证号必须是有效的 15 位或 18 位号码")
+        return normalized
 
 
 class GridMemberLeaveUpdate(BaseModel):
@@ -312,6 +335,7 @@ def _member_to_dict(
     business_date: date,
     *,
     sensitive: bool,
+    identity_access: bool,
     departments: list[dict] | None = None,
     account: dict | None = None,
 ) -> dict:
@@ -349,15 +373,19 @@ def _member_to_dict(
             "leave_end_date": row[8],
             "leave_reason": row[9],
             "leave_source": row[10],
-            "has_id_card": bool(row[11]),
-            "id_card_masked": mask_identity_number(row[11]),
         })
     else:
         for field in (
             "phone", "notes", "leave_start_date", "leave_end_date",
-            "leave_reason", "leave_source", "has_id_card", "id_card_masked",
+            "leave_reason", "leave_source",
         ):
             result.pop(field, None)
+    if identity_access:
+        result.update({
+            "has_id_card": bool(row[11]),
+            "id_card_masked": mask_identity_number(row[11]),
+            "id_card_number": str(row[11] or ""),
+        })
     return result
 
 
@@ -376,6 +404,7 @@ async def list_members(
     where_parts = []
     params = []
     can_view_sensitive = has_permission(user, PERSONNEL_SENSITIVE_VIEW)
+    can_manage_identity = str(user.get("role") or "") == "super_admin"
     if keyword:
         if can_view_sensitive:
             where_parts.append(
@@ -496,6 +525,7 @@ async def list_members(
                 row,
                 business_date,
                 sensitive=can_view_sensitive,
+                identity_access=can_manage_identity,
                 departments=departments_by_member.get(int(row[0]), []),
                 account=accounts_by_member.get(int(row[0])),
             )
@@ -629,6 +659,43 @@ async def list_unlinked_accounts(
             "id": int(row[0]),
             "username_masked": mask_identity_number(row[1]),
             "display_name": str(row[2] or row[1]),
+        }
+        for row in rows
+    ]}
+
+
+@router.get("/account-options")
+async def list_account_options(
+    member_id: int = Query(..., gt=0),
+    user: dict = Depends(require_permission(PERSONNEL_MANAGE)),
+    conn=Depends(get_db),
+):
+    """编辑人员时可选择的普通账号；已关联账号会标明当前人员，用于安全互换。"""
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id FROM _grid_members WHERE id=%s", (member_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, "人员不存在")
+        await cur.execute(
+            """
+            SELECT account.id, account.username, account.display_name,
+                   account.member_id, member.name
+            FROM _users AS account
+            LEFT JOIN _grid_members AS member ON member.id=account.member_id
+            WHERE account.role<>'super_admin'
+            ORDER BY account.member_id IS NULL DESC,
+                     account.display_name, account.username
+            """
+        )
+        rows = await cur.fetchall()
+    return {"data": [
+        {
+            "id": int(row[0]),
+            "username_masked": mask_identity_number(row[1]),
+            "display_name": str(row[2] or row[1]),
+            "linked_member_id": int(row[3]) if row[3] is not None else None,
+            "linked_member_name": str(row[4] or ""),
+            "is_current": row[3] is not None and int(row[3]) == member_id,
         }
         for row in rows
     ]}
@@ -1064,6 +1131,149 @@ async def _attach_account_to_new_member(
     return int(cur.lastrowid), username
 
 
+async def _set_account_inherited_for_member(
+    cur,
+    *,
+    account_id: int,
+    member_id: int,
+    member_name: str,
+    position: str,
+) -> None:
+    group_id, group_code, _ = await _position_primary_group(cur, position)
+    await cur.execute(
+        "DELETE FROM _user_permission_group_links WHERE user_id=%s",
+        (account_id,),
+    )
+    await cur.execute(
+        """
+        UPDATE _users
+        SET member_id=%s, display_name=%s,
+            group_assignment_mode='inherited',
+            permission_group_id=%s, role=%s,
+            active_session_id=NULL
+        WHERE id=%s
+        """,
+        (
+            member_id,
+            member_name,
+            group_id,
+            _legacy_role_for_group(group_code),
+            account_id,
+        ),
+    )
+
+
+async def _reassign_member_account(
+    cur,
+    *,
+    member_id: int,
+    target_account_id: int,
+) -> dict:
+    await cur.execute(
+        """
+        SELECT id, username, role, member_id
+        FROM _users
+        WHERE id=%s OR member_id=%s
+        ORDER BY id
+        FOR UPDATE
+        """,
+        (target_account_id, member_id),
+    )
+    account_rows = await cur.fetchall()
+    current_account = next(
+        (row for row in account_rows if row[3] is not None and int(row[3]) == member_id),
+        None,
+    )
+    target_account = next(
+        (row for row in account_rows if int(row[0]) == target_account_id),
+        None,
+    )
+    if current_account is None:
+        raise HTTPException(409, "该人员当前没有关联账号，请刷新后重试")
+    if target_account is None:
+        raise HTTPException(400, "目标账号不存在")
+    if str(current_account[2]) == "super_admin":
+        raise HTTPException(400, "超级管理员账号不能通过人员管理改绑")
+    if str(target_account[2]) == "super_admin":
+        raise HTTPException(400, "超级管理员账号不能通过人员管理改绑")
+    current_account_id = int(current_account[0])
+    if current_account_id == target_account_id:
+        return {
+            "changed": False,
+            "swapped": False,
+            "affected_account_ids": [],
+        }
+
+    other_member_id = (
+        int(target_account[3]) if target_account[3] is not None else None
+    )
+    member_ids = [member_id]
+    if other_member_id is not None:
+        member_ids.append(other_member_id)
+    placeholders = ", ".join(["%s"] * len(member_ids))
+    await cur.execute(
+        f"SELECT id, name, position FROM _grid_members "
+        f"WHERE id IN ({placeholders}) ORDER BY id FOR UPDATE",
+        member_ids,
+    )
+    members = {
+        int(row[0]): {"name": str(row[1]), "position": str(row[2])}
+        for row in await cur.fetchall()
+    }
+    if member_id not in members or (
+        other_member_id is not None and other_member_id not in members
+    ):
+        raise HTTPException(409, "账号关联的人员状态已经变化，请刷新后重试")
+
+    affected_account_ids = [current_account_id, target_account_id]
+    await cur.execute(
+        "UPDATE _users SET member_id=NULL, active_session_id=NULL "
+        "WHERE id IN (%s, %s)",
+        affected_account_ids,
+    )
+    await cur.execute(
+        "DELETE FROM _sessions WHERE user_id IN (%s, %s)",
+        affected_account_ids,
+    )
+
+    current_member = members[member_id]
+    await _set_account_inherited_for_member(
+        cur,
+        account_id=target_account_id,
+        member_id=member_id,
+        member_name=current_member["name"],
+        position=current_member["position"],
+    )
+    if other_member_id is None:
+        await cur.execute(
+            "DELETE FROM _user_permission_group_links WHERE user_id=%s",
+            (current_account_id,),
+        )
+        await cur.execute(
+            """
+            UPDATE _users
+            SET group_assignment_mode='custom', permission_group_id=NULL,
+                role='member', active_session_id=NULL
+            WHERE id=%s AND member_id IS NULL
+            """,
+            (current_account_id,),
+        )
+    else:
+        other_member = members[other_member_id]
+        await _set_account_inherited_for_member(
+            cur,
+            account_id=current_account_id,
+            member_id=other_member_id,
+            member_name=other_member["name"],
+            position=other_member["position"],
+        )
+    return {
+        "changed": True,
+        "swapped": other_member_id is not None,
+        "affected_account_ids": affected_account_ids,
+    }
+
+
 @router.post("")
 async def create_member(
     data: GridMemberCreate,
@@ -1072,6 +1282,8 @@ async def create_member(
     conn=Depends(get_db),
 ):
     """原子创建人员，并关联或创建其登录账号。"""
+    if data.id_card_number and str(user.get("role") or "") != "super_admin":
+        raise HTTPException(403, "只有超级管理员可以填写身份证号")
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -1082,17 +1294,26 @@ async def create_member(
                 data.department_id,
             )
             primary = departments[0] if departments else None
+            if data.id_card_number:
+                await cur.execute(
+                    "SELECT id FROM _grid_members WHERE id_card_number=%s FOR UPDATE",
+                    (data.id_card_number,),
+                )
+                if await cur.fetchone():
+                    raise HTTPException(409, "该身份证号已被其他人员使用")
             await cur.execute(
                 "INSERT INTO _grid_members "
-                "(name, community, department_id, position, phone, notes, status, "
+                "(name, community, department_id, position, phone, id_card_number, "
+                "notes, status, "
                 "leave_start_date, leave_end_date, leave_reason, leave_source) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     data.name.strip(),
                     primary.get("community_name") or "" if primary else "",
                     primary["id"] if primary else None,
                     data.position,
                     data.phone,
+                    data.id_card_number,
                     data.notes,
                     data.status,
                     data.leave_start_date,
@@ -1114,6 +1335,8 @@ async def create_member(
     except Exception as exc:
         await conn.rollback()
         if "Duplicate" in str(exc):
+            if data.id_card_number and "id_card" in str(exc).lower():
+                raise HTTPException(409, "该身份证号已被其他人员使用") from exc
             message = "该人员已存在" if "uk_name" in str(exc) else "该用户名已存在"
             raise HTTPException(400, message) from exc
         raise
@@ -1127,6 +1350,7 @@ async def create_member(
             "department_count": len(departments),
             "account_id": account_id,
             "account_mode": data.account_mode,
+            "identity_added": bool(data.id_card_number),
         },
         **request_audit_fields(request),
     )
@@ -1151,6 +1375,17 @@ async def update_member(
     """修改"""
     fields_set = data.model_fields_set
     relationship_fields = {"department_id", "department_ids", "community", "position"}
+    identity_changed = "id_card_number" in fields_set
+    account_requested = "account_id" in fields_set
+    if identity_changed and str(user.get("role") or "") != "super_admin":
+        raise HTTPException(403, "只有超级管理员可以修改身份证号")
+    if account_requested and data.account_id is None:
+        raise HTTPException(400, "请选择要关联的账号")
+    account_result = {
+        "changed": False,
+        "swapped": False,
+        "affected_account_ids": [],
+    }
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -1187,6 +1422,16 @@ async def update_member(
             for field in ["position", "phone", "notes", "leave_reason"]:
                 if field in fields_set:
                     updates[field] = getattr(data, field) or ""
+            if identity_changed:
+                if data.id_card_number:
+                    await cur.execute(
+                        "SELECT id FROM _grid_members "
+                        "WHERE id_card_number=%s AND id<>%s FOR UPDATE",
+                        (data.id_card_number, member_id),
+                    )
+                    if await cur.fetchone():
+                        raise HTTPException(409, "该身份证号已被其他人员使用")
+                updates["id_card_number"] = data.id_card_number
             for field in ["leave_start_date", "leave_end_date"]:
                 if field in fields_set:
                     updates[field] = getattr(data, field)
@@ -1198,7 +1443,11 @@ async def update_member(
                 updates.setdefault("leave_source", "manual")
                 if next_start is None and next_end is None:
                     updates.setdefault("leave_reason", "")
-            if not updates and not (relationship_fields & fields_set):
+            if (
+                not updates
+                and not (relationship_fields & fields_set)
+                and not account_requested
+            ):
                 raise HTTPException(400, "没有要更新的字段")
 
             old_position = str(existing[3])
@@ -1227,20 +1476,37 @@ async def update_member(
                 )
             if relationship_fields & fields_set:
                 await replace_member_departments(cur, member_id, departments)
-            if "position" in fields_set:
+            if account_requested:
+                account_result = await _reassign_member_account(
+                    cur,
+                    member_id=member_id,
+                    target_account_id=int(data.account_id),
+                )
+            elif "position" in fields_set:
                 await _refresh_inherited_account_group(cur, member_id)
             if old_position == "社区民警" or next_position == "社区民警":
                 await sync_community_police_compat(cur)
         await conn.commit()
-    except Exception:
+    except Exception as exc:
         await conn.rollback()
+        if "Duplicate" in str(exc) and identity_changed:
+            raise HTTPException(409, "该身份证号已被其他人员使用") from exc
         raise
     await record_admin_audit(
         user,
         "personnel.update",
         target_type="grid_member",
         target_name=str(member_id),
-        detail={"changed_fields": sorted(fields_set)},
+        detail={
+            "changed_fields": sorted(
+                field for field in fields_set
+                if field not in {"id_card_number", "account_id"}
+            ),
+            "identity_changed": identity_changed,
+            "account_changed": account_result["changed"],
+            "account_swapped": account_result["swapped"],
+            "affected_account_ids": account_result["affected_account_ids"],
+        },
         **request_audit_fields(request),
     )
     return {"message": "修改成功"}

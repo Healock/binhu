@@ -39,6 +39,7 @@ import {
   getGridCommunities,
   getDepartments,
   getAttendanceHistory,
+  getMemberAccountOptions,
   getUnlinkedAccountOptions,
   listGridMembers,
   updateGridMember,
@@ -113,6 +114,7 @@ export default function GridMembers() {
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
   const canManageAttendance = Boolean(user?.permissions.includes('attendance.manage'))
   const canViewSensitive = Boolean(user?.permissions.includes('personnel.sensitive.view'))
+  const canManageIdentity = user?.role === 'super_admin'
   const canDelete = Boolean(
     user?.permission_groups.some(group => group.code === 'super_admin'),
   )
@@ -272,18 +274,10 @@ export default function GridMembers() {
     },
     {
       title: '身份证号',
-      dataIndex: 'id_card_masked',
-      key: 'id_card_masked',
+      dataIndex: 'id_card_number',
+      key: 'id_card_number',
       width: 185,
-      render: (value, member) => (
-        member.has_id_card
-          ? (
-              <Tooltip title="完整号码仅保存在数据库中，页面不显示">
-                <span>{value}</span>
-              </Tooltip>
-            )
-          : <span className="text-slate-400">未补齐</span>
-      ),
+      render: value => value || <span className="text-slate-400">未补齐</span>,
     },
     {
       title: '人员状态',
@@ -561,7 +555,8 @@ export default function GridMembers() {
                 <div className="hidden md:block">
                   <AppTable<GridMember>
                     columns={memberColumns.filter(column => (
-                      canViewSensitive || !['phone', 'id_card_masked', 'notes'].includes(String(column.key))
+                      (canViewSensitive || !['phone', 'notes'].includes(String(column.key)))
+                      && (canManageIdentity || column.key !== 'id_card_number')
                     ))}
                     dataSource={state.rows}
                     emptyText={state.error || '该分类暂无人员'}
@@ -598,6 +593,7 @@ export default function GridMembers() {
                           canDelete={canDelete}
                           canManageAttendance={canManageAttendance}
                           canViewSensitive={canViewSensitive}
+                          canManageIdentity={canManageIdentity}
                         />
                       ))}
                     </div>
@@ -630,6 +626,7 @@ export default function GridMembers() {
           member={editing}
           departments={departments}
           accountOptions={accountOptions}
+          canManageIdentity={canManageIdentity}
           onClose={() => {
             setShowAddForm(false)
             setEditing(null)
@@ -780,6 +777,7 @@ function MobileMemberCard({
   canDelete,
   canManageAttendance,
   canViewSensitive,
+  canManageIdentity,
 }: {
   member: GridMember
   onEdit: () => void
@@ -789,6 +787,7 @@ function MobileMemberCard({
   canDelete: boolean
   canManageAttendance: boolean
   canViewSensitive: boolean
+  canManageIdentity: boolean
 }) {
   const { label, color, detail, reason } = getMemberStatusMeta(member)
 
@@ -824,23 +823,23 @@ function MobileMemberCard({
         </div>
       )}
 
-      {canViewSensitive && <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
-        <div className="flex min-w-0 gap-3">
+      {(canViewSensitive || canManageIdentity) && <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
+        {canViewSensitive && <div className="flex min-w-0 gap-3">
           <span className="w-16 shrink-0 text-slate-500">电话</span>
           <span className="min-w-0 truncate text-slate-700" title={member.phone || '-'}>
             {member.phone || '-'}
           </span>
-        </div>
-        <div className="flex min-w-0 gap-3">
+        </div>}
+        {canManageIdentity && <div className="flex min-w-0 gap-3">
           <span className="w-16 shrink-0 text-slate-500">身份证</span>
           <span
             className="min-w-0 truncate text-slate-700"
-            title={member.has_id_card ? member.id_card_masked : '未补齐'}
+            title={member.id_card_number || '未补齐'}
           >
-            {member.has_id_card ? member.id_card_masked : '未补齐'}
+            {member.id_card_number || '未补齐'}
           </span>
-        </div>
-        {member.notes && (
+        </div>}
+        {canViewSensitive && member.notes && (
           <div className="flex min-w-0 gap-3">
             <span className="w-16 shrink-0 text-slate-500">备注</span>
             <span className="min-w-0 truncate text-slate-700" title={member.notes}>
@@ -869,12 +868,14 @@ function MemberForm({
   member,
   departments,
   accountOptions,
+  canManageIdentity,
   onClose,
   onSaved,
 }: {
   member: GridMember | null
   departments: DepartmentOption[]
   accountOptions: AccountOption[]
+  canManageIdentity: boolean
   onClose: () => void
   onSaved: () => void
 }) {
@@ -886,9 +887,16 @@ function MemberForm({
     (member?.position as PersonnelPosition) || '组员',
   )
   const [phone, setPhone] = useState(member?.phone || '')
+  const [idCardNumber, setIdCardNumber] = useState(member?.id_card_number || '')
   const [notes, setNotes] = useState(member?.notes || '')
   const [accountMode, setAccountMode] = useState<'existing' | 'create'>('existing')
   const [existingUserId, setExistingUserId] = useState<number | null>(null)
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(
+    member?.account?.id || null,
+  )
+  const [editAccountOptions, setEditAccountOptions] = useState<AccountOption[]>([])
+  const [accountOptionsLoading, setAccountOptionsLoading] = useState(Boolean(member))
+  const [accountOptionsError, setAccountOptionsError] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
@@ -896,6 +904,29 @@ function MemberForm({
   const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
   const multipleCommunities = position === '社区民警'
   const communityPosition = ['组长', '组员', '社区民警'].includes(position)
+  const currentAccountId = member?.account?.id || null
+
+  useEffect(() => {
+    if (!member) return
+    let cancelled = false
+    setAccountOptionsLoading(true)
+    getMemberAccountOptions(member.id)
+      .then(options => {
+        if (!cancelled) {
+          setEditAccountOptions(options)
+          setAccountOptionsError('')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAccountOptionsError('账号列表加载失败，仍可保存其他资料')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAccountOptionsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [member])
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -918,16 +949,41 @@ function MemberForm({
       setFormError('请输入用户名和至少 8 个字符的初始密码')
       return
     }
+    const normalizedIdentity = idCardNumber.replace(/\s+/g, '').toUpperCase()
+    if (
+      canManageIdentity
+      && normalizedIdentity
+      && !/^(?:\d{15}|\d{17}[\dX])$/.test(normalizedIdentity)
+    ) {
+      setFormError('身份证号必须是有效的 15 位或 18 位号码')
+      return
+    }
     setSaving(true)
     setFormError('')
     try {
-      const payload = {
+      const payload: {
+        department_ids: number[]
+        position: PersonnelPosition
+        phone: string
+        notes: string
+        id_card_number?: string | null
+        account_id?: number
+      } = {
         department_ids: departmentIds,
         position,
         phone,
         notes,
       }
+      if (canManageIdentity) {
+        const initialIdentity = (member?.id_card_number || '').replace(/\s+/g, '').toUpperCase()
+        if (!member || normalizedIdentity !== initialIdentity) {
+          payload.id_card_number = normalizedIdentity || null
+        }
+      }
       if (member) {
+        if (selectedAccountId && selectedAccountId !== currentAccountId) {
+          payload.account_id = selectedAccountId
+        }
         await updateGridMember(member.id, payload)
       } else {
         await createGridMember({
@@ -1082,12 +1138,60 @@ function MemberForm({
             账号姓名与人员姓名一致，默认继承该岗位的权限组；新账号会标记为临时密码。
           </p>
         </div>}
-        {member?.account && <Alert
-          type="info"
-          showIcon
-          message={`关联账号：${member.account.username_masked}`}
-          description="人员和账号保持一对一，不能在用户管理中单独解除关联。"
-        />}
+        {member && <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-2 font-medium text-slate-700">关联账号</div>
+          <Select
+            showSearch
+            optionFilterProp="label"
+            value={selectedAccountId || undefined}
+            onChange={setSelectedAccountId}
+            loading={accountOptionsLoading}
+            placeholder="请选择关联账号"
+            className="w-full"
+            options={editAccountOptions.map(account => ({
+              value: account.id,
+              label: `${account.display_name}（${account.username_masked}）${
+                account.is_current
+                  ? ' · 当前关联'
+                  : account.linked_member_id
+                    ? ` · 将与${account.linked_member_name}互换`
+                    : ' · 空闲账号'
+              }`,
+            }))}
+          />
+          {accountOptionsError && (
+            <p className="mt-2 text-xs text-red-700">{accountOptionsError}</p>
+          )}
+          {selectedAccountId && selectedAccountId !== currentAccountId && (
+            <Alert
+              className="mt-3"
+              type="warning"
+              showIcon
+              message={editAccountOptions.find(item => item.id === selectedAccountId)?.linked_member_id
+                ? '保存后两名人员的账号将互换'
+                : '保存后当前账号将释放，并改绑到所选账号'}
+              description="受影响账号会退出当前登录，并按新人员岗位重新继承权限。"
+            />
+          )}
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            人员和账号保持一对一；用户管理中仍不能单独解除或改绑。
+          </p>
+        </div>}
+        {canManageIdentity && <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">
+            身份证号
+          </label>
+          <Input
+            value={idCardNumber}
+            onChange={event => setIdCardNumber(event.target.value)}
+            placeholder="15 位或 18 位，可留空"
+            maxLength={18}
+            autoComplete="off"
+          />
+          <p className="mt-1.5 text-xs text-slate-500">
+            仅超级管理员可以查看、填写、替换或清空。
+          </p>
+        </div>}
         <div>
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             电话
