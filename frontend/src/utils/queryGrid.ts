@@ -4,6 +4,12 @@ import type {
   QuerySourceRow,
 } from '../api/client.ts'
 
+export interface QueryAuditChange {
+  field: string
+  before: string
+  after: string
+}
+
 export type QueryDisplayRow = QueryDataRow & {
   __kind: 'parent' | 'source' | 'draft'
   __parent_key?: string
@@ -138,4 +144,22 @@ export async function saveChangedSourceFields(
     revision = result.revision
   }
   return revision
+}
+
+export function buildQueryAuditChanges(
+  beforeValues: Record<string, string> | null | undefined,
+  afterValues: Record<string, string> | null | undefined,
+  action: 'create' | 'update' | 'delete',
+): QueryAuditChange[] {
+  const before = beforeValues || {}
+  const after = afterValues || {}
+  const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+  return fields.flatMap(field => {
+    const oldValue = String(before[field] ?? '')
+    const newValue = String(after[field] ?? '')
+    if (action === 'create' && !newValue.trim()) return []
+    if (action === 'delete' && !oldValue.trim()) return []
+    if (action === 'update' && oldValue === newValue) return []
+    return [{ field, before: oldValue, after: newValue }]
+  })
 }

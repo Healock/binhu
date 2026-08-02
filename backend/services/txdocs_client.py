@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import json
 import httpx
 from typing import Optional
 from config import settings
@@ -23,6 +24,16 @@ COLUMN_COUNT = len(COLUMNS)  # 14
 # 即使单元格没有超过 10000，读取 1001 行以上也可能返回空数据。
 MAX_CELLS_PER_PAGE = 10000
 MAX_ROWS_PER_PAGE = 1000
+DATE_NUMBER_COLUMNS = {"下发日期", "截止日期", "下发时间", "截止时间"}
+
+
+class TxDocsAPIError(RuntimeError):
+    """腾讯文档返回了 HTTP 或业务层错误。"""
+
+    def __init__(self, message: str, *, code: str | int | None = None):
+        self.code = code
+        prefix = f"腾讯文档接口错误 {code}" if code not in (None, "") else "腾讯文档接口错误"
+        super().__init__(f"{prefix}：{message or '未知错误'}")
 
 
 def column_letter(index: int) -> str:
@@ -83,16 +94,65 @@ class TxDocsClient:
                     retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
                     await asyncio.sleep(retry_after)
                     continue
-                resp.raise_for_status()
+                try:
+                    payload = resp.json()
+                except (json.JSONDecodeError, ValueError) as exc:
+                    if resp.status_code >= 500 and attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise TxDocsAPIError(
+                        f"HTTP {resp.status_code} 返回了无法解析的响应"
+                    ) from exc
+                if resp.status_code >= 400:
+                    if resp.status_code >= 500 and attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise self._api_error(payload, http_status=resp.status_code)
+                business_error = self._business_error(payload)
+                if business_error is not None:
+                    raise business_error
                 # 请求间延迟，避免限频
                 await asyncio.sleep(settings.API_RATE_LIMIT_DELAY_MS / 1000)
-                return resp.json()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code >= 500 and attempt < max_retries - 1:
+                return payload
+            except httpx.RequestError:
+                if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise
         raise Exception(f"请求失败，已重试 {max_retries} 次: {url}")
+
+    @staticmethod
+    def _api_error(payload: object, *, http_status: int | None = None) -> TxDocsAPIError:
+        code: str | int | None = http_status
+        message = "请求失败"
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                code = error.get("code", code)
+                message = str(error.get("message") or error.get("msg") or message)
+            else:
+                code = payload.get("code", payload.get("errorCode", code))
+                message = str(payload.get("message") or payload.get("msg") or message)
+        return TxDocsAPIError(message[:500], code=code)
+
+    @classmethod
+    def _business_error(cls, payload: object) -> TxDocsAPIError | None:
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if error:
+            return cls._api_error(payload)
+        for key in ("code", "errorCode", "error_code", "errcode", "retcode", "ret"):
+            if key not in payload or payload[key] in (None, ""):
+                continue
+            raw_code = payload[key]
+            try:
+                success = int(raw_code) in {0, 200}
+            except (TypeError, ValueError):
+                success = str(raw_code).strip().lower() in {"ok", "success"}
+            if not success:
+                return cls._api_error(payload)
+        return None
 
     async def read_range(
         self,
@@ -135,6 +195,7 @@ class TxDocsClient:
         sheet_id: str,
         header_row: int = 1,
         column_names: list[str] | None = None,
+        include_detected_headers: bool = False,
     ) -> list[dict]:
         """读取非空数据行，并保留腾讯表中的一基物理行号和单元格类型。"""
         if column_names is None:
@@ -164,10 +225,14 @@ class TxDocsClient:
                 values, metadata = self._decode_row(raw_row, column_names)
                 if not any(values.values()):
                     continue
+                is_header = self._looks_like_header(values, column_names)
+                if is_header and not include_detected_headers:
+                    continue
                 result_rows.append({
                     "physical_row": current_row + offset,
                     "values": values,
                     "cell_meta": metadata,
+                    "is_header": is_header,
                 })
 
             # 终止条件必须使用 API 原始行数，不能使用过滤空白行后的数量。
@@ -211,6 +276,36 @@ class TxDocsClient:
             }
         return "", {"type": "text"}
 
+    @staticmethod
+    def _format_column_value(column: str, value: str, metadata: dict) -> str:
+        """恢复腾讯以浮点数返回的 M.DD 日期显示。"""
+        if column not in DATE_NUMBER_COLUMNS or metadata.get("type") != "number":
+            return value
+        raw = str(value or "").strip()
+        if "." not in raw:
+            return raw
+        month, day = raw.split(".", 1)
+        if month.isdigit() and day.isdigit() and 1 <= len(day) <= 2:
+            return f"{month}.{day.ljust(2, '0')}"
+        return raw
+
+    @staticmethod
+    def _looks_like_header(values: dict[str, str], column_names: list[str]) -> bool:
+        """识别错误配置后混入数据区的重复表头。"""
+        nonempty = 0
+        matches = 0
+        for column in column_names:
+            value = "".join(str(values.get(column, "") or "").split())
+            if not value:
+                continue
+            nonempty += 1
+            expected = "".join(str(column).split())
+            if value == expected or (
+                expected == "身份证号" and value in {"身份证号码", "身份证"}
+            ):
+                matches += 1
+        return matches >= 3 and matches * 2 >= nonempty
+
     def _decode_row(
         self,
         raw_row,
@@ -228,7 +323,7 @@ class TxDocsClient:
                 meta = {"type": "text"}
             else:
                 value, meta = self._decode_cell(cell)
-            values[column] = value.strip()
+            values[column] = self._format_column_value(column, value.strip(), meta)
             metadata[column] = meta
         return values, metadata
 
@@ -435,24 +530,13 @@ class TxDocsClient:
         }
 
     @staticmethod
-    def build_insert_row_request(sheet_id: str, physical_row: int) -> dict:
-        return {
-            "insertDimensionRequest": {
-                "sheetId": sheet_id,
-                "dimension": "ROWS",
-                "startIndex": physical_row - 1,
-                "endIndex": physical_row,
-            }
-        }
-
-    @staticmethod
     def build_delete_row_request(sheet_id: str, physical_row: int) -> dict:
         return {
             "deleteDimensionRequest": {
                 "sheetId": sheet_id,
-                "dimension": "ROWS",
-                "startIndex": physical_row - 1,
-                "endIndex": physical_row,
+                "dimension": "ROW",
+                "startIndex": physical_row,
+                "endIndex": physical_row + 1,
             }
         }
 

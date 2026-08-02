@@ -1,7 +1,13 @@
+import os
 import unittest
 from unittest.mock import AsyncMock, call
 
-from services.txdocs_client import TxDocsClient
+import httpx
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
+
+from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
 
 def make_response(row_count: int, column_count: int) -> dict:
@@ -92,6 +98,90 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
                 call("file", "sheet", "A1002:B2001"),
             ],
         )
+
+    async def test_repeated_header_inside_data_range_is_skipped(self):
+        client = TxDocsClient("client", "token", "user")
+        response = make_response(2, 3)
+        response["gridData"]["rows"][0] = {
+            "values": [
+                {"cellValue": {"text": "核查人"}},
+                {"cellValue": {"text": "姓名"}},
+                {"cellValue": {"text": "社区"}},
+            ]
+        }
+        response["gridData"]["rows"][1] = {
+            "values": [
+                {"cellValue": {"text": "网格员甲"}},
+                {"cellValue": {"text": "对象乙"}},
+                {"cellValue": {"text": "长板"}},
+            ]
+        }
+        client.read_range = AsyncMock(return_value=response)
+
+        rows = await client.read_all_source_rows(
+            "file", "sheet", 1, ["核查人", "姓名", "社区"]
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["physical_row"], 3)
+        self.assertEqual(rows[0]["values"]["社区"], "长板")
+
+    async def test_detected_header_can_be_retained_for_append_position(self):
+        client = TxDocsClient("client", "token", "user")
+        response = {
+            "gridData": {
+                "rows": [{
+                    "values": [
+                        {"cellValue": {"text": "核查人"}},
+                        {"cellValue": {"text": "姓名"}},
+                        {"cellValue": {"text": "社区"}},
+                    ]
+                }]
+            }
+        }
+        client.read_range = AsyncMock(return_value=response)
+
+        rows = await client.read_all_source_rows(
+            "file", "sheet", 1, ["核查人", "姓名", "社区"],
+            include_detected_headers=True,
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["is_header"])
+        self.assertEqual(rows[0]["physical_row"], 2)
+
+    def test_numeric_month_day_keeps_trailing_zero(self):
+        client = TxDocsClient("client", "token", "user")
+        values, metadata = client._decode_row(
+            {
+                "values": [
+                    {"cellValue": {"number": 7.3}},
+                    {"cellValue": {"number": 7.03}},
+                ]
+            },
+            ["下发时间", "截止时间"],
+        )
+
+        self.assertEqual(values, {"下发时间": "7.30", "截止时间": "7.03"})
+        self.assertEqual(metadata["下发时间"]["type"], "number")
+
+    async def test_http_200_business_error_is_not_treated_as_success(self):
+        async def handler(_request):
+            return httpx.Response(
+                200,
+                json={"code": 400001, "message": "请求参数错误"},
+            )
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient("client", "token", "user", http_client=http)
+        try:
+            with self.assertRaisesRegex(TxDocsAPIError, "400001.*请求参数错误"):
+                await client.batch_update("file", [{"unsupportedRequest": {}}])
+        finally:
+            await http.aclose()
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
-  Descriptions,
   Drawer,
   Empty,
   Input,
@@ -54,6 +53,7 @@ import { useAuth } from '../context/AuthContext'
 import { PageHeader } from '../components/ui'
 import {
   buildQueryDisplayRows,
+  buildQueryAuditChanges,
   canEditQueryCell,
   ensureTrailingQueryDraft,
   isQueryDraftTouched,
@@ -866,7 +866,11 @@ export default function DataQuery() {
             )}
             {columns.map(column => {
               const editable = selectedDrawerSource?.editable_fields.includes(column)
-              const meta = selectedDrawerSource?.cell_meta[column] || metaByColumn[column]
+              const managedMeta = metaByColumn[column]
+              const sourceMeta = selectedDrawerSource?.cell_meta[column]
+              const meta = managedMeta?.type === 'select'
+                ? managedMeta
+                : sourceMeta || managedMeta
               return (
                 <label key={column} className="block">
                   <span className="mb-1 flex items-center justify-between text-sm font-medium text-[var(--app-text)]">
@@ -922,33 +926,61 @@ export default function DataQuery() {
           <List
             dataSource={auditRows}
             locale={{ emptyText: '暂无修改记录' }}
-            renderItem={item => (
-              <List.Item>
-                <List.Item.Meta
-                  title={(
-                    <Space wrap>
+            renderItem={item => {
+              const changes = buildQueryAuditChanges(
+                item.before_values,
+                item.after_values,
+                item.action,
+              )
+              return (
+                <List.Item className="!block">
+                  <div className="w-full">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Tag color={item.action === 'delete' ? 'red' : item.action === 'create' ? 'green' : 'blue'}>
                         {{ create: '新增', update: '修改', delete: '删除' }[item.action]}
                       </Tag>
-                      <span>{item.username}</span>
-                      <span>{item.column_name || '整行'}</span>
+                      <span className="font-medium text-[var(--app-text-strong)]">{item.username}</span>
+                      <span className="text-sm text-[var(--app-text-secondary)]">
+                        {item.column_name || `第 ${item.physical_row || '-'} 行`}
+                      </span>
                       <Tag color={item.sync_status === 'synced' ? 'green' : item.sync_status === 'failed' ? 'red' : 'gold'}>
                         {item.sync_status === 'synced' ? '已同步' : item.sync_status === 'failed' ? '写入失败' : '待同步'}
                       </Tag>
-                    </Space>
-                  )}
-                  description={new Date(item.created_at).toLocaleString('zh-CN')}
-                />
-                <Descriptions
-                  size="small"
-                  column={1}
-                  items={[
-                    { key: 'before', label: '修改前', children: <pre className="max-w-xl whitespace-pre-wrap text-xs">{JSON.stringify(item.before_values, null, 2)}</pre> },
-                    { key: 'after', label: '修改后', children: <pre className="max-w-xl whitespace-pre-wrap text-xs">{JSON.stringify(item.after_values, null, 2)}</pre> },
-                  ]}
-                />
-              </List.Item>
-            )}
+                    </div>
+                    <div className="mt-1 text-xs text-[var(--app-text-tertiary)]">
+                      {new Date(item.created_at).toLocaleString('zh-CN')} · {changes.length} 个字段发生变化
+                    </div>
+                    <div className="mt-3 overflow-hidden rounded-lg border border-[var(--app-border)]">
+                      {changes.length ? changes.map(change => (
+                        <div
+                          key={change.field}
+                          className="grid gap-1 border-b border-[var(--app-border)] px-3 py-2 text-sm last:border-b-0 md:grid-cols-[140px_1fr]"
+                        >
+                          <div className="font-medium text-[var(--app-text)]">{change.field}</div>
+                          {item.action === 'create' ? (
+                            <div className="break-words text-emerald-600 dark:text-emerald-400">+ {change.after}</div>
+                          ) : item.action === 'delete' ? (
+                            <div className="break-words text-red-600 dark:text-red-400">− {change.before}</div>
+                          ) : (
+                            <div className="flex flex-wrap items-center gap-2 break-words">
+                              <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700 line-through dark:bg-red-950/40 dark:text-red-300">
+                                {change.before || '（空）'}
+                              </span>
+                              <span className="text-[var(--app-text-tertiary)]">→</span>
+                              <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                                {change.after || '（空）'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )) : (
+                        <div className="px-3 py-2 text-sm text-[var(--app-text-secondary)]">没有可展示的字段变化</div>
+                      )}
+                    </div>
+                  </div>
+                </List.Item>
+              )
+            }}
           />
           {auditTotal > 20 && (
             <div className="mt-4 flex justify-end">

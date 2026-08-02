@@ -692,11 +692,11 @@ export interface QueryWritebackAudit {
   parser_type: string
   spreadsheet_id: number
   physical_row: number | null
-  column_name: string
-  row_key_before: string
-  row_key_after: string
-  before_values: Record<string, string>
-  after_values: Record<string, string>
+  column_name: string | null
+  row_key_before: string | null
+  row_key_after: string | null
+  before_values: Record<string, string> | null
+  after_values: Record<string, string> | null
   sync_status: 'pending' | 'synced' | 'failed'
   synced_at: string | null
   created_at: string
