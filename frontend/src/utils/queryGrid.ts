@@ -77,6 +77,42 @@ export function ensureTrailingQueryDraft(
   ]
 }
 
+export function updateQueryDraftValue(
+  rows: QueryDisplayRow[],
+  editedRow: QueryDisplayRow,
+  column: string,
+  value: unknown,
+  columns: string[],
+  createId: () => string,
+): QueryDisplayRow[] {
+  const draftId = String(editedRow.__draft_id || '')
+  if (!draftId) return rows
+
+  const latestValues = Object.fromEntries(
+    columns.map(field => [field, String(editedRow[field] ?? '')]),
+  )
+  let matched = false
+  const updated = rows.map(row => {
+    if (String(row.__draft_id || '') !== draftId) return row
+    matched = true
+    return {
+      ...row,
+      ...latestValues,
+      [column]: String(value ?? ''),
+    }
+  })
+
+  if (!matched) {
+    updated.push({
+      ...createQueryDraftRow(columns, draftId),
+      ...latestValues,
+      [column]: String(value ?? ''),
+    })
+  }
+
+  return ensureTrailingQueryDraft(updated, columns, createId)
+}
+
 export function sourceToDisplay(
   source: QuerySourceRow,
   parentKey: string,

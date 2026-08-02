@@ -29,7 +29,7 @@ import {
   AllCommunityModule,
   ModuleRegistry,
   themeQuartz,
-  type CellValueChangedEvent,
+  type CellEditRequestEvent,
   type ColDef,
   type FilterChangedEvent,
   type GridApi,
@@ -61,6 +61,7 @@ import {
   normalizeQueryResponse,
   saveChangedSourceFields,
   sourceToDisplay,
+  updateQueryDraftValue,
   type QueryDisplayRow as DisplayRow,
 } from '../utils/queryGrid'
 
@@ -440,16 +441,16 @@ export default function DataQuery() {
     }),
   ], [actionRenderer, canAdd, columns, metaByColumn, requiredFields, source])
 
-  const handleCellChange = useCallback(async (event: CellValueChangedEvent<DisplayRow>) => {
+  const handleCellEditRequest = useCallback(async (event: CellEditRequestEvent<DisplayRow>) => {
     const row = event.data
     const column = event.colDef.field
     if (!row || !column || event.newValue === event.oldValue) return
     if (row.__kind === 'draft') {
-      const draftId = String(row.__draft_id || '')
-      setDraftRows(current => ensureTrailingQueryDraft(
-        current.map(item => item.__draft_id === draftId
-          ? { ...item, [column]: String(event.newValue ?? '') }
-          : item),
+      setDraftRows(current => updateQueryDraftValue(
+        current,
+        row,
+        column,
+        event.newValue,
         columns,
         makeDraftId,
       ))
@@ -467,9 +468,7 @@ export default function DataQuery() {
       messageApi.success('已写回腾讯表格')
       await fetchData()
     } catch (requestError) {
-      row[column] = event.oldValue
-      event.api.refreshCells({ rowNodes: [event.node], columns: [column], force: true })
-      messageApi.error(errorText(requestError, '保存失败，已恢复原值'))
+      messageApi.error(errorText(requestError, '保存失败，原值未改变'))
       if (errorStatus(requestError) === 409) await fetchData()
     }
   }, [columns, fetchData, makeDraftId, messageApi, selectedType])
@@ -703,9 +702,10 @@ export default function DataQuery() {
             tooltipShowDelay={300}
             stopEditingWhenCellsLoseFocus
             singleClickEdit
+            readOnlyEdit
             animateRows={false}
             onGridReady={event => { gridApi.current = event.api }}
-            onCellValueChanged={handleCellChange}
+            onCellEditRequest={handleCellEditRequest}
             onSortChanged={handleSort}
             onFilterChanged={handleFilter}
             postSortRows={params => {
