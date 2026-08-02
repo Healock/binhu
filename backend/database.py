@@ -454,6 +454,8 @@ async def ensure_online_editor_schema(cur) -> None:
             row_key CHAR(32) NOT NULL,
             values_json JSON NOT NULL,
             community VARCHAR(200) NOT NULL DEFAULT '',
+            inspector VARCHAR(100) NOT NULL DEFAULT '',
+            task_state VARCHAR(20) NOT NULL DEFAULT '',
             source_count INT NOT NULL DEFAULT 1,
             conflict TINYINT(1) NOT NULL DEFAULT 0,
             search_text MEDIUMTEXT NOT NULL,
@@ -462,9 +464,75 @@ async def ensure_online_editor_schema(cur) -> None:
                 ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (parser_type, row_key),
             INDEX idx_source_projection_community (parser_type, community),
-            INDEX idx_source_projection_pending (parser_type, pending_state)
+            INDEX idx_source_projection_pending (parser_type, pending_state),
+            INDEX idx_source_projection_tasks (
+                parser_type, community, inspector, task_state
+            )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "inspector",
+        "VARCHAR(100) NOT NULL DEFAULT '' AFTER community",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "task_state",
+        "VARCHAR(20) NOT NULL DEFAULT '' AFTER inspector",
+    )
+    await _ensure_index(
+        cur,
+        "_online_source_projection",
+        "idx_source_projection_tasks",
+        "INDEX idx_source_projection_tasks "
+        "(parser_type, community, inspector, task_state)",
+    )
+    # 只读取已有来源缓存完成兼容回填，不访问或改写腾讯文档。
+    await cur.execute("""
+        UPDATE _online_source_projection
+        SET inspector=TRIM(COALESCE(
+                JSON_UNQUOTE(JSON_EXTRACT(values_json, '$.\"核查人\"')),
+                ''
+            )),
+            task_state=CASE
+                WHEN parser_type='疑似未注销模型三' THEN
+                    CASE WHEN TRIM(COALESCE(
+                        JSON_UNQUOTE(JSON_EXTRACT(values_json, '$.\"核查结果\"')),
+                        ''
+                    )) IN ('近期反吴', '在吴', '离吴')
+                    THEN 'completed' ELSE 'unchecked' END
+                WHEN parser_type='疑似返苏' THEN
+                    CASE
+                        WHEN TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(
+                            values_json, '$.\"核查反馈\"'
+                        )), ''))<>'' THEN 'completed'
+                        WHEN TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(
+                            values_json, '$.\"现住址\"'
+                        )), ''))<>'' THEN 'checked'
+                        ELSE 'unchecked'
+                    END
+                WHEN parser_type IN (
+                    '全链条', '出租房屋核查', '寄递业'
+                ) THEN
+                    CASE
+                        WHEN TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(
+                            values_json, '$.\"核查结果\"'
+                        )), ''))<>'' THEN 'completed'
+                        WHEN TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(
+                            values_json, '$.\"现住址\"'
+                        )), ''))<>'' THEN 'checked'
+                        ELSE 'unchecked'
+                    END
+                ELSE ''
+            END
+        WHERE task_state=''
+          AND parser_type IN (
+              '全链条', '出租房屋核查', '寄递业',
+              '疑似未注销模型三', '疑似返苏'
+          )
     """)
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _online_source_cache_state (

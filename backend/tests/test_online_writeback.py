@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException, Request
 
@@ -15,6 +15,7 @@ from routers.query import (
     _row_values_match,
     new_row_required_fields,
     update_source_cell,
+    update_source_fields,
 )
 from services.online_edit_permissions import (
     can_manage_rows,
@@ -22,6 +23,7 @@ from services.online_edit_permissions import (
     effective_edit_communities,
     effective_view_communities,
     validate_row_change,
+    validate_row_changes,
 )
 from services.online_source import (
     cleanup_expired_writeback_audit,
@@ -186,6 +188,20 @@ class ConflictCursor(SqlAwareCursor):
             self.one = None
 
 
+class BatchUpdateCursor(ConflictCursor):
+    def __init__(self, source_values):
+        super().__init__(source_values)
+        self.lastrowid = 31
+
+    async def execute(self, sql, params=None):
+        compact = " ".join(sql.split())
+        if "FROM _communities AS community" in compact and "UNION" in compact:
+            self.calls.append((compact, params))
+            self.one = ("长板",)
+            return
+        await super().execute(sql, params)
+
+
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
     async def test_view_scope_can_expand_but_edit_scope_stays_with_position(self):
         user = make_user("组员", communities=["长板"], view_scope="all")
@@ -232,6 +248,39 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("二次反馈", locked)
         self.assertNotIn("研判", unlocked)
 
+    async def test_batch_validation_can_save_result_and_secondary_together(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("全链条")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({"社区": "长板", "身份证号": "1", "电话号码": "2", "下发日期": "3"})
+        after = {**before, "核查结果": "无法核实", "二次反馈": "再次联系未果"}
+
+        await validate_row_changes(
+            SqlAwareCursor(formal={"长板": "长板"}),
+            user,
+            parser,
+            before,
+            after,
+            ["核查结果", "二次反馈"],
+        )
+
+    async def test_batch_validation_cannot_unlock_cross_community_row(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("全链条")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({"社区": "冬梅", "身份证号": "1", "电话号码": "2", "下发日期": "3"})
+        after = {**before, "核查结果": "无法核实", "二次反馈": "已联系"}
+
+        with self.assertRaises(PermissionError):
+            await validate_row_changes(
+                SqlAwareCursor(formal={"冬梅": "冬梅"}),
+                user,
+                parser,
+                before,
+                after,
+                ["核查结果", "二次反馈"],
+            )
+
     def test_row_management_requires_global_position_and_permission(self):
         permissions = [ONLINE_RAW_VIEW, ONLINE_RAW_EDIT, ONLINE_RAW_ROW_MANAGE]
         self.assertFalse(can_manage_rows(make_user("片长", permissions=permissions)))
@@ -275,9 +324,10 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(cursor.many_rows), 1)
         projection = cursor.many_rows[0]
-        self.assertEqual(projection[4], 2)
-        self.assertEqual(projection[5], 0)
-        self.assertEqual(projection[7], "pending")
+        self.assertEqual(projection[5], "completed")
+        self.assertEqual(projection[6], 2)
+        self.assertEqual(projection[7], 0)
+        self.assertEqual(projection[9], "pending")
         self.assertEqual(json.loads(projection[2])["现住址"], "新址")
 
     async def test_non_mergeable_duplicates_are_exposed_as_conflict(self):
@@ -292,8 +342,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         await rebuild_projection(cursor, "全链条")
 
-        self.assertEqual(cursor.many_rows[0][4], 2)
-        self.assertEqual(cursor.many_rows[0][5], 1)
+        self.assertEqual(cursor.many_rows[0][6], 2)
+        self.assertEqual(cursor.many_rows[0][7], 1)
 
     async def test_external_change_returns_409_and_refreshes_cache(self):
         parser = get_parser("全链条")
@@ -324,6 +374,59 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 409)
         refresh.assert_awaited_once()
         client.close.assert_awaited_once()
+
+    async def test_mobile_batch_update_uses_one_request_and_one_cache_revision(self):
+        parser = get_parser("全链条")
+        cached = {column: "" for column in parser.COLUMNS}
+        cached.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+        })
+        verified = {
+            **cached,
+            "现住址": "长板一号",
+            "核查结果": "无法核实",
+            "二次反馈": "再次联系未果",
+        }
+        cursor = BatchUpdateCursor(cached)
+        conn = FakeConnection(cursor)
+        client = AsyncMock()
+        client.read_source_row.side_effect = [
+            {"values": cached, "cell_meta": {}},
+            {"values": verified, "cell_meta": {}},
+        ]
+        client.build_update_cell_request = Mock(
+            side_effect=lambda *args: {"column": args[2], "value": args[3]}
+        )
+        request = Request({
+            "type": "http", "method": "PATCH", "path": "/", "headers": [],
+            "scheme": "http", "server": ("test", 80), "client": ("127.0.0.1", 1),
+        })
+
+        with patch("routers.query._oauth_client", AsyncMock(return_value=client)), \
+             patch("routers.query._insert_writeback_audit", AsyncMock(return_value=31)), \
+             patch("routers.query._update_writeback_audit", AsyncMock()), \
+             patch("routers.query.update_cached_source_row", AsyncMock(return_value=("row-key", 2))) as cache_update, \
+             patch("routers.query.record_admin_audit", AsyncMock()):
+            result = await update_source_fields(
+                parser_type="全链条",
+                source_id=1,
+                changes={
+                    "现住址": "长板一号",
+                    "核查结果": "无法核实",
+                    "二次反馈": "再次联系未果",
+                },
+                expected_revision=1,
+                request=request,
+                user=make_user("组员", communities=["长板"]),
+                conn=conn,
+            )
+
+        self.assertTrue(result["pending_sync"])
+        self.assertEqual(len(client.batch_update.await_args.args[1]), 3)
+        cache_update.assert_awaited_once()
 
     async def test_area_accepts_multiple_leaders(self):
         cursor = SqlAwareCursor()

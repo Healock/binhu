@@ -183,11 +183,30 @@ async def validate_row_change(
     after: dict[str, str],
     column: str,
 ) -> None:
+    await validate_row_changes(cur, user, parser, before, after, [column])
+
+
+async def validate_row_changes(
+    cur,
+    user: dict[str, Any],
+    parser,
+    before: dict[str, str],
+    after: dict[str, str],
+    columns: list[str],
+) -> None:
+    """一次校验同一来源行的多个字段。
+
+    二次反馈能否填写取决于本次提交后的主结果，避免用户必须先保存
+    “无法核实”，再单独保存二次反馈。
+    """
     capabilities = await row_edit_capabilities(cur, user, parser, before)
-    if column not in capabilities["editable_fields"]:
+    editable = set(capabilities["editable_fields"])
+    if _role_class(user) == "community" and capabilities["can_edit"]:
+        editable = set(editable_fields_for_row(user, parser.COLUMNS, after))
+    if any(column not in editable for column in columns):
         raise PermissionError("当前岗位不能修改该字段或该社区数据")
     role_class = _role_class(user)
-    if role_class == "area" and column == parser.COMMUNITY_COLUMN:
+    if role_class == "area" and parser.COMMUNITY_COLUMN in columns:
         allowed = capabilities["edit_communities"]
         formal_after = await formal_community(cur, parser.community_value(after))
         if allowed is not None and (not formal_after or formal_after not in allowed):

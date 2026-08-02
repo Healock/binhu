@@ -685,6 +685,153 @@ export async function deleteQuerySourceRow(
   return data
 }
 
+// ---- Flow-post mobile task workbench ----
+export type MobileTaskScope = 'mine' | 'community'
+export type MobileTaskStatus = 'pending' | 'review' | 'completed' | 'all'
+export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
+
+export interface MobileTaskBusinessSummary {
+  parser_type: string
+  label: string
+  pending: number
+  unchecked: number
+  checked: number
+  completed: number
+  review: number
+  source_ready: boolean
+}
+
+export interface MobileTaskHomeData {
+  business_date: string
+  last_success_at: string | null
+  scope: MobileTaskScope
+  person: { name: string; position: string; community: string }
+  personal: {
+    pending: number
+    new_today: number | null
+    carryover_today: number | null
+    completed_today: number | null
+  }
+  community: { pending: number }
+  daily_snapshot_available: boolean
+  businesses: MobileTaskBusinessSummary[]
+}
+
+export interface MobileTaskSummaryFields {
+  title: string
+  phone: string
+  address: string
+  date: string
+  result: string
+}
+
+export interface MobileTaskItem {
+  row_key: string
+  parser_type: string
+  summary: MobileTaskSummaryFields
+  community: string
+  inspector: string
+  state: MobileTaskState
+  needs_review: boolean
+  source_count: number
+  conflict: boolean
+  pending_sync: boolean
+}
+
+export interface MobileTaskSource {
+  id: number
+  physical_row: number
+  values: Record<string, string>
+  cell_meta: Record<string, Omit<QueryColumnMeta, 'field'>>
+  revision: number
+  row_hash: string
+  editable_fields: string[]
+  state: MobileTaskState
+  needs_review: boolean
+}
+
+export interface MobileTaskDetailData {
+  task: MobileTaskItem
+  workflow: {
+    result_field: string
+    phone_fields: string[]
+    title_fields: string[]
+    address_fields: string[]
+    date_fields: string[]
+    secondary_fields: string[]
+    columns: string[]
+  }
+  writeback_enabled: boolean
+  sources: MobileTaskSource[]
+}
+
+export async function getMobileTaskHome(
+  scope: MobileTaskScope,
+): Promise<MobileTaskHomeData> {
+  const { data } = await api.get('/mobile-tasks/home', {
+    ...activeRequest,
+    params: { scope },
+  })
+  return data
+}
+
+export async function listMobileTasks(params: {
+  parser_type: string
+  scope: MobileTaskScope
+  status: MobileTaskStatus
+  keyword?: string
+  page?: number
+  page_size?: number
+}): Promise<{
+  data: MobileTaskItem[]
+  total: number
+  page: number
+  page_size: number
+  source_ready: boolean
+  message: string
+}> {
+  const { data } = await api.get(`/mobile-tasks/${encodeURIComponent(params.parser_type)}`, {
+    ...activeRequest,
+    params: {
+      scope: params.scope,
+      status: params.status,
+      keyword: params.keyword,
+      page: params.page || 1,
+      page_size: params.page_size || 20,
+    },
+  })
+  return data
+}
+
+export async function getMobileTaskDetail(
+  parserType: string,
+  rowKey: string,
+): Promise<MobileTaskDetailData> {
+  const { data } = await api.get(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}`,
+    activeRequest,
+  )
+  return data
+}
+
+export async function updateMobileTask(
+  parserType: string,
+  sourceId: number,
+  payload: { changes: Record<string, string>; expected_revision: number },
+): Promise<{
+  values: Record<string, string>
+  row_key: string
+  revision: number
+  pending_sync: boolean
+  message: string
+}> {
+  const { data } = await api.patch(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
+    payload,
+  )
+  return data
+}
+
 export interface QueryWritebackAudit {
   id: number
   username: string

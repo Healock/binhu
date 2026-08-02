@@ -17,7 +17,7 @@ from services.online_edit_permissions import (
     effective_view_communities,
     row_edit_capabilities,
     validate_new_row_scope,
-    validate_row_change,
+    validate_row_changes,
 )
 from services.online_source import (
     acquire_sheet_lock,
@@ -400,6 +400,200 @@ async def _update_writeback_audit(
         "SET sync_status=%s, row_key_after=%s, after_values=%s WHERE id=%s",
         (status, row_key_after, stable_json(after_values), audit_id),
     )
+
+
+async def update_source_fields(
+    *,
+    parser_type: str,
+    source_id: int,
+    changes: dict[str, str],
+    expected_revision: int,
+    request: Request,
+    user: dict,
+    conn,
+) -> dict:
+    """在一把工作表锁内批量校验、写入并回读同一腾讯来源行。"""
+    if parser_type not in QUERY_TYPES:
+        raise HTTPException(400, "不支持的业务类型")
+    parser = get_parser(parser_type)
+    normalized_changes = {
+        str(column): str(value or "").strip()
+        for column, value in changes.items()
+    }
+    if not normalized_changes:
+        raise HTTPException(400, "没有需要保存的修改")
+    if len(normalized_changes) > 5:
+        raise HTTPException(400, "一次最多保存 5 个字段")
+    if any(len(value) > 10000 for value in normalized_changes.values()):
+        raise HTTPException(400, "单个字段内容不能超过 10000 个字符")
+    unknown = [column for column in normalized_changes if column not in parser.COLUMNS]
+    if unknown:
+        raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
+    ordered_columns = [
+        column for column in parser.COLUMNS if column in normalized_changes
+    ]
+
+    async with conn.cursor() as cur:
+        if not await _writeback_enabled(cur):
+            raise HTTPException(503, "在线回写已由超级管理员暂停")
+        source = await _load_source_row(cur, parser_type, source_id)
+        if source["revision"] != expected_revision:
+            raise HTTPException(409, "该行已被更新，请刷新后重试")
+        if not await acquire_sheet_lock(cur, source["spreadsheet_id"], timeout=2):
+            raise HTTPException(409, "该表格正在同步或被他人编辑，请稍后重试")
+
+    client = None
+    audit_id = None
+    try:
+        async with conn.cursor() as cur:
+            client = await _oauth_client(cur)
+        current = await client.read_source_row(
+            source["spreadsheet"]["file_id"],
+            source["sheet_id"],
+            source["physical_row"],
+            parser.COLUMNS,
+        )
+        current_values = current["values"]
+        if source_row_hash(current_values) != source["row_hash"]:
+            await _refresh_spreadsheet(conn, client, source["spreadsheet"])
+            raise HTTPException(409, "腾讯表格已被其他人修改，已刷新来源行")
+
+        after = dict(current_values)
+        after.update(normalized_changes)
+        async with conn.cursor() as cur:
+            try:
+                await validate_row_changes(
+                    cur, user, parser, current_values, after, ordered_columns
+                )
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+            if any(column in set(parser.get_business_key()) for column in ordered_columns):
+                try:
+                    parser.validate_existing_row_key(after)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+            if (
+                parser.COMMUNITY_COLUMN in ordered_columns
+                and not parser.community_value(after)
+            ):
+                raise HTTPException(400, "社区不能为空")
+            new_key = parser.make_row_key(after)
+            if new_key != source["row_key"]:
+                await cur.execute(
+                    "SELECT id FROM _online_source_rows "
+                    "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
+                    (parser_type, new_key, source_id),
+                )
+                if await cur.fetchone():
+                    raise HTTPException(409, "修改后会形成重复业务主键，请先处理原始重复行")
+
+            audit_id = await _insert_writeback_audit(
+                cur,
+                user=user,
+                action="update",
+                parser_type=parser_type,
+                spreadsheet_id=source["spreadsheet_id"],
+                sheet_id=source["sheet_id"],
+                physical_row=source["physical_row"],
+                column_name="、".join(ordered_columns),
+                row_key_before=source["row_key"],
+                row_key_after=new_key,
+                before_values=current_values,
+                after_values=after,
+                sync_status="writing",
+            )
+
+        requests = []
+        try:
+            for column in ordered_columns:
+                metadata = current["cell_meta"].get(column) or {"type": "text"}
+                requests.append(client.build_update_cell_request(
+                    source["sheet_id"],
+                    source["physical_row"],
+                    parser.COLUMNS.index(column),
+                    normalized_changes[column],
+                    metadata,
+                ))
+        except ValueError as exc:
+            if audit_id:
+                async with conn.cursor() as cur:
+                    await _update_writeback_audit(cur, audit_id, "failed")
+            raise HTTPException(400, str(exc)) from exc
+
+        try:
+            await client.batch_update(source["spreadsheet"]["file_id"], requests)
+            verified = await client.read_source_row(
+                source["spreadsheet"]["file_id"],
+                source["sheet_id"],
+                source["physical_row"],
+                parser.COLUMNS,
+            )
+            mismatched = []
+            for column in ordered_columns:
+                metadata = current["cell_meta"].get(column) or {"type": "text"}
+                if not _same_value(
+                    verified["values"].get(column, ""),
+                    normalized_changes[column],
+                    metadata.get("type", "text"),
+                ):
+                    mismatched.append(column)
+            if mismatched:
+                await _refresh_spreadsheet(conn, client, source["spreadsheet"])
+                raise HTTPException(
+                    502,
+                    f"腾讯表格写入后校验失败：{'、'.join(mismatched)}",
+                )
+        except TxDocsAPIError as exc:
+            if audit_id:
+                async with conn.cursor() as cur:
+                    await _update_writeback_audit(cur, audit_id, "failed")
+            raise HTTPException(502, str(exc)) from exc
+        except Exception:
+            if audit_id:
+                async with conn.cursor() as cur:
+                    await _update_writeback_audit(cur, audit_id, "failed")
+            raise
+
+        verified_values = verified["values"]
+        new_key = parser.make_row_key(verified_values)
+        async with conn.cursor() as cur:
+            await _update_writeback_audit(
+                cur,
+                audit_id,
+                "pending",
+                row_key_after=new_key,
+                after_values=verified_values,
+            )
+        _, revision = await update_cached_source_row(
+            conn,
+            source_id,
+            parser_type,
+            verified_values,
+            verified["cell_meta"],
+        )
+    finally:
+        try:
+            if client:
+                await client.close()
+        finally:
+            async with conn.cursor() as cur:
+                await release_sheet_lock(cur, source["spreadsheet_id"])
+
+    await record_admin_audit(
+        user,
+        "online.writeback.update",
+        target_type="online_source_row",
+        target_name=f"{parser_type}:{source_id}",
+        detail={"source_id": source_id, "columns": ordered_columns},
+        **request_audit_fields(request),
+    )
+    return {
+        "message": "已写回腾讯表格，汇总将在下次同步后更新",
+        "values": verified_values,
+        "row_key": new_key,
+        "revision": revision,
+        "pending_sync": True,
+    }
 
 
 @router.get("/types")
@@ -849,150 +1043,15 @@ async def update_source_cell(
     user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
     conn=Depends(get_db),
 ):
-    if parser_type not in QUERY_TYPES:
-        raise HTTPException(400, "不支持的业务类型")
-    parser = get_parser(parser_type)
-    if data.column not in parser.COLUMNS:
-        raise HTTPException(400, "字段不存在")
-    async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
-            raise HTTPException(503, "在线回写已由超级管理员暂停")
-        source = await _load_source_row(cur, parser_type, source_id)
-        if source["revision"] != data.expected_revision:
-            raise HTTPException(409, "该行已被更新，请刷新后重试")
-        if not await acquire_sheet_lock(cur, source["spreadsheet_id"], timeout=2):
-            raise HTTPException(409, "该表格正在同步或被他人编辑，请稍后重试")
-    client = None
-    audit_id = None
-    try:
-        async with conn.cursor() as cur:
-            client = await _oauth_client(cur)
-        current = await client.read_source_row(
-            source["spreadsheet"]["file_id"],
-            source["sheet_id"],
-            source["physical_row"],
-            parser.COLUMNS,
-        )
-        current_values = current["values"]
-        if source_row_hash(current_values) != source["row_hash"]:
-            await _refresh_spreadsheet(conn, client, source["spreadsheet"])
-            raise HTTPException(409, "腾讯表格已被其他人修改，已刷新来源行")
-
-        after = dict(current_values)
-        after[data.column] = data.value.strip()
-        async with conn.cursor() as cur:
-            try:
-                await validate_row_change(
-                    cur, user, parser, current_values, after, data.column
-                )
-            except PermissionError as exc:
-                raise HTTPException(403, str(exc)) from exc
-            if data.column in set(parser.get_business_key()):
-                try:
-                    parser.validate_existing_row_key(after)
-                except ValueError as exc:
-                    raise HTTPException(400, str(exc)) from exc
-            if (
-                data.column == parser.COMMUNITY_COLUMN
-                and not parser.community_value(after)
-            ):
-                raise HTTPException(400, "社区不能为空")
-            new_key = parser.make_row_key(after)
-            if new_key != source["row_key"]:
-                await cur.execute(
-                    "SELECT id FROM _online_source_rows "
-                    "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
-                    (parser_type, new_key, source_id),
-                )
-                if await cur.fetchone():
-                    raise HTTPException(409, "修改后会形成重复业务主键，请先处理原始重复行")
-
-            audit_id = await _insert_writeback_audit(
-                cur,
-                user=user,
-                action="update",
-                parser_type=parser_type,
-                spreadsheet_id=source["spreadsheet_id"],
-                sheet_id=source["sheet_id"],
-                physical_row=source["physical_row"],
-                column_name=data.column,
-                row_key_before=source["row_key"],
-                row_key_after=new_key,
-                before_values=current_values,
-                after_values=after,
-                sync_status="writing",
-            )
-
-        metadata = current["cell_meta"].get(data.column) or {"type": "text"}
-        request_body = client.build_update_cell_request(
-            source["sheet_id"],
-            source["physical_row"],
-            parser.COLUMNS.index(data.column),
-            data.value.strip(),
-            metadata,
-        )
-        try:
-            await client.batch_update(source["spreadsheet"]["file_id"], [request_body])
-            verified = await client.read_source_row(
-                source["spreadsheet"]["file_id"],
-                source["sheet_id"],
-                source["physical_row"],
-                parser.COLUMNS,
-            )
-            actual_value = verified["values"].get(data.column, "")
-            if not _same_value(actual_value, data.value, metadata.get("type", "text")):
-                await _refresh_spreadsheet(conn, client, source["spreadsheet"])
-                raise HTTPException(502, "腾讯表格写入后校验失败，请刷新确认")
-        except TxDocsAPIError as exc:
-            if audit_id:
-                async with conn.cursor() as cur:
-                    await _update_writeback_audit(cur, audit_id, "failed")
-            raise HTTPException(502, str(exc)) from exc
-        except Exception:
-            if audit_id:
-                async with conn.cursor() as cur:
-                    await _update_writeback_audit(cur, audit_id, "failed")
-            raise
-        verified_values = verified["values"]
-        new_key = parser.make_row_key(verified_values)
-        async with conn.cursor() as cur:
-            await _update_writeback_audit(
-                cur,
-                audit_id,
-                "pending",
-                row_key_after=new_key,
-                after_values=verified_values,
-            )
-        _, revision = await update_cached_source_row(
-            conn,
-            source_id,
-            parser_type,
-            verified_values,
-            verified["cell_meta"],
-        )
-    finally:
-        try:
-            if client:
-                await client.close()
-        finally:
-            async with conn.cursor() as cur:
-                await release_sheet_lock(cur, source["spreadsheet_id"])
-
-    await record_admin_audit(
-        user,
-        "online.writeback.update",
-        target_type="online_source_row",
-        target_name=f"{parser_type}:{source_id}",
-        detail={"source_id": source_id, "column": data.column},
-        **request_audit_fields(request),
+    return await update_source_fields(
+        parser_type=parser_type,
+        source_id=source_id,
+        changes={data.column: data.value},
+        expected_revision=data.expected_revision,
+        request=request,
+        user=user,
+        conn=conn,
     )
-    return {
-        "message": "已写回腾讯表格，汇总将在下次同步后更新",
-        "values": verified_values,
-        "row_key": new_key,
-        "revision": revision,
-        "pending_sync": True,
-    }
 
 
 @router.post("/{parser_type}/source-rows")

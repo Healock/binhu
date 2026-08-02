@@ -6,8 +6,10 @@ import {
   navigationItemById,
   normalizeMobileDockConfig,
   routeIsActive,
+  mobileNavigationItemLabel,
 } from '../navigation/mobileNavigation'
 import NavigationIcon from './NavigationIcon'
+import { confirmPendingNavigation } from '../utils/navigationGuard'
 
 function useVirtualKeyboardOpen() {
   const [open, setOpen] = useState(false)
@@ -58,10 +60,12 @@ export default function MobileDock({
   config,
   role,
   permissions,
+  position,
 }: {
   config: MobileDockConfig
   role: Role
   permissions: PermissionCode[]
+  position?: string | null
 }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -144,12 +148,13 @@ export default function MobileDock({
                   role="menuitem"
                   className={`mobile-dock-menu__item${active ? ' is-active' : ''}`}
                   onClick={() => {
+                    if (!confirmPendingNavigation()) return
                     setOpenGroupId(null)
                     navigate(item.path)
                   }}
                 >
                   <NavigationIcon name={item.icon} />
-                  <span>{item.shortLabel}</span>
+                  <span>{mobileNavigationItemLabel(item, position, true)}</span>
                 </button>
               )
             })}
