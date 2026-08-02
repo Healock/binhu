@@ -1,16 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { BorderStyleTypes } from '@univerjs/core'
 import {
   applyQuerySheetValues,
   buildQuerySheetRows,
   canEditQuerySheetCell,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
+  resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
 
 const columns = ['社区', '核查人', '姓名']
+
+test('使用 Univer 运行时实际提供的细边框枚举', () => {
+  assert.equal(
+    resolveQuerySheetThinBorderStyle({ BorderStyleTypes }),
+    BorderStyleTypes.THIN,
+  )
+  assert.equal(resolveQuerySheetThinBorderStyle({}), null)
+})
 
 test('工作表表头、重复父行和归档数据保持只读', () => {
   const rows = buildQuerySheetRows([
