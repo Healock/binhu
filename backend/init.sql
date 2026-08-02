@@ -288,6 +288,8 @@ CREATE TABLE IF NOT EXISTS _online_source_projection (
     row_key CHAR(32) NOT NULL,
     values_json JSON NOT NULL,
     community VARCHAR(200) NOT NULL DEFAULT '',
+    inspector VARCHAR(100) NOT NULL DEFAULT '',
+    task_state VARCHAR(20) NOT NULL DEFAULT '',
     source_count INT NOT NULL DEFAULT 1,
     conflict TINYINT(1) NOT NULL DEFAULT 0,
     search_text MEDIUMTEXT NOT NULL,
@@ -296,7 +298,8 @@ CREATE TABLE IF NOT EXISTS _online_source_projection (
                ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (parser_type, row_key),
     INDEX idx_source_projection_community (parser_type, community),
-    INDEX idx_source_projection_pending (parser_type, pending_state)
+    INDEX idx_source_projection_pending (parser_type, pending_state),
+    INDEX idx_source_projection_tasks (parser_type, community, inspector, task_state)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _online_source_cache_state (

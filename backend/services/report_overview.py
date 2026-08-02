@@ -110,6 +110,7 @@ async def _load_effective_tasks(
     end_date: str,
     parser_types: list[str],
     communities: list[str] | None = None,
+    inspector: str | None = None,
 ) -> list[tuple[Any, ...]]:
     type_placeholders = ", ".join(["%s"] * len(parser_types))
     community_clause = ""
@@ -123,6 +124,13 @@ async def _load_effective_tasks(
             community_params = communities
         else:
             community_clause = "AND 1=0"
+    inspector_clause = ""
+    inspector_params: list[str] = []
+    if inspector is not None:
+        inspector_clause = (
+            "AND LOWER(TRIM(latest.inspector))=LOWER(TRIM(%s))"
+        )
+        inspector_params = [inspector]
     await cur.execute(
         f"""
         WITH latest_ranked AS (
@@ -177,6 +185,7 @@ async def _load_effective_tasks(
           AND latest.community <> '社区'
           AND latest.community <> '下发社区'
           {community_clause}
+          {inspector_clause}
           AND person.position IN ('组长', '组员')
         """,
         (
@@ -187,6 +196,7 @@ async def _load_effective_tasks(
             end_date,
             *parser_types,
             *community_params,
+            *inspector_params,
         ),
     )
     return list(await cur.fetchall())
@@ -256,6 +266,8 @@ async def get_online_overview(
     end_date: str,
     parser_type: str,
     community: str | list[str] | None = None,
+    inspector: str | None = None,
+    parser_types_override: list[str] | None = None,
 ) -> dict[str, Any]:
     """返回跟随业务类型和日期区间变化的在线数据概览。"""
     if start_date > end_date:
@@ -268,10 +280,16 @@ async def get_online_overview(
     try:
         async with conn.cursor() as cur:
             parser_types = (
-                await _get_summary_types(cur)
-                if parser_type == SUMMARY_TYPE
-                else [parser_type]
+                list(dict.fromkeys(parser_types_override))
+                if parser_types_override
+                else (
+                    await _get_summary_types(cur)
+                    if parser_type == SUMMARY_TYPE
+                    else [parser_type]
+                )
             )
+            if any(item not in BUILDERS for item in parser_types):
+                raise ValueError("包含未实现日报的业务类型")
             available_start, available_end, available_days = (
                 await _load_available_range(cur, parser_types)
             )
@@ -342,6 +360,7 @@ async def get_online_overview(
                 end_date,
                 parser_types,
                 communities,
+                inspector,
             )
             new_keys = await _find_new_activity_keys(cur, tasks, runs)
 

@@ -8,6 +8,7 @@ from collections import defaultdict
 from typing import Any
 
 from services.parsers import get_parser
+from services.task_workflow import task_state
 
 
 def json_value(value: Any, fallback):
@@ -89,6 +90,8 @@ async def rebuild_projection(cur, parser_type: str) -> None:
             row_key,
             stable_json(parent),
             parser.community_value(parent),
+            str(parent.get("核查人", "") or "").strip(),
+            task_state(parser_type, parent),
             len(source_rows),
             int(conflict),
             "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS),
@@ -103,9 +106,9 @@ async def rebuild_projection(cur, parser_type: str) -> None:
         await cur.executemany(
             """
             INSERT INTO _online_source_projection (
-                parser_type, row_key, values_json, community,
+                parser_type, row_key, values_json, community, inspector, task_state,
                 source_count, conflict, search_text, pending_state
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             projection_rows,
         )

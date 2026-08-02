@@ -1,6 +1,6 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider } from './context/AuthContext'
+import { AuthProvider, useAuth } from './context/AuthContext'
 import AppThemeProvider from './components/AppThemeProvider'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
@@ -22,6 +22,11 @@ import WorkLog from './pages/WorkLog'
 import WorkLogDrafts from './pages/WorkLogDrafts'
 import PermissionGroups from './pages/PermissionGroups'
 import Profile from './pages/Profile'
+import MobileTaskHome from './pages/MobileTaskHome'
+import MobileTaskList from './pages/MobileTaskList'
+import MobileTaskDetail from './pages/MobileTaskDetail'
+import useMobileViewport from './hooks/useMobileViewport'
+import { shouldUseMobileTaskWorkbench } from './utils/mobileTaskRouting'
 
 const DataQuery = lazy(() => import('./pages/DataQuery'))
 
@@ -31,6 +36,36 @@ function LazyPage({ children }: { children: ReactNode }) {
       {children}
     </Suspense>
   )
+}
+
+function DashboardEntry() {
+  const { user } = useAuth()
+  const mobile = useMobileViewport()
+  if (shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
+    return user?.permissions?.includes('online.raw.view')
+      ? <MobileTaskHome />
+      : <Navigate to="/settings/personalization" replace />
+  }
+  return user?.permissions?.includes('online.summary.view')
+    ? <Dashboard />
+    : <Navigate to="/settings/personalization" replace />
+}
+
+function QueryEntry() {
+  const { user } = useAuth()
+  const mobile = useMobileViewport()
+  return shouldUseMobileTaskWorkbench(user?.member?.position, mobile)
+    ? <Navigate to="/tasks" replace />
+    : <LazyPage><DataQuery /></LazyPage>
+}
+
+function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
+  const { user } = useAuth()
+  const mobile = useMobileViewport()
+  if (!shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
+    return <Navigate to="/query" replace />
+  }
+  return detail ? <MobileTaskDetail /> : <MobileTaskList />
 }
 
 function App() {
@@ -45,11 +80,11 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/profile" element={<Profile />} />
-              <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
-                <Route path="/" element={<Dashboard />} />
-              </Route>
+              <Route path="/" element={<DashboardEntry />} />
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
-                <Route path="/query" element={<LazyPage><DataQuery /></LazyPage>} />
+                <Route path="/query" element={<QueryEntry />} />
+                <Route path="/tasks" element={<MobileTaskEntry />} />
+                <Route path="/tasks/:parserType/:rowKey" element={<MobileTaskEntry detail />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<VisitSummary />} />

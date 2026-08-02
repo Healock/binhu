@@ -30,6 +30,137 @@
   animation: app-view-fade-in 300ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
 }
 
+.mobile-task-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+.mobile-task-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 20px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 92% 4%, rgb(255 255 255 / 0.20), transparent 36%),
+    linear-gradient(145deg, #1d4ed8, #2563eb 55%, #0f766e);
+  box-shadow: 0 16px 36px rgb(29 78 216 / 0.18);
+}
+
+.mobile-task-hero__refresh {
+  min-width: 44px !important;
+  min-height: 44px !important;
+  color: white !important;
+  background: rgb(255 255 255 / 0.12) !important;
+}
+
+.mobile-task-hero__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.mobile-task-hero__metrics > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.10);
+}
+
+.mobile-task-hero__metrics span {
+  overflow: hidden;
+  color: rgb(255 255 255 / 0.68);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mobile-task-hero__metrics strong {
+  color: white;
+  font-size: 21px;
+  font-weight: 650;
+}
+
+.mobile-task-hero__footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 5px 12px;
+  margin-top: 13px;
+  color: rgb(255 255 255 / 0.68);
+  font-size: 11px;
+}
+
+.mobile-task-business-card,
+.mobile-task-item-card {
+  width: 100%;
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+}
+
+.mobile-task-business-card {
+  display: flex;
+  min-height: 92px;
+  align-items: center;
+  gap: 14px;
+  padding: 15px;
+}
+
+.mobile-task-business-card:active,
+.mobile-task-item-card:active {
+  transform: scale(0.995);
+  background: var(--app-surface-muted);
+}
+
+.mobile-task-business-card.is-empty {
+  opacity: 0.68;
+}
+
+.mobile-task-item-card {
+  min-height: 132px;
+  padding: 15px;
+  text-align: left;
+}
+
+.mobile-task-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--app-primary-soft);
+  color: var(--app-primary-text);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.mobile-task-badge.is-warning {
+  background: rgb(245 158 11 / 0.12);
+  color: var(--app-warning);
+}
+
+.mobile-task-badge.is-danger {
+  background: rgb(239 68 68 / 0.10);
+  color: var(--app-danger);
+}
+
+html[data-theme='dark'] .mobile-task-hero {
+  border-color: rgb(148 163 184 / 0.18);
+  background:
+    radial-gradient(circle at 92% 4%, rgb(96 165 250 / 0.18), transparent 38%),
+    linear-gradient(145deg, #172d50, #183b67 56%, #134e4a);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.30);
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-old(root),
   ::view-transition-new(root),

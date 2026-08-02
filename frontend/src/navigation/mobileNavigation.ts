@@ -296,6 +296,18 @@ export function routeIsActive(
   pathname: string,
   item: NavigationItemDefinition,
 ): boolean {
+  if (item.id === 'online_query' && pathname.startsWith('/tasks')) return true
   if (item.end) return pathname === item.path
   return pathname === item.path || pathname.startsWith(`${item.path}/`)
+}
+
+export function mobileNavigationItemLabel(
+  item: NavigationItemDefinition,
+  position?: string | null,
+  short = false,
+): string {
+  const flowPost = position === '组员' || position === '组长'
+  if (flowPost && item.id === 'online_summary') return '首页'
+  if (flowPost && item.id === 'online_query') return '任务处理'
+  return short ? item.shortLabel : item.label
 }

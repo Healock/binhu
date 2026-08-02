@@ -13,11 +13,14 @@ import { getUserDisplayName, ROLE_LABELS } from '../types'
 import {
   accessibleNavigationGroups,
   normalizeMobileDockConfig,
+  mobileNavigationItemLabel,
+  routeIsActive,
 } from '../navigation/mobileNavigation'
 import MobileDock from './MobileDock'
 import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
+import { confirmPendingNavigation } from '../utils/navigationGuard'
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -42,6 +45,7 @@ export default function Layout() {
   )
 
   const handleLogout = async () => {
+    if (!confirmPendingNavigation()) return
     setAccountOpen(false)
     await logout()
     navigate('/login', { replace: true })
@@ -83,6 +87,7 @@ export default function Layout() {
                   block
                   icon={<UserOutlined />}
                   onClick={() => {
+                    if (!confirmPendingNavigation()) return
                     setAccountOpen(false)
                     navigate('/profile')
                   }}
@@ -93,6 +98,7 @@ export default function Layout() {
                   block
                   icon={<SettingOutlined />}
                   onClick={() => {
+                    if (!confirmPendingNavigation()) return
                     setAccountOpen(false)
                     navigate('/settings/personalization')
                   }}
@@ -160,9 +166,12 @@ export default function Layout() {
                     key={item.path}
                     to={item.path}
                     end={item.end}
-                    className={({ isActive }) =>
+                    onClick={(event) => {
+                      if (!confirmPendingNavigation()) event.preventDefault()
+                    }}
+                    className={() =>
                       `flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors ${
-                        isActive
+                        routeIsActive(location.pathname, item)
                           ? 'bg-blue-50 text-blue-700'
                           : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                       }`
@@ -171,7 +180,10 @@ export default function Layout() {
                     <span className="flex w-5 justify-center text-base">
                       <NavigationIcon name={item.icon} />
                     </span>
-                    <span>{item.label}</span>
+                    <span className={(user?.member?.position === '组员' || user?.member?.position === '组长') ? 'hidden md:inline' : ''}>{item.label}</span>
+                    {(user?.member?.position === '组员' || user?.member?.position === '组长') && (
+                      <span className="md:hidden">{mobileNavigationItemLabel(item, user.member.position)}</span>
+                    )}
                   </NavLink>
                 ))}
               </div>
@@ -187,7 +199,9 @@ export default function Layout() {
               </span>
               <button
                 type="button"
-                onClick={() => navigate('/profile')}
+                onClick={() => {
+                  if (confirmPendingNavigation()) navigate('/profile')
+                }}
                 className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
               >
                 <div className="truncate text-sm font-semibold text-slate-800">{getUserDisplayName(user)}</div>
@@ -222,7 +236,9 @@ export default function Layout() {
               showIcon
               message="当前账号仍在使用临时密码"
               description="请进入个人中心修改密码。系统不会强制修改，但会持续提醒。"
-              action={<Button size="small" onClick={() => navigate('/profile')}>前往修改</Button>}
+              action={<Button size="small" onClick={() => {
+                if (confirmPendingNavigation()) navigate('/profile')
+              }}>前往修改</Button>}
             />
           )}
           <div key={location.pathname} className="app-route-transition">
@@ -237,6 +253,7 @@ export default function Layout() {
           config={dockConfig}
           role={user.role}
           permissions={user.permissions}
+          position={user.member?.position}
         />
       )}
     </div>

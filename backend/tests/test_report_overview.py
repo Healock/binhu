@@ -69,6 +69,25 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("department.department_type='community'", sql)
         self.assertIn("person.position IN ('组长', '组员')", sql)
 
+    async def test_effective_tasks_can_limit_to_linked_inspector(self):
+        cursor = EffectiveTaskCursor()
+
+        await report_overview._load_effective_tasks(
+            cursor,
+            "2026-08-03",
+            "2026-08-03",
+            ["全链条", "寄递业"],
+            ["长板", "长板村"],
+            "网格员甲",
+        )
+
+        sql, params = cursor.call
+        self.assertIn(
+            "LOWER(TRIM(latest.inspector))=LOWER(TRIM(%s))",
+            sql,
+        )
+        self.assertEqual(params[-3:], ("长板", "长板村", "网格员甲"))
+
     async def test_classifies_carryover_new_and_changed_tasks(self):
         pool = FakePool()
         runs = [
