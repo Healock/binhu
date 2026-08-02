@@ -20,6 +20,33 @@ export interface QuerySheetCellChange {
   after: string
 }
 
+export interface QuerySheetCustomFilter {
+  val: string | number
+  operator?: string
+}
+
+export interface QuerySheetFilterCriteria {
+  colId: number
+  filters?: {
+    blank?: true
+    filters?: string[]
+  }
+  colorFilters?: {
+    cellFillColors?: Array<string | null>
+    cellTextColors?: string[]
+  }
+  customFilters?: {
+    and?: number
+    customFilters: QuerySheetCustomFilter[]
+  }
+}
+
+export interface QuerySheetRequestFilters {
+  filters?: Record<string, string[]>
+  gridFilters?: Record<string, unknown>
+  unsupportedColorColumns: string[]
+}
+
 export const QUERY_SHEET_FEATURE_CONFIG = {
   disableForceStringAlert: true,
   disableForceStringMark: true,
@@ -35,26 +62,99 @@ export interface QuerySheetPalette {
   text: string
 }
 
-export function querySheetPalette(darkMode: boolean): QuerySheetPalette {
-  return darkMode
-    ? {
-        background: '#0f172a',
-        border: '#334155',
-        conflict: '#3f1d25',
-        editable: '#142a44',
-        header: '#1e293b',
-        pending: '#3a2f13',
-        text: '#e5edf7',
+export function querySheetPalette(_darkMode: boolean): QuerySheetPalette {
+  // Univer 会在深色模式下转换工作表源颜色。这里始终写入同一套语义色，
+  // 避免先写深色、再被 Univer 二次转换成浅色。
+  return {
+    background: '#ffffff',
+    border: '#d8dee9',
+    conflict: '#fff1f0',
+    editable: '#f0f7ff',
+    header: '#e8eef8',
+    pending: '#fffbe6',
+    text: '#172033',
+  }
+}
+
+function hasColorFilter(criteria: QuerySheetFilterCriteria): boolean {
+  const colors = criteria.colorFilters
+  return Boolean(colors?.cellFillColors?.length || colors?.cellTextColors?.length)
+}
+
+function customFilterToGridCondition(filter: QuerySheetCustomFilter): Record<string, string> {
+  const operator = String(filter.operator || 'equal')
+  const rawValue = String(filter.val ?? '')
+  if (rawValue === '') {
+    return { type: operator === 'notEqual' ? 'notBlank' : 'blank', filter: '' }
+  }
+
+  const startsWithWildcard = rawValue.startsWith('*')
+  const endsWithWildcard = rawValue.endsWith('*')
+  const value = rawValue.replace(/^\*/, '').replace(/\*$/, '')
+  if (operator === 'equal' || operator === 'notEqual') {
+    if (startsWithWildcard && endsWithWildcard) {
+      return {
+        type: operator === 'notEqual' ? 'notContains' : 'contains',
+        filter: value,
       }
-    : {
-        background: '#ffffff',
-        border: '#d8dee9',
-        conflict: '#fff1f0',
-        editable: '#f0f7ff',
-        header: '#e8eef8',
-        pending: '#fffbe6',
-        text: '#172033',
+    }
+    if (endsWithWildcard) {
+      return {
+        type: operator === 'notEqual' ? 'notStartsWith' : 'startsWith',
+        filter: value,
       }
+    }
+    if (startsWithWildcard) {
+      return {
+        type: operator === 'notEqual' ? 'notEndsWith' : 'endsWith',
+        filter: value,
+      }
+    }
+    return { type: operator === 'notEqual' ? 'notEqual' : 'equals', filter: rawValue }
+  }
+
+  const comparisonTypes: Record<string, string> = {
+    greaterThan: 'greaterThan',
+    greaterThanOrEqual: 'greaterThanOrEqual',
+    lessThan: 'lessThan',
+    lessThanOrEqual: 'lessThanOrEqual',
+  }
+  return {
+    type: comparisonTypes[operator] || 'equals',
+    filter: rawValue,
+  }
+}
+
+export function buildQuerySheetRequestFilters(
+  criteriaByColumn: Record<string, QuerySheetFilterCriteria>,
+): QuerySheetRequestFilters {
+  const filters: Record<string, string[]> = {}
+  const gridFilters: Record<string, unknown> = {}
+  const unsupportedColorColumns: string[] = []
+
+  for (const [column, criteria] of Object.entries(criteriaByColumn)) {
+    if (hasColorFilter(criteria)) unsupportedColorColumns.push(column)
+
+    const selectedValues = [...(criteria.filters?.filters || [])]
+    if (criteria.filters?.blank) selectedValues.push('')
+    if (selectedValues.length) filters[column] = [...new Set(selectedValues.map(String))]
+
+    const customFilters = criteria.customFilters?.customFilters || []
+    if (customFilters.length === 1) {
+      gridFilters[column] = customFilterToGridCondition(customFilters[0])
+    } else if (customFilters.length > 1) {
+      gridFilters[column] = {
+        operator: criteria.customFilters?.and ? 'and' : 'or',
+        conditions: customFilters.slice(0, 2).map(customFilterToGridCondition),
+      }
+    }
+  }
+
+  return {
+    filters: Object.keys(filters).length ? filters : undefined,
+    gridFilters: Object.keys(gridFilters).length ? gridFilters : undefined,
+    unsupportedColorColumns,
+  }
 }
 
 interface UniverBorderEnums {

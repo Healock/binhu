@@ -48,7 +48,11 @@ import {
   sourceToDisplay,
   type QueryDisplayRow as DisplayRow,
 } from '../utils/queryGrid'
-import type { QuerySheetCellChange } from '../utils/querySpreadsheet'
+import {
+  buildQuerySheetRequestFilters,
+  type QuerySheetCellChange,
+  type QuerySheetFilterCriteria,
+} from '../utils/querySpreadsheet'
 
 function errorText(error: any, fallback: string): string {
   const detail = error?.response?.data?.detail
@@ -87,6 +91,9 @@ export default function DataQuery() {
   const [selectedSheetRow, setSelectedSheetRow] = useState<DisplayRow | null>(null)
   const [sheetSaving, setSheetSaving] = useState(false)
   const [sheetRevision, setSheetRevision] = useState(0)
+  const [sheetFilterCriteria, setSheetFilterCriteria] = useState<
+    Record<string, QuerySheetFilterCriteria>
+  >({})
   const [pendingCount, setPendingCount] = useState(0)
   const [addOpen, setAddOpen] = useState(false)
   const [addValues, setAddValues] = useState<Record<string, string>>({})
@@ -107,6 +114,10 @@ export default function DataQuery() {
 
   const isSuperAdmin = user?.role === 'super_admin'
     || user?.permission_groups?.some(group => group.code === 'super_admin')
+  const sheetRequestFilters = useMemo(
+    () => buildQuerySheetRequestFilters(sheetFilterCriteria),
+    [sheetFilterCriteria],
+  )
 
   useEffect(() => {
     getQueryTypes()
@@ -128,6 +139,8 @@ export default function DataQuery() {
         page,
         page_size: pageSize,
         keyword: keyword || undefined,
+        filters: sheetRequestFilters.filters,
+        grid_filters: sheetRequestFilters.gridFilters,
       }))
       if (sequence !== fetchSequence.current) return
       setRows(result.data)
@@ -160,7 +173,7 @@ export default function DataQuery() {
     } finally {
       if (sequence === fetchSequence.current) setLoading(false)
     }
-  }, [selectedType, source, page, pageSize, keyword])
+  }, [selectedType, source, page, pageSize, keyword, sheetRequestFilters])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -355,6 +368,7 @@ export default function DataQuery() {
   const changeSourceType = (value: 'online' | 'archive') => {
     setSource(value)
     setPage(1)
+    setSheetFilterCriteria({})
     setRows([])
     setCanAdd(false)
     setRequiredFields([])
@@ -383,6 +397,7 @@ export default function DataQuery() {
             onChange={value => {
               setSelectedType(value)
               setPage(1)
+              setSheetFilterCriteria({})
               setRows([])
               setCanAdd(false)
               setRequiredFields([])
@@ -451,6 +466,12 @@ export default function DataQuery() {
       <div className="app-card hidden overflow-hidden md:block">
         <div className="query-spreadsheet-toolbar">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {Object.keys(sheetFilterCriteria).length > 0 && (
+              <>
+                <Tag color="blue">{Object.keys(sheetFilterCriteria).length} 列筛选中</Tag>
+                <Button size="small" onClick={() => setSheetFilterCriteria({})}>清除筛选</Button>
+              </>
+            )}
             {!selectedSheetRow ? (
               <span className="text-sm text-[var(--app-text-secondary)]">
                 选择单元格或整行后，可在这里查看来源状态和行操作
@@ -517,7 +538,12 @@ export default function DataQuery() {
               drafts={draftRows}
               canAdd={canAdd}
               revision={sheetRevision}
+              filterCriteria={sheetFilterCriteria}
               onDraftsChange={setDraftRows}
+              onFilterCriteriaChange={criteria => {
+                setSheetFilterCriteria(criteria)
+                setPage(1)
+              }}
               onSelectionChange={setSelectedSheetRow}
               onCommit={handleSheetCommit}
               onBlocked={messageApi.warning}
@@ -528,7 +554,7 @@ export default function DataQuery() {
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑。可复制、粘贴和连续录入；新增权限用户可在数据下方任意空白行填写，确认后再写入腾讯表格。
+          蓝色单元格可直接编辑；工具栏中的筛选条件会重新查询全部记录。筛选值列表取自当前页，格式调整仅影响当前查看，不回写腾讯表格。
         </div>
         <div className="flex justify-end border-t border-[var(--app-border)] px-4 py-3">
           <Pagination
