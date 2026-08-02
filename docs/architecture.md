@@ -440,7 +440,8 @@ Axios 和仍需使用浏览器 `fetch` 的认证请求复用同一个 401 处理
 
 疑似返苏在代码和新建数据库中使用“身份证号码”“二次核查结果”作为标准列名。旧部署的归档表
 可能仍使用“身份证号”“二次反馈”，同步和查询会自动识别这组旧列名。旧归档表的“联系号码”
-还需要按受控迁移文件扩到 500 个字符；迁移必须在三库备份后单独执行。
+扩容属于已经执行过的一次性迁移；新环境如果仍发现旧结构，必须重新编写并评审迁移，不能直接
+从历史标签复制命令到生产环境执行。
 
 ## 入库主键和重复数据
 
@@ -452,8 +453,8 @@ Axios 和仍需使用浏览器 `fetch` 的认证请求复用同一个 401 处理
 - 出租房屋核查按“身份证号 + 手机号码”识别核查对象。同一对象在在线表格中出现多行时只计
   一次，并按表格顺序合并非空内容；后行的非空内容优先，后行空白不会擦除前行已填写的核查
   结果。身份证号和手机号都为空时不能判断是否同一人，仍按冲突停止同步。
-- 旧主键切换到新主键时，使用 `backend/migrations/rekey_collision_tables.py` 先演练再迁移。
-  迁移只补当前在线数据，不改写历史日报。
+- 旧主键切换已经完成，当前同步直接使用上述新主键。历史迁移源码可从当时的 Git 标签追溯，
+  不作为当前程序的一部分继续保留。
 
 ## 后端主要文件
 
@@ -467,14 +468,11 @@ Axios 和仍需使用浏览器 `fetch` 的认证请求复用同一个 401 处理
 | `backend/services/report_builders/` | 负责生成单日报表 |
 | `backend/services/report_ledger.py` | 记录跨日结转、移除和当天活动，并聚合日报 |
 | `backend/services/report_range.py` | 负责计算一段时间的统计 |
-| `backend/migrations/backfill_daily_task_ledger.py` | 审计并安全回算历史任务流水和日报 |
 | `backend/services/report_view.py` | 统一转换汇总表的两列或三列输出 |
 | `backend/services/permissions.py` | 定义权限目录、预设组、岗位默认组和数据范围 |
 | `backend/services/data_scope.py` | 按账号社区范围过滤业务数据和汇总结果 |
 | `backend/services/member_departments.py` | 校验和维护人员的单部门或多社区关系，并同步旧字段与民警兼容镜像 |
 | `backend/services/mobile_navigation.py` | 校验账号的手机 Dock 分类、页面顺序和功能权限 |
-| `backend/tools/import_users.py` | 预览或执行一次性私密账号名单导入 |
-| `backend/tools/migrate_personnel_accounts.py` | 只读预览并补建已有组织账号的人员、岗位和多社区关系 |
 | `backend/services/visit_import.py` | 校验、去重并导入走访明细，计算已有数据范围 |
 | `backend/services/star_rating_import.py` | 校验星级评定并在 24 小时内关联走访记录 |
 | `backend/services/visit_summary.py` | 按日期区间计算网格员和社区走访汇总 |
@@ -551,7 +549,8 @@ flowchart LR
 - 所有角色都可以查看公告和属于自己的个人提示；只有超级管理员可以发布或删除公告。
 - 自动同步和备份失败仍然只向超级管理员发送个人提示。
 
-`backend/routers/test_mock.py` 虽然存在，但没有在 `backend/main.py` 中启用，所以它现在不是可用接口。这个问题记录在 [风险清单](known-risks.md)。
+历史回算、账号名单导入和人员补建工具均已完成使命，并在 `0.9.5` 从当前源码中移除。需要审计
+历史实现时从对应 Git 标签查看；新的迁移需求应重新建立有明确输入、预览、验证和回退规则的短期工具。
 
 ## 前端主要文件
 

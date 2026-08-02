@@ -1030,22 +1030,6 @@ class DatabaseManager:
                           )
                     )
                 """)
-                # 测试数据表（用于验证工作量统计逻辑）
-                await cur.execute("""
-                    CREATE TABLE IF NOT EXISTS t_test_mock (
-                        _row_key VARCHAR(200) NOT NULL,
-                        社区 VARCHAR(100) DEFAULT '',
-                        核查人 VARCHAR(100) DEFAULT '',
-                        姓名 VARCHAR(100) DEFAULT '',
-                        现住址 VARCHAR(500) DEFAULT '',
-                        核查结果 VARCHAR(500) DEFAULT '',
-                        下发日期 VARCHAR(50) DEFAULT '',
-                        截止日期 VARCHAR(50) DEFAULT '',
-                        _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        UNIQUE KEY uk_row_key (_row_key)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                """)
                 # 用户表
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _users (
