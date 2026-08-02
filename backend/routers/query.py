@@ -36,7 +36,7 @@ from services.permissions import (
     ONLINE_RAW_VIEW,
 )
 from services.schema_compat import get_database_column_map, quote_identifier
-from services.txdocs_client import TxDocsClient
+from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
 
 router = APIRouter(prefix="/api/query", tags=["数据查询"])
@@ -72,6 +72,75 @@ def _same_value(left: str, right: str, cell_type: str) -> bool:
         except (TypeError, ValueError):
             return False
     return str(left or "").strip() == str(right or "").strip()
+
+
+async def _managed_column_metadata(
+    cur,
+    parser,
+    source_metadata: dict | None = None,
+) -> dict[str, dict]:
+    """用平台名册为社区和核查人提供稳定的下拉选项。"""
+    metadata = {
+        column: dict((source_metadata or {}).get(column) or {"type": "text"})
+        for column in parser.COLUMNS
+    }
+    if parser.COMMUNITY_COLUMN in parser.COLUMNS:
+        await cur.execute(
+            """
+            SELECT community.name
+            FROM _communities AS community
+            JOIN _departments AS department
+              ON department.community_id=community.id
+             AND department.department_type='community'
+             AND department.is_active=1
+            ORDER BY community.id
+            """
+        )
+        communities = [str(row[0]) for row in await cur.fetchall() if row[0]]
+        metadata[parser.COMMUNITY_COLUMN] = {
+            "type": "select",
+            "multiple": False,
+            "options": [{"id": name, "text": name} for name in communities],
+        }
+    if "核查人" in parser.COLUMNS:
+        await cur.execute(
+            """
+            SELECT DISTINCT member.name
+            FROM _grid_members AS member
+            JOIN _grid_member_department_links AS link
+              ON link.member_id=member.id
+            JOIN _departments AS department
+              ON department.id=link.department_id
+             AND department.department_type='community'
+             AND department.is_active=1
+            WHERE member.position IN ('组长', '组员')
+              AND member.status='在岗'
+            ORDER BY member.name
+            """
+        )
+        members = [str(row[0]) for row in await cur.fetchall() if row[0]]
+        metadata["核查人"] = {
+            "type": "select",
+            "multiple": False,
+            "options": [{"id": name, "text": name} for name in members],
+        }
+    return metadata
+
+
+def _row_values_match(
+    expected: dict[str, str],
+    actual: dict[str, str],
+    actual_metadata: dict[str, dict],
+    columns: list[str],
+) -> bool:
+    return all(
+        _same_value(
+            actual.get(column, ""),
+            expected.get(column, ""),
+            (actual_metadata.get(column) or {}).get("type", "text"),
+        )
+        for column in columns
+    )
 
 
 def _append_grid_filters(
@@ -443,6 +512,8 @@ async def _legacy_query(
             params + [page_size, (page - 1) * page_size],
         )
         rows = await cur.fetchall()
+        # 归档及尚未完成来源定位的旧查询保持只读，不需要额外读取编辑下拉项。
+        column_metadata = {column: {"type": "text"} for column in columns}
     result = {
         "data": [
             {
@@ -455,7 +526,9 @@ async def _legacy_query(
         "page": page,
         "page_size": page_size,
         "columns": columns,
-        "column_meta": [{"field": column, "type": "text"} for column in columns],
+        "column_meta": [
+            {"field": column, **column_metadata[column]} for column in columns
+        ],
         "source_ready": False,
         "writeback_enabled": False,
         "can_add": False,
@@ -565,7 +638,10 @@ async def _projection_query(
             (parser_type,),
         )
         metadata_row = await cur.fetchone()
-        column_metadata = json_value(metadata_row[0], {}) if metadata_row else {}
+        source_metadata = json_value(metadata_row[0], {}) if metadata_row else {}
+        column_metadata = await _managed_column_metadata(
+            cur, parser, source_metadata
+        )
         await cur.execute(
             "SELECT COUNT(*) FROM _online_writeback_audit "
             "WHERE parser_type=%s AND sync_status='pending'",
@@ -619,7 +695,7 @@ async def _projection_query(
         "page_size": page_size,
         "columns": columns,
         "column_meta": [
-            {"field": column, **(column_metadata.get(column) or {"type": "text"})}
+            {"field": column, **column_metadata[column]}
             for column in columns
         ],
         "source_ready": True,
@@ -833,6 +909,11 @@ async def update_source_cell(
             if not _same_value(actual_value, data.value, metadata.get("type", "text")):
                 await _refresh_spreadsheet(conn, client, source["spreadsheet"])
                 raise HTTPException(502, "腾讯表格写入后校验失败，请刷新确认")
+        except TxDocsAPIError as exc:
+            if audit_id:
+                async with conn.cursor() as cur:
+                    await _update_writeback_audit(cur, audit_id, "failed")
+            raise HTTPException(502, str(exc)) from exc
         except Exception:
             if audit_id:
                 async with conn.cursor() as cur:
@@ -920,16 +1001,18 @@ async def create_source_row(
     try:
         async with conn.cursor() as cur:
             client = await _oauth_client(cur)
-        source_rows = await client.read_all_source_rows(
+        all_rows = await client.read_all_source_rows(
             spreadsheet["file_id"], spreadsheet["data_sheet_id"],
             spreadsheet["header_row"], parser.COLUMNS,
+            include_detected_headers=True,
         )
+        source_rows = [row for row in all_rows if not row.get("is_header")]
         new_key = parser.make_row_key(values)
         if any(parser.make_row_key(row["values"]) == new_key for row in source_rows):
             await _refresh_spreadsheet(conn, client, spreadsheet)
             raise HTTPException(409, "腾讯表格中已经存在相同业务主键")
         physical_row = max(
-            [spreadsheet["header_row"], *[row["physical_row"] for row in source_rows]]
+            [spreadsheet["header_row"], *[row["physical_row"] for row in all_rows]]
         ) + 1
         async with conn.cursor() as cur:
             audit_id = await _insert_writeback_audit(
@@ -951,9 +1034,6 @@ async def create_source_row(
             await client.batch_update(
                 spreadsheet["file_id"],
                 [
-                    client.build_insert_row_request(
-                        spreadsheet["data_sheet_id"], physical_row
-                    ),
                     client.build_update_range_request(
                         spreadsheet["data_sheet_id"],
                         physical_row - 1,
@@ -966,9 +1046,19 @@ async def create_source_row(
                 spreadsheet["file_id"], spreadsheet["data_sheet_id"],
                 physical_row, parser.COLUMNS,
             )
-            if verified["values"] != values:
+            if not _row_values_match(
+                values,
+                verified["values"],
+                verified["cell_meta"],
+                parser.COLUMNS,
+            ):
                 await _refresh_spreadsheet(conn, client, spreadsheet)
                 raise HTTPException(502, "腾讯表格新增后校验失败，请直接检查在线表格")
+        except TxDocsAPIError as exc:
+            if audit_id:
+                async with conn.cursor() as cur:
+                    await _update_writeback_audit(cur, audit_id, "failed")
+            raise HTTPException(502, str(exc)) from exc
         except Exception:
             if audit_id:
                 async with conn.cursor() as cur:
@@ -1064,6 +1154,10 @@ async def delete_source_row(
             )
             async with conn.cursor() as cur:
                 await _update_writeback_audit(cur, audit_id, "pending")
+        except TxDocsAPIError as exc:
+            async with conn.cursor() as cur:
+                await _update_writeback_audit(cur, audit_id, "failed")
+            raise HTTPException(502, str(exc)) from exc
         except Exception:
             async with conn.cursor() as cur:
                 await _update_writeback_audit(cur, audit_id, "failed")

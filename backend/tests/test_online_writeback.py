@@ -9,7 +9,13 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from routers.grid_members import _replace_area_leaders
-from routers.query import CellUpdate, new_row_required_fields, update_source_cell
+from routers.query import (
+    CellUpdate,
+    _managed_column_metadata,
+    _row_values_match,
+    new_row_required_fields,
+    update_source_cell,
+)
 from services.online_edit_permissions import (
     can_manage_rows,
     editable_fields_for_row,
@@ -117,6 +123,26 @@ class ProjectionCursor:
     async def executemany(self, sql, rows):
         del sql
         self.many_rows = list(rows)
+
+
+class ManagedMetadataCursor:
+    def __init__(self):
+        self.mode = ""
+
+    async def execute(self, sql, params=None):
+        del params
+        compact = " ".join(sql.split())
+        if "FROM _communities AS community" in compact:
+            self.mode = "communities"
+        elif "FROM _grid_members AS member" in compact:
+            self.mode = "members"
+
+    async def fetchall(self):
+        if self.mode == "communities":
+            return [("长板",), ("龙河",)]
+        if self.mode == "members":
+            return [("网格员甲",), ("网格员乙",)]
+        return []
 
 
 class CursorContext:
@@ -314,17 +340,51 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted, 3)
         self.assertIn("INTERVAL 90 DAY", cursor.calls[-1][0])
 
-    def test_dimension_requests_use_one_based_physical_rows(self):
+    def test_delete_dimension_uses_official_one_based_row_range(self):
         client = TxDocsClient("client", "token", "user")
 
         self.assertEqual(
-            client.build_insert_row_request("sheet", 12)["insertDimensionRequest"],
-            {"sheetId": "sheet", "dimension": "ROWS", "startIndex": 11, "endIndex": 12},
+            client.build_delete_row_request("sheet", 12)["deleteDimensionRequest"],
+            {"sheetId": "sheet", "dimension": "ROW", "startIndex": 12, "endIndex": 13},
+        )
+
+    def test_new_row_verification_compares_numeric_display_equivalently(self):
+        columns = ["下发时间", "姓名"]
+        self.assertTrue(_row_values_match(
+            {"下发时间": "7.30", "姓名": "对象"},
+            {"下发时间": "7.3", "姓名": "对象"},
+            {"下发时间": {"type": "number"}, "姓名": {"type": "text"}},
+            columns,
+        ))
+
+    async def test_query_uses_managed_community_and_member_select_options(self):
+        parser = get_parser("全链条")
+
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {"核查结果": {"type": "select", "options": [{"id": "1", "text": "移交"}]}},
+        )
+
+        self.assertEqual(
+            metadata[parser.COMMUNITY_COLUMN],
+            {
+                "type": "select",
+                "multiple": False,
+                "options": [
+                    {"id": "长板", "text": "长板"},
+                    {"id": "龙河", "text": "龙河"},
+                ],
+            },
         )
         self.assertEqual(
-            client.build_delete_row_request("sheet", 12)["deleteDimensionRequest"],
-            {"sheetId": "sheet", "dimension": "ROWS", "startIndex": 11, "endIndex": 12},
+            metadata["核查人"]["options"],
+            [
+                {"id": "网格员甲", "text": "网格员甲"},
+                {"id": "网格员乙", "text": "网格员乙"},
+            ],
         )
+        self.assertEqual(metadata["核查结果"]["type"], "select")
 
 
 if __name__ == "__main__":

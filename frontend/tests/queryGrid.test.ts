@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  buildQueryAuditChanges,
   buildQueryDisplayRows,
   canEditQueryCell,
   createQueryDraftRow,
@@ -117,4 +118,22 @@ test('手机抽屉连续保存会把上一格的新版本传给下一格', async
     ['核查结果', 4],
     ['二次反馈', 5],
   ])
+})
+
+test('修改记录只展示真正发生变化的字段', () => {
+  assert.deepEqual(
+    buildQueryAuditChanges(
+      { 社区: '长板', 核查结果: '', 姓名: '张三' },
+      { 社区: '长板', 核查结果: '移交', 姓名: '张三' },
+      'update',
+    ),
+    [{ field: '核查结果', before: '', after: '移交' }],
+  )
+  assert.deepEqual(
+    buildQueryAuditChanges(null, { 社区: '长板', 姓名: '', 核查人: '李四' }, 'create'),
+    [
+      { field: '社区', before: '', after: '长板' },
+      { field: '核查人', before: '', after: '李四' },
+    ],
+  )
 })
