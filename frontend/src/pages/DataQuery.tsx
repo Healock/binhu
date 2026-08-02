@@ -44,8 +44,8 @@ import { QuerySpreadsheet } from '../components/QuerySpreadsheet'
 import {
   buildQueryAuditChanges,
   isQueryDraftTouched,
+  loadCompleteQueryResult,
   missingQueryDraftFields,
-  normalizeQueryResponse,
   saveChangedSourceFields,
   sourceToDisplay,
   type QueryDisplayRow as DisplayRow,
@@ -56,6 +56,8 @@ import {
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
 } from '../utils/querySpreadsheet'
+
+const MOBILE_CARD_PAGE_SIZE = 50
 
 function errorText(error: any, fallback: string): string {
   const detail = error?.response?.data?.detail
@@ -79,8 +81,7 @@ export default function DataQuery() {
   const [columns, setColumns] = useState<string[]>([])
   const [columnMeta, setColumnMeta] = useState<QueryColumnMeta[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
+  const [mobilePage, setMobilePage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [scopeMessage, setScopeMessage] = useState('')
@@ -160,11 +161,11 @@ export default function DataQuery() {
     setLoading(true)
     setError('')
     try {
-      const result = normalizeQueryResponse(await queryData({
+      const result = await loadCompleteQueryResult((requestPage, requestPageSize) => queryData({
         type: selectedType,
         source,
-        page,
-        page_size: pageSize,
+        page: requestPage,
+        page_size: requestPageSize,
         keyword: keyword || undefined,
         filters: sheetRequestFilters.filters,
         grid_filters: sheetRequestFilters.gridFilters,
@@ -181,6 +182,10 @@ export default function DataQuery() {
       setCanAdd(Boolean(result.can_add))
       setRequiredFields(result.required_fields || [])
       setPendingCount(Number(result.pending_count || 0))
+      setMobilePage(current => Math.min(
+        current,
+        Math.max(1, Math.ceil(result.total / MOBILE_CARD_PAGE_SIZE)),
+      ))
       setSelectedSheetRow(null)
       setSheetRevision(current => current + 1)
     } catch (requestError) {
@@ -200,7 +205,7 @@ export default function DataQuery() {
     } finally {
       if (sequence === fetchSequence.current) setLoading(false)
     }
-  }, [selectedType, source, page, pageSize, keyword, sheetRequestFilters])
+  }, [selectedType, source, keyword, sheetRequestFilters])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -268,6 +273,7 @@ export default function DataQuery() {
 
   const handleSheetCommit = useCallback(async (changes: QuerySheetCellChange[]) => {
     const revisions = new Map<number, number>()
+    const newlyPendingSourceIds = new Set<number>()
     let completed = 0
     try {
       for (const change of changes) {
@@ -281,19 +287,32 @@ export default function DataQuery() {
           expected_revision: expectedRevision,
         })
         revisions.set(sourceId, result.revision)
+        const wasPending = Boolean(change.row.__pending)
+        Object.assign(change.row, result.values, {
+          __revision: result.revision,
+          __row_key: result.row_key,
+          __pending: result.pending_sync,
+        })
+        if (result.pending_sync && !wasPending) {
+          newlyPendingSourceIds.add(sourceId)
+        }
         completed += 1
       }
       messageApi.success(changes.length > 1
         ? `已将 ${changes.length} 个单元格写回腾讯表格`
         : '已写回腾讯表格')
-      await fetchData()
+      if (newlyPendingSourceIds.size > 0) {
+        setPendingCount(current => current + newlyPendingSourceIds.size)
+      }
+      setRows(current => [...current])
+      if (keyword || Object.keys(sheetFilterCriteria).length > 0) await fetchData()
     } catch (requestError) {
       const prefix = completed > 0 ? `已有 ${completed} 项写入；` : ''
       messageApi.error(`${prefix}${errorText(requestError, '保存失败，已重新加载在线内容')}`)
       await fetchData()
       throw requestError
     }
-  }, [fetchData, messageApi, selectedType])
+  }, [fetchData, keyword, messageApi, selectedType, sheetFilterCriteria])
 
   const openAdd = () => {
     setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
@@ -394,7 +413,7 @@ export default function DataQuery() {
 
   const changeSourceType = (value: 'online' | 'archive') => {
     setSource(value)
-    setPage(1)
+    setMobilePage(1)
     setSheetFilterCriteria({})
     setRows([])
     setCanAdd(false)
@@ -423,7 +442,7 @@ export default function DataQuery() {
             value={selectedType}
             onChange={value => {
               setSelectedType(value)
-              setPage(1)
+              setMobilePage(1)
               setSheetFilterCriteria({})
               setRows([])
               setCanAdd(false)
@@ -448,13 +467,13 @@ export default function DataQuery() {
             placeholder="搜索全部字段"
             value={searchInput}
             onChange={event => setSearchInput(event.target.value)}
-            onPressEnter={() => { setKeyword(searchInput); setPage(1) }}
+            onPressEnter={() => { setKeyword(searchInput); setMobilePage(1) }}
             className="min-w-56 flex-1"
           />
           <Button
             type="primary"
             icon={<SearchOutlined />}
-            onClick={() => { setKeyword(searchInput); setPage(1) }}
+            onClick={() => { setKeyword(searchInput); setMobilePage(1) }}
           >
             搜索
           </Button>
@@ -588,7 +607,7 @@ export default function DataQuery() {
               onDraftsChange={setDraftRows}
               onFilterCriteriaChange={criteria => {
                 setSheetFilterCriteria(criteria)
-                setPage(1)
+                setMobilePage(1)
               }}
               onSelectionChange={setSelectedSheetRow}
               onCommit={handleSheetCommit}
@@ -600,28 +619,17 @@ export default function DataQuery() {
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑；工具栏中的筛选条件会重新查询全部记录。筛选值列表取自当前页，格式调整仅影响当前查看，不回写腾讯表格。
-        </div>
-        <div className="flex justify-end border-t border-[var(--app-border)] px-4 py-3">
-          <Pagination
-            current={page}
-            pageSize={pageSize}
-            total={total}
-            showSizeChanger
-            pageSizeOptions={[20, 50, 100, 200]}
-            showTotal={count => `共 ${count} 条`}
-            onChange={(nextPage, nextSize) => {
-              setPage(nextSize !== pageSize ? 1 : nextPage)
-              setPageSize(nextSize)
-            }}
-          />
+          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。工具栏中的筛选条件会重新查询全部记录，格式调整仅影响当前查看，不回写腾讯表格。
         </div>
       </div>
 
       <div className="space-y-3 md:hidden">
         {loading ? <div className="app-card p-10 text-center"><Spin /></div> : rows.length === 0 ? (
           <div className="app-card p-8"><Empty description={error || '没有找到符合条件的数据'} /></div>
-        ) : rows.map(row => {
+        ) : rows.slice(
+          (mobilePage - 1) * MOBILE_CARD_PAGE_SIZE,
+          mobilePage * MOBILE_CARD_PAGE_SIZE,
+        ).map(row => {
           const community = String(row['社区'] || row['下发社区'] || '-')
           const name = String(row['姓名'] || row['参考姓名'] || row['出租屋地址'] || '-')
           const result = String(row['核查结果'] || row['核查反馈'] || row['实际情况'] || '尚未填写结果')
@@ -648,9 +656,15 @@ export default function DataQuery() {
             </button>
           )
         })}
-        {total > pageSize && (
+        {total > MOBILE_CARD_PAGE_SIZE && (
           <div className="flex justify-center py-2">
-            <Pagination simple current={page} pageSize={pageSize} total={total} onChange={setPage} />
+            <Pagination
+              simple
+              current={mobilePage}
+              pageSize={MOBILE_CARD_PAGE_SIZE}
+              total={total}
+              onChange={setMobilePage}
+            />
           </div>
         )}
       </div>
