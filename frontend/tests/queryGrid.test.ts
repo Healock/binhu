@@ -11,6 +11,7 @@ import {
   missingQueryDraftFields,
   normalizeQueryResponse,
   saveChangedSourceFields,
+  updateQueryDraftValue,
 } from '../src/utils/queryGrid.ts'
 
 const sourceRow = {
@@ -68,6 +69,38 @@ test('行内新增始终保留一条尾部空行', () => {
     createId,
   )
   assert.equal(withExtraBlanks.length, 2)
+})
+
+test('行内新增结束编辑后保留输入并继续补空行', () => {
+  const columns = ['下发时间', '社区', '核查人']
+  let sequence = 0
+  const createId = () => `draft-${++sequence}`
+  const initial = ensureTrailingQueryDraft([], columns, createId)
+
+  const afterEnter = updateQueryDraftValue(
+    initial,
+    initial[0],
+    '下发时间',
+    '7.28',
+    columns,
+    createId,
+  )
+  assert.equal(afterEnter.length, 2)
+  assert.equal(afterEnter[0].下发时间, '7.28')
+  assert.equal(isQueryDraftTouched(afterEnter[1], columns), false)
+
+  const afterNextCell = updateQueryDraftValue(
+    afterEnter,
+    afterEnter[0],
+    '社区',
+    '长板',
+    columns,
+    createId,
+  )
+  assert.equal(afterNextCell.length, 2)
+  assert.equal(afterNextCell[0].下发时间, '7.28')
+  assert.equal(afterNextCell[0].社区, '长板')
+  assert.equal(isQueryDraftTouched(afterNextCell[1], columns), false)
 })
 
 test('行内新增只在必填字段完整后允许提交', () => {
