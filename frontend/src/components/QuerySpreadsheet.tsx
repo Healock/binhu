@@ -34,6 +34,7 @@ import {
   canEditQuerySheetCell,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
+  resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
@@ -198,11 +199,14 @@ export function QuerySpreadsheet({
 
     const allRange = worksheet.getRange(0, 0, initialValues.length, columns.length)
     allRange.setWrap(true)
-    allRange.setBorder(
-      univerAPI.Enum.BorderType.ALL,
-      univerAPI.Enum.BorderStyle.THIN,
-      '#d8dee9',
-    )
+    const thinBorderStyle = resolveQuerySheetThinBorderStyle(univerAPI.Enum)
+    if (thinBorderStyle !== null) {
+      allRange.setBorder(
+        univerAPI.Enum.BorderType.ALL,
+        thinBorderStyle,
+        '#d8dee9',
+      )
+    }
     const headerRange = worksheet.getRange(0, 0, 1, columns.length)
     headerRange.setBackgroundColor('#e8eef8')
     headerRange.setFontWeight('bold')

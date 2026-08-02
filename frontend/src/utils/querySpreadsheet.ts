@@ -20,6 +20,17 @@ export interface QuerySheetCellChange {
   after: string
 }
 
+interface UniverBorderEnums {
+  BorderStyleTypes?: {
+    THIN?: unknown
+  }
+}
+
+export function resolveQuerySheetThinBorderStyle(enums: UniverBorderEnums): number | null {
+  const style = enums.BorderStyleTypes?.THIN
+  return typeof style === 'number' ? style : null
+}
+
 function stringifyCell(value: unknown): string {
   return value === null || value === undefined ? '' : String(value)
 }
