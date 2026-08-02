@@ -9,6 +9,7 @@ import {
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
+  QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
@@ -22,6 +23,13 @@ test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅
   assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringMark, true)
   assert.equal(querySheetPalette(false).background, '#ffffff')
   assert.deepEqual(querySheetPalette(true), querySheetPalette(false))
+})
+
+test('查询工作表同时启用标题区域和经典工具栏', () => {
+  // Univer 0.25.x 的工具栏受 header && toolbar 共同控制。
+  assert.equal(QUERY_SHEET_UI_CONFIG.header, true)
+  assert.equal(QUERY_SHEET_UI_CONFIG.toolbar, true)
+  assert.equal(QUERY_SHEET_UI_CONFIG.ribbonType, 'classic')
 })
 
 test('工作表值筛选和条件筛选转换为完整查询请求', () => {

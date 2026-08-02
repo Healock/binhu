@@ -39,6 +39,7 @@ import {
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
+  QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
@@ -180,12 +181,7 @@ export function QuerySpreadsheet({
       container,
       UniverSheetsCorePreset({
         container,
-        header: false,
-        toolbar: true,
-        ribbonType: 'classic',
-        footer: false,
-        formulaBar: true,
-        contextMenu: false,
+        ...QUERY_SHEET_UI_CONFIG,
         sheets: QUERY_SHEET_FEATURE_CONFIG,
       }),
       UniverSheetsDataValidationPreset({
