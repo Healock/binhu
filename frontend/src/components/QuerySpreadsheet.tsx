@@ -58,6 +58,7 @@ export interface QuerySpreadsheetProps {
   drafts: QueryDisplayRow[]
   canAdd: boolean
   revision: number
+  layoutRevision?: number
   filterCriteria: Record<string, QuerySheetFilterCriteria>
   onDraftsChange: (drafts: QueryDisplayRow[]) => void
   onFilterCriteriaChange: (criteria: Record<string, QuerySheetFilterCriteria>) => void
@@ -128,6 +129,7 @@ export function QuerySpreadsheet({
   drafts,
   canAdd,
   revision,
+  layoutRevision = 0,
   filterCriteria,
   onDraftsChange,
   onFilterCriteriaChange,
@@ -495,6 +497,22 @@ export function QuerySpreadsheet({
   useEffect(() => {
     applyAppearanceRef.current?.(themeMode === 'dark')
   }, [themeMode])
+
+  useEffect(() => {
+    // Fullscreen changes the sheet container without changing the browser viewport.
+    // Univer listens for window resize, so notify it after the fullscreen layout has
+    // completed instead of rebuilding the workbook and losing the current selection.
+    let secondFrame = 0
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+    })
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      if (secondFrame) window.cancelAnimationFrame(secondFrame)
+    }
+  }, [layoutRevision])
 
   return <div ref={containerRef} className="query-spreadsheet" aria-label={`${businessType}在线工作表`} />
 }
