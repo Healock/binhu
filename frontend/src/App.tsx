@@ -1,3 +1,4 @@
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import AppThemeProvider from './components/AppThemeProvider'
@@ -5,7 +6,6 @@ import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 import SettingsLayout from './components/SettingsLayout'
 import Dashboard from './pages/Dashboard'
-import DataQuery from './pages/DataQuery'
 import GridMembers from './pages/GridMembers'
 import WeekendDuty from './pages/WeekendDuty'
 import Communities from './pages/Communities'
@@ -23,6 +23,16 @@ import WorkLogDrafts from './pages/WorkLogDrafts'
 import PermissionGroups from './pages/PermissionGroups'
 import Profile from './pages/Profile'
 
+const DataQuery = lazy(() => import('./pages/DataQuery'))
+
+function LazyPage({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={<div className="app-card p-10 text-center text-[var(--app-text-secondary)]">正在加载在线工作表…</div>}>
+      {children}
+    </Suspense>
+  )
+}
+
 function App() {
   return (
     <AuthProvider>
@@ -39,7 +49,7 @@ function App() {
                 <Route path="/" element={<Dashboard />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
-                <Route path="/query" element={<DataQuery />} />
+                <Route path="/query" element={<LazyPage><DataQuery /></LazyPage>} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<VisitSummary />} />

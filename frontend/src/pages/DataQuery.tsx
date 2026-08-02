@@ -18,24 +18,11 @@ import {
 } from 'antd'
 import {
   DeleteOutlined,
-  DownOutlined,
   EditOutlined,
   HistoryOutlined,
   PlusOutlined,
-  RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import {
-  AllCommunityModule,
-  ModuleRegistry,
-  themeQuartz,
-  type CellEditRequestEvent,
-  type ColDef,
-  type FilterChangedEvent,
-  type GridApi,
-  type SortChangedEvent,
-} from 'ag-grid-community'
-import { AgGridReact } from 'ag-grid-react'
 import {
   createQuerySourceRow,
   deleteQuerySourceRow,
@@ -51,34 +38,17 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { PageHeader } from '../components/ui'
+import { QuerySpreadsheet } from '../components/QuerySpreadsheet'
 import {
-  buildQueryDisplayRows,
   buildQueryAuditChanges,
-  canEditQueryCell,
-  ensureTrailingQueryDraft,
   isQueryDraftTouched,
   missingQueryDraftFields,
   normalizeQueryResponse,
   saveChangedSourceFields,
   sourceToDisplay,
-  updateQueryDraftValue,
   type QueryDisplayRow as DisplayRow,
 } from '../utils/queryGrid'
-
-ModuleRegistry.registerModules([AllCommunityModule])
-
-const gridTheme = themeQuartz.withParams({
-  accentColor: '#2563eb',
-  backgroundColor: 'var(--app-surface)',
-  foregroundColor: 'var(--app-text)',
-  borderColor: 'var(--app-border)',
-  headerBackgroundColor: 'var(--app-surface-muted)',
-  oddRowBackgroundColor: 'var(--app-surface-muted)',
-  rowHoverColor: 'var(--app-primary-soft)',
-  fontFamily: 'inherit',
-  fontSize: 13,
-  spacing: 6,
-})
+import type { QuerySheetCellChange } from '../utils/querySpreadsheet'
 
 function errorText(error: any, fallback: string): string {
   const detail = error?.response?.data?.detail
@@ -104,9 +74,6 @@ export default function DataQuery() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
-  const [sortBy, setSortBy] = useState<string>()
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
-  const [gridFilters, setGridFilters] = useState<Record<string, unknown>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [scopeMessage, setScopeMessage] = useState('')
@@ -117,9 +84,10 @@ export default function DataQuery() {
   const [requiredFields, setRequiredFields] = useState<string[]>([])
   const [draftRows, setDraftRows] = useState<DisplayRow[]>([])
   const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
+  const [selectedSheetRow, setSelectedSheetRow] = useState<DisplayRow | null>(null)
+  const [sheetSaving, setSheetSaving] = useState(false)
+  const [sheetRevision, setSheetRevision] = useState(0)
   const [pendingCount, setPendingCount] = useState(0)
-  const [expanded, setExpanded] = useState<Record<string, QuerySourceRow[]>>({})
-  const [expanding, setExpanding] = useState<string>()
   const [addOpen, setAddOpen] = useState(false)
   const [addValues, setAddValues] = useState<Record<string, string>>({})
   const [adding, setAdding] = useState(false)
@@ -134,15 +102,8 @@ export default function DataQuery() {
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditPage, setAuditPage] = useState(1)
   const [auditTotal, setAuditTotal] = useState(0)
-  const gridApi = useRef<GridApi<DisplayRow> | null>(null)
   const fetchSequence = useRef(0)
-  const nextDraftId = useRef(0)
   const [messageApi, messageContext] = message.useMessage()
-
-  const makeDraftId = useCallback(
-    () => `new-${++nextDraftId.current}`,
-    [],
-  )
 
   const isSuperAdmin = user?.role === 'super_admin'
     || user?.permission_groups?.some(group => group.code === 'super_admin')
@@ -167,9 +128,6 @@ export default function DataQuery() {
         page,
         page_size: pageSize,
         keyword: keyword || undefined,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-        grid_filters: Object.keys(gridFilters).length ? gridFilters : undefined,
       }))
       if (sequence !== fetchSequence.current) return
       setRows(result.data)
@@ -183,7 +141,8 @@ export default function DataQuery() {
       setCanAdd(Boolean(result.can_add))
       setRequiredFields(result.required_fields || [])
       setPendingCount(Number(result.pending_count || 0))
-      setExpanded({})
+      setSelectedSheetRow(null)
+      setSheetRevision(current => current + 1)
     } catch (requestError) {
       if (sequence !== fetchSequence.current) return
       setError(errorText(requestError, '查询失败，请检查网络后重试'))
@@ -196,46 +155,14 @@ export default function DataQuery() {
       setPendingCount(0)
       setScopeMessage('')
       setRowManageMessage('')
+      setSelectedSheetRow(null)
+      setSheetRevision(current => current + 1)
     } finally {
       if (sequence === fetchSequence.current) setLoading(false)
     }
-  }, [selectedType, source, page, pageSize, keyword, sortBy, sortOrder, gridFilters])
+  }, [selectedType, source, page, pageSize, keyword])
 
   useEffect(() => { fetchData() }, [fetchData])
-
-  const columnsKey = columns.join('\u0001')
-  useEffect(() => {
-    setDraftRows(current => {
-      if (source !== 'online' || !canAdd || columns.length === 0) return []
-      return ensureTrailingQueryDraft(current, columns, makeDraftId)
-    })
-  }, [canAdd, columnsKey, makeDraftId, source])
-
-  const displayRows = useMemo<DisplayRow[]>(() => {
-    return buildQueryDisplayRows(rows, expanded)
-  }, [rows, expanded])
-
-  const toggleSources = useCallback(async (row: QueryDataRow) => {
-    const rowKey = String(row.__row_key || '')
-    if (!rowKey) return
-    if (expanded[rowKey]) {
-      setExpanded(current => {
-        const next = { ...current }
-        delete next[rowKey]
-        return next
-      })
-      return
-    }
-    setExpanding(rowKey)
-    try {
-      const sources = await getQuerySourceRows(selectedType, rowKey)
-      setExpanded(current => ({ ...current, [rowKey]: sources }))
-    } catch (requestError) {
-      messageApi.error(errorText(requestError, '原始行加载失败'))
-    } finally {
-      setExpanding(undefined)
-    }
-  }, [expanded, messageApi, selectedType])
 
   const handleDelete = useCallback(async (row: DisplayRow) => {
     const sourceId = Number(row.__source_id)
@@ -253,12 +180,10 @@ export default function DataQuery() {
   }, [fetchData, messageApi, selectedType])
 
   const discardDraft = useCallback((draftId: string) => {
-    setDraftRows(current => ensureTrailingQueryDraft(
-      current.filter(row => row.__draft_id !== draftId),
-      columns,
-      makeDraftId,
-    ))
-  }, [columns, makeDraftId])
+    setDraftRows(current => current.filter(row => row.__draft_id !== draftId))
+    setSelectedSheetRow(null)
+    setSheetRevision(current => current + 1)
+  }, [])
 
   const submitDraft = useCallback(async (row: DisplayRow) => {
     const draftId = String(row.__draft_id || '')
@@ -275,11 +200,8 @@ export default function DataQuery() {
       )
       const result = await createQuerySourceRow(selectedType, values)
       messageApi.success(result.message)
-      setDraftRows(current => ensureTrailingQueryDraft(
-        current.filter(item => item.__draft_id !== draftId),
-        columns,
-        makeDraftId,
-      ))
+      setDraftRows(current => current.filter(item => item.__draft_id !== draftId))
+      setSelectedSheetRow(null)
       await fetchData()
     } catch (requestError) {
       messageApi.error(errorText(requestError, '新增失败，草稿已保留'))
@@ -293,92 +215,10 @@ export default function DataQuery() {
   }, [
     columns,
     fetchData,
-    makeDraftId,
     messageApi,
     requiredFields,
     savingDraftIds,
     selectedType,
-  ])
-
-  const actionRenderer = useCallback((params: { data?: DisplayRow }) => {
-    const row = params.data
-    if (!row) return null
-    if (row.__kind === 'draft') {
-      const draftId = String(row.__draft_id || '')
-      const touched = isQueryDraftTouched(row, columns)
-      const missing = missingQueryDraftFields(row, requiredFields)
-      return (
-        <div className="flex h-full items-center gap-1.5">
-          {!touched ? (
-            <Tag color="green" icon={<PlusOutlined />}>在此新增</Tag>
-          ) : (
-            <>
-              <Tag color="gold">待提交</Tag>
-              <Button
-                type="link"
-                size="small"
-                disabled={missing.length > 0}
-                loading={savingDraftIds.has(draftId)}
-                title={missing.length ? `还需填写：${missing.join('、')}` : '写入腾讯表格'}
-                onClick={() => submitDraft(row)}
-              >
-                写入
-              </Button>
-              <Button
-                type="text"
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
-                title="放弃这条草稿"
-                onClick={() => discardDraft(draftId)}
-              />
-            </>
-          )}
-        </div>
-      )
-    }
-    const duplicate = row.__kind === 'parent' && Number(row.__source_count || 0) > 1
-    const key = String(row.__row_key || '')
-    return (
-      <div className={`flex h-full items-center gap-1 ${row.__kind === 'source' ? 'pl-4' : ''}`}>
-        {duplicate && (
-          <Button
-            type="text"
-            size="small"
-            loading={expanding === key}
-            icon={expanded[key] ? <DownOutlined /> : <RightOutlined />}
-            onClick={() => toggleSources(row)}
-          >
-            {row.__source_count} 条原始行
-          </Button>
-        )}
-        {row.__kind === 'source' && <Tag color="default">第 {String(row.__physical_row)} 行</Tag>}
-        {row.__pending && <Tag color="gold">待同步</Tag>}
-        {row.__conflict && <Tag color="red">内容冲突</Tag>}
-        {row.__can_delete && (
-          <Popconfirm
-            title="确认删除腾讯原始行？"
-            description="该操作会真实删除在线表格中的整行，下一次同步后进入归档。"
-            okText="确认删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-            onConfirm={() => handleDelete(row)}
-          >
-            <Button type="text" danger size="small" icon={<DeleteOutlined />} />
-          </Popconfirm>
-        )}
-      </div>
-    )
-  }, [
-    columns,
-    discardDraft,
-    expanded,
-    expanding,
-    handleDelete,
-    requiredFields,
-    savingDraftIds,
-    submitDraft,
-    toggleSources,
   ])
 
   const metaByColumn = useMemo(
@@ -386,104 +226,34 @@ export default function DataQuery() {
     [columnMeta],
   )
 
-  const columnDefs = useMemo<ColDef<DisplayRow>[]>(() => [
-    {
-      headerName: '来源 / 状态',
-      colId: '__actions',
-      width: 210,
-      minWidth: 180,
-      pinned: 'left',
-      sortable: false,
-      filter: false,
-      editable: false,
-      cellRenderer: actionRenderer,
-    },
-    ...columns.map((column, index) => {
-      const meta = metaByColumn[column] || { type: 'text' }
-      const definition: ColDef<DisplayRow> = {
-        field: column,
-        headerName: requiredFields.includes(column) ? `${column} *` : column,
-        minWidth: 150,
-        width: 180,
-        pinned: index === 0 ? 'left' : undefined,
-        filter: meta.type === 'number' ? 'agNumberColumnFilter' : 'agTextColumnFilter',
-        filterParams: { debounceMs: 450, buttons: ['reset'] },
-        sortable: true,
-        resizable: true,
-        editable: params => canEditQueryCell(source, params.data, column, canAdd),
-        cellClassRules: {
-          'binhu-grid-cell--editable': params => canEditQueryCell(
-            source,
-            params.data,
-            column,
-            canAdd,
-          ),
-          'binhu-grid-cell--draft-required': params => Boolean(
-            params.data?.__kind === 'draft'
-            && requiredFields.includes(column)
-            && !String(params.value ?? '').trim()
-          ),
-        },
-        tooltipValueGetter: params => String(params.value || ''),
-      }
-      if (meta.type === 'select') {
-        definition.cellEditor = 'agSelectCellEditor'
-        definition.cellEditorParams = {
-          values: (meta.options || []).map(option => option.text),
-        }
-      } else if (meta.type === 'number') {
-        definition.cellEditor = 'agNumberCellEditor'
-      } else if (['地址', '现住址', '核查结果', '核查反馈', '二次反馈', '二次核查结果', '实际情况'].includes(column)) {
-        definition.flex = 1
-        definition.minWidth = 220
-      }
-      return definition
-    }),
-  ], [actionRenderer, canAdd, columns, metaByColumn, requiredFields, source])
-
-  const handleCellEditRequest = useCallback(async (event: CellEditRequestEvent<DisplayRow>) => {
-    const row = event.data
-    const column = event.colDef.field
-    if (!row || !column || event.newValue === event.oldValue) return
-    if (row.__kind === 'draft') {
-      setDraftRows(current => updateQueryDraftValue(
-        current,
-        row,
-        column,
-        event.newValue,
-        columns,
-        makeDraftId,
-      ))
-      return
-    }
-    const sourceId = Number(row.__source_id)
-    const revision = Number(row.__revision)
-    if (!sourceId || !revision) return
+  const handleSheetCommit = useCallback(async (changes: QuerySheetCellChange[]) => {
+    const revisions = new Map<number, number>()
+    let completed = 0
     try {
-      const result = await updateQuerySourceCell(selectedType, sourceId, {
-        column,
-        value: String(event.newValue ?? ''),
-        expected_revision: revision,
-      })
-      messageApi.success('已写回腾讯表格')
+      for (const change of changes) {
+        const sourceId = Number(change.row.__source_id)
+        const initialRevision = Number(change.row.__revision)
+        if (!sourceId || !initialRevision) throw new Error('缺少腾讯来源行版本')
+        const expectedRevision = revisions.get(sourceId) || initialRevision
+        const result = await updateQuerySourceCell(selectedType, sourceId, {
+          column: change.column,
+          value: change.after,
+          expected_revision: expectedRevision,
+        })
+        revisions.set(sourceId, result.revision)
+        completed += 1
+      }
+      messageApi.success(changes.length > 1
+        ? `已将 ${changes.length} 个单元格写回腾讯表格`
+        : '已写回腾讯表格')
       await fetchData()
     } catch (requestError) {
-      messageApi.error(errorText(requestError, '保存失败，原值未改变'))
-      if (errorStatus(requestError) === 409) await fetchData()
+      const prefix = completed > 0 ? `已有 ${completed} 项写入；` : ''
+      messageApi.error(`${prefix}${errorText(requestError, '保存失败，已重新加载在线内容')}`)
+      await fetchData()
+      throw requestError
     }
-  }, [columns, fetchData, makeDraftId, messageApi, selectedType])
-
-  const handleSort = useCallback((event: SortChangedEvent<DisplayRow>) => {
-    const sorted = event.api.getColumnState().find(column => column.sort)
-    setSortBy(sorted?.colId === '__actions' ? undefined : sorted?.colId)
-    setSortOrder(sorted?.sort === 'asc' ? 'asc' : 'desc')
-    setPage(1)
-  }, [])
-
-  const handleFilter = useCallback((event: FilterChangedEvent<DisplayRow>) => {
-    setGridFilters(event.api.getFilterModel())
-    setPage(1)
-  }, [])
+  }, [fetchData, messageApi, selectedType])
 
   const openAdd = () => {
     setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
@@ -504,7 +274,7 @@ export default function DataQuery() {
     }
   }
 
-  const openMobileDetails = async (row: QueryDataRow) => {
+  const openDetails = async (row: QueryDataRow) => {
     setDrawerOpen(true)
     setDrawerLoading(true)
     try {
@@ -585,13 +355,11 @@ export default function DataQuery() {
   const changeSourceType = (value: 'online' | 'archive') => {
     setSource(value)
     setPage(1)
-    setGridFilters({})
     setRows([])
     setCanAdd(false)
     setRequiredFields([])
     setDraftRows([])
-    setExpanded({})
-    gridApi.current?.setFilterModel(null)
+    setSelectedSheetRow(null)
   }
 
   return (
@@ -619,7 +387,7 @@ export default function DataQuery() {
               setCanAdd(false)
               setRequiredFields([])
               setDraftRows([])
-              setExpanded({})
+              setSelectedSheetRow(null)
             }}
             className="min-w-44"
             options={types.map(type => ({ value: type, label: type }))}
@@ -681,67 +449,87 @@ export default function DataQuery() {
       )}
 
       <div className="app-card hidden overflow-hidden md:block">
-        <div style={{ height: 620 }}>
-          <AgGridReact<DisplayRow>
-            theme={gridTheme}
-            rowData={displayRows}
-            pinnedBottomRowData={source === 'online' && canAdd ? draftRows : undefined}
-            columnDefs={columnDefs}
-            defaultColDef={{ suppressHeaderMenuButton: false }}
-            getRowId={params => params.data.__kind === 'draft'
-              ? `draft-${params.data.__draft_id}`
-              : params.data.__kind === 'source'
-                ? `source-${params.data.__source_id}`
-                : `parent-${params.data.__row_key}`}
-            getRowClass={params => params.data?.__kind === 'draft'
-              ? 'binhu-grid-row--draft'
-              : params.data?.__kind === 'source'
-                ? 'binhu-grid-row--source'
-                : params.data?.__conflict ? 'binhu-grid-row--conflict' : undefined}
-            loading={loading}
-            tooltipShowDelay={300}
-            stopEditingWhenCellsLoseFocus
-            singleClickEdit
-            readOnlyEdit
-            animateRows={false}
-            onGridReady={event => { gridApi.current = event.api }}
-            onCellEditRequest={handleCellEditRequest}
-            onSortChanged={handleSort}
-            onFilterChanged={handleFilter}
-            postSortRows={params => {
-              const children = new Map<string, typeof params.nodes>()
-              for (const node of params.nodes) {
-                const parentKey = String(node.data?.__parent_key || '')
-                if (node.data?.__kind === 'source' && parentKey) {
-                  const group = children.get(parentKey) || []
-                  group.push(node)
-                  children.set(parentKey, group)
-                }
-              }
-              const ordered = [] as typeof params.nodes
-              const included = new Set(params.nodes)
-              for (const node of params.nodes) {
-                if (node.data?.__kind === 'source') continue
-                ordered.push(node)
-                const key = String(node.data?.__row_key || '')
-                for (const child of children.get(key) || []) {
-                  ordered.push(child)
-                  included.delete(child)
-                }
-              }
-              for (const node of included) {
-                if (node.data?.__kind === 'source') ordered.push(node)
-              }
-              params.nodes.splice(0, params.nodes.length, ...ordered)
-            }}
-            overlayNoRowsTemplate={error || '没有找到符合条件的数据'}
-          />
-        </div>
-        {source === 'online' && canAdd && (
-          <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-            在表格最下方的新增空行中直接填写；开始录入后会自动补一条空行。草稿只保留在当前页面，点击“写入”后才会提交到腾讯表格。
+        <div className="query-spreadsheet-toolbar">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {!selectedSheetRow ? (
+              <span className="text-sm text-[var(--app-text-secondary)]">
+                选择单元格或整行后，可在这里查看来源状态和行操作
+              </span>
+            ) : selectedSheetRow.__kind === 'draft' ? (() => {
+              const touched = isQueryDraftTouched(selectedSheetRow, columns)
+              const draftId = String(selectedSheetRow.__draft_id || '')
+              const missing = missingQueryDraftFields(selectedSheetRow, requiredFields)
+              return touched ? (
+                <>
+                  <Tag color="gold">新增草稿</Tag>
+                  {missing.length > 0 && <span className="text-sm text-amber-700">还需填写：{missing.join('、')}</span>}
+                  <Button
+                    type="primary"
+                    size="small"
+                    disabled={missing.length > 0}
+                    loading={savingDraftIds.has(draftId)}
+                    onClick={() => submitDraft(selectedSheetRow)}
+                  >
+                    写入腾讯表格
+                  </Button>
+                  <Button size="small" onClick={() => discardDraft(draftId)}>清空这行</Button>
+                </>
+              ) : (
+                <><Tag color="green" icon={<PlusOutlined />}>新增空行</Tag><span className="text-sm text-[var(--app-text-secondary)]">直接输入或粘贴内容即可开始新增</span></>
+              )
+            })() : (
+              <>
+                {Number(selectedSheetRow.__source_count || 0) > 1 ? (
+                  <Tag>{selectedSheetRow.__source_count} 条腾讯原始行</Tag>
+                ) : selectedSheetRow.__editable_fields?.length ? (
+                  <Tag color="blue">蓝色单元格可编辑</Tag>
+                ) : <Tag>只读</Tag>}
+                {selectedSheetRow.__pending && <Tag color="gold">汇总待同步</Tag>}
+                {selectedSheetRow.__conflict && <Tag color="red">内容冲突</Tag>}
+                <Button size="small" onClick={() => openDetails(selectedSheetRow)}>
+                  {Number(selectedSheetRow.__source_count || 0) > 1 ? '查看原始行' : '查看详情'}
+                </Button>
+                {selectedSheetRow.__can_delete && (
+                  <Popconfirm
+                    title="确认删除腾讯原始行？"
+                    description="该操作会真实删除在线表格中的整行，下一次同步后进入归档。"
+                    okText="确认删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => handleDelete(selectedSheetRow)}
+                  >
+                    <Button danger size="small" icon={<DeleteOutlined />}>删除原始行</Button>
+                  </Popconfirm>
+                )}
+              </>
+            )}
           </div>
-        )}
+          {sheetSaving && <Tag color="processing">正在写回腾讯表格</Tag>}
+        </div>
+        <Spin spinning={loading} tip="正在加载在线工作表">
+          {columns.length > 0 ? (
+            <QuerySpreadsheet
+              businessType={selectedType}
+              source={source}
+              rows={rows}
+              columns={columns}
+              columnMeta={columnMeta}
+              drafts={draftRows}
+              canAdd={canAdd}
+              revision={sheetRevision}
+              onDraftsChange={setDraftRows}
+              onSelectionChange={setSelectedSheetRow}
+              onCommit={handleSheetCommit}
+              onBlocked={messageApi.warning}
+              onSavingChange={setSheetSaving}
+            />
+          ) : (
+            <div className="p-10"><Empty description={error || '没有找到符合条件的数据'} /></div>
+          )}
+        </Spin>
+        <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
+          蓝色单元格可直接编辑。可复制、粘贴和连续录入；新增权限用户可在数据下方任意空白行填写，确认后再写入腾讯表格。
+        </div>
         <div className="flex justify-end border-t border-[var(--app-border)] px-4 py-3">
           <Pagination
             current={page}
@@ -770,7 +558,7 @@ export default function DataQuery() {
               type="button"
               key={String(row.__row_key)}
               className="app-card w-full p-4 text-left"
-              onClick={() => openMobileDetails(row)}
+              onClick={() => openDetails(row)}
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
