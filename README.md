@@ -17,15 +17,9 @@
 
 - `AGENTS.md` 是共享协作入口，必须随 Git 同步；`.env`、`backend/.env` 和 `AGENTS.local.md` 是本地文件，禁止提交。
 - Docker Compose 不提供数据库或加密键的默认值；缺少变量会明确失败。
-- `upload.py`、`setup_server.py`、`fix_server.py` 和 `retry_deploy.py` 只从 `BINHU_SSH_*` 环境变量读取远程连接信息。
-
-示例（PowerShell）：
-
-```powershell
-$env:BINHU_SSH_HOST = "your-server.example.com"
-$env:BINHU_SSH_PASSWORD = "<your-ssh-password>"
-python upload.py
-```
+- 项目不长期保留一次性部署或迁移脚本。正式发布、回退和备份要求统一以
+  [开发与运维手册](docs/operations.md) 为准；真实服务器信息只保存在各电脑自己的
+  `AGENTS.local.md` 中。
 
 ## 项目文档
 
