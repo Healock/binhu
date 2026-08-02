@@ -8,6 +8,8 @@ from typing import Any
 
 ONLINE_SUMMARY_VIEW = "online.summary.view"
 ONLINE_RAW_VIEW = "online.raw.view"
+ONLINE_RAW_EDIT = "online.raw.edit"
+ONLINE_RAW_ROW_MANAGE = "online.raw.row_manage"
 VISIT_SUMMARY_VIEW = "visit.summary.view"
 PERSONNEL_BASIC_VIEW = "personnel.basic.view"
 PERSONNEL_SENSITIVE_VIEW = "personnel.sensitive.view"
@@ -30,6 +32,8 @@ OPS_MANAGE = "ops.manage"
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
     (ONLINE_RAW_VIEW, "数据查看", "查询在线原始及归档数据"),
+    (ONLINE_RAW_EDIT, "数据业务", "修改腾讯在线表格中的现有数据"),
+    (ONLINE_RAW_ROW_MANAGE, "数据业务", "新增或删除腾讯在线表格原始行"),
     (VISIT_SUMMARY_VIEW, "数据查看", "查看走访概览和汇总"),
     (PERSONNEL_BASIC_VIEW, "基础资料", "查看人员基础信息"),
     (PERSONNEL_SENSITIVE_VIEW, "基础资料", "查看人员敏感资料和出勤原因"),
@@ -62,7 +66,13 @@ COMMON_VIEW_PERMISSIONS = {
     PREFERENCES_MANAGE,
 }
 
+FLOW_POST_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {ONLINE_RAW_EDIT}
+
+GLOBAL_VIEW_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {ONLINE_RAW_EDIT}
+
 INTERNAL_BUSINESS_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
+    ONLINE_RAW_EDIT,
+    ONLINE_RAW_ROW_MANAGE,
     PERSONNEL_SENSITIVE_VIEW,
     SYNC_TRIGGER,
     REPORT_CONFIG_MANAGE,
@@ -76,14 +86,14 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "name": "流口岗",
         "description": "组长、组员和自购房岗位的默认权限",
         "data_scope": "own_department",
-        "permissions": COMMON_VIEW_PERMISSIONS,
+        "permissions": FLOW_POST_PERMISSIONS,
         "sort_order": 10,
     },
     "global_viewer": {
         "name": "全局查看组",
         "description": "片长默认权限，可查看全所业务数据",
         "data_scope": "all",
-        "permissions": COMMON_VIEW_PERMISSIONS,
+        "permissions": GLOBAL_VIEW_PERMISSIONS,
         "sort_order": 20,
     },
     "internal_business": {

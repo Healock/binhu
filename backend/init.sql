@@ -26,7 +26,8 @@ INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('visit_summary_positions', '["组长", "组员"]'),
     ('weekend_duty_positions', '["组长", "组员"]'),
     ('session_idle_minutes', '30'),
-    ('permission_enforcement_enabled', '0');
+    ('permission_enforcement_enabled', '0'),
+    ('online_writeback_enabled', '0');
 CREATE TABLE IF NOT EXISTS _grid_members (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,
@@ -231,8 +232,27 @@ CREATE TABLE IF NOT EXISTS _communities (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     name            VARCHAR(200) NOT NULL UNIQUE,
     police_officers JSON DEFAULT NULL,
+    area_id         INT DEFAULT NULL,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _areas (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(100) NOT NULL UNIQUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+               ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _area_leader_links (
+    area_id   INT NOT NULL,
+    member_id INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (area_id, member_id),
+    INDEX idx_area_leader_member (member_id, area_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO _areas (name) VALUES ('东片'), ('中片'), ('西片');
 
 CREATE TABLE IF NOT EXISTS _community_aliases (
     id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -245,6 +265,68 @@ CREATE TABLE IF NOT EXISTS _community_aliases (
         FOREIGN KEY (community_id)
         REFERENCES _communities(id)
         ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _online_source_rows (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    spreadsheet_id INT NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    sheet_id VARCHAR(100) NOT NULL,
+    physical_row INT NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    row_hash CHAR(64) NOT NULL,
+    values_json JSON NOT NULL,
+    cell_meta_json JSON NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_online_source_position (spreadsheet_id, sheet_id, physical_row),
+    INDEX idx_online_source_business (parser_type, row_key, spreadsheet_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _online_source_projection (
+    parser_type VARCHAR(50) NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    values_json JSON NOT NULL,
+    community VARCHAR(200) NOT NULL DEFAULT '',
+    source_count INT NOT NULL DEFAULT 1,
+    conflict TINYINT(1) NOT NULL DEFAULT 0,
+    search_text MEDIUMTEXT NOT NULL,
+    pending_state VARCHAR(20) NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+               ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (parser_type, row_key),
+    INDEX idx_source_projection_community (parser_type, community),
+    INDEX idx_source_projection_pending (parser_type, pending_state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _online_source_cache_state (
+    spreadsheet_id INT NOT NULL PRIMARY KEY,
+    parser_type VARCHAR(50) NOT NULL,
+    row_count INT NOT NULL DEFAULT 0,
+    refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_source_cache_parser (parser_type, refreshed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _online_writeback_audit (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    username VARCHAR(50) NOT NULL DEFAULT '',
+    action VARCHAR(20) NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    spreadsheet_id INT NOT NULL,
+    sheet_id VARCHAR(100) NOT NULL,
+    physical_row INT DEFAULT NULL,
+    column_name VARCHAR(200) DEFAULT NULL,
+    row_key_before CHAR(32) DEFAULT NULL,
+    row_key_after CHAR(32) DEFAULT NULL,
+    before_values JSON DEFAULT NULL,
+    after_values JSON DEFAULT NULL,
+    sync_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    synced_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_writeback_audit_time (created_at),
+    INDEX idx_writeback_audit_pending (spreadsheet_id, sync_status, created_at),
+    INDEX idx_writeback_audit_user (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _departments (

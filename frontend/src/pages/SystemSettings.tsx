@@ -85,12 +85,18 @@ export default function SystemSettings() {
   const [idleMinutes, setIdleMinutes] = useState(30)
   const [savingIdle, setSavingIdle] = useState(false)
   const [idleMsg, setIdleMsg] = useState('')
+  const [onlineWritebackEnabled, setOnlineWritebackEnabled] = useState(false)
+  const [savingWriteback, setSavingWriteback] = useState(false)
+  const [writebackMsg, setWritebackMsg] = useState('')
 
   useEffect(() => {
     Promise.all([getSystemConfig(), getSyncSchedule()])
       .then(([config, currentSchedule]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
         setIdleMinutes(Number(config.session_idle_minutes || 30))
+        setOnlineWritebackEnabled(
+          String(config.online_writeback_enabled || '0') === '1',
+        )
         const configuredVisitPositions = parseSummaryPositions(
           config.visit_summary_positions,
         ).filter(position => position !== '自购房')
@@ -206,6 +212,25 @@ export default function SystemSettings() {
     }
   }
 
+  const handleSaveWriteback = async () => {
+    setSavingWriteback(true)
+    setWritebackMsg('')
+    try {
+      await updateSystemConfig({
+        online_writeback_enabled: onlineWritebackEnabled ? '1' : '0',
+      })
+      setWritebackMsg(
+        onlineWritebackEnabled
+          ? '在线回写已启用'
+          : '在线回写已暂停，数据查询仍可正常使用',
+      )
+    } catch (error: any) {
+      setWritebackMsg(error?.response?.data?.detail || '保存失败')
+    } finally {
+      setSavingWriteback(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Panel
@@ -294,6 +319,52 @@ export default function SystemSettings() {
               type={scheduleMsg.includes('失败') ? 'error' : 'success'}
               showIcon
               message={scheduleMsg}
+            />
+          )}
+        </div>
+      </Panel>
+
+      <Panel
+        title="腾讯文档在线回写"
+        description="控制在线数据查询页是否允许把修改、新增和删除直接写回腾讯表格"
+      >
+        <div className="flex flex-col gap-4">
+          <Alert
+            type="warning"
+            showIcon
+            message="关闭开关不会影响查询和正常同步"
+            description="开启后，符合岗位和社区范围的账号才能编辑；修改结果要等下一次正常同步后才进入业务库、日报和汇总。"
+          />
+          <div className="flex min-h-11 items-center justify-between gap-4 rounded-lg border border-[var(--app-border)] px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-[var(--app-text-strong)]">
+                允许平台回写腾讯文档
+              </div>
+              <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
+                发生异常时可立即关闭，已经登录的账号下一次写操作会立即受限。
+              </div>
+            </div>
+            <Switch
+              checked={onlineWritebackEnabled}
+              onChange={setOnlineWritebackEnabled}
+              loading={loading}
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              loading={savingWriteback}
+              disabled={loading}
+              onClick={handleSaveWriteback}
+            >
+              保存在线回写设置
+            </Button>
+          </div>
+          {writebackMsg && (
+            <Alert
+              type={writebackMsg.includes('已') ? 'success' : 'error'}
+              showIcon
+              message={writebackMsg}
             />
           )}
         </div>

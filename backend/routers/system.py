@@ -46,6 +46,11 @@ async def update_config(
                     raise HTTPException(400, "空闲超时时间必须在 5 分钟至 24 小时之间")
             if k == "permission_enforcement_enabled":
                 raise HTTPException(400, "权限启用状态只能通过迁移工具修改")
+            if k == "online_writeback_enabled":
+                normalized = str(v).strip().lower()
+                if normalized not in {"0", "1", "true", "false"}:
+                    raise HTTPException(400, "在线回写开关必须是开启或关闭")
+                v = "1" if normalized in {"1", "true"} else "0"
             if k in POSITION_CONFIG_KEYS:
                 try:
                     v = (

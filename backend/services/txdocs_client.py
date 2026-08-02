@@ -25,6 +25,16 @@ MAX_CELLS_PER_PAGE = 10000
 MAX_ROWS_PER_PAGE = 1000
 
 
+def column_letter(index: int) -> str:
+    """把从 0 开始的列号转换为 Excel 列字母。"""
+    value = index + 1
+    result = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
 class TxDocsClient:
     """腾讯文档 API 客户端"""
 
@@ -111,41 +121,116 @@ class TxDocsClient:
         if column_names is None:
             column_names = COLUMNS
 
+        rows = await self.read_all_source_rows(
+            file_id,
+            sheet_id,
+            header_row,
+            column_names,
+        )
+        return [row["values"] for row in rows]
+
+    async def read_all_source_rows(
+        self,
+        file_id: str,
+        sheet_id: str,
+        header_row: int = 1,
+        column_names: list[str] | None = None,
+    ) -> list[dict]:
+        """读取非空数据行，并保留腾讯表中的一基物理行号和单元格类型。"""
+        if column_names is None:
+            column_names = COLUMNS
         col_count = len(column_names)
         rows_per_page = min(
             MAX_ROWS_PER_PAGE,
-            MAX_CELLS_PER_PAGE // col_count,
+            max(1, MAX_CELLS_PER_PAGE // col_count),
         )
-
-        # 列字母映射
-        col_start = "A"
-        if col_count <= 26:
-            col_end = chr(ord("A") + col_count - 1)
-        else:
-            col_end = chr(ord("A") + (col_count - 1) // 26 - 1) + chr(ord("A") + (col_count - 1) % 26)
-
-        all_data = []
-        data_start_row = header_row + 1
-        current_row = data_start_row
+        col_end = column_letter(col_count - 1)
+        current_row = header_row + 1
+        result_rows: list[dict] = []
 
         while True:
             end_row = current_row + rows_per_page - 1
-            range_str = f"{col_start}{current_row}:{col_end}{end_row}"
-
-            result = await self.read_range(file_id, sheet_id, range_str)
-            rows = self._extract_rows(result, column_names)
-
-            if not rows:
+            response = await self.read_range(
+                file_id,
+                sheet_id,
+                f"A{current_row}:{col_end}{end_row}",
+            )
+            raw_rows = self._raw_rows(response)
+            raw_count = len(raw_rows)
+            if raw_count == 0:
                 break
 
-            all_data.extend(rows)
+            for offset, raw_row in enumerate(raw_rows):
+                values, metadata = self._decode_row(raw_row, column_names)
+                if not any(values.values()):
+                    continue
+                result_rows.append({
+                    "physical_row": current_row + offset,
+                    "values": values,
+                    "cell_meta": metadata,
+                })
 
-            if len(rows) < rows_per_page:
+            # 终止条件必须使用 API 原始行数，不能使用过滤空白行后的数量。
+            if raw_count < rows_per_page:
                 break
-
             current_row = end_row + 1
 
-        return all_data
+        return result_rows
+
+    @staticmethod
+    def _raw_rows(response: dict) -> list:
+        raw_rows = (response.get("gridData") or {}).get("rows", [])
+        if not raw_rows:
+            raw_rows = response.get("data", [])
+        return raw_rows if isinstance(raw_rows, list) else []
+
+    @staticmethod
+    def _decode_cell(cell) -> tuple[str, dict]:
+        cv = cell.get("cellValue") if isinstance(cell, dict) else None
+        if cv is None:
+            return "", {"type": "text"}
+        if not isinstance(cv, dict):
+            return (str(cv) if cv else ""), {"type": "text"}
+        if "text" in cv:
+            return (str(cv.get("text") or ""), {"type": "text"})
+        if "number" in cv:
+            number = cv.get("number")
+            return ("" if number is None else str(number), {"type": "number"})
+        if "select" in cv:
+            select = cv.get("select") or {}
+            selected = select.get("value") or []
+            options = select.get("options") or []
+            by_id = {str(option.get("id")): str(option.get("text") or "") for option in options}
+            texts = [by_id.get(str(value), str(value)) for value in selected]
+            multiple = bool(select.get("multiple"))
+            value = ",".join(texts) if multiple else (texts[0] if texts else "")
+            return value, {
+                "type": "select",
+                "multiple": multiple,
+                "options": options,
+            }
+        return "", {"type": "text"}
+
+    def _decode_row(
+        self,
+        raw_row,
+        column_names: list[str],
+    ) -> tuple[dict[str, str], dict[str, dict]]:
+        cells = raw_row.get("values", []) if isinstance(raw_row, dict) else raw_row
+        if not isinstance(cells, list):
+            cells = []
+        values: dict[str, str] = {}
+        metadata: dict[str, dict] = {}
+        for index, column in enumerate(column_names):
+            cell = cells[index] if index < len(cells) else None
+            if isinstance(raw_row, list):
+                value = "" if cell is None else str(cell)
+                meta = {"type": "text"}
+            else:
+                value, meta = self._decode_cell(cell)
+            values[column] = value.strip()
+            metadata[column] = meta
+        return values, metadata
 
     def _extract_rows(self, response: dict, column_names: list[str] | None = None) -> list[dict]:
         """从 API 响应中提取数据行，映射为字典
@@ -157,13 +242,7 @@ class TxDocsClient:
         if column_names is None:
             column_names = COLUMNS
 
-        # v3 格式
-        grid_data = response.get("gridData", {})
-        raw_rows = grid_data.get("rows", [])
-
-        # 旧格式兼容
-        if not raw_rows:
-            raw_rows = response.get("data", [])
+        raw_rows = self._raw_rows(response)
         if not raw_rows:
             return []
 
@@ -230,6 +309,28 @@ class TxDocsClient:
 
         return result
 
+    async def read_source_row(
+        self,
+        file_id: str,
+        sheet_id: str,
+        physical_row: int,
+        column_names: list[str],
+    ) -> dict:
+        col_end = column_letter(len(column_names) - 1)
+        response = await self.read_range(
+            file_id,
+            sheet_id,
+            f"A{physical_row}:{col_end}{physical_row}",
+        )
+        raw_rows = self._raw_rows(response)
+        raw_row = raw_rows[0] if raw_rows else []
+        values, metadata = self._decode_row(raw_row, column_names)
+        return {
+            "physical_row": physical_row,
+            "values": values,
+            "cell_meta": metadata,
+        }
+
     async def batch_update(
         self,
         file_id: str,
@@ -281,6 +382,77 @@ class TxDocsClient:
                     "startColumn": start_col,
                     "rows": rows,
                 },
+            }
+        }
+
+    def build_update_cell_request(
+        self,
+        sheet_id: str,
+        physical_row: int,
+        column_index: int,
+        value: str,
+        metadata: dict | None = None,
+    ) -> dict:
+        """按原单元格类型构建单格更新，物理行号为一基。"""
+        metadata = metadata or {"type": "text"}
+        cell_type = metadata.get("type")
+        cell_value: dict
+        if cell_type == "number" and str(value).strip():
+            try:
+                number = float(str(value).strip())
+            except ValueError as exc:
+                raise ValueError("该单元格必须填写数字") from exc
+            cell_value = {"number": number}
+        elif cell_type == "select":
+            options = metadata.get("options") or []
+            by_text = {str(option.get("text") or ""): option for option in options}
+            requested = (
+                [part.strip() for part in str(value).split(",") if part.strip()]
+                if metadata.get("multiple")
+                else ([str(value).strip()] if str(value).strip() else [])
+            )
+            missing = [item for item in requested if item not in by_text]
+            if missing:
+                raise ValueError(f"无效的下拉选项: {', '.join(missing)}")
+            cell_value = {
+                "select": {
+                    "value": [by_text[item].get("id") for item in requested],
+                    "options": options,
+                    "multiple": bool(metadata.get("multiple")),
+                }
+            }
+        else:
+            cell_value = {"text": str(value)}
+        return {
+            "updateRangeRequest": {
+                "sheetId": sheet_id,
+                "gridData": {
+                    "startRow": physical_row - 1,
+                    "startColumn": column_index,
+                    "rows": [{"values": [{"cellValue": cell_value}]}],
+                },
+            }
+        }
+
+    @staticmethod
+    def build_insert_row_request(sheet_id: str, physical_row: int) -> dict:
+        return {
+            "insertDimensionRequest": {
+                "sheetId": sheet_id,
+                "dimension": "ROWS",
+                "startIndex": physical_row - 1,
+                "endIndex": physical_row,
+            }
+        }
+
+    @staticmethod
+    def build_delete_row_request(sheet_id: str, physical_row: int) -> dict:
+        return {
+            "deleteDimensionRequest": {
+                "sheetId": sheet_id,
+                "dimension": "ROWS",
+                "startIndex": physical_row - 1,
+                "endIndex": physical_row,
             }
         }
 

@@ -7,6 +7,14 @@ from services.txdocs_client import TxDocsClient
 from services.parsers import get_parser
 from services.business_time import get_business_date
 from services.schema_compat import get_database_column_map, quote_identifier
+from services.online_source import (
+    acquire_sheet_lock,
+    cleanup_expired_writeback_audit,
+    mark_writebacks_synced,
+    rebuild_projection,
+    release_sheet_lock,
+    replace_source_cache,
+)
 
 
 def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int]:
@@ -196,6 +204,9 @@ class SyncEngine:
                     finally:
                         await self._advance_step(conn, task_id)
 
+            async with conn.cursor() as cur:
+                await cleanup_expired_writeback_audit(cur)
+
             if errors:
                 await self._complete_with_errors(conn, task_id, total, "\n".join(errors))
             else:
@@ -235,15 +246,33 @@ class SyncEngine:
         ]
 
     async def _sync_one(self, conn, client, sp: dict) -> tuple[int, str | None]:
+        async with conn.cursor() as cur:
+            locked = await acquire_sheet_lock(cur, sp["id"], timeout=5)
+        if not locked:
+            raise RuntimeError("该腾讯表格正在被平台编辑，请稍后重新同步")
+        try:
+            return await self._sync_one_locked(conn, client, sp)
+        finally:
+            async with conn.cursor() as cur:
+                await release_sheet_lock(cur, sp["id"])
+
+    async def _sync_one_locked(
+        self,
+        conn,
+        client,
+        sp: dict,
+    ) -> tuple[int, str | None]:
         """同步单个表格：增量比对 + 归档"""
         parser = get_parser(sp["parser_type"])
         table = parser.table_name
         cols = parser.COLUMNS
 
         # 1. 从腾讯文档读取
-        raw_rows = await client.read_all_data(
+        source_rows = await client.read_all_source_rows(
             sp["file_id"], sp["data_sheet_id"], sp["header_row"], cols
         )
+        await replace_source_cache(conn, sp, source_rows)
+        raw_rows = [source["values"] for source in source_rows]
 
         # 2. 解析 + 生成业务主键。业务明确允许时可合并同一对象的重复行。
         online, duplicate_count = deduplicate_rows(parser, raw_rows)
@@ -326,6 +355,10 @@ class SyncEngine:
                     parser,
                     archive_column_map,
                 )
+
+        async with conn.cursor() as cur:
+            await mark_writebacks_synced(cur, sp["id"])
+            await rebuild_projection(cur, sp["parser_type"])
 
         return len(online), report_date
 
