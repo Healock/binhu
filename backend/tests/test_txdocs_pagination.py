@@ -29,6 +29,7 @@ def make_response(row_count: int, column_count: int) -> dict:
 class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
     async def test_nine_column_table_is_limited_to_one_thousand_rows(self):
         client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=2001)
         client.read_range = AsyncMock(
             side_effect=[
                 make_response(1000, 9),
@@ -55,6 +56,7 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wide_table_still_obeys_cell_limit(self):
         client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=10000)
         client.read_range = AsyncMock(return_value=make_response(0, 14))
         columns = [f"column-{index}" for index in range(14)]
 
@@ -76,6 +78,7 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         first_page = make_response(1000, 2)
         first_page["gridData"]["rows"][0] = {"values": []}
         client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=2001)
         client.read_range = AsyncMock(side_effect=[
             first_page,
             make_response(1, 2),
@@ -101,6 +104,7 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_repeated_header_inside_data_range_is_skipped(self):
         client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=1000)
         response = make_response(2, 3)
         response["gridData"]["rows"][0] = {
             "values": [
@@ -128,6 +132,7 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_detected_header_can_be_retained_for_append_position(self):
         client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=1000)
         response = {
             "gridData": {
                 "rows": [{
@@ -149,6 +154,32 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["is_header"])
         self.assertEqual(rows[0]["physical_row"], 2)
+
+    async def test_sheet_row_total_uses_v3_properties_list(self):
+        client = TxDocsClient("client", "token", "user")
+        client.get_file_info = AsyncMock(return_value={
+            "properties": [
+                {"sheetId": "first", "rowTotal": 20},
+                {"sheetId": "target", "rowCount": 0, "rowTotal": 192},
+            ]
+        })
+
+        total = await client.get_sheet_row_total("file", "target")
+
+        self.assertEqual(total, 192)
+        client.get_file_info.assert_awaited_once_with("file")
+
+    async def test_read_range_is_clamped_to_existing_sheet_rows(self):
+        client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=12)
+        client.read_range = AsyncMock(return_value=make_response(11, 3))
+
+        rows = await client.read_all_source_rows(
+            "file", "sheet", 1, ["核查人", "姓名", "社区"]
+        )
+
+        self.assertEqual(len(rows), 11)
+        client.read_range.assert_awaited_once_with("file", "sheet", "A2:C12")
 
     def test_numeric_month_day_keeps_trailing_zero(self):
         client = TxDocsClient("client", "token", "user")
