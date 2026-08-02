@@ -223,6 +223,36 @@ html[data-theme='dark'] ::selection {
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+.query-spreadsheet-card--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex !important;
+  height: 100vh;
+  height: 100dvh;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+  background: var(--app-surface);
+}
+
+.query-spreadsheet-card--fullscreen .ant-spin-nested-loading,
+.query-spreadsheet-card--fullscreen .ant-spin-container {
+  min-height: 0;
+  flex: 1;
+}
+
+.query-spreadsheet-card--fullscreen .ant-spin-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.query-spreadsheet-card--fullscreen .query-spreadsheet {
+  min-height: 0;
+  height: auto;
+  flex: 1;
+}
+
 .app-card--padded {
   padding: 20px;
 }
@@ -315,6 +345,11 @@ html[data-theme='dark'] ::selection {
   align-items: center;
   gap: 12px;
   padding: 16px 20px;
+}
+
+.query-filter-toolbar {
+  gap: 10px;
+  padding: 12px 16px;
 }
 
 .dashboard-report-toolbar {
