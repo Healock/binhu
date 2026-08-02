@@ -568,7 +568,11 @@ export default function DataQuery() {
             </Button>
           </div>
         </div>
-        <Spin spinning={loading} tip="正在加载在线工作表">
+        <Spin
+          spinning={loading}
+          tip="正在加载在线工作表"
+          className="query-spreadsheet-loading"
+        >
           {columns.length > 0 ? (
             <QuerySpreadsheet
               businessType={selectedType}
@@ -579,6 +583,7 @@ export default function DataQuery() {
               drafts={draftRows}
               canAdd={canAdd}
               revision={sheetRevision}
+              layoutRevision={sheetFullscreen ? 1 : 0}
               filterCriteria={sheetFilterCriteria}
               onDraftsChange={setDraftRows}
               onFilterCriteriaChange={criteria => {

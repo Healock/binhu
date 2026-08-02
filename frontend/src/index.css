@@ -236,28 +236,31 @@ html[data-theme='dark'] ::selection {
   background: var(--app-surface);
 }
 
-.query-spreadsheet-card:fullscreen .ant-spin-nested-loading,
-.query-spreadsheet-card--fullscreen .ant-spin-nested-loading {
+.query-spreadsheet-card:fullscreen > .query-spreadsheet-loading,
+.query-spreadsheet-card--fullscreen > .query-spreadsheet-loading {
   display: flex;
   min-height: 0;
-  flex: 1;
+  width: 100%;
+  flex: 1 1 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
-.query-spreadsheet-card:fullscreen .ant-spin-container,
-.query-spreadsheet-card--fullscreen .ant-spin-container {
-  min-height: 0;
-  height: 100%;
-  flex: 1;
+.query-spreadsheet-card:fullscreen > .query-spreadsheet-loading > .ant-spin-container,
+.query-spreadsheet-card--fullscreen > .query-spreadsheet-loading > .ant-spin-container {
   display: flex;
+  min-height: 0;
+  width: 100%;
+  flex: 1 1 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .query-spreadsheet-card:fullscreen .query-spreadsheet,
 .query-spreadsheet-card--fullscreen .query-spreadsheet {
   min-height: 0;
-  height: auto;
-  flex: 1;
+  height: 100%;
+  flex: 1 1 0;
 }
 
 .app-card--padded {
