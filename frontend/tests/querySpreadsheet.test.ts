@@ -7,12 +7,22 @@ import {
   canEditQuerySheetCell,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
+  QUERY_SHEET_FEATURE_CONFIG,
+  querySheetPalette,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
 
 const columns = ['社区', '核查人', '姓名']
+
+test('查询工作表关闭长数字文本误报并提供深浅色配色', () => {
+  assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringAlert, true)
+  assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringMark, true)
+  assert.equal(querySheetPalette(false).background, '#ffffff')
+  assert.equal(querySheetPalette(true).background, '#0f172a')
+  assert.notEqual(querySheetPalette(false).editable, querySheetPalette(true).editable)
+})
 
 test('使用 Univer 运行时实际提供的细边框枚举', () => {
   assert.equal(

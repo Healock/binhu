@@ -20,6 +20,43 @@ export interface QuerySheetCellChange {
   after: string
 }
 
+export const QUERY_SHEET_FEATURE_CONFIG = {
+  disableForceStringAlert: true,
+  disableForceStringMark: true,
+}
+
+export interface QuerySheetPalette {
+  background: string
+  border: string
+  conflict: string
+  editable: string
+  header: string
+  pending: string
+  text: string
+}
+
+export function querySheetPalette(darkMode: boolean): QuerySheetPalette {
+  return darkMode
+    ? {
+        background: '#0f172a',
+        border: '#334155',
+        conflict: '#3f1d25',
+        editable: '#142a44',
+        header: '#1e293b',
+        pending: '#3a2f13',
+        text: '#e5edf7',
+      }
+    : {
+        background: '#ffffff',
+        border: '#d8dee9',
+        conflict: '#fff1f0',
+        editable: '#f0f7ff',
+        header: '#e8eef8',
+        pending: '#fffbe6',
+        text: '#172033',
+      }
+}
+
 interface UniverBorderEnums {
   BorderStyleTypes?: {
     THIN?: unknown

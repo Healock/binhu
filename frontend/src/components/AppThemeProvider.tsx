@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -16,6 +18,12 @@ import {
   THEME_MEDIA_QUERY,
   THEME_STORAGE_KEY,
 } from '../utils/themeMode'
+
+const AppThemeModeContext = createContext<'light' | 'dark'>('light')
+
+export function useAppThemeMode() {
+  return useContext(AppThemeModeContext)
+}
 
 const lightTheme: ThemeConfig = {
   algorithm: antdTheme.defaultAlgorithm,
@@ -149,8 +157,10 @@ export default function AppThemeProvider({
   )
 
   return (
-    <ConfigProvider locale={zhCN} theme={themeConfig}>
-      {children}
-    </ConfigProvider>
+    <AppThemeModeContext.Provider value={resolvedMode}>
+      <ConfigProvider locale={zhCN} theme={themeConfig}>
+        {children}
+      </ConfigProvider>
+    </AppThemeModeContext.Provider>
   )
 }

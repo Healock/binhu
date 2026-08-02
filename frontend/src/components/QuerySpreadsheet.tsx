@@ -27,6 +27,7 @@ import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
 
 import type { QueryColumnMeta, QueryDataRow } from '../api/client'
+import { useAppThemeMode } from './AppThemeProvider'
 import type { QueryDisplayRow } from '../utils/queryGrid'
 import {
   applyQuerySheetValues,
@@ -34,6 +35,8 @@ import {
   canEditQuerySheetCell,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
+  QUERY_SHEET_FEATURE_CONFIG,
+  querySheetPalette,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
@@ -124,6 +127,9 @@ export function QuerySpreadsheet({
   onSavingChange,
 }: QuerySpreadsheetProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const themeMode = useAppThemeMode()
+  const themeModeRef = useRef(themeMode)
+  const applyAppearanceRef = useRef<((darkMode: boolean) => void) | null>(null)
   const callbacksRef = useRef({
     onDraftsChange,
     onSelectionChange,
@@ -139,6 +145,7 @@ export function QuerySpreadsheet({
     onBlocked,
     onSavingChange,
   }
+  themeModeRef.current = themeMode
 
   useEffect(() => {
     const container = containerRef.current
@@ -165,6 +172,7 @@ export function QuerySpreadsheet({
         footer: false,
         formulaBar: true,
         contextMenu: false,
+        sheets: QUERY_SHEET_FEATURE_CONFIG,
       }),
       UniverSheetsDataValidationPreset({
         showEditOnDropdown: false,
@@ -200,33 +208,42 @@ export function QuerySpreadsheet({
     const allRange = worksheet.getRange(0, 0, initialValues.length, columns.length)
     allRange.setWrap(true)
     const thinBorderStyle = resolveQuerySheetThinBorderStyle(univerAPI.Enum)
-    if (thinBorderStyle !== null) {
-      allRange.setBorder(
-        univerAPI.Enum.BorderType.ALL,
-        thinBorderStyle,
-        '#d8dee9',
-      )
-    }
     const headerRange = worksheet.getRange(0, 0, 1, columns.length)
-    headerRange.setBackgroundColor('#e8eef8')
     headerRange.setFontWeight('bold')
-    headerRange.setFontColor('#172033')
 
-    sheetRows.forEach((descriptor, rowIndex) => {
-      const worksheetRow = rowIndex + 1
-      if (descriptor.kind === 'data') {
-        if (descriptor.data.__conflict) {
-          worksheet.getRange(worksheetRow, 0, 1, columns.length).setBackgroundColor('#fff1f0')
-        } else if (descriptor.data.__pending) {
-          worksheet.getRange(worksheetRow, 0, 1, columns.length).setBackgroundColor('#fffbe6')
-        }
+    const applyAppearance = (darkMode: boolean) => {
+      const palette = querySheetPalette(darkMode)
+      univerAPI.toggleDarkMode(darkMode)
+      allRange.setBackgroundColor(palette.background)
+      allRange.setFontColor(palette.text)
+      if (thinBorderStyle !== null) {
+        allRange.setBorder(
+          univerAPI.Enum.BorderType.ALL,
+          thinBorderStyle,
+          palette.border,
+        )
       }
-      columns.forEach((column, columnIndex) => {
-        if (canEditQuerySheetCell(source, descriptor, column, canAdd)) {
-          worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor('#f0f7ff')
+      headerRange.setBackgroundColor(palette.header)
+      headerRange.setFontColor(palette.text)
+
+      sheetRows.forEach((descriptor, rowIndex) => {
+        const worksheetRow = rowIndex + 1
+        if (descriptor.kind === 'data') {
+          if (descriptor.data.__conflict) {
+            worksheet.getRange(worksheetRow, 0, 1, columns.length).setBackgroundColor(palette.conflict)
+          } else if (descriptor.data.__pending) {
+            worksheet.getRange(worksheetRow, 0, 1, columns.length).setBackgroundColor(palette.pending)
+          }
         }
+        columns.forEach((column, columnIndex) => {
+          if (canEditQuerySheetCell(source, descriptor, column, canAdd)) {
+            worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.editable)
+          }
+        })
       })
-    })
+    }
+    applyAppearanceRef.current = applyAppearance
+    applyAppearance(themeModeRef.current === 'dark')
 
     const metaByColumn = Object.fromEntries(columnMeta.map(meta => [meta.field, meta]))
     columns.forEach((column, columnIndex) => {
@@ -416,12 +433,17 @@ export function QuerySpreadsheet({
       disposed = true
       if (reconcileTimer) clearTimeout(reconcileTimer)
       disposables.forEach(disposable => disposable.dispose())
+      if (applyAppearanceRef.current === applyAppearance) applyAppearanceRef.current = null
       univer.dispose()
       container.replaceChildren()
     }
   // `revision` is the explicit rebuild boundary. Draft edits update the parent state,
   // but must not destroy and recreate the workbook while the user is typing.
   }, [businessType, canAdd, columnMeta, columns, revision, source])
+
+  useEffect(() => {
+    applyAppearanceRef.current?.(themeMode === 'dark')
+  }, [themeMode])
 
   return <div ref={containerRef} className="query-spreadsheet" aria-label={`${businessType}在线工作表`} />
 }
