@@ -8,11 +8,13 @@ import {
   createQueryDraftRow,
   ensureTrailingQueryDraft,
   isQueryDraftTouched,
+  loadCompleteQueryResult,
   missingQueryDraftFields,
   normalizeQueryResponse,
   saveChangedSourceFields,
   updateQueryDraftValue,
 } from '../src/utils/queryGrid.ts'
+import type { QueryResponse } from '../src/api/client.ts'
 
 const sourceRow = {
   id: 9,
@@ -46,6 +48,37 @@ test('查询响应缺省集合会被标准化', () => {
   assert.equal(result.page, 1)
   assert.equal(result.writeback_enabled, true)
   assert.deepEqual(result.required_fields, [])
+})
+
+test('电脑工作表分批读取后按页序合并为连续结果', async () => {
+  const requested: number[] = []
+  let active = 0
+  let maxActive = 0
+  const result = await loadCompleteQueryResult(async (page, pageSize) => {
+    requested.push(page)
+    active += 1
+    maxActive = Math.max(maxActive, active)
+    await new Promise(resolve => setTimeout(resolve, page === 2 ? 8 : 1))
+    active -= 1
+    return {
+      data: [{ __row_key: `row-${page}` }],
+      total: 450,
+      page,
+      page_size: pageSize,
+      columns: ['姓名'],
+      column_meta: [],
+      source_ready: true,
+      writeback_enabled: true,
+      can_add: false,
+      required_fields: [],
+      pending_count: 0,
+    } satisfies QueryResponse
+  }, 200, 2)
+
+  assert.deepEqual(requested, [1, 2, 3])
+  assert.equal(maxActive, 2)
+  assert.deepEqual(result.data.map(row => row.__row_key), ['row-1', 'row-2', 'row-3'])
+  assert.equal(result.total, 450)
 })
 
 test('行内新增始终保留一条尾部空行', () => {

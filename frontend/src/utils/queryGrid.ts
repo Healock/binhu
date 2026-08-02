@@ -16,6 +16,9 @@ export type QueryDisplayRow = QueryDataRow & {
   __draft_id?: string
 }
 
+export const QUERY_LOAD_PAGE_SIZE = 200
+export const QUERY_LOAD_CONCURRENCY = 4
+
 export function normalizeQueryResponse(value: QueryResponse): QueryResponse {
   return {
     ...value,
@@ -32,6 +35,37 @@ export function normalizeQueryResponse(value: QueryResponse): QueryResponse {
       ? value.required_fields.map(String)
       : [],
     pending_count: Number(value.pending_count || 0),
+  }
+}
+
+export async function loadCompleteQueryResult(
+  loadPage: (page: number, pageSize: number) => Promise<QueryResponse>,
+  pageSize = QUERY_LOAD_PAGE_SIZE,
+  concurrency = QUERY_LOAD_CONCURRENCY,
+): Promise<QueryResponse> {
+  const safePageSize = Math.max(1, Math.floor(pageSize))
+  const safeConcurrency = Math.max(1, Math.floor(concurrency))
+  const first = normalizeQueryResponse(await loadPage(1, safePageSize))
+  const pageCount = Math.ceil(first.total / safePageSize)
+  if (pageCount <= 1) return first
+
+  const pages: QueryResponse[] = [first]
+  for (let start = 2; start <= pageCount; start += safeConcurrency) {
+    const pageNumbers = Array.from(
+      { length: Math.min(safeConcurrency, pageCount - start + 1) },
+      (_, index) => start + index,
+    )
+    const batch = await Promise.all(
+      pageNumbers.map(page => loadPage(page, safePageSize).then(normalizeQueryResponse)),
+    )
+    pages.push(...batch)
+  }
+
+  return {
+    ...first,
+    data: pages.flatMap(result => result.data),
+    page: 1,
+    page_size: safePageSize,
   }
 }
 
