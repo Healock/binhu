@@ -1,5 +1,43 @@
 @import "tailwindcss";
 
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root) {
+  animation: app-view-fade-out 180ms ease-in both;
+}
+
+::view-transition-new(root) {
+  animation: app-view-fade-in 300ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+}
+
+@keyframes app-view-fade-out {
+  to {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes app-view-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.app-route-transition {
+  animation: app-view-fade-in 300ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root),
+  .app-route-transition {
+    animation: none !important;
+  }
+}
+
 :root {
   color: #172033;
   background: #f4f6f9;
