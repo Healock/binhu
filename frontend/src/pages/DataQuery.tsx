@@ -1,169 +1,498 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Alert, Button, Input, Segmented, Select, Tag, Tooltip } from 'antd'
-import type { TableColumnsType, TableProps } from 'antd'
-import { FilterOutlined, SearchOutlined } from '@ant-design/icons'
-import { getQueryTypes, queryData } from '../api/client'
-import AppTable from '../components/AppTable'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Alert,
+  Button,
+  Descriptions,
+  Drawer,
+  Empty,
+  Input,
+  List,
+  Modal,
+  Pagination,
+  Popconfirm,
+  Segmented,
+  Select,
+  Space,
+  Spin,
+  Tag,
+  message,
+} from 'antd'
+import {
+  DeleteOutlined,
+  DownOutlined,
+  EditOutlined,
+  HistoryOutlined,
+  PlusOutlined,
+  RightOutlined,
+  SearchOutlined,
+} from '@ant-design/icons'
+import {
+  AllCommunityModule,
+  ModuleRegistry,
+  themeQuartz,
+  type CellValueChangedEvent,
+  type ColDef,
+  type FilterChangedEvent,
+  type GridApi,
+  type SortChangedEvent,
+} from 'ag-grid-community'
+import { AgGridReact } from 'ag-grid-react'
+import {
+  createQuerySourceRow,
+  deleteQuerySourceRow,
+  getQuerySourceRows,
+  getQueryTypes,
+  getQueryWritebackAudit,
+  queryData,
+  updateQuerySourceCell,
+  type QueryColumnMeta,
+  type QueryDataRow,
+  type QuerySourceRow,
+  type QueryWritebackAudit,
+} from '../api/client'
+import { useAuth } from '../context/AuthContext'
 import { PageHeader } from '../components/ui'
+import {
+  buildQueryDisplayRows,
+  canEditQueryCell,
+  normalizeQueryResponse,
+  saveChangedSourceFields,
+  sourceToDisplay,
+  type QueryDisplayRow as DisplayRow,
+} from '../utils/queryGrid'
 
-type QueryRow = Record<string, string> & { __tableKey: string }
+ModuleRegistry.registerModules([AllCommunityModule])
 
-const EMPTY_FILTER_VALUE = '__binhu_empty_value__'
+const gridTheme = themeQuartz.withParams({
+  accentColor: '#2563eb',
+  backgroundColor: 'var(--app-surface)',
+  foregroundColor: 'var(--app-text)',
+  borderColor: 'var(--app-border)',
+  headerBackgroundColor: 'var(--app-surface-muted)',
+  oddRowBackgroundColor: 'var(--app-surface-muted)',
+  rowHoverColor: 'var(--app-primary-soft)',
+  fontFamily: 'inherit',
+  fontSize: 13,
+  spacing: 6,
+})
+
+function errorText(error: any, fallback: string): string {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail.message === 'string') return detail.message
+  return fallback
+}
+
+function errorStatus(error: any): number {
+  return Number(error?.response?.status || 0)
+}
 
 export default function DataQuery() {
+  const { user } = useAuth()
   const [types, setTypes] = useState<string[]>([])
   const [selectedType, setSelectedType] = useState('全链条')
   const [source, setSource] = useState<'online' | 'archive'>('online')
-  const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
-  const [data, setData] = useState<Record<string, string>[]>([])
+  const [keyword, setKeyword] = useState('')
+  const [rows, setRows] = useState<QueryDataRow[]>([])
   const [columns, setColumns] = useState<string[]>([])
+  const [columnMeta, setColumnMeta] = useState<QueryColumnMeta[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [pageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(50)
+  const [sortBy, setSortBy] = useState<string>()
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [gridFilters, setGridFilters] = useState<Record<string, unknown>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [scopeMessage, setScopeMessage] = useState('')
-  const [sortCol, setSortCol] = useState<string | null>(null)
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
-  const [filters, setFilters] = useState<Record<string, string[]>>({})
+  const [rowManageMessage, setRowManageMessage] = useState('')
+  const [sourceReady, setSourceReady] = useState(false)
+  const [writebackEnabled, setWritebackEnabled] = useState(false)
+  const [canAdd, setCanAdd] = useState(false)
+  const [pendingCount, setPendingCount] = useState(0)
+  const [expanded, setExpanded] = useState<Record<string, QuerySourceRow[]>>({})
+  const [expanding, setExpanding] = useState<string>()
+  const [addOpen, setAddOpen] = useState(false)
+  const [addValues, setAddValues] = useState<Record<string, string>>({})
+  const [adding, setAdding] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerLoading, setDrawerLoading] = useState(false)
+  const [drawerSources, setDrawerSources] = useState<QuerySourceRow[]>([])
+  const [drawerSourceId, setDrawerSourceId] = useState<number>()
+  const [drawerDraft, setDrawerDraft] = useState<Record<string, string>>({})
+  const [drawerSaving, setDrawerSaving] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
+  const [auditRows, setAuditRows] = useState<QueryWritebackAudit[]>([])
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [auditPage, setAuditPage] = useState(1)
+  const [auditTotal, setAuditTotal] = useState(0)
+  const gridApi = useRef<GridApi<DisplayRow> | null>(null)
+  const fetchSequence = useRef(0)
+  const [messageApi, messageContext] = message.useMessage()
 
-  useEffect(() => { getQueryTypes().then(setTypes).catch(() => {}) }, [])
+  const isSuperAdmin = user?.role === 'super_admin'
+    || user?.permission_groups?.some(group => group.code === 'super_admin')
 
-  // 有筛选值的列
-  const activeFilterCount = Object.values(filters).filter((v) => v.length > 0).length
+  useEffect(() => {
+    getQueryTypes()
+      .then(result => {
+        setTypes(result)
+        if (result.length && !result.includes(selectedType)) setSelectedType(result[0])
+      })
+      .catch(() => setError('业务类型加载失败'))
+  }, [])
 
   const fetchData = useCallback(async () => {
+    const sequence = ++fetchSequence.current
     setLoading(true)
     setError('')
     try {
-      const activeFilters: Record<string, string[]> = {}
-      for (const [k, v] of Object.entries(filters)) {
-        if (v.length > 0) activeFilters[k] = v
-      }
-      const result = await queryData({
-        type: selectedType, source, page, page_size: pageSize,
+      const result = normalizeQueryResponse(await queryData({
+        type: selectedType,
+        source,
+        page,
+        page_size: pageSize,
         keyword: keyword || undefined,
-        sort_by: sortCol || undefined, sort_order: sortDir,
-        filters: activeFilterCount > 0 ? activeFilters : undefined,
-      })
-      setData(result.data)
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        grid_filters: Object.keys(gridFilters).length ? gridFilters : undefined,
+      }))
+      if (sequence !== fetchSequence.current) return
+      setRows(result.data)
       setColumns(result.columns)
+      setColumnMeta(result.column_meta || [])
       setTotal(result.total)
       setScopeMessage(result.scope_message || '')
-    } catch (e) {
-      console.error('查询失败', e)
-      setError('查询失败，请检查网络后重试')
-      setData([])
+      setRowManageMessage(result.row_manage_message || '')
+      setSourceReady(Boolean(result.source_ready))
+      setWritebackEnabled(Boolean(result.writeback_enabled))
+      setCanAdd(Boolean(result.can_add))
+      setPendingCount(Number(result.pending_count || 0))
+      setExpanded({})
+    } catch (requestError) {
+      if (sequence !== fetchSequence.current) return
+      setError(errorText(requestError, '查询失败，请检查网络后重试'))
+      setRows([])
       setTotal(0)
+      setSourceReady(false)
+      setWritebackEnabled(false)
+      setCanAdd(false)
+      setPendingCount(0)
       setScopeMessage('')
+      setRowManageMessage('')
+    } finally {
+      if (sequence === fetchSequence.current) setLoading(false)
     }
-    finally { setLoading(false) }
-  }, [selectedType, source, page, pageSize, keyword, sortCol, sortDir, filters, activeFilterCount])
+  }, [selectedType, source, page, pageSize, keyword, sortBy, sortOrder, gridFilters])
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  // 每列唯一值（基于当前页数据，用于下拉选项）
-  const getUniqueValues = (col: string): string[] => {
-    const set = new Set<string>(filters[col] || [])
-    for (const row of data) set.add(row[col] ?? '')
-    return Array.from(set).sort((left, right) => left.localeCompare(right, 'zh-CN'))
-  }
+  const displayRows = useMemo<DisplayRow[]>(() => {
+    return buildQueryDisplayRows(rows, expanded)
+  }, [rows, expanded])
 
-  const resetTableState = () => {
-    setPage(1)
-    setSortCol(null)
-    setSortDir('desc')
-    setFilters({})
-  }
-
-  const handleTypeChange = (value: string) => {
-    setSelectedType(value)
-    resetTableState()
-  }
-
-  const handleSourceChange = (value: 'online' | 'archive') => {
-    setSource(value)
-    resetTableState()
-  }
-
-  const handleSearch = () => {
-    setKeyword(searchInput)
-    setPage(1)
-  }
-
-  const handleTableChange: NonNullable<TableProps<QueryRow>['onChange']> = (
-    pagination,
-    nextFilters,
-    sorter,
-  ) => {
-    setPage(pagination.current || 1)
-
-    const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter
-    if (activeSorter?.order) {
-      setSortCol(String(activeSorter.field || activeSorter.columnKey))
-      setSortDir(activeSorter.order === 'ascend' ? 'asc' : 'desc')
-    } else {
-      setSortCol(null)
-      setSortDir('desc')
+  const toggleSources = useCallback(async (row: QueryDataRow) => {
+    const rowKey = String(row.__row_key || '')
+    if (!rowKey) return
+    if (expanded[rowKey]) {
+      setExpanded(current => {
+        const next = { ...current }
+        delete next[rowKey]
+        return next
+      })
+      return
     }
+    setExpanding(rowKey)
+    try {
+      const sources = await getQuerySourceRows(selectedType, rowKey)
+      setExpanded(current => ({ ...current, [rowKey]: sources }))
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '原始行加载失败'))
+    } finally {
+      setExpanding(undefined)
+    }
+  }, [expanded, messageApi, selectedType])
 
-    const normalizedFilters: Record<string, string[]> = {}
-    for (const [column, values] of Object.entries(nextFilters)) {
-      if (!values?.length) continue
-      normalizedFilters[column] = values.map(value => (
-        String(value) === EMPTY_FILTER_VALUE ? '' : String(value)
+  const handleDelete = useCallback(async (row: DisplayRow) => {
+    const sourceId = Number(row.__source_id)
+    const revision = Number(row.__revision)
+    if (!sourceId || !revision) return
+    try {
+      const result = await deleteQuerySourceRow(selectedType, sourceId, revision)
+      messageApi.success(result.message)
+      setDrawerOpen(false)
+      await fetchData()
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '删除失败'))
+      if (errorStatus(requestError) === 409) await fetchData()
+    }
+  }, [fetchData, messageApi, selectedType])
+
+  const actionRenderer = useCallback((params: { data?: DisplayRow }) => {
+    const row = params.data
+    if (!row) return null
+    const duplicate = row.__kind === 'parent' && Number(row.__source_count || 0) > 1
+    const key = String(row.__row_key || '')
+    return (
+      <div className={`flex h-full items-center gap-1 ${row.__kind === 'source' ? 'pl-4' : ''}`}>
+        {duplicate && (
+          <Button
+            type="text"
+            size="small"
+            loading={expanding === key}
+            icon={expanded[key] ? <DownOutlined /> : <RightOutlined />}
+            onClick={() => toggleSources(row)}
+          >
+            {row.__source_count} 条原始行
+          </Button>
+        )}
+        {row.__kind === 'source' && <Tag color="default">第 {String(row.__physical_row)} 行</Tag>}
+        {row.__pending && <Tag color="gold">待同步</Tag>}
+        {row.__conflict && <Tag color="red">内容冲突</Tag>}
+        {row.__can_delete && (
+          <Popconfirm
+            title="确认删除腾讯原始行？"
+            description="该操作会真实删除在线表格中的整行，下一次同步后进入归档。"
+            okText="确认删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => handleDelete(row)}
+          >
+            <Button type="text" danger size="small" icon={<DeleteOutlined />} />
+          </Popconfirm>
+        )}
+      </div>
+    )
+  }, [expanded, expanding, handleDelete, toggleSources])
+
+  const metaByColumn = useMemo(
+    () => Object.fromEntries(columnMeta.map(meta => [meta.field, meta])),
+    [columnMeta],
+  )
+
+  const columnDefs = useMemo<ColDef<DisplayRow>[]>(() => [
+    {
+      headerName: '来源 / 状态',
+      colId: '__actions',
+      width: 190,
+      minWidth: 150,
+      pinned: 'left',
+      sortable: false,
+      filter: false,
+      editable: false,
+      cellRenderer: actionRenderer,
+    },
+    ...columns.map((column, index) => {
+      const meta = metaByColumn[column] || { type: 'text' }
+      const definition: ColDef<DisplayRow> = {
+        field: column,
+        headerName: column,
+        minWidth: 150,
+        width: 180,
+        pinned: index === 0 ? 'left' : undefined,
+        filter: meta.type === 'number' ? 'agNumberColumnFilter' : 'agTextColumnFilter',
+        filterParams: { debounceMs: 450, buttons: ['reset'] },
+        sortable: true,
+        resizable: true,
+        editable: params => canEditQueryCell(source, params.data, column),
+        cellClassRules: {
+          'binhu-grid-cell--editable': params => canEditQueryCell(
+            source,
+            params.data,
+            column,
+          ),
+        },
+        tooltipValueGetter: params => String(params.value || ''),
+      }
+      if (meta.type === 'select') {
+        definition.cellEditor = 'agSelectCellEditor'
+        definition.cellEditorParams = {
+          values: (meta.options || []).map(option => option.text),
+        }
+      } else if (meta.type === 'number') {
+        definition.cellEditor = 'agNumberCellEditor'
+      } else if (['地址', '现住址', '核查结果', '核查反馈', '二次反馈', '二次核查结果', '实际情况'].includes(column)) {
+        definition.flex = 1
+        definition.minWidth = 220
+      }
+      return definition
+    }),
+  ], [actionRenderer, columns, metaByColumn, source])
+
+  const handleCellChange = useCallback(async (event: CellValueChangedEvent<DisplayRow>) => {
+    const row = event.data
+    const column = event.colDef.field
+    if (!row || !column || event.newValue === event.oldValue) return
+    const sourceId = Number(row.__source_id)
+    const revision = Number(row.__revision)
+    if (!sourceId || !revision) return
+    try {
+      const result = await updateQuerySourceCell(selectedType, sourceId, {
+        column,
+        value: String(event.newValue ?? ''),
+        expected_revision: revision,
+      })
+      messageApi.success('已写回腾讯表格')
+      await fetchData()
+    } catch (requestError) {
+      row[column] = event.oldValue
+      event.api.refreshCells({ rowNodes: [event.node], columns: [column], force: true })
+      messageApi.error(errorText(requestError, '保存失败，已恢复原值'))
+      if (errorStatus(requestError) === 409) await fetchData()
+    }
+  }, [fetchData, messageApi, selectedType])
+
+  const handleSort = useCallback((event: SortChangedEvent<DisplayRow>) => {
+    const sorted = event.api.getColumnState().find(column => column.sort)
+    setSortBy(sorted?.colId === '__actions' ? undefined : sorted?.colId)
+    setSortOrder(sorted?.sort === 'asc' ? 'asc' : 'desc')
+    setPage(1)
+  }, [])
+
+  const handleFilter = useCallback((event: FilterChangedEvent<DisplayRow>) => {
+    setGridFilters(event.api.getFilterModel())
+    setPage(1)
+  }, [])
+
+  const openAdd = () => {
+    setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
+    setAddOpen(true)
+  }
+
+  const submitAdd = async () => {
+    setAdding(true)
+    try {
+      const result = await createQuerySourceRow(selectedType, addValues)
+      messageApi.success(result.message)
+      setAddOpen(false)
+      await fetchData()
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '新增失败'))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const openMobileDetails = async (row: QueryDataRow) => {
+    setDrawerOpen(true)
+    setDrawerLoading(true)
+    try {
+      const rowKey = String(row.__row_key || '')
+      let sources: QuerySourceRow[]
+      if (rowKey && sourceReady) {
+        sources = await getQuerySourceRows(selectedType, rowKey)
+      } else {
+        sources = []
+      }
+      setDrawerSources(sources)
+      const first = sources[0]
+      setDrawerSourceId(first?.id)
+      setDrawerDraft(first ? { ...first.values } : Object.fromEntries(
+        columns.map(column => [column, String(row[column] || '')]),
       ))
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '详情加载失败'))
+    } finally {
+      setDrawerLoading(false)
     }
-    setFilters(normalizedFilters)
   }
 
-  const tableColumns: TableColumnsType<QueryRow> = columns.map(column => ({
-    title: column,
-    dataIndex: column,
-    key: column,
-    width: 180,
-    sorter: true,
-    sortOrder: sortCol === column
-      ? (sortDir === 'asc' ? 'ascend' : 'descend')
-      : null,
-    filters: getUniqueValues(column).map(value => ({
-      text: value || '(空)',
-      value: value || EMPTY_FILTER_VALUE,
-    })),
-    filteredValue: filters[column]?.map(value => value || EMPTY_FILTER_VALUE) || null,
-    ellipsis: { showTitle: false },
-    render: value => (
-      <Tooltip title={value || '-'}>
-        <span>{value || '-'}</span>
-      </Tooltip>
-    ),
-  }))
+  const selectedDrawerSource = drawerSources.find(item => item.id === drawerSourceId)
 
-  const tableData: QueryRow[] = data.map((row, index) => ({
-    ...row,
-    __tableKey: `${page}-${index}`,
-  }))
+  const saveDrawer = async () => {
+    if (!selectedDrawerSource) return
+    const changed = selectedDrawerSource.editable_fields.filter(
+      column => drawerDraft[column] !== selectedDrawerSource.values[column],
+    )
+    if (!changed.length) {
+      messageApi.info('没有需要保存的修改')
+      return
+    }
+    setDrawerSaving(true)
+    try {
+      await saveChangedSourceFields(
+        selectedDrawerSource,
+        drawerDraft,
+        (column, value, expectedRevision) => updateQuerySourceCell(
+          selectedType,
+          selectedDrawerSource.id,
+          { column, value, expected_revision: expectedRevision },
+        ),
+      )
+      messageApi.success('修改已写回腾讯表格')
+      setDrawerOpen(false)
+      await fetchData()
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '保存失败，请重新打开详情确认'))
+      if (errorStatus(requestError) === 409) {
+        setDrawerOpen(false)
+        await fetchData()
+      }
+    } finally {
+      setDrawerSaving(false)
+    }
+  }
+
+  const loadAudit = useCallback(async (nextPage = 1) => {
+    setAuditLoading(true)
+    try {
+      const result = await getQueryWritebackAudit({
+        page: nextPage,
+        page_size: 20,
+        parser_type: selectedType,
+      })
+      setAuditRows(result.data)
+      setAuditTotal(result.total)
+      setAuditPage(nextPage)
+    } catch (requestError) {
+      messageApi.error(errorText(requestError, '修改记录加载失败'))
+    } finally {
+      setAuditLoading(false)
+    }
+  }, [messageApi, selectedType])
+
+  const changeSourceType = (value: 'online' | 'archive') => {
+    setSource(value)
+    setPage(1)
+    setGridFilters({})
+    setRows([])
+    setCanAdd(false)
+    setExpanded({})
+    gridApi.current?.setFilterModel(null)
+  }
 
   return (
     <div className="app-page">
+      {messageContext}
       <PageHeader
         title="在线数据查询"
-        description="查询当前数据或历史归档，支持关键词、列筛选和排序"
-        actions={<Tag color="blue">共 {total} 条</Tag>}
+        description="当前数据可按岗位和社区权限安全回写腾讯表格；归档数据保持只读"
+        actions={(
+          <Space wrap>
+            {pendingCount > 0 && <Tag color="gold">{pendingCount} 项待同步</Tag>}
+            <Tag color="blue">共 {total} 条</Tag>
+          </Space>
+        )}
       />
 
-      <section className="app-card">
+      <section className="app-card app-card--padded">
         <div className="app-toolbar">
           <Select
             value={selectedType}
-            onChange={handleTypeChange}
+            onChange={value => {
+              setSelectedType(value)
+              setPage(1)
+              setRows([])
+              setCanAdd(false)
+              setExpanded({})
+            }}
             className="min-w-44"
             options={types.map(type => ({ value: type, label: type }))}
           />
           <Segmented
             value={source}
-            onChange={value => handleSourceChange(value as 'online' | 'archive')}
+            onChange={value => changeSourceType(value as 'online' | 'archive')}
             options={[
               { value: 'online', label: '当前数据' },
               { value: 'archive', label: '归档数据' },
@@ -172,42 +501,315 @@ export default function DataQuery() {
           <Input
             allowClear
             prefix={<SearchOutlined className="text-slate-400" />}
-            placeholder="输入关键词搜索"
+            placeholder="搜索全部字段"
             value={searchInput}
             onChange={event => setSearchInput(event.target.value)}
-            onPressEnter={handleSearch}
+            onPressEnter={() => { setKeyword(searchInput); setPage(1) }}
             className="min-w-56 flex-1"
           />
-          <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>
+          <Button
+            type="primary"
+            icon={<SearchOutlined />}
+            onClick={() => { setKeyword(searchInput); setPage(1) }}
+          >
             搜索
           </Button>
-          {activeFilterCount > 0 && (
-            <Tag icon={<FilterOutlined />} color="processing">{activeFilterCount} 列筛选中</Tag>
+          {source === 'online' && canAdd && (
+            <Button icon={<PlusOutlined />} onClick={openAdd}>新增原始行</Button>
+          )}
+          {isSuperAdmin && (
+            <Button
+              icon={<HistoryOutlined />}
+              onClick={() => { setAuditOpen(true); loadAudit(1) }}
+            >
+              修改记录
+            </Button>
           )}
         </div>
       </section>
 
       {scopeMessage && <Alert type="info" showIcon message={scopeMessage} />}
+      {source === 'online' && rowManageMessage && (
+        <Alert type="warning" showIcon message={rowManageMessage} />
+      )}
+      {source === 'online' && sourceReady && pendingCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="腾讯表格已更新，业务库和汇总尚未同步"
+          description="查询页显示最新来源内容；下一次正常同步后，在线汇总、归档和日报才会更新。"
+        />
+      )}
+      {source === 'online' && sourceReady && !writebackEnabled && (
+        <Alert type="warning" showIcon message="超级管理员已暂停在线回写，当前页面只读" />
+      )}
 
-      <AppTable<QueryRow>
-        columns={tableColumns}
-        dataSource={tableData}
-        emptyText={error || '没有找到符合条件的数据'}
-        loading={{ spinning: loading, tip: '正在查询数据...' }}
-        onChange={handleTableChange}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          hideOnSinglePage: true,
-          showLessItems: true,
-          showSizeChanger: false,
-          showTotal: count => `共 ${count} 条`,
-        }}
-        rowKey="__tableKey"
-        scroll={{ x: Math.max(columns.length * 180, 900) }}
-        sticky
-      />
+      <div className="app-card hidden overflow-hidden md:block">
+        <div style={{ height: 620 }}>
+          <AgGridReact<DisplayRow>
+            theme={gridTheme}
+            rowData={displayRows}
+            columnDefs={columnDefs}
+            defaultColDef={{ suppressHeaderMenuButton: false }}
+            getRowId={params => params.data.__kind === 'source'
+              ? `source-${params.data.__source_id}`
+              : `parent-${params.data.__row_key}`}
+            getRowClass={params => params.data?.__kind === 'source'
+              ? 'binhu-grid-row--source'
+              : params.data?.__conflict ? 'binhu-grid-row--conflict' : undefined}
+            loading={loading}
+            tooltipShowDelay={300}
+            stopEditingWhenCellsLoseFocus
+            singleClickEdit
+            animateRows={false}
+            onGridReady={event => { gridApi.current = event.api }}
+            onCellValueChanged={handleCellChange}
+            onSortChanged={handleSort}
+            onFilterChanged={handleFilter}
+            postSortRows={params => {
+              const children = new Map<string, typeof params.nodes>()
+              for (const node of params.nodes) {
+                const parentKey = String(node.data?.__parent_key || '')
+                if (node.data?.__kind === 'source' && parentKey) {
+                  const group = children.get(parentKey) || []
+                  group.push(node)
+                  children.set(parentKey, group)
+                }
+              }
+              const ordered = [] as typeof params.nodes
+              const included = new Set(params.nodes)
+              for (const node of params.nodes) {
+                if (node.data?.__kind === 'source') continue
+                ordered.push(node)
+                const key = String(node.data?.__row_key || '')
+                for (const child of children.get(key) || []) {
+                  ordered.push(child)
+                  included.delete(child)
+                }
+              }
+              for (const node of included) {
+                if (node.data?.__kind === 'source') ordered.push(node)
+              }
+              params.nodes.splice(0, params.nodes.length, ...ordered)
+            }}
+            overlayNoRowsTemplate={error || '没有找到符合条件的数据'}
+          />
+        </div>
+        <div className="flex justify-end border-t border-[var(--app-border)] px-4 py-3">
+          <Pagination
+            current={page}
+            pageSize={pageSize}
+            total={total}
+            showSizeChanger
+            pageSizeOptions={[20, 50, 100, 200]}
+            showTotal={count => `共 ${count} 条`}
+            onChange={(nextPage, nextSize) => {
+              setPage(nextSize !== pageSize ? 1 : nextPage)
+              setPageSize(nextSize)
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="space-y-3 md:hidden">
+        {loading ? <div className="app-card p-10 text-center"><Spin /></div> : rows.length === 0 ? (
+          <div className="app-card p-8"><Empty description={error || '没有找到符合条件的数据'} /></div>
+        ) : rows.map(row => {
+          const community = String(row['社区'] || row['下发社区'] || '-')
+          const name = String(row['姓名'] || row['参考姓名'] || row['出租屋地址'] || '-')
+          const result = String(row['核查结果'] || row['核查反馈'] || row['实际情况'] || '尚未填写结果')
+          return (
+            <button
+              type="button"
+              key={String(row.__row_key)}
+              className="app-card w-full p-4 text-left"
+              onClick={() => openMobileDetails(row)}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold text-[var(--app-text-strong)]">{name}</div>
+                  <div className="mt-1 text-sm text-[var(--app-text-secondary)]">{community}</div>
+                </div>
+                <div className="flex flex-wrap justify-end gap-1">
+                  {Number(row.__source_count || 0) > 1 && <Tag>{row.__source_count} 条原始行</Tag>}
+                  {row.__pending && <Tag color="gold">待同步</Tag>}
+                  {row.__conflict && <Tag color="red">冲突</Tag>}
+                </div>
+              </div>
+              <div className="mt-3 line-clamp-2 text-sm text-[var(--app-text)]">{result}</div>
+              <div className="mt-3 text-xs text-[var(--app-primary)]">查看详情与可编辑字段</div>
+            </button>
+          )
+        })}
+        {total > pageSize && (
+          <div className="flex justify-center py-2">
+            <Pagination simple current={page} pageSize={pageSize} total={total} onChange={setPage} />
+          </div>
+        )}
+      </div>
+
+      <Modal
+        open={addOpen}
+        title={`新增“${selectedType}”腾讯原始行`}
+        width={840}
+        okText="写入腾讯表格"
+        cancelText="取消"
+        confirmLoading={adding}
+        onOk={submitAdd}
+        onCancel={() => setAddOpen(false)}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="新增会直接写入腾讯在线表格，业务汇总需等待下一次正常同步"
+          className="mb-4"
+        />
+        <div className="grid max-h-[60vh] grid-cols-1 gap-4 overflow-y-auto pr-2 md:grid-cols-2">
+          {columns.map(column => {
+            const meta = metaByColumn[column]
+            return (
+              <label key={column} className="block">
+                <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">{column}</span>
+                {meta?.type === 'select' ? (
+                  <Select
+                    className="w-full"
+                    value={addValues[column] || undefined}
+                    onChange={value => setAddValues(current => ({ ...current, [column]: value }))}
+                    options={(meta.options || []).map(option => ({ value: option.text, label: option.text }))}
+                    allowClear
+                  />
+                ) : (
+                  <Input.TextArea
+                    autoSize={{ minRows: 1, maxRows: 4 }}
+                    value={addValues[column] || ''}
+                    onChange={event => setAddValues(current => ({ ...current, [column]: event.target.value }))}
+                  />
+                )}
+              </label>
+            )
+          })}
+        </div>
+      </Modal>
+
+      <Drawer
+        open={drawerOpen}
+        title="在线数据详情"
+        width="min(94vw, 620px)"
+        onClose={() => setDrawerOpen(false)}
+        extra={selectedDrawerSource?.editable_fields.length ? (
+          <Button type="primary" loading={drawerSaving} onClick={saveDrawer}>保存修改</Button>
+        ) : null}
+      >
+        {drawerLoading ? <div className="py-16 text-center"><Spin /></div> : (
+          <div className="space-y-4">
+            {drawerSources.length > 1 && (
+              <Select
+                className="w-full"
+                value={drawerSourceId}
+                onChange={value => {
+                  setDrawerSourceId(value)
+                  const selected = drawerSources.find(item => item.id === value)
+                  setDrawerDraft({ ...(selected?.values || {}) })
+                }}
+                options={drawerSources.map(item => ({
+                  value: item.id,
+                  label: `腾讯第 ${item.physical_row} 行`,
+                }))}
+              />
+            )}
+            {columns.map(column => {
+              const editable = selectedDrawerSource?.editable_fields.includes(column)
+              const meta = selectedDrawerSource?.cell_meta[column] || metaByColumn[column]
+              return (
+                <label key={column} className="block">
+                  <span className="mb-1 flex items-center justify-between text-sm font-medium text-[var(--app-text)]">
+                    {column}
+                    {editable && <Tag color="blue" icon={<EditOutlined />}>可编辑</Tag>}
+                  </span>
+                  {editable && meta?.type === 'select' ? (
+                    <Select
+                      className="w-full"
+                      value={drawerDraft[column] || undefined}
+                      onChange={value => setDrawerDraft(current => ({ ...current, [column]: value || '' }))}
+                      options={(meta.options || []).map(option => ({ value: option.text, label: option.text }))}
+                      allowClear
+                    />
+                  ) : editable ? (
+                    <Input.TextArea
+                      autoSize={{ minRows: 1, maxRows: 5 }}
+                      value={drawerDraft[column] || ''}
+                      onChange={event => setDrawerDraft(current => ({ ...current, [column]: event.target.value }))}
+                    />
+                  ) : (
+                    <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-3 py-2 text-sm text-[var(--app-text)]">
+                      {drawerDraft[column] || '-'}
+                    </div>
+                  )}
+                </label>
+              )
+            })}
+            {selectedDrawerSource?.can_delete && (
+              <Popconfirm
+                title="确认删除腾讯原始行？"
+                description="删除后需等待下一次同步更新业务汇总。"
+                okText="确认删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => handleDelete(sourceToDisplay(selectedDrawerSource, 'drawer'))}
+              >
+                <Button danger block icon={<DeleteOutlined />}>删除这条腾讯原始行</Button>
+              </Popconfirm>
+            )}
+          </div>
+        )}
+      </Drawer>
+
+      <Modal
+        open={auditOpen}
+        title={`“${selectedType}”平台回写记录（保留 90 天）`}
+        width={980}
+        footer={null}
+        onCancel={() => setAuditOpen(false)}
+      >
+        <Spin spinning={auditLoading}>
+          <List
+            dataSource={auditRows}
+            locale={{ emptyText: '暂无修改记录' }}
+            renderItem={item => (
+              <List.Item>
+                <List.Item.Meta
+                  title={(
+                    <Space wrap>
+                      <Tag color={item.action === 'delete' ? 'red' : item.action === 'create' ? 'green' : 'blue'}>
+                        {{ create: '新增', update: '修改', delete: '删除' }[item.action]}
+                      </Tag>
+                      <span>{item.username}</span>
+                      <span>{item.column_name || '整行'}</span>
+                      <Tag color={item.sync_status === 'synced' ? 'green' : item.sync_status === 'failed' ? 'red' : 'gold'}>
+                        {item.sync_status === 'synced' ? '已同步' : item.sync_status === 'failed' ? '写入失败' : '待同步'}
+                      </Tag>
+                    </Space>
+                  )}
+                  description={new Date(item.created_at).toLocaleString('zh-CN')}
+                />
+                <Descriptions
+                  size="small"
+                  column={1}
+                  items={[
+                    { key: 'before', label: '修改前', children: <pre className="max-w-xl whitespace-pre-wrap text-xs">{JSON.stringify(item.before_values, null, 2)}</pre> },
+                    { key: 'after', label: '修改后', children: <pre className="max-w-xl whitespace-pre-wrap text-xs">{JSON.stringify(item.after_values, null, 2)}</pre> },
+                  ]}
+                />
+              </List.Item>
+            )}
+          />
+          {auditTotal > 20 && (
+            <div className="mt-4 flex justify-end">
+              <Pagination current={auditPage} pageSize={20} total={auditTotal} onChange={loadAudit} />
+            </div>
+          )}
+        </Spin>
+      </Modal>
     </div>
   )
 }

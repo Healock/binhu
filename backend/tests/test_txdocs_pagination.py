@@ -66,6 +66,33 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
             "A2:N715",
         )
 
+    async def test_blank_rows_do_not_end_pagination_or_shift_physical_rows(self):
+        first_page = make_response(1000, 2)
+        first_page["gridData"]["rows"][0] = {"values": []}
+        client = TxDocsClient("client", "token", "user")
+        client.read_range = AsyncMock(side_effect=[
+            first_page,
+            make_response(1, 2),
+        ])
+
+        rows = await client.read_all_source_rows(
+            "file",
+            "sheet",
+            header_row=1,
+            column_names=["first", "second"],
+        )
+
+        self.assertEqual(len(rows), 1000)
+        self.assertEqual(rows[0]["physical_row"], 3)
+        self.assertEqual(rows[-1]["physical_row"], 1002)
+        self.assertEqual(
+            client.read_range.await_args_list,
+            [
+                call("file", "sheet", "A2:B1001"),
+                call("file", "sheet", "A1002:B2001"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

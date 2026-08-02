@@ -1,13 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Alert, Button, Input, Modal, Select, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import {
+  createCommunityArea,
+  deleteCommunityArea,
+  getAreaLeaderOptions,
+  getCommunityAreas,
   getGridCommunities,
   addGridCommunity,
   deleteGridCommunity,
   getCommunityPoliceOptions,
   updateGridCommunityDetails,
+  updateCommunityArea,
+  type CommunityArea,
   type GridCommunity,
 } from '../api/client'
 import AppTable from '../components/AppTable'
@@ -18,6 +24,8 @@ export default function Communities() {
   const { user } = useAuth()
   const canManage = Boolean(user?.permissions.includes('community.manage'))
   const [communities, setCommunities] = useState<GridCommunity[]>([])
+  const [areas, setAreas] = useState<CommunityArea[]>([])
+  const [areaLeaderOptions, setAreaLeaderOptions] = useState<Array<{ id: number; name: string }>>([])
   const [newName, setNewName] = useState('')
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(true)
@@ -26,19 +34,29 @@ export default function Communities() {
   const [nameDraft, setNameDraft] = useState('')
   const [aliasDraft, setAliasDraft] = useState<string[]>([])
   const [officerDraft, setOfficerDraft] = useState<number[]>([])
+  const [areaDraft, setAreaDraft] = useState<number>()
   const [policeOptions, setPoliceOptions] = useState<Array<{ id: number; name: string }>>([])
   const [savingDetails, setSavingDetails] = useState(false)
+  const [areaEditorOpen, setAreaEditorOpen] = useState(false)
+  const [editingArea, setEditingArea] = useState<CommunityArea | null>(null)
+  const [areaNameDraft, setAreaNameDraft] = useState('')
+  const [areaLeaderDraft, setAreaLeaderDraft] = useState<number[]>([])
+  const [savingArea, setSavingArea] = useState(false)
 
   const fetch = useCallback(async () => {
     setLoading(true)
     setLoadError('')
     try {
-      const [communityRows, officerRows] = await Promise.all([
+      const [communityRows, officerRows, areaRows, leaderRows] = await Promise.all([
         getGridCommunities(),
         getCommunityPoliceOptions(),
+        getCommunityAreas(),
+        getAreaLeaderOptions(),
       ])
       setCommunities(communityRows)
       setPoliceOptions(officerRows)
+      setAreas(areaRows)
+      setAreaLeaderOptions(leaderRows)
     } catch {
       setLoadError('社区列表加载失败，请稍后重试')
     } finally {
@@ -78,10 +96,15 @@ export default function Communities() {
     setNameDraft(community.name)
     setAliasDraft(community.aliases || [])
     setOfficerDraft(community.police_officer_ids || [])
+    setAreaDraft(community.area_id || undefined)
   }
 
   const handleSaveDetails = async () => {
     if (!editingCommunity) return
+    if (!areaDraft) {
+      setMsg('保存失败：请选择所属片区')
+      return
+    }
     setSavingDetails(true)
     try {
       const result = await updateGridCommunityDetails(
@@ -89,6 +112,7 @@ export default function Communities() {
         nameDraft.trim(),
         aliasDraft,
         officerDraft,
+        areaDraft,
       )
       const matchedText = result.matched_visit_rows > 0
         ? `，同时归类 ${result.matched_visit_rows} 条已有走访数据`
@@ -98,6 +122,7 @@ export default function Communities() {
       setNameDraft('')
       setAliasDraft([])
       setOfficerDraft([])
+      setAreaDraft(undefined)
       await fetch()
     } catch (error: any) {
       setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
@@ -106,7 +131,57 @@ export default function Communities() {
     }
   }
 
+  const openAreaEditor = (area?: CommunityArea) => {
+    setEditingArea(area || null)
+    setAreaNameDraft(area?.name || '')
+    setAreaLeaderDraft(area?.leader_ids || [])
+    setAreaEditorOpen(true)
+  }
+
+  const saveArea = async () => {
+    if (!areaNameDraft.trim()) return
+    setSavingArea(true)
+    try {
+      const payload = { name: areaNameDraft.trim(), leader_ids: areaLeaderDraft }
+      if (editingArea) await updateCommunityArea(editingArea.id, payload)
+      else await createCommunityArea(payload)
+      setMsg(editingArea ? '片区已保存' : '片区已创建')
+      setAreaEditorOpen(false)
+      await fetch()
+    } catch (error: any) {
+      setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
+    } finally {
+      setSavingArea(false)
+    }
+  }
+
+  const removeArea = (area: CommunityArea) => {
+    Modal.confirm({
+      title: `删除片区“${area.name}”？`,
+      content: '只有没有关联社区的片区才能删除。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteCommunityArea(area.id)
+          setMsg(`已删除片区“${area.name}”`)
+          await fetch()
+        } catch (error: any) {
+          setMsg(`删除失败：${error?.response?.data?.detail || '请稍后重试'}`)
+        }
+      },
+    })
+  }
+
   const communityColumns: TableColumnsType<GridCommunity> = [
+    {
+      title: '所属片区',
+      dataIndex: 'area_name',
+      key: 'area_name',
+      width: 140,
+      render: value => value ? <Tag color="blue">{value}</Tag> : <Tag color="warning">待分配</Tag>,
+    },
     {
       title: '社区名称',
       dataIndex: 'name',
@@ -170,9 +245,40 @@ export default function Communities() {
     <div className="app-page">
       <PageHeader
         title="社区管理"
-        description="维护社区名单、别名和社区民警，工作日志会自动读取这里的信息"
+        description="维护片区、社区名单、别名和社区民警；片长的在线编辑范围以片区配置为准"
         actions={<Tag color="blue">共 {communities.length} 个社区</Tag>}
       />
+
+      <section className="app-card app-card--padded">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--app-text-strong)]">片区设置</h2>
+            <p className="mt-1 text-sm text-[var(--app-text-secondary)]">一个社区只能属于一个片区；同一片区可以配置多位片长。</p>
+          </div>
+          {canManage && <Button icon={<PlusOutlined />} onClick={() => openAreaEditor()}>添加片区</Button>}
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          {areas.map(area => (
+            <div key={area.id} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-semibold text-[var(--app-text-strong)]">{area.name}</div>
+                  <div className="mt-1 text-sm text-[var(--app-text-secondary)]">{area.community_count} 个社区</div>
+                </div>
+                {canManage && <div className="flex gap-1">
+                  <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openAreaEditor(area)} />
+                  <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeArea(area)} />
+                </div>}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1">
+                {area.leaders.length
+                  ? area.leaders.map(leader => <Tag key={leader.id}>{leader.name}</Tag>)
+                  : <span className="text-xs text-[var(--app-text-muted)]">暂未配置片长</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {canManage && <section className="app-card">
         <div className="app-toolbar">
@@ -211,6 +317,7 @@ export default function Communities() {
                   <div>
                     <div className="font-medium text-gray-800">{c.name}</div>
                     <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
+                    <div className="mt-1 text-sm text-slate-600">片区：{c.area_name || '待分配'}</div>
                     <div className="mt-1 text-sm text-slate-600">
                       社区民警：{c.police_officers?.length > 0
                         ? c.police_officers.join('、')
@@ -254,9 +361,20 @@ export default function Communities() {
           setNameDraft('')
           setAliasDraft([])
           setOfficerDraft([])
+          setAreaDraft(undefined)
         }}
       >
         <div className="space-y-5">
+          <div>
+            <div className="mb-2 font-medium text-slate-700">所属片区</div>
+            <Select
+              value={areaDraft}
+              onChange={setAreaDraft}
+              placeholder="请选择所属片区"
+              className="w-full"
+              options={areas.map(area => ({ value: area.id, label: area.name }))}
+            />
+          </div>
           <div>
             <div className="mb-2 font-medium text-slate-700">社区正式名称</div>
             <Input
@@ -300,6 +418,35 @@ export default function Communities() {
               className="w-full"
               maxTagCount="responsive"
               options={[]}
+            />
+          </div>
+        </div>
+      </Modal>}
+
+      {canManage && <Modal
+        open={areaEditorOpen}
+        title={editingArea ? `编辑“${editingArea.name}”` : '添加片区'}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={savingArea}
+        onOk={saveArea}
+        onCancel={() => setAreaEditorOpen(false)}
+      >
+        <div className="space-y-4">
+          <div>
+            <div className="mb-2 font-medium text-slate-700">片区名称</div>
+            <Input value={areaNameDraft} onChange={event => setAreaNameDraft(event.target.value)} placeholder="例如：东片" />
+          </div>
+          <div>
+            <div className="mb-2 font-medium text-slate-700">片长</div>
+            <Select
+              mode="multiple"
+              value={areaLeaderDraft}
+              onChange={setAreaLeaderDraft}
+              className="w-full"
+              placeholder="可选择一名或多名片长"
+              options={areaLeaderOptions.map(item => ({ value: item.id, label: item.name }))}
+              maxTagCount="responsive"
             />
           </div>
         </div>

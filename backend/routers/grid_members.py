@@ -165,6 +165,7 @@ class CommunityAliasesUpdate(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=30)
     police_officers: Optional[list[str]] = Field(default=None, max_length=20)
     police_officer_ids: Optional[list[int]] = Field(default=None, max_length=50)
+    area_id: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("name")
     @classmethod
@@ -210,6 +211,24 @@ class CommunityAliasesUpdate(BaseModel):
             if name not in normalized:
                 normalized.append(name)
         return normalized
+
+
+class AreaWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    leader_ids: list[int] = Field(default_factory=list, max_length=20)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_area_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("片区名称不能为空")
+        return normalized
+
+    @field_validator("leader_ids")
+    @classmethod
+    def normalize_leaders(cls, values: list[int]) -> list[int]:
+        return list(dict.fromkeys(values))
 
 
 def _parse_police_officers(value) -> list[str]:
@@ -576,8 +595,10 @@ async def list_communities(
     async with conn.cursor() as cur:
         await cur.execute(f"""
             SELECT c.id, c.name, c.police_officers,
-                   COALESCE(g.grid_count, 0) AS grid_count
+                   COALESCE(g.grid_count, 0) AS grid_count,
+                   area.id, area.name
             FROM _communities c
+            LEFT JOIN _areas AS area ON area.id=c.area_id
             LEFT JOIN (
                 SELECT department.community_id,
                        COUNT(DISTINCT link.member_id) AS grid_count
@@ -630,10 +651,208 @@ async def list_communities(
                 ],
                 "grid_count": row[3],
                 "aliases": aliases_by_community.get(row[0], []),
+                "area_id": int(row[4]) if row[4] is not None else None,
+                "area_name": str(row[5] or ""),
             }
             for row in rows
         ]
     }
+
+
+@router.get("/areas")
+async def list_areas(
+    user: dict = Depends(require_permission(COMMUNITY_VIEW)),
+    conn=Depends(get_db),
+):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT area.id, area.name,
+                   COUNT(DISTINCT community.id) AS community_count
+            FROM _areas AS area
+            LEFT JOIN _communities AS community ON community.area_id=area.id
+            GROUP BY area.id, area.name
+            ORDER BY area.name
+            """
+        )
+        area_rows = await cur.fetchall()
+        await cur.execute(
+            """
+            SELECT link.area_id, member.id, member.name
+            FROM _area_leader_links AS link
+            JOIN _grid_members AS member ON member.id=link.member_id
+            WHERE member.position='片长'
+            ORDER BY link.area_id, member.name
+            """
+        )
+        leaders: dict[int, list[dict]] = {}
+        for area_id, member_id, name in await cur.fetchall():
+            leaders.setdefault(int(area_id), []).append({
+                "id": int(member_id),
+                "name": str(name),
+            })
+    return {"data": [
+        {
+            "id": int(row[0]),
+            "name": str(row[1]),
+            "community_count": int(row[2] or 0),
+            "leaders": leaders.get(int(row[0]), []),
+            "leader_ids": [
+                item["id"] for item in leaders.get(int(row[0]), [])
+            ],
+        }
+        for row in area_rows
+    ]}
+
+
+@router.get("/area-leader-options")
+async def list_area_leader_options(
+    user: dict = Depends(require_permission(COMMUNITY_VIEW)),
+    conn=Depends(get_db),
+):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id, name FROM _grid_members "
+            "WHERE position='片长' ORDER BY name"
+        )
+        rows = await cur.fetchall()
+    return {"data": [
+        {"id": int(row[0]), "name": str(row[1])}
+        for row in rows
+    ]}
+
+
+async def _replace_area_leaders(cur, area_id: int, leader_ids: list[int]) -> None:
+    if leader_ids:
+        placeholders = ", ".join(["%s"] * len(leader_ids))
+        await cur.execute(
+            f"SELECT id FROM _grid_members "
+            f"WHERE position='片长' AND id IN ({placeholders})",
+            leader_ids,
+        )
+        valid = {int(row[0]) for row in await cur.fetchall()}
+        if valid != set(leader_ids):
+            raise HTTPException(400, "片区负责人只能选择人员管理中的片长")
+    await cur.execute(
+        "DELETE FROM _area_leader_links WHERE area_id=%s",
+        (area_id,),
+    )
+    if leader_ids:
+        await cur.executemany(
+            "INSERT INTO _area_leader_links (area_id, member_id) "
+            "VALUES (%s, %s)",
+            [(area_id, leader_id) for leader_id in leader_ids],
+        )
+
+
+@router.post("/areas")
+async def create_area(
+    data: AreaWrite,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            try:
+                await cur.execute("INSERT INTO _areas (name) VALUES (%s)", (data.name,))
+            except Exception as exc:
+                if "Duplicate" in str(exc):
+                    raise HTTPException(400, "该片区名称已存在") from exc
+                raise
+            area_id = int(cur.lastrowid)
+            await _replace_area_leaders(cur, area_id, data.leader_ids)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "area.create",
+        target_type="area",
+        target_name=data.name,
+        detail={"area_id": area_id, "leader_count": len(data.leader_ids)},
+        **request_audit_fields(request),
+    )
+    return {"id": area_id, "message": "片区已创建"}
+
+
+@router.put("/areas/{area_id}")
+async def update_area(
+    area_id: int,
+    data: AreaWrite,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            try:
+                await cur.execute(
+                    "UPDATE _areas SET name=%s WHERE id=%s",
+                    (data.name, area_id),
+                )
+            except Exception as exc:
+                if "Duplicate" in str(exc):
+                    raise HTTPException(400, "该片区名称已存在") from exc
+                raise
+            if cur.rowcount == 0:
+                raise HTTPException(404, "片区不存在")
+            await _replace_area_leaders(cur, area_id, data.leader_ids)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "area.update",
+        target_type="area",
+        target_name=data.name,
+        detail={"area_id": area_id, "leader_count": len(data.leader_ids)},
+        **request_audit_fields(request),
+    )
+    return {"message": "片区已保存"}
+
+
+@router.delete("/areas/{area_id}")
+async def delete_area(
+    area_id: int,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT name FROM _areas WHERE id=%s",
+            (area_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "片区不存在")
+        await cur.execute(
+            "SELECT COUNT(*) FROM _communities WHERE area_id=%s",
+            (area_id,),
+        )
+        if int((await cur.fetchone())[0] or 0):
+            raise HTTPException(409, "该片区仍有关联社区，不能删除")
+        await cur.execute(
+            "DELETE FROM _area_leader_links WHERE area_id=%s",
+            (area_id,),
+        )
+        await cur.execute("DELETE FROM _areas WHERE id=%s", (area_id,))
+    await record_admin_audit(
+        user,
+        "area.delete",
+        target_type="area",
+        target_name=str(row[0]),
+        detail={"area_id": area_id},
+        **request_audit_fields(request),
+    )
+    return {"message": "片区已删除"}
 
 
 @router.get("/unlinked-accounts")
@@ -817,6 +1036,18 @@ async def update_community_aliases(
             current = communities.get(community_id)
             if not current:
                 raise HTTPException(404, "社区不存在")
+
+            if "area_id" in data.model_fields_set:
+                await cur.execute(
+                    "SELECT id FROM _areas WHERE id=%s",
+                    (data.area_id,),
+                )
+                if not await cur.fetchone():
+                    raise HTTPException(400, "所选片区不存在")
+                await cur.execute(
+                    "UPDATE _communities SET area_id=%s WHERE id=%s",
+                    (data.area_id, community_id),
+                )
 
             target_name = data.name or current["name"]
             target_normalized_name = normalize_community(target_name)
@@ -1020,6 +1251,7 @@ async def update_community_aliases(
         "aliases": aliases,
         "police_officers": returned_officers,
         "matched_visit_rows": matched_rows,
+        "area_id": data.area_id,
     }
 
 

@@ -568,6 +568,51 @@ export async function getQueryTypes(): Promise<string[]> {
   return data.data
 }
 
+export interface QueryColumnMeta {
+  field: string
+  type: 'text' | 'number' | 'select'
+  multiple?: boolean
+  options?: Array<{ id: string | number; text: string }>
+}
+
+export interface QueryDataRow extends Record<string, unknown> {
+  __row_key?: string
+  __source_count?: number
+  __conflict?: boolean
+  __pending?: boolean
+  __source_id?: number | null
+  __revision?: number | null
+  __physical_row?: number | null
+  __editable_fields?: string[]
+  __can_delete?: boolean
+}
+
+export interface QuerySourceRow {
+  id: number
+  physical_row: number
+  values: Record<string, string>
+  cell_meta: Record<string, Omit<QueryColumnMeta, 'field'>>
+  revision: number
+  row_hash: string
+  editable_fields: string[]
+  can_delete: boolean
+}
+
+export interface QueryResponse {
+  data: QueryDataRow[]
+  total: number
+  page: number
+  page_size: number
+  columns: string[]
+  column_meta: QueryColumnMeta[]
+  source_ready: boolean
+  writeback_enabled: boolean
+  can_add: boolean
+  pending_count: number
+  scope_message?: string
+  row_manage_message?: string
+}
+
 export async function queryData(params: {
   type: string
   source?: string
@@ -577,14 +622,8 @@ export async function queryData(params: {
   sort_by?: string
   sort_order?: string
   filters?: Record<string, string[]>
-}): Promise<{
-  data: Record<string, string>[]
-  total: number
-  page: number
-  page_size: number
-  columns: string[]
-  scope_message?: string
-}> {
+  grid_filters?: Record<string, unknown>
+}): Promise<QueryResponse> {
   const { data } = await api.get(`/query/${params.type}`, {
     ...activeRequest,
     params: {
@@ -595,8 +634,79 @@ export async function queryData(params: {
       sort_by: params.sort_by,
       sort_order: params.sort_order,
       filters: params.filters ? JSON.stringify(params.filters) : undefined,
+      grid_filters: params.grid_filters
+        ? JSON.stringify(params.grid_filters)
+        : undefined,
     },
   })
+  return data
+}
+
+export async function getQuerySourceRows(
+  type: string,
+  rowKey: string,
+): Promise<QuerySourceRow[]> {
+  const { data } = await api.get(`/query/${type}/rows/${rowKey}/sources`)
+  return data.data
+}
+
+export async function updateQuerySourceCell(
+  type: string,
+  sourceId: number,
+  payload: { column: string; value: string; expected_revision: number },
+): Promise<{
+  values: Record<string, string>
+  row_key: string
+  revision: number
+  pending_sync: boolean
+  message: string
+}> {
+  const { data } = await api.patch(`/query/${type}/source-rows/${sourceId}`, payload)
+  return data
+}
+
+export async function createQuerySourceRow(
+  type: string,
+  values: Record<string, string>,
+): Promise<{ message: string; row_key: string; pending_sync: boolean }> {
+  const { data } = await api.post(`/query/${type}/source-rows`, { values })
+  return data
+}
+
+export async function deleteQuerySourceRow(
+  type: string,
+  sourceId: number,
+  expectedRevision: number,
+): Promise<{ message: string; pending_sync: boolean }> {
+  const { data } = await api.delete(`/query/${type}/source-rows/${sourceId}`, {
+    params: { expected_revision: expectedRevision },
+  })
+  return data
+}
+
+export interface QueryWritebackAudit {
+  id: number
+  username: string
+  action: 'create' | 'update' | 'delete'
+  parser_type: string
+  spreadsheet_id: number
+  physical_row: number | null
+  column_name: string
+  row_key_before: string
+  row_key_after: string
+  before_values: Record<string, string>
+  after_values: Record<string, string>
+  sync_status: 'pending' | 'synced' | 'failed'
+  synced_at: string | null
+  created_at: string
+}
+
+export async function getQueryWritebackAudit(params: {
+  page?: number
+  page_size?: number
+  parser_type?: string
+}): Promise<{ data: QueryWritebackAudit[]; total: number }> {
+  const { data } = await api.get('/query/writeback/audit', { params })
   return data
 }
 
@@ -655,6 +765,16 @@ export interface GridCommunity {
   aliases: string[]
   police_officers: string[]
   police_officer_ids: number[]
+  area_id: number | null
+  area_name: string
+}
+
+export interface CommunityArea {
+  id: number
+  name: string
+  community_count: number
+  leaders: Array<{ id: number; name: string }>
+  leader_ids: number[]
 }
 
 export interface DepartmentOption {
@@ -695,6 +815,34 @@ export async function getCommunityPoliceOptions(): Promise<Array<{ id: number; n
   return data.data
 }
 
+export async function getCommunityAreas(): Promise<CommunityArea[]> {
+  const { data } = await api.get('/grid-members/areas')
+  return data.data
+}
+
+export async function getAreaLeaderOptions(): Promise<Array<{ id: number; name: string }>> {
+  const { data } = await api.get('/grid-members/area-leader-options')
+  return data.data
+}
+
+export async function createCommunityArea(payload: {
+  name: string
+  leader_ids: number[]
+}): Promise<void> {
+  await api.post('/grid-members/areas', payload)
+}
+
+export async function updateCommunityArea(
+  id: number,
+  payload: { name: string; leader_ids: number[] },
+): Promise<void> {
+  await api.put(`/grid-members/areas/${id}`, payload)
+}
+
+export async function deleteCommunityArea(id: number): Promise<void> {
+  await api.delete(`/grid-members/areas/${id}`)
+}
+
 export async function listGridMembers(params: {
   keyword?: string
   community?: string
@@ -731,6 +879,7 @@ export async function updateGridCommunityDetails(
   name: string,
   aliases: string[],
   policeOfficerIds: number[],
+  areaId: number,
 ): Promise<{
   name: string
   aliases: string[]
@@ -741,6 +890,7 @@ export async function updateGridCommunityDetails(
     name,
     aliases,
     police_officer_ids: policeOfficerIds,
+    area_id: areaId,
   })
   return data
 }

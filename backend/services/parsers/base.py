@@ -17,6 +17,7 @@ class BaseParser:
     table_name: str = ""
     COLUMNS: list[str] = []
     DATABASE_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {}
+    COMMUNITY_COLUMN = "社区"
 
     def get_schema(self) -> list[ColumnDef]:
         """返回列定义列表"""
@@ -59,6 +60,31 @@ class BaseParser:
         """从行数据生成业务主键 MD5"""
         key_parts = [str(row.get(k, "")) for k in self.get_business_key()]
         return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+    def community_value(self, row: dict) -> str:
+        """返回权限判断使用的来源社区。"""
+        return str(row.get(self.COMMUNITY_COLUMN, "") or "").strip()
+
+    def validate_new_row(self, row: dict) -> None:
+        """校验平台新增行：全部业务主键和社区都必须完整。"""
+        missing_keys = [
+            key
+            for key in self.get_business_key()
+            if not str(row.get(key, "") or "").strip()
+        ]
+        if missing_keys:
+            raise ValueError(f"请填写业务主键字段：{'、'.join(missing_keys)}")
+        if self.COMMUNITY_COLUMN in self.COLUMNS and not self.community_value(row):
+            raise ValueError("社区不能为空")
+
+    def validate_existing_row_key(self, row: dict) -> None:
+        """校验已有来源行仍可识别，并允许逐格修复历史不完整主键。"""
+        values = [
+            str(row.get(key, "") or "").strip()
+            for key in self.get_business_key()
+        ]
+        if not any(values):
+            raise ValueError("业务主键字段不能全部为空")
 
     def merge_duplicate_row(
         self,

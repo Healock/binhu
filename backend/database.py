@@ -6,7 +6,10 @@ from services.business_time import current_business_date
 from services.permissions import (
     ALL_PERMISSIONS,
     DEFAULT_PERMISSION_GROUPS,
+    ONLINE_RAW_EDIT,
+    ONLINE_RAW_ROW_MANAGE,
     POSITION_DEFAULT_GROUP,
+    parse_permissions,
     serialize_permissions,
 )
 
@@ -107,6 +110,27 @@ async def ensure_permission_schema(cur) -> None:
                 group["sort_order"],
             ),
         )
+    # 新权限只追加到相应预设组，不覆盖超级管理员已经调整过的其他权限。
+    permission_additions = {
+        "flow_post": {ONLINE_RAW_EDIT},
+        "global_viewer": {ONLINE_RAW_EDIT},
+        "internal_business": {ONLINE_RAW_EDIT, ONLINE_RAW_ROW_MANAGE},
+        "admin": {ONLINE_RAW_EDIT, ONLINE_RAW_ROW_MANAGE},
+    }
+    for code, additions in permission_additions.items():
+        await cur.execute(
+            "SELECT permissions FROM _permission_groups WHERE code=%s",
+            (code,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            continue
+        current = set(parse_permissions(row[0]))
+        if not additions.issubset(current):
+            await cur.execute(
+                "UPDATE _permission_groups SET permissions=%s WHERE code=%s",
+                (serialize_permissions(current | additions), code),
+            )
     await cur.execute(
         "UPDATE _permission_groups SET permissions=%s, data_scope='all', "
         "is_system=1, is_locked=1 WHERE code='super_admin'",
@@ -333,6 +357,162 @@ async def ensure_permission_schema(cur) -> None:
         "INSERT IGNORE INTO _system_config (config_key, config_value) "
         "VALUES ('session_idle_minutes', '30'), "
         "('permission_enforcement_enabled', '0')"
+    )
+
+
+async def ensure_online_editor_schema(cur) -> None:
+    """增加 0.10.0 片区、腾讯来源定位和回写审计结构。"""
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _areas (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_column(cur, "_communities", "area_id", "INT DEFAULT NULL")
+    await _ensure_index(
+        cur,
+        "_communities",
+        "idx_community_area",
+        "INDEX idx_community_area (area_id)",
+    )
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _area_leader_links (
+            area_id INT NOT NULL,
+            member_id INT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (area_id, member_id),
+            INDEX idx_area_leader_member (member_id, area_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+
+    for area_name in ("东片", "中片", "西片"):
+        await cur.execute(
+            "INSERT IGNORE INTO _areas (name) VALUES (%s)",
+            (area_name,),
+        )
+    initial_communities = {
+        "东片": ("长板", "龙河", "祥泰", "江城"),
+        "中片": ("冬梅", "三船港", "联团", "湖滨华城"),
+        "西片": ("顾家荡", "水秀", "阅湖", "南厍"),
+    }
+    for area_name, community_names in initial_communities.items():
+        placeholders = ", ".join(["%s"] * len(community_names))
+        await cur.execute(
+            f"UPDATE _communities AS community "
+            f"JOIN _areas AS area ON area.name=%s "
+            f"SET community.area_id=COALESCE(community.area_id, area.id) "
+            f"WHERE community.name IN ({placeholders})",
+            (area_name, *community_names),
+        )
+    for area_name, leader_name in (
+        ("东片", "熊朝良"),
+        ("中片", "褚寿生"),
+        ("西片", "蔡泉波"),
+    ):
+        await cur.execute(
+            """
+            INSERT IGNORE INTO _area_leader_links (area_id, member_id)
+            SELECT area.id, member.id
+            FROM _areas AS area
+            JOIN _grid_members AS member
+              ON member.name=%s AND member.position='片长'
+            WHERE area.name=%s
+            """,
+            (leader_name, area_name),
+        )
+
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_source_rows (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            spreadsheet_id INT NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            sheet_id VARCHAR(100) NOT NULL,
+            physical_row INT NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            row_hash CHAR(64) NOT NULL,
+            values_json JSON NOT NULL,
+            cell_meta_json JSON NOT NULL,
+            revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+            refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_online_source_position (
+                spreadsheet_id, sheet_id, physical_row
+            ),
+            INDEX idx_online_source_business (
+                parser_type, row_key, spreadsheet_id
+            )
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_source_projection (
+            parser_type VARCHAR(50) NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            values_json JSON NOT NULL,
+            community VARCHAR(200) NOT NULL DEFAULT '',
+            source_count INT NOT NULL DEFAULT 1,
+            conflict TINYINT(1) NOT NULL DEFAULT 0,
+            search_text MEDIUMTEXT NOT NULL,
+            pending_state VARCHAR(20) NOT NULL DEFAULT '',
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (parser_type, row_key),
+            INDEX idx_source_projection_community (parser_type, community),
+            INDEX idx_source_projection_pending (parser_type, pending_state)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_source_cache_state (
+            spreadsheet_id INT NOT NULL PRIMARY KEY,
+            parser_type VARCHAR(50) NOT NULL,
+            row_count INT NOT NULL DEFAULT 0,
+            refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_source_cache_parser (parser_type, refreshed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_writeback_audit (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            username VARCHAR(50) NOT NULL DEFAULT '',
+            action VARCHAR(20) NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            spreadsheet_id INT NOT NULL,
+            sheet_id VARCHAR(100) NOT NULL,
+            physical_row INT DEFAULT NULL,
+            column_name VARCHAR(200) DEFAULT NULL,
+            row_key_before CHAR(32) DEFAULT NULL,
+            row_key_after CHAR(32) DEFAULT NULL,
+            before_values JSON DEFAULT NULL,
+            after_values JSON DEFAULT NULL,
+            sync_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            synced_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_writeback_audit_time (created_at),
+            INDEX idx_writeback_audit_pending (
+                spreadsheet_id, sync_status, created_at
+            ),
+            INDEX idx_writeback_audit_user (user_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute(
+        "INSERT IGNORE INTO _system_config (config_key, config_value) "
+        "VALUES ('online_writeback_enabled', '0')"
+    )
+    await cur.execute(
+        "DELETE FROM _online_writeback_audit "
+        "WHERE created_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)"
+    )
+    await cur.execute(
+        "UPDATE _online_writeback_audit SET sync_status='failed' "
+        "WHERE sync_status='writing'"
     )
 
 
@@ -1097,6 +1277,7 @@ class DatabaseManager:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
                 await ensure_permission_schema(cur)
+                await ensure_online_editor_schema(cur)
                 await ensure_bootstrap_admin(cur)
 
         async with cls._pools["daily_report"].acquire() as conn:
