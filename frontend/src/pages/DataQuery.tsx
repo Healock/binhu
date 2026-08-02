@@ -19,6 +19,8 @@ import {
 import {
   DeleteOutlined,
   EditOutlined,
+  FullscreenExitOutlined,
+  FullscreenOutlined,
   HistoryOutlined,
   PlusOutlined,
   SearchOutlined,
@@ -50,6 +52,7 @@ import {
 } from '../utils/queryGrid'
 import {
   buildQuerySheetRequestFilters,
+  toggleQuerySheetFullscreen,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
 } from '../utils/querySpreadsheet'
@@ -90,6 +93,7 @@ export default function DataQuery() {
   const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
   const [selectedSheetRow, setSelectedSheetRow] = useState<DisplayRow | null>(null)
   const [sheetSaving, setSheetSaving] = useState(false)
+  const [sheetFullscreen, setSheetFullscreen] = useState(false)
   const [sheetRevision, setSheetRevision] = useState(0)
   const [sheetFilterCriteria, setSheetFilterCriteria] = useState<
     Record<string, QuerySheetFilterCriteria>
@@ -118,6 +122,28 @@ export default function DataQuery() {
     () => buildQuerySheetRequestFilters(sheetFilterCriteria),
     [sheetFilterCriteria],
   )
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setSheetFullscreen(document.fullscreenElement === document.body)
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [])
+
+  const handleSheetFullscreen = useCallback(async () => {
+    try {
+      await toggleQuerySheetFullscreen(
+        document.body,
+        document.fullscreenElement,
+        typeof document.exitFullscreen === 'function'
+          ? () => document.exitFullscreen()
+          : undefined,
+      )
+    } catch {
+      messageApi.error('当前浏览器不支持全屏，请尝试更新浏览器或使用电脑端 Chrome')
+    }
+  }, [messageApi])
 
   useEffect(() => {
     getQueryTypes()
@@ -390,8 +416,8 @@ export default function DataQuery() {
         )}
       />
 
-      <section className="app-card app-card--padded">
-        <div className="app-toolbar">
+      <section className="app-card query-filter-panel">
+        <div className="app-toolbar query-filter-toolbar">
           <Select
             value={selectedType}
             onChange={value => {
@@ -463,7 +489,9 @@ export default function DataQuery() {
         <Alert type="warning" showIcon message="超级管理员已暂停在线回写，当前页面只读" />
       )}
 
-      <div className="app-card hidden overflow-hidden md:block">
+      <div
+        className={`app-card query-spreadsheet-card hidden overflow-hidden md:block${sheetFullscreen ? ' query-spreadsheet-card--fullscreen' : ''}`}
+      >
         <div className="query-spreadsheet-toolbar">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {Object.keys(sheetFilterCriteria).length > 0 && (
@@ -525,7 +553,17 @@ export default function DataQuery() {
               </>
             )}
           </div>
-          {sheetSaving && <Tag color="processing">正在写回腾讯表格</Tag>}
+          <div className="flex shrink-0 items-center gap-2">
+            {sheetSaving && <Tag color="processing">正在写回腾讯表格</Tag>}
+            <Button
+              size="small"
+              icon={sheetFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+              aria-pressed={sheetFullscreen}
+              onClick={handleSheetFullscreen}
+            >
+              {sheetFullscreen ? '退出全屏' : '全屏'}
+            </Button>
+          </div>
         </div>
         <Spin spinning={loading} tip="正在加载在线工作表">
           {columns.length > 0 ? (

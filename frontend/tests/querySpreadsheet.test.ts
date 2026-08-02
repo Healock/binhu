@@ -13,6 +13,7 @@ import {
   querySheetPalette,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
+  toggleQuerySheetFullscreen,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
 
@@ -30,6 +31,22 @@ test('查询工作表同时启用标题区域和经典工具栏', () => {
   assert.equal(QUERY_SHEET_UI_CONFIG.header, true)
   assert.equal(QUERY_SHEET_UI_CONFIG.toolbar, true)
   assert.equal(QUERY_SHEET_UI_CONFIG.ribbonType, 'classic')
+})
+
+test('查询工作表可以进入和退出浏览器全屏', async () => {
+  let requested = 0
+  let exited = 0
+  const target = {
+    requestFullscreen: async () => { requested += 1 },
+  } as unknown as HTMLElement
+
+  await toggleQuerySheetFullscreen(target, null, async () => { exited += 1 })
+  assert.equal(requested, 1)
+  assert.equal(exited, 0)
+
+  await toggleQuerySheetFullscreen(target, target, async () => { exited += 1 })
+  assert.equal(requested, 1)
+  assert.equal(exited, 1)
 })
 
 test('工作表值筛选和条件筛选转换为完整查询请求', () => {
