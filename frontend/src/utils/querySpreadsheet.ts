@@ -52,6 +52,16 @@ export const QUERY_SHEET_FEATURE_CONFIG = {
   disableForceStringMark: true,
 }
 
+export const QUERY_SHEET_UI_CONFIG = {
+  // Univer 0.25.x 只有在 header 和 toolbar 同时启用时才渲染顶部功能区。
+  header: true,
+  toolbar: true,
+  ribbonType: 'classic' as const,
+  footer: false,
+  formulaBar: true,
+  contextMenu: false,
+}
+
 export interface QuerySheetPalette {
   background: string
   border: string
