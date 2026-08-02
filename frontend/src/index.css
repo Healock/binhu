@@ -223,30 +223,37 @@ html[data-theme='dark'] ::selection {
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+.query-spreadsheet-card:fullscreen,
 .query-spreadsheet-card--fullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 900;
   display: flex !important;
+  width: 100vw;
   height: 100vh;
   height: 100dvh;
   flex-direction: column;
+  overflow: hidden;
   border: 0;
   border-radius: 0;
   background: var(--app-surface);
 }
 
-.query-spreadsheet-card--fullscreen .ant-spin-nested-loading,
-.query-spreadsheet-card--fullscreen .ant-spin-container {
+.query-spreadsheet-card:fullscreen .ant-spin-nested-loading,
+.query-spreadsheet-card--fullscreen .ant-spin-nested-loading {
+  display: flex;
   min-height: 0;
   flex: 1;
+  flex-direction: column;
 }
 
+.query-spreadsheet-card:fullscreen .ant-spin-container,
 .query-spreadsheet-card--fullscreen .ant-spin-container {
+  min-height: 0;
+  height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
 }
 
+.query-spreadsheet-card:fullscreen .query-spreadsheet,
 .query-spreadsheet-card--fullscreen .query-spreadsheet {
   min-height: 0;
   height: auto;

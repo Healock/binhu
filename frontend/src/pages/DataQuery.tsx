@@ -114,6 +114,7 @@ export default function DataQuery() {
   const [auditPage, setAuditPage] = useState(1)
   const [auditTotal, setAuditTotal] = useState(0)
   const fetchSequence = useRef(0)
+  const sheetCardRef = useRef<HTMLDivElement>(null)
   const [messageApi, messageContext] = message.useMessage()
 
   const isSuperAdmin = user?.role === 'super_admin'
@@ -125,7 +126,7 @@ export default function DataQuery() {
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setSheetFullscreen(document.fullscreenElement === document.body)
+      setSheetFullscreen(document.fullscreenElement === sheetCardRef.current)
     }
     document.addEventListener('fullscreenchange', handleFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
@@ -134,7 +135,7 @@ export default function DataQuery() {
   const handleSheetFullscreen = useCallback(async () => {
     try {
       await toggleQuerySheetFullscreen(
-        document.body,
+        sheetCardRef.current,
         document.fullscreenElement,
         typeof document.exitFullscreen === 'function'
           ? () => document.exitFullscreen()
@@ -490,6 +491,7 @@ export default function DataQuery() {
       )}
 
       <div
+        ref={sheetCardRef}
         className={`app-card query-spreadsheet-card hidden overflow-hidden md:block${sheetFullscreen ? ' query-spreadsheet-card--fullscreen' : ''}`}
       >
         <div className="query-spreadsheet-toolbar">
@@ -545,6 +547,7 @@ export default function DataQuery() {
                     okText="确认删除"
                     cancelText="取消"
                     okButtonProps={{ danger: true }}
+                    getPopupContainer={trigger => trigger.closest('.query-spreadsheet-card') as HTMLElement || document.body}
                     onConfirm={() => handleDelete(selectedSheetRow)}
                   >
                     <Button danger size="small" icon={<DeleteOutlined />}>删除原始行</Button>
