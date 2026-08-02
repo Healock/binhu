@@ -22,9 +22,12 @@ import {
 import sheetsZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation'
 import validationZhCN from '@univerjs/preset-sheets-data-validation/locales/zh-CN'
+import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter'
+import filterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN'
 
 import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
+import '@univerjs/preset-sheets-filter/lib/index.css'
 
 import type { QueryColumnMeta, QueryDataRow } from '../api/client'
 import { useAppThemeMode } from './AppThemeProvider'
@@ -41,6 +44,7 @@ import {
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
+  type QuerySheetFilterCriteria,
   type QuerySheetRow,
 } from '../utils/querySpreadsheet'
 
@@ -53,7 +57,9 @@ export interface QuerySpreadsheetProps {
   drafts: QueryDisplayRow[]
   canAdd: boolean
   revision: number
+  filterCriteria: Record<string, QuerySheetFilterCriteria>
   onDraftsChange: (drafts: QueryDisplayRow[]) => void
+  onFilterCriteriaChange: (criteria: Record<string, QuerySheetFilterCriteria>) => void
   onSelectionChange: (row: QueryDisplayRow | null) => void
   onCommit: (changes: QuerySheetCellChange[]) => Promise<void>
   onBlocked: (message: string) => void
@@ -91,17 +97,18 @@ function createQueryUniver(
   container: HTMLElement,
   corePreset: ReturnType<typeof UniverSheetsCorePreset>,
   validationPreset: ReturnType<typeof UniverSheetsDataValidationPreset>,
+  filterPreset: ReturnType<typeof UniverSheetsFilterPreset>,
 ) {
   const univer = new Univer({
     locale: LocaleType.ZH_CN,
     locales: {
-      [LocaleType.ZH_CN]: merge({}, sheetsZhCN, validationZhCN),
+      [LocaleType.ZH_CN]: merge({}, sheetsZhCN, validationZhCN, filterZhCN),
     },
     theme: defaultTheme,
     logLevel: LogLevel.WARN,
   })
   const plugins = new Map<string, { plugin: any; options?: any }>()
-  for (const preset of [corePreset, validationPreset]) {
+  for (const preset of [corePreset, validationPreset, filterPreset]) {
     for (const entry of preset.plugins) {
       const [plugin, options] = Array.isArray(entry) ? entry : [entry, undefined]
       plugins.set(plugin.pluginName, { plugin, options })
@@ -120,7 +127,9 @@ export function QuerySpreadsheet({
   drafts,
   canAdd,
   revision,
+  filterCriteria,
   onDraftsChange,
+  onFilterCriteriaChange,
   onSelectionChange,
   onCommit,
   onBlocked,
@@ -129,9 +138,11 @@ export function QuerySpreadsheet({
   const containerRef = useRef<HTMLDivElement>(null)
   const themeMode = useAppThemeMode()
   const themeModeRef = useRef(themeMode)
+  const filterCriteriaRef = useRef(filterCriteria)
   const applyAppearanceRef = useRef<((darkMode: boolean) => void) | null>(null)
   const callbacksRef = useRef({
     onDraftsChange,
+    onFilterCriteriaChange,
     onSelectionChange,
     onCommit,
     onBlocked,
@@ -140,12 +151,14 @@ export function QuerySpreadsheet({
 
   callbacksRef.current = {
     onDraftsChange,
+    onFilterCriteriaChange,
     onSelectionChange,
     onCommit,
     onBlocked,
     onSavingChange,
   }
   themeModeRef.current = themeMode
+  filterCriteriaRef.current = filterCriteria
 
   useEffect(() => {
     const container = containerRef.current
@@ -168,7 +181,8 @@ export function QuerySpreadsheet({
       UniverSheetsCorePreset({
         container,
         header: false,
-        toolbar: false,
+        toolbar: true,
+        ribbonType: 'classic',
         footer: false,
         formulaBar: true,
         contextMenu: false,
@@ -178,6 +192,7 @@ export function QuerySpreadsheet({
         showEditOnDropdown: false,
         showSearchOnDropdown: true,
       }),
+      UniverSheetsFilterPreset(),
     )
 
     const workbook = univerAPI.createWorkbook({
@@ -260,6 +275,23 @@ export function QuerySpreadsheet({
         .build()
       worksheet.getRange(1, columnIndex, sheetRows.length, 1).setDataValidation(rule)
     })
+
+    const firstBlankRow = sheetRows.findIndex(row => row.kind === 'blank')
+    const filterDataRowCount = firstBlankRow >= 0 ? firstBlankRow : sheetRows.length
+    const sheetFilter = worksheet
+      .getRange(0, 0, Math.max(1, filterDataRowCount + 1), columns.length)
+      .createFilter()
+    if (sheetFilter) {
+      Object.entries(filterCriteriaRef.current).forEach(([column, criteria]) => {
+        const columnIndex = columns.indexOf(column)
+        if (columnIndex >= 0) {
+          sheetFilter.setColumnFilterCriteria(columnIndex, {
+            ...criteria,
+            colId: columnIndex,
+          })
+        }
+      })
+    }
 
     let disposed = false
     let suppressCommands = false
@@ -355,6 +387,29 @@ export function QuerySpreadsheet({
         selectedWorksheetRow = selection?.startRow ?? -1
         reportSelection()
       }),
+      univerAPI.addEvent(univerAPI.Event.SheetBeforeRangeFilter, params => {
+        const colors = params.criteria?.colorFilters
+        if (colors?.cellFillColors?.length || colors?.cellTextColors?.length) {
+          params.cancel = true
+          callbacksRef.current.onBlocked('在线查询暂不支持按颜色筛选，请改用值筛选或条件筛选')
+        }
+      }),
+      univerAPI.addEvent(univerAPI.Event.SheetRangeFiltered, params => {
+        const column = columns[params.col]
+        if (!column) return
+        const next = { ...filterCriteriaRef.current }
+        if (params.criteria) {
+          next[column] = JSON.parse(JSON.stringify(params.criteria)) as QuerySheetFilterCriteria
+        } else {
+          delete next[column]
+        }
+        filterCriteriaRef.current = next
+        callbacksRef.current.onFilterCriteriaChange(next)
+      }),
+      univerAPI.addEvent(univerAPI.Event.SheetRangeFilterCleared, () => {
+        filterCriteriaRef.current = {}
+        callbacksRef.current.onFilterCriteriaChange({})
+      }),
       univerAPI.addEvent(univerAPI.Event.BeforeSheetEditStart, params => {
         const descriptor = sheetRows[params.row - 1]
         const column = columns[params.column]
@@ -415,7 +470,7 @@ export function QuerySpreadsheet({
           }
           return
         }
-        if (/insert|remove|append-row|delete-range|move-row|move-col/i.test(event.id)) {
+        if (/(insert|remove|append|delete|move).*(row|column|col|range)|(row|column|col|range).*(insert|remove|append|delete|move)/i.test(event.id)) {
           event.cancel = true
           callbacksRef.current.onBlocked('在线查询页不允许改变工作表结构')
         }

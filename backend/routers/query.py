@@ -143,6 +143,48 @@ def _row_values_match(
     )
 
 
+def _grid_filter_condition(
+    expression: str,
+    model: dict,
+) -> tuple[str, list[Any]] | None:
+    if not isinstance(model, dict):
+        return None
+    filter_type = str(model.get("type") or "contains")
+    value = str(model.get("filter") or "")
+    if filter_type == "blank":
+        return f"COALESCE({expression}, '') = ''", []
+    if filter_type == "notBlank":
+        return f"COALESCE({expression}, '') <> ''", []
+    if filter_type == "equals":
+        return f"{expression} = %s", [value]
+    if filter_type == "notEqual":
+        return f"{expression} <> %s", [value]
+    if filter_type == "startsWith":
+        return f"{expression} LIKE %s", [f"{value}%"]
+    if filter_type == "notStartsWith":
+        return f"{expression} NOT LIKE %s", [f"{value}%"]
+    if filter_type == "endsWith":
+        return f"{expression} LIKE %s", [f"%{value}"]
+    if filter_type == "notEndsWith":
+        return f"{expression} NOT LIKE %s", [f"%{value}"]
+    if filter_type == "notContains":
+        return f"{expression} NOT LIKE %s", [f"%{value}%"]
+    if filter_type in {
+        "greaterThan",
+        "lessThan",
+        "greaterThanOrEqual",
+        "lessThanOrEqual",
+    }:
+        operator = {
+            "greaterThan": ">",
+            "lessThan": "<",
+            "greaterThanOrEqual": ">=",
+            "lessThanOrEqual": "<=",
+        }[filter_type]
+        return f"CAST({expression} AS DECIMAL(30, 6)) {operator} %s", [value]
+    return f"{expression} LIKE %s", [f"%{value}%"]
+
+
 def _append_grid_filters(
     where_parts: list[str],
     params: list[Any],
@@ -162,39 +204,26 @@ def _append_grid_filters(
         if column not in columns or not isinstance(model, dict):
             continue
         expression = expression_for(column)
-        filter_type = str(model.get("type") or "contains")
-        value = str(model.get("filter") or "")
-        if filter_type == "blank":
-            where_parts.append(f"COALESCE({expression}, '') = ''")
-        elif filter_type == "notBlank":
-            where_parts.append(f"COALESCE({expression}, '') <> ''")
-        elif filter_type == "equals":
-            where_parts.append(f"{expression} = %s")
-            params.append(value)
-        elif filter_type == "notEqual":
-            where_parts.append(f"{expression} <> %s")
-            params.append(value)
-        elif filter_type == "startsWith":
-            where_parts.append(f"{expression} LIKE %s")
-            params.append(f"{value}%")
-        elif filter_type == "endsWith":
-            where_parts.append(f"{expression} LIKE %s")
-            params.append(f"%{value}")
-        elif filter_type == "notContains":
-            where_parts.append(f"{expression} NOT LIKE %s")
-            params.append(f"%{value}%")
-        elif filter_type in {"greaterThan", "lessThan", "greaterThanOrEqual", "lessThanOrEqual"}:
-            operator = {
-                "greaterThan": ">",
-                "lessThan": "<",
-                "greaterThanOrEqual": ">=",
-                "lessThanOrEqual": "<=",
-            }[filter_type]
-            where_parts.append(f"CAST({expression} AS DECIMAL(30, 6)) {operator} %s")
-            params.append(value)
-        else:
-            where_parts.append(f"{expression} LIKE %s")
-            params.append(f"%{value}%")
+        raw_conditions = model.get("conditions")
+        if isinstance(raw_conditions, list) and raw_conditions:
+            conditions = [
+                condition
+                for item in raw_conditions[:2]
+                if (condition := _grid_filter_condition(expression, item)) is not None
+            ]
+            if not conditions:
+                continue
+            joiner = " AND " if str(model.get("operator") or "and") == "and" else " OR "
+            where_parts.append("(" + joiner.join(sql for sql, _ in conditions) + ")")
+            for _, condition_params in conditions:
+                params.extend(condition_params)
+            continue
+        condition = _grid_filter_condition(expression, model)
+        if condition is None:
+            continue
+        sql, condition_params = condition
+        where_parts.append(sql)
+        params.extend(condition_params)
 
 
 async def _writeback_enabled(cur) -> bool:
@@ -487,7 +516,10 @@ async def _legacy_query(
             if column not in columns or not isinstance(values, list) or not values:
                 continue
             placeholders = ",".join(["%s"] * len(values))
-            where_parts.append(f"{database_column(column)} IN ({placeholders})")
+            expression = database_column(column)
+            if any(str(value) == "" for value in values):
+                expression = f"COALESCE({expression}, '')"
+            where_parts.append(f"{expression} IN ({placeholders})")
             params.extend(str(value) for value in values)
     _append_grid_filters(
         where_parts,
@@ -586,6 +618,8 @@ async def _projection_query(
                 f"'{_json_path(column)}'))"
             )
             placeholders = ",".join(["%s"] * len(values))
+            if any(str(value) == "" for value in values):
+                expression = f"COALESCE({expression}, '')"
             where_parts.append(f"{expression} IN ({placeholders})")
             params.extend(str(value) for value in values)
     _append_grid_filters(

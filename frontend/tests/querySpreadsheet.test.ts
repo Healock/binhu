@@ -3,6 +3,7 @@ import test from 'node:test'
 import { BorderStyleTypes } from '@univerjs/core'
 import {
   applyQuerySheetValues,
+  buildQuerySheetRequestFilters,
   buildQuerySheetRows,
   canEditQuerySheetCell,
   isQuerySheetRangeEditable,
@@ -16,12 +17,70 @@ import {
 
 const columns = ['社区', '核查人', '姓名']
 
-test('查询工作表关闭长数字文本误报并提供深浅色配色', () => {
+test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅色', () => {
   assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringAlert, true)
   assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringMark, true)
   assert.equal(querySheetPalette(false).background, '#ffffff')
-  assert.equal(querySheetPalette(true).background, '#0f172a')
-  assert.notEqual(querySheetPalette(false).editable, querySheetPalette(true).editable)
+  assert.deepEqual(querySheetPalette(true), querySheetPalette(false))
+})
+
+test('工作表值筛选和条件筛选转换为完整查询请求', () => {
+  const result = buildQuerySheetRequestFilters({
+    社区: {
+      colId: 0,
+      filters: { blank: true, filters: ['长板', '冬梅', '长板'] },
+    },
+    姓名: {
+      colId: 2,
+      customFilters: { customFilters: [{ val: '*张*' }] },
+    },
+  })
+
+  assert.deepEqual(result.filters, { 社区: ['长板', '冬梅', ''] })
+  assert.deepEqual(result.gridFilters, {
+    姓名: { type: 'contains', filter: '张' },
+  })
+  assert.deepEqual(result.unsupportedColorColumns, [])
+})
+
+test('工作表复合条件、非空和颜色筛选转换正确', () => {
+  const result = buildQuerySheetRequestFilters({
+    数量: {
+      colId: 0,
+      customFilters: {
+        and: 1,
+        customFilters: [
+          { val: 10, operator: 'greaterThanOrEqual' },
+          { val: 20, operator: 'lessThanOrEqual' },
+        ],
+      },
+    },
+    地址: {
+      colId: 1,
+      customFilters: { customFilters: [{ val: '*园', operator: 'notEqual' }] },
+    },
+    结果: {
+      colId: 2,
+      customFilters: { customFilters: [{ val: '', operator: 'notEqual' }] },
+    },
+    状态: {
+      colId: 3,
+      colorFilters: { cellFillColors: ['#ffffff'] },
+    },
+  })
+
+  assert.deepEqual(result.gridFilters, {
+    数量: {
+      operator: 'and',
+      conditions: [
+        { type: 'greaterThanOrEqual', filter: '10' },
+        { type: 'lessThanOrEqual', filter: '20' },
+      ],
+    },
+    地址: { type: 'notEndsWith', filter: '园' },
+    结果: { type: 'notBlank', filter: '' },
+  })
+  assert.deepEqual(result.unsupportedColorColumns, ['状态'])
 })
 
 test('使用 Univer 运行时实际提供的细边框枚举', () => {
