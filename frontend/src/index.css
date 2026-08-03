@@ -298,83 +298,34 @@
   font-weight: 400;
 }
 
-.mobile-phone-picker__backdrop {
-  position: fixed;
-  z-index: 80;
-  inset: 0;
+.mobile-phone-native-select {
+  position: relative;
+  display: inline-grid;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.mobile-phone-native-select--compact {
+  width: auto;
+}
+
+.mobile-phone-native-select > .ant-btn,
+.mobile-phone-native-select__control {
+  grid-area: 1 / 1;
   width: 100%;
   height: 100%;
+}
+
+.mobile-phone-native-select__control {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  min-height: 44px;
   border: 0;
-  border-radius: 0;
-  background: rgb(15 23 42 / 0.42);
-}
-
-.mobile-phone-picker {
-  position: fixed;
-  z-index: 81;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  left: max(12px, env(safe-area-inset-left));
-  display: grid;
-  max-height: min(70dvh, 520px);
-  gap: 14px;
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid var(--app-border);
-  border-radius: 18px;
-  color: var(--app-text);
-  background: var(--app-surface);
-  box-shadow: 0 24px 64px rgb(15 23 42 / 0.28);
-}
-
-.mobile-phone-picker__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.mobile-phone-picker__header h2,
-.mobile-phone-picker__header p {
-  margin: 0;
-}
-
-.mobile-phone-picker__header h2 {
-  color: var(--app-text-strong);
-  font-size: 17px;
-  font-weight: 650;
-}
-
-.mobile-phone-picker__header p {
-  margin-top: 3px;
-  color: var(--app-text-secondary);
-  font-size: 12px;
-}
-
-.mobile-phone-picker__list {
-  display: grid;
-  gap: 10px;
-}
-
-.mobile-phone-picker__item {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  background: var(--app-surface-muted);
-}
-
-.mobile-phone-picker__item > strong {
-  color: var(--app-text-strong);
-  font-size: 17px;
-  letter-spacing: 0.02em;
-}
-
-.mobile-phone-picker__actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 16px;
 }
 
 .mobile-task-badge {
@@ -770,7 +721,7 @@ html[data-theme='dark'] ::selection {
   border-radius: 8px;
 }
 
-.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card):not(.mobile-phone-picker__backdrop) {
+.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card) {
   min-height: 36px;
   border-radius: 8px;
 }
@@ -1390,7 +1341,7 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   .app-shell input:not([type='checkbox']):not([type='radio']),
   .app-shell select,
   .app-shell textarea,
-  .app-shell button:not(.ant-btn):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card):not(.mobile-phone-picker__backdrop) {
+  .app-shell button:not(.ant-btn):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card) {
     min-height: 44px;
   }
 

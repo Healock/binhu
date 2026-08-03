@@ -36,6 +36,7 @@ from services.permissions import (
     ONLINE_RAW_VIEW,
 )
 from services.schema_compat import get_database_column_map, quote_identifier
+from services.task_workflow import TASK_WORKFLOWS
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
 
@@ -74,12 +75,72 @@ def _same_value(left: str, right: str, cell_type: str) -> bool:
     return str(left or "").strip() == str(right or "").strip()
 
 
+def _usable_select_options(metadata: dict | None) -> list[dict]:
+    """过滤腾讯空白单元格偶尔返回的空下拉选项。"""
+    if not isinstance(metadata, dict):
+        return []
+    result = []
+    for option in metadata.get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        option_id = str(option.get("id") or "").strip()
+        text = str(option.get("text") or "").strip()
+        if not option_id or not text:
+            continue
+        normalized = dict(option)
+        normalized["id"] = option_id
+        normalized["text"] = text
+        result.append(normalized)
+    return result
+
+
+async def _cached_result_options(
+    cur,
+    parser_type: str,
+    field: str,
+    *,
+    spreadsheet_id: int | None = None,
+    sheet_id: str | None = None,
+) -> list[dict]:
+    """从同业务已缓存的非空单元格复用腾讯原始选项 ID。"""
+    options_path = f'$."{field}".options'
+    scope_sql = ""
+    params: list[Any] = [parser_type, options_path]
+    if spreadsheet_id is not None:
+        scope_sql += " AND spreadsheet_id=%s"
+        params.append(spreadsheet_id)
+    if sheet_id:
+        scope_sql += " AND sheet_id=%s"
+        params.append(sheet_id)
+    await cur.execute(
+        f"""
+        SELECT cell_meta_json
+        FROM _online_source_rows
+        WHERE parser_type=%s
+          AND JSON_LENGTH(JSON_EXTRACT(cell_meta_json, %s)) > 1
+          {scope_sql}
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        tuple(params),
+    )
+    for row in await cur.fetchall():
+        cached = json_value(row[0], {})
+        options = _usable_select_options(cached.get(field))
+        if options:
+            return options
+    return []
+
+
 async def _managed_column_metadata(
     cur,
     parser,
     source_metadata: dict | None = None,
+    *,
+    spreadsheet_id: int | None = None,
+    sheet_id: str | None = None,
 ) -> dict[str, dict]:
-    """用平台名册为社区和核查人提供稳定的下拉选项。"""
+    """补齐社区、核查人和业务结果的稳定下拉选项。"""
     metadata = {
         column: dict((source_metadata or {}).get(column) or {"type": "text"})
         for column in parser.COLUMNS
@@ -123,6 +184,28 @@ async def _managed_column_metadata(
             "type": "select",
             "multiple": False,
             "options": [{"id": name, "text": name} for name in members],
+        }
+    workflow = TASK_WORKFLOWS.get(parser.parser_type)
+    if workflow and workflow.result_field in parser.COLUMNS:
+        result_field = workflow.result_field
+        options = _usable_select_options(metadata.get(result_field))
+        if not options:
+            options = await _cached_result_options(
+                cur,
+                parser.parser_type,
+                result_field,
+                spreadsheet_id=spreadsheet_id,
+                sheet_id=sheet_id,
+            )
+        if not options:
+            options = [
+                {"id": text, "text": text}
+                for text in workflow.result_options
+            ]
+        metadata[result_field] = {
+            "type": "select",
+            "multiple": False,
+            "options": options,
         }
     return metadata
 
@@ -461,6 +544,13 @@ async def update_source_fields(
         after = dict(current_values)
         after.update(normalized_changes)
         async with conn.cursor() as cur:
+            current["cell_meta"] = await _managed_column_metadata(
+                cur,
+                parser,
+                current.get("cell_meta") or {},
+                spreadsheet_id=source["spreadsheet_id"],
+                sheet_id=source["sheet_id"],
+            )
             try:
                 await validate_row_changes(
                     cur, user, parser, current_values, after, ordered_columns

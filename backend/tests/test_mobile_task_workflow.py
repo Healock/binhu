@@ -79,6 +79,12 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["identity_number"], "320000000000000001")
         self.assertEqual(summary["source"], "")
 
+    def test_each_mobile_workflow_defines_result_choices(self):
+        for workflow in TASK_WORKFLOWS.values():
+            with self.subTest(parser_type=workflow.parser_type):
+                self.assertGreater(len(workflow.result_options), 0)
+                self.assertEqual(len(workflow.result_options), len(set(workflow.result_options)))
+
     def test_only_flow_positions_with_one_community_are_allowed(self):
         user = {
             "member": {"name": "网格员甲", "position": "组员"},

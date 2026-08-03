@@ -128,8 +128,9 @@ class ProjectionCursor:
 
 
 class ManagedMetadataCursor:
-    def __init__(self):
+    def __init__(self, cached_metadata=None):
         self.mode = ""
+        self.cached_metadata = cached_metadata
 
     async def execute(self, sql, params=None):
         del params
@@ -138,12 +139,16 @@ class ManagedMetadataCursor:
             self.mode = "communities"
         elif "FROM _grid_members AS member" in compact:
             self.mode = "members"
+        elif "FROM _online_source_rows" in compact:
+            self.mode = "cached_metadata"
 
     async def fetchall(self):
         if self.mode == "communities":
             return [("长板",), ("龙河",)]
         if self.mode == "members":
             return [("网格员甲",), ("网格员乙",)]
+        if self.mode == "cached_metadata" and self.cached_metadata:
+            return [(json.dumps(self.cached_metadata, ensure_ascii=False),)]
         return []
 
 
@@ -488,6 +493,49 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(metadata["核查结果"]["type"], "select")
+
+    async def test_blank_result_options_reuse_cached_tencent_option_ids(self):
+        parser = get_parser("全链条")
+        cursor = ManagedMetadataCursor({
+            "核查结果": {
+                "type": "select",
+                "options": [
+                    {"id": "result-1", "text": "已登记"},
+                    {"id": "result-2", "text": "无法核实"},
+                ],
+            },
+        })
+
+        metadata = await _managed_column_metadata(
+            cursor,
+            parser,
+            {"核查结果": {
+                "type": "select",
+                "options": [{"id": "", "text": ""}],
+            }},
+        )
+
+        self.assertEqual(metadata["核查结果"]["options"], [
+            {"id": "result-1", "text": "已登记"},
+            {"id": "result-2", "text": "无法核实"},
+        ])
+
+    async def test_result_options_have_business_fallback_without_cached_metadata(self):
+        parser = get_parser("疑似未注销模型三")
+
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {"核查结果": {
+                "type": "select",
+                "options": [{"id": "", "text": ""}],
+            }},
+        )
+
+        self.assertEqual(
+            [item["text"] for item in metadata["核查结果"]["options"]],
+            ["近期反吴", "离吴", "在吴"],
+        )
 
 
 if __name__ == "__main__":
