@@ -62,13 +62,20 @@ export const QUERY_SHEET_UI_CONFIG = {
   contextMenu: false,
 }
 
+export function isQuerySheetFullscreen(
+  activeElement: Element | null,
+  documentRoot: HTMLElement | null,
+): boolean {
+  return Boolean(documentRoot && activeElement === documentRoot)
+}
+
 export async function toggleQuerySheetFullscreen(
-  target: HTMLElement | null,
+  documentRoot: HTMLElement | null,
   activeElement: Element | null,
   exitFullscreen?: () => Promise<void>,
 ): Promise<void> {
-  if (!target) throw new Error('fullscreen_target_missing')
-  if (activeElement === target) {
+  if (!documentRoot) throw new Error('fullscreen_target_missing')
+  if (activeElement === documentRoot) {
     if (!exitFullscreen) throw new Error('fullscreen_not_supported')
     await exitFullscreen()
     return
@@ -77,10 +84,10 @@ export async function toggleQuerySheetFullscreen(
     if (!exitFullscreen) throw new Error('fullscreen_not_supported')
     await exitFullscreen()
   }
-  if (typeof target.requestFullscreen !== 'function') {
+  if (typeof documentRoot.requestFullscreen !== 'function') {
     throw new Error('fullscreen_not_supported')
   }
-  await target.requestFullscreen()
+  await documentRoot.requestFullscreen()
 }
 
 export interface QuerySheetPalette {

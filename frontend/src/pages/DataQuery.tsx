@@ -52,6 +52,7 @@ import {
 } from '../utils/queryGrid'
 import {
   buildQuerySheetRequestFilters,
+  isQuerySheetFullscreen,
   toggleQuerySheetFullscreen,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
@@ -115,7 +116,6 @@ export default function DataQuery() {
   const [auditPage, setAuditPage] = useState(1)
   const [auditTotal, setAuditTotal] = useState(0)
   const fetchSequence = useRef(0)
-  const sheetCardRef = useRef<HTMLDivElement>(null)
   const [messageApi, messageContext] = message.useMessage()
 
   const isSuperAdmin = user?.role === 'super_admin'
@@ -127,16 +127,24 @@ export default function DataQuery() {
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setSheetFullscreen(document.fullscreenElement === sheetCardRef.current)
+      setSheetFullscreen(isQuerySheetFullscreen(
+        document.fullscreenElement,
+        document.documentElement,
+      ))
     }
     document.addEventListener('fullscreenchange', handleFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
   }, [])
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('query-sheet-fullscreen-active', sheetFullscreen)
+    return () => document.documentElement.classList.remove('query-sheet-fullscreen-active')
+  }, [sheetFullscreen])
+
   const handleSheetFullscreen = useCallback(async () => {
     try {
       await toggleQuerySheetFullscreen(
-        sheetCardRef.current,
+        document.documentElement,
         document.fullscreenElement,
         typeof document.exitFullscreen === 'function'
           ? () => document.exitFullscreen()
@@ -510,7 +518,6 @@ export default function DataQuery() {
       )}
 
       <div
-        ref={sheetCardRef}
         className={`app-card query-spreadsheet-card hidden overflow-hidden md:block${sheetFullscreen ? ' query-spreadsheet-card--fullscreen' : ''}`}
       >
         <div className="query-spreadsheet-toolbar">

@@ -6,6 +6,7 @@ import {
   buildQuerySheetRequestFilters,
   buildQuerySheetRows,
   canEditQuerySheetCell,
+  isQuerySheetFullscreen,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
@@ -33,18 +34,22 @@ test('查询工作表同时启用标题区域和经典工具栏', () => {
   assert.equal(QUERY_SHEET_UI_CONFIG.ribbonType, 'classic')
 })
 
-test('查询工作表可以进入和退出浏览器全屏', async () => {
+test('查询工作表使用文档根节点全屏以保留工具栏和筛选浮层', async () => {
   let requested = 0
   let exited = 0
-  const target = {
+  const documentRoot = {
     requestFullscreen: async () => { requested += 1 },
   } as unknown as HTMLElement
+  const sheetCard = {} as HTMLElement
 
-  await toggleQuerySheetFullscreen(target, null, async () => { exited += 1 })
+  assert.equal(isQuerySheetFullscreen(sheetCard, documentRoot), false)
+  assert.equal(isQuerySheetFullscreen(documentRoot, documentRoot), true)
+
+  await toggleQuerySheetFullscreen(documentRoot, null, async () => { exited += 1 })
   assert.equal(requested, 1)
   assert.equal(exited, 0)
 
-  await toggleQuerySheetFullscreen(target, target, async () => { exited += 1 })
+  await toggleQuerySheetFullscreen(documentRoot, documentRoot, async () => { exited += 1 })
   assert.equal(requested, 1)
   assert.equal(exited, 1)
 })
