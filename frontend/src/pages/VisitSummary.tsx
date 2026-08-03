@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   DatePicker,
+  message,
   Modal,
   Select,
   Table,
@@ -11,6 +12,7 @@ import {
 import type { TableColumnsType } from 'antd'
 import {
   CalendarOutlined,
+  DownloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -25,6 +27,8 @@ import {
   type VisitSummaryReport,
   type VisitSummaryCategory,
 } from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 import { buildVisitTableTotal } from '../utils/tableTotals'
 
 const EMPTY_FILTER_VALUE = '__binhu_empty_visit_summary_value__'
@@ -173,6 +177,7 @@ function SummaryCard({
 }
 
 export default function VisitSummary() {
+  const { recordActivity } = useAuth()
   const [coverage, setCoverage] = useState<VisitCoverage | null>(null)
   const [coverageLoading, setCoverageLoading] = useState(false)
   const [coverageError, setCoverageError] = useState('')
@@ -184,6 +189,9 @@ export default function VisitSummary() {
   const [summaryReport, setSummaryReport] = useState<VisitSummaryReport | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState('')
+  const [visibleInspectorRows, setVisibleInspectorRows] = useState<VisitSummaryRow[]>([])
+  const [visibleCommunityRows, setVisibleCommunityRows] = useState<VisitSummaryRow[]>([])
+  const [exporting, setExporting] = useState(false)
   const rangeInitialized = useRef(false)
   const summaryRequestId = useRef(0)
 
@@ -255,6 +263,47 @@ export default function VisitSummary() {
     )?.label
     || '出租房'
   const shownResultLabel = `${shownCategoryLabel} · ${shownRangeLabel}`
+
+  useEffect(() => {
+    setVisibleInspectorRows(inspectorRows)
+    setVisibleCommunityRows(communityRows)
+  }, [summaryReport])
+
+  const handleExport = async () => {
+    if (!summaryReport || !shownSummaryRange) return
+    setExporting(true)
+    try {
+      await recordActivity()
+      await exportSummaryWorkbook({
+        fileName: `走访汇总_${shownCategoryLabel}_${shownSummaryRange[0]}_至_${shownSummaryRange[1]}`,
+        tables: [
+          {
+            sheet: '人员汇总',
+            columns: summaryReport.inspector.columns,
+            rows: visibleInspectorRows,
+            total: buildVisitTableTotal(
+              summaryReport.inspector.columns,
+              visibleInspectorRows,
+            ),
+          },
+          {
+            sheet: '社区汇总',
+            columns: summaryReport.community.columns,
+            rows: visibleCommunityRows,
+            total: buildVisitTableTotal(
+              summaryReport.community.columns,
+              visibleCommunityRows,
+            ),
+          },
+        ],
+      })
+      message.success('已导出当前走访汇总数据')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div className="app-page min-w-0">
@@ -394,6 +443,16 @@ export default function VisitSummary() {
             )}
           >
             查询汇总
+          </Button>
+          <Button
+            size="large"
+            icon={<DownloadOutlined />}
+            loading={exporting}
+            disabled={!summaryReport || summaryLoading}
+            onClick={handleExport}
+            className="w-full md:w-auto"
+          >
+            导出 XLSX
           </Button>
           <span className="text-sm text-slate-500 md:ml-auto">
             当前结果：{shownResultLabel}
@@ -544,6 +603,9 @@ export default function VisitSummary() {
               summary={visitSummaryTotal(
                 summaryReport.inspector.columns,
               )}
+              onChange={(_, __, ___, extra) => {
+                setVisibleInspectorRows([...extra.currentDataSource])
+              }}
               title={currentRows => (
                 <h2 className="text-sm font-semibold text-gray-700">
                   人员汇总（{currentRows.length} 行）
@@ -565,6 +627,9 @@ export default function VisitSummary() {
               summary={visitSummaryTotal(
                 summaryReport.community.columns,
               )}
+              onChange={(_, __, ___, extra) => {
+                setVisibleCommunityRows([...extra.currentDataSource])
+              }}
               title={currentRows => (
                 <h2 className="text-sm font-semibold text-gray-700">
                   社区汇总（{currentRows.length} 个社区）

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Alert, DatePicker, Segmented, Select, Table, Tag } from 'antd'
+import { Alert, Button, DatePicker, message, Segmented, Select, Table, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
+import { DownloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
@@ -19,6 +20,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useSync } from '../hooks/useSync'
+import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 import { buildReportTableTotal } from '../utils/tableTotals'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
@@ -122,6 +124,9 @@ export default function Dashboard() {
   const [msg, setMsg] = useState('')
   const [timezone, setTimezone] = useState('Asia/Shanghai')
   const [mobileReportSection, setMobileReportSection] = useState<'inspector' | 'community'>('inspector')
+  const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
+  const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
+  const [exporting, setExporting] = useState(false)
   const [startDate, endDate] = dateRange
 
   // 日期或业务类型变化时读取报表；同步任务结束时也会调用同一函数。
@@ -214,15 +219,60 @@ export default function Dashboard() {
     ? `${overview.available_start_date} 至 ${overview.available_end_date}`
     : '暂无可用数据'
 
+  useEffect(() => {
+    setVisibleInspectorRows(inspectorTable.data)
+    setVisibleCommunityRows(communityTable.data)
+  }, [report])
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      await recordActivity()
+      const inspectorColumns = inspectorTable.columns.filter((column: string) => column !== 'id')
+      const communityColumns = communityTable.columns.filter((column: string) => column !== 'id')
+      await exportSummaryWorkbook({
+        fileName: `在线数据汇总_${reportType}_${startDate}_至_${endDate}`,
+        tables: [
+          {
+            sheet: '网格员汇总',
+            columns: inspectorColumns,
+            rows: visibleInspectorRows,
+            total: buildReportTableTotal(inspectorColumns, visibleInspectorRows),
+          },
+          {
+            sheet: '社区汇总',
+            columns: communityColumns,
+            rows: visibleCommunityRows,
+            total: buildReportTableTotal(communityColumns, visibleCommunityRows),
+          },
+        ],
+      })
+      message.success('已导出当前在线汇总数据')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="app-page">
       <PageHeader
         title="在线数据汇总"
         description="同步腾讯文档数据，并按日期和业务类型查看统计结果"
         actions={report.exists ? (
-          <Tag color="blue">
-            网格员 {inspectorTable.data.length} 行 · 社区 {communityTable.data.length} 行
-          </Tag>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Tag color="blue">
+              网格员 {inspectorTable.data.length} 行 · 社区 {communityTable.data.length} 行
+            </Tag>
+            <Button
+              icon={<DownloadOutlined />}
+              loading={exporting}
+              onClick={handleExport}
+            >
+              导出 XLSX
+            </Button>
+          </div>
         ) : undefined}
       />
 
@@ -406,6 +456,9 @@ export default function Dashboard() {
                     inspectorTable.columns,
                   )
                 : undefined}
+              onChange={(_, __, ___, extra) => {
+                setVisibleInspectorRows([...extra.currentDataSource])
+              }}
               title={currentRows => (
                 <h3 className="text-sm font-semibold text-gray-700">
                   {inspectorTitle}（{currentRows.length} 人）
@@ -425,6 +478,9 @@ export default function Dashboard() {
                     communityTable.columns,
                   )
                 : undefined}
+              onChange={(_, __, ___, extra) => {
+                setVisibleCommunityRows([...extra.currentDataSource])
+              }}
               title={currentRows => (
                 <h3 className="text-sm font-semibold text-gray-700">
                   {communityTitle}（{currentRows.length} 个社区）
