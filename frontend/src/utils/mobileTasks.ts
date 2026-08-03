@@ -1,7 +1,13 @@
 import type {
   MobileTaskBusinessSummary,
   MobileTaskDetailData,
+  MobileTaskSource,
 } from '../api/client'
+
+export interface MobileTaskSourceDifference {
+  field: string
+  values: string[]
+}
 
 export function mobileTaskPhoneValue(value: string): string {
   return value.replace(/[^\d+]/g, '')
@@ -43,6 +49,23 @@ export function buildMobileTaskChanges(
       .filter(field => (formValues[field] || '') !== (sourceValues[field] || ''))
       .map(field => [field, formValues[field] || '']),
   )
+}
+
+export function mobileTaskSourceDifferences(
+  sources: Pick<MobileTaskSource, 'values'>[],
+  columns: string[],
+): MobileTaskSourceDifference[] {
+  if (sources.length < 2) return []
+
+  const fields = Array.from(new Set([
+    ...columns,
+    ...sources.flatMap(source => Object.keys(source.values)),
+  ]))
+
+  return fields.flatMap(field => {
+    const values = sources.map(source => String(source.values[field] || '').trim())
+    return new Set(values).size > 1 ? [{ field, values }] : []
+  })
 }
 
 export function mobileTaskEditorFields(

@@ -33,8 +33,12 @@
 .mobile-task-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+.app-temporary-password-alert {
+  margin-bottom: 16px;
 }
 
 .mobile-task-hero {
@@ -115,6 +119,21 @@
   padding: 15px;
 }
 
+.mobile-task-business-list,
+.mobile-task-list,
+.mobile-task-source-list {
+  display: grid;
+  gap: 12px;
+}
+
+.mobile-task-filter-card {
+  padding: 14px;
+}
+
+.mobile-task-filter-card__row {
+  margin-top: 12px;
+}
+
 .mobile-task-business-card:active,
 .mobile-task-item-card:active {
   transform: scale(0.995);
@@ -129,6 +148,90 @@
   min-height: 132px;
   padding: 15px;
   text-align: left;
+}
+
+.mobile-task-item-card__address {
+  margin-top: 12px;
+}
+
+.mobile-task-item-card__footer {
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.mobile-task-source-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.mobile-task-source-card {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  color: var(--app-text);
+  background: var(--app-surface-muted);
+  text-align: left;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.mobile-task-source-card.is-selected {
+  border-color: var(--app-primary);
+  background: var(--app-primary-soft);
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 0.10);
+}
+
+.mobile-task-source-card__header {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+}
+
+.mobile-task-source-card__header > :nth-child(2) {
+  color: var(--app-text-secondary);
+}
+
+.mobile-task-source-card__state {
+  justify-self: end;
+  color: var(--app-primary-text);
+  font-size: 11px;
+}
+
+.mobile-task-source-card__differences {
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid var(--app-border);
+}
+
+.mobile-task-source-card__difference {
+  display: grid;
+  grid-template-columns: minmax(72px, 30%) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.mobile-task-source-card__difference > span {
+  color: var(--app-text-secondary);
+}
+
+.mobile-task-source-card__difference > strong {
+  overflow-wrap: anywhere;
+  color: var(--app-text-strong);
+  font-weight: 550;
+}
+
+.mobile-task-source-card__difference > strong.is-empty {
+  color: var(--app-text-muted);
+  font-weight: 400;
 }
 
 .mobile-task-badge {
@@ -524,7 +627,7 @@ html[data-theme='dark'] ::selection {
   border-radius: 8px;
 }
 
-.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action) {
+.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card) {
   min-height: 36px;
   border-radius: 8px;
 }
@@ -1144,7 +1247,7 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   .app-shell input:not([type='checkbox']):not([type='radio']),
   .app-shell select,
   .app-shell textarea,
-  .app-shell button:not(.ant-btn):not(.compact-action) {
+  .app-shell button:not(.ant-btn):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card) {
     min-height: 44px;
   }
 
