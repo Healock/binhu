@@ -31,12 +31,14 @@ import {
 } from '../utils/navigationGuard'
 import {
   buildMobileTaskChanges,
+  mobileTaskCanLaunchTelephone,
   mobileTaskEditorFields,
-  mobileTaskPhoneValue,
+  mobileTaskPhoneOptions,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
 } from '../utils/mobileTasks'
+import MobilePhonePicker from '../components/MobilePhonePicker'
 
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
@@ -58,7 +60,7 @@ function detailError(reason: any, fallback: string) {
 
 export default function MobileTaskDetail() {
   const navigate = useNavigate()
-  const { recordActivity } = useAuth()
+  const { recordActivity, user } = useAuth()
   const { parserType = '', rowKey = '' } = useParams()
   const [data, setData] = useState<MobileTaskDetailData | null>(null)
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null)
@@ -67,6 +69,7 @@ export default function MobileTaskDetail() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
+  const [phonePickerOpen, setPhonePickerOpen] = useState(false)
 
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
@@ -181,7 +184,17 @@ export default function MobileTaskDetail() {
 
   const dial = async (phone: string) => {
     await recordActivity().catch(() => {})
-    window.location.href = `tel:${mobileTaskPhoneValue(phone)}`
+    const navigation = navigator as Navigator & { userAgentData?: { mobile?: boolean } }
+    if (!mobileTaskCanLaunchTelephone(
+      navigation.userAgent,
+      navigation.userAgentData?.mobile,
+      navigation.maxTouchPoints,
+    )) {
+      await navigator.clipboard.writeText(phone)
+      message.info('当前设备没有拨号功能，已复制电话号码')
+      return
+    }
+    window.location.href = `tel:${phone}`
   }
 
   if (loading && !data) {
@@ -202,6 +215,7 @@ export default function MobileTaskDetail() {
     : data.task.summary.date
   const phone = selectedSource ? firstValue(selectedSource.values, data.workflow.phone_fields) : data.task.summary.phone
   const address = selectedSource ? firstValue(selectedSource.values, data.workflow.address_fields) : data.task.summary.address
+  const phoneOptions = mobileTaskPhoneOptions(phone)
 
   return (
     <div className="mobile-task-page">
@@ -226,8 +240,8 @@ export default function MobileTaskDetail() {
 
         {(phone || address) && (
           <div className="mt-4 grid grid-cols-2 gap-2">
-            {phone && <Button className="min-h-11" type="primary" icon={<PhoneOutlined />} onClick={() => void dial(phone)}>拨打电话</Button>}
-            {phone && <Button className="min-h-11" icon={<CopyOutlined />} onClick={() => void copy(phone, '电话')}>复制电话</Button>}
+            {phoneOptions.length > 0 && <Button className="min-h-11" type="primary" icon={<PhoneOutlined />} onClick={() => phoneOptions.length > 1 ? setPhonePickerOpen(true) : void dial(phoneOptions[0])}>{phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}</Button>}
+            {phoneOptions.length > 0 && <Button className="min-h-11" icon={<CopyOutlined />} onClick={() => phoneOptions.length > 1 ? setPhonePickerOpen(true) : void copy(phoneOptions[0], '电话')}>{phoneOptions.length > 1 ? '选择号码' : '复制电话'}</Button>}
             {address && <Button className="col-span-2 min-h-11" icon={<CopyOutlined />} onClick={() => void copy(address, '地址')}>复制地址</Button>}
           </div>
         )}
@@ -311,7 +325,12 @@ export default function MobileTaskDetail() {
                 })) || []
                 return (
                   <label key={field} className="block">
-                    <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">{field}</span>
+                    <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">
+                      {field === '核查人' && user?.member?.position === '组长' ? '任务分配' : field}
+                    </span>
+                    {field === '核查人' && user?.member?.position === '组长' && (
+                      <span className="mb-2 block text-xs text-[var(--app-text-secondary)]">选择本社区在岗组员，保存后即完成转派</span>
+                    )}
                     {metadata.type === 'select' || field === '核查人' ? (
                       <Select
                         allowClear
@@ -364,6 +383,16 @@ export default function MobileTaskDetail() {
           }]}
         />
       )}
+      <MobilePhonePicker
+        open={phonePickerOpen && phoneOptions.length > 1}
+        phones={phoneOptions}
+        onClose={() => setPhonePickerOpen(false)}
+        onCopy={value => void copy(value, '电话号码')}
+        onDial={value => {
+          setPhonePickerOpen(false)
+          void dial(value)
+        }}
+      />
     </div>
   )
 }

@@ -162,7 +162,7 @@ async def _aggregate_live(cur, context: dict, scope: FlowScope) -> dict[str, dic
     return totals
 
 
-async def _member_options(cur, community: str) -> list[dict[str, str]]:
+async def _assignee_options(cur, community: str) -> list[dict[str, str]]:
     await cur.execute(
         """
         SELECT DISTINCT member.name
@@ -176,7 +176,7 @@ async def _member_options(cur, community: str) -> list[dict[str, str]]:
         JOIN _communities AS community
           ON community.id=department.community_id
         WHERE community.name=%s
-          AND member.position IN ('组长', '组员')
+          AND member.position='组员'
           AND member.status='在岗'
         ORDER BY member.name
         """,
@@ -187,6 +187,42 @@ async def _member_options(cur, community: str) -> list[dict[str, str]]:
         for row in await cur.fetchall()
         if row[0]
     ]
+
+
+async def _validate_assignment(
+    cur,
+    context: dict,
+    changes: dict[str, str],
+) -> None:
+    if "核查人" not in changes:
+        return
+    if context["position"] != "组长":
+        raise HTTPException(403, "只有组长可以在手机任务中转派任务")
+    assignee = str(changes.get("核查人") or "").strip()
+    if not assignee:
+        raise HTTPException(400, "请选择要分配的组员")
+    await cur.execute(
+        """
+        SELECT member.id
+        FROM _grid_members AS member
+        JOIN _grid_member_department_links AS link
+          ON link.member_id=member.id
+        JOIN _departments AS department
+          ON department.id=link.department_id
+         AND department.department_type='community'
+         AND department.is_active=1
+        JOIN _communities AS community
+          ON community.id=department.community_id
+        WHERE community.name=%s
+          AND member.name=%s
+          AND member.position='组员'
+          AND member.status='在岗'
+        LIMIT 1
+        """,
+        (context["community"], assignee),
+    )
+    if not await cur.fetchone():
+        raise HTTPException(400, "只能分配给本社区在岗组员")
 
 
 def _task_record(
@@ -408,7 +444,10 @@ async def get_mobile_task_detail(
         )
         raw_sources = await cur.fetchall()
         enabled = await _writeback_enabled(cur)
-        member_options = await _member_options(cur, context["community"])
+        assignee_options = (
+            await _assignee_options(cur, context["community"])
+            if context["position"] == "组长" else []
+        )
 
         sources = []
         for source_id, physical_row, raw_values, raw_meta, revision, row_hash in raw_sources:
@@ -423,11 +462,11 @@ async def get_mobile_task_detail(
             metadata = await _managed_column_metadata(
                 cur, parser, json_value(raw_meta, {})
             )
-            if "核查人" in metadata:
+            if "核查人" in metadata and context["position"] == "组长":
                 metadata["核查人"] = {
                     "type": "select",
                     "multiple": False,
-                    "options": list(member_options),
+                    "options": list(assignee_options),
                 }
             source_task = _task_record(
                 parser_type,
@@ -442,6 +481,10 @@ async def get_mobile_task_detail(
                 list(capabilities["editable_fields"])
                 if enabled else []
             )
+            if context["position"] != "组长":
+                editable_fields = [
+                    field for field in editable_fields if field != "核查人"
+                ]
             # 二次反馈是否真正允许保存，仍由批量校验根据提交后的主结果
             # 决定；这里先把字段交给手机表单，才能在同一次提交中展开。
             if enabled and capabilities["can_edit"]:
@@ -504,7 +547,9 @@ async def update_mobile_task(
 ):
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
-    await _flow_context(conn, user)
+    context = await _flow_context(conn, user)
+    async with conn.cursor() as cur:
+        await _validate_assignment(cur, context, data.changes)
     return await update_source_fields(
         parser_type=parser_type,
         source_id=source_id,

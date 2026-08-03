@@ -9,8 +9,41 @@ export interface MobileTaskSourceDifference {
   values: string[]
 }
 
+export function mobileTaskPhoneOptions(value: string): string[] {
+  const options: string[] = []
+  const add = (phone: string) => {
+    if (phone && !options.includes(phone)) options.push(phone)
+  }
+
+  for (const chunk of String(value || '').split(/[，,、;；|/\r\n]+/)) {
+    const compact = chunk.replace(/[^\d+]/g, '')
+    if (!compact) continue
+    const normalized = compact.replace(/^\+?86(?=1[3-9]\d{9})/, '')
+    const mobileNumbers = normalized.match(/1[3-9]\d{9}/g) || []
+    if (mobileNumbers.length && mobileNumbers.join('') === normalized) {
+      mobileNumbers.forEach(add)
+      continue
+    }
+    if (normalized.length >= 5 && normalized.length <= 20) add(normalized)
+  }
+
+  if (options.length > 0) return options
+  const fallback = String(value || '').replace(/[^\d+]/g, '')
+  return fallback ? [fallback] : []
+}
+
 export function mobileTaskPhoneValue(value: string): string {
-  return value.replace(/[^\d+]/g, '')
+  return mobileTaskPhoneOptions(value)[0] || ''
+}
+
+export function mobileTaskCanLaunchTelephone(
+  userAgent: string,
+  userAgentMobile = false,
+  maxTouchPoints = 0,
+): boolean {
+  return userAgentMobile
+    || /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(userAgent)
+    || (/Macintosh/i.test(userAgent) && maxTouchPoints > 1)
 }
 
 export function mobileTaskSourceState(

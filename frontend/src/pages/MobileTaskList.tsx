@@ -4,7 +4,7 @@ import {
   RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag } from 'antd'
+import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -15,7 +15,11 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
-import { mobileTaskPhoneValue } from '../utils/mobileTasks'
+import {
+  mobileTaskCanLaunchTelephone,
+  mobileTaskPhoneOptions,
+} from '../utils/mobileTasks'
+import MobilePhonePicker from '../components/MobilePhonePicker'
 
 const STATUS_OPTIONS = [
   { label: '待处理', value: 'pending' },
@@ -50,6 +54,7 @@ export default function MobileTaskList() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState('')
+  const [phoneChoices, setPhoneChoices] = useState<string[]>([])
 
   const load = useCallback(async (targetPage = 1, append = false) => {
     append ? setLoadingMore(true) : setLoading(true)
@@ -81,10 +86,34 @@ export default function MobileTaskList() {
     setSearchParams({ type, scope: nextScope })
   }
 
-  const dial = async (event: React.MouseEvent, phone: string) => {
-    event.stopPropagation()
+  const copyPhone = async (phone: string) => {
+    await navigator.clipboard.writeText(phone)
+    message.success('电话号码已复制')
+  }
+
+  const dial = async (phone: string) => {
     await recordActivity().catch(() => {})
-    window.location.href = `tel:${mobileTaskPhoneValue(phone)}`
+    const navigation = navigator as Navigator & { userAgentData?: { mobile?: boolean } }
+    if (!mobileTaskCanLaunchTelephone(
+      navigation.userAgent,
+      navigation.userAgentData?.mobile,
+      navigation.maxTouchPoints,
+    )) {
+      await navigator.clipboard.writeText(phone)
+      message.info('当前设备没有拨号功能，已复制电话号码')
+      return
+    }
+    window.location.href = `tel:${phone}`
+  }
+
+  const selectPhone = (event: React.MouseEvent, rawValue: string) => {
+    event.stopPropagation()
+    const phones = mobileTaskPhoneOptions(rawValue)
+    if (phones.length === 1) {
+      void dial(phones[0])
+      return
+    }
+    setPhoneChoices(phones)
   }
 
   return (
@@ -99,6 +128,7 @@ export default function MobileTaskList() {
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
           />
           <Segmented
+            className="mobile-task-scope-switch"
             value={scope}
             onChange={value => updateQuery(parserType, value as MobileTaskScope)}
             options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
@@ -106,7 +136,7 @@ export default function MobileTaskList() {
         </div>
         <div className="mobile-task-filter-card__row">
           <Segmented
-            className="w-full"
+            className="mobile-task-status-switch w-full"
             block
             value={status}
             onChange={value => setStatus(value as MobileTaskStatus)}
@@ -142,6 +172,7 @@ export default function MobileTaskList() {
         <div className="mobile-task-list">
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
+            const phoneOptions = mobileTaskPhoneOptions(task.summary.phone)
             return (
               <article
                 key={task.row_key}
@@ -168,14 +199,14 @@ export default function MobileTaskList() {
                   <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
                     {task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
                   </div>
-                  {task.summary.phone && (
+                  {phoneOptions.length > 0 && (
                     <Button
                       type="primary"
                       ghost
                       className="min-h-11 shrink-0"
                       icon={<PhoneOutlined />}
-                      onClick={event => void dial(event, task.summary.phone)}
-                    >拨打
+                      onClick={event => selectPhone(event, task.summary.phone)}
+                    >{phoneOptions.length > 1 ? '选择拨打' : '拨打'}
                     </Button>
                   )}
                 </div>
@@ -187,6 +218,16 @@ export default function MobileTaskList() {
           )}
         </div>
       )}
+      <MobilePhonePicker
+        open={phoneChoices.length > 1}
+        phones={phoneChoices}
+        onClose={() => setPhoneChoices([])}
+        onCopy={phone => void copyPhone(phone)}
+        onDial={phone => {
+          setPhoneChoices([])
+          void dial(phone)
+        }}
+      />
     </div>
   )
 }
