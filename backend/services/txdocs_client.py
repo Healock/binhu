@@ -24,7 +24,6 @@ COLUMN_COUNT = len(COLUMNS)  # 14
 # 即使单元格没有超过 10000，读取 1001 行以上也可能返回空数据。
 MAX_CELLS_PER_PAGE = 10000
 MAX_ROWS_PER_PAGE = 1000
-DATE_NUMBER_COLUMNS = {"下发日期", "截止日期", "下发时间", "截止时间"}
 
 
 class TxDocsAPIError(RuntimeError):
@@ -283,19 +282,6 @@ class TxDocsClient:
         return "", {"type": "text"}
 
     @staticmethod
-    def _format_column_value(column: str, value: str, metadata: dict) -> str:
-        """恢复腾讯以浮点数返回的 M.DD 日期显示。"""
-        if column not in DATE_NUMBER_COLUMNS or metadata.get("type") != "number":
-            return value
-        raw = str(value or "").strip()
-        if "." not in raw:
-            return raw
-        month, day = raw.split(".", 1)
-        if month.isdigit() and day.isdigit() and 1 <= len(day) <= 2:
-            return f"{month}.{day.ljust(2, '0')}"
-        return raw
-
-    @staticmethod
     def _looks_like_header(values: dict[str, str], column_names: list[str]) -> bool:
         """识别错误配置后混入数据区的重复表头。"""
         nonempty = 0
@@ -329,7 +315,11 @@ class TxDocsClient:
                 meta = {"type": "text"}
             else:
                 value, meta = self._decode_cell(cell)
-            values[column] = self._format_column_value(column, value.strip(), meta)
+            # 腾讯的范围读取接口只返回浮点值，不返回原始输入或数字显示格式。
+            # 例如数值单元格 7.30 和 7.3 都会成为 7.3，不能靠补零猜回原值；
+            # 保留接口值可避免把真实的 8.3 误改成 8.30。需要保留尾零时，
+            # 来源表必须把该单元格设置为文本，让接口通过 cellValue.text 返回。
+            values[column] = value.strip()
             metadata[column] = meta
         return values, metadata
 
