@@ -435,7 +435,7 @@ async def get_mobile_task_detail(
         await cur.execute(
             """
             SELECT id, physical_row, values_json, cell_meta_json,
-                   revision, row_hash
+                   revision, row_hash, spreadsheet_id, sheet_id
             FROM _online_source_rows
             WHERE parser_type=%s AND row_key=%s
             ORDER BY spreadsheet_id, physical_row
@@ -450,7 +450,16 @@ async def get_mobile_task_detail(
         )
 
         sources = []
-        for source_id, physical_row, raw_values, raw_meta, revision, row_hash in raw_sources:
+        for (
+            source_id,
+            physical_row,
+            raw_values,
+            raw_meta,
+            revision,
+            row_hash,
+            spreadsheet_id,
+            sheet_id,
+        ) in raw_sources:
             values = json_value(raw_values, {})
             # 同一业务主键偶尔会跨社区重复。父投影可以用于定位任务，
             # 但详情绝不能因此暴露其他社区的腾讯原始行。
@@ -460,7 +469,11 @@ async def get_mobile_task_detail(
                 continue
             capabilities = await row_edit_capabilities(cur, user, parser, values)
             metadata = await _managed_column_metadata(
-                cur, parser, json_value(raw_meta, {})
+                cur,
+                parser,
+                json_value(raw_meta, {}),
+                spreadsheet_id=int(spreadsheet_id),
+                sheet_id=str(sheet_id),
             )
             if "核查人" in metadata and context["position"] == "组长":
                 metadata["核查人"] = {

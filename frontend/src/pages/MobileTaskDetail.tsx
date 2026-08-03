@@ -69,7 +69,6 @@ export default function MobileTaskDetail() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
-  const [phonePickerOpen, setPhonePickerOpen] = useState(false)
 
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
@@ -240,8 +239,20 @@ export default function MobileTaskDetail() {
 
         {(phone || address) && (
           <div className="mt-4 grid grid-cols-2 gap-2">
-            {phoneOptions.length > 0 && <Button className="min-h-11" type="primary" icon={<PhoneOutlined />} onClick={() => phoneOptions.length > 1 ? setPhonePickerOpen(true) : void dial(phoneOptions[0])}>{phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}</Button>}
-            {phoneOptions.length > 0 && <Button className="min-h-11" icon={<CopyOutlined />} onClick={() => phoneOptions.length > 1 ? setPhonePickerOpen(true) : void copy(phoneOptions[0], '电话')}>{phoneOptions.length > 1 ? '选择号码' : '复制电话'}</Button>}
+            <MobilePhonePicker
+              phones={phoneOptions}
+              mode="dial"
+              label={phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}
+              buttonProps={{ className: 'min-h-11', type: 'primary', icon: <PhoneOutlined /> }}
+              onSelect={value => void dial(value)}
+            />
+            <MobilePhonePicker
+              phones={phoneOptions}
+              mode="copy"
+              label={phoneOptions.length > 1 ? '选择复制' : '复制电话'}
+              buttonProps={{ className: 'min-h-11', icon: <CopyOutlined /> }}
+              onSelect={value => void copy(value, '电话号码')}
+            />
             {address && <Button className="col-span-2 min-h-11" icon={<CopyOutlined />} onClick={() => void copy(address, '地址')}>复制地址</Button>}
           </div>
         )}
@@ -383,16 +394,6 @@ export default function MobileTaskDetail() {
           }]}
         />
       )}
-      <MobilePhonePicker
-        open={phonePickerOpen && phoneOptions.length > 1}
-        phones={phoneOptions}
-        onClose={() => setPhonePickerOpen(false)}
-        onCopy={value => void copy(value, '电话号码')}
-        onDial={value => {
-          setPhonePickerOpen(false)
-          void dial(value)
-        }}
-      />
     </div>
   )
 }

@@ -4,7 +4,7 @@ import {
   RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd'
+import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -54,7 +54,6 @@ export default function MobileTaskList() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState('')
-  const [phoneChoices, setPhoneChoices] = useState<string[]>([])
 
   const load = useCallback(async (targetPage = 1, append = false) => {
     append ? setLoadingMore(true) : setLoading(true)
@@ -86,11 +85,6 @@ export default function MobileTaskList() {
     setSearchParams({ type, scope: nextScope })
   }
 
-  const copyPhone = async (phone: string) => {
-    await navigator.clipboard.writeText(phone)
-    message.success('电话号码已复制')
-  }
-
   const dial = async (phone: string) => {
     await recordActivity().catch(() => {})
     const navigation = navigator as Navigator & { userAgentData?: { mobile?: boolean } }
@@ -104,16 +98,6 @@ export default function MobileTaskList() {
       return
     }
     window.location.href = `tel:${phone}`
-  }
-
-  const selectPhone = (event: React.MouseEvent, rawValue: string) => {
-    event.stopPropagation()
-    const phones = mobileTaskPhoneOptions(rawValue)
-    if (phones.length === 1) {
-      void dial(phones[0])
-      return
-    }
-    setPhoneChoices(phones)
   }
 
   return (
@@ -224,16 +208,19 @@ export default function MobileTaskList() {
                   <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
                     {task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
                   </div>
-                  {phoneOptions.length > 0 && (
-                    <Button
-                      type="primary"
-                      ghost
-                      className="min-h-11 shrink-0"
-                      icon={<PhoneOutlined />}
-                      onClick={event => selectPhone(event, task.summary.phone)}
-                    >{phoneOptions.length > 1 ? '选择拨打' : '拨打'}
-                    </Button>
-                  )}
+                  <MobilePhonePicker
+                    phones={phoneOptions}
+                    mode="dial"
+                    label={phoneOptions.length > 1 ? '选择拨打' : '拨打'}
+                    className="mobile-phone-native-select--compact"
+                    buttonProps={{
+                      type: 'primary',
+                      ghost: true,
+                      className: 'min-h-11 shrink-0',
+                      icon: <PhoneOutlined />,
+                    }}
+                    onSelect={phone => void dial(phone)}
+                  />
                 </div>
               </article>
             )
@@ -243,16 +230,6 @@ export default function MobileTaskList() {
           )}
         </div>
       )}
-      <MobilePhonePicker
-        open={phoneChoices.length > 1}
-        phones={phoneChoices}
-        onClose={() => setPhoneChoices([])}
-        onCopy={phone => void copyPhone(phone)}
-        onDial={phone => {
-          setPhoneChoices([])
-          void dial(phone)
-        }}
-      />
     </div>
   )
 }

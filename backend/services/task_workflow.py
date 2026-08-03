@@ -18,6 +18,7 @@ class TaskWorkflow:
     source_fields: tuple[str, ...] = ()
     secondary_fields: tuple[str, ...] = ()
     valid_results: tuple[str, ...] = ()
+    result_options: tuple[str, ...] = ()
 
     def state(self, values: dict[str, str]) -> str:
         """返回 unchecked、checked 或 completed。"""
@@ -78,6 +79,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         identity_fields=("身份证号",),
         source_fields=("来源",),
         secondary_fields=("二次反馈",),
+        result_options=("已登记", "无法核实", "移交", "无需登记", "离苏"),
     ),
     "出租房屋核查": TaskWorkflow(
         parser_type="出租房屋核查",
@@ -89,6 +91,14 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止时间", "下发时间"),
         identity_fields=("身份证号",),
         secondary_fields=("二次反馈",),
+        result_options=(
+            "已登记",
+            "离苏",
+            "常口",
+            "无需登记，原因写备注",
+            "移交，移交哪个社区写备注",
+            "无法核实",
+        ),
     ),
     "寄递业": TaskWorkflow(
         parser_type="寄递业",
@@ -100,6 +110,14 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止时间", "下发时间"),
         identity_fields=("身份证号", "参考身份证号码"),
         secondary_fields=("二次反馈",),
+        result_options=(
+            "已登记",
+            "离苏",
+            "无需登记，原因后面备注好",
+            "移交，后面移交哪个社区备注好",
+            "身份错误",
+            "无法核实",
+        ),
     ),
     "疑似未注销模型三": TaskWorkflow(
         parser_type="疑似未注销模型三",
@@ -111,6 +129,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止时间",),
         identity_fields=("身份证号",),
         valid_results=("近期反吴", "在吴", "离吴"),
+        result_options=("近期反吴", "离吴", "在吴"),
     ),
     "疑似返苏": TaskWorkflow(
         parser_type="疑似返苏",
@@ -122,6 +141,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止日期", "下发日期"),
         identity_fields=("身份证号码",),
         secondary_fields=("二次核查结果",),
+        result_options=("已登记", "无需登记", "移交", "无法核实"),
     ),
 }
 
