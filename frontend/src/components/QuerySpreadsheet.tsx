@@ -41,8 +41,10 @@ import {
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
+  querySheetTextCell,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
+  fitQuerySheetColumnWidth,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
@@ -68,10 +70,6 @@ export interface QuerySpreadsheetProps {
   onSavingChange?: (saving: boolean) => void
 }
 
-function normalizeCellValue(value: unknown): string {
-  return value === null || value === undefined ? '' : String(value)
-}
-
 function rangeSize(range: IRange): { rows: number; columns: number } {
   return {
     rows: range.endRow - range.startRow + 1,
@@ -84,15 +82,6 @@ function commandRanges(params: any, worksheet: FWorksheet): IRange[] {
   if (params?.range) return [params.range]
   const active = worksheet.getActiveRange()
   return active ? [active.getRange()] : []
-}
-
-function columnWidth(column: string): number {
-  if (['地址', '现住址', '核查结果', '核查反馈', '二次反馈', '二次核查结果', '实际情况'].includes(column)) {
-    return 240
-  }
-  if (column.includes('时间') || column.includes('日期')) return 130
-  if (column.includes('身份证')) return 180
-  return 150
 }
 
 function createQueryUniver(
@@ -209,17 +198,23 @@ export function QuerySpreadsheet({
     })
     const worksheet = workbook.getActiveSheet()
     const initialValues = [
-      columns,
-      ...sheetRows.map(row => columns.map(column => normalizeCellValue(row.data[column]))),
+      columns.map(querySheetTextCell),
+      ...sheetRows.map(row => columns.map(column => querySheetTextCell(row.data[column]))),
     ]
     worksheet.getRange(0, 0, initialValues.length, columns.length).setValues(initialValues)
     worksheet.setFreeze({ startRow: 1, startColumn: 0, xSplit: 0, ySplit: 1 })
     worksheet.setRowHeight(0, 36)
     worksheet.setRowHeights(1, sheetRows.length, 32)
-    columns.forEach((column, index) => worksheet.setColumnWidth(index, columnWidth(column)))
 
     const allRange = worksheet.getRange(0, 0, initialValues.length, columns.length)
     allRange.setWrap(true)
+    worksheet.autoResizeColumns(0, columns.length)
+    columns.forEach((column, index) => {
+      worksheet.setColumnWidth(
+        index,
+        fitQuerySheetColumnWidth(column, worksheet.getColumnWidth(index)),
+      )
+    })
     const thinBorderStyle = resolveQuerySheetThinBorderStyle(univerAPI.Enum)
     const headerRange = worksheet.getRange(0, 0, 1, columns.length)
     headerRange.setFontWeight('bold')
@@ -305,7 +300,9 @@ export function QuerySpreadsheet({
           const columnIndex = columns.indexOf(change.column)
           if (descriptorIndex < 0 || columnIndex < 0) continue
           change.row[change.column] = change.before
-          worksheet.getRange(descriptorIndex + 1, columnIndex).setValue(change.before)
+          worksheet
+            .getRange(descriptorIndex + 1, columnIndex)
+            .setValue(querySheetTextCell(change.before))
         }
       } finally {
         suppressCommands = false
