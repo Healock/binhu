@@ -10,6 +10,8 @@ from typing import Literal
 
 
 ReportColumnMode = Literal["two", "three"]
+LEGACY_DAILY_AVERAGE_COLUMN = "当日人均核查数"
+DAILY_AVERAGE_COLUMN = "每日人均核查数"
 SUM_COLUMNS = (
     "数据总数",
     "未核查",
@@ -17,6 +19,7 @@ SUM_COLUMNS = (
     "已完成",
     "无法见底数",
     "网格员人数",
+    "在岗人日",
 )
 
 
@@ -55,7 +58,10 @@ def _build_summary(table: dict) -> dict:
     total = summary.get("数据总数", 0)
     completed = summary.get("已完成", 0)
     unable = summary.get("无法见底数", 0)
-    member_count = summary.get("网格员人数", 0)
+    person_days = summary.get(
+        "在岗人日",
+        summary.get("网格员人数", 0),
+    )
 
     if "核查完成率" in columns:
         summary["核查完成率"] = _ratio(completed, total)
@@ -64,8 +70,11 @@ def _build_summary(table: dict) -> dict:
             max(completed - unable, 0),
             completed,
         )
-    if "当日人均核查数" in columns:
-        summary["当日人均核查数"] = _ratio(completed, member_count)
+    if DAILY_AVERAGE_COLUMN in columns:
+        if any(row.get(DAILY_AVERAGE_COLUMN) is None for row in rows):
+            summary[DAILY_AVERAGE_COLUMN] = None
+        else:
+            summary[DAILY_AVERAGE_COLUMN] = _ratio(completed, person_days)
 
     return summary
 
@@ -74,8 +83,36 @@ def _with_summary(table: dict) -> dict:
     return {**table, "summary": _build_summary(table)}
 
 
+def _rename_daily_average(table: dict) -> dict:
+    """把旧数据库列名转换成稳定的页面名称，不修改持久化表。"""
+    columns = list(table.get("columns") or [])
+    if LEGACY_DAILY_AVERAGE_COLUMN not in columns:
+        return table
+    renamed_columns = []
+    for column in columns:
+        target = (
+            DAILY_AVERAGE_COLUMN
+            if column == LEGACY_DAILY_AVERAGE_COLUMN
+            else column
+        )
+        if target not in renamed_columns:
+            renamed_columns.append(target)
+
+    renamed_rows = []
+    for source_row in table.get("data") or []:
+        row = dict(source_row)
+        if LEGACY_DAILY_AVERAGE_COLUMN in row:
+            row.setdefault(
+                DAILY_AVERAGE_COLUMN,
+                row[LEGACY_DAILY_AVERAGE_COLUMN],
+            )
+            row.pop(LEGACY_DAILY_AVERAGE_COLUMN, None)
+        renamed_rows.append(row)
+    return {**table, "columns": renamed_columns, "data": renamed_rows}
+
+
 def _prepare_table(table: dict, mode: ReportColumnMode) -> dict:
-    prepared = _with_summary(table)
+    prepared = _with_summary(_rename_daily_average(table))
     if mode == "two":
         prepared = _project_table(prepared)
     return prepared

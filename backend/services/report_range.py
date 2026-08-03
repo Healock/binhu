@@ -20,6 +20,9 @@ from services.report_members import (
     get_community_alias_lookup,
     merge_inspector_rows,
 )
+from services.report_attendance import (
+    load_community_person_days as _load_community_person_days,
+)
 
 
 INSPECTOR_COLUMNS = [
@@ -357,23 +360,37 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                     member_counts.get(community, 0) + 1
                 )
 
+            community_person_days, attendance = (
+                await _load_community_person_days(
+                    covered_dates,
+                    alias_lookup,
+                )
+            )
+
             community_rows = []
             for row in merged_rows:
                 community = str(row[0])
                 member_count = member_counts.get(community, 0)
                 completed = int(row[4] or 0)
+                person_days = community_person_days.get(community, 0)
                 community_rows.append(
                     (
                         *row,
                         member_count,
-                        calculate_ratio(completed, member_count),
+                        person_days if attendance["complete"] else None,
+                        (
+                            calculate_ratio(completed, person_days)
+                            if attendance["complete"]
+                            else None
+                        ),
                     )
                 )
 
         community_columns = [
             *COMMUNITY_COLUMNS,
             "网格员人数",
-            "当日人均核查数",
+            "在岗人日",
+            "每日人均核查数",
         ]
         inspector_table = {
             "columns": INSPECTOR_COLUMNS,
@@ -396,6 +413,7 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                 "end": end_date,
                 "days": len(covered_dates),
             },
+            "attendance": attendance,
             **community_table,
             "inspector": inspector_table,
             "community": community_table,

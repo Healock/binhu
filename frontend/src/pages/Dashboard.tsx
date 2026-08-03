@@ -337,6 +337,16 @@ export default function Dashboard() {
       {report.scope_message && (
         <Alert type="info" showIcon message={report.scope_message} />
       )}
+      {report.attendance && !report.attendance.complete && (
+        <Alert
+          type="warning"
+          showIcon
+          message="所选区间含未完成的双休日排班，已隐藏每日人均核查数"
+          description={report.attendance.missing_week_starts?.length
+            ? `缺少排班的周：${report.attendance.missing_week_starts.join('、')}`
+            : undefined}
+        />
+      )}
 
       {!isImplemented ? (
         <section className="app-card">

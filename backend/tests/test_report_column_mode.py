@@ -204,7 +204,23 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         result = project_report_payload({"exists": True, **table}, "three")
 
         self.assertEqual(result["summary"]["网格员人数"], 4)
-        self.assertEqual(result["summary"]["当日人均核查数"], 6.25)
+        self.assertEqual(result["summary"]["每日人均核查数"], 6.25)
+        self.assertNotIn("当日人均核查数", result["columns"])
+
+    def test_range_average_uses_person_days_and_preserves_missing_value(self):
+        table = sample_detailed_table()
+        table["columns"].extend(["在岗人日", "每日人均核查数"])
+        table["data"][0].update({"在岗人日": 3, "每日人均核查数": 5})
+        table["data"][1].update({"在岗人日": 2, "每日人均核查数": 5})
+
+        result = project_report_payload({"exists": True, **table}, "three")
+
+        self.assertEqual(result["summary"]["在岗人日"], 5)
+        self.assertEqual(result["summary"]["每日人均核查数"], 5)
+
+        table["data"][1]["每日人均核查数"] = None
+        result = project_report_payload({"exists": True, **table}, "three")
+        self.assertIsNone(result["summary"]["每日人均核查数"])
 
     def test_inspector_total_uses_one_total_label(self):
         table = sample_detailed_table()

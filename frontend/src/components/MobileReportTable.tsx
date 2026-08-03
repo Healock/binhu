@@ -42,7 +42,8 @@ const PREFERRED_METRICS = [
   '未核查',
   '无法见底数',
   '核查见底率',
-  '当日人均核查数',
+  '每日人均核查数',
+  '在岗人日',
 ]
 
 function formatValue(value: unknown, column: string): string {

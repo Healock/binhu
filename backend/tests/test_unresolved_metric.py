@@ -1,7 +1,8 @@
+from datetime import date
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services import report_range
+from services import report_attendance, report_range
 from services.report_builders import summary as report_summary
 
 
@@ -25,6 +26,77 @@ def make_database(*, fetchall=None, fetchone=None):
 
 
 class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
+    async def test_person_days_use_leave_and_weekend_duty(self):
+        context = {
+            "members": {
+                "张三": {
+                    "id": 1,
+                    "name": "张三",
+                    "community": "长板",
+                    "communities": ["长板"],
+                    "position": "组员",
+                },
+                "李四": {
+                    "id": 2,
+                    "name": "李四",
+                    "community": "长板",
+                    "communities": ["长板"],
+                    "position": "组员",
+                },
+            },
+            "periods": {
+                2: [{
+                    "start_date": date(2026, 7, 28),
+                    "end_date": date(2026, 7, 28),
+                    "is_active": True,
+                }],
+            },
+            "duties": {(1, date(2026, 7, 27)): date(2026, 8, 1)},
+            "weekend_duty_positions": {"组长", "组员"},
+            "missing_week_starts": set(),
+            "history_started_on": date(2026, 7, 1),
+            "legacy_history_incomplete": False,
+        }
+        with patch.object(
+            report_attendance,
+            "get_attendance_context",
+            new=AsyncMock(return_value=context),
+        ):
+            person_days, attendance = (
+                await report_attendance.get_community_person_days(
+                    MagicMock(),
+                    {"2026-07-27", "2026-07-28", "2026-08-01"},
+                    {"长板": "长板"},
+                )
+            )
+
+        self.assertEqual(person_days, {"长板": 4})
+        self.assertTrue(attendance["complete"])
+
+    async def test_person_days_hide_average_for_covered_unassigned_weekend(self):
+        context = {
+            "members": {},
+            "periods": {},
+            "duties": {},
+            "weekend_duty_positions": {"组长", "组员"},
+            "missing_week_starts": {date(2026, 7, 27)},
+            "history_started_on": date(2026, 7, 30),
+            "legacy_history_incomplete": True,
+        }
+        with patch.object(
+            report_attendance,
+            "get_attendance_context",
+            new=AsyncMock(return_value=context),
+        ):
+            _, attendance = await report_attendance.get_community_person_days(
+                MagicMock(),
+                {"2026-08-01"},
+                {},
+            )
+
+        self.assertFalse(attendance["complete"])
+        self.assertEqual(attendance["missing_week_starts"], ["2026-07-27"])
+
     async def test_daily_summary_rate_uses_completed_as_denominator(self):
         report_date = "2026-07-27"
         community_table = f"{report_date}_daily_fullChain_community"
@@ -88,7 +160,9 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             report_range,
             "_validate_ledger_coverage",
-            new=AsyncMock(return_value=(["2026-07-27"], [])),
+            new=AsyncMock(
+                return_value=(["2026-07-27", "2026-07-28"], [])
+            ),
         ), patch.object(
             report_range,
             "_aggregate_range_ledger",
@@ -107,16 +181,30 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             report_range,
             "get_active_members",
             new=AsyncMock(return_value=[("长板", "张三")]),
+        ), patch.object(
+            report_range,
+            "_load_community_person_days",
+            new=AsyncMock(return_value=(
+                {"长板": 5},
+                {
+                    "complete": True,
+                    "missing_week_starts": [],
+                    "history_started_on": "2026-07-01",
+                    "legacy_history_incomplete": False,
+                },
+            )),
         ):
             result = await report_range.get_summary_range(
                 "2026-07-27",
-                "2026-07-27",
+                "2026-07-28",
             )
 
         self.assertTrue(result["exists"])
         row = result["data"][0]
         self.assertEqual(row["核查完成率"], 0.83)
         self.assertEqual(row["核查见底率"], 0.8)
+        self.assertEqual(row["在岗人日"], 5)
+        self.assertEqual(row["每日人均核查数"], 2.0)
         self.assertEqual(result["community"]["data"], result["data"])
         self.assertEqual(result["inspector"]["data"][0]["姓名"], "张三")
         self.assertEqual(

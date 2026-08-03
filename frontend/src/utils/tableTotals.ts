@@ -7,6 +7,7 @@ const REPORT_SUM_COLUMNS = new Set([
   '已完成',
   '无法见底数',
   '网格员人数',
+  '在岗人日',
 ])
 
 const VISIT_SUM_COLUMNS = new Set([
@@ -66,7 +67,9 @@ export function buildReportTableTotal(
     ? numeric(total['已完成'])
     : numeric(total['已核查'])
   const unable = numeric(total['无法见底数'])
-  const memberCount = numeric(total['网格员人数'])
+  const personDays = columns.includes('在岗人日')
+    ? numeric(total['在岗人日'])
+    : numeric(total['网格员人数'])
 
   if (columns.includes('核查完成率')) {
     total['核查完成率'] = roundRatio(completed, dataTotal, 2)
@@ -78,8 +81,15 @@ export function buildReportTableTotal(
       2,
     )
   }
-  if (columns.includes('当日人均核查数')) {
-    total['当日人均核查数'] = roundRatio(completed, memberCount, 2)
+  const averageColumn = columns.includes('每日人均核查数')
+    ? '每日人均核查数'
+    : columns.includes('当日人均核查数')
+      ? '当日人均核查数'
+      : ''
+  if (averageColumn) {
+    total[averageColumn] = rows.some(row => row[averageColumn] == null)
+      ? null
+      : roundRatio(completed, personDays, 2)
   }
   return total
 }

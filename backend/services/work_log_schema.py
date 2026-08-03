@@ -380,7 +380,7 @@ SCHEMA = {
                         column("completion_rate", "核查完成率", "percent"),
                         column("unable", "无法见底数"),
                         column("ground_rate", "核查见底率", "percent"),
-                        column("average_checked", "当日人均核查数", "decimal"),
+                        column("average_checked", "每日人均核查数", "decimal"),
                     ],
                     source="system",
                     source_key="online_summary",

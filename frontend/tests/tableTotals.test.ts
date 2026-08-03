@@ -60,6 +60,32 @@ test('在线汇总两列模式按已核查计算完成率', () => {
   assert.equal(total.核查见底率, 0.75)
 })
 
+test('在线区间汇总按在岗人日重算每日人均核查数', () => {
+  const columns = [
+    '社区',
+    '已完成',
+    '在岗人日',
+    '每日人均核查数',
+  ]
+  const total = buildReportTableTotal(columns, [
+    { 社区: '长板', 已完成: 12, 在岗人日: 3, 每日人均核查数: 4 },
+    { 社区: '龙河', 已完成: 8, 在岗人日: 2, 每日人均核查数: 4 },
+  ])
+
+  assert.equal(total.已完成, 20)
+  assert.equal(total.在岗人日, 5)
+  assert.equal(total.每日人均核查数, 4)
+})
+
+test('双休日排班不完整时在线汇总不猜测每日人均核查数', () => {
+  const total = buildReportTableTotal(
+    ['社区', '已完成', '在岗人日', '每日人均核查数'],
+    [{ 社区: '长板', 已完成: 12, 在岗人日: null, 每日人均核查数: null }],
+  )
+
+  assert.equal(total.每日人均核查数, null)
+})
+
 test('走访汇总总计按筛选行和在岗人日重算比率', () => {
   const columns = [
     '社区',

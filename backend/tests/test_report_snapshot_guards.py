@@ -320,6 +320,54 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有同步快照", result["message"])
         self.assertEqual(cursor.execute.await_count, 1)
 
+    async def test_single_day_summary_uses_actual_person_days(self):
+        inspector_row = ("长板", "张三", 10, 0, 0, 10, 1.0, 0, 1.0)
+        pool, _ = make_database(
+            fetchone_values=[("snapshot",), ("summary",), ("inspector",)],
+            fetchall_values=[[inspector_row]],
+        )
+        attendance = {
+            "complete": True,
+            "missing_week_starts": [],
+            "history_started_on": "2026-07-01",
+            "legacy_history_incomplete": False,
+        }
+
+        with patch.object(
+            report_summary.db_manager,
+            "get_pool",
+            return_value=pool,
+        ), patch.object(
+            report_summary,
+            "_get_summary_types",
+            new=AsyncMock(return_value=["全链条"]),
+        ), patch.object(
+            report_summary,
+            "get_community_alias_lookup",
+            new=AsyncMock(return_value={"长板": "长板"}),
+        ), patch.object(
+            report_summary,
+            "complete_inspector_rows",
+            new=AsyncMock(return_value=[inspector_row]),
+        ), patch.object(
+            report_summary,
+            "get_active_members",
+            new=AsyncMock(
+                return_value=[("长板", "张三"), ("长板", "李四")]
+            ),
+        ), patch.object(
+            report_summary,
+            "load_community_person_days",
+            new=AsyncMock(return_value=({"长板": 1}, attendance)),
+        ):
+            result = await report_summary.get_summary("2026-07-27")
+
+        row = result["community"]["data"][0]
+        self.assertEqual(row["网格员人数"], 2)
+        self.assertEqual(row["在岗人日"], 1)
+        self.assertEqual(row["每日人均核查数"], 10.0)
+        self.assertEqual(result["attendance"], attendance)
+
 
 if __name__ == "__main__":
     unittest.main()
