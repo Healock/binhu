@@ -26,6 +26,27 @@ def make_database(*, fetchall=None, fetchone=None):
 
 
 class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
+    async def test_person_days_loads_from_online_data_pool(self):
+        pool, _ = make_database()
+        expected = ({"长板": 2}, {"complete": True})
+        with patch.object(
+            report_attendance.db_manager,
+            "get_pool",
+            return_value=pool,
+        ) as get_pool, patch.object(
+            report_attendance,
+            "get_community_person_days",
+            new=AsyncMock(return_value=expected),
+        ):
+            result = await report_attendance.load_community_person_days(
+                {"2026-07-27"},
+                {"长板": "长板"},
+            )
+
+        self.assertEqual(result, expected)
+        get_pool.assert_called_once_with("online_data")
+        pool.release.assert_called_once()
+
     async def test_person_days_use_leave_and_weekend_duty(self):
         context = {
             "members": {
