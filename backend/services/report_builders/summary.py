@@ -17,6 +17,7 @@ from services.report_members import (
     get_community_alias_lookup,
     merge_inspector_rows,
 )
+from services.report_attendance import load_community_person_days
 
 SUMMARY_COLS = """
     社区 VARCHAR(100) NOT NULL PRIMARY KEY,
@@ -41,7 +42,8 @@ SUMMARY_OUTPUT_COLS = [
     "无法见底数",
     "核查见底率",
     "网格员人数",
-    "当日人均核查数",
+    "在岗人日",
+    "每日人均核查数",
 ]
 
 SUMMARY_INSPECTOR_OUTPUT_COLS = [
@@ -335,13 +337,28 @@ async def get_summary(date_str: str) -> dict:
                 member_counts[formal_community] = (
                     member_counts.get(formal_community, 0) + 1
                 )
+            community_person_days, attendance = (
+                await load_community_person_days(
+                    {date_str},
+                    alias_lookup,
+                )
+            )
             community_rows = [
                 (
                     *row,
                     member_counts.get(str(row[0]), 0),
-                    calculate_ratio(
-                        int(row[4] or 0),
-                        member_counts.get(str(row[0]), 0),
+                    (
+                        community_person_days.get(str(row[0]), 0)
+                        if attendance["complete"]
+                        else None
+                    ),
+                    (
+                        calculate_ratio(
+                            int(row[4] or 0),
+                            community_person_days.get(str(row[0]), 0),
+                        )
+                        if attendance["complete"]
+                        else None
                     ),
                 )
                 for row in community_rows
@@ -365,6 +382,7 @@ async def get_summary(date_str: str) -> dict:
             "exists": True,
             # 保留原来的顶层社区表字段，兼容尚未升级的调用方。
             **community_table,
+            "attendance": attendance,
             "inspector": inspector_table,
             "community": community_table,
         }

@@ -178,7 +178,9 @@ async def _online_summary_snapshot(
             "completion_rate": _percent(row.get("核查完成率")),
             "unable": _number(row.get("无法见底数")),
             "ground_rate": _percent(row.get("核查见底率")),
-            "average_checked": _decimal(row.get("当日人均核查数")),
+            "average_checked": _decimal(
+                row.get("每日人均核查数", row.get("当日人均核查数"))
+            ),
         })
     if not table_rows:
         return {
