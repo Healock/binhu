@@ -42,9 +42,9 @@ import {
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
   querySheetTextCell,
+  resolveQuerySheetColumnWidth,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
-  fitQuerySheetColumnWidth,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
@@ -205,16 +205,18 @@ export function QuerySpreadsheet({
     worksheet.setFreeze({ startRow: 1, startColumn: 0, xSplit: 0, ySplit: 1 })
     worksheet.setRowHeight(0, 36)
     worksheet.setRowHeights(1, sheetRows.length, 32)
-
-    const allRange = worksheet.getRange(0, 0, initialValues.length, columns.length)
-    allRange.setWrap(true)
-    worksheet.autoResizeColumns(0, columns.length)
     columns.forEach((column, index) => {
       worksheet.setColumnWidth(
         index,
-        fitQuerySheetColumnWidth(column, worksheet.getColumnWidth(index)),
+        resolveQuerySheetColumnWidth(
+          column,
+          sheetRows.map(row => row.data[column]),
+        ),
       )
     })
+
+    const allRange = worksheet.getRange(0, 0, initialValues.length, columns.length)
+    allRange.setWrap(true)
     const thinBorderStyle = resolveQuerySheetThinBorderStyle(univerAPI.Enum)
     const headerRange = worksheet.getRange(0, 0, 1, columns.length)
     headerRange.setFontWeight('bold')

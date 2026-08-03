@@ -29,6 +29,10 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
+import {
+  visitSummaryColumnWidth,
+  visitSummaryScrollWidth,
+} from '../utils/summaryTableLayout'
 import { buildVisitTableTotal } from '../utils/tableTotals'
 
 const EMPTY_FILTER_VALUE = '__binhu_empty_visit_summary_value__'
@@ -104,9 +108,7 @@ function visitSummaryColumns(
       title: column,
       dataIndex: column,
       key: column,
-      width: column === '社区' || column === '姓名'
-        ? 120
-        : Math.min(136, Math.max(112, column.length * 13 + 36)),
+      width: visitSummaryColumnWidth(column),
       sorter: (left, right, sortOrder) => (
         compareSummaryValues(left[column], right[column], sortOrder)
       ),
@@ -601,6 +603,7 @@ export default function VisitSummary() {
               reportGrid
               rowKey={(row, index) => `${row.社区}-${row.姓名}-${index}`}
               loading={summaryLoading}
+              scroll={{ x: visitSummaryScrollWidth(summaryReport.inspector.columns) }}
               sticky
               summary={visitSummaryTotal(
                 summaryReport.inspector.columns,
@@ -625,6 +628,7 @@ export default function VisitSummary() {
               reportGrid
               rowKey={(row, index) => `${row.社区}-${index}`}
               loading={summaryLoading}
+              scroll={{ x: visitSummaryScrollWidth(summaryReport.community.columns) }}
               sticky
               summary={visitSummaryTotal(
                 summaryReport.community.columns,

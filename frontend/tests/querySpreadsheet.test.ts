@@ -14,6 +14,7 @@ import {
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
   querySheetTextCell,
+  resolveQuerySheetColumnWidth,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   toggleQuerySheetFullscreen,
@@ -45,6 +46,9 @@ test('工作表自动列宽保留合理的最小值和最大值', () => {
   assert.equal(fitQuerySheetColumnWidth('姓名', 96), 114)
   assert.equal(fitQuerySheetColumnWidth('身份证号', 500), 200)
   assert.equal(fitQuerySheetColumnWidth('地址', 900), 280)
+  assert.equal(resolveQuerySheetColumnWidth('下发日期', ['7.30', '7.31']), 92)
+  assert.equal(resolveQuerySheetColumnWidth('身份证号', ['32052519911016025X']), 176)
+  assert.equal(resolveQuerySheetColumnWidth('地址', ['吴江松陵镇开平路2188号吾悦商业广场']), 260)
 })
 
 test('查询工作表同时启用标题区域和经典工具栏', () => {

@@ -777,6 +777,16 @@ html.query-sheet-fullscreen-active .app-route-transition {
   border-inline-end: 1px dashed var(--app-border-strong) !important;
 }
 
+.app-data-table--report-grid .ant-table-thead .ant-table-column-sorters,
+.app-data-table--report-grid .ant-table-thead .ant-table-column-title {
+  min-width: 0;
+}
+
+.app-data-table--report-grid .ant-table-thead .ant-table-column-title {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .app-data-table .ant-table-column-sorters {
   gap: 8px;
 }
