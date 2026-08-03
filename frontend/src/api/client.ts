@@ -719,7 +719,9 @@ export interface MobileTaskHomeData {
 
 export interface MobileTaskSummaryFields {
   title: string
+  identity_number: string
   phone: string
+  source: string
   address: string
   date: string
   result: string

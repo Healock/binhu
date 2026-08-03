@@ -173,6 +173,9 @@ export default function MobileTaskList() {
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
             const phoneOptions = mobileTaskPhoneOptions(task.summary.phone)
+            const phoneDisplay = phoneOptions.length > 0
+              ? phoneOptions.join('、')
+              : task.summary.phone
             return (
               <article
                 key={task.row_key}
@@ -194,6 +197,28 @@ export default function MobileTaskList() {
                   </div>
                   <RightOutlined className="mt-1 shrink-0 text-[var(--app-text-muted)]" />
                 </div>
+                {(task.summary.identity_number || phoneDisplay || task.summary.source) && (
+                  <dl className="mobile-task-item-card__details">
+                    {task.summary.identity_number && (
+                      <div className="mobile-task-item-card__detail-row">
+                        <dt>身份证号</dt>
+                        <dd>{task.summary.identity_number}</dd>
+                      </div>
+                    )}
+                    {phoneDisplay && (
+                      <div className="mobile-task-item-card__detail-row">
+                        <dt>手机号</dt>
+                        <dd>{phoneDisplay}</dd>
+                      </div>
+                    )}
+                    {task.summary.source && (
+                      <div className="mobile-task-item-card__detail-row">
+                        <dt>来源</dt>
+                        <dd>{task.summary.source}</dd>
+                      </div>
+                    )}
+                  </dl>
+                )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
                 <div className="mobile-task-item-card__footer flex items-center justify-between gap-3 border-t border-[var(--app-border)]">
                   <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
