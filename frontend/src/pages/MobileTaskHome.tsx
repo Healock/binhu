@@ -114,7 +114,7 @@ export default function MobileTaskHome() {
               />
             </div>
 
-            <div className="space-y-3">
+            <div className="mobile-task-business-list">
               {sortMobileTaskBusinesses(data.businesses).map(item => (
                 <button
                   key={item.parser_type}

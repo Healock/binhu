@@ -33,6 +33,7 @@ import {
   buildMobileTaskChanges,
   mobileTaskEditorFields,
   mobileTaskPhoneValue,
+  mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
 } from '../utils/mobileTasks'
@@ -84,6 +85,9 @@ export default function MobileTaskDetail() {
       visibleEditorFields,
     )
   }, [formValues, selectedSource, visibleEditorFields])
+  const sourceDifferences = useMemo(() => (
+    data ? mobileTaskSourceDifferences(data.sources, data.workflow.columns) : []
+  ), [data])
   const dirty = Object.keys(changes).length > 0
 
   const selectSource = useCallback((source: MobileTaskSource) => {
@@ -239,16 +243,43 @@ export default function MobileTaskDetail() {
       )}
 
       {data.sources.length > 1 && (
-        <section className="app-card p-3">
-          <div className="mb-2 text-sm font-medium text-[var(--app-text)]">选择腾讯来源</div>
-          <div className="grid grid-cols-2 gap-2">
+        <section className="app-card mobile-task-source-panel">
+          <div>
+            <div className="text-sm font-semibold text-[var(--app-text-strong)]">选择腾讯来源</div>
+            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+              {sourceDifferences.length > 0
+                ? `以下 ${sourceDifferences.length} 项内容不同，点击卡片切换处理对象`
+                : '两条来源的业务内容一致，请按腾讯行号分别处理'}
+            </p>
+          </div>
+          <div className="mobile-task-source-list">
             {data.sources.map((source, index) => (
-              <Button
+              <button
                 key={source.id}
-                type={source.id === selectedSourceId ? 'primary' : 'default'}
-                className="min-h-11"
+                type="button"
+                className={`mobile-task-source-card${source.id === selectedSourceId ? ' is-selected' : ''}`}
                 onClick={() => chooseSource(source)}
-              >来源 {index + 1} · 第 {source.physical_row} 行</Button>
+              >
+                <span className="mobile-task-source-card__header">
+                  <span className="font-semibold">来源 {index + 1}</span>
+                  <span>腾讯第 {source.physical_row} 行</span>
+                  <span className="mobile-task-source-card__state">
+                    {source.id === selectedSourceId ? '当前选中' : '点击选择'}
+                  </span>
+                </span>
+                {sourceDifferences.length > 0 && (
+                  <span className="mobile-task-source-card__differences">
+                    {sourceDifferences.map(difference => (
+                      <span key={difference.field} className="mobile-task-source-card__difference">
+                        <span>{difference.field}</span>
+                        <strong className={!difference.values[index] ? 'is-empty' : ''}>
+                          {difference.values[index] || '空白'}
+                        </strong>
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </button>
             ))}
           </div>
         </section>

@@ -231,7 +231,7 @@ export default function Layout() {
         }`}>
           {user?.password_is_temporary && (
             <Alert
-              className="mb-4"
+              className="app-temporary-password-alert"
               type="warning"
               showIcon
               message="当前账号仍在使用临时密码"

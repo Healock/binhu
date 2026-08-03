@@ -89,7 +89,7 @@ export default function MobileTaskList() {
 
   return (
     <div className="mobile-task-page">
-      <section className="app-card p-4">
+      <section className="app-card mobile-task-filter-card">
         <div className="flex items-center gap-3">
           <Select
             className="min-w-0 flex-1"
@@ -104,14 +104,16 @@ export default function MobileTaskList() {
             options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
           />
         </div>
-        <Segmented
-          className="mt-3 w-full"
-          block
-          value={status}
-          onChange={value => setStatus(value as MobileTaskStatus)}
-          options={STATUS_OPTIONS}
-        />
-        <div className="mt-3 flex gap-2">
+        <div className="mobile-task-filter-card__row">
+          <Segmented
+            className="w-full"
+            block
+            value={status}
+            onChange={value => setStatus(value as MobileTaskStatus)}
+            options={STATUS_OPTIONS}
+          />
+        </div>
+        <div className="mobile-task-filter-card__row flex gap-2">
           <Input
             allowClear
             value={keywordInput}
@@ -133,11 +135,11 @@ export default function MobileTaskList() {
       </div>
 
       {loading ? (
-        <div className="space-y-3"><div className="app-card p-4"><Skeleton active paragraph={{ rows: 3 }} /></div><div className="app-card p-4"><Skeleton active paragraph={{ rows: 3 }} /></div></div>
+        <div className="mobile-task-list"><div className="app-card p-4"><Skeleton active paragraph={{ rows: 3 }} /></div><div className="app-card p-4"><Skeleton active paragraph={{ rows: 3 }} /></div></div>
       ) : rows.length === 0 ? (
         <div className="app-card py-8"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有符合条件的任务" /></div>
       ) : (
-        <div className="space-y-3">
+        <div className="mobile-task-list">
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
             return (
@@ -161,8 +163,8 @@ export default function MobileTaskList() {
                   </div>
                   <RightOutlined className="mt-1 shrink-0 text-[var(--app-text-muted)]" />
                 </div>
-                {task.summary.address && <p className="mt-3 line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
-                <div className="mt-3 flex items-center justify-between gap-3 border-t border-[var(--app-border)] pt-3">
+                {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
+                <div className="mobile-task-item-card__footer flex items-center justify-between gap-3 border-t border-[var(--app-border)]">
                   <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
                     {task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
                   </div>

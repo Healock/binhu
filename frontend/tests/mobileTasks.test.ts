@@ -5,6 +5,7 @@ import {
   buildMobileTaskChanges,
   mobileTaskEditorFields,
   mobileTaskPhoneValue,
+  mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
   sortMobileTaskBusinesses,
@@ -42,6 +43,25 @@ test('批量保存只提交实际变化且不自动补造字段', () => {
     { 核查人: '甲', 现住址: '长板一号', 核查结果: '', 研判: '不可编辑' },
     ['核查人', '现住址', '核查结果'],
   ), { 现住址: '长板一号' })
+})
+
+test('重复腾讯来源只列出真正不同的字段并保留空白差异', () => {
+  const differences = mobileTaskSourceDifferences([
+    { values: { 姓名: '朱明山', 电话: '13800000000', 现住址: '', 核查结果: '在吴' } },
+    { values: { 姓名: '朱明山', 电话: '13800000000', 现住址: '长板一号', 核查结果: '离吴' } },
+  ], ['姓名', '电话', '现住址', '核查结果'])
+
+  assert.deepEqual(differences, [
+    { field: '现住址', values: ['', '长板一号'] },
+    { field: '核查结果', values: ['在吴', '离吴'] },
+  ])
+})
+
+test('内容一致的重复来源不伪造差异', () => {
+  assert.deepEqual(mobileTaskSourceDifferences([
+    { values: { 姓名: '朱明山' } },
+    { values: { 姓名: ' 朱明山 ' } },
+  ], ['姓名']), [])
 })
 
 test('无法核实时才显示授权的二次反馈字段', () => {
