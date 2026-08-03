@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BorderStyleTypes } from '@univerjs/core'
+import { BorderStyleTypes, CellValueType } from '@univerjs/core'
 import {
   applyQuerySheetValues,
   buildQuerySheetRequestFilters,
   buildQuerySheetRows,
   canEditQuerySheetCell,
+  fitQuerySheetColumnWidth,
   isQuerySheetFullscreen,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
+  querySheetTextCell,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   toggleQuerySheetFullscreen,
@@ -25,6 +27,24 @@ test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅
   assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringMark, true)
   assert.equal(querySheetPalette(false).background, '#ffffff')
   assert.deepEqual(querySheetPalette(true), querySheetPalette(false))
+})
+
+test('腾讯日期和长数字以强制文本写入工作表', () => {
+  assert.deepEqual(querySheetTextCell('7.30'), {
+    v: '7.30',
+    t: CellValueType.FORCE_STRING,
+  })
+  assert.deepEqual(querySheetTextCell(320525199110160250n), {
+    v: '320525199110160250',
+    t: CellValueType.FORCE_STRING,
+  })
+})
+
+test('工作表自动列宽保留合理的最小值和最大值', () => {
+  assert.equal(fitQuerySheetColumnWidth('下发日期', 40), 92)
+  assert.equal(fitQuerySheetColumnWidth('姓名', 96), 114)
+  assert.equal(fitQuerySheetColumnWidth('身份证号', 500), 200)
+  assert.equal(fitQuerySheetColumnWidth('地址', 900), 280)
 })
 
 test('查询工作表同时启用标题区域和经典工具栏', () => {

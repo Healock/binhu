@@ -16,6 +16,7 @@ export default function AppTable<T extends object>({
   scroll,
   size = 'small',
   sticky = false,
+  tableLayout,
   ...props
 }: AppTableProps<T>) {
   return (
@@ -39,6 +40,7 @@ export default function AppTable<T extends object>({
         showSorterTooltip={{ target: 'sorter-icon' }}
         size={size}
         sticky={sticky}
+        tableLayout={tableLayout ?? (reportGrid ? 'fixed' : undefined)}
       />
     </div>
   )

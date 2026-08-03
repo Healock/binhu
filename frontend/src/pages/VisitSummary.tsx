@@ -104,7 +104,9 @@ function visitSummaryColumns(
       title: column,
       dataIndex: column,
       key: column,
-      width: column === '社区' || column === '姓名' ? 120 : 112,
+      width: column === '社区' || column === '姓名'
+        ? 120
+        : Math.min(136, Math.max(112, column.length * 13 + 36)),
       sorter: (left, right, sortOrder) => (
         compareSummaryValues(left[column], right[column], sortOrder)
       ),

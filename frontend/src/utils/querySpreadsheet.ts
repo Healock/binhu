@@ -1,3 +1,4 @@
+import { CellValueType, type ICellData } from '@univerjs/core'
 import type { QueryDataRow } from '../api/client.ts'
 import {
   canEditQueryCell,
@@ -60,6 +61,61 @@ export const QUERY_SHEET_UI_CONFIG = {
   footer: false,
   formulaBar: true,
   contextMenu: false,
+}
+
+const QUERY_SHEET_LONG_TEXT_COLUMNS = new Set([
+  '地址',
+  '现住址',
+  '核查结果',
+  '核查反馈',
+  '二次反馈',
+  '二次核查结果',
+  '实际情况',
+  '简要警情及处理结果',
+  '备注',
+])
+
+/**
+ * 腾讯表格的业务值本质上都是显示文本。显式使用 FORCE_STRING，避免
+ * Univer 把 7.30、身份证号或长手机号重新推断为数字。
+ */
+export function querySheetTextCell(value: unknown): ICellData {
+  return {
+    v: stringifyCell(value),
+    t: CellValueType.FORCE_STRING,
+  }
+}
+
+/**
+ * 先采用 Univer 按真实内容测得的宽度，再限制过窄和极端长文本。
+ * 这样短日期、姓名等列会收紧，地址和反馈仍能保留足够的阅读空间。
+ */
+export function fitQuerySheetColumnWidth(column: string, measuredWidth: number): number {
+  let minimum = 104
+  let maximum = 220
+
+  if (column.includes('日期') || column.includes('时间')) {
+    minimum = 92
+    maximum = 168
+  } else if (column.includes('身份证')) {
+    minimum = 176
+    maximum = 200
+  } else if (column.includes('电话') || column.includes('手机')) {
+    minimum = 140
+    maximum = 190
+  } else if (['社区', '核查人', '姓名'].includes(column)) {
+    minimum = 100
+    maximum = 170
+  } else if (column === '来源') {
+    minimum = 140
+    maximum = 220
+  } else if (QUERY_SHEET_LONG_TEXT_COLUMNS.has(column)) {
+    minimum = 150
+    maximum = 280
+  }
+
+  const safeMeasuredWidth = Number.isFinite(measuredWidth) ? measuredWidth : minimum
+  return Math.round(Math.min(maximum, Math.max(minimum, safeMeasuredWidth + 18)))
 }
 
 export function isQuerySheetFullscreen(
