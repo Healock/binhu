@@ -14,6 +14,8 @@ class TaskWorkflow:
     title_fields: tuple[str, ...]
     address_fields: tuple[str, ...]
     date_fields: tuple[str, ...]
+    identity_fields: tuple[str, ...]
+    source_fields: tuple[str, ...] = ()
     secondary_fields: tuple[str, ...] = ()
     valid_results: tuple[str, ...] = ()
 
@@ -55,7 +57,9 @@ class TaskWorkflow:
     def summary(self, values: dict[str, str]) -> dict[str, str]:
         return {
             "title": self.first_value(values, self.title_fields) or "未填写姓名",
+            "identity_number": self.first_value(values, self.identity_fields),
             "phone": self.first_value(values, self.phone_fields),
+            "source": self.first_value(values, self.source_fields),
             "address": self.first_value(values, self.address_fields),
             "date": self.first_value(values, self.date_fields),
             "result": str(values.get(self.result_field, "") or "").strip(),
@@ -71,6 +75,8 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         title_fields=("姓名",),
         address_fields=("现住址", "地址"),
         date_fields=("截止日期", "下发日期"),
+        identity_fields=("身份证号",),
+        source_fields=("来源",),
         secondary_fields=("二次反馈",),
     ),
     "出租房屋核查": TaskWorkflow(
@@ -81,6 +87,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         title_fields=("姓名",),
         address_fields=("现住址", "房屋地址"),
         date_fields=("截止时间", "下发时间"),
+        identity_fields=("身份证号",),
         secondary_fields=("二次反馈",),
     ),
     "寄递业": TaskWorkflow(
@@ -91,6 +98,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         title_fields=("姓名", "参考姓名"),
         address_fields=("现住址", "地址1"),
         date_fields=("截止时间", "下发时间"),
+        identity_fields=("身份证号", "参考身份证号码"),
         secondary_fields=("二次反馈",),
     ),
     "疑似未注销模型三": TaskWorkflow(
@@ -101,6 +109,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         title_fields=("姓名",),
         address_fields=("地址",),
         date_fields=("截止时间",),
+        identity_fields=("身份证号",),
         valid_results=("近期反吴", "在吴", "离吴"),
     ),
     "疑似返苏": TaskWorkflow(
@@ -111,6 +120,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         title_fields=("姓名",),
         address_fields=("现住址", "高频抓拍小区"),
         date_fields=("截止日期", "下发日期"),
+        identity_fields=("身份证号码",),
         secondary_fields=("二次核查结果",),
     ),
 }

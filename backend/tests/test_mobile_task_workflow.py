@@ -61,6 +61,24 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertTrue(workflow.needs_review({}, source_count=2))
         self.assertTrue(workflow.needs_review({}, conflict=True))
 
+    def test_card_summary_includes_identity_phone_and_fullchain_source(self):
+        summary = TASK_WORKFLOWS["全链条"].summary({
+            "姓名": "测试对象",
+            "身份证号": "320000000000000000",
+            "电话号码": "18800000000",
+            "来源": "模型来源甲",
+        })
+        self.assertEqual(summary["identity_number"], "320000000000000000")
+        self.assertEqual(summary["phone"], "18800000000")
+        self.assertEqual(summary["source"], "模型来源甲")
+
+    def test_delivery_card_uses_reference_identity_as_fallback(self):
+        summary = TASK_WORKFLOWS["寄递业"].summary({
+            "参考身份证号码": "320000000000000001",
+        })
+        self.assertEqual(summary["identity_number"], "320000000000000001")
+        self.assertEqual(summary["source"], "")
+
     def test_only_flow_positions_with_one_community_are_allowed(self):
         user = {
             "member": {"name": "网格员甲", "position": "组员"},
