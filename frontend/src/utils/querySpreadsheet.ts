@@ -86,10 +86,18 @@ export function querySheetTextCell(value: unknown): ICellData {
   }
 }
 
-/**
- * 先采用 Univer 按真实内容测得的宽度，再限制过窄和极端长文本。
- * 这样短日期、姓名等列会收紧，地址和反馈仍能保留足够的阅读空间。
- */
+/** 把文本近似换算成像素宽度，不调用 Univer 的列宽命令和撤销栈。 */
+export function measureQuerySheetTextWidth(value: unknown): number {
+  const lines = stringifyCell(value).split(/\r?\n/)
+  return Math.max(0, ...lines.map(line => Array.from(line).reduce((width, character) => {
+    if (/\s/u.test(character)) return width + 4
+    if (/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/u.test(character)) return width + 14
+    if (/[A-Z]/u.test(character)) return width + 9
+    return width + 8
+  }, 0)))
+}
+
+/** 限制过窄和极端长文本，避免地址等字段把整张工作表撑开。 */
 export function fitQuerySheetColumnWidth(column: string, measuredWidth: number): number {
   let minimum = 104
   let maximum = 220
@@ -116,6 +124,19 @@ export function fitQuerySheetColumnWidth(column: string, measuredWidth: number):
 
   const safeMeasuredWidth = Number.isFinite(measuredWidth) ? measuredWidth : minimum
   return Math.round(Math.min(maximum, Math.max(minimum, safeMeasuredWidth + 18)))
+}
+
+/**
+ * 根据当前工作表真实值计算安全列宽。Univer 0.25.x 的 autoResizeColumns 在
+ * 工作簿刚创建时会访问尚未初始化的撤销栈，因此这里只做纯计算，再由既有的
+ * setColumnWidth 写入宽度。
+ */
+export function resolveQuerySheetColumnWidth(column: string, values: unknown[]): number {
+  const measuredWidth = values.reduce(
+    (width, value) => Math.max(width, measureQuerySheetTextWidth(value)),
+    measureQuerySheetTextWidth(column),
+  )
+  return fitQuerySheetColumnWidth(column, measuredWidth)
 }
 
 export function isQuerySheetFullscreen(
