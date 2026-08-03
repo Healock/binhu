@@ -564,6 +564,22 @@ html[data-theme='dark'] ::selection {
   background: var(--app-surface);
 }
 
+.query-spreadsheet-card--fullscreen {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+}
+
+html.query-sheet-fullscreen-active,
+html.query-sheet-fullscreen-active body {
+  overflow: hidden;
+}
+
+html.query-sheet-fullscreen-active .app-route-transition {
+  transform: none !important;
+  animation: none !important;
+}
+
 .query-spreadsheet-card:fullscreen > .query-spreadsheet-loading,
 .query-spreadsheet-card--fullscreen > .query-spreadsheet-loading {
   display: flex;
