@@ -108,6 +108,7 @@ export default function MobileTaskHome() {
                 </p>
               </div>
               <Segmented
+                className="mobile-task-scope-switch"
                 value={scope}
                 onChange={value => setScope(value as MobileTaskScope)}
                 options={[{ label: '我的', value: 'mine' }, { label: '本社区', value: 'community' }]}

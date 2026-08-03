@@ -1,12 +1,17 @@
 import os
 import unittest
+from unittest.mock import AsyncMock, MagicMock
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from fastapi import HTTPException
 
-from routers.mobile_tasks import _source_in_community, require_flow_user
+from routers.mobile_tasks import (
+    _source_in_community,
+    _validate_assignment,
+    require_flow_user,
+)
 from services.parsers import get_parser
 from services.task_workflow import TASK_WORKFLOWS, task_state
 
@@ -82,6 +87,51 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertFalse(_source_in_community(
             parser, {"社区": "冬梅"}, ["长板", "长板村"]
         ))
+
+
+class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_leader_can_reassign_mobile_task(self):
+        cursor = MagicMock()
+        with self.assertRaises(HTTPException) as raised:
+            await _validate_assignment(
+                cursor,
+                {"position": "组员", "community": "长板"},
+                {"核查人": "组员甲"},
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_leader_can_only_assign_active_member_in_same_community(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(7,))
+        await _validate_assignment(
+            cursor,
+            {"position": "组长", "community": "长板"},
+            {"核查人": "组员甲"},
+        )
+        self.assertEqual(
+            cursor.execute.await_args.args[1],
+            ("长板", "组员甲"),
+        )
+
+        cursor.fetchone = AsyncMock(return_value=None)
+        with self.assertRaises(HTTPException) as raised:
+            await _validate_assignment(
+                cursor,
+                {"position": "组长", "community": "长板"},
+                {"核查人": "其他社区人员"},
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_non_assignment_changes_skip_member_lookup(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        await _validate_assignment(
+            cursor,
+            {"position": "组员", "community": "长板"},
+            {"现住址": "长板一号"},
+        )
+        cursor.execute.assert_not_awaited()
 
 
 if __name__ == "__main__":

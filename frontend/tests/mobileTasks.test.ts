@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   buildMobileTaskChanges,
   mobileTaskEditorFields,
+  mobileTaskCanLaunchTelephone,
+  mobileTaskPhoneOptions,
   mobileTaskPhoneValue,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
@@ -114,4 +116,22 @@ test('有待办的业务优先，零任务业务沉底', () => {
   ])
   assert.deepEqual(sorted.map(item => item.parser_type), ['a', 'c', 'b'])
   assert.equal(mobileTaskPhoneValue('193-9261 0106'), '19392610106')
+})
+
+test('连续或分隔保存的多个手机号会拆成独立拨号选项', () => {
+  assert.deepEqual(
+    mobileTaskPhoneOptions('1556428608218549970040'),
+    ['15564286082', '18549970040'],
+  )
+  assert.deepEqual(
+    mobileTaskPhoneOptions('18856221510；0512-12345678；18856221510'),
+    ['18856221510', '051212345678'],
+  )
+  assert.deepEqual(mobileTaskPhoneOptions('+86 18856221510'), ['18856221510'])
+})
+
+test('只有手机浏览器会直接启动 tel 协议', () => {
+  assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Linux; Android 15)'), true)
+  assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Windows NT 10.0)'), false)
+  assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Macintosh)', false, 5), true)
 })
