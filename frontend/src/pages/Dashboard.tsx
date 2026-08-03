@@ -261,18 +261,9 @@ export default function Dashboard() {
         title="在线数据汇总"
         description="同步腾讯文档数据，并按日期和业务类型查看统计结果"
         actions={report.exists ? (
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Tag color="blue">
-              网格员 {inspectorTable.data.length} 行 · 社区 {communityTable.data.length} 行
-            </Tag>
-            <Button
-              icon={<DownloadOutlined />}
-              loading={exporting}
-              onClick={handleExport}
-            >
-              导出 XLSX
-            </Button>
-          </div>
+          <Tag color="blue">
+            网格员 {inspectorTable.data.length} 行 · 社区 {communityTable.data.length} 行
+          </Tag>
         ) : undefined}
       />
 
@@ -364,6 +355,17 @@ export default function Dashboard() {
             />
           </div>
           {canConfigureReport && <SummaryReportConfigButton />}
+          {report.exists && (
+            <Button
+              size="large"
+              icon={<DownloadOutlined />}
+              loading={exporting}
+              onClick={handleExport}
+              className="w-full md:w-auto"
+            >
+              导出 XLSX
+            </Button>
+          )}
           {msg && report.exists && (
             <span className={`text-sm ${msg.includes('成功') ? 'text-green-700' : 'text-orange-700'}`}>
               {msg}
