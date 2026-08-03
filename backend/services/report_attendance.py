@@ -77,7 +77,7 @@ async def load_community_person_days(
     """从 OnlineData 读取出勤，避免复用 daily_report 的数据库连接。"""
     if not covered_dates:
         raise ValueError("计算在岗人日时至少需要一个业务日期")
-    pool = db_manager.get_pool("OnlineData")
+    pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
