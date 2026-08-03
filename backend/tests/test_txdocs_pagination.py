@@ -181,20 +181,28 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 11)
         client.read_range.assert_awaited_once_with("file", "sheet", "A2:C12")
 
-    def test_numeric_month_day_keeps_trailing_zero(self):
+    def test_numeric_month_day_preserves_api_value_without_guessing(self):
         client = TxDocsClient("client", "token", "user")
         values, metadata = client._decode_row(
             {
                 "values": [
+                    {"cellValue": {"text": "7.30"}},
                     {"cellValue": {"number": 7.3}},
+                    {"cellValue": {"number": 8.3}},
                     {"cellValue": {"number": 7.03}},
                 ]
             },
-            ["下发时间", "截止时间"],
+            ["下发日期", "截止日期", "下发时间", "截止时间"],
         )
 
-        self.assertEqual(values, {"下发时间": "7.30", "截止时间": "7.03"})
-        self.assertEqual(metadata["下发时间"]["type"], "number")
+        self.assertEqual(values, {
+            "下发日期": "7.30",
+            "截止日期": "7.3",
+            "下发时间": "8.3",
+            "截止时间": "7.03",
+        })
+        self.assertEqual(metadata["下发日期"]["type"], "text")
+        self.assertEqual(metadata["截止日期"]["type"], "number")
 
     async def test_http_200_business_error_is_not_treated_as_success(self):
         async def handler(_request):
