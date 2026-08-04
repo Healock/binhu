@@ -66,15 +66,17 @@ def _build_summary(table: dict) -> dict:
     if "核查完成率" in columns:
         summary["核查完成率"] = _ratio(completed, total)
     if "核查见底率" in columns:
-        summary["核查见底率"] = _ratio(
-            max(completed - unable, 0),
-            completed,
-        )
+        summary["核查见底率"] = _ratio(completed, completed + unable)
     if DAILY_AVERAGE_COLUMN in columns:
         if any(row.get(DAILY_AVERAGE_COLUMN) is None for row in rows):
             summary[DAILY_AVERAGE_COLUMN] = None
         else:
-            summary[DAILY_AVERAGE_COLUMN] = _ratio(completed, person_days)
+            workload = sum(
+                Decimal(str(row.get(DAILY_AVERAGE_COLUMN) or 0))
+                * Decimal(_count(row.get("在岗人日", row.get("网格员人数", 0))))
+                for row in rows
+            )
+            summary[DAILY_AVERAGE_COLUMN] = _ratio(workload, person_days)
 
     return summary
 

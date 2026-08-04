@@ -75,11 +75,7 @@ export function buildReportTableTotal(
     total['核查完成率'] = roundRatio(completed, dataTotal, 2)
   }
   if (columns.includes('核查见底率')) {
-    total['核查见底率'] = roundRatio(
-      Math.max(completed - unable, 0),
-      completed,
-      2,
-    )
+    total['核查见底率'] = roundRatio(completed, completed + unable, 2)
   }
   const averageColumn = columns.includes('每日人均核查数')
     ? '每日人均核查数'
@@ -89,7 +85,15 @@ export function buildReportTableTotal(
   if (averageColumn) {
     total[averageColumn] = rows.some(row => row[averageColumn] == null)
       ? null
-      : roundRatio(completed, personDays, 2)
+      : roundRatio(
+          rows.reduce((sum, row) => (
+            sum
+            + numeric(row[averageColumn])
+              * numeric(row['在岗人日'] ?? row['网格员人数'])
+          ), 0),
+          personDays,
+          2,
+        )
   }
   return total
 }

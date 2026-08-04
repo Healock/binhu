@@ -132,6 +132,19 @@ class MobileNavigationConfigTests(unittest.TestCase):
                 permissions,
             )
 
+    def test_police_permissions_expose_upload_and_address_pages(self):
+        config = default_mobile_dock_config(
+            "member",
+            ["police.dispatch.manage", "police.address.manage"],
+        )
+        items = {
+            item
+            for group in config["groups"]
+            for item in group["items"]
+        }
+        self.assertIn("data_upload", items)
+        self.assertIn("police_addresses", items)
+
     def test_strict_validation_rejects_duplicates_and_forbidden_items(self):
         with self.assertRaisesRegex(ValueError, "分类不能重复"):
             validate_mobile_dock_config(

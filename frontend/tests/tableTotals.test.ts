@@ -31,7 +31,7 @@ test('在线汇总总计只使用筛选后的行', () => {
   assert.equal(total.社区, '总计')
   assert.equal(total.数据总数, 10)
   assert.equal(total.核查完成率, 0.5)
-  assert.equal(total.核查见底率, 0.8)
+  assert.equal(total.核查见底率, 0.83)
 })
 
 test('在线汇总两列模式按已核查计算完成率', () => {
@@ -57,7 +57,7 @@ test('在线汇总两列模式按已核查计算完成率', () => {
   assert.equal(total.未核查, 6)
   assert.equal(total.已核查, 4)
   assert.equal(total.核查完成率, 0.4)
-  assert.equal(total.核查见底率, 0.75)
+  assert.equal(total.核查见底率, 0.8)
 })
 
 test('在线区间汇总按在岗人日重算每日人均核查数', () => {

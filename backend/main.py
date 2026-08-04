@@ -28,6 +28,7 @@ from routers.personnel_attendance import router as personnel_attendance_router
 from routers.work_logs import router as work_logs_router
 from routers.permission_groups import router as permission_groups_router
 from routers.mobile_tasks import router as mobile_tasks_router
+from routers.police_dispatch import router as police_dispatch_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
@@ -111,6 +112,7 @@ app.include_router(sync_router, dependencies=auth_dep)
 app.include_router(stats_router, dependencies=auth_dep)
 app.include_router(query_router, dependencies=auth_dep)
 app.include_router(mobile_tasks_router, dependencies=auth_dep)
+app.include_router(police_dispatch_router, dependencies=auth_dep)
 app.include_router(grid_members_router, dependencies=auth_dep)
 app.include_router(system_router, dependencies=auth_dep)
 app.include_router(notifications_router, dependencies=auth_dep)

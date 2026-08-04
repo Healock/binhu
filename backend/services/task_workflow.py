@@ -17,6 +17,7 @@ class TaskWorkflow:
     identity_fields: tuple[str, ...]
     source_fields: tuple[str, ...] = ()
     secondary_fields: tuple[str, ...] = ()
+    analysis_fields: tuple[str, ...] = ("研判",)
     valid_results: tuple[str, ...] = ()
     result_options: tuple[str, ...] = ()
 
@@ -25,6 +26,8 @@ class TaskWorkflow:
         result = str(values.get(self.result_field, "") or "").strip()
         if self.valid_results:
             return "completed" if result in self.valid_results else "unchecked"
+        if "无法核实" in result:
+            return "checked"
         if result:
             return "completed"
         if any(str(values.get(field, "") or "").strip() for field in ("现住址",)):
@@ -40,13 +43,20 @@ class TaskWorkflow:
     ) -> bool:
         if conflict or source_count > 1:
             return True
-        result = str(values.get(self.result_field, "") or "").strip()
-        if "无法核实" not in result or not self.secondary_fields:
+        if self.valid_results:
             return False
-        return not any(
+        result = str(values.get(self.result_field, "") or "").strip()
+        return "无法核实" in result
+
+    def review_stage(self, values: dict[str, str]) -> str:
+        """无法核实任务按研判是否填写区分复核阶段。"""
+        result = str(values.get(self.result_field, "") or "").strip()
+        if self.valid_results or "无法核实" not in result:
+            return ""
+        return "analyzed" if any(
             str(values.get(field, "") or "").strip()
-            for field in self.secondary_fields
-        )
+            for field in self.analysis_fields
+        ) else "waiting_analysis"
 
     def first_value(self, values: dict[str, str], fields: tuple[str, ...]) -> str:
         for field in fields:

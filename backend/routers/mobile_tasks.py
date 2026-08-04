@@ -31,6 +31,7 @@ from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
 FlowScope = Literal["mine", "community"]
 TaskStatus = Literal["pending", "review", "completed", "all"]
+ReviewStage = Literal["all", "waiting_analysis", "analyzed"]
 
 
 class TaskBatchUpdate(BaseModel):
@@ -75,15 +76,26 @@ def _json_field(field: str) -> str:
 def _review_condition(parser_type: str) -> str:
     workflow = TASK_WORKFLOWS[parser_type]
     conditions = ["projection.conflict=1", "projection.source_count>1"]
-    if workflow.secondary_fields:
-        secondary = " AND ".join(
-            f"{_json_field(field)}=''" for field in workflow.secondary_fields
-        )
+    if not workflow.valid_results:
         conditions.append(
-            f"({_json_field(workflow.result_field)} LIKE '%%无法核实%%' "
-            f"AND {secondary})"
+            f"({_json_field(workflow.result_field)} LIKE '%%无法核实%%')"
         )
     return "(" + " OR ".join(conditions) + ")"
+
+
+def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
+    workflow = TASK_WORKFLOWS[parser_type]
+    if stage == "all" or workflow.valid_results:
+        return "1=1"
+    analysis = " OR ".join(
+        f"{_json_field(field)}<>''" for field in workflow.analysis_fields
+    ) or "0"
+    unable = f"{_json_field(workflow.result_field)} LIKE '%%无法核实%%'"
+    return (
+        f"({unable} AND ({analysis}))"
+        if stage == "analyzed"
+        else f"({unable} AND NOT ({analysis}))"
+    )
 
 
 async def _flow_context(conn, user: dict) -> dict:
@@ -130,6 +142,13 @@ async def _aggregate_live(cur, context: dict, scope: FlowScope) -> dict[str, dic
                COUNT(*),
                SUM(CASE WHEN projection.conflict=1
                               OR projection.source_count>1
+                              OR (projection.parser_type IN (
+                                      '全链条','出租房屋核查','寄递业'
+                                  ) AND {_json_field('核查结果')}
+                                      LIKE '%%无法核实%%')
+                              OR (projection.parser_type='疑似返苏'
+                                  AND {_json_field('核查反馈')}
+                                      LIKE '%%无法核实%%')
                         THEN 1 ELSE 0 END)
         FROM _online_source_projection AS projection
         WHERE projection.parser_type IN ({type_placeholders})
@@ -248,6 +267,7 @@ def _task_record(
             source_count=int(source_count or 0),
             conflict=bool(conflict),
         ),
+        "review_stage": workflow.review_stage(normalized),
         "source_count": int(source_count or 0),
         "conflict": bool(conflict),
         "pending_sync": bool(pending),
@@ -327,6 +347,7 @@ async def list_mobile_tasks(
     parser_type: str,
     scope: FlowScope = Query("mine"),
     status: TaskStatus = Query("pending"),
+    review_stage: ReviewStage = Query("all"),
     keyword: str | None = Query(None, max_length=100),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
@@ -346,6 +367,7 @@ async def list_mobile_tasks(
         where_parts.append("projection.task_state='completed'")
     elif status == "review":
         where_parts.append(review_condition)
+        where_parts.append(_review_stage_condition(parser_type, review_stage))
     if keyword and keyword.strip():
         where_parts.append("projection.search_text LIKE %s")
         query_params.append(f"%{keyword.strip()}%")
@@ -518,6 +540,7 @@ async def get_mobile_task_detail(
                 "editable_fields": list(dict.fromkeys(editable_fields)),
                 "state": source_task["state"],
                 "needs_review": source_task["needs_review"],
+                "review_stage": source_task["review_stage"],
             })
 
         if not sources:
@@ -542,6 +565,7 @@ async def get_mobile_task_detail(
             "address_fields": list(workflow.address_fields),
             "date_fields": list(workflow.date_fields),
             "secondary_fields": list(workflow.secondary_fields),
+            "analysis_fields": list(workflow.analysis_fields),
             "columns": parser.COLUMNS,
         },
         "writeback_enabled": enabled,

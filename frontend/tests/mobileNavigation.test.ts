@@ -66,6 +66,22 @@ test('新权限列表优先于旧角色决定 Dock 页面', () => {
   )
 })
 
+test('公安下发权限可以单独进入数据上传中心和公安地址库', () => {
+  const config = defaultMobileDockConfig('member', [
+    'police.dispatch.manage',
+    'police.address.manage',
+  ])
+
+  assert.equal(
+    config.groups.some(group => group.items.includes('data_upload')),
+    true,
+  )
+  assert.equal(
+    config.groups.some(group => group.items.includes('police_addresses')),
+    true,
+  )
+})
+
 test('数据上传中心只出现在管理员和超级管理员导航中', () => {
   const member = defaultMobileDockConfig('member')
   const admin = defaultMobileDockConfig('admin')

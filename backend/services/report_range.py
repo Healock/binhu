@@ -23,6 +23,7 @@ from services.report_members import (
 from services.report_attendance import (
     load_community_person_days as _load_community_person_days,
 )
+from services.report_workload import load_effective_workload_by_community
 
 
 INSPECTOR_COLUMNS = [
@@ -153,10 +154,12 @@ async def _aggregate_range_ledger(
                  )
                  ELSE 0 END AS completion_rate,
             SUM(latest.unable_to_verify) AS unable_count,
-            CASE WHEN SUM(latest.task_state = 'completed') > 0
+            CASE WHEN SUM(latest.task_state = 'completed')
+                           + SUM(latest.unable_to_verify) > 0
                  THEN ROUND(
-                    SUM(latest.reached_bottom)
-                    / SUM(latest.task_state = 'completed'),
+                    SUM(latest.task_state = 'completed')
+                    / (SUM(latest.task_state = 'completed')
+                       + SUM(latest.unable_to_verify)),
                     2
                  )
                  ELSE 0 END AS reached_bottom_rate
@@ -366,12 +369,17 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                     alias_lookup,
                 )
             )
+            effective_workload = await load_effective_workload_by_community(
+                cur,
+                start_date,
+                end_date,
+                summary_types,
+            )
 
             community_rows = []
             for row in merged_rows:
                 community = str(row[0])
                 member_count = member_counts.get(community, 0)
-                completed = int(row[4] or 0)
                 person_days = community_person_days.get(community, 0)
                 community_rows.append(
                     (
@@ -379,7 +387,10 @@ async def get_summary_range(start_date: str, end_date: str) -> dict:
                         member_count,
                         person_days if attendance["complete"] else None,
                         (
-                            calculate_ratio(completed, person_days)
+                            calculate_ratio(
+                                effective_workload.get(community, 0),
+                                person_days,
+                            )
                             if attendance["complete"]
                             else None
                         ),

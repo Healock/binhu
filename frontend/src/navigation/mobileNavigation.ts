@@ -30,6 +30,7 @@ export interface NavigationItemDefinition {
   end?: boolean
   roles?: Role[]
   permission?: PermissionCode
+  anyPermissions?: PermissionCode[]
 }
 
 export interface NavigationGroupDefinition {
@@ -78,7 +79,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '数据上传中心',
         shortLabel: '数据上传',
         icon: 'upload',
-        permission: 'visit.import',
+        anyPermissions: ['visit.import', 'police.dispatch.manage'],
         roles: ['super_admin', 'admin'],
       },
       {
@@ -113,6 +114,15 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '社区管理',
         icon: 'communities',
         permission: 'community.view',
+      },
+      {
+        id: 'police_addresses',
+        path: '/police-addresses',
+        label: '小区管理（公安地址库）',
+        shortLabel: '公安地址库',
+        icon: 'communities',
+        permission: 'police.address.manage',
+        roles: ['super_admin', 'admin'],
       },
       {
         id: 'users',
@@ -168,6 +178,9 @@ export function isNavigationItemAccessible(
   permissions?: PermissionCode[],
 ): boolean {
   if (item.permission && permissions) return permissions.includes(item.permission)
+  if (item.anyPermissions && permissions) {
+    return item.anyPermissions.some(permission => permissions.includes(permission))
+  }
   return !item.roles || item.roles.includes(role)
 }
 
@@ -297,6 +310,7 @@ export function routeIsActive(
   item: NavigationItemDefinition,
 ): boolean {
   if (item.id === 'online_query' && pathname.startsWith('/tasks')) return true
+  if (item.id === 'online_query' && pathname.startsWith('/police-tasks')) return true
   if (item.end) return pathname === item.path
   return pathname === item.path || pathname.startsWith(`${item.path}/`)
 }
@@ -307,7 +321,10 @@ export function mobileNavigationItemLabel(
   short = false,
 ): string {
   const flowPost = position === '组员' || position === '组长'
+  const internalPost = position === '基础管控' || position === '中队长'
   if (flowPost && item.id === 'online_summary') return '首页'
   if (flowPost && item.id === 'online_query') return '任务处理'
+  if (internalPost && item.id === 'online_summary') return '首页'
+  if (internalPost && item.id === 'online_query') return '公安任务'
   return short ? item.shortLabel : item.label
 }

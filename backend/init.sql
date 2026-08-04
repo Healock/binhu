@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS _communities (
     name            VARCHAR(200) NOT NULL UNIQUE,
     police_officers JSON DEFAULT NULL,
     area_id         INT DEFAULT NULL,
+    is_active       TINYINT(1) NOT NULL DEFAULT 1,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -330,6 +331,149 @@ CREATE TABLE IF NOT EXISTS _online_writeback_audit (
     INDEX idx_writeback_audit_time (created_at),
     INDEX idx_writeback_audit_pending (spreadsheet_id, sync_status, created_at),
     INDEX idx_writeback_audit_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_address_entries (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(300) NOT NULL,
+    normalized_name VARCHAR(300) NOT NULL,
+    detail_address VARCHAR(1000) NOT NULL DEFAULT '',
+    address_type VARCHAR(30) NOT NULL DEFAULT 'community',
+    pattern VARCHAR(200) NOT NULL DEFAULT '',
+    community_id INT DEFAULT NULL,
+    aliases_json JSON NOT NULL,
+    source_flags JSON NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    created_by INT DEFAULT NULL,
+    updated_by INT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_police_address_name_community (normalized_name, community_id),
+    INDEX idx_police_address_community (community_id, enabled),
+    INDEX idx_police_address_type (address_type, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_address_imports (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    import_kind VARCHAR(30) NOT NULL,
+    file_name VARCHAR(255) NOT NULL DEFAULT '',
+    file_sha256 CHAR(64) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'preview',
+    imported_count INT NOT NULL DEFAULT 0,
+    created_count INT NOT NULL DEFAULT 0,
+    merged_count INT NOT NULL DEFAULT 0,
+    conflict_count INT NOT NULL DEFAULT 0,
+    created_by INT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_police_address_import_hash (import_kind, file_sha256),
+    INDEX idx_police_address_import_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_address_sources (
+    entry_id BIGINT NOT NULL,
+    import_id BIGINT NOT NULL,
+    source_kind VARCHAR(30) NOT NULL,
+    source_row INT NOT NULL,
+    source_name VARCHAR(300) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (entry_id, import_id, source_row),
+    INDEX idx_police_address_source_import (import_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_address_import_conflicts (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    import_id BIGINT DEFAULT NULL,
+    source_row INT NOT NULL DEFAULT 0,
+    reason VARCHAR(500) NOT NULL,
+    values_json JSON NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_police_address_conflict_import (import_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_dispatch_batches (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    file_name VARCHAR(255) NOT NULL DEFAULT '',
+    file_sha256 CHAR(64) NOT NULL UNIQUE,
+    sheet_name VARCHAR(255) NOT NULL DEFAULT '',
+    status VARCHAR(30) NOT NULL DEFAULT 'reviewing',
+    total_count INT NOT NULL DEFAULT 0,
+    counts_json JSON NOT NULL,
+    imported_by INT NOT NULL,
+    first_publish_date DATE DEFAULT NULL,
+    publish_started_at DATETIME DEFAULT NULL,
+    completed_at DATETIME DEFAULT NULL,
+    last_error VARCHAR(500) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_police_dispatch_batch_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_dispatch_tasks (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_id BIGINT NOT NULL,
+    source_row INT NOT NULL,
+    source_name VARCHAR(300) NOT NULL DEFAULT '',
+    person_name VARCHAR(200) NOT NULL DEFAULT '',
+    identity_number VARCHAR(50) NOT NULL DEFAULT '',
+    identity_hash CHAR(64) NOT NULL DEFAULT '',
+    phone VARCHAR(200) NOT NULL DEFAULT '',
+    original_address VARCHAR(1500) NOT NULL DEFAULT '',
+    source_created_time VARCHAR(100) NOT NULL DEFAULT '',
+    transfer_note TEXT,
+    raw_values_json JSON NOT NULL,
+    duplicate_group_key CHAR(64) NOT NULL DEFAULT '',
+    duplicate_kind VARCHAR(30) NOT NULL DEFAULT '',
+    suggested_action VARCHAR(30) NOT NULL DEFAULT 'dispatch',
+    suggested_community_id INT DEFAULT NULL,
+    suggestion_reason VARCHAR(1000) NOT NULL DEFAULT '',
+    allocation_mode VARCHAR(30) NOT NULL DEFAULT '',
+    final_action VARCHAR(30) NOT NULL DEFAULT '',
+    final_community_id INT DEFAULT NULL,
+    review_note VARCHAR(1000) NOT NULL DEFAULT '',
+    reviewed_by INT DEFAULT NULL,
+    reviewer_name VARCHAR(100) NOT NULL DEFAULT '',
+    reviewed_at DATETIME DEFAULT NULL,
+    version INT UNSIGNED NOT NULL DEFAULT 1,
+    task_status VARCHAR(30) NOT NULL DEFAULT 'pending_review',
+    publish_status VARCHAR(30) NOT NULL DEFAULT 'not_required',
+    published_row INT DEFAULT NULL,
+    publish_key CHAR(64) NOT NULL DEFAULT '',
+    publish_error VARCHAR(500) NOT NULL DEFAULT '',
+    linked_source_id BIGINT DEFAULT NULL,
+    linked_row_hash CHAR(64) NOT NULL DEFAULT '',
+    conflict_values_json JSON DEFAULT NULL,
+    cache_pending TINYINT(1) NOT NULL DEFAULT 0,
+    published_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_police_dispatch_source_row (batch_id, source_row),
+    INDEX idx_police_dispatch_task_filter (batch_id, task_status, suggested_action),
+    INDEX idx_police_dispatch_task_duplicate (batch_id, duplicate_group_key),
+    INDEX idx_police_dispatch_task_identity (batch_id, identity_hash),
+    INDEX idx_police_dispatch_task_publish (batch_id, publish_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_dispatch_publish_results (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL UNIQUE,
+    spreadsheet_id INT NOT NULL,
+    sheet_id VARCHAR(100) NOT NULL,
+    physical_row INT DEFAULT NULL,
+    business_key CHAR(64) NOT NULL DEFAULT '',
+    request_values_json JSON NOT NULL,
+    verified_values_json JSON DEFAULT NULL,
+    source_row_id BIGINT DEFAULT NULL,
+    expected_row_hash CHAR(64) NOT NULL DEFAULT '',
+    resolution VARCHAR(30) NOT NULL DEFAULT '',
+    cache_pending TINYINT(1) NOT NULL DEFAULT 0,
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    error_code VARCHAR(100) NOT NULL DEFAULT '',
+    error_message VARCHAR(500) NOT NULL DEFAULT '',
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_attempt_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_police_publish_status (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _departments (
@@ -790,6 +934,7 @@ CREATE TABLE IF NOT EXISTS _daily_task_ledger (
     task_state        VARCHAR(20) NOT NULL,
     unable_to_verify  TINYINT(1) NOT NULL DEFAULT 0,
     reached_bottom    TINYINT(1) NOT NULL DEFAULT 0,
+    effective_workload TINYINT UNSIGNED NOT NULL DEFAULT 0,
     created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (report_date, parser_type, row_key),

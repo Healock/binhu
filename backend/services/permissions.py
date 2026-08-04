@@ -28,6 +28,8 @@ PERMISSION_MANAGE = "permission.manage"
 ANNOUNCEMENT_MANAGE = "announcement.manage"
 SYSTEM_MANAGE = "system.manage"
 OPS_MANAGE = "ops.manage"
+POLICE_DISPATCH_MANAGE = "police.dispatch.manage"
+POLICE_ADDRESS_MANAGE = "police.address.manage"
 
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
@@ -52,6 +54,8 @@ PERMISSION_CATALOG = [
     (ANNOUNCEMENT_MANAGE, "平台管理", "发布和删除公告"),
     (SYSTEM_MANAGE, "平台管理", "管理数据源、OAuth 和系统设置"),
     (OPS_MANAGE, "平台管理", "使用运维中心"),
+    (POLICE_DISPATCH_MANAGE, "业务操作", "管理公安全链条数据预处理、审核和发布"),
+    (POLICE_ADDRESS_MANAGE, "基础资料", "管理公安地址库和地址映射"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}
@@ -79,6 +83,8 @@ INTERNAL_BUSINESS_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
     VISIT_IMPORT,
     WORK_LOG_MANAGE,
     ATTENDANCE_MANAGE,
+    POLICE_DISPATCH_MANAGE,
+    POLICE_ADDRESS_MANAGE,
 }
 
 DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {

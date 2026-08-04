@@ -48,13 +48,31 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             "completed",
         )
 
-    def test_unverifiable_without_secondary_feedback_needs_review(self):
+    def test_unverifiable_always_needs_review_and_uses_analysis_stage(self):
         workflow = TASK_WORKFLOWS["寄递业"]
         self.assertTrue(workflow.needs_review({"核查结果": "无法核实"}))
-        self.assertFalse(workflow.needs_review({
+        self.assertTrue(workflow.needs_review({
             "核查结果": "无法核实",
             "二次反馈": "再次联系未果",
         }))
+        self.assertEqual(
+            workflow.review_stage({"核查结果": "无法核实"}),
+            "waiting_analysis",
+        )
+        self.assertEqual(
+            workflow.review_stage({"核查结果": "无法核实", "研判": "已研判"}),
+            "analyzed",
+        )
+
+    def test_unverifiable_is_checked_but_not_completed(self):
+        self.assertEqual(
+            task_state("全链条", {"核查结果": "无法核实"}),
+            "checked",
+        )
+        self.assertEqual(
+            task_state("疑似返苏", {"核查反馈": "无法核实"}),
+            "checked",
+        )
 
     def test_duplicate_or_conflict_needs_review(self):
         workflow = TASK_WORKFLOWS["全链条"]

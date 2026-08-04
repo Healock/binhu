@@ -689,6 +689,7 @@ export async function deleteQuerySourceRow(
 export type MobileTaskScope = 'mine' | 'community'
 export type MobileTaskStatus = 'pending' | 'review' | 'completed' | 'all'
 export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
+export type MobileTaskReviewStage = 'all' | 'waiting_analysis' | 'analyzed'
 
 export interface MobileTaskBusinessSummary {
   parser_type: string
@@ -735,6 +736,7 @@ export interface MobileTaskItem {
   inspector: string
   state: MobileTaskState
   needs_review: boolean
+  review_stage: '' | 'waiting_analysis' | 'analyzed'
   source_count: number
   conflict: boolean
   pending_sync: boolean
@@ -750,6 +752,7 @@ export interface MobileTaskSource {
   editable_fields: string[]
   state: MobileTaskState
   needs_review: boolean
+  review_stage: '' | 'waiting_analysis' | 'analyzed'
 }
 
 export interface MobileTaskDetailData {
@@ -761,6 +764,7 @@ export interface MobileTaskDetailData {
     address_fields: string[]
     date_fields: string[]
     secondary_fields: string[]
+    analysis_fields: string[]
     columns: string[]
   }
   writeback_enabled: boolean
@@ -781,6 +785,7 @@ export async function listMobileTasks(params: {
   parser_type: string
   scope: MobileTaskScope
   status: MobileTaskStatus
+  review_stage?: MobileTaskReviewStage
   keyword?: string
   page?: number
   page_size?: number
@@ -797,6 +802,7 @@ export async function listMobileTasks(params: {
     params: {
       scope: params.scope,
       status: params.status,
+      review_stage: params.review_stage || 'all',
       keyword: params.keyword,
       page: params.page || 1,
       page_size: params.page_size || 20,
@@ -917,6 +923,7 @@ export interface GridCommunity {
   police_officer_ids: number[]
   area_id: number | null
   area_name: string
+  is_active: boolean
 }
 
 export interface CommunityArea {
@@ -932,6 +939,7 @@ export interface DepartmentOption {
   name: string
   type: 'community' | 'internal'
   community_name: string | null
+  is_active: boolean
 }
 
 export async function getDepartments(): Promise<DepartmentOption[]> {
@@ -1329,6 +1337,289 @@ export async function getVisitImportIssues(
     params: { page, page_size: pageSize },
   })
   return data
+}
+
+export async function updateGridCommunityStatus(
+  id: number,
+  isActive: boolean,
+): Promise<{ message: string; is_active: boolean }> {
+  const { data } = await api.patch(`/grid-members/communities/${id}/status`, {
+    is_active: isActive,
+  })
+  return data
+}
+
+// ---- 公安全链条预处理与地址库 ----
+export interface PoliceCommunityOption {
+  id: number
+  name: string
+  enabled: boolean
+  aliases: string[]
+}
+
+export interface PoliceAddressEntry {
+  id: number
+  name: string
+  detail_address: string
+  address_type: 'community' | 'apartment' | 'other'
+  pattern: string
+  community_id: number
+  community_name: string
+  aliases: string[]
+  sources: string[]
+  enabled: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type PoliceAddressPayload = Omit<
+  PoliceAddressEntry,
+  'id' | 'community_name' | 'sources' | 'created_at' | 'updated_at'
+>
+
+export interface PoliceAddressImportResult {
+  status: 'preview' | 'success' | 'partial' | 'duplicate'
+  total?: number
+  accepted?: Array<Record<string, unknown>>
+  conflicts?: Array<Record<string, string | number>>
+  create_count?: number
+  merge_count?: number
+  created_count?: number
+  merged_count?: number
+  imported_count?: number
+  conflict_count?: number
+  import_id?: number
+  message?: string
+}
+
+export interface PoliceDispatchCounts {
+  total: number
+  pending_review: number
+  reviewed: number
+  no_registration: number
+  transfer: number
+  dispatch: number
+  balanced: number
+  duplicate: number
+  abnormal: number
+  pending_publish: number
+  published: number
+  retryable: number
+  needs_reconciliation: number
+  conflict: number
+  cache_pending: number
+}
+
+export interface PoliceDispatchBatch {
+  id: number
+  file_name: string
+  sheet_name: string
+  status: 'reviewing' | 'ready_to_publish' | 'publishing' | 'reconciling' | 'completed'
+  total_count: number
+  counts: PoliceDispatchCounts
+  reviewed_count: number
+  first_publish_date: string | null
+  last_error: string
+  created_at: string
+  updated_at: string
+  imported_by: string
+  community_distribution: Array<{
+    community_id: number
+    community_name: string
+    count: number
+  }>
+}
+
+export interface PoliceDispatchTask {
+  id: number
+  batch_id: number
+  source_row: number
+  source_name: string
+  person_name: string
+  identity_number: string
+  phone: string
+  original_address: string
+  created_time: string
+  transfer_note: string
+  duplicate_group_key: string
+  duplicate_kind: 'exact' | 'conflict' | ''
+  suggested_action: 'dispatch' | 'no_registration' | 'transfer' | 'manual'
+  suggested_community_id: number | null
+  suggested_community_name: string
+  suggestion_reason: string
+  allocation_mode: 'matched' | 'balanced' | 'conflict' | ''
+  final_action: 'dispatch' | 'no_registration' | 'transfer' | 'duplicate_exclude' | ''
+  final_community_id: number | null
+  final_community_name: string
+  review_note: string
+  reviewer_name: string
+  reviewed_at: string | null
+  version: number
+  task_status: 'pending_review' | 'pending_publish' | 'publish_failed' | 'completed'
+  publish_status: string
+  publish_error: string
+  raw_values: Record<string, string>
+  field_roles: Record<string, string>
+  linked_source_id: number | null
+  linked_row_hash: string
+  conflict_values: Record<string, string>
+  requested_values: Record<string, string>
+  conflict_diff: Array<{ field: string; platform: string; tencent: string }>
+  cache_pending: boolean
+}
+
+export async function listPoliceAddresses(params?: {
+  keyword?: string
+  enabled?: boolean
+}): Promise<{ data: PoliceAddressEntry[]; total: number; communities: PoliceCommunityOption[] }> {
+  const { data } = await api.get('/police-dispatch/addresses', { params })
+  return data
+}
+
+export async function createPoliceAddress(payload: PoliceAddressPayload): Promise<void> {
+  await api.post('/police-dispatch/addresses', payload)
+}
+
+export async function updatePoliceAddress(id: number, payload: PoliceAddressPayload): Promise<void> {
+  await api.put(`/police-dispatch/addresses/${id}`, payload)
+}
+
+export async function disablePoliceAddress(id: number): Promise<void> {
+  await api.delete(`/police-dispatch/addresses/${id}`)
+}
+
+export async function importPoliceAddresses(
+  file: File,
+  importKind: 'community' | 'apartment',
+  commit = false,
+): Promise<PoliceAddressImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/police-dispatch/addresses/import', form, {
+    params: { import_kind: importKind, commit },
+    timeout: 300000,
+  })
+  return data
+}
+
+export async function uploadPoliceDispatchBatch(file: File): Promise<{
+  status: 'success' | 'duplicate'
+  message: string
+  batch: PoliceDispatchBatch
+}> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/police-dispatch/batches', form, { timeout: 300000 })
+  return data
+}
+
+export async function listPoliceDispatchBatches(params?: {
+  file_name?: string
+  upload_date?: string
+  status?: string
+  page?: number
+  page_size?: number
+}): Promise<{ data: PoliceDispatchBatch[]; total: number; page: number; page_size: number }> {
+  const { data } = await api.get('/police-dispatch/batches', { params })
+  return data
+}
+
+export async function getPoliceDispatchBatch(id: number): Promise<{
+  batch: PoliceDispatchBatch
+  communities: PoliceCommunityOption[]
+}> {
+  const { data } = await api.get(`/police-dispatch/batches/${id}`)
+  return data
+}
+
+export async function getPoliceDispatchWorkbench(): Promise<{
+  active_batch: PoliceDispatchBatch | null
+  batches: PoliceDispatchBatch[]
+  communities: PoliceCommunityOption[]
+}> {
+  const { data } = await api.get('/police-dispatch/workbench/home', activeRequest)
+  return data
+}
+
+export async function listPoliceDispatchTasks(params: {
+  batch_id: number
+  status?: string
+  category?: string
+  keyword?: string
+  page?: number
+  page_size?: number
+}): Promise<{ data: PoliceDispatchTask[]; total: number; page: number; page_size: number }> {
+  const { data } = await api.post('/police-dispatch/tasks/search', params, activeRequest)
+  return data
+}
+
+export async function getPoliceDispatchTask(id: number): Promise<{
+  task: PoliceDispatchTask
+  duplicates: PoliceDispatchTask[]
+  duplicate_differences: Array<{
+    task_id: number
+    source_row: number
+    fields: Array<{ field: string; value: string }>
+  }>
+  communities: PoliceCommunityOption[]
+}> {
+  const { data } = await api.get(`/police-dispatch/tasks/${id}`, activeRequest)
+  return data
+}
+
+export async function updatePoliceDispatchBusinessFields(
+  id: number,
+  payload: { expected_version: number; fields: Record<string, string> },
+): Promise<void> {
+  await api.patch(`/police-dispatch/tasks/${id}/business-fields`, payload)
+}
+
+export async function resolvePoliceDispatchConflict(
+  id: number,
+  payload: {
+    expected_version: number
+    strategy: 'adopt_tencent' | 'overwrite_tencent'
+    expected_row_hash: string
+    confirmation?: string
+  },
+): Promise<{ message: string; cache_pending: boolean }> {
+  const { data } = await api.post(`/police-dispatch/tasks/${id}/resolve-conflict`, payload)
+  return data
+}
+
+export async function reviewPoliceDispatchTask(
+  id: number,
+  payload: {
+    expected_version: number
+    final_action: Exclude<PoliceDispatchTask['final_action'], ''>
+    final_community_id?: number | null
+    review_note?: string
+  },
+): Promise<void> {
+  await api.patch(`/police-dispatch/tasks/${id}`, payload)
+}
+
+export async function bulkReviewPoliceDispatchTasks(payload: {
+  tasks: Array<{ id: number; version: number }>
+  mode: 'accept_suggestion' | 'set_action'
+  final_action?: Exclude<PoliceDispatchTask['final_action'], ''>
+  final_community_id?: number | null
+  review_note?: string
+}): Promise<void> {
+  await api.post('/police-dispatch/tasks/bulk-review', payload)
+}
+
+export async function publishPoliceDispatchBatch(id: number): Promise<{
+  message: string
+  success_count: number
+  failed_count: number
+}> {
+  const { data } = await api.post(`/police-dispatch/batches/${id}/publish`)
+  return data
+}
+
+export function policeDispatchFeedbackUrl(id: number): string {
+  return `/api/police-dispatch/batches/${id}/feedback.xlsx`
 }
 
 // ---- System Config ----

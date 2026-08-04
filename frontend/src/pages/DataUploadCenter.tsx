@@ -11,6 +11,7 @@ import {
 import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
 import { InboxOutlined, UploadOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
+import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -159,6 +160,8 @@ const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
 export default function DataUploadCenter() {
   const { user } = useAuth()
   const canUpload = Boolean(user?.permissions.includes('visit.import'))
+  const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
+  const canUseUploadCenter = canUpload || canManagePoliceDispatch
   const [detailFileList, setDetailFileList] = useState<UploadFile[]>([])
   const [detailFile, setDetailFile] = useState<File | null>(null)
   const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])
@@ -271,10 +274,10 @@ export default function DataUploadCenter() {
     <div className="app-page min-w-0">
       <PageHeader
         title="数据上传中心"
-        description="集中导入走访明细和星级评定；导入后到“走访汇总”查看数据范围和统计结果"
+        description="集中导入走访、星级评定和公安全链条下发文件，并查看各类处理结果"
       />
 
-      {!canUpload && (
+      {!canUseUploadCenter && (
         <Alert
           type="info"
           showIcon
@@ -360,6 +363,8 @@ export default function DataUploadCenter() {
           )}
         </Panel>
       </div>
+
+      <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
 
       {result && (
         <Panel

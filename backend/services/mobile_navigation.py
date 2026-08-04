@@ -20,6 +20,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     "resources": (
         "grid_members",
         "communities",
+        "police_addresses",
         "users",
         "permission_groups",
     ),
@@ -30,7 +31,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
 }
 
 SUPER_ADMIN_ITEMS = {"users", "permission_groups", "operations"}
-ADMIN_ITEMS = {"data_upload", "work_log"}
+ADMIN_ITEMS = {"data_upload", "work_log", "police_addresses"}
 
 ITEM_PERMISSIONS: dict[str, str] = {
     "online_summary": "online.summary.view",
@@ -40,9 +41,13 @@ ITEM_PERMISSIONS: dict[str, str] = {
     "work_log": "worklog.manage",
     "grid_members": "personnel.basic.view",
     "communities": "community.view",
+    "police_addresses": "police.address.manage",
     "users": "user.manage",
     "permission_groups": "permission.manage",
     "operations": "ops.manage",
+}
+ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
+    "data_upload": ("visit.import", "police.dispatch.manage"),
 }
 
 
@@ -60,6 +65,9 @@ def _item_is_accessible(
     permissions: Iterable[str] | None = None,
 ) -> bool:
     if permissions is not None:
+        alternatives = ITEM_PERMISSION_ALTERNATIVES.get(item_id)
+        if alternatives:
+            return any(permission in permissions for permission in alternatives)
         required = ITEM_PERMISSIONS.get(item_id)
         return required is None or required in permissions
     if item_id in SUPER_ADMIN_ITEMS:
