@@ -16,7 +16,7 @@ async def record_admin_audit(
     detail: Any = None,
     ip_address: str = "",
     user_agent: str = "",
-) -> None:
+) -> int:
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
@@ -40,6 +40,7 @@ async def record_admin_audit(
                     user_agent[:300],
                 ),
             )
+            return int(cur.lastrowid)
     finally:
         pool.release(conn)
 

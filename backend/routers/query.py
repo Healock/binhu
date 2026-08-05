@@ -39,6 +39,11 @@ from services.permissions import (
 from services.schema_compat import get_database_column_map, quote_identifier
 from services.task_workflow import TASK_WORKFLOWS
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
+from services.work_activity import (
+    ONLINE_TASK_UPDATE,
+    is_actual_online_work,
+    record_work_activity,
+)
 
 
 router = APIRouter(prefix="/api/query", tags=["数据查询"])
@@ -702,6 +707,12 @@ async def update_source_fields(
         detail={"source_id": source_id, "columns": ordered_columns},
         **request_audit_fields(request),
     )
+    if audit_id and is_actual_online_work(ordered_columns):
+        await record_work_activity(
+            user,
+            ONLINE_TASK_UPDATE,
+            event_key=f"writeback:{audit_id}",
+        )
     return {
         "message": "已写回腾讯表格，汇总将在下次同步后更新",
         "values": verified_values,

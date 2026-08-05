@@ -265,6 +265,7 @@ export type MobileNavigationItemId =
   | 'visit_summary'
   | 'data_upload'
   | 'work_log'
+  | 'people'
   | 'grid_members'
   | 'communities'
   | 'police_addresses'
@@ -329,6 +330,40 @@ export interface User extends UserPreferences {
   }
   created_at?: string
   updated_at?: string
+}
+
+export interface WorkContributionDay {
+  date: string
+  count: number
+}
+
+export interface WorkContributionCategory {
+  type: 'online_task_update' | 'police_dispatch_review' | 'work_log' | string
+  label: string
+  count: number
+}
+
+export interface WorkContributionSummary {
+  total: number
+  active_days: number
+  longest_streak: number
+  days: WorkContributionDay[]
+  categories: WorkContributionCategory[]
+}
+
+export interface PublicProfileSummary {
+  id: number
+  display_name: string
+  position: string
+  departments: string[]
+  community_names: string[]
+  joined_at: string | null
+  contribution: WorkContributionSummary
+}
+
+export interface PublicProfile extends PublicProfileSummary {
+  year: number
+  available_years: number[]
 }
 
 export function getUserDisplayName(

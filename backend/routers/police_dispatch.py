@@ -54,6 +54,10 @@ from services.police_dispatch import (
     stable_json,
 )
 from services.txdocs_client import TxDocsAPIError
+from services.work_activity import (
+    POLICE_DISPATCH_REVIEW,
+    record_work_activity,
+)
 
 
 router = APIRouter(prefix="/api/police-dispatch", tags=["全链条下发"])
@@ -1162,10 +1166,15 @@ async def review_task(
     except Exception:
         await conn.rollback()
         raise
-    await record_admin_audit(
+    audit_id = await record_admin_audit(
         user, "police_dispatch.review", target_type="police_dispatch_task",
         target_name=str(task_id), detail={"action": data.final_action, "batch_id": batch_id},
         **request_audit_fields(request),
+    )
+    await record_work_activity(
+        user,
+        POLICE_DISPATCH_REVIEW,
+        event_key=f"admin-audit:{audit_id}",
     )
     return {"message": "审核结果已保存", "version": data.expected_version + 1}
 
@@ -1216,10 +1225,16 @@ async def bulk_review_tasks(
     except Exception:
         await conn.rollback()
         raise
-    await record_admin_audit(
+    audit_id = await record_admin_audit(
         user, "police_dispatch.bulk_review", target_type="police_dispatch_batch",
         target_name=str(batch_id), detail={"count": len(ids), "mode": data.mode},
         **request_audit_fields(request),
+    )
+    await record_work_activity(
+        user,
+        POLICE_DISPATCH_REVIEW,
+        event_key=f"admin-audit:{audit_id}",
+        units=len(ids),
     )
     return {"message": f"已审核 {len(ids)} 条任务", "count": len(ids)}
 

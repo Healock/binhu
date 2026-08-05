@@ -5,6 +5,7 @@ import type {
   OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
   BackupJob, AuditActionOption, AuditEvent, User, UserPreferences, ReportColumnMode,
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
+  PublicProfile, PublicProfileSummary,
 } from '../types'
 
 const api = axios.create({
@@ -1712,5 +1713,34 @@ export async function saveOAuth(payload: OAuthConfig): Promise<void> {
 
 export async function testOAuth(payload: OAuthConfig): Promise<{ valid: boolean; message: string }> {
   const { data } = await api.post('/auth/oauth/test', payload)
+  return data
+}
+
+// ---- Public work profiles ----
+export async function listPublicProfiles(params?: {
+  keyword?: string
+  position?: string
+  year?: number
+  page?: number
+  page_size?: number
+}): Promise<{
+  data: PublicProfileSummary[]
+  total: number
+  page: number
+  page_size: number
+  year: number
+}> {
+  const { data } = await api.get('/profiles', { params, ...activeRequest })
+  return data
+}
+
+export async function getPublicProfile(
+  userId: number,
+  year?: number,
+): Promise<PublicProfile> {
+  const { data } = await api.get(`/profiles/${userId}`, {
+    params: year ? { year } : undefined,
+    ...activeRequest,
+  })
   return data
 }

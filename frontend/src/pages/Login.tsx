@@ -71,8 +71,8 @@ export default function Login() {
               <h2 className="text-xl font-semibold text-slate-900">登录系统</h2>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
+            <form onSubmit={handleSubmit} className="grid gap-5">
+              <div className="grid gap-2">
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
                 <Input
                   size="large"
@@ -84,7 +84,7 @@ export default function Login() {
                   autoComplete="username"
                 />
               </div>
-              <div>
+              <div className="grid gap-2">
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">密码</label>
                 <Input.Password
                   size="large"
@@ -95,17 +95,19 @@ export default function Login() {
                   autoComplete="current-password"
                 />
               </div>
-              {error && <Alert type="error" showIcon message={error} />}
-              <Button
-                type="primary"
-                htmlType="submit"
-                size="large"
-                loading={loading}
-                disabled={!username.trim() || !password}
-                block
-              >
-                登录
-              </Button>
+              <div className="grid gap-3 pt-1">
+                {error && <Alert type="error" showIcon message={error} />}
+                <Button
+                  type="primary"
+                  htmlType="submit"
+                  size="large"
+                  loading={loading}
+                  disabled={!username.trim() || !password}
+                  block
+                >
+                  登录
+                </Button>
+              </div>
             </form>
           </div>
         </div>
