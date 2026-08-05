@@ -1,3 +1,4 @@
+import ast
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
@@ -19,6 +20,14 @@ from ops_agent import _container_name, decode_docker_stream
 from routers import admin_ops
 from routers.admin_ops import _require_log_source, router as admin_ops_router
 from services import backups
+from services.audit_display import (
+    ACTION_LABELS,
+    TARGET_TYPE_LABELS,
+    action_label,
+    actor_name,
+    detail_items,
+    target_display,
+)
 from services.ops_database import require_database_name
 from services.ops_redaction import redact_text, sanitize_detail, sanitized_json
 
@@ -199,6 +208,149 @@ class AdminOperationsSecurityTests(unittest.IsolatedAsyncioTestCase):
                     "message": "2026-07-28T01:02:04Z normal line",
                 },
             ],
+        )
+
+
+class AuditDisplayTests(unittest.IsolatedAsyncioTestCase):
+    def test_all_current_literal_audit_codes_have_display_labels(self):
+        actions: set[str] = set()
+        target_types: set[str] = set()
+        router_directory = Path(__file__).resolve().parents[1] / "routers"
+        for path in router_directory.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                function_name = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else ""
+                )
+                if function_name != "record_admin_audit":
+                    continue
+                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                    actions.add(str(node.args[1].value))
+                for keyword in node.keywords:
+                    if keyword.arg == "target_type" and isinstance(
+                        keyword.value, ast.Constant
+                    ):
+                        target_types.add(str(keyword.value.value))
+
+        self.assertEqual(actions - ACTION_LABELS.keys(), set())
+        self.assertEqual(target_types - TARGET_TYPE_LABELS.keys(), set())
+
+    def test_current_member_name_is_preferred_over_identifier_username(self):
+        self.assertEqual(
+            actor_name(
+                member_name="示例人员",
+                display_name="显示姓名",
+                current_username="operator_007",
+                recorded_username="operator_007",
+                user_id=7,
+            ),
+            "示例人员",
+        )
+        self.assertEqual(
+            actor_name(
+                member_name=None,
+                display_name=None,
+                current_username=None,
+                recorded_username="",
+                user_id=None,
+            ),
+            "系统自动任务",
+        )
+
+    def test_codes_and_detail_fields_have_human_readable_labels(self):
+        self.assertEqual(action_label("police_dispatch.import"), "导入下发数据")
+        self.assertEqual(
+            target_display("police_dispatch_batch", "1"),
+            "数据下发批次 · #1",
+        )
+        self.assertEqual(
+            detail_items(
+                {"accepted": 74, "conflicts": 0, "import_kind": "community"}
+            ),
+            [
+                {"key": "accepted", "label": "导入数量", "value": "74"},
+                {"key": "conflicts", "label": "冲突数量", "value": "0"},
+                {"key": "import_kind", "label": "导入类型", "value": "居民小区"},
+            ],
+        )
+
+    async def test_audit_api_keeps_raw_fields_and_adds_display_fields(self):
+        class AuditCursor:
+            def __init__(self):
+                self.last_sql = ""
+                self.executed = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def execute(self, sql, params=None):
+                self.last_sql = " ".join(sql.split())
+                self.executed.append((self.last_sql, params))
+
+            async def fetchone(self):
+                return (1,)
+
+            async def fetchall(self):
+                return [
+                    (
+                        9,
+                        7,
+                        "operator_007",
+                        "police_dispatch.import",
+                        "police_dispatch_batch",
+                        "1",
+                        "success",
+                        '{"row_count":528}',
+                        "127.0.0.1",
+                        "browser",
+                        datetime(2026, 8, 5, 7, 42, 21),
+                        "示例人员",
+                        "示例人员",
+                        "operator_007",
+                    )
+                ]
+
+        cursor = AuditCursor()
+        pool = FakePool(cursor)
+        with patch.object(admin_ops.db_manager, "get_pool", return_value=pool):
+            result = await admin_ops.audit_log(
+                page=1,
+                page_size=50,
+                action="",
+                user={"id": 1, "role": "super_admin"},
+            )
+
+        event = result["data"][0]
+        self.assertEqual(event["actor_name"], "示例人员")
+        self.assertEqual(event["actor_account"], "operator_007")
+        self.assertEqual(event["action_label"], "导入下发数据")
+        self.assertEqual(event["target_display"], "数据下发批次 · #1")
+        self.assertEqual(event["result_label"], "成功")
+        self.assertEqual(event["detail"], {"row_count": 528})
+        self.assertEqual(
+            event["detail_items"],
+            [{"key": "row_count", "label": "数据行数", "value": "528"}],
+        )
+        self.assertTrue(
+            any(
+                "LEFT JOIN _grid_members" in sql
+                for sql, _ in cursor.executed
+            )
+        )
+        self.assertTrue(
+            any(
+                option["value"] == "police_dispatch.import"
+                for option in result["action_options"]
+            )
         )
 
 

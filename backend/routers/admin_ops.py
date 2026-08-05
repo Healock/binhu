@@ -15,6 +15,15 @@ from config import settings
 from database import db_manager
 from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
+from services.audit_display import (
+    action_label,
+    action_options,
+    actor_account,
+    actor_name,
+    detail_items,
+    result_label,
+    target_display,
+)
 from services.backups import (
     create_backup_task,
     get_backup_schedule,
@@ -345,21 +354,25 @@ async def audit_log(
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
-            where = "WHERE action=%s" if action else ""
+            where = "WHERE audit.action=%s" if action else ""
             params = (action,) if action else ()
             await cur.execute(
-                f"SELECT COUNT(*) FROM _admin_audit_log {where}",
+                f"SELECT COUNT(*) FROM _admin_audit_log AS audit {where}",
                 params,
             )
             total = (await cur.fetchone())[0]
             await cur.execute(
                 f"""
-                SELECT id, user_id, username, action, target_type,
-                       target_name, result, detail_json, ip_address,
-                       user_agent, created_at
-                FROM _admin_audit_log
+                SELECT audit.id, audit.user_id, audit.username, audit.action,
+                       audit.target_type, audit.target_name, audit.result,
+                       audit.detail_json, audit.ip_address, audit.user_agent,
+                       audit.created_at, actor.display_name, member.name,
+                       actor.username
+                FROM _admin_audit_log AS audit
+                LEFT JOIN _users AS actor ON actor.id=audit.user_id
+                LEFT JOIN _grid_members AS member ON member.id=actor.member_id
                 {where}
-                ORDER BY id DESC
+                ORDER BY audit.id DESC
                 LIMIT %s OFFSET %s
                 """,
                 (*params, page_size, offset),
@@ -374,22 +387,42 @@ async def audit_log(
             detail = json.loads(row[7]) if isinstance(row[7], str) else row[7]
         except (TypeError, json.JSONDecodeError):
             detail = None
+        resolved_actor_name = actor_name(
+            member_name=row[12],
+            display_name=row[11],
+            current_username=row[13],
+            recorded_username=row[2],
+            user_id=row[1],
+        )
+        resolved_actor_account = actor_account(row[13], row[2])
         data.append(
             {
                 "id": row[0],
                 "user_id": row[1],
                 "username": row[2],
+                "actor_name": resolved_actor_name,
+                "actor_account": resolved_actor_account,
                 "action": row[3],
+                "action_label": action_label(row[3]),
                 "target_type": row[4],
                 "target_name": row[5],
+                "target_display": target_display(row[4], row[5]),
                 "result": row[6],
+                "result_label": result_label(row[6]),
                 "detail": detail,
+                "detail_items": detail_items(detail),
                 "ip_address": row[8],
                 "user_agent": row[9],
                 "created_at": row[10].isoformat() + "Z",
             }
         )
-    return {"data": data, "total": total, "page": page, "page_size": page_size}
+    return {
+        "data": data,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "action_options": action_options(),
+    }
 
 
 @router.post("/diagnostics")

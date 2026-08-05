@@ -46,6 +46,7 @@ import {
 } from '../api/client'
 import type {
   AuditEvent,
+  AuditActionOption,
   BackupJob,
   BackupSchedule,
   OpsContainer,
@@ -62,6 +63,10 @@ const STATUS_COLORS: Record<string, string> = {
   completed: 'success',
   healthy: 'success',
   failed: 'error',
+  denied: 'error',
+  partial: 'warning',
+  duplicate: 'default',
+  conflict: 'warning',
   unhealthy: 'error',
   unavailable: 'error',
   expired: 'default',
@@ -73,6 +78,10 @@ const STATUS_LABELS: Record<string, string> = {
   success: '成功',
   completed: '成功',
   failed: '失败',
+  denied: '已拒绝',
+  partial: '部分成功',
+  duplicate: '重复文件',
+  conflict: '发生冲突',
   expired: '已过期',
   healthy: '健康',
   unhealthy: '异常',
@@ -109,11 +118,11 @@ function saveBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-function StatusTag({ value }: { value?: string | null }) {
+function StatusTag({ value, label }: { value?: string | null; label?: string | null }) {
   const normalized = value || 'unknown'
   return (
     <Tag color={STATUS_COLORS[normalized] || 'default'}>
-      {STATUS_LABELS[normalized] || normalized}
+      {label || STATUS_LABELS[normalized] || normalized}
     </Tag>
   )
 }
@@ -751,6 +760,7 @@ function AuditTab() {
   const [pageSize, setPageSize] = useState(50)
   const [total, setTotal] = useState(0)
   const [action, setAction] = useState('')
+  const [actionOptions, setActionOptions] = useState<AuditActionOption[]>([])
 
   useEffect(() => {
     setLoading(true)
@@ -758,6 +768,7 @@ function AuditTab() {
       .then(result => {
         setData(result.data)
         setTotal(result.total)
+        setActionOptions(result.action_options)
       })
       .catch(() => message.error('操作记录加载失败'))
       .finally(() => setLoading(false))
@@ -765,14 +776,26 @@ function AuditTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Alert type="info" showIcon message="操作记录不保存密码、令牌、Cookie 或请求正文" />
-      <Input.Search
+      <Alert
+        type="info"
+        showIcon
+        message="默认显示姓名和中文摘要；展开记录可查看原始审计字段。操作记录不保存密码、令牌、Cookie 或请求正文。"
+      />
+      <Select
         allowClear
-        placeholder="按操作代码精确筛选，例如 backup.create"
+        showSearch
+        value={action || undefined}
+        placeholder="按操作类型筛选"
         className="w-full max-w-md"
-        onSearch={value => {
+        options={actionOptions}
+        filterOption={(input, option) => (
+          `${option?.label || ''} ${option?.value || ''}`
+            .toLocaleLowerCase()
+            .includes(input.toLocaleLowerCase())
+        )}
+        onChange={value => {
           setPage(1)
-          setAction(value.trim())
+          setAction(value || '')
         }}
       />
       <Table
@@ -792,20 +815,74 @@ function AuditTab() {
         }}
         columns={[
           { title: '时间', dataIndex: 'created_at', width: 180, render: formatTime },
-          { title: '操作者', dataIndex: 'username', width: 120 },
-          { title: '操作', dataIndex: 'action', width: 190 },
-          { title: '目标', key: 'target', width: 220, render: (_, row) => `${row.target_type || '-'} · ${row.target_name || '-'}` },
-          { title: '结果', dataIndex: 'result', width: 100, render: value => <StatusTag value={value} /> },
-          { title: 'IP', dataIndex: 'ip_address', width: 150 },
+          {
+            title: '操作者',
+            dataIndex: 'actor_name',
+            width: 140,
+            render: value => <span className="font-medium">{value || '系统自动任务'}</span>,
+          },
+          {
+            title: '操作',
+            dataIndex: 'action_label',
+            width: 190,
+            render: value => <span className="font-medium">{value}</span>,
+          },
+          { title: '目标', dataIndex: 'target_display', width: 240 },
+          {
+            title: '结果',
+            dataIndex: 'result',
+            width: 110,
+            render: (value, row) => <StatusTag value={value} label={row.result_label} />,
+          },
+          { title: 'IP', dataIndex: 'ip_address', width: 140 },
           {
             title: '详情',
-            dataIndex: 'detail',
-            ellipsis: { showTitle: false },
-            render: value => value
-              ? <Tooltip title={<pre className="whitespace-pre-wrap">{JSON.stringify(value, null, 2)}</pre>}>{JSON.stringify(value)}</Tooltip>
+            dataIndex: 'detail_items',
+            width: 360,
+            render: items => items?.length
+              ? (
+                  <Space size={[4, 4]} wrap>
+                    {items.slice(0, 4).map(item => (
+                      <Tag key={item.key} className="max-w-64 truncate" title={`${item.label}：${item.value}`}>
+                        {item.label}：{item.value}
+                      </Tag>
+                    ))}
+                    {items.length > 4 && <Tag>另有 {items.length - 4} 项</Tag>}
+                  </Space>
+                )
               : '-',
           },
         ]}
+        expandable={{
+          expandedRowRender: row => (
+            <div className="space-y-3 px-2 py-1">
+              <Descriptions
+                size="small"
+                column={{ xs: 1, sm: 2, lg: 3 }}
+                items={[
+                  { key: 'account', label: '当前账号', children: row.actor_account || '-' },
+                  { key: 'recorded-account', label: '记录时账号', children: row.username || '-' },
+                  { key: 'action', label: '操作代码', children: row.action || '-' },
+                  {
+                    key: 'target',
+                    label: '原始目标',
+                    children: `${row.target_type || '-'} · ${row.target_name || '-'}`,
+                  },
+                  { key: 'ip', label: '来源 IP', children: row.ip_address || '-' },
+                  { key: 'agent', label: '浏览器', children: row.user_agent || '-' },
+                ]}
+              />
+              <details className="rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+                <summary className="cursor-pointer text-sm text-slate-600 dark:text-slate-300">
+                  查看原始审计详情
+                </summary>
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-3 text-xs text-slate-100">
+                  {row.detail ? JSON.stringify(row.detail, null, 2) : '无原始详情'}
+                </pre>
+              </details>
+            </div>
+          ),
+        }}
       />
     </div>
   )
