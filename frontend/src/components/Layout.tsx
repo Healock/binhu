@@ -21,7 +21,10 @@ import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
-import { isFlowTaskPosition, isPoliceDispatchTaskPosition } from '../utils/mobileTaskRouting'
+import {
+  canAccessFlowTaskWorkbench,
+  isPoliceDispatchTaskPosition,
+} from '../utils/mobileTaskRouting'
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -41,7 +44,11 @@ export default function Layout() {
     const links: Array<{ key: string; path: string; label: string }> = []
     if (
       user.permissions.includes('online.raw.view')
-      && isFlowTaskPosition(user.member?.position)
+      && canAccessFlowTaskWorkbench(
+        user.member?.position,
+        user.role,
+        user.permission_groups?.map(group => group.code),
+      )
     ) {
       links.push({ key: 'flow-tasks', path: '/tasks/home', label: '任务处理' })
     }

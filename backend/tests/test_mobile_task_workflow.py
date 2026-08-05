@@ -8,8 +8,10 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from fastapi import HTTPException
 
 from routers.mobile_tasks import (
+    _scope_where,
     _source_in_community,
     _validate_assignment,
+    is_flow_task_admin,
     require_flow_user,
 )
 from services.parsers import get_parser
@@ -130,8 +132,41 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             parser, {"社区": "冬梅"}, ["长板", "长板村"]
         ))
 
+    def test_admin_permission_group_can_open_all_scope(self):
+        user = {
+            "role": "member",
+            "permission_groups": [{"code": "admin"}],
+        }
+        self.assertTrue(is_flow_task_admin(user))
+        where, params = _scope_where({
+            "admin_mode": True,
+            "community_values": None,
+            "name": "管理员甲",
+        }, "all")
+        self.assertEqual(where, "1=1")
+        self.assertEqual(params, [])
+
+    def test_flow_position_cannot_expand_to_all_scope(self):
+        with self.assertRaises(HTTPException) as raised:
+            _scope_where({
+                "admin_mode": False,
+                "community_values": ["长板", "长板村"],
+                "name": "网格员甲",
+            }, "all")
+        self.assertEqual(raised.exception.status_code, 403)
+
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_assignment_uses_global_row_permission_validation(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        await _validate_assignment(
+            cursor,
+            {"admin_mode": True, "position": "管理员", "community": "全所"},
+            {"核查人": "网格员甲"},
+        )
+        cursor.execute.assert_not_awaited()
+
     async def test_only_leader_can_reassign_mobile_task(self):
         cursor = MagicMock()
         with self.assertRaises(HTTPException) as raised:

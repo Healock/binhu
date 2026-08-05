@@ -30,7 +30,7 @@ import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
 import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
-  isFlowTaskPosition,
+  canAccessFlowTaskWorkbench,
   shouldUseMobileTaskWorkbench,
   shouldUsePoliceDispatchWorkbench,
 } from './utils/mobileTaskRouting'
@@ -76,7 +76,11 @@ function QueryEntry() {
 
 function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
   const { user } = useAuth()
-  if (!isFlowTaskPosition(user?.member?.position)) {
+  if (!canAccessFlowTaskWorkbench(
+    user?.member?.position,
+    user?.role,
+    user?.permission_groups?.map(group => group.code),
+  )) {
     return <Navigate to="/query" replace />
   }
   return detail ? <MobileTaskDetail /> : <MobileTaskList />
@@ -84,7 +88,11 @@ function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
 
 function MobileTaskHomeEntry() {
   const { user } = useAuth()
-  return isFlowTaskPosition(user?.member?.position)
+  return canAccessFlowTaskWorkbench(
+    user?.member?.position,
+    user?.role,
+    user?.permission_groups?.map(group => group.code),
+  )
     ? <MobileTaskHome />
     : <Navigate to="/query" replace />
 }

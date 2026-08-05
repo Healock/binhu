@@ -505,6 +505,38 @@ export interface OnlineDataOverview {
   completion_rate: number
 }
 
+export type OnlineOverviewCategory = 'carryover' | 'new' | 'changed' | 'pending' | 'completed'
+
+export interface OnlineOverviewDetailItem {
+  parser_type: string
+  row_key: string
+  community: string
+  inspector: string
+  state: 'unchecked' | 'checked' | 'completed' | string
+  first_activity_date: string
+  last_activity_date: string
+  reason: string
+  summary: {
+    title: string
+    identity_number: string
+    phone: string
+    source: string
+    address: string
+    date: string
+    result: string
+  }
+  values: Record<string, string>
+}
+
+export interface OnlineOverviewDetails {
+  category: OnlineOverviewCategory
+  category_label: string
+  total: number
+  page: number
+  page_size: number
+  data: OnlineOverviewDetailItem[]
+}
+
 export async function getOnlineDataOverview(
   startDate: string,
   endDate: string,
@@ -516,6 +548,21 @@ export async function getOnlineDataOverview(
       end_date: endDate,
       parser_type: parserType,
     },
+  })
+  return data
+}
+
+export async function getOnlineDataOverviewDetails(params: {
+  start_date: string
+  end_date: string
+  parser_type: string
+  category: OnlineOverviewCategory
+  page?: number
+  page_size?: number
+}): Promise<OnlineOverviewDetails> {
+  const { data } = await api.get('/stats/overview/details', {
+    ...activeRequest,
+    params,
   })
   return data
 }
@@ -686,7 +733,7 @@ export async function deleteQuerySourceRow(
 }
 
 // ---- Flow-post mobile task workbench ----
-export type MobileTaskScope = 'mine' | 'community'
+export type MobileTaskScope = 'mine' | 'community' | 'all'
 export type MobileTaskStatus = 'pending' | 'review' | 'completed' | 'all'
 export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
 export type MobileTaskReviewStage = 'all' | 'waiting_analysis' | 'analyzed'
@@ -706,6 +753,7 @@ export interface MobileTaskHomeData {
   business_date: string
   last_success_at: string | null
   scope: MobileTaskScope
+  admin_mode: boolean
   person: { name: string; position: string; community: string }
   personal: {
     pending: number

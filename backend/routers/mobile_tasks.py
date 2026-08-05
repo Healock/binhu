@@ -20,7 +20,10 @@ from routers.query import (
 )
 from services.business_time import get_business_date
 from services.data_scope import community_names_for_scopes
-from services.online_edit_permissions import row_edit_capabilities
+from services.online_edit_permissions import (
+    effective_view_communities,
+    row_edit_capabilities,
+)
 from services.online_source import json_value
 from services.parsers import get_parser
 from services.permissions import ONLINE_RAW_EDIT, ONLINE_RAW_VIEW
@@ -29,7 +32,7 @@ from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
-FlowScope = Literal["mine", "community"]
+FlowScope = Literal["mine", "community", "all"]
 TaskStatus = Literal["pending", "review", "completed", "all"]
 ReviewStage = Literal["all", "waiting_analysis", "analyzed"]
 
@@ -63,6 +66,20 @@ def require_flow_user(user: dict) -> tuple[str, str]:
     if len(communities) != 1:
         raise HTTPException(403, "当前人员必须配置一个有效社区部门")
     return name, communities[0]
+
+
+def is_flow_task_admin(user: dict) -> bool:
+    group_codes = {
+        str(group.get("code") or "")
+        for group in user.get("permission_groups") or []
+        if isinstance(group, dict)
+    }
+    legacy_group = str((user.get("permission_group") or {}).get("code") or "")
+    return (
+        str(user.get("role") or "") in {"admin", "super_admin"}
+        or bool(group_codes & {"admin", "super_admin"})
+        or legacy_group in {"admin", "super_admin"}
+    )
 
 
 def _json_field(field: str) -> str:
@@ -99,6 +116,26 @@ def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
 
 
 async def _flow_context(conn, user: dict) -> dict:
+    if is_flow_task_admin(user):
+        view_communities = effective_view_communities(user)
+        community_values = (
+            None
+            if view_communities is None
+            else await community_names_for_scopes(conn, view_communities)
+        )
+        member = user.get("member") or {}
+        return {
+            "name": str(
+                member.get("name")
+                or user.get("display_name")
+                or user.get("username")
+                or "管理员"
+            ).strip(),
+            "position": str(member.get("position") or "管理员").strip(),
+            "community": "全所",
+            "community_values": community_values,
+            "admin_mode": True,
+        }
     name, community = require_flow_user(user)
     aliases = await community_names_for_scopes(conn, [community])
     return {
@@ -106,6 +143,7 @@ async def _flow_context(conn, user: dict) -> dict:
         "position": str((user.get("member") or {}).get("position") or ""),
         "community": community,
         "community_values": aliases or [community],
+        "admin_mode": False,
     }
 
 
@@ -115,10 +153,19 @@ def _scope_where(
     *,
     alias: str = "projection",
 ) -> tuple[str, list[str]]:
+    if scope == "all" and not context.get("admin_mode"):
+        raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
     community_values = context["community_values"]
-    placeholders = ", ".join(["%s"] * len(community_values))
-    clause = f"{alias}.community IN ({placeholders})"
-    params = list(community_values)
+    if community_values is None:
+        clause = "1=1"
+        params: list[str] = []
+    elif community_values:
+        placeholders = ", ".join(["%s"] * len(community_values))
+        clause = f"{alias}.community IN ({placeholders})"
+        params = list(community_values)
+    else:
+        clause = "1=0"
+        params = []
     if scope == "mine":
         clause += f" AND LOWER(TRIM({alias}.inspector))=LOWER(TRIM(%s))"
         params.append(context["name"])
@@ -215,6 +262,8 @@ async def _validate_assignment(
 ) -> None:
     if "核查人" not in changes:
         return
+    if context.get("admin_mode"):
+        return
     if context["position"] != "组长":
         raise HTTPException(403, "只有组长可以在手机任务中转派任务")
     assignee = str(changes.get("核查人") or "").strip()
@@ -274,7 +323,13 @@ def _task_record(
     }
 
 
-def _source_in_community(parser, values: dict, community_values: list[str]) -> bool:
+def _source_in_community(
+    parser,
+    values: dict,
+    community_values: list[str] | None,
+) -> bool:
+    if community_values is None:
+        return True
     source_community = parser.community_value(values).strip()
     return bool(source_community and source_community in set(community_values))
 
@@ -290,8 +345,10 @@ async def get_mobile_task_home(
         business_date = await get_business_date(cur)
         readiness = await _source_readiness(cur)
         selected = await _aggregate_live(cur, context, scope)
-        personal = await _aggregate_live(cur, context, "mine")
-        community = await _aggregate_live(cur, context, "community")
+        personal_scope: FlowScope = "all" if context["admin_mode"] else "mine"
+        community_scope: FlowScope = "all" if context["admin_mode"] else "community"
+        personal = await _aggregate_live(cur, context, personal_scope)
+        community = await _aggregate_live(cur, context, community_scope)
         await cur.execute(
             "SELECT MAX(finished_at) FROM _sync_log "
             "WHERE status IN ('success', 'completed')"
@@ -305,7 +362,7 @@ async def get_mobile_task_home(
             date_text,
             SUMMARY_TYPE,
             context["community_values"],
-            inspector=context["name"],
+            inspector=None if context["admin_mode"] else context["name"],
             parser_types_override=list(MOBILE_TASK_TYPES),
         )
     except (RuntimeError, ValueError):
@@ -323,6 +380,7 @@ async def get_mobile_task_home(
         "business_date": date_text,
         "last_success_at": _iso_utc(sync_row[0]) if sync_row else None,
         "scope": scope,
+        "admin_mode": context["admin_mode"],
         "person": {
             "name": context["name"],
             "position": context["position"],
@@ -438,18 +496,19 @@ async def get_mobile_task_detail(
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
     parser = get_parser(parser_type)
-    placeholders = ", ".join(["%s"] * len(context["community_values"]))
+    detail_scope: FlowScope = "all" if context["admin_mode"] else "community"
+    scope_where, scope_params = _scope_where(context, detail_scope)
     async with conn.cursor() as cur:
         if not await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type)):
             raise HTTPException(409, "来源定位尚未建立，请等待一次正常同步")
         await cur.execute(
             f"""
             SELECT values_json, source_count, conflict, pending_state, task_state
-            FROM _online_source_projection
-            WHERE parser_type=%s AND row_key=%s
-              AND community IN ({placeholders})
+            FROM _online_source_projection AS projection
+            WHERE projection.parser_type=%s AND projection.row_key=%s
+              AND {scope_where}
             """,
-            (parser_type, row_key, *context["community_values"]),
+            (parser_type, row_key, *scope_params),
         )
         parent_row = await cur.fetchone()
         if not parent_row:
@@ -516,7 +575,7 @@ async def get_mobile_task_detail(
                 list(capabilities["editable_fields"])
                 if enabled else []
             )
-            if context["position"] != "组长":
+            if context["position"] != "组长" and not context["admin_mode"]:
                 editable_fields = [
                     field for field in editable_fields if field != "核查人"
                 ]

@@ -171,6 +171,106 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["selected_data_days"], 1)
         self.assertTrue(pool.released)
 
+    def test_detail_categories_partition_and_match_state_totals(self):
+        tasks = [
+            ("全链条", "carry-task", "unchecked", "2026-08-04", "carryover"),
+            ("全链条", "new-task", "completed", "2026-08-05", "activity"),
+            ("全链条", "changed-task", "checked", "2026-08-05", "activity"),
+        ]
+        new_keys = {("全链条", "new-task")}
+
+        change_total = sum(len(report_overview._filter_tasks_by_category(
+            tasks, new_keys, category
+        )) for category in ("carryover", "new", "changed"))
+        self.assertEqual(change_total, len(tasks))
+        self.assertEqual(
+            len(report_overview._filter_tasks_by_category(tasks, new_keys, "pending")),
+            2,
+        )
+        self.assertEqual(
+            len(report_overview._filter_tasks_by_category(tasks, new_keys, "completed")),
+            1,
+        )
+
+    async def test_overview_details_reuse_category_and_snapshot_values(self):
+        pool = FakePool()
+        runs = [(
+            "2026-08-05",
+            "全链条",
+            "2026-08-05_snapshot_fullChain",
+            "2026-08-04_snapshot_fullChain",
+        )]
+        tasks = [
+            ("全链条", "new-task", "completed", "2026-08-05", "activity"),
+            ("全链条", "changed-task", "checked", "2026-08-05", "activity"),
+        ]
+        metadata = {
+            ("全链条", "changed-task"): {
+                "report_date": "2026-08-05",
+                "community": "长板",
+                "inspector": "网格员甲",
+                "state": "checked",
+            },
+        }
+        snapshots = {
+            ("全链条", "changed-task"): {
+                "姓名": "张三",
+                "身份证号": "TEST-ID",
+                "电话号码": "TEST-PHONE",
+                "地址": "原地址",
+                "现住址": "长板一号",
+                "核查结果": "无法核实",
+            },
+        }
+
+        with (
+            patch.object(report_overview.db_manager, "get_pool", return_value=pool),
+            patch.object(
+                report_overview,
+                "_resolve_parser_types",
+                new=AsyncMock(return_value=["全链条"]),
+            ),
+            patch.object(report_overview, "_load_runs", new=AsyncMock(return_value=runs)),
+            patch.object(
+                report_overview,
+                "_resolve_communities",
+                new=AsyncMock(return_value=["长板", "长板村"]),
+            ),
+            patch.object(
+                report_overview,
+                "_load_effective_tasks",
+                new=AsyncMock(return_value=tasks),
+            ),
+            patch.object(
+                report_overview,
+                "_find_new_activity_keys",
+                new=AsyncMock(return_value={("全链条", "new-task")}),
+            ),
+            patch.object(
+                report_overview,
+                "_load_latest_task_metadata",
+                new=AsyncMock(return_value=metadata),
+            ),
+            patch.object(
+                report_overview,
+                "_load_snapshot_values",
+                new=AsyncMock(return_value=snapshots),
+            ),
+        ):
+            result = await report_overview.get_online_overview_details(
+                "2026-08-05",
+                "2026-08-05",
+                "全链条",
+                "changed",
+                community=["长板"],
+            )
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["data"][0]["summary"]["title"], "张三")
+        self.assertEqual(result["data"][0]["community"], "长板")
+        self.assertEqual(result["data"][0]["reason"], "已有任务在所选区间内发生有效变化")
+        self.assertTrue(pool.released)
+
     async def test_returns_available_range_when_selection_has_no_runs(self):
         pool = FakePool()
         with (
