@@ -16,6 +16,12 @@ from database import get_db
 from deps import require_permission
 from services.permissions import WORK_LOG_MANAGE
 from services.audit import record_admin_audit, request_audit_fields
+from services.business_time import get_business_date
+from services.work_activity import (
+    WORK_LOG,
+    profile_identity,
+    record_work_activity,
+)
 from services.work_log_data import build_system_snapshot
 from services.work_log_pdf import build_daily_pdf
 from services.work_log_schema import (
@@ -425,7 +431,7 @@ async def create_draft(
             business_date=data.business_date,
         )
     if created:
-        await record_admin_audit(
+        audit_id = await record_admin_audit(
             user,
             "work_log.create",
             target_type="work_log_draft",
@@ -435,6 +441,11 @@ async def create_draft(
                 "business_date": data.business_date.isoformat(),
             },
             **request_audit_fields(request),
+        )
+        await record_work_activity(
+            user,
+            WORK_LOG,
+            event_key=f"admin-audit:{audit_id}",
         )
     return _draft_payload(row, user)
 
@@ -529,6 +540,13 @@ async def save_draft(
                 detail="草稿已在其他页面更新，请刷新后继续",
             )
         row = await _select_draft(cur, draft_id=draft_id)
+        activity_date = await get_business_date(cur)
+    profile_key, _, _ = profile_identity(user)
+    await record_work_activity(
+        user,
+        WORK_LOG,
+        event_key=f"work-log-save:{profile_key}:{draft_id}:{activity_date.isoformat()}",
+    )
     return _draft_payload(row, user)
 
 

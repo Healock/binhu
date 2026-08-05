@@ -408,6 +408,11 @@ html[data-theme='dark'] .mobile-task-hero {
   --app-success: #16a34a;
   --app-warning: #c2410c;
   --app-danger: #b91c1c;
+  --contribution-0: #e8edf3;
+  --contribution-1: #bfdbfe;
+  --contribution-2: #60a5fa;
+  --contribution-3: #2563eb;
+  --contribution-4: #1e3a8a;
   --app-radius: 10px;
   --app-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
 }
@@ -434,7 +439,58 @@ html[data-theme='dark'] {
   --app-success: #34d399;
   --app-warning: #fb923c;
   --app-danger: #f87171;
+  --contribution-0: #1f2a3a;
+  --contribution-1: #193b68;
+  --contribution-2: #2563a5;
+  --contribution-3: #3b82f6;
+  --contribution-4: #93c5fd;
   --app-shadow: 0 1px 3px rgb(0 0 0 / 0.34);
+}
+
+.contribution-calendar__scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.contribution-calendar__scroll:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--app-primary);
+  outline-offset: 3px;
+}
+
+.contribution-calendar svg {
+  display: block;
+}
+
+.contribution-calendar__legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 6px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.contribution-calendar__legend-cell {
+  width: 10px;
+  height: 10px;
+  border: 1px solid color-mix(in srgb, var(--app-border) 70%, transparent);
+  border-radius: 2px;
+}
+
+.public-profile-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--app-primary-border);
+  border-radius: 50%;
+  color: var(--app-primary-text);
+  background: var(--app-primary-soft);
+  font-weight: 700;
 }
 
 * {

@@ -1,8 +1,12 @@
-import { Alert, Button, Descriptions, Form, Input, Tag, message } from 'antd'
+import { useEffect, useState } from 'react'
+import { Alert, Button, Descriptions, Form, Input, Select, Skeleton, Tag, message } from 'antd'
 import { LockOutlined, UserOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { getUserDisplayName } from '../types'
+import { getUserDisplayName, type PublicProfile } from '../types'
+import { getPublicProfile } from '../api/client'
 import { PageHeader, Panel } from '../components/ui'
+import ContributionCalendar from '../components/ContributionCalendar'
 
 interface PasswordFormValues {
   currentPassword: string
@@ -19,7 +23,22 @@ function errorMessage(error: any): string {
 
 export default function Profile() {
   const { user, changePassword } = useAuth()
+  const navigate = useNavigate()
   const [form] = Form.useForm<PasswordFormValues>()
+  const [year, setYear] = useState(new Date().getFullYear())
+  const [publicProfile, setPublicProfile] = useState<PublicProfile | null>(null)
+  const [contributionLoading, setContributionLoading] = useState(true)
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+    setContributionLoading(true)
+    getPublicProfile(user.id, year)
+      .then(response => { if (!cancelled) setPublicProfile(response) })
+      .catch(() => { if (!cancelled) setPublicProfile(null) })
+      .finally(() => { if (!cancelled) setContributionLoading(false) })
+    return () => { cancelled = true }
+  }, [user, year])
 
   if (!user) return null
 
@@ -39,6 +58,38 @@ export default function Profile() {
         title="个人中心"
         description="查看当前账号资料并管理自己的登录密码"
       />
+      <Panel
+        title="我的工作贡献"
+        description="登录、浏览、查询、导出和任务分配等普通操作不会计入。"
+        extra={(
+          <div className="flex items-center gap-2">
+            {publicProfile && (
+              <Select
+                value={year}
+                onChange={setYear}
+                options={publicProfile.available_years.map(item => ({ value: item, label: `${item} 年` }))}
+                style={{ width: 108 }}
+              />
+            )}
+            <Button onClick={() => navigate(`/people/${user.id}`)}>查看公开主页</Button>
+          </div>
+        )}
+      >
+        {contributionLoading ? (
+          <Skeleton active paragraph={{ rows: 3 }} />
+        ) : publicProfile ? (
+          <>
+            <ContributionCalendar year={publicProfile.year} days={publicProfile.contribution.days} />
+            <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-[var(--app-border)] pt-4 text-sm text-[var(--app-text-secondary)]">
+              <span><strong className="mr-1 text-[var(--app-text-strong)]">{publicProfile.contribution.total}</strong>项实际工作</span>
+              <span><strong className="mr-1 text-[var(--app-text-strong)]">{publicProfile.contribution.active_days}</strong>个活跃日</span>
+              <span>最长连续 <strong className="text-[var(--app-text-strong)]">{publicProfile.contribution.longest_streak}</strong> 天</span>
+            </div>
+          </>
+        ) : (
+          <Alert type="warning" showIcon message="工作贡献暂时无法加载" />
+        )}
+      </Panel>
       <div className="grid gap-5 xl:grid-cols-2">
         <Panel
           title="账号资料"

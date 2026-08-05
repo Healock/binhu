@@ -137,6 +137,17 @@ export default function Layout() {
                 </Button>
                 <Button
                   block
+                  icon={<UserOutlined />}
+                  onClick={() => {
+                    if (!confirmPendingNavigation()) return
+                    setAccountOpen(false)
+                    navigate('/people')
+                  }}
+                >
+                  人员主页
+                </Button>
+                <Button
+                  block
                   icon={<SettingOutlined />}
                   onClick={() => {
                     if (!confirmPendingNavigation()) return

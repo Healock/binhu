@@ -797,6 +797,112 @@ async def ensure_police_dispatch_schema(cur) -> None:
                 )
 
 
+async def ensure_work_activity_schema(cur) -> None:
+    """Add permanent, privacy-safe work contribution events for 0.13.0."""
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _work_activity_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            event_key VARCHAR(190) NOT NULL,
+            profile_key VARCHAR(64) NOT NULL,
+            user_id INT NOT NULL,
+            member_id INT DEFAULT NULL,
+            activity_type VARCHAR(50) NOT NULL,
+            units INT UNSIGNED NOT NULL DEFAULT 1,
+            occurred_at DATETIME NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_work_activity_event (event_key),
+            INDEX idx_work_activity_profile_time (profile_key, occurred_at),
+            INDEX idx_work_activity_user_time (user_id, occurred_at),
+            INDEX idx_work_activity_member_time (member_id, occurred_at),
+            INDEX idx_work_activity_type_time (activity_type, occurred_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+
+    # Copy no business values into this table: only actor, type, count and time.
+    await cur.execute("""
+        INSERT IGNORE INTO _work_activity_events (
+            event_key, profile_key, user_id, member_id,
+            activity_type, units, occurred_at, created_at
+        )
+        SELECT CONCAT('writeback:', audit.id),
+               CASE WHEN user.member_id IS NOT NULL
+                    THEN CONCAT('member:', user.member_id)
+                    ELSE CONCAT('user:', audit.user_id) END,
+               audit.user_id, user.member_id,
+               'online_task_update', 1, audit.created_at, UTC_TIMESTAMP()
+        FROM _online_writeback_audit AS audit
+        JOIN _users AS user ON user.id=audit.user_id
+        WHERE audit.action='update'
+          AND audit.sync_status IN ('pending', 'synced')
+          AND COALESCE(audit.column_name, '') REGEXP
+              '(^|、)(现住址|核查结果|核查反馈|实际情况|二次反馈|二次核查结果|二次反馈/二次核查结果|研判|登记情况)(、|$)'
+    """)
+
+    await cur.execute("""
+        INSERT IGNORE INTO _work_activity_events (
+            event_key, profile_key, user_id, member_id,
+            activity_type, units, occurred_at, created_at
+        )
+        SELECT CONCAT('admin-audit:', audit.id),
+               CASE WHEN user.member_id IS NOT NULL
+                    THEN CONCAT('member:', user.member_id)
+                    ELSE CONCAT('user:', audit.user_id) END,
+               audit.user_id, user.member_id,
+               CASE
+                   WHEN audit.action IN (
+                       'police_dispatch.review',
+                       'police_dispatch.bulk_review'
+                   ) THEN 'police_dispatch_review'
+                   ELSE 'work_log'
+               END,
+               CASE
+                   WHEN audit.action='police_dispatch.bulk_review'
+                   THEN GREATEST(
+                       1,
+                       COALESCE(CAST(JSON_UNQUOTE(
+                           JSON_EXTRACT(audit.detail_json, '$.count')
+                       ) AS UNSIGNED), 1)
+                   )
+                   ELSE 1
+               END,
+               audit.created_at, UTC_TIMESTAMP()
+        FROM _admin_audit_log AS audit
+        JOIN _users AS user ON user.id=audit.user_id
+        WHERE audit.result='success'
+          AND audit.action IN (
+              'police_dispatch.review',
+              'police_dispatch.bulk_review',
+              'work_log.create'
+          )
+    """)
+
+    # Old create audits may have expired. A surviving draft still proves one
+    # creation, but does not justify inventing historical save activity.
+    await cur.execute("""
+        INSERT IGNORE INTO _work_activity_events (
+            event_key, profile_key, user_id, member_id,
+            activity_type, units, occurred_at, created_at
+        )
+        SELECT CONCAT('work-log-draft:', draft.id),
+               CASE WHEN user.member_id IS NOT NULL
+                    THEN CONCAT('member:', user.member_id)
+                    ELSE CONCAT('user:', draft.created_by) END,
+               draft.created_by, user.member_id,
+               'work_log', 1, draft.created_at, UTC_TIMESTAMP()
+        FROM _work_log_drafts AS draft
+        JOIN _users AS user ON user.id=draft.created_by
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM _admin_audit_log AS audit
+            WHERE audit.action='work_log.create'
+              AND audit.result='success'
+              AND audit.target_type='work_log_draft'
+              AND audit.target_name=CAST(draft.id AS CHAR)
+        )
+    """)
+
+
 async def ensure_bootstrap_admin(cur) -> bool:
     """Create the first super administrator only from explicit environment values."""
     await cur.execute("SELECT COUNT(*) FROM _users")
@@ -1577,6 +1683,7 @@ class DatabaseManager:
                 await ensure_permission_schema(cur)
                 await ensure_online_editor_schema(cur)
                 await ensure_police_dispatch_schema(cur)
+                await ensure_work_activity_schema(cur)
                 await ensure_bootstrap_admin(cur)
 
         # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
