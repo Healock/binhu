@@ -52,13 +52,14 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
                 for value in [
                     "8.3", "8.5", "网格员", "冬梅", "人像圈层",
                     "对象", "320000000000000000", "18800000000",
-                    "原地址", "", "2026-07-31 15:17:56", "无法核实",
+                    "原地址", "已登记", "2026-07-31 15:17:56", "无法核实",
                     "无法核实", "无其他号码", "",
                 ]
             ]
         }, selected)
 
         self.assertEqual(selected, current_layout)
+        self.assertEqual(parser.normalize_source_row(values)["登记情况"], "已登记")
         self.assertEqual(parser.normalize_source_row(values)["创建时间"], "2026-07-31 15:17:56")
         self.assertEqual(parser.normalize_source_row(values)["现住址"], "无法核实")
         self.assertEqual(parser.normalize_source_row(values)["核查结果"], "无法核实")
@@ -85,17 +86,26 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(selected, legacy_layout)
+        self.assertNotIn("登记情况", legacy_layout)
+        self.assertEqual(
+            parser.normalize_source_row({"地址": "旧地址"})["登记情况"],
+            "",
+        )
 
     def test_fullchain_write_positions_follow_current_source_layout(self):
         parser = get_parser("全链条")
         source_columns = parser.source_column_layouts()[0]
         values = {column: "" for column in parser.COLUMNS}
-        values.update({"创建时间": "创建", "研判": "无其他号码"})
+        values.update({
+            "登记情况": "待登记",
+            "创建时间": "创建",
+            "研判": "无其他号码",
+        })
 
         row = parser.source_row_values(values, source_columns)
 
         self.assertEqual(source_columns.index("研判"), 13)
-        self.assertEqual(row[9], "")
+        self.assertEqual(row[9], "待登记")
         self.assertEqual(row[10], "创建")
         self.assertEqual(row[13], "无其他号码")
 

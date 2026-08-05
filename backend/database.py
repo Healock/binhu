@@ -1412,6 +1412,14 @@ class DatabaseManager:
                         await cur.execute(f"ALTER TABLE {table} MODIFY COLUMN `{col}` VARCHAR(500)")
                     except Exception:
                         pass
+                # 全链条腾讯来源表新增的“登记情况”是正式业务字段。可空列保持
+                # 旧程序可回退，历史数据等待下一次正常同步补齐。
+                await _ensure_column(
+                    cur,
+                    "t_fullchain",
+                    "登记情况",
+                    "VARCHAR(500) DEFAULT NULL AFTER `地址`",
+                )
                 # 旧数据库平滑补齐网格员状态和请假字段
                 for column_name, column_definition in [
                     ("position", "VARCHAR(20) NOT NULL DEFAULT '组员'"),
@@ -1570,6 +1578,17 @@ class DatabaseManager:
                 await ensure_online_editor_schema(cur)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_bootstrap_admin(cur)
+
+        # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
+        # 在启动时平滑补齐，既不改历史记录，也不要求重建归档库。
+        async with cls._pools["archive"].acquire() as conn:
+            async with conn.cursor() as cur:
+                await _ensure_column(
+                    cur,
+                    "t_fullchain_archive",
+                    "登记情况",
+                    "VARCHAR(500) DEFAULT NULL AFTER `地址`",
+                )
 
         async with cls._pools["daily_report"].acquire() as conn:
             async with conn.cursor() as cur:
