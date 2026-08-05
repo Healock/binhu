@@ -1,4 +1,4 @@
-"""公安下发 Excel 解析、地址匹配、建议生成与反馈工作簿。"""
+"""下发 Excel 解析、地址匹配、建议生成与反馈工作簿。"""
 
 from __future__ import annotations
 
@@ -21,17 +21,7 @@ FINAL_ACTIONS = {"dispatch", "no_registration", "transfer", "duplicate_exclude"}
 
 
 class PoliceWorkbookError(ValueError):
-    """上传文件无法按公安地址库或全链条模板解析。"""
-
-
-@dataclass(slots=True)
-class AddressImportRow:
-    source_row: int
-    name: str
-    detail_address: str
-    community_text: str
-    address_type: str
-    pattern: str
+    """上传文件无法按全链条模板解析。"""
 
 
 @dataclass(slots=True)
@@ -150,7 +140,7 @@ def _read_xlsx(content: bytes) -> list[tuple[str, list[list[str]]]]:
 
 def _read_xls(content: bytes) -> list[tuple[str, list[list[str]]]]:
     try:
-        import xlrd  # 旧版公安映射表仍使用 BIFF .xls。
+        import xlrd  # 全链条系统导出仍可能使用 BIFF .xls。
     except ImportError as exc:  # pragma: no cover - 部署依赖缺失保护
         raise PoliceWorkbookError("服务器缺少 .xls 解析组件 xlrd") from exc
     try:
@@ -204,14 +194,6 @@ def _header_index(row: list[str], aliases: dict[str, tuple[str, ...]]) -> dict[s
     return result
 
 
-ADDRESS_HEADER_ALIASES = {
-    "name": ("小区名称", "小区", "居民小区", "公寓名称", "名称"),
-    "address": ("详细地址", "小区地址", "地址"),
-    "community": ("社区", "所属社区", "村社区"),
-    "pattern": ("模式", "管理模式", "公寓模式"),
-}
-
-
 DISPATCH_HEADER_ALIASES = {
     "source": ("来源", "数据来源"),
     "name": ("姓名", "人员姓名"),
@@ -238,50 +220,6 @@ def _locate_header(
     if best is None:
         raise PoliceWorkbookError("没有找到可识别的标准表头")
     return best
-
-
-def parse_address_workbook(
-    content: bytes,
-    filename: str,
-    import_kind: str,
-) -> tuple[str, list[AddressImportRow]]:
-    if import_kind not in {"community", "apartment"}:
-        raise PoliceWorkbookError("地址库导入类型无效")
-    sheet_name, rows, header_row, columns = _locate_header(
-        read_workbook_rows(content, filename),
-        ADDRESS_HEADER_ALIASES,
-        {"name", "community"},
-    )
-    result: list[AddressImportRow] = []
-    inherited_community = ""
-    for row_number, row in enumerate(rows[header_row + 1 :], start=header_row + 2):
-        def value(field: str) -> str:
-            index = columns.get(field)
-            return _cell_text(row[index]) if index is not None and index < len(row) else ""
-
-        name = value("name")
-        community = value("community") or inherited_community
-        if value("community"):
-            inherited_community = community
-        if not any(normalize_space(item) for item in row):
-            continue
-        if _normalized_header(name) in {
-            _normalized_header(item) for item in ADDRESS_HEADER_ALIASES["name"]
-        }:
-            continue
-        if not name:
-            continue
-        result.append(AddressImportRow(
-            source_row=row_number,
-            name=name,
-            detail_address=value("address"),
-            community_text=community,
-            address_type=import_kind,
-            pattern=value("pattern"),
-        ))
-    if not result:
-        raise PoliceWorkbookError("地址映射表中没有可导入的数据")
-    return sheet_name, result
 
 
 def parse_dispatch_workbook(
@@ -524,7 +462,7 @@ def publish_business_key(identity_number: str, phone: str, dispatch_date: str) -
 
 
 async def reconcile_police_dispatch_publications(cur, spreadsheet_id: int) -> dict[str, int]:
-    """仅在一次正常同步完整成功后，对结果不确定的公安发布任务做只读对账。"""
+    """仅在一次正常同步完整成功后，对结果不确定的发布任务做只读对账。"""
     from services.online_source import json_value, source_row_hash
     from services.parsers import get_parser
 
@@ -679,7 +617,7 @@ def build_feedback_workbook(
     summary = workbook.active
     summary.title = "汇总"
     summary_rows = [
-        ["公安全链条预处理反馈"],
+        ["全链条预处理反馈"],
         ["批次", batch.get("id")],
         ["原文件", batch.get("file_name", "")],
         ["导出时间", exported_at.strftime("%Y-%m-%d %H:%M:%S")],
@@ -739,7 +677,7 @@ def build_feedback_workbook(
         for row in sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
             for cell in row:
                 if isinstance(cell.value, str):
-                    # openpyxl 会把以“=”开头的字符串自动识别为公式；公安
+                    # openpyxl 会把以“=”开头的字符串自动识别为公式；
                     # 来源字段必须始终作为纯文本输出。
                     cell.data_type = "s"
                     cell.number_format = "@"

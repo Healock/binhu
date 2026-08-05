@@ -1349,7 +1349,7 @@ export async function updateGridCommunityStatus(
   return data
 }
 
-// ---- 公安全链条预处理与地址库 ----
+// ---- 全链条预处理与小区管理 ----
 export interface PoliceCommunityOption {
   id: number
   name: string
@@ -1376,21 +1376,6 @@ export type PoliceAddressPayload = Omit<
   PoliceAddressEntry,
   'id' | 'community_name' | 'sources' | 'created_at' | 'updated_at'
 >
-
-export interface PoliceAddressImportResult {
-  status: 'preview' | 'success' | 'partial' | 'duplicate'
-  total?: number
-  accepted?: Array<Record<string, unknown>>
-  conflicts?: Array<Record<string, string | number>>
-  create_count?: number
-  merge_count?: number
-  created_count?: number
-  merged_count?: number
-  imported_count?: number
-  conflict_count?: number
-  import_id?: number
-  message?: string
-}
 
 export interface PoliceDispatchCounts {
   total: number
@@ -1486,20 +1471,6 @@ export async function updatePoliceAddress(id: number, payload: PoliceAddressPayl
 
 export async function disablePoliceAddress(id: number): Promise<void> {
   await api.delete(`/police-dispatch/addresses/${id}`)
-}
-
-export async function importPoliceAddresses(
-  file: File,
-  importKind: 'community' | 'apartment',
-  commit = false,
-): Promise<PoliceAddressImportResult> {
-  const form = new FormData()
-  form.append('file', file)
-  const { data } = await api.post('/police-dispatch/addresses/import', form, {
-    params: { import_kind: importKind, commit },
-    timeout: 300000,
-  })
-  return data
 }
 
 export async function uploadPoliceDispatchBatch(file: File): Promise<{

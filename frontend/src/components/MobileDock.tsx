@@ -140,7 +140,7 @@ export default function MobileDock({
             }}
           >
             {openGroup.items.map((item) => {
-              const active = routeIsActive(location.pathname, item)
+              const active = routeIsActive(location.pathname, item, true)
               return (
                 <button
                   key={item.id}
@@ -166,7 +166,7 @@ export default function MobileDock({
         <div className="mobile-dock-bar__items">
           {groups.map(({ definition, items }) => {
             const active = items.some(item => (
-              routeIsActive(location.pathname, item)
+              routeIsActive(location.pathname, item, true)
             ))
             const expanded = openGroupId === definition.id
             return (

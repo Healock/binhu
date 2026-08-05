@@ -1,9 +1,8 @@
-"""公安地址库、全链条批次预处理、审核、反馈导出与腾讯发布。"""
+"""小区地址库、全链条批次预处理、审核、反馈导出与腾讯发布。"""
 
 from __future__ import annotations
 
 import asyncio
-from difflib import SequenceMatcher
 import io
 import json
 from datetime import datetime, timedelta
@@ -40,7 +39,6 @@ from services.police_dispatch import (
     build_feedback_workbook,
     build_publish_address,
     normalize_lookup,
-    parse_address_workbook,
     parse_dispatch_workbook,
     publish_business_key,
     resolve_community,
@@ -53,7 +51,7 @@ from services.police_dispatch import (
 from services.txdocs_client import TxDocsAPIError
 
 
-router = APIRouter(prefix="/api/police-dispatch", tags=["公安全链条下发"])
+router = APIRouter(prefix="/api/police-dispatch", tags=["全链条下发"])
 
 
 class AddressCreate(BaseModel):
@@ -132,19 +130,19 @@ def require_police_access(permission: str) -> Callable:
         if permission_scope != "all":
             raise HTTPException(
                 403,
-                "公安预处理必须使用全所数据范围，请联系超级管理员修正权限组",
+                "数据预处理必须使用全所数据范围，请联系超级管理员修正权限组",
             )
         group_codes = _permission_group_codes(user)
         member = user.get("member")
         if member:
             if str(member.get("position") or "") in ALLOWED_POLICE_POSITIONS:
                 return user
-            raise HTTPException(403, "当前人员岗位不能进入公安预处理工作台")
+            raise HTTPException(403, "当前人员岗位不能进入数据预处理工作台")
         if group_codes.intersection({"admin", "super_admin"}) or (
             not group_codes and user.get("role") in {"admin", "super_admin"}
         ):
             return user
-        raise HTTPException(403, "公安预处理仅向内勤和系统管理员开放")
+        raise HTTPException(403, "数据预处理仅向内勤和系统管理员开放")
 
     dependency.__name__ = f"require_police_{permission.replace('.', '_')}"
     return dependency
@@ -159,7 +157,7 @@ def _safe_filename(filename: str | None, fallback: str) -> str:
 
 
 async def _read_upload(file: UploadFile, *, allow_xls: bool = True) -> tuple[str, bytes]:
-    filename = _safe_filename(file.filename, "公安数据.xlsx")
+    filename = _safe_filename(file.filename, "下发数据.xlsx")
     suffixes = {".xlsx", ".xls"} if allow_xls else {".xlsx"}
     if Path(filename).suffix.lower() not in suffixes:
         raise HTTPException(400, "只支持 .xls 或 .xlsx 文件")
@@ -369,202 +367,6 @@ async def disable_address(
         target_name=str(entry_id), **request_audit_fields(request),
     )
     return {"message": "地址记录已停用"}
-
-
-async def _prepare_address_import(cur, parsed) -> tuple[list[dict], list[dict]]:
-    communities = await _communities(cur)
-    resolver = community_resolver(
-        item for item in communities if item.get("enabled", False)
-    )
-    await cur.execute(
-        "SELECT id, normalized_name, community_id FROM _police_address_entries"
-    )
-    existing = [(int(row[0]), str(row[1]), int(row[2]) if row[2] else None)
-                for row in await cur.fetchall()]
-    accepted: list[dict] = []
-    conflicts: list[dict] = []
-    batch_seen: dict[str, int] = {}
-    for item in parsed:
-        community = resolve_community(item.community_text, resolver)
-        normalized_name = normalize_lookup(item.name)
-        base = {
-            "source_row": item.source_row,
-            "name": item.name,
-            "detail_address": item.detail_address,
-            "address_type": item.address_type,
-            "pattern": item.pattern,
-            "community_text": item.community_text,
-        }
-        if not community:
-            conflicts.append({**base, "reason": "社区无法按正式名称或别名识别"})
-            continue
-        cross = [row for row in existing if row[1] == normalized_name and row[2] != community["id"]]
-        similar_cross = [
-            row for row in existing
-            if row[2] != community["id"]
-            and min(len(row[1]), len(normalized_name)) >= 4
-            and (
-                row[1] in normalized_name
-                or normalized_name in row[1]
-                or SequenceMatcher(None, row[1], normalized_name).ratio() >= 0.88
-            )
-        ]
-        similar_batch_cross = any(
-            seen_community != community["id"]
-            and min(len(seen_name), len(normalized_name)) >= 4
-            and (
-                seen_name in normalized_name
-                or normalized_name in seen_name
-                or SequenceMatcher(None, seen_name, normalized_name).ratio() >= 0.88
-            )
-            for seen_name, seen_community in batch_seen.items()
-        )
-        if cross or similar_cross or similar_batch_cross or (normalized_name in batch_seen and batch_seen[normalized_name] != community["id"]):
-            conflicts.append({**base, "reason": "同名或高度相似地址指向不同社区，需要人工处理"})
-            continue
-        batch_seen[normalized_name] = int(community["id"])
-        same = next((row for row in existing if row[1] == normalized_name and row[2] == community["id"]), None)
-        accepted.append({
-            **base,
-            "normalized_name": normalized_name,
-            "community_id": int(community["id"]),
-            "community_name": community["name"],
-            "operation": "merge" if same else "create",
-            "existing_id": same[0] if same else None,
-        })
-    return accepted, conflicts
-
-
-@router.post("/addresses/import")
-async def import_addresses(
-    request: Request,
-    file: UploadFile = File(...),
-    import_kind: Literal["community", "apartment"] = Query(...),
-    commit: bool = Query(False),
-    user: dict = Depends(require_police_address),
-    conn=Depends(get_db),
-):
-    filename, content = await _read_upload(file)
-    try:
-        sheet_name, parsed = await asyncio.to_thread(
-            parse_address_workbook, content, filename, import_kind
-        )
-    except PoliceWorkbookError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    digest = sha256(content).hexdigest()
-    async with conn.cursor() as cur:
-        accepted, conflicts = await _prepare_address_import(cur, parsed)
-        if not commit:
-            created_count = sum(item["operation"] == "create" for item in accepted)
-            merged_count = sum(item["operation"] == "merge" for item in accepted)
-            return {
-                "status": "preview", "sheet_name": sheet_name,
-                "total": len(parsed), "accepted": accepted,
-                "conflicts": conflicts,
-                "imported_count": len(accepted),
-                "created_count": created_count, "create_count": created_count,
-                "merged_count": merged_count, "merge_count": merged_count,
-                "conflict_count": len(conflicts),
-            }
-        await cur.execute(
-            "SELECT id, imported_count, created_count, merged_count, conflict_count "
-            "FROM _police_address_imports "
-            "WHERE import_kind=%s AND file_sha256=%s",
-            (import_kind, digest),
-        )
-        duplicate = await cur.fetchone()
-        if duplicate:
-            return {
-                "status": "duplicate",
-                "import_id": int(duplicate[0]),
-                "message": "同一文件已经导入",
-                "imported_count": int(duplicate[1]),
-                "created_count": int(duplicate[2]),
-                "create_count": int(duplicate[2]),
-                "merged_count": int(duplicate[3]),
-                "merge_count": int(duplicate[3]),
-                "conflict_count": int(duplicate[4]),
-            }
-    await conn.begin()
-    try:
-        async with conn.cursor() as cur:
-            await cur.execute("""
-                INSERT INTO _police_address_imports (
-                    import_kind, file_name, file_sha256, status,
-                    imported_count, created_count, merged_count,
-                    conflict_count, created_by
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                import_kind, filename, digest, "partial" if conflicts else "success",
-                len(accepted), sum(item["operation"] == "create" for item in accepted),
-                sum(item["operation"] == "merge" for item in accepted),
-                len(conflicts), user["id"],
-            ))
-            import_id = int(cur.lastrowid)
-            for item in accepted:
-                await cur.execute(
-                    "SELECT id FROM _police_address_entries "
-                    "WHERE normalized_name=%s AND community_id=%s FOR UPDATE",
-                    (item["normalized_name"], item["community_id"]),
-                )
-                current_entry = await cur.fetchone()
-                if current_entry:
-                    entry_id = int(current_entry[0])
-                    await cur.execute("""
-                        UPDATE _police_address_entries SET
-                            detail_address=CASE WHEN detail_address='' THEN %s ELSE detail_address END,
-                            pattern=CASE WHEN pattern='' THEN %s ELSE pattern END,
-                            source_flags=JSON_ARRAY_APPEND(source_flags, '$', %s),
-                            enabled=1, updated_by=%s
-                        WHERE id=%s
-                    """, (item["detail_address"], item["pattern"], import_kind, user["id"], entry_id))
-                else:
-                    await cur.execute("""
-                        INSERT INTO _police_address_entries (
-                            name, normalized_name, detail_address, address_type,
-                            pattern, community_id, aliases_json, source_flags,
-                            enabled, created_by, updated_by
-                        ) VALUES (%s, %s, %s, %s, %s, %s, JSON_ARRAY(), JSON_ARRAY(%s), 1, %s, %s)
-                    """, (
-                        item["name"], item["normalized_name"], item["detail_address"],
-                        item["address_type"], item["pattern"], item["community_id"],
-                        import_kind, user["id"], user["id"],
-                    ))
-                    entry_id = int(cur.lastrowid)
-                await cur.execute("""
-                    INSERT IGNORE INTO _police_address_sources (
-                        entry_id, import_id, source_kind, source_row, source_name
-                    ) VALUES (%s, %s, %s, %s, %s)
-                """, (entry_id, import_id, import_kind, item["source_row"], item["name"]))
-            for item in conflicts:
-                safe_values = {
-                    "name": item["name"], "community": item["community_text"],
-                    "address_type": item["address_type"],
-                }
-                await cur.execute("""
-                    INSERT INTO _police_address_import_conflicts (
-                        import_id, source_row, reason, values_json
-                    ) VALUES (%s, %s, %s, %s)
-                """, (import_id, item["source_row"], item["reason"], stable_json(safe_values)))
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
-    await record_admin_audit(
-        user, "police_address.import", target_type="police_address_import",
-        target_name=str(import_id), detail={
-            "import_kind": import_kind, "accepted": len(accepted), "conflicts": len(conflicts),
-        }, **request_audit_fields(request),
-    )
-    created_count = sum(item["operation"] == "create" for item in accepted)
-    merged_count = sum(item["operation"] == "merge" for item in accepted)
-    return {
-        "status": "partial" if conflicts else "success", "import_id": import_id,
-        "total": len(parsed), "imported_count": len(accepted),
-        "created_count": created_count, "create_count": created_count,
-        "merged_count": merged_count, "merge_count": merged_count,
-        "conflict_count": len(conflicts), "conflicts": conflicts,
-    }
 
 
 def _task_counts(rows: list[tuple]) -> dict[str, int]:
@@ -1648,7 +1450,7 @@ async def export_feedback(
             for row in await cur.fetchall()
         ]
     content = await asyncio.to_thread(build_feedback_workbook, batch, tasks, datetime.now())
-    filename = f"公安下发批次-{batch_id}-反馈.xlsx"
+    filename = f"下发批次-{batch_id}-反馈.xlsx"
     return StreamingResponse(
         io.BytesIO(content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

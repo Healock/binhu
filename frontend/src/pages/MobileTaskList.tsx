@@ -246,7 +246,7 @@ export default function MobileTaskList() {
             )
           })}
           {rows.length < total && (
-            <Button block className="min-h-11" loading={loadingMore} onClick={() => void load(page + 1, true)}>加载更多</Button>
+            <Button block className="mobile-task-load-more min-h-11" loading={loadingMore} onClick={() => void load(page + 1, true)}>加载更多</Button>
           )}
         </div>
       )}

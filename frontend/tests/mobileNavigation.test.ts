@@ -66,7 +66,7 @@ test('新权限列表优先于旧角色决定 Dock 页面', () => {
   )
 })
 
-test('公安下发权限可以单独进入数据上传中心和公安地址库', () => {
+test('下发权限可以单独进入数据上传中心和小区管理', () => {
   const config = defaultMobileDockConfig('member', [
     'police.dispatch.manage',
     'police.address.manage',

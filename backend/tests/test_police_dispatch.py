@@ -23,7 +23,6 @@ from services.police_dispatch import (
     apply_preprocessing_suggestions,
     build_feedback_workbook,
     build_publish_address,
-    parse_address_workbook,
     parse_dispatch_workbook,
     publish_business_key,
     reconcile_police_dispatch_publications,
@@ -33,6 +32,7 @@ from routers.police_dispatch import (
     TaskBusinessFieldsUpdate,
     TaskReview,
     TaskSearch,
+    router,
     _batch_payloads,
     _mark_overwrite_uncertain,
     _publish_values,
@@ -129,19 +129,11 @@ def test_parse_xls_uses_same_header_logic(monkeypatch):
     assert rows[0].identity_number.endswith("X")
 
 
-def test_address_import_downfills_community_and_apartment_is_mapping_only():
-    content = _xlsx([
-        ["滨湖辖区公寓汇总"],
-        ["序号", "社区", "公寓名称", "模式"],
-        [1, "水秀社区", "开平商务中心", "开放式"],
-        [2, "", "云玺商务广场", "开放式（民宿较多）"],
-    ])
-
-    _, rows = parse_address_workbook(content, "滨湖公寓明细.xlsx", "apartment")
-
-    assert [row.community_text for row in rows] == ["水秀社区", "水秀社区"]
-    assert all(row.address_type == "apartment" for row in rows)
-    assert rows[1].pattern == "开放式（民宿较多）"
+def test_one_time_address_mapping_import_route_is_removed():
+    assert not any(
+        route.path == "/api/police-dispatch/addresses/import"
+        for route in router.routes
+    )
 
 
 def test_suggestions_require_review_and_balance_only_unmatched_pool():

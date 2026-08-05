@@ -140,7 +140,7 @@ export default function PoliceDispatchBatchDetail() {
   return (
     <div className="app-page min-w-0">
       <PageHeader
-        title={batch ? `公安下发批次 #${batch.id}` : '公安下发批次'}
+        title={batch ? `下发批次 #${batch.id}` : '下发批次'}
         description={batch?.file_name || '查看审核进度、社区分配和腾讯发布结果'}
         extra={batch && (
           <Space wrap>

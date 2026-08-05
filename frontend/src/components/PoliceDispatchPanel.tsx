@@ -52,7 +52,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       setPage(targetPage)
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '公安下发批次读取失败')
+      setError(reason?.response?.data?.detail || '下发批次读取失败')
     } finally {
       setLoading(false)
     }
@@ -88,7 +88,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       await load(1)
       navigate(`/police-dispatch/batches/${result.batch.id}`)
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '公安数据导入失败')
+      setError(reason?.response?.data?.detail || '数据导入失败')
     } finally {
       setUploading(false)
     }
@@ -133,13 +133,13 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
 
   return (
     <Panel
-      title="公安局数据下发"
+      title="数据下发"
       description="导入全链条系统导出文件；平台只提供预处理建议，所有记录仍须基础管控或中队长人工审核"
       padded={false}
     >
       <div className="space-y-5 p-5">
         {!enabled && (
-          <Alert type="info" showIcon message="当前账号没有公安数据下发权限" />
+          <Alert type="info" showIcon message="当前账号没有数据下发权限" />
         )}
         {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
@@ -152,7 +152,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             disabled={!enabled || uploading}
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-            <p className="ant-upload-text">拖入公安全链条系统导出文件，或点击选择</p>
+            <p className="ant-upload-text">拖入全链条系统导出文件，或点击选择</p>
             <p className="ant-upload-hint">支持 .xls/.xlsx；身份证号、手机号和日期始终按文本保存</p>
           </Dragger>
           <Button

@@ -30,6 +30,7 @@ import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
 import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
+  isFlowTaskPosition,
   shouldUseMobileTaskWorkbench,
   shouldUsePoliceDispatchWorkbench,
 } from './utils/mobileTaskRouting'
@@ -75,11 +76,17 @@ function QueryEntry() {
 
 function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
   const { user } = useAuth()
-  const mobile = useMobileViewport()
-  if (!shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
+  if (!isFlowTaskPosition(user?.member?.position)) {
     return <Navigate to="/query" replace />
   }
   return detail ? <MobileTaskDetail /> : <MobileTaskList />
+}
+
+function MobileTaskHomeEntry() {
+  const { user } = useAuth()
+  return isFlowTaskPosition(user?.member?.position)
+    ? <MobileTaskHome />
+    : <Navigate to="/query" replace />
 }
 
 function App() {
@@ -97,6 +104,7 @@ function App() {
               <Route path="/" element={<DashboardEntry />} />
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
                 <Route path="/query" element={<QueryEntry />} />
+                <Route path="/tasks/home" element={<MobileTaskHomeEntry />} />
                 <Route path="/tasks" element={<MobileTaskEntry />} />
                 <Route path="/tasks/:parserType/:rowKey" element={<MobileTaskEntry detail />} />
               </Route>

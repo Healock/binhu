@@ -249,8 +249,8 @@ export default function Communities() {
               Modal.confirm({
                 title: community.is_active ? `停用“${community.name}”？` : `重新启用“${community.name}”？`,
                 content: community.is_active
-                  ? '停用社区不会删除历史数据；存在人员或未完成公安任务时将拒绝停用。'
-                  : '启用后可重新参与人员分配、地址匹配和公安任务平均分配。',
+                  ? '停用社区不会删除历史数据；存在人员或未完成下发任务时将拒绝停用。'
+                  : '启用后可重新参与人员分配、地址匹配和下发任务平均分配。',
                 okText: community.is_active ? '停用' : '启用',
                 okButtonProps: { danger: community.is_active },
                 cancelText: '取消',

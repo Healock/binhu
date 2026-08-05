@@ -54,8 +54,8 @@ PERMISSION_CATALOG = [
     (ANNOUNCEMENT_MANAGE, "平台管理", "发布和删除公告"),
     (SYSTEM_MANAGE, "平台管理", "管理数据源、OAuth 和系统设置"),
     (OPS_MANAGE, "平台管理", "使用运维中心"),
-    (POLICE_DISPATCH_MANAGE, "业务操作", "管理公安全链条数据预处理、审核和发布"),
-    (POLICE_ADDRESS_MANAGE, "基础资料", "管理公安地址库和地址映射"),
+    (POLICE_DISPATCH_MANAGE, "业务操作", "管理全链条数据预处理、审核和发布"),
+    (POLICE_ADDRESS_MANAGE, "基础资料", "管理小区地址库"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}
