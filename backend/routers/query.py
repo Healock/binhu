@@ -25,6 +25,7 @@ from services.online_source import (
     rebuild_projection,
     release_sheet_lock,
     replace_source_cache,
+    resolve_source_columns,
     source_row_hash,
     stable_json,
     update_cached_source_row,
@@ -412,11 +413,12 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
 
 async def _refresh_spreadsheet(conn, client, spreadsheet: dict) -> None:
     parser = get_parser(spreadsheet["parser_type"])
+    source_columns = await resolve_source_columns(client, spreadsheet, parser)
     rows = await client.read_all_source_rows(
         spreadsheet["file_id"],
         spreadsheet["data_sheet_id"],
         spreadsheet["header_row"],
-        parser.COLUMNS,
+        source_columns,
     )
     await replace_source_cache(conn, spreadsheet, rows)
 
@@ -530,12 +532,25 @@ async def update_source_fields(
     try:
         async with conn.cursor() as cur:
             client = await _oauth_client(cur)
-        current = await client.read_source_row(
+        source_columns = await resolve_source_columns(
+            client, source["spreadsheet"], parser
+        )
+        current_raw = await client.read_source_row(
             source["spreadsheet"]["file_id"],
             source["sheet_id"],
             source["physical_row"],
-            parser.COLUMNS,
+            source_columns,
         )
+        current = {
+            **current_raw,
+            "values": parser.normalize_source_row(current_raw["values"]),
+            "cell_meta": {
+                column: (current_raw.get("cell_meta") or {}).get(
+                    column, {"type": "text"}
+                )
+                for column in parser.COLUMNS
+            },
+        }
         current_values = current["values"]
         if source_row_hash(current_values) != source["row_hash"]:
             await _refresh_spreadsheet(conn, client, source["spreadsheet"])
@@ -600,7 +615,7 @@ async def update_source_fields(
                 requests.append(client.build_update_cell_request(
                     source["sheet_id"],
                     source["physical_row"],
-                    parser.COLUMNS.index(column),
+                    source_columns.index(column),
                     normalized_changes[column],
                     metadata,
                 ))
@@ -612,12 +627,22 @@ async def update_source_fields(
 
         try:
             await client.batch_update(source["spreadsheet"]["file_id"], requests)
-            verified = await client.read_source_row(
+            verified_raw = await client.read_source_row(
                 source["spreadsheet"]["file_id"],
                 source["sheet_id"],
                 source["physical_row"],
-                parser.COLUMNS,
+                source_columns,
             )
+            verified = {
+                **verified_raw,
+                "values": parser.normalize_source_row(verified_raw["values"]),
+                "cell_meta": {
+                    column: (verified_raw.get("cell_meta") or {}).get(
+                        column, {"type": "text"}
+                    )
+                    for column in parser.COLUMNS
+                },
+            }
             mismatched = []
             for column in ordered_columns:
                 metadata = current["cell_meta"].get(column) or {"type": "text"}
@@ -1184,9 +1209,10 @@ async def create_source_row(
     try:
         async with conn.cursor() as cur:
             client = await _oauth_client(cur)
+        source_columns = await resolve_source_columns(client, spreadsheet, parser)
         all_rows = await client.read_all_source_rows(
             spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-            spreadsheet["header_row"], parser.COLUMNS,
+            spreadsheet["header_row"], source_columns,
             include_detected_headers=True,
         )
         source_rows = [row for row in all_rows if not row.get("is_header")]
@@ -1221,14 +1247,21 @@ async def create_source_row(
                         spreadsheet["data_sheet_id"],
                         physical_row - 1,
                         0,
-                        [[values[column] for column in parser.COLUMNS]],
+                        [parser.source_row_values(values, source_columns)],
                     ),
                 ],
             )
             verified = await client.read_source_row(
                 spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-                physical_row, parser.COLUMNS,
+                physical_row, source_columns,
             )
+            verified["values"] = parser.normalize_source_row(verified["values"])
+            verified["cell_meta"] = {
+                column: (verified.get("cell_meta") or {}).get(
+                    column, {"type": "text"}
+                )
+                for column in parser.COLUMNS
+            }
             if not _row_values_match(
                 values,
                 verified["values"],
@@ -1305,10 +1338,14 @@ async def delete_source_row(
     try:
         async with conn.cursor() as cur:
             client = await _oauth_client(cur)
+        source_columns = await resolve_source_columns(
+            client, source["spreadsheet"], parser
+        )
         current = await client.read_source_row(
             source["spreadsheet"]["file_id"], source["sheet_id"],
-            source["physical_row"], parser.COLUMNS,
+            source["physical_row"], source_columns,
         )
+        current["values"] = parser.normalize_source_row(current["values"])
         if source_row_hash(current["values"]) != source["row_hash"]:
             await _refresh_spreadsheet(conn, client, source["spreadsheet"])
             raise HTTPException(409, "腾讯表格已被其他人修改，已刷新来源行")

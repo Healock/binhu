@@ -27,7 +27,12 @@ from routers.query import (
 )
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_date
-from services.online_source import acquire_sheet_lock, json_value, release_sheet_lock
+from services.online_source import (
+    acquire_sheet_lock,
+    json_value,
+    release_sheet_lock,
+    resolve_source_columns,
+)
 from services.online_source import source_row_hash
 from services.parsers import get_parser
 from services.permissions import POLICE_ADDRESS_MANAGE, POLICE_DISPATCH_MANAGE
@@ -1277,14 +1282,12 @@ async def resolve_publish_conflict(
         try:
             async with conn.cursor() as cur:
                 client = await _oauth_client(cur)
+            source_columns = await resolve_source_columns(client, spreadsheet, parser)
             live = await client.read_source_row(
                 spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-                int(row[8]), parser.COLUMNS,
+                int(row[8]), source_columns,
             )
-            live_values = {
-                column: str(live["values"].get(column, "") or "").strip()
-                for column in parser.COLUMNS
-            }
+            live_values = parser.normalize_source_row(live["values"])
             if source_row_hash(live_values) != data.expected_row_hash:
                 raise HTTPException(409, "腾讯行在确认后再次变化，请刷新冲突详情")
             requested = {
@@ -1296,13 +1299,16 @@ async def resolve_publish_conflict(
                 spreadsheet["file_id"],
                 [client.build_update_range_request(
                     spreadsheet["data_sheet_id"], int(row[8]) - 1, 0,
-                    [[requested[column] for column in parser.COLUMNS]],
+                    [parser.source_row_values(
+                        {**live["values"], **requested}, source_columns
+                    )],
                 )],
             )
             verified = await client.read_source_row(
                 spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-                int(row[8]), parser.COLUMNS,
+                int(row[8]), source_columns,
             )
+            verified["values"] = parser.normalize_source_row(verified["values"])
             if not _row_values_match(
                 requested, verified["values"], verified.get("cell_meta") or {},
                 parser.COLUMNS,
@@ -1680,9 +1686,10 @@ async def publish_batch(
     try:
         async with conn.cursor() as cur:
             client = await _oauth_client(cur)
+        source_columns = await resolve_source_columns(client, spreadsheet, parser)
         all_rows = await client.read_all_source_rows(
             spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-            spreadsheet["header_row"], parser.COLUMNS,
+            spreadsheet["header_row"], source_columns,
             include_detected_headers=True,
         )
         source_rows = [row for row in all_rows if not row.get("is_header")]
@@ -1753,7 +1760,10 @@ async def publish_batch(
         for offset in range(0, len(ready), 50):
             chunk = ready[offset:offset + 50]
             start_row = next_row
-            rows = [[values[column] for column in parser.COLUMNS] for _, values, _ in chunk]
+            rows = [
+                parser.source_row_values(values, source_columns)
+                for _, values, _ in chunk
+            ]
             try:
                 await client.batch_update(
                     spreadsheet["file_id"],
@@ -1766,7 +1776,10 @@ async def publish_batch(
                     try:
                         verified = await client.read_source_row(
                             spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-                            physical_row, parser.COLUMNS,
+                            physical_row, source_columns,
+                        )
+                        verified["values"] = parser.normalize_source_row(
+                            verified["values"]
                         )
                         matched = _row_values_match(
                             values, verified["values"], verified.get("cell_meta") or {},
