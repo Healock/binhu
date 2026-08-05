@@ -1024,7 +1024,7 @@ async def delete_community(
         if address_count or task_count:
             raise HTTPException(
                 409,
-                "该社区已被公安地址库或历史批次引用，请改为停用",
+                "该社区已被小区地址库或历史批次引用，请改为停用",
             )
         await cur.execute(
             "DELETE FROM _departments WHERE community_id=%s",
@@ -1086,7 +1086,7 @@ async def update_community_status(
                     raise HTTPException(
                         409,
                         detail={
-                            "message": "请先转移社区人员并处理未完成公安任务",
+                            "message": "请先转移社区人员并处理未完成下发任务",
                             "member_count": member_count,
                             "pending_task_count": pending_count,
                         },

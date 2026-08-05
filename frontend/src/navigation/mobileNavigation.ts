@@ -118,8 +118,8 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
       {
         id: 'police_addresses',
         path: '/police-addresses',
-        label: '小区管理（公安地址库）',
-        shortLabel: '公安地址库',
+        label: '小区管理',
+        shortLabel: '小区管理',
         icon: 'communities',
         permission: 'police.address.manage',
         roles: ['super_admin', 'admin'],
@@ -308,9 +308,10 @@ export function navigationItemById(
 export function routeIsActive(
   pathname: string,
   item: NavigationItemDefinition,
+  taskRoutesAsQuery = false,
 ): boolean {
-  if (item.id === 'online_query' && pathname.startsWith('/tasks')) return true
-  if (item.id === 'online_query' && pathname.startsWith('/police-tasks')) return true
+  if (taskRoutesAsQuery && item.id === 'online_query' && pathname.startsWith('/tasks')) return true
+  if (taskRoutesAsQuery && item.id === 'online_query' && pathname.startsWith('/police-tasks')) return true
   if (item.end) return pathname === item.path
   return pathname === item.path || pathname.startsWith(`${item.path}/`)
 }
@@ -325,6 +326,6 @@ export function mobileNavigationItemLabel(
   if (flowPost && item.id === 'online_summary') return '首页'
   if (flowPost && item.id === 'online_query') return '任务处理'
   if (internalPost && item.id === 'online_summary') return '首页'
-  if (internalPost && item.id === 'online_query') return '公安任务'
+  if (internalPost && item.id === 'online_query') return '下发任务'
   return short ? item.shortLabel : item.label
 }

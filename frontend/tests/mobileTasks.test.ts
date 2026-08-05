@@ -24,7 +24,7 @@ import {
   routeIsActive,
 } from '../src/navigation/mobileNavigation.ts'
 
-test('只有组员和组长在手机端切换到任务工作台', () => {
+test('组员和组长手机端自动分流，岗位判断也允许桌面任务路由', () => {
   assert.equal(isFlowTaskPosition('组员'), true)
   assert.equal(isFlowTaskPosition('组长'), true)
   assert.equal(shouldUseMobileTaskWorkbench('组员', true), true)
@@ -32,7 +32,7 @@ test('只有组员和组长在手机端切换到任务工作台', () => {
   assert.equal(shouldUseMobileTaskWorkbench('基础管控', true), false)
 })
 
-test('基础管控和中队长仅在手机端切换到公安任务工作台', () => {
+test('基础管控和中队长手机端自动分流，桌面端可用同一岗位准入', () => {
   assert.equal(isPoliceDispatchTaskPosition('基础管控'), true)
   assert.equal(isPoliceDispatchTaskPosition('中队长'), true)
   assert.equal(shouldUsePoliceDispatchWorkbench('基础管控', true), true)
@@ -45,9 +45,10 @@ test('流口岗手机导航复用旧配置 ID 并显示新名称', () => {
   const query = navigationItemById('online_query')!
   assert.equal(mobileNavigationItemLabel(summary, '组员', true), '首页')
   assert.equal(mobileNavigationItemLabel(query, '组长'), '任务处理')
-  assert.equal(mobileNavigationItemLabel(query, '基础管控'), '公安任务')
-  assert.equal(routeIsActive('/tasks/全链条/row', query), true)
-  assert.equal(routeIsActive('/police-tasks', query), true)
+  assert.equal(mobileNavigationItemLabel(query, '基础管控'), '下发任务')
+  assert.equal(routeIsActive('/tasks/全链条/row', query), false)
+  assert.equal(routeIsActive('/tasks/全链条/row', query, true), true)
+  assert.equal(routeIsActive('/police-tasks', query, true), true)
 })
 
 test('批量保存只提交实际变化且不自动补造字段', () => {

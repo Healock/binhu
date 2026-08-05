@@ -274,7 +274,7 @@ export default function DataUploadCenter() {
     <div className="app-page min-w-0">
       <PageHeader
         title="数据上传中心"
-        description="集中导入走访、星级评定和公安全链条下发文件，并查看各类处理结果"
+        description="集中导入走访、星级评定和全链条下发文件，并查看各类处理结果"
       />
 
       {!canUseUploadCenter && (

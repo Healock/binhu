@@ -31,6 +31,7 @@ import {
   type PoliceDispatchBatch,
   type PoliceDispatchTask,
 } from '../api/client'
+import useMobileViewport from '../hooks/useMobileViewport'
 
 const actionLabels: Record<string, string> = {
   dispatch: '下发到社区',
@@ -159,6 +160,7 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
 }
 
 export default function PoliceDispatchWorkbench() {
+  const mobile = useMobileViewport()
   const [searchParams, setSearchParams] = useSearchParams()
   const [batches, setBatches] = useState<PoliceDispatchBatch[]>([])
   const [communities, setCommunities] = useState<PoliceCommunityOption[]>([])
@@ -205,7 +207,7 @@ export default function PoliceDispatchWorkbench() {
       if (nextId) setSearchParams({ batch: String(nextId) }, { replace: true })
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '公安任务工作台读取失败')
+      setError(reason?.response?.data?.detail || '任务工作台读取失败')
       setLoading(false)
     }
   }
@@ -422,12 +424,12 @@ export default function PoliceDispatchWorkbench() {
     : []
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 pb-4">
+    <div className="mx-auto max-w-7xl space-y-4 pb-4">
       <section className="app-card overflow-hidden border-0 bg-gradient-to-br from-blue-700 to-indigo-700 p-5 text-white shadow-lg">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-xs font-medium text-blue-100">内勤业务 · 共享队列</div>
-            <h1 className="mt-1 text-xl font-semibold">公安全链条任务处理</h1>
+            <h1 className="mt-1 text-xl font-semibold">全链条任务处理</h1>
           </div>
           <Button ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
         </div>
@@ -506,9 +508,9 @@ export default function PoliceDispatchWorkbench() {
       </section>
 
       <Spin spinning={loading}>
-        <div className="space-y-3">
+        <div className="grid gap-3 md:grid-cols-2">
           {tasks.map(item => <TaskCard key={item.id} item={item} onOpen={() => openTask(item)} />)}
-          {!loading && !tasks.length && <div className="app-card py-12"><Empty description="当前筛选没有任务" /></div>}
+          {!loading && !tasks.length && <div className="app-card py-12 md:col-span-2"><Empty description="当前筛选没有任务" /></div>}
         </div>
       </Spin>
 
@@ -521,8 +523,9 @@ export default function PoliceDispatchWorkbench() {
       <Drawer
         open={Boolean(selected)}
         title={selected ? `${selected.person_name || '待核查对象'} · 第 ${selected.source_row} 行` : '任务审核'}
-        placement="bottom"
-        height="min(88dvh, 820px)"
+        placement={mobile ? 'bottom' : 'right'}
+        height={mobile ? 'min(88dvh, 820px)' : undefined}
+        width={mobile ? undefined : 'min(720px, 88vw)'}
         onClose={() => setSelected(null)}
         destroyOnHidden
         extra={selected && <Tag>v{selected.version}</Tag>}
