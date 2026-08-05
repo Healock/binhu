@@ -898,7 +898,7 @@ async def ensure_work_activity_schema(cur) -> None:
             WHERE audit.action='work_log.create'
               AND audit.result='success'
               AND audit.target_type='work_log_draft'
-              AND audit.target_name=CAST(draft.id AS CHAR)
+              AND CAST(audit.target_name AS BINARY)=CAST(draft.id AS BINARY)
         )
     """)
 
