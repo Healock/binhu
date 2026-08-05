@@ -86,12 +86,19 @@ async def _load_runs(
 ) -> list[tuple[Any, ...]]:
     placeholders = ", ".join(["%s"] * len(parser_types))
     await cur.execute(
-        "SELECT report_date, parser_type, snapshot_table, "
-        "previous_snapshot_table "
-        "FROM _daily_task_ledger_runs "
-        f"WHERE report_date BETWEEN %s AND %s "
-        f"AND parser_type IN ({placeholders}) "
-        "ORDER BY report_date, parser_type",
+        "SELECT run.report_date, run.parser_type, run.snapshot_table, "
+        "CASE WHEN previous_table.TABLE_NAME IS NULL THEN NULL "
+        "ELSE run.previous_snapshot_table END "
+        "FROM _daily_task_ledger_runs AS run "
+        "JOIN information_schema.TABLES AS current_table "
+        "ON current_table.TABLE_SCHEMA=DATABASE() "
+        "AND current_table.TABLE_NAME=run.snapshot_table "
+        "LEFT JOIN information_schema.TABLES AS previous_table "
+        "ON previous_table.TABLE_SCHEMA=DATABASE() "
+        "AND previous_table.TABLE_NAME=run.previous_snapshot_table "
+        f"WHERE run.report_date BETWEEN %s AND %s "
+        f"AND run.parser_type IN ({placeholders}) "
+        "ORDER BY run.report_date, run.parser_type",
         (start_date, end_date, *parser_types),
     )
     return list(await cur.fetchall())
@@ -103,10 +110,13 @@ async def _load_available_range(
 ) -> tuple[Any, Any, int]:
     placeholders = ", ".join(["%s"] * len(parser_types))
     await cur.execute(
-        "SELECT MIN(report_date), MAX(report_date), "
-        "COUNT(DISTINCT report_date) "
-        "FROM _daily_task_ledger_runs "
-        f"WHERE parser_type IN ({placeholders})",
+        "SELECT MIN(run.report_date), MAX(run.report_date), "
+        "COUNT(DISTINCT run.report_date) "
+        "FROM _daily_task_ledger_runs AS run "
+        "JOIN information_schema.TABLES AS current_table "
+        "ON current_table.TABLE_SCHEMA=DATABASE() "
+        "AND current_table.TABLE_NAME=run.snapshot_table "
+        f"WHERE run.parser_type IN ({placeholders})",
         parser_types,
     )
     start_date, end_date, data_days = await cur.fetchone()
@@ -142,7 +152,14 @@ async def _load_effective_tasks(
         inspector_params = [inspector]
     await cur.execute(
         f"""
-        WITH latest_ranked AS (
+        WITH valid_runs AS (
+            SELECT run.report_date, run.parser_type
+            FROM _daily_task_ledger_runs AS run
+            JOIN information_schema.TABLES AS current_table
+              ON current_table.TABLE_SCHEMA=DATABASE()
+             AND current_table.TABLE_NAME=run.snapshot_table
+        ),
+        latest_ranked AS (
             SELECT
                 ledger.*,
                 ROW_NUMBER() OVER (
@@ -150,6 +167,9 @@ async def _load_effective_tasks(
                     ORDER BY ledger.report_date DESC, ledger.updated_at DESC
                 ) AS ledger_rank
             FROM _daily_task_ledger AS ledger
+            JOIN valid_runs
+              ON valid_runs.report_date=ledger.report_date
+             AND valid_runs.parser_type=ledger.parser_type
             WHERE ledger.report_date BETWEEN %s AND %s
               AND ledger.parser_type IN ({type_placeholders})
         ),
@@ -164,6 +184,9 @@ async def _load_effective_tasks(
                     ORDER BY ledger.report_date ASC, ledger.updated_at ASC
                 ) AS event_rank
             FROM _daily_task_ledger AS ledger
+            JOIN valid_runs
+              ON valid_runs.report_date=ledger.report_date
+             AND valid_runs.parser_type=ledger.parser_type
             WHERE ledger.report_date BETWEEN %s AND %s
               AND ledger.parser_type IN ({type_placeholders})
               AND ledger.included = 1
@@ -367,7 +390,14 @@ async def _load_latest_task_metadata(
             placeholders = ", ".join(["%s"] * len(row_key_chunk))
             await cur.execute(
                 f"""
-                WITH ranked AS (
+                WITH valid_runs AS (
+                    SELECT run.report_date, run.parser_type
+                    FROM _daily_task_ledger_runs AS run
+                    JOIN information_schema.TABLES AS current_table
+                      ON current_table.TABLE_SCHEMA=DATABASE()
+                     AND current_table.TABLE_NAME=run.snapshot_table
+                ),
+                ranked AS (
                     SELECT ledger.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY ledger.parser_type, ledger.row_key
@@ -375,6 +405,9 @@ async def _load_latest_task_metadata(
                                         ledger.updated_at DESC
                            ) AS ledger_rank
                     FROM _daily_task_ledger AS ledger
+                    JOIN valid_runs
+                      ON valid_runs.report_date=ledger.report_date
+                     AND valid_runs.parser_type=ledger.parser_type
                     WHERE ledger.report_date BETWEEN %s AND %s
                       AND ledger.parser_type=%s
                       AND ledger.row_key IN ({placeholders})
