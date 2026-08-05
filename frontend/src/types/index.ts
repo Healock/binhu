@@ -198,14 +198,31 @@ export interface AuditEvent {
   id: number
   user_id: number | null
   username: string
+  actor_name: string
+  actor_account: string
   action: string
+  action_label: string
   target_type: string
   target_name: string
+  target_display: string
   result: string
+  result_label: string
   detail: Record<string, unknown> | null
+  detail_items: AuditDetailItem[]
   ip_address: string
   user_agent: string
   created_at: string
+}
+
+export interface AuditDetailItem {
+  key: string
+  label: string
+  value: string
+}
+
+export interface AuditActionOption {
+  value: string
+  label: string
 }
 
 // OAuth

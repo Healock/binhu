@@ -1,0 +1,380 @@
+"""Human-readable labels for the immutable administrator audit trail."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+
+ACTION_LABELS: dict[str, str] = {
+    "logs.export": "导出系统日志",
+    "backup.create": "创建数据库备份",
+    "backup.schedule.update": "修改备份计划",
+    "backup.download": "下载数据库备份",
+    "diagnostics.export": "导出诊断包",
+    "account.password.change": "修改登录密码",
+    "oauth.update": "更新腾讯文档授权",
+    "oauth.test": "测试腾讯文档授权",
+    "area.create": "新建片区",
+    "area.update": "修改片区",
+    "area.delete": "删除片区",
+    "community.enable": "启用社区",
+    "community.disable": "停用社区",
+    "personnel.create_with_account": "新增人员和账号",
+    "personnel.update": "修改人员资料",
+    "personnel.delete_with_account": "删除人员和关联账号",
+    "announcement.create": "发布公告",
+    "announcement.delete": "删除公告",
+    "permission_group.create": "新建权限组",
+    "permission_group.update": "修改权限组",
+    "permission_group.delete": "删除权限组",
+    "permission_group.position_mapping.update": "修改岗位默认权限组",
+    "personnel.weekend_duty.update": "修改双休日排班",
+    "police_address.create": "新增小区地址",
+    "police_address.update": "修改小区地址",
+    "police_address.disable": "停用小区地址",
+    "police_address.import": "导入小区地址映射（历史功能）",
+    "police_dispatch.import": "导入下发数据",
+    "police_dispatch.business_fields.update": "修改下发任务字段",
+    "police_dispatch.review": "审核下发任务",
+    "police_dispatch.bulk_review": "批量审核下发任务",
+    "police_dispatch.conflict.adopt_tencent": "采用腾讯表格内容",
+    "police_dispatch.conflict.overwrite_tencent": "用平台内容覆盖腾讯表格",
+    "police_dispatch.publish": "发布下发任务",
+    "online.writeback.update": "修改腾讯原始行",
+    "online.writeback.create": "新增腾讯原始行",
+    "online.writeback.delete": "删除腾讯原始行",
+    "spreadsheet.config.update": "批量修改在线表格配置",
+    "spreadsheet.create": "新增在线表格配置",
+    "spreadsheet.update": "修改在线表格配置",
+    "spreadsheet.delete": "删除在线表格配置",
+    "report.summary_config.update": "修改总汇总配置",
+    "sync.trigger": "触发在线数据同步",
+    "sync.schedule.update": "修改自动同步计划",
+    "system.config.update": "修改系统设置",
+    "user.create": "创建用户",
+    "user.update": "修改用户",
+    "user.delete": "删除用户",
+    "visit_detail.import": "导入走访明细",
+    "visit_rating.import": "导入星级评定",
+    "work_log.create": "创建工作日志",
+    "work_log.delete": "删除工作日志",
+    "work_log.takeover": "接管工作日志",
+    "work_log.refresh": "刷新工作日志系统数据",
+    "work_log.export": "导出工作日志",
+}
+
+TARGET_TYPE_LABELS: dict[str, str] = {
+    "container": "系统日志",
+    "backup": "数据库备份",
+    "backup_schedule": "备份计划",
+    "system": "系统",
+    "user": "用户账号",
+    "oauth": "腾讯文档授权",
+    "area": "片区",
+    "community": "社区",
+    "grid_member": "人员",
+    "announcement": "公告",
+    "permission_group": "权限组",
+    "weekend_duty": "双休日排班",
+    "police_address": "小区地址",
+    "police_address_import": "小区地址导入批次",
+    "police_dispatch_batch": "数据下发批次",
+    "police_dispatch_task": "数据下发任务",
+    "online_source_row": "腾讯原始行",
+    "spreadsheet": "在线表格配置",
+    "system_config": "系统设置",
+    "sync": "同步任务",
+    "sync_schedule": "自动同步计划",
+    "visit_import": "走访导入批次",
+    "work_log_draft": "工作日志",
+}
+
+RESULT_LABELS: dict[str, str] = {
+    "success": "成功",
+    "completed": "成功",
+    "partial": "部分成功",
+    "failed": "失败",
+    "denied": "已拒绝",
+    "duplicate": "重复文件",
+    "conflict": "发生冲突",
+    "pending": "等待处理",
+    "running": "处理中",
+}
+
+DETAIL_LABELS: dict[str, str] = {
+    "since_minutes": "日志时间范围",
+    "bytes": "导出大小",
+    "filename": "文件名",
+    "enabled": "启用状态",
+    "is_active": "启用状态",
+    "run_hour": "执行小时",
+    "run_minute": "执行分钟",
+    "retention_days": "保留天数",
+    "temporary_password_cleared": "临时密码状态已清除",
+    "configured": "是否已配置",
+    "http_status": "接口状态码",
+    "error": "错误原因",
+    "area_id": "片区编号",
+    "leader_count": "片长人数",
+    "position": "岗位",
+    "department_count": "所属部门数",
+    "account_id": "账号编号",
+    "account_mode": "账号处理方式",
+    "identity_added": "已登记身份证号",
+    "changed_fields": "变更字段",
+    "identity_changed": "身份证号已变更",
+    "account_changed": "关联账号已变更",
+    "account_swapped": "已交换关联账号",
+    "affected_account_ids": "受影响账号",
+    "account_deleted": "关联账号已删除",
+    "title": "标题",
+    "severity": "级别",
+    "name": "名称",
+    "permission_count": "权限数量",
+    "affected_users": "受影响账号数",
+    "member_count": "人员数量",
+    "complete": "排班是否完整",
+    "address_type": "地址类型",
+    "row_count": "数据行数",
+    "accepted": "导入数量",
+    "conflicts": "冲突数量",
+    "import_kind": "导入类型",
+    "change_digest": "变更摘要",
+    "affected_count": "受影响记录数",
+    "action": "处理结果",
+    "batch_id": "批次编号",
+    "count": "处理数量",
+    "mode": "处理方式",
+    "row_hash": "来源行版本",
+    "success": "成功数量",
+    "failed": "失败数量",
+    "source_id": "来源行编号",
+    "columns": "修改字段",
+    "parser_type": "业务类型",
+    "types": "业务类型",
+    "fields": "修改字段",
+    "keys": "设置项目",
+    "interval_minutes": "同步间隔",
+    "member_id": "关联人员编号",
+    "assignment_mode": "权限组来源",
+    "permission_groups": "权限组",
+    "temporary_password": "使用临时密码",
+    "password_changed": "密码已修改",
+    "inserted_rows": "新增行数",
+    "updated_rows": "更新行数",
+    "unchanged_rows": "未变化行数",
+    "ignored_rows": "忽略行数",
+    "error_count": "错误数量",
+    "warning_count": "警告数量",
+    "unmatched_rows": "未匹配行数",
+    "ambiguous_rows": "多义匹配行数",
+    "duplicate_file": "重复文件",
+    "reason": "原因",
+    "report_type": "日志类型",
+    "business_date": "业务日期",
+    "previous_owner": "原负责人",
+    "version": "数据版本",
+    "missing_count": "未填写字段数",
+}
+
+VALUE_LABELS: dict[str, str] = {
+    "apartment": "公寓",
+    "community": "居民小区",
+    "existing": "关联已有账号",
+    "create": "同时创建账号",
+    "inherited": "继承岗位默认权限组",
+    "custom": "账号自定义权限组",
+    "dispatch": "下发到社区",
+    "no_registration": "无需登记",
+    "transfer": "移交",
+    "duplicate": "重复排除",
+    "duplicate_exclude": "重复排除",
+    "accept_suggestion": "采用平台建议",
+    "set_action": "统一指定处理结果",
+    "adopt_tencent": "采用腾讯内容",
+    "overwrite_tencent": "采用平台内容",
+    "detail": "走访明细",
+    "rating": "星级评定",
+    "daily": "日报",
+    "weekly": "周报",
+    "monthly": "月报",
+    "info": "普通",
+    "warning": "重要",
+    "error": "紧急",
+    "other": "其他",
+}
+
+FIELD_LABELS: dict[str, str] = {
+    "id_card_number": "身份证号",
+    "phone": "手机号",
+    "community": "社区",
+    "department_id": "部门",
+    "department_ids": "所属部门",
+    "permission_group_ids": "权限组",
+    "display_name": "显示姓名",
+    "member_id": "关联人员",
+    "group_assignment_mode": "权限组来源",
+    "password": "密码",
+    "is_active": "启用状态",
+    "enabled": "启用状态",
+    "name": "名称",
+    "url": "腾讯文档地址",
+    "file_id": "腾讯文件编号",
+    "data_sheet_id": "数据工作表编号",
+    "summary_sheet_id": "汇总工作表编号",
+    "header_row": "表头行",
+    "parser_type": "业务类型",
+    "position": "岗位",
+    "notes": "备注",
+    "status": "状态",
+    "username": "用户名",
+    "account_id": "关联账号",
+    "timezone": "系统时区",
+    "visit_summary_positions": "出租房走访统计岗位",
+    "weekend_duty_positions": "双休日备勤岗位",
+    "permission_enforcement_enabled": "权限强制开关",
+    "online_writeback_enabled": "在线回写总开关",
+}
+
+TARGET_NAME_LABELS: dict[str, str] = {
+    "daily": "每日备份计划",
+    "default": "默认同步计划",
+    "tencent-docs": "腾讯文档",
+    "operations-center": "运维中心",
+    "batch": "批量配置",
+    "position_mappings": "岗位默认权限组",
+    "summary_types": "总汇总业务类型",
+}
+
+
+def action_label(action: str) -> str:
+    return ACTION_LABELS.get(action, action or "未知操作")
+
+
+def result_label(result: str) -> str:
+    return RESULT_LABELS.get(result, result or "未知")
+
+
+def actor_name(
+    *,
+    member_name: str | None,
+    display_name: str | None,
+    current_username: str | None,
+    recorded_username: str,
+    user_id: int | None,
+) -> str:
+    return next(
+        (
+            value.strip()
+            for value in (
+                member_name,
+                display_name,
+                current_username,
+                recorded_username,
+            )
+            if value and value.strip()
+        ),
+        "系统自动任务" if user_id is None else "已删除账号",
+    )
+
+
+def actor_account(current_username: str | None, recorded_username: str) -> str:
+    return (current_username or recorded_username or "").strip()
+
+
+def target_display(target_type: str, target_name: str) -> str:
+    type_label = TARGET_TYPE_LABELS.get(target_type, target_type or "未指定目标")
+    raw_name = (target_name or "").strip()
+    if not raw_name:
+        return type_label
+    name = TARGET_NAME_LABELS.get(raw_name, raw_name)
+    if name == raw_name and raw_name.isdigit():
+        name = f"#{raw_name}"
+    elif target_type == "online_source_row" and ":" in raw_name:
+        parser_type, source_id = raw_name.rsplit(":", 1)
+        name = f"{parser_type} · 来源行 #{source_id}"
+    return f"{type_label} · {name}"
+
+
+def _field_label(value: Any) -> str:
+    text = str(value)
+    return FIELD_LABELS.get(text, DETAIL_LABELS.get(text, text))
+
+
+def _format_scalar(key: str, value: Any) -> str:
+    if value is None:
+        return "未填写"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    text = str(value)
+    if key in {"row_hash", "change_digest"} and len(text) > 16:
+        return f"{text[:12]}…"
+    return VALUE_LABELS.get(text, RESULT_LABELS.get(text, text))
+
+
+def format_detail_value(key: str, value: Any) -> str:
+    if isinstance(value, Mapping):
+        return "；".join(
+            f"{DETAIL_LABELS.get(str(child_key), str(child_key))}："
+            f"{format_detail_value(str(child_key), child_value)}"
+            for child_key, child_value in value.items()
+        ) or "无"
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        formatter = (
+            _field_label
+            if key in {"changed_fields", "columns", "fields", "keys"}
+            else str
+        )
+        return "、".join(formatter(item) for item in value) or "无"
+    if key == "since_minutes":
+        return f"最近 {_format_scalar(key, value)} 分钟"
+    if key == "bytes":
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return _format_scalar(key, value)
+        if size >= 1024 * 1024:
+            return f"{size / 1024 / 1024:.1f} MB"
+        if size >= 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size} B"
+    if key in {"run_hour"}:
+        return f"{_format_scalar(key, value)} 时"
+    if key in {"run_minute"}:
+        return f"{_format_scalar(key, value)} 分"
+    if key in {"retention_days"}:
+        return f"{_format_scalar(key, value)} 天"
+    if key in {"interval_minutes"}:
+        return f"{_format_scalar(key, value)} 分钟"
+    return _format_scalar(key, value)
+
+
+def detail_items(detail: Any) -> list[dict[str, str]]:
+    if detail is None:
+        return []
+    if not isinstance(detail, Mapping):
+        return [
+            {
+                "key": "detail",
+                "label": "详情",
+                "value": format_detail_value("detail", detail),
+            }
+        ]
+    return [
+        {
+            "key": str(key),
+            "label": DETAIL_LABELS.get(str(key), str(key)),
+            "value": format_detail_value(str(key), value),
+        }
+        for key, value in detail.items()
+    ]
+
+
+def action_options() -> list[dict[str, str]]:
+    return [
+        {"value": value, "label": label}
+        for value, label in sorted(ACTION_LABELS.items(), key=lambda item: item[1])
+    ]

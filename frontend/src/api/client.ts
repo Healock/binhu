@@ -3,7 +3,7 @@ import type {
   Spreadsheet, SpreadsheetCreate, StatsResponse, StatsItem,
   SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
   OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
-  BackupJob, AuditEvent, User, UserPreferences, ReportColumnMode,
+  BackupJob, AuditActionOption, AuditEvent, User, UserPreferences, ReportColumnMode,
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
 } from '../types'
 
@@ -355,7 +355,13 @@ export async function getAuditEvents(params: {
   page: number
   page_size: number
   action?: string
-}): Promise<{ data: AuditEvent[]; total: number; page: number; page_size: number }> {
+}): Promise<{
+  data: AuditEvent[]
+  total: number
+  page: number
+  page_size: number
+  action_options: AuditActionOption[]
+}> {
   const { data } = await api.get('/admin/ops/audit', { params })
   return data
 }
