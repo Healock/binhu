@@ -34,6 +34,7 @@ class RawData:
     身份证号: Optional[str] = None
     电话号码: Optional[str] = None
     地址: Optional[str] = None
+    登记情况: Optional[str] = None
     创建时间: Optional[str] = None
     现住址: Optional[str] = None
     核查结果: Optional[str] = None

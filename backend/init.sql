@@ -692,7 +692,7 @@ CREATE TABLE IF NOT EXISTS _visit_import_issues (
     INDEX idx_visit_issue_batch (batch_id, severity, source_row_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 1. 全链条（14列业务数据）
+-- 1. 全链条（15列业务数据，兼容旧版14列腾讯来源表）
 CREATE TABLE IF NOT EXISTS t_fullchain (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     _row_key        VARCHAR(200) NOT NULL,
@@ -705,6 +705,7 @@ CREATE TABLE IF NOT EXISTS t_fullchain (
     身份证号        VARCHAR(50),
     电话号码        VARCHAR(50),
     地址            VARCHAR(500),
+    登记情况        VARCHAR(500),
     创建时间        VARCHAR(50),
     现住址          VARCHAR(500),
     核查结果        VARCHAR(500),

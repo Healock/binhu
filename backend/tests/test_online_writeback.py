@@ -244,13 +244,14 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
     def test_secondary_feedback_unlocks_only_for_unverifiable_result(self):
         user = make_user("组员", communities=["长板"])
-        columns = ["核查人", "核查结果", "研判", "二次反馈"]
+        columns = ["核查人", "登记情况", "核查结果", "研判", "二次反馈"]
 
         unlocked = editable_fields_for_row(user, columns, {"核查结果": "无法核实"})
         locked = editable_fields_for_row(user, columns, {"核查结果": "移交"})
 
         self.assertIn("二次反馈", unlocked)
         self.assertNotIn("二次反馈", locked)
+        self.assertNotIn("登记情况", unlocked)
         self.assertNotIn("研判", unlocked)
 
     async def test_batch_validation_can_save_result_and_secondary_together(self):
@@ -349,6 +350,26 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cursor.many_rows[0][6], 2)
         self.assertEqual(cursor.many_rows[0][7], 1)
+
+    async def test_fullchain_projection_retains_registration_value(self):
+        parser = get_parser("全链条")
+        values = {column: "" for column in parser.COLUMNS}
+        values.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+            "登记情况": "已登记",
+        })
+        cursor = ProjectionCursor([
+            ("row-key", json.dumps(values, ensure_ascii=False)),
+        ])
+
+        await rebuild_projection(cursor, "全链条")
+
+        projection_values = json.loads(cursor.many_rows[0][2])
+        self.assertEqual(projection_values["登记情况"], "已登记")
+        self.assertIn("已登记", cursor.many_rows[0][8])
 
     async def test_external_change_returns_409_and_refreshes_cache(self):
         parser = get_parser("全链条")

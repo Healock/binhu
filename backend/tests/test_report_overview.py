@@ -54,6 +54,16 @@ class EffectiveTaskCursor:
 
 
 class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
+    def test_legacy_fullchain_snapshot_defaults_registration_to_blank(self):
+        parser = report_overview.get_parser("全链条")
+        columns = [column for column in parser.COLUMNS if column != "登记情况"]
+        row = tuple(f"value-{index}" for index in range(len(columns)))
+
+        values = report_overview._snapshot_values(parser, columns, row)
+
+        self.assertEqual(values["登记情况"], "")
+        self.assertEqual(values["创建时间"], row[columns.index("创建时间")])
+
     async def test_effective_tasks_use_fixed_registered_person_scope(self):
         cursor = EffectiveTaskCursor()
 
