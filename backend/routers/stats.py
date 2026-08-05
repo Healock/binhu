@@ -14,7 +14,10 @@ from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
 from services.report_builders.summary import get_summary
 from services.report_range import get_report_range, get_summary_range
-from services.report_overview import get_online_overview
+from services.report_overview import (
+    get_online_overview,
+    get_online_overview_details,
+)
 from services.report_view import project_report_payload
 from services.data_scope import (
     allowed_community_names,
@@ -155,6 +158,33 @@ async def get_overview(
             end_date,
             parser_type,
             await allowed_community_names(user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/overview/details")
+async def get_overview_details(
+    start_date: str = Query(..., description="yyyy-MM-dd"),
+    end_date: str = Query(..., description="yyyy-MM-dd"),
+    parser_type: str = Query("全链条"),
+    category: Literal[
+        "carryover", "new", "changed", "pending", "completed"
+    ] = Query(...),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+):
+    """读取与概览卡片数量严格一致的任务明细。"""
+    try:
+        return await get_online_overview_details(
+            start_date,
+            end_date,
+            parser_type,
+            category,
+            page=page,
+            page_size=page_size,
+            community=await allowed_community_names(user),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

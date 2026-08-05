@@ -8,6 +8,8 @@ import {
   type MobileTaskScope,
 } from '../api/client'
 import { sortMobileTaskBusinesses } from '../utils/mobileTasks'
+import { useAuth } from '../context/AuthContext'
+import { isFlowTaskAdmin } from '../utils/mobileTaskRouting'
 
 function metricValue(value: number | null, snapshotAvailable: boolean) {
   if (!snapshotAvailable || value === null) return '—'
@@ -28,7 +30,12 @@ function formatSyncTime(value: string | null) {
 
 export default function MobileTaskHome() {
   const navigate = useNavigate()
-  const [scope, setScope] = useState<MobileTaskScope>('mine')
+  const { user } = useAuth()
+  const adminMode = isFlowTaskAdmin(
+    user?.role,
+    user?.permission_groups?.map(group => group.code),
+  )
+  const [scope, setScope] = useState<MobileTaskScope>(adminMode ? 'all' : 'mine')
   const [data, setData] = useState<MobileTaskHomeData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -60,8 +67,8 @@ export default function MobileTaskHome() {
           <section className="mobile-task-hero">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm text-white/75">{data.person.community}社区 · {data.person.position}</div>
-                <h1 className="mt-1 text-xl font-semibold text-white">{data.person.name}，今天待核查</h1>
+                <div className="text-sm text-white/75">{data.admin_mode ? '全所流口岗' : `${data.person.community}社区`} · {data.person.position}</div>
+                <h1 className="mt-1 text-xl font-semibold text-white">{data.admin_mode ? '流口岗任务概览' : `${data.person.name}，今天待核查`}</h1>
               </div>
               <Button
                 type="text"
@@ -75,7 +82,7 @@ export default function MobileTaskHome() {
 
             <div className="mt-5 flex items-end gap-2">
               <strong className="text-5xl font-semibold leading-none text-white">{data.personal.pending}</strong>
-              <span className="pb-1 text-sm text-white/70">条我的任务</span>
+              <span className="pb-1 text-sm text-white/70">条{data.admin_mode ? '全所任务' : '我的任务'}</span>
             </div>
 
             <div className="mobile-task-hero__metrics">
@@ -85,7 +92,7 @@ export default function MobileTaskHome() {
             </div>
 
             <div className="mobile-task-hero__footer">
-              <span>本社区待核查 {data.community.pending} 条</span>
+              <span>{data.admin_mode ? '全所' : '本社区'}待核查 {data.community.pending} 条</span>
               <span>最近同步 {formatSyncTime(data.last_success_at)}</span>
             </div>
           </section>
@@ -104,15 +111,21 @@ export default function MobileTaskHome() {
               <div>
                 <h2 className="text-lg font-semibold text-[var(--app-text-strong)]">业务待办</h2>
                 <p className="mt-0.5 text-xs text-[var(--app-text-secondary)]">
-                  {scope === 'mine' ? '只看分配给我的任务' : `查看${data.person.community}社区全部任务`}
+                  {data.admin_mode
+                    ? '查看全所流口岗任务'
+                    : scope === 'mine' ? '只看分配给我的任务' : `查看${data.person.community}社区全部任务`}
                 </p>
               </div>
-              <Segmented
-                className="mobile-task-scope-switch"
-                value={scope}
-                onChange={value => setScope(value as MobileTaskScope)}
-                options={[{ label: '我的', value: 'mine' }, { label: '本社区', value: 'community' }]}
-              />
+              {data.admin_mode ? (
+                <span className="mobile-task-badge">全所</span>
+              ) : (
+                <Segmented
+                  className="mobile-task-scope-switch"
+                  value={scope}
+                  onChange={value => setScope(value as MobileTaskScope)}
+                  options={[{ label: '我的', value: 'mine' }, { label: '本社区', value: 'community' }]}
+                />
+              )}
             </div>
 
             <div className="mobile-task-business-list">

@@ -13,6 +13,8 @@ import {
   sortMobileTaskBusinesses,
 } from '../src/utils/mobileTasks.ts'
 import {
+  canAccessFlowTaskWorkbench,
+  isFlowTaskAdmin,
   isFlowTaskPosition,
   isPoliceDispatchTaskPosition,
   shouldUseMobileTaskWorkbench,
@@ -30,6 +32,13 @@ test('组员和组长手机端自动分流，岗位判断也允许桌面任务�
   assert.equal(shouldUseMobileTaskWorkbench('组员', true), true)
   assert.equal(shouldUseMobileTaskWorkbench('组员', false), false)
   assert.equal(shouldUseMobileTaskWorkbench('基础管控', true), false)
+})
+
+test('管理员和超级管理员可以进入流口岗任务工作台', () => {
+  assert.equal(isFlowTaskAdmin('admin'), true)
+  assert.equal(isFlowTaskAdmin('member', ['admin']), true)
+  assert.equal(canAccessFlowTaskWorkbench('', 'super_admin'), true)
+  assert.equal(canAccessFlowTaskWorkbench('社区民警', 'member', []), false)
 })
 
 test('基础管控和中队长手机端自动分流，桌面端可用同一岗位准入', () => {

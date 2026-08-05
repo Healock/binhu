@@ -1,5 +1,18 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Alert, Button, DatePicker, message, Segmented, Select, Table, Tag } from 'antd'
+import {
+  Alert,
+  Button,
+  DatePicker,
+  Drawer,
+  Empty,
+  message,
+  Pagination,
+  Segmented,
+  Select,
+  Skeleton,
+  Table,
+  Tag,
+} from 'antd'
 import type { TableColumnsType } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -12,11 +25,14 @@ import { EmptyState, PageHeader, Panel } from '../components/ui'
 import {
   formatDateInTimezone,
   getOnlineDataOverview,
+  getOnlineDataOverviewDetails,
   getReport,
   getReportRange,
   getReportTypes,
   getSystemConfig,
   type OnlineDataOverview,
+  type OnlineOverviewCategory,
+  type OnlineOverviewDetailItem,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useSync } from '../hooks/useSync'
@@ -25,6 +41,11 @@ import { buildReportTableTotal } from '../utils/tableTotals'
 
 const RATE_COLS = ['核查完成率', '核查见底率']
 const EMPTY_FILTER_VALUE = '__binhu_empty_report_value__'
+const OVERVIEW_STATE_LABELS: Record<string, { text: string; color: string }> = {
+  unchecked: { text: '未核查', color: 'red' },
+  checked: { text: '待补结果', color: 'orange' },
+  completed: { text: '已完成', color: 'green' },
+}
 
 const fmt = (val: any, col: string) => {
   if (val == null) return '-'
@@ -127,6 +148,13 @@ export default function Dashboard() {
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
   const [exporting, setExporting] = useState(false)
+  const [detailCategory, setDetailCategory] = useState<OnlineOverviewCategory | null>(null)
+  const [detailRows, setDetailRows] = useState<OnlineOverviewDetailItem[]>([])
+  const [detailTotal, setDetailTotal] = useState(0)
+  const [detailPage, setDetailPage] = useState(1)
+  const [detailLabel, setDetailLabel] = useState('')
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState('')
   const [startDate, endDate] = dateRange
 
   // 日期或业务类型变化时读取报表；同步任务结束时也会调用同一函数。
@@ -191,6 +219,12 @@ export default function Dashboard() {
   }, [])
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
   useEffect(() => { fetchReport() }, [fetchReport])
+  useEffect(() => {
+    setDetailCategory(null)
+    setDetailRows([])
+    setDetailTotal(0)
+    setDetailPage(1)
+  }, [startDate, endDate, reportType])
 
   const isImplemented = implemented.includes(reportType)
   const isSummary = reportType === '总汇总表'
@@ -255,6 +289,107 @@ export default function Dashboard() {
     }
   }
 
+  const loadOverviewDetails = async (
+    category: OnlineOverviewCategory,
+    page = 1,
+  ) => {
+    setDetailCategory(category)
+    setDetailLoading(true)
+    setDetailError('')
+    try {
+      await recordActivity()
+      const result = await getOnlineDataOverviewDetails({
+        start_date: startDate,
+        end_date: endDate,
+        parser_type: reportType,
+        category,
+        page,
+        page_size: 20,
+      })
+      setDetailRows(result.data)
+      setDetailTotal(result.total)
+      setDetailPage(result.page)
+      setDetailLabel(result.category_label)
+    } catch (error: any) {
+      setDetailRows([])
+      setDetailTotal(0)
+      setDetailError(error?.response?.data?.detail || error?.message || '概览明细读取失败')
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  const overviewDetailColumns: TableColumnsType<OnlineOverviewDetailItem> = [
+    {
+      title: '业务',
+      dataIndex: 'parser_type',
+      width: 130,
+    },
+    {
+      title: '核查对象',
+      key: 'subject',
+      width: 190,
+      render: (_, item) => (
+        <div>
+          <div className="font-medium text-[var(--app-text-strong)]">{item.summary.title}</div>
+          {item.summary.identity_number && (
+            <div className="mt-0.5 text-xs text-[var(--app-text-secondary)]">{item.summary.identity_number}</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      title: '社区 / 核查人',
+      key: 'assignment',
+      width: 150,
+      render: (_, item) => (
+        <div>
+          <div>{item.community || '未填写社区'}</div>
+          <div className="mt-0.5 text-xs text-[var(--app-text-secondary)]">{item.inspector || '待分配'}</div>
+        </div>
+      ),
+    },
+    {
+      title: '状态',
+      key: 'state',
+      width: 180,
+      render: (_, item) => {
+        const state = OVERVIEW_STATE_LABELS[item.state] || { text: item.state || '未知', color: 'default' }
+        return (
+          <div>
+            <Tag color={state.color}>{state.text}</Tag>
+            <div className="mt-1 text-xs leading-5 text-[var(--app-text-secondary)]">{item.reason}</div>
+          </div>
+        )
+      },
+    },
+    {
+      title: '活动日期',
+      key: 'activity',
+      width: 120,
+      render: (_, item) => (
+        <div>
+          <div>{item.last_activity_date}</div>
+          {item.first_activity_date !== item.last_activity_date && (
+            <div className="mt-0.5 text-xs text-[var(--app-text-secondary)]">首次 {item.first_activity_date}</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      title: '电话 / 地址',
+      key: 'contact',
+      width: 260,
+      render: (_, item) => (
+        <div className="text-sm leading-5">
+          {item.summary.phone && <div>{item.summary.phone}</div>}
+          <div className="text-[var(--app-text-secondary)]">{item.summary.address || '未填写地址'}</div>
+          {item.summary.result && <div className="mt-1 text-xs text-[var(--app-primary)]">结果：{item.summary.result}</div>}
+        </div>
+      ),
+    },
+  ]
+
   return (
     <div className="app-page">
       <PageHeader
@@ -300,15 +435,92 @@ export default function Dashboard() {
               : '完成一次成功同步后，这里会显示可用范围'}
             metrics={[
               { key: 'total', title: '任务总数', value: overview?.total_tasks || 0, suffix: '条', help: '所选区间内同一业务任务去重后的数量' },
-              { key: 'carryover', title: '结转数据', value: overview?.carryover_tasks || 0, suffix: '条', help: '进入所选区间时已经存在、尚未完成的任务', valueStyle: { color: '#d97706' } },
-              { key: 'new', title: '新下发数据', value: overview?.new_tasks || 0, suffix: '条', help: '任务首次进入区间时，前一张快照中还不存在', valueStyle: { color: '#1d4ed8' } },
-              { key: 'changed', title: '已有任务变化', value: overview?.changed_tasks || 0, suffix: '条', help: '前一张快照中已经存在，但发生了有效业务变化' },
-              { key: 'pending', title: '待完成', value: overview?.pending_tasks || 0, suffix: '条', valueStyle: { color: '#dc2626' } },
-              { key: 'completed', title: '已完成', value: overview?.completed_tasks || 0, suffix: '条', help: `完成率 ${((overview?.completion_rate || 0) * 100).toFixed(1)}%`, valueStyle: { color: '#047857' } },
+              { key: 'carryover', title: '结转数据', value: overview?.carryover_tasks || 0, suffix: '条', help: '进入所选区间时已经存在、尚未完成的任务；点击查看明细', valueStyle: { color: '#d97706' }, onClick: () => void loadOverviewDetails('carryover') },
+              { key: 'new', title: '新下发数据', value: overview?.new_tasks || 0, suffix: '条', help: '任务首次进入区间时，前一张快照中还不存在；点击查看明细', valueStyle: { color: '#1d4ed8' }, onClick: () => void loadOverviewDetails('new') },
+              { key: 'changed', title: '已有任务变化', value: overview?.changed_tasks || 0, suffix: '条', help: '前一张快照中已经存在，但发生了有效业务变化；点击查看明细', onClick: () => void loadOverviewDetails('changed') },
+              { key: 'pending', title: '待完成', value: overview?.pending_tasks || 0, suffix: '条', help: '区间最终状态尚未完成；点击查看明细', valueStyle: { color: '#dc2626' }, onClick: () => void loadOverviewDetails('pending') },
+              { key: 'completed', title: '已完成', value: overview?.completed_tasks || 0, suffix: '条', help: `完成率 ${((overview?.completion_rate || 0) * 100).toFixed(1)}%；点击查看明细`, valueStyle: { color: '#047857' }, onClick: () => void loadOverviewDetails('completed') },
             ]}
           />
         </Panel>
       )}
+
+      <Drawer
+        open={Boolean(detailCategory)}
+        onClose={() => setDetailCategory(null)}
+        width="min(920px, 100vw)"
+        title={`${detailLabel || '概览'}明细 · ${startDate} 至 ${endDate}`}
+        extra={!detailLoading ? <Tag color="blue">共 {detailTotal} 条</Tag> : undefined}
+        destroyOnHidden
+      >
+        {detailError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={detailError}
+            action={detailCategory ? (
+              <Button size="small" onClick={() => void loadOverviewDetails(detailCategory, detailPage)}>重试</Button>
+            ) : undefined}
+          />
+        ) : detailLoading ? (
+          <Skeleton active paragraph={{ rows: 8 }} />
+        ) : detailRows.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前分类没有数据" />
+        ) : (
+          <>
+            <div className="hidden md:block">
+              <Table
+                rowKey={item => `${item.parser_type}:${item.row_key}`}
+                columns={overviewDetailColumns}
+                dataSource={detailRows}
+                pagination={false}
+                size="small"
+                scroll={{ x: 1030 }}
+              />
+            </div>
+            <div className="space-y-3 md:hidden">
+              {detailRows.map(item => {
+                const state = OVERVIEW_STATE_LABELS[item.state] || { text: item.state || '未知', color: 'default' }
+                return (
+                  <article key={`${item.parser_type}:${item.row_key}`} className="app-card p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-[var(--app-text-secondary)]">{item.parser_type}</div>
+                        <h3 className="mt-1 font-semibold text-[var(--app-text-strong)]">{item.summary.title}</h3>
+                        <div className="mt-1 text-xs text-[var(--app-text-secondary)]">{item.community || '未填写社区'} · {item.inspector || '待分配'}</div>
+                      </div>
+                      <Tag color={state.color}>{state.text}</Tag>
+                    </div>
+                    <div className="mt-3 space-y-1.5 text-sm text-[var(--app-text)]">
+                      {item.summary.identity_number && <div>身份证号：{item.summary.identity_number}</div>}
+                      {item.summary.phone && <div>电话：{item.summary.phone}</div>}
+                      <div>地址：{item.summary.address || '未填写'}</div>
+                      {item.summary.result && <div>结果：{item.summary.result}</div>}
+                    </div>
+                    <div className="mt-3 border-t border-[var(--app-border)] pt-3 text-xs leading-5 text-[var(--app-text-secondary)]">
+                      <div>{item.reason}</div>
+                      <div>最近活动 {item.last_activity_date}</div>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+            {detailTotal > 20 && (
+              <div className="mt-5 flex justify-center">
+                <Pagination
+                  current={detailPage}
+                  pageSize={20}
+                  total={detailTotal}
+                  showSizeChanger={false}
+                  onChange={page => {
+                    if (detailCategory) void loadOverviewDetails(detailCategory, page)
+                  }}
+                />
+              </div>
+            )}
+          </>
+        )}
+      </Drawer>
 
       <section className="app-card">
         <div className="app-toolbar dashboard-report-toolbar">

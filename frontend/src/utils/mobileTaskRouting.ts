@@ -13,6 +13,22 @@ export function isFlowTaskPosition(position?: string | null): boolean {
   return FLOW_TASK_POSITIONS.has(String(position || '').trim())
 }
 
+export function isFlowTaskAdmin(
+  role?: string | null,
+  permissionGroupCodes: string[] = [],
+): boolean {
+  return ['admin', 'super_admin'].includes(String(role || '').trim())
+    || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(String(code || '').trim()))
+}
+
+export function canAccessFlowTaskWorkbench(
+  position?: string | null,
+  role?: string | null,
+  permissionGroupCodes: string[] = [],
+): boolean {
+  return isFlowTaskPosition(position) || isFlowTaskAdmin(role, permissionGroupCodes)
+}
+
 export function shouldUseMobileTaskWorkbench(
   position: string | null | undefined,
   isMobile: boolean,

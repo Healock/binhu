@@ -15,7 +15,7 @@ import {
   type MobileTaskStatus,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
+import { isFlowTaskAdmin, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
 import {
   mobileTaskCanLaunchTelephone,
   mobileTaskPhoneOptions,
@@ -37,14 +37,20 @@ const STATE_LABELS = {
 
 export default function MobileTaskList() {
   const navigate = useNavigate()
-  const { recordActivity } = useAuth()
+  const { recordActivity, user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedType = searchParams.get('type') || MOBILE_TASK_TYPES[0]
   const parserType = MOBILE_TASK_TYPES.includes(requestedType as any)
     ? requestedType
     : MOBILE_TASK_TYPES[0]
   const requestedScope = searchParams.get('scope')
-  const scope: MobileTaskScope = requestedScope === 'community' ? 'community' : 'mine'
+  const adminMode = isFlowTaskAdmin(
+    user?.role,
+    user?.permission_groups?.map(group => group.code),
+  )
+  const scope: MobileTaskScope = adminMode
+    ? 'all'
+    : requestedScope === 'community' ? 'community' : 'mine'
   const [status, setStatus] = useState<MobileTaskStatus>('pending')
   const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>('all')
   const [keywordInput, setKeywordInput] = useState('')
@@ -114,12 +120,16 @@ export default function MobileTaskList() {
             onChange={value => updateQuery(value, scope)}
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
           />
-          <Segmented
-            className="mobile-task-scope-switch"
-            value={scope}
-            onChange={value => updateQuery(parserType, value as MobileTaskScope)}
-            options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
-          />
+          {adminMode ? (
+            <Tag color="blue">全所</Tag>
+          ) : (
+            <Segmented
+              className="mobile-task-scope-switch"
+              value={scope}
+              onChange={value => updateQuery(parserType, value as MobileTaskScope)}
+              options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
+            />
+          )}
         </div>
         <div className="mobile-task-filter-card__row">
           <Segmented
