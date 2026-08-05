@@ -265,6 +265,7 @@ class AuditDisplayTests(unittest.IsolatedAsyncioTestCase):
 
     def test_codes_and_detail_fields_have_human_readable_labels(self):
         self.assertEqual(action_label("police_dispatch.import"), "导入下发数据")
+        self.assertEqual(action_label("police_dispatch.delete"), "删除下发批次")
         self.assertEqual(
             target_display("police_dispatch_batch", "1"),
             "数据下发批次 · #1",

@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from openpyxl import Workbook, load_workbook
 from starlette.requests import Request
 
+from deps import require_super_admin
 from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
     POLICE_ADDRESS_MANAGE,
@@ -39,6 +40,7 @@ from routers.police_dispatch import (
     _review_one,
     _search_tasks,
     _task_counts,
+    delete_batch,
     list_tasks,
     require_police_access,
     update_task_business_fields,
@@ -133,6 +135,19 @@ def test_one_time_address_mapping_import_route_is_removed():
     assert not any(
         route.path == "/api/police-dispatch/addresses/import"
         for route in router.routes
+    )
+
+
+def test_batch_delete_route_requires_super_admin():
+    route = next(
+        route
+        for route in router.routes
+        if route.path == "/api/police-dispatch/batches/{batch_id}"
+        and "DELETE" in route.methods
+    )
+    assert any(
+        dependency.call is require_super_admin
+        for dependency in route.dependant.dependencies
     )
 
 
@@ -330,6 +345,87 @@ class _CursorContext:
 
     async def __aexit__(self, *_args):
         return False
+
+
+def _delete_batch_conn(*rows: tuple):
+    cursor = MagicMock()
+    cursor.rowcount = 1
+    cursor.execute = AsyncMock()
+    cursor.fetchone = AsyncMock(side_effect=rows)
+    conn = MagicMock()
+    conn.begin = AsyncMock()
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    return conn, cursor
+
+
+def test_super_admin_can_delete_never_published_batch(monkeypatch):
+    conn, cursor = _delete_batch_conn(
+        (7, None, None),
+        (528, 0, 0),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    request = Request({
+        "type": "http", "method": "DELETE", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    result = asyncio.run(delete_batch(
+        batch_id=7,
+        request=request,
+        user={"id": 1, "username": "root", "role": "super_admin"},
+        conn=conn,
+    ))
+
+    assert result == {"message": "批次已删除", "deleted_task_count": 528}
+    conn.begin.assert_awaited_once()
+    conn.commit.assert_awaited_once()
+    conn.rollback.assert_not_awaited()
+    sql = "\n".join(call.args[0] for call in cursor.execute.await_args_list)
+    assert "DELETE FROM _police_dispatch_tasks" in sql
+    assert "DELETE FROM _police_dispatch_batches" in sql
+    assert audit.await_args.args[1] == "police_dispatch.delete"
+    assert audit.await_args.kwargs["detail"] == {"row_count": 528}
+
+
+def test_started_or_linked_batch_cannot_be_deleted(monkeypatch):
+    monkeypatch.setattr(
+        "routers.police_dispatch.record_admin_audit",
+        AsyncMock(),
+    )
+    request = Request({
+        "type": "http", "method": "DELETE", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    published_conn, _ = _delete_batch_conn(
+        (7, date(2026, 8, 6), datetime(2026, 8, 6, 1, 0)),
+    )
+    with pytest.raises(HTTPException) as published_error:
+        asyncio.run(delete_batch(
+            batch_id=7,
+            request=request,
+            user={"id": 1, "role": "super_admin"},
+            conn=published_conn,
+        ))
+    assert published_error.value.status_code == 409
+    published_conn.rollback.assert_awaited_once()
+
+    linked_conn, _ = _delete_batch_conn(
+        (8, None, None),
+        (3, 1, 1),
+    )
+    with pytest.raises(HTTPException) as linked_error:
+        asyncio.run(delete_batch(
+            batch_id=8,
+            request=request,
+            user={"id": 1, "role": "super_admin"},
+            conn=linked_conn,
+        ))
+    assert linked_error.value.status_code == 409
+    linked_conn.rollback.assert_awaited_once()
 
 
 def test_business_field_update_audit_contains_only_names_and_digest(monkeypatch):

@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import require_permission
+from deps import require_permission, require_super_admin
 from routers.query import (
     _enabled_spreadsheets,
     _load_source_row,
@@ -673,6 +673,80 @@ async def get_batch(
         batch = await _batch_payload(cur, batch_id)
         communities = await _communities(cur)
     return {"batch": batch, "communities": communities}
+
+
+@router.delete("/batches/{batch_id}")
+async def delete_batch(
+    batch_id: int,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT id, first_publish_date, publish_started_at
+                FROM _police_dispatch_batches
+                WHERE id=%s
+                FOR UPDATE
+            """, (batch_id,))
+            batch = await cur.fetchone()
+            if not batch:
+                raise HTTPException(404, "批次不存在")
+            if batch[1] is not None or batch[2] is not None:
+                raise HTTPException(
+                    409,
+                    "该批次已经开始发布，不能删除；腾讯表格中的外部结果无法随批次撤销",
+                )
+
+            await cur.execute("""
+                SELECT COUNT(task.id),
+                       SUM(result.id IS NOT NULL),
+                       SUM(task.publish_status IN (
+                           'publishing', 'retryable', 'needs_reconciliation',
+                           'conflict', 'success'
+                       ) OR task.published_row IS NOT NULL
+                         OR task.linked_source_id IS NOT NULL)
+                FROM _police_dispatch_tasks AS task
+                LEFT JOIN _police_dispatch_publish_results AS result
+                  ON result.task_id=task.id
+                WHERE task.batch_id=%s
+            """, (batch_id,))
+            task_count, result_count, external_state_count = await cur.fetchone()
+            if int(result_count or 0) or int(external_state_count or 0):
+                raise HTTPException(
+                    409,
+                    "该批次已经存在发布记录或腾讯来源关联，不能删除",
+                )
+
+            await cur.execute(
+                "DELETE FROM _police_dispatch_tasks WHERE batch_id=%s",
+                (batch_id,),
+            )
+            await cur.execute(
+                "DELETE FROM _police_dispatch_batches WHERE id=%s",
+                (batch_id,),
+            )
+            if not cur.rowcount:
+                raise HTTPException(409, "批次状态已经变化，请刷新后重试")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    await record_admin_audit(
+        user,
+        "police_dispatch.delete",
+        target_type="police_dispatch_batch",
+        target_name=str(batch_id),
+        detail={"row_count": int(task_count or 0)},
+        **request_audit_fields(request),
+    )
+    return {
+        "message": "批次已删除",
+        "deleted_task_count": int(task_count or 0),
+    }
 
 
 def _task_payload(row: tuple) -> dict[str, Any]:
