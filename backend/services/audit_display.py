@@ -35,6 +35,7 @@ ACTION_LABELS: dict[str, str] = {
     "police_address.disable": "停用小区地址",
     "police_address.import": "导入小区地址映射（历史功能）",
     "police_dispatch.import": "导入下发数据",
+    "police_dispatch.delete": "删除下发批次",
     "police_dispatch.business_fields.update": "修改下发任务字段",
     "police_dispatch.review": "审核下发任务",
     "police_dispatch.bulk_review": "批量审核下发任务",

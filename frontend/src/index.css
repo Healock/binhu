@@ -742,6 +742,19 @@ html.query-sheet-fullscreen-active .app-route-transition {
   align-items: center;
 }
 
+/* Ant Design 6 的 Select 由 CSS 变量计算垂直内边距。项目额外增高控件时，
+   必须同步高度变量，否则文字会停留在原高度的上半区。 */
+.app-shell .ant-select-single .ant-select-content {
+  align-self: center;
+}
+
+.app-shell .ant-select-single .ant-select-content-value,
+.app-shell .ant-select-single .ant-select-placeholder,
+.app-shell .ant-select-single .ant-select-selection-item,
+.app-shell .ant-select-single .ant-select-selection-placeholder {
+  transform: translateY(1px);
+}
+
 .dashboard-report-toolbar__build {
   min-width: 96px;
   padding-inline: 18px;
@@ -1400,6 +1413,14 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
 
   .app-shell .ant-select-single .ant-select-selector {
     align-items: center;
+  }
+
+  .app-shell .ant-select-single {
+    --ant-select-height: 44px;
+  }
+
+  .app-shell .ant-select-single .ant-select-content {
+    align-self: center;
   }
 
   .app-shell .mobile-task-scope-switch.ant-segmented {

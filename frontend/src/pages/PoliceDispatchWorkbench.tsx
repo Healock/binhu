@@ -17,10 +17,17 @@ import {
   Tag,
   message,
 } from 'antd'
-import { CheckOutlined, CopyOutlined, ExclamationCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import {
+  CheckOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  ExclamationCircleOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import {
   bulkReviewPoliceDispatchTasks,
+  deletePoliceDispatchBatch,
   getPoliceDispatchTask,
   getPoliceDispatchWorkbench,
   listPoliceDispatchTasks,
@@ -31,6 +38,7 @@ import {
   type PoliceDispatchBatch,
   type PoliceDispatchTask,
 } from '../api/client'
+import { useAuth } from '../context/AuthContext'
 import useMobileViewport from '../hooks/useMobileViewport'
 
 const actionLabels: Record<string, string> = {
@@ -160,6 +168,7 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
 }
 
 export default function PoliceDispatchWorkbench() {
+  const { user } = useAuth()
   const mobile = useMobileViewport()
   const [searchParams, setSearchParams] = useSearchParams()
   const [batches, setBatches] = useState<PoliceDispatchBatch[]>([])
@@ -187,7 +196,14 @@ export default function PoliceDispatchWorkbench() {
   const [reviewNote, setReviewNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [fieldSaving, setFieldSaving] = useState(false)
+  const [deletingBatch, setDeletingBatch] = useState(false)
   const [error, setError] = useState('')
+
+  const isSuperAdmin = Boolean(
+    user?.permission_groups?.some(group => group.code === 'super_admin')
+    || user?.permission_group?.code === 'super_admin'
+    || (!user?.permission_groups?.length && user?.role === 'super_admin'),
+  )
 
   const activeBatch = useMemo(
     () => batches.find(item => item.id === batchId) || null,
@@ -247,6 +263,40 @@ export default function PoliceDispatchWorkbench() {
     setBatchId(value)
     setSearchParams({ batch: String(value) }, { replace: true })
     setPage(1)
+  }
+
+  const deleteActiveBatch = () => {
+    if (!activeBatch || !isSuperAdmin) return
+    Modal.confirm({
+      title: `删除批次 #${activeBatch.id}？`,
+      content: (
+        <div className="space-y-2 text-sm">
+          <p>将删除该批次及其中 {activeBatch.total_count} 条本地审核任务，删除后不可恢复。</p>
+          <p className="text-slate-500">已经开始发布或存在腾讯来源关联的批次不能删除。</p>
+        </div>
+      ),
+      okText: '删除批次',
+      cancelText: '取消',
+      okButtonProps: { danger: true, loading: deletingBatch },
+      async onOk() {
+        setDeletingBatch(true)
+        try {
+          const result = await deletePoliceDispatchBatch(activeBatch.id)
+          message.success(`${result.message}，已移除 ${result.deleted_task_count} 条任务`)
+          setSelected(null)
+          setBatchId(null)
+          setTasks([])
+          setTotal(0)
+          setSearchParams({}, { replace: true })
+          await loadHome()
+        } catch (reason: any) {
+          message.error(reason?.response?.data?.detail || '批次删除失败')
+          throw reason
+        } finally {
+          setDeletingBatch(false)
+        }
+      },
+    })
   }
 
   const openTask = async (item: PoliceDispatchTask) => {
@@ -433,16 +483,29 @@ export default function PoliceDispatchWorkbench() {
           </div>
           <Button ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
         </div>
-        <Select
-          className="mt-4 w-full"
-          value={batchId}
-          placeholder="暂无批次"
-          onChange={changeBatch}
-          options={batches.map(item => ({
-            value: item.id,
-            label: `#${item.id} · ${item.file_name} · ${item.status === 'completed' ? '已完成' : '处理中'}`,
-          }))}
-        />
+        <div className="mt-4 flex items-center gap-2">
+          <Select
+            className="min-w-0 flex-1"
+            value={batchId}
+            placeholder="暂无批次"
+            onChange={changeBatch}
+            options={batches.map(item => ({
+              value: item.id,
+              label: `#${item.id} · ${item.file_name} · ${item.status === 'completed' ? '已完成' : '处理中'}`,
+            }))}
+          />
+          {isSuperAdmin && activeBatch && (
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={deletingBatch}
+              className="shrink-0"
+              onClick={deleteActiveBatch}
+            >
+              <span className="hidden sm:inline">删除批次</span>
+            </Button>
+          )}
+        </div>
         {activeBatch && (
           <>
             <Progress
@@ -471,14 +534,17 @@ export default function PoliceDispatchWorkbench() {
 
       {error && <Alert type="error" showIcon message={error} />}
 
-      <section className="app-card space-y-3 p-3">
-        <Segmented
-          block
-          value={status}
-          options={statusOptions}
-          onChange={value => setStatus(String(value))}
-        />
-        <div className="grid grid-cols-[minmax(0,1fr)_132px] gap-2">
+      <section className="app-card p-3 sm:p-4">
+        <div className="overflow-x-auto pb-1">
+          <Segmented
+            block
+            className="min-w-[680px] md:min-w-0"
+            value={status}
+            options={statusOptions}
+            onChange={value => setStatus(String(value))}
+          />
+        </div>
+        <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(280px,1fr)_148px_auto] lg:items-center">
           <Input.Search
             allowClear
             placeholder="姓名、身份证号、手机号、地址"
@@ -487,23 +553,22 @@ export default function PoliceDispatchWorkbench() {
             onSearch={() => setAppliedKeyword(keyword.trim())}
           />
           <Select value={category} options={categoryOptions} onChange={setCategory} />
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-slate-500">当前筛选共 {total} 条</span>
-          <Popconfirm
-            title="确认当前筛选结果的全部建议？"
-            description="最多处理 2000 条；含人工判断的任务会阻止整批操作，请先逐条处理。"
-            onConfirm={acceptCurrentFilter}
-          >
-            <Button
-              size="small"
-              icon={<CheckOutlined />}
-              disabled={total === 0 || status === 'pending_publish' || status === 'completed'}
-              loading={saving}
+          <div className="flex min-w-0 items-center justify-between gap-3 lg:justify-end">
+            <span className="shrink-0 text-xs text-slate-500">当前筛选 {total} 条</span>
+            <Popconfirm
+              title="确认当前筛选结果的全部建议？"
+              description="最多处理 2000 条；含人工判断的任务会阻止整批操作，请先逐条处理。"
+              onConfirm={acceptCurrentFilter}
             >
-              批量确认筛选结果
-            </Button>
-          </Popconfirm>
+              <Button
+                icon={<CheckOutlined />}
+                disabled={total === 0 || status === 'pending_publish' || status === 'completed'}
+                loading={saving}
+              >
+                批量确认
+              </Button>
+            </Popconfirm>
+          </div>
         </div>
       </section>
 

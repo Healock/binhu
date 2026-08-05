@@ -1558,6 +1558,14 @@ export async function getPoliceDispatchBatch(id: number): Promise<{
   return data
 }
 
+export async function deletePoliceDispatchBatch(id: number): Promise<{
+  message: string
+  deleted_task_count: number
+}> {
+  const { data } = await api.delete(`/police-dispatch/batches/${id}`)
+  return data
+}
+
 export async function getPoliceDispatchWorkbench(): Promise<{
   active_batch: PoliceDispatchBatch | null
   batches: PoliceDispatchBatch[]
