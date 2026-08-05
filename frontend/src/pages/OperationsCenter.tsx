@@ -28,6 +28,7 @@ import {
   PauseOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
+  RightOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
@@ -854,6 +855,21 @@ function AuditTab() {
           },
         ]}
         expandable={{
+          expandIcon: ({ expanded, onExpand, record }) => (
+            <button
+              type="button"
+              className="compact-action inline-flex h-11 w-11 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 md:h-7 md:w-7 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+              aria-label={expanded ? '收起操作详情' : '展开操作详情'}
+              onClick={event => {
+                event.stopPropagation()
+                onExpand(record, event)
+              }}
+            >
+              <RightOutlined
+                className={`text-xs transition-transform${expanded ? ' rotate-90' : ''}`}
+              />
+            </button>
+          ),
           expandedRowRender: row => (
             <div className="space-y-3 px-2 py-1">
               <Descriptions

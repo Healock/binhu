@@ -364,14 +364,15 @@ export default function Dashboard() {
       },
     },
     {
-      title: '活动日期',
+      title: '日期信息',
       key: 'activity',
-      width: 120,
+      width: 170,
       render: (_, item) => (
-        <div>
-          <div>{item.last_activity_date}</div>
+        <div className="text-xs leading-5">
+          <div><span className="text-[var(--app-text-secondary)]">最近活动：</span>{item.last_activity_date}</div>
+          <div><span className="text-[var(--app-text-secondary)]">首次下发：</span>{item.first_dispatch_date || item.first_activity_date}</div>
           {item.first_activity_date !== item.last_activity_date && (
-            <div className="mt-0.5 text-xs text-[var(--app-text-secondary)]">首次 {item.first_activity_date}</div>
+            <div><span className="text-[var(--app-text-secondary)]">区间首次：</span>{item.first_activity_date}</div>
           )}
         </div>
       ),
@@ -500,6 +501,10 @@ export default function Dashboard() {
                     <div className="mt-3 border-t border-[var(--app-border)] pt-3 text-xs leading-5 text-[var(--app-text-secondary)]">
                       <div>{item.reason}</div>
                       <div>最近活动 {item.last_activity_date}</div>
+                      <div>首次下发 {item.first_dispatch_date || item.first_activity_date}</div>
+                      {item.first_activity_date !== item.last_activity_date && (
+                        <div>区间首次 {item.first_activity_date}</div>
+                      )}
                     </div>
                   </article>
                 )

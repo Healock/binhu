@@ -472,6 +472,18 @@ def _category_reason(category: str, state: str) -> str:
     return "区间最终状态尚未完成"
 
 
+def _first_dispatch_date(
+    values: dict[str, str],
+    first_activity_date: str,
+) -> str:
+    """返回业务表记录的首次下发日期，旧表无该字段时兼容回退。"""
+    for field in ("下发日期", "下发时间"):
+        value = str(values.get(field) or "").strip()
+        if value:
+            return value
+    return str(first_activity_date)
+
+
 async def get_online_overview_details(
     start_date: str,
     end_date: str,
@@ -552,6 +564,9 @@ async def get_online_overview_details(
                 "inspector": str(task_meta.get("inspector") or ""),
                 "state": state,
                 "first_activity_date": str(first_date),
+                "first_dispatch_date": _first_dispatch_date(
+                    values, str(first_date)
+                ),
                 "last_activity_date": str(task_meta.get("report_date") or first_date),
                 "reason": _category_reason(category, state),
                 "summary": summary,

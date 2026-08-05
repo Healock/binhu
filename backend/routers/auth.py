@@ -245,6 +245,11 @@ async def update_preferences(
                 req.mobile_dock_config,
                 str(user["role"]),
                 user.get("permissions"),
+                [
+                    str(group.get("code") or "")
+                    for group in user.get("permission_groups") or []
+                    if isinstance(group, dict)
+                ],
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -278,6 +283,11 @@ async def update_preferences(
                 updated_user.get("mobile_dock_config"),
                 str(user["role"]),
                 user.get("permissions"),
+                [
+                    str(group.get("code") or "")
+                    for group in user.get("permission_groups") or []
+                    if isinstance(group, dict)
+                ],
             ),
             "theme_mode": normalize_theme_mode(
                 updated_user.get("theme_mode"),

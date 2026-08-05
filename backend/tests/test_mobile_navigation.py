@@ -45,11 +45,32 @@ class MobileNavigationConfigTests(unittest.TestCase):
         }
         self.assertIn("data_upload", admin_items)
         self.assertIn("work_log", admin_items)
+        self.assertIn("flow_tasks", admin_items)
         self.assertNotIn("users", admin_items)
         self.assertIn("users", super_items)
         self.assertIn("operations", super_items)
         self.assertIn("data_upload", super_items)
         self.assertIn("work_log", super_items)
+        self.assertIn("flow_tasks", super_items)
+
+    def test_admin_permission_group_exposes_dedicated_flow_tasks(self):
+        permissions = ["online.raw.view"]
+        member = default_mobile_dock_config("member", permissions)
+        delegated_admin = default_mobile_dock_config(
+            "member", permissions, ["admin"]
+        )
+        self.assertNotIn(
+            "flow_tasks",
+            {item for group in member["groups"] for item in group["items"]},
+        )
+        self.assertIn(
+            "flow_tasks",
+            {
+                item
+                for group in delegated_admin["groups"]
+                for item in group["items"]
+            },
+        )
 
     def test_normalize_filters_unknown_duplicate_and_forbidden_items(self):
         result = normalize_mobile_dock_config(

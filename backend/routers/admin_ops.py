@@ -364,13 +364,19 @@ async def audit_log(
             await cur.execute(
                 f"""
                 SELECT audit.id, audit.user_id, audit.username, audit.action,
-                       audit.target_type, audit.target_name, audit.result,
+                       audit.target_type, audit.target_name,
+                       COALESCE(sync_task.status, audit.result),
                        audit.detail_json, audit.ip_address, audit.user_agent,
                        audit.created_at, actor.display_name, member.name,
                        actor.username
                 FROM _admin_audit_log AS audit
                 LEFT JOIN _users AS actor ON actor.id=audit.user_id
                 LEFT JOIN _grid_members AS member ON member.id=actor.member_id
+                LEFT JOIN _sync_log AS sync_task
+                  ON audit.action='sync.trigger'
+                 AND audit.target_type='sync'
+                 AND audit.target_name REGEXP '^[0-9]+$'
+                 AND sync_task.id=CAST(audit.target_name AS UNSIGNED)
                 {where}
                 ORDER BY audit.id DESC
                 LIMIT %s OFFSET %s

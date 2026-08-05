@@ -61,11 +61,13 @@ export default function MobileDock({
   role,
   permissions,
   position,
+  permissionGroupCodes,
 }: {
   config: MobileDockConfig
   role: Role
   permissions: PermissionCode[]
   position?: string | null
+  permissionGroupCodes?: string[]
 }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -73,9 +75,16 @@ export default function MobileDock({
   const [openGroupId, setOpenGroupId] = useState<string | null>(null)
   const keyboardOpen = useVirtualKeyboardOpen()
   const normalized = useMemo(
-    () => normalizeMobileDockConfig(config, role, permissions),
-    [config, permissions, role],
+    () => normalizeMobileDockConfig(
+      config,
+      role,
+      permissions,
+      permissionGroupCodes,
+    ),
+    [config, permissionGroupCodes, permissions, role],
   )
+  const legacyTaskRoutes = ['组员', '组长', '基础管控', '中队长']
+    .includes(String(position || ''))
   const groups = normalized.groups.flatMap((groupConfig) => {
     const definition = navigationGroupById(groupConfig.id)
     if (!definition) return []
@@ -140,7 +149,11 @@ export default function MobileDock({
             }}
           >
             {openGroup.items.map((item) => {
-              const active = routeIsActive(location.pathname, item, true)
+              const active = routeIsActive(
+                location.pathname,
+                item,
+                legacyTaskRoutes,
+              )
               return (
                 <button
                   key={item.id}
@@ -166,7 +179,7 @@ export default function MobileDock({
         <div className="mobile-dock-bar__items">
           {groups.map(({ definition, items }) => {
             const active = items.some(item => (
-              routeIsActive(location.pathname, item, true)
+              routeIsActive(location.pathname, item, legacyTaskRoutes)
             ))
             const expanded = openGroupId === definition.id
             return (

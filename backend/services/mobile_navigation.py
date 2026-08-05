@@ -13,6 +13,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     "workspace": (
         "online_summary",
         "online_query",
+        "flow_tasks",
         "visit_summary",
         "data_upload",
         "work_log",
@@ -31,11 +32,12 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
 }
 
 SUPER_ADMIN_ITEMS = {"users", "permission_groups", "operations"}
-ADMIN_ITEMS = {"data_upload", "work_log", "police_addresses"}
+ADMIN_ITEMS = {"data_upload", "work_log", "police_addresses", "flow_tasks"}
 
 ITEM_PERMISSIONS: dict[str, str] = {
     "online_summary": "online.summary.view",
     "online_query": "online.raw.view",
+    "flow_tasks": "online.raw.view",
     "visit_summary": "visit.summary.view",
     "data_upload": "visit.import",
     "work_log": "worklog.manage",
@@ -63,7 +65,15 @@ def _item_is_accessible(
     item_id: str,
     role: str,
     permissions: Iterable[str] | None = None,
+    permission_group_codes: Iterable[str] | None = None,
 ) -> bool:
+    if item_id == "flow_tasks":
+        admin_codes = {"admin", "super_admin"}
+        group_codes = {
+            str(code).strip() for code in permission_group_codes or []
+        }
+        if role not in admin_codes and not (group_codes & admin_codes):
+            return False
     if permissions is not None:
         alternatives = ITEM_PERMISSION_ALTERNATIVES.get(item_id)
         if alternatives:
@@ -80,6 +90,7 @@ def _item_is_accessible(
 def default_mobile_dock_config(
     role: str,
     permissions: Iterable[str] | None = None,
+    permission_group_codes: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """返回当前角色默认可见的全部分类和页面。"""
     return {
@@ -89,7 +100,9 @@ def default_mobile_dock_config(
                 "items": [
                     item_id
                     for item_id in item_ids
-                    if _item_is_accessible(item_id, role, permissions)
+                    if _item_is_accessible(
+                        item_id, role, permissions, permission_group_codes
+                    )
                 ],
             }
             for group_id, item_ids in GROUP_ITEMS.items()
@@ -116,6 +129,7 @@ def normalize_mobile_dock_config(
     value: Any,
     role: str,
     permissions: Iterable[str] | None = None,
+    permission_group_codes: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """读取配置时过滤未知、重复和无权限入口。
 
@@ -124,7 +138,9 @@ def normalize_mobile_dock_config(
     parsed = _load_config(value)
     raw_groups = parsed.get("groups") if parsed else None
     if not isinstance(raw_groups, list):
-        return default_mobile_dock_config(role, permissions)
+        return default_mobile_dock_config(
+            role, permissions, permission_group_codes
+        )
 
     groups: list[dict[str, Any]] = []
     seen_groups: set[str] = set()
@@ -146,7 +162,9 @@ def normalize_mobile_dock_config(
             if (
                 item_id not in allowed
                 or item_id in seen_items
-                or not _item_is_accessible(item_id, role, permissions)
+                or not _item_is_accessible(
+                    item_id, role, permissions, permission_group_codes
+                )
             ):
                 continue
             seen_items.add(item_id)
@@ -159,7 +177,9 @@ def normalize_mobile_dock_config(
     return (
         {"groups": groups}
         if groups
-        else default_mobile_dock_config(role, permissions)
+        else default_mobile_dock_config(
+            role, permissions, permission_group_codes
+        )
     )
 
 
@@ -167,6 +187,7 @@ def validate_mobile_dock_config(
     value: Any,
     role: str,
     permissions: Iterable[str] | None = None,
+    permission_group_codes: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """保存配置前做严格校验，避免静默接受错误或越权入口。"""
     parsed = _load_config(value)
@@ -199,7 +220,9 @@ def validate_mobile_dock_config(
                 raise ValueError(f"页面不属于当前分类：{item_id or '空值'}")
             if item_id in seen_items:
                 raise ValueError("同一分类中的页面不能重复")
-            if not _item_is_accessible(item_id, role, permissions):
+            if not _item_is_accessible(
+                item_id, role, permissions, permission_group_codes
+            ):
                 raise ValueError("Dock 配置包含当前账号无权访问的页面")
             seen_items.add(item_id)
             items.append(item_id)
