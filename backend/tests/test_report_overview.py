@@ -54,6 +54,43 @@ class EffectiveTaskCursor:
 
 
 class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_queries_only_accept_existing_snapshot_tables(self):
+        cursor = EffectiveTaskCursor()
+
+        await report_overview._load_runs(
+            cursor,
+            "2026-08-04",
+            "2026-08-05",
+            ["全链条", "出租房屋核查"],
+        )
+
+        sql, params = cursor.call
+        self.assertIn("JOIN information_schema.TABLES AS current_table", sql)
+        self.assertIn("LEFT JOIN information_schema.TABLES AS previous_table", sql)
+        self.assertIn(
+            "CASE WHEN previous_table.TABLE_NAME IS NULL THEN NULL",
+            sql,
+        )
+        self.assertEqual(
+            params,
+            ("2026-08-04", "2026-08-05", "全链条", "出租房屋核查"),
+        )
+
+    async def test_latest_metadata_ignores_ledger_rows_without_snapshot(self):
+        cursor = EffectiveTaskCursor()
+
+        result = await report_overview._load_latest_task_metadata(
+            cursor,
+            "2026-08-05",
+            "2026-08-05",
+            [("全链条", "row-1", "checked", "2026-08-05", "activity")],
+        )
+
+        sql, _ = cursor.call
+        self.assertEqual(result, {})
+        self.assertIn("JOIN information_schema.TABLES AS current_table", sql)
+        self.assertIn("JOIN valid_runs", sql)
+
     def test_first_dispatch_date_prefers_business_field_and_falls_back(self):
         self.assertEqual(
             report_overview._first_dispatch_date(
@@ -95,6 +132,8 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         )
 
         sql, _ = cursor.call
+        self.assertIn("JOIN information_schema.TABLES AS current_table", sql)
+        self.assertIn("JOIN valid_runs", sql)
         self.assertIn("JOIN OnlineData._grid_members AS person", sql)
         self.assertIn("department.department_type='community'", sql)
         self.assertIn("person.position IN ('组长', '组员')", sql)
