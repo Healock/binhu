@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Alert, Button, Input, Modal, Select, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons'
 import {
   createCommunityArea,
   deleteCommunityArea,
@@ -13,6 +13,7 @@ import {
   getCommunityPoliceOptions,
   updateGridCommunityDetails,
   updateCommunityArea,
+  updateGridCommunityStatus,
   type CommunityArea,
   type GridCommunity,
 } from '../api/client'
@@ -84,8 +85,8 @@ export default function Communities() {
           await deleteGridCommunity(id)
           setMsg(`已删除社区“${name}”`)
           fetch()
-        } catch {
-          setMsg('删除失败，请稍后重试')
+        } catch (error: any) {
+          setMsg(`删除失败：${error?.response?.data?.detail || '请稍后重试'}`)
         }
       },
     })
@@ -176,6 +177,12 @@ export default function Communities() {
 
   const communityColumns: TableColumnsType<GridCommunity> = [
     {
+      title: '状态',
+      dataIndex: 'is_active',
+      width: 90,
+      render: value => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag>,
+    },
+    {
       title: '所属片区',
       dataIndex: 'area_name',
       key: 'area_name',
@@ -222,7 +229,7 @@ export default function Communities() {
     ...(canManage ? [{
       title: '操作',
       key: 'actions',
-      width: 190,
+      width: 300,
       render: (_, community) => (
         <div className="flex items-center gap-1">
           <Button
@@ -232,6 +239,35 @@ export default function Communities() {
             onClick={() => openCommunityEditor(community)}
           >
             编辑资料
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            danger={community.is_active}
+            icon={community.is_active ? <StopOutlined /> : <CheckCircleOutlined />}
+            onClick={() => {
+              Modal.confirm({
+                title: community.is_active ? `停用“${community.name}”？` : `重新启用“${community.name}”？`,
+                content: community.is_active
+                  ? '停用社区不会删除历史数据；存在人员或未完成公安任务时将拒绝停用。'
+                  : '启用后可重新参与人员分配、地址匹配和公安任务平均分配。',
+                okText: community.is_active ? '停用' : '启用',
+                okButtonProps: { danger: community.is_active },
+                cancelText: '取消',
+                onOk: async () => {
+                  try {
+                    const result = await updateGridCommunityStatus(community.id, !community.is_active)
+                    setMsg(result.message)
+                    await fetch()
+                  } catch (error: any) {
+                    const detail = error?.response?.data?.detail
+                    setMsg(`状态修改失败：${typeof detail === 'string' ? detail : detail?.message || '请稍后重试'}`)
+                  }
+                },
+              })
+            }}
+          >
+            {community.is_active ? '停用' : '启用'}
           </Button>
           <Button type="link" danger size="small" onClick={() => handleDelete(community.id, community.name)}>
             删除
@@ -316,6 +352,7 @@ export default function Communities() {
                 <div key={c.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
                   <div>
                     <div className="font-medium text-gray-800">{c.name}</div>
+                    <Tag color={c.is_active ? 'success' : 'default'}>{c.is_active ? '启用' : '停用'}</Tag>
                     <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
                     <div className="mt-1 text-sm text-slate-600">片区：{c.area_name || '待分配'}</div>
                     <div className="mt-1 text-sm text-slate-600">

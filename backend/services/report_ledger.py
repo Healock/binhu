@@ -131,6 +131,7 @@ async def refresh_daily_ledger(
 
     if previous:
         previous_state = builder.ledger_state_sql("p")
+        workload_sql = builder.ledger_effective_workload_sql("t", "p")
         activity_sql = (
             "CASE WHEN p._row_key IS NULL OR "
             f"({builder.ledger_change_sql('t', 'p')}) "
@@ -143,6 +144,7 @@ async def refresh_daily_ledger(
         )
         join_sql = f"LEFT JOIN {previous} p ON p._row_key=t._row_key"
     else:
+        workload_sql = builder.ledger_effective_workload_sql("t", None)
         utc_start, utc_end = await get_business_date_range_utc_bounds(
             cur,
             report_date,
@@ -170,6 +172,7 @@ async def refresh_daily_ledger(
             {state_sql} AS task_state,
             {unable_sql} AS unable_to_verify,
             {reached_bottom_sql} AS reached_bottom,
+            {workload_sql} AS workload_candidate,
             CASE WHEN {online_sql} THEN 1 ELSE 0 END AS online_present,
             {activity_sql} AS activity,
             {previous_unfinished_sql} AS previous_unfinished
@@ -204,7 +207,7 @@ async def refresh_daily_ledger(
         INSERT INTO _daily_task_ledger (
             report_date, parser_type, row_key, source, included,
             online_present, community, inspector, task_state,
-            unable_to_verify, reached_bottom
+            unable_to_verify, reached_bottom, effective_workload
         )
         SELECT
             %s,
@@ -227,7 +230,21 @@ async def refresh_daily_ledger(
             candidate.inspector,
             candidate.task_state,
             candidate.unable_to_verify,
-            candidate.reached_bottom
+            candidate.reached_bottom,
+            LEAST(
+                CASE WHEN candidate.activity=1
+                     THEN candidate.workload_candidate ELSE 0 END,
+                GREATEST(
+                    2 - COALESCE((
+                        SELECT SUM(history.effective_workload)
+                        FROM _daily_task_ledger AS history
+                        WHERE history.report_date < %s
+                          AND history.parser_type=%s
+                          AND history.row_key=candidate.row_key
+                    ), 0),
+                    0
+                )
+            )
         FROM ({derived_sql}) candidate
         WHERE {candidate_filter}
         ON DUPLICATE KEY UPDATE
@@ -239,11 +256,18 @@ async def refresh_daily_ledger(
             task_state=VALUES(task_state),
             unable_to_verify=VALUES(unable_to_verify),
             reached_bottom=VALUES(reached_bottom),
+            effective_workload=VALUES(effective_workload),
             updated_at=CURRENT_TIMESTAMP
     """
     await cur.execute(
         insert_sql,
-        (report_date, builder.parser_type, *parameters),
+        (
+            report_date,
+            builder.parser_type,
+            report_date,
+            builder.parser_type,
+            *parameters,
+        ),
     )
 
     if previous:
@@ -255,7 +279,7 @@ async def refresh_daily_ledger(
             INSERT INTO _daily_task_ledger (
                 report_date, parser_type, row_key, source, included,
                 online_present, community, inspector, task_state,
-                unable_to_verify, reached_bottom
+                unable_to_verify, reached_bottom, effective_workload
             )
             SELECT
                 %s,
@@ -272,7 +296,8 @@ async def refresh_daily_ledger(
                 TRIM(IFNULL(p.`{previous_inspector}`, '')),
                 {previous_state},
                 {builder.ledger_unable_sql("p")},
-                {builder.ledger_reached_bottom_sql("p")}
+                {builder.ledger_reached_bottom_sql("p")},
+                0
             FROM {previous} p
             LEFT JOIN {today} t ON t._row_key=p._row_key
             LEFT JOIN OnlineData._community_aliases AS community_alias
@@ -290,6 +315,7 @@ async def refresh_daily_ledger(
                 task_state=VALUES(task_state),
                 unable_to_verify=VALUES(unable_to_verify),
                 reached_bottom=VALUES(reached_bottom),
+                effective_workload=0,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (report_date, builder.parser_type),
@@ -380,9 +406,10 @@ async def aggregate_ledger_into_reports(
             SUM(task_state='completed'),
             ROUND(SUM(task_state='completed') / COUNT(*), 2),
             SUM(unable_to_verify),
-            CASE WHEN SUM(task_state='completed') > 0
+            CASE WHEN SUM(task_state='completed') + SUM(unable_to_verify) > 0
                  THEN ROUND(
-                    SUM(reached_bottom) / SUM(task_state='completed'),
+                    SUM(task_state='completed')
+                    / (SUM(task_state='completed') + SUM(unable_to_verify)),
                     2
                  )
                  ELSE 0 END

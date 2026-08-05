@@ -4,12 +4,13 @@ import {
   RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag } from 'antd'
+import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   listMobileTasks,
   type MobileTaskItem,
+  type MobileTaskReviewStage,
   type MobileTaskScope,
   type MobileTaskStatus,
 } from '../api/client'
@@ -45,6 +46,7 @@ export default function MobileTaskList() {
   const requestedScope = searchParams.get('scope')
   const scope: MobileTaskScope = requestedScope === 'community' ? 'community' : 'mine'
   const [status, setStatus] = useState<MobileTaskStatus>('pending')
+  const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>('all')
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [rows, setRows] = useState<MobileTaskItem[]>([])
@@ -63,6 +65,7 @@ export default function MobileTaskList() {
         parser_type: parserType,
         scope,
         status,
+        review_stage: reviewStage,
         keyword: keyword || undefined,
         page: targetPage,
       })
@@ -77,7 +80,7 @@ export default function MobileTaskList() {
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [keyword, parserType, scope, status])
+  }, [keyword, parserType, reviewStage, scope, status])
 
   useEffect(() => { void load() }, [load])
 
@@ -127,6 +130,21 @@ export default function MobileTaskList() {
             options={STATUS_OPTIONS}
           />
         </div>
+        {status === 'review' && (
+          <div className="mobile-task-filter-card__row">
+            <Segmented
+              block
+              className="w-full"
+              value={reviewStage}
+              onChange={value => setReviewStage(value as MobileTaskReviewStage)}
+              options={[
+                { label: '全部复核', value: 'all' },
+                { label: '等待研判', value: 'waiting_analysis' },
+                { label: '已研判', value: 'analyzed' },
+              ]}
+            />
+          </div>
+        )}
         <div className="mobile-task-filter-card__row flex gap-2">
           <Input
             allowClear
@@ -175,6 +193,8 @@ export default function MobileTaskList() {
                       <h2 className="truncate font-semibold text-[var(--app-text-strong)]">{task.summary.title}</h2>
                       <Tag color={state.color}>{state.text}</Tag>
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
+                      {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
+                      {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
                       {task.pending_sync && <Tag color="blue">待同步</Tag>}
                     </div>
                     <p className="mt-1 text-xs text-[var(--app-text-secondary)]">{task.community || '社区未填写'} · {task.inspector || '待分配'}</p>

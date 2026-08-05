@@ -18,6 +18,7 @@ from services.report_members import (
     merge_inspector_rows,
 )
 from services.report_attendance import load_community_person_days
+from services.report_workload import load_effective_workload_by_community
 
 SUMMARY_COLS = """
     社区 VARCHAR(100) NOT NULL PRIMARY KEY,
@@ -127,6 +128,8 @@ async def build_summary_with_subreports(date_str: str) -> dict:
 async def build_summary(
     date_str: str,
     summary_types: list[str] | None = None,
+    *,
+    generation_method: str = "sync",
 ) -> dict:
     """生成总汇总表（合并分表社区汇总 + 网格员人数）"""
     t_summary = f"`{date_str}_daily_summary`"
@@ -222,15 +225,36 @@ async def build_summary(
             await cur.execute(f"""
                 UPDATE {t_summary} SET
                     核查完成率 = CASE WHEN 数据总数 > 0 THEN ROUND(已完成 / 数据总数, 2) ELSE 0 END,
-                    核查见底率 = CASE WHEN 已完成 > 0 THEN ROUND(GREATEST(已完成 - 无法见底数, 0) / 已完成, 2) ELSE 0 END,
+                    核查见底率 = CASE WHEN 已完成 + 无法见底数 > 0 THEN ROUND(已完成 / (已完成 + 无法见底数), 2) ELSE 0 END,
                     当日人均核查数 = CASE WHEN 网格员人数 > 0 THEN ROUND(已完成 / 网格员人数, 2) ELSE 0 END
             """)
+            alias_lookup = await get_community_alias_lookup(cur)
+            effective_workload = await load_effective_workload_by_community(
+                cur, date_str, date_str, summary_types,
+            )
+            person_days, attendance = await load_community_person_days(
+                {date_str}, alias_lookup,
+            )
+            await cur.execute(f"SELECT 社区 FROM {t_summary}")
+            for (community_name,) in await cur.fetchall():
+                community = canonical_community(community_name, alias_lookup)
+                average = (
+                    calculate_ratio(
+                        effective_workload.get(community, 0),
+                        person_days.get(community, 0),
+                    )
+                    if attendance["complete"] else 0
+                )
+                await cur.execute(
+                    f"UPDATE {t_summary} SET 当日人均核查数=%s WHERE 社区=%s",
+                    (average, community_name),
+                )
 
             await cur.execute(
                 "INSERT INTO _daily_report_meta (table_name, report_date, parser_type, generation_method) "
-                "VALUES (%s, %s, '总汇总表', 'sync') ON DUPLICATE KEY UPDATE "
-                "generation_method='sync', generated_at=NOW()",
-                (f"{date_str}_daily_summary", date_str),
+                "VALUES (%s, %s, '总汇总表', %s) ON DUPLICATE KEY UPDATE "
+                "generation_method=VALUES(generation_method), generated_at=NOW()",
+                (f"{date_str}_daily_summary", date_str, generation_method),
             )
 
             await cur.execute(f"SELECT COUNT(*) FROM {t_summary}")
@@ -343,6 +367,12 @@ async def get_summary(date_str: str) -> dict:
                     alias_lookup,
                 )
             )
+            effective_workload = await load_effective_workload_by_community(
+                cur,
+                date_str,
+                date_str,
+                summary_types,
+            )
             community_rows = [
                 (
                     *row,
@@ -354,7 +384,7 @@ async def get_summary(date_str: str) -> dict:
                     ),
                     (
                         calculate_ratio(
-                            int(row[4] or 0),
+                            effective_workload.get(str(row[0]), 0),
                             community_person_days.get(str(row[0]), 0),
                         )
                         if attendance["complete"]

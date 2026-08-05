@@ -220,9 +220,8 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("department.department_type='community'", normalized)
         self.assertIn("person.position IN ('组长', '组员')", normalized)
         self.assertIn(
-            "GREATEST( SUM(report_row.已完成) "
-            "- SUM(report_row.无法见底数), 0 ) "
-            "/ SUM(report_row.已完成)",
+            "SUM(report_row.已完成) / (SUM(report_row.已完成) "
+            "+ SUM(report_row.无法见底数))",
             normalized,
         )
         self.assertNotIn("DELETE", normalized)
@@ -256,8 +255,9 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("department.department_type='community'", normalized)
         self.assertIn("person.position IN ('组长', '组员')", normalized)
         self.assertIn(
-            "SUM(ledger.reached_bottom) "
-            "/ SUM(ledger.task_state = 'completed')",
+            "SUM(ledger.task_state = 'completed') "
+            "/ (SUM(ledger.task_state = 'completed') "
+            "+ SUM(ledger.unable_to_verify))",
             normalized,
         )
         self.assertEqual(
@@ -286,7 +286,7 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             merged,
             [
-                ("名册社区", "张三", 14, 3, 4, 7, 0.5, 2, 0.71),
+                ("名册社区", "张三", 14, 3, 4, 7, 0.5, 2, 0.78),
                 ("社区乙", "李四", 0, 0, 0, 0, 0.0, 0, 0.0),
                 ("社区外", "名册外人员", 3, 0, 1, 2, 0.67, 0, 1.0),
             ],

@@ -176,7 +176,6 @@ class CommunityAliasesUpdate(BaseModel):
         if not normalized:
             raise ValueError("社区名不能为空")
         return normalized
-
     @field_validator("aliases")
     @classmethod
     def normalize_aliases(cls, aliases: list[str]) -> list[str]:
@@ -211,6 +210,10 @@ class CommunityAliasesUpdate(BaseModel):
             if name not in normalized:
                 normalized.append(name)
         return normalized
+
+
+class CommunityStatusUpdate(BaseModel):
+    is_active: bool
 
 
 class AreaWrite(BaseModel):
@@ -568,7 +571,9 @@ async def list_departments(
         await cur.execute(
             """
             SELECT department.id, department.name,
-                   department.department_type, community.name
+                   department.department_type, community.name,
+                   CASE WHEN department.department_type='internal' THEN 1
+                        ELSE COALESCE(community.is_active, 0) END AS is_active
             FROM _departments AS department
             LEFT JOIN _communities AS community
               ON community.id=department.community_id
@@ -580,6 +585,7 @@ async def list_departments(
         {
             "id": row[0], "name": row[1], "type": row[2],
             "community_name": row[3],
+            "is_active": bool(row[4]),
         }
         for row in rows
     ]}
@@ -596,7 +602,7 @@ async def list_communities(
         await cur.execute(f"""
             SELECT c.id, c.name, c.police_officers,
                    COALESCE(g.grid_count, 0) AS grid_count,
-                   area.id, area.name
+                   area.id, area.name, c.is_active
             FROM _communities c
             LEFT JOIN _areas AS area ON area.id=c.area_id
             LEFT JOIN (
@@ -653,6 +659,7 @@ async def list_communities(
                 "aliases": aliases_by_community.get(row[0], []),
                 "area_id": int(row[4]) if row[4] is not None else None,
                 "area_name": str(row[5] or ""),
+                "is_active": bool(row[6]),
             }
             for row in rows
         ]
@@ -1002,6 +1009,24 @@ async def delete_community(
         if int((await cur.fetchone())[0] or 0):
             raise HTTPException(409, "该社区部门仍有人员，不能删除")
         await cur.execute(
+            "SELECT COUNT(*) FROM _police_address_entries WHERE community_id=%s",
+            (community_id,),
+        )
+        address_count = int((await cur.fetchone())[0] or 0)
+        await cur.execute(
+            """
+            SELECT COUNT(*) FROM _police_dispatch_tasks
+            WHERE suggested_community_id=%s OR final_community_id=%s
+            """,
+            (community_id, community_id),
+        )
+        task_count = int((await cur.fetchone())[0] or 0)
+        if address_count or task_count:
+            raise HTTPException(
+                409,
+                "该社区已被公安地址库或历史批次引用，请改为停用",
+            )
+        await cur.execute(
             "DELETE FROM _departments WHERE community_id=%s",
             (community_id,),
         )
@@ -1009,6 +1034,89 @@ async def delete_community(
         if cur.rowcount == 0:
             raise HTTPException(404, "社区不存在")
     return {"message": "删除成功"}
+
+
+@router.patch("/communities/{community_id}/status")
+async def update_community_status(
+    community_id: int,
+    data: CommunityStatusUpdate,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    """启用或停用社区；历史关系保留，停用前必须清空当前归属。"""
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT name, is_active FROM _communities WHERE id=%s FOR UPDATE",
+                (community_id,),
+            )
+            current = await cur.fetchone()
+            if not current:
+                raise HTTPException(404, "社区不存在")
+            if bool(current[1]) == data.is_active:
+                await conn.commit()
+                return {
+                    "message": "社区状态未变化",
+                    "is_active": data.is_active,
+                }
+            if not data.is_active:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM _grid_member_department_links AS link
+                    JOIN _departments AS department
+                      ON department.id=link.department_id
+                    WHERE department.community_id=%s
+                    """,
+                    (community_id,),
+                )
+                member_count = int((await cur.fetchone())[0] or 0)
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) FROM _police_dispatch_tasks
+                    WHERE task_status<>'completed'
+                      AND (suggested_community_id=%s OR final_community_id=%s)
+                    """,
+                    (community_id, community_id),
+                )
+                pending_count = int((await cur.fetchone())[0] or 0)
+                if member_count or pending_count:
+                    raise HTTPException(
+                        409,
+                        detail={
+                            "message": "请先转移社区人员并处理未完成公安任务",
+                            "member_count": member_count,
+                            "pending_task_count": pending_count,
+                        },
+                    )
+            active_value = 1 if data.is_active else 0
+            await cur.execute(
+                "UPDATE _communities SET is_active=%s WHERE id=%s",
+                (active_value, community_id),
+            )
+            await cur.execute(
+                "UPDATE _departments SET is_active=%s "
+                "WHERE community_id=%s AND department_type='community'",
+                (active_value, community_id),
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "community.enable" if data.is_active else "community.disable",
+        target_type="community",
+        target_name=str(community_id),
+        detail={"is_active": data.is_active},
+        **request_audit_fields(request),
+    )
+    return {
+        "message": "社区已启用" if data.is_active else "社区已停用",
+        "is_active": data.is_active,
+    }
 
 
 @router.put("/communities/{community_id}/aliases")

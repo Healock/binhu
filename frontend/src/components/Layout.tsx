@@ -33,6 +33,8 @@ export default function Layout() {
     [user],
   )
   const mobileNavigationMode = user?.mobile_navigation_mode || 'dock'
+  const mobileWorkbenchPosition = ['组员', '组长', '基础管控', '中队长']
+    .includes(user?.member?.position || '')
   const dockConfig = useMemo(
     () => user
       ? normalizeMobileDockConfig(
@@ -180,8 +182,8 @@ export default function Layout() {
                     <span className="flex w-5 justify-center text-base">
                       <NavigationIcon name={item.icon} />
                     </span>
-                    <span className={(user?.member?.position === '组员' || user?.member?.position === '组长') ? 'hidden md:inline' : ''}>{item.label}</span>
-                    {(user?.member?.position === '组员' || user?.member?.position === '组长') && (
+                    <span className={mobileWorkbenchPosition ? 'hidden md:inline' : ''}>{item.label}</span>
+                    {mobileWorkbenchPosition && (
                       <span className="md:hidden">{mobileNavigationItemLabel(item, user.member.position)}</span>
                     )}
                   </NavLink>

@@ -158,7 +158,7 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["已完成"], 25)
         self.assertEqual(summary["无法见底数"], 5)
         self.assertEqual(summary["核查完成率"], 0.5)
-        self.assertEqual(summary["核查见底率"], 0.8)
+        self.assertEqual(summary["核查见底率"], 0.83)
 
     def test_total_reached_bottom_rate_is_zero_without_completed_data(self):
         table = sample_detailed_table()
@@ -193,7 +193,7 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["已核查"], 25)
         self.assertNotIn("已完成", summary)
         self.assertEqual(summary["核查完成率"], 0.5)
-        self.assertEqual(summary["核查见底率"], 0.8)
+        self.assertEqual(summary["核查见底率"], 0.83)
 
     def test_summary_report_total_recalculates_person_average(self):
         table = sample_detailed_table()

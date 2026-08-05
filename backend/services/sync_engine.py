@@ -15,6 +15,7 @@ from services.online_source import (
     release_sheet_lock,
     replace_source_cache,
 )
+from services.police_dispatch import reconcile_police_dispatch_publications
 
 
 def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int]:
@@ -357,6 +358,8 @@ class SyncEngine:
                 )
 
         async with conn.cursor() as cur:
+            if sp["parser_type"] == "全链条":
+                await reconcile_police_dispatch_publications(cur, sp["id"])
             await mark_writebacks_synced(cur, sp["id"])
             await rebuild_projection(cur, sp["parser_type"])
 

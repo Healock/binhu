@@ -54,9 +54,32 @@ class BaseReportBuilder:
         result = f"IFNULL({alias}.`{self.result_column}`, '')"
         address = f"IFNULL({alias}.`现住址`, '')"
         return (
-            f"CASE WHEN {result} <> '' THEN 'completed' "
+            f"CASE WHEN {result} LIKE '%%无法核实%%' THEN 'checked' "
+            f"WHEN {result} <> '' THEN 'completed' "
             f"WHEN {address} <> '' THEN 'checked' "
             "ELSE 'unchecked' END"
+        )
+
+    def ledger_effective_workload_sql(
+        self,
+        today_alias: str,
+        previous_alias: str | None,
+    ) -> str:
+        """当天最终快照对应的有效核查次数；同一任务一天最多一次。"""
+        today_state = self.ledger_state_sql(today_alias)
+        if not previous_alias:
+            return (
+                f"CASE WHEN ({today_state}) <> 'unchecked' "
+                "THEN 1 ELSE 0 END"
+            )
+        previous_state = self.ledger_state_sql(previous_alias)
+        return (
+            "CASE "
+            f"WHEN ({previous_state})='unchecked' "
+            f"AND ({today_state}) IN ('checked','completed') THEN 1 "
+            f"WHEN ({previous_state})='checked' "
+            f"AND ({today_state})='completed' THEN 1 "
+            "ELSE 0 END"
         )
 
     def ledger_change_sql(self, today_alias: str, previous_alias: str) -> str:
@@ -111,7 +134,13 @@ class BaseReportBuilder:
             return "0"
         return f"CASE WHEN {conditions} THEN 1 ELSE 0 END"
 
-    async def build(self, date_str: str) -> dict:
+    async def build(
+        self,
+        date_str: str,
+        *,
+        generation_method: str = "sync",
+        reset_ledger: bool | None = None,
+    ) -> dict:
         """生成包含跨日结转的当天任务日报。"""
         t_inspector = f"`{date_str}_daily_{self.table_suffix}_inspector`"
         t_community = f"`{date_str}_daily_{self.table_suffix}_community`"
@@ -143,7 +172,8 @@ class BaseReportBuilder:
                     cur,
                     self,
                     date_str,
-                    generation_method="sync",
+                    generation_method=generation_method,
+                    reset=reset_ledger,
                 )
                 await aggregate_ledger_into_reports(
                     cur,
@@ -161,8 +191,9 @@ class BaseReportBuilder:
                 for tname in [f"{date_str}_daily_{self.table_suffix}_inspector", f"{date_str}_daily_{self.table_suffix}_community"]:
                     await cur.execute(
                         "INSERT INTO _daily_report_meta (table_name, report_date, parser_type, generation_method) "
-                        "VALUES (%s, %s, %s, 'workload') ON DUPLICATE KEY UPDATE generated_at = NOW()",
-                        (tname, date_str, self.parser_type),
+                        "VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE "
+                        "generation_method=VALUES(generation_method), generated_at=NOW()",
+                        (tname, date_str, self.parser_type, generation_method),
                     )
 
             return {
@@ -183,8 +214,8 @@ class BaseReportBuilder:
         prev: 前一天快照表名（None 时当天数据全算新增）
         """
         rc = self.result_column
-        see_base = " OR ".join(f"t.{rc} LIKE '%%{kw}%%'" for kw in self.see_base_keywords)
         no_base = f"t.{rc} LIKE '%%无法核实%%'"
+        state = self.ledger_state_sql("t")
 
         if prev:
             join_clause = f"LEFT JOIN {prev} prev ON t._row_key = prev._row_key"
@@ -196,24 +227,18 @@ class BaseReportBuilder:
             # 只用前一天快照判断“今天是否发生变化”；一旦进入当天工作量，
             # 必须按今天的最终状态归类。否则地址从一个非空值改成另一个
             # 非空值时会进入数据总数，却不会进入任何状态列。
-            cond_unchecked = """IFNULL(t.现住址, '') = ''
-                AND IFNULL(t.{rc}, '') = ''""".format(rc=rc)
-            cond_checked = """IFNULL(t.现住址, '') <> ''
-                AND IFNULL(t.{rc}, '') = ''""".format(rc=rc)
-            cond_done = "IFNULL(t.{rc}, '') <> ''".format(rc=rc)
+            cond_unchecked = f"({state})='unchecked'"
+            cond_checked = f"({state})='checked'"
+            cond_done = f"({state})='completed'"
         else:
             # 无前一天快照：用 _last_updated_at 筛选当天有活动的数据，按当前状态分类
             join_clause = ""
             change_filter = (
                 "t._last_updated_at >= %s AND t._last_updated_at < %s"
             )
-            cond_unchecked = (
-                f"IFNULL(t.现住址, '') = '' AND IFNULL(t.{rc}, '') = ''"
-            )
-            cond_checked = (
-                f"IFNULL(t.现住址, '') <> '' AND IFNULL(t.{rc}, '') = ''"
-            )
-            cond_done = f"IFNULL(t.{rc}, '') <> ''"
+            cond_unchecked = f"({state})='unchecked'"
+            cond_checked = f"({state})='checked'"
+            cond_done = f"({state})='completed'"
 
         inspector_sql = f"""
             SELECT
@@ -223,10 +248,10 @@ class BaseReportBuilder:
                 SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END),
-                CASE WHEN SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) > 0
+                CASE WHEN SUM(CASE WHEN {cond_done} OR {no_base} THEN 1 ELSE 0 END) > 0
                      THEN ROUND(
-                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
-                        / SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN {cond_done} OR {no_base} THEN 1 ELSE 0 END),
                         2
                      )
                      ELSE 0 END
@@ -247,10 +272,10 @@ class BaseReportBuilder:
                 SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
                 CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END),
-                CASE WHEN SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END) > 0
+                CASE WHEN SUM(CASE WHEN {cond_done} OR {no_base} THEN 1 ELSE 0 END) > 0
                      THEN ROUND(
-                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
-                        / SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN {cond_done} THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN {cond_done} OR {no_base} THEN 1 ELSE 0 END),
                         2
                      )
                      ELSE 0 END
@@ -270,21 +295,21 @@ class BaseReportBuilder:
         列名加 AS 别名，便于在子查询中引用
         """
         rc = self.result_column
-        see_base = " OR ".join(f"t.{rc} LIKE '%%{kw}%%'" for kw in self.see_base_keywords)
         no_base = f"t.{rc} LIKE '%%无法核实%%'"
+        state = self.ledger_state_sql("t")
 
         inspector_sql = f"""
             SELECT
                 t.社区 AS 社区, t.核查人 AS 姓名, COUNT(*) AS 数据总数,
-                SUM(CASE WHEN IFNULL(t.现住址, '') = '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 未核查,
-                SUM(CASE WHEN IFNULL(t.现住址, '') <> '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 已核查,
-                SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) AS 已完成,
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
+                SUM(CASE WHEN ({state})='unchecked' THEN 1 ELSE 0 END) AS 未核查,
+                SUM(CASE WHEN ({state})='checked' THEN 1 ELSE 0 END) AS 已核查,
+                SUM(CASE WHEN ({state})='completed' THEN 1 ELSE 0 END) AS 已完成,
+                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN ({state})='completed' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END) AS 无法见底数,
-                CASE WHEN SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) > 0
+                CASE WHEN SUM(CASE WHEN ({state})='completed' OR {no_base} THEN 1 ELSE 0 END) > 0
                      THEN ROUND(
-                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
-                        / SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN ({state})='completed' THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN ({state})='completed' OR {no_base} THEN 1 ELSE 0 END),
                         2
                      )
                      ELSE 0 END AS 核查见底率
@@ -298,15 +323,15 @@ class BaseReportBuilder:
         community_sql = f"""
             SELECT
                 t.社区 AS 社区, COUNT(*) AS 数据总数,
-                SUM(CASE WHEN IFNULL(t.现住址, '') = '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 未核查,
-                SUM(CASE WHEN IFNULL(t.现住址, '') <> '' AND IFNULL(t.{rc}, '') = '' THEN 1 ELSE 0 END) AS 已核查,
-                SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) AS 已完成,
-                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
+                SUM(CASE WHEN ({state})='unchecked' THEN 1 ELSE 0 END) AS 未核查,
+                SUM(CASE WHEN ({state})='checked' THEN 1 ELSE 0 END) AS 已核查,
+                SUM(CASE WHEN ({state})='completed' THEN 1 ELSE 0 END) AS 已完成,
+                CASE WHEN COUNT(*) > 0 THEN ROUND(SUM(CASE WHEN ({state})='completed' THEN 1 ELSE 0 END) / COUNT(*), 2) ELSE 0 END AS 核查完成率,
                 SUM(CASE WHEN {no_base} THEN 1 ELSE 0 END) AS 无法见底数,
-                CASE WHEN SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END) > 0
+                CASE WHEN SUM(CASE WHEN ({state})='completed' OR {no_base} THEN 1 ELSE 0 END) > 0
                      THEN ROUND(
-                        SUM(CASE WHEN {see_base} THEN 1 ELSE 0 END)
-                        / SUM(CASE WHEN IFNULL(t.{rc}, '') <> '' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN ({state})='completed' THEN 1 ELSE 0 END)
+                        / SUM(CASE WHEN ({state})='completed' OR {no_base} THEN 1 ELSE 0 END),
                         2
                      )
                      ELSE 0 END AS 核查见底率

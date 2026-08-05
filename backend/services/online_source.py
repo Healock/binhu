@@ -72,6 +72,17 @@ async def rebuild_projection(cur, parser_type: str) -> None:
         for value in row
         if value
     }
+    if parser_type == "全链条":
+        await cur.execute("""
+            SELECT source.row_key
+            FROM _police_dispatch_publish_results AS result
+            JOIN _online_source_rows AS source
+              ON source.spreadsheet_id=result.spreadsheet_id
+             AND source.sheet_id=result.sheet_id
+             AND source.physical_row=result.physical_row
+            WHERE result.status='success'
+        """)
+        pending_keys.update(str(row[0]) for row in await cur.fetchall() if row[0])
 
     projection_rows = []
     for row_key, source_rows in grouped.items():
@@ -225,6 +236,12 @@ async def mark_writebacks_synced(cur, spreadsheet_id: int) -> None:
         SET sync_status='synced', synced_at=UTC_TIMESTAMP()
         WHERE spreadsheet_id=%s AND sync_status='pending'
         """,
+        (spreadsheet_id,),
+    )
+    await cur.execute(
+        "UPDATE _police_dispatch_publish_results "
+        "SET status='synced' "
+        "WHERE spreadsheet_id=%s AND status='success'",
         (spreadsheet_id,),
     )
 

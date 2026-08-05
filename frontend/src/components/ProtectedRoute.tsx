@@ -6,9 +6,10 @@ interface Props {
   requireRole?: Role
   requireRoles?: Role[]
   requirePermission?: PermissionCode
+  requireAnyPermission?: PermissionCode[]
 }
 
-export default function ProtectedRoute({ requireRole, requireRoles, requirePermission }: Props) {
+export default function ProtectedRoute({ requireRole, requireRoles, requirePermission, requireAnyPermission }: Props) {
   const { user, loading } = useAuth()
 
   if (loading) {
@@ -30,6 +31,12 @@ export default function ProtectedRoute({ requireRole, requireRoles, requirePermi
     return <Navigate to="/" replace />
   }
   if (requirePermission && !user.permissions?.includes(requirePermission)) {
+    return <Navigate to="/settings/personalization" replace />
+  }
+  if (
+    requireAnyPermission?.length
+    && !requireAnyPermission.some(permission => user.permissions?.includes(permission))
+  ) {
     return <Navigate to="/settings/personalization" replace />
   }
 

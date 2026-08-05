@@ -89,7 +89,7 @@ def canonicalize_inspector_rows(
                 completed,
                 calculate_ratio(completed, total),
                 unable,
-                calculate_ratio(max(completed - unable, 0), completed),
+                calculate_ratio(completed, completed + unable),
             )
         )
     result.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
@@ -257,7 +257,7 @@ def aggregate_community_rows(
                 completed,
                 calculate_ratio(completed, total),
                 unable,
-                calculate_ratio(max(completed - unable, 0), completed),
+                calculate_ratio(completed, completed + unable),
             )
         )
     return result
@@ -347,7 +347,7 @@ def merge_inspector_rows(
                 completed,
                 calculate_ratio(completed, total),
                 unable,
-                calculate_ratio(max(completed - unable, 0), completed),
+                calculate_ratio(completed, completed + unable),
             )
         )
     result.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
@@ -379,14 +379,11 @@ async def rebuild_community_report_table(
                  )
                  ELSE 0 END,
             SUM(report_row.无法见底数),
-            CASE WHEN SUM(report_row.已完成) > 0
+            CASE WHEN SUM(report_row.已完成) + SUM(report_row.无法见底数) > 0
                  THEN ROUND(
-                    GREATEST(
-                        SUM(report_row.已完成)
-                        - SUM(report_row.无法见底数),
-                        0
-                    )
-                    / SUM(report_row.已完成),
+                    SUM(report_row.已完成)
+                    / (SUM(report_row.已完成)
+                       + SUM(report_row.无法见底数)),
                     2
                  )
                  ELSE 0 END
@@ -428,10 +425,12 @@ async def rebuild_community_report_from_ledger(
             SUM(ledger.task_state = 'completed'),
             ROUND(SUM(ledger.task_state = 'completed') / COUNT(*), 2),
             SUM(ledger.unable_to_verify),
-            CASE WHEN SUM(ledger.task_state = 'completed') > 0
+            CASE WHEN SUM(ledger.task_state = 'completed')
+                           + SUM(ledger.unable_to_verify) > 0
                  THEN ROUND(
-                    SUM(ledger.reached_bottom)
-                    / SUM(ledger.task_state = 'completed'),
+                    SUM(ledger.task_state = 'completed')
+                    / (SUM(ledger.task_state = 'completed')
+                       + SUM(ledger.unable_to_verify)),
                     2
                  )
                  ELSE 0 END

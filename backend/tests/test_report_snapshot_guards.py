@@ -76,15 +76,15 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
         normalized_sql = " ".join(inspector_sql.split())
 
         self.assertIn(
-            "IFNULL(t.现住址, '') = '' AND IFNULL(t.核查结果, '') = ''",
+            "LIKE '%%无法核实%%' THEN 'checked'",
             normalized_sql,
         )
         self.assertIn(
-            "IFNULL(t.现住址, '') <> '' AND IFNULL(t.核查结果, '') = ''",
+            "IFNULL(t.`现住址`, '') <> '' THEN 'checked'",
             normalized_sql,
         )
         self.assertIn(
-            "IFNULL(t.核查结果, '') <> ''",
+            "IFNULL(t.`核查结果`, '') <> '' THEN 'completed'",
             normalized_sql,
         )
         self.assertNotIn(
@@ -359,6 +359,10 @@ class ReportSnapshotGuardTests(unittest.IsolatedAsyncioTestCase):
             report_summary,
             "load_community_person_days",
             new=AsyncMock(return_value=({"长板": 1}, attendance)),
+        ), patch.object(
+            report_summary,
+            "load_effective_workload_by_community",
+            new=AsyncMock(return_value={"长板": 10}),
         ):
             result = await report_summary.get_summary("2026-07-27")
 

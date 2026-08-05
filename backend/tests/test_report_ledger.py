@@ -26,6 +26,7 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("'checked'", sql)
         self.assertIn("'unchecked'", sql)
         self.assertIn("task.`现住址`", sql)
+        self.assertIn("LIKE '%%无法核实%%' THEN 'checked'", sql)
         # 这两个表达式会和数据库参数一起执行；百分号必须转义，
         # 否则 aiomysql 会把它误当作 Python 格式化符。
         self.assertIn("%%无法核实%%", builder.ledger_unable_sql("task"))
@@ -37,7 +38,8 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(
             "WHEN (CASE WHEN IFNULL(previous.`核查结果`, '') "
-            "<> '' THEN 'completed'",
+            "LIKE '%%无法核实%%' THEN 'checked' WHEN "
+            "IFNULL(previous.`核查结果`, '') <> '' THEN 'completed'",
             normalized,
         )
         self.assertIn("LIKE '%%移交%%' THEN '移交'", normalized)
@@ -54,7 +56,7 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(builder.ledger_unable_sql("task"), "0")
         self.assertIn("近期反吴", builder.ledger_reached_bottom_sql("task"))
 
-    async def test_daily_rate_divides_reached_bottom_by_completed_count(self):
+    async def test_daily_rate_divides_completed_by_completed_plus_unable(self):
         cursor = make_cursor([(2,), (1,)])
 
         with patch.object(
@@ -76,10 +78,19 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
 
         insert_sql = " ".join(cursor.execute.await_args_list[2].args[0].split())
         self.assertIn(
-            "SUM(reached_bottom) / SUM(task_state='completed')",
+            "SUM(task_state='completed') / "
+            "(SUM(task_state='completed') + SUM(unable_to_verify))",
             insert_sql,
         )
-        self.assertNotIn("SUM(reached_bottom) / COUNT(*)", insert_sql)
+
+    def test_effective_workload_counts_two_cross_day_transitions_only(self):
+        builder = FullChainBuilder()
+        sql = " ".join(builder.ledger_effective_workload_sql("today", "previous").split())
+        self.assertIn("previous.`核查结果`", sql)
+        self.assertIn("today.`核查结果`", sql)
+        self.assertIn("='unchecked'", sql)
+        self.assertIn("='checked'", sql)
+        self.assertIn("='completed'", sql)
 
     async def test_carried_task_changed_today_has_one_carryover_row(self):
         cursor = make_cursor(

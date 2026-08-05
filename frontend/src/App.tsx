@@ -25,8 +25,14 @@ import Profile from './pages/Profile'
 import MobileTaskHome from './pages/MobileTaskHome'
 import MobileTaskList from './pages/MobileTaskList'
 import MobileTaskDetail from './pages/MobileTaskDetail'
+import PoliceAddressManagement from './pages/PoliceAddressManagement'
+import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
+import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import useMobileViewport from './hooks/useMobileViewport'
-import { shouldUseMobileTaskWorkbench } from './utils/mobileTaskRouting'
+import {
+  shouldUseMobileTaskWorkbench,
+  shouldUsePoliceDispatchWorkbench,
+} from './utils/mobileTaskRouting'
 
 const DataQuery = lazy(() => import('./pages/DataQuery'))
 
@@ -41,6 +47,11 @@ function LazyPage({ children }: { children: ReactNode }) {
 function DashboardEntry() {
   const { user } = useAuth()
   const mobile = useMobileViewport()
+  if (shouldUsePoliceDispatchWorkbench(user?.member?.position, mobile)) {
+    return user?.permissions?.includes('police.dispatch.manage')
+      ? <Navigate to="/police-tasks" replace />
+      : <Navigate to="/settings/personalization" replace />
+  }
   if (shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
     return user?.permissions?.includes('online.raw.view')
       ? <MobileTaskHome />
@@ -54,6 +65,9 @@ function DashboardEntry() {
 function QueryEntry() {
   const { user } = useAuth()
   const mobile = useMobileViewport()
+  if (shouldUsePoliceDispatchWorkbench(user?.member?.position, mobile)) {
+    return <Navigate to="/police-tasks" replace />
+  }
   return shouldUseMobileTaskWorkbench(user?.member?.position, mobile)
     ? <Navigate to="/tasks" replace />
     : <LazyPage><DataQuery /></LazyPage>
@@ -89,8 +103,12 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<VisitSummary />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="visit.import" />}>
+              <Route element={<ProtectedRoute requireAnyPermission={['visit.import', 'police.dispatch.manage']} />}>
                 <Route path="/data-upload" element={<DataUploadCenter />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>
+                <Route path="/police-tasks" element={<PoliceDispatchWorkbench />} />
+                <Route path="/police-dispatch/batches/:batchId" element={<PoliceDispatchBatchDetail />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="worklog.manage" />}>
                 <Route path="/work-log" element={<WorkLog />} />
@@ -104,6 +122,9 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="community.view" />}>
                 <Route path="/communities" element={<Communities />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="police.address.manage" />}>
+                <Route path="/police-addresses" element={<PoliceAddressManagement />} />
               </Route>
 
               {/* 用户管理仅超管 */}

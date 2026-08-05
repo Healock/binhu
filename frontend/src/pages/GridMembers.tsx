@@ -1042,7 +1042,7 @@ function MemberForm({
               className="w-full"
               maxTagCount="responsive"
               options={departments
-                .filter(item => item.type === 'community')
+                .filter(item => item.type === 'community' && item.is_active)
                 .map(item => ({ value: item.id, label: item.name }))}
             />
           ) : (
@@ -1056,7 +1056,7 @@ function MemberForm({
               options={departments
                 .filter(item => internalPosition
                   ? item.type === 'internal'
-                  : item.type === 'community')
+                  : item.type === 'community' && item.is_active)
                 .map(item => ({ value: item.id, label: item.name }))}
             />
           )}
