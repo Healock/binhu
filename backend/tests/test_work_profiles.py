@@ -75,6 +75,13 @@ async def test_history_backfill_is_idempotent_and_stores_no_business_body():
     assert "after_values" not in create_sql
     assert "identity_number" not in create_sql
     assert "phone" not in create_sql
+    draft_fallback_sql = next(
+        sql for sql in inserts if "work-log-draft:" in sql
+    )
+    assert (
+        "CAST(audit.target_name AS BINARY)=CAST(draft.id AS BINARY)"
+        in draft_fallback_sql
+    )
 
 
 class ProfileCursor:
