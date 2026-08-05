@@ -348,10 +348,58 @@ class AuditDisplayTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             any(
+                "LEFT JOIN _sync_log AS sync_task" in sql
+                and "COALESCE(sync_task.status, audit.result)" in sql
+                for sql, _ in cursor.executed
+            )
+        )
+        self.assertTrue(
+            any(
                 option["value"] == "police_dispatch.import"
                 for option in result["action_options"]
             )
         )
+
+    async def test_sync_audit_displays_live_sync_task_status(self):
+        class SyncAuditCursor:
+            def __init__(self):
+                self.last_sql = ""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def execute(self, sql, params=None):
+                self.last_sql = " ".join(sql.split())
+
+            async def fetchone(self):
+                return (1,)
+
+            async def fetchall(self):
+                return [(
+                    10, 1, "admin", "sync.trigger", "sync", "2608",
+                    "success", None, "127.0.0.1", "browser",
+                    datetime(2026, 8, 5, 8, 0), "管理员", None, "admin",
+                )]
+
+        cursor = SyncAuditCursor()
+        with patch.object(
+            admin_ops.db_manager,
+            "get_pool",
+            return_value=FakePool(cursor),
+        ):
+            result = await admin_ops.audit_log(
+                page=1,
+                page_size=50,
+                action="sync.trigger",
+                user={"id": 1, "role": "super_admin"},
+            )
+
+        self.assertEqual(result["data"][0]["result"], "success")
+        self.assertEqual(result["data"][0]["result_label"], "成功")
+        self.assertIn("sync_task.id=CAST", cursor.last_sql)
 
 
 class BackupTests(unittest.IsolatedAsyncioTestCase):

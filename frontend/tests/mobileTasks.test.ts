@@ -60,6 +60,16 @@ test('流口岗手机导航复用旧配置 ID 并显示新名称', () => {
   assert.equal(routeIsActive('/police-tasks', query, true), true)
 })
 
+test('管理员手机导航使用独立流口任务入口', () => {
+  const flowTasks = navigationItemById('flow_tasks')!
+  const query = navigationItemById('online_query')!
+
+  assert.equal(flowTasks.path, '/tasks/home')
+  assert.equal(flowTasks.shortLabel, '流口任务')
+  assert.equal(routeIsActive('/tasks/全链条/row', flowTasks), true)
+  assert.equal(routeIsActive('/tasks/全链条/row', query, false), false)
+})
+
 test('批量保存只提交实际变化且不自动补造字段', () => {
   assert.deepEqual(buildMobileTaskChanges(
     { 核查人: '甲', 现住址: '', 核查结果: '' },

@@ -23,6 +23,7 @@ import SessionTimeoutGuard from './SessionTimeoutGuard'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 import {
   canAccessFlowTaskWorkbench,
+  isFlowTaskPosition,
   isPoliceDispatchTaskPosition,
 } from '../utils/mobileTaskRouting'
 
@@ -32,9 +33,19 @@ export default function Layout() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const menuGroups = useMemo(
-    () => user ? accessibleNavigationGroups(user.role, user.permissions) : [],
+  const permissionGroupCodes = useMemo(
+    () => user?.permission_groups?.map(group => group.code) || [],
     [user],
+  )
+  const menuGroups = useMemo(
+    () => user
+      ? accessibleNavigationGroups(
+          user.role,
+          user.permissions,
+          permissionGroupCodes,
+        )
+      : [],
+    [permissionGroupCodes, user],
   )
   const mobileNavigationMode = user?.mobile_navigation_mode || 'dock'
   const mobileWorkbenchPosition = ['组员', '组长', '基础管控', '中队长']
@@ -44,10 +55,11 @@ export default function Layout() {
     const links: Array<{ key: string; path: string; label: string }> = []
     if (
       user.permissions.includes('online.raw.view')
+      && isFlowTaskPosition(user.member?.position)
       && canAccessFlowTaskWorkbench(
         user.member?.position,
         user.role,
-        user.permission_groups?.map(group => group.code),
+        permissionGroupCodes,
       )
     ) {
       links.push({ key: 'flow-tasks', path: '/tasks/home', label: '任务处理' })
@@ -60,16 +72,17 @@ export default function Layout() {
       links.push({ key: 'dispatch-tasks', path: '/police-tasks', label: '下发任务处理' })
     }
     return links
-  }, [user])
+  }, [permissionGroupCodes, user])
   const dockConfig = useMemo(
     () => user
       ? normalizeMobileDockConfig(
           user.mobile_dock_config,
           user.role,
           user.permissions,
+          permissionGroupCodes,
         )
       : { groups: [] },
-    [user],
+    [permissionGroupCodes, user],
   )
 
   const handleLogout = async () => {
@@ -306,6 +319,7 @@ export default function Layout() {
           role={user.role}
           permissions={user.permissions}
           position={user.member?.position}
+          permissionGroupCodes={permissionGroupCodes}
         />
       )}
     </div>

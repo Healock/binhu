@@ -520,6 +520,7 @@ export interface OnlineOverviewDetailItem {
   inspector: string
   state: 'unchecked' | 'checked' | 'completed' | string
   first_activity_date: string
+  first_dispatch_date?: string
   last_activity_date: string
   reason: string
   summary: {

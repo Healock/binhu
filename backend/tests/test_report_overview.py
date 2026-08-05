@@ -54,6 +54,26 @@ class EffectiveTaskCursor:
 
 
 class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
+    def test_first_dispatch_date_prefers_business_field_and_falls_back(self):
+        self.assertEqual(
+            report_overview._first_dispatch_date(
+                {"下发日期": "7.30", "下发时间": "7.29"},
+                "2026-08-01",
+            ),
+            "7.30",
+        )
+        self.assertEqual(
+            report_overview._first_dispatch_date(
+                {"下发日期": "", "下发时间": "08-02"},
+                "2026-08-03",
+            ),
+            "08-02",
+        )
+        self.assertEqual(
+            report_overview._first_dispatch_date({}, "2026-08-03"),
+            "2026-08-03",
+        )
+
     def test_legacy_fullchain_snapshot_defaults_registration_to_blank(self):
         parser = report_overview.get_parser("全链条")
         columns = [column for column in parser.COLUMNS if column != "登记情况"]
@@ -224,6 +244,7 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         }
         snapshots = {
             ("全链条", "changed-task"): {
+                "下发日期": "7.30",
                 "姓名": "张三",
                 "身份证号": "TEST-ID",
                 "电话号码": "TEST-PHONE",
@@ -278,6 +299,7 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["data"][0]["summary"]["title"], "张三")
         self.assertEqual(result["data"][0]["community"], "长板")
+        self.assertEqual(result["data"][0]["first_dispatch_date"], "7.30")
         self.assertEqual(result["data"][0]["reason"], "已有任务在所选区间内发生有效变化")
         self.assertTrue(pool.released)
 

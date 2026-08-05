@@ -43,6 +43,28 @@ test('超级管理员默认 Dock 包含用户管理和运维中心', () => {
     config.groups.some(group => group.items.includes('data_upload')),
     true,
   )
+  assert.equal(
+    config.groups.some(group => group.items.includes('flow_tasks')),
+    true,
+  )
+})
+
+test('管理员权限组可以配置独立流口任务入口', () => {
+  const regular = defaultMobileDockConfig('member', ['online.raw.view'])
+  const delegatedAdmin = defaultMobileDockConfig(
+    'member',
+    ['online.raw.view'],
+    ['admin'],
+  )
+
+  assert.equal(
+    regular.groups.some(group => group.items.includes('flow_tasks')),
+    false,
+  )
+  assert.equal(
+    delegatedAdmin.groups.some(group => group.items.includes('flow_tasks')),
+    true,
+  )
 })
 
 test('新权限列表优先于旧角色决定 Dock 页面', () => {

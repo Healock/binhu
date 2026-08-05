@@ -261,6 +261,7 @@ export type MobileNavigationGroupId = 'workspace' | 'resources' | 'system'
 export type MobileNavigationItemId =
   | 'online_summary'
   | 'online_query'
+  | 'flow_tasks'
   | 'visit_summary'
   | 'data_upload'
   | 'work_log'

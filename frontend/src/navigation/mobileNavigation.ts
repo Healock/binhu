@@ -66,6 +66,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         permission: 'online.raw.view',
       },
       {
+        id: 'flow_tasks',
+        path: '/tasks/home',
+        label: '流口任务处理',
+        shortLabel: '流口任务',
+        icon: 'query',
+        permission: 'online.raw.view',
+      },
+      {
         id: 'visit_summary',
         path: '/visit-summary',
         label: '走访汇总',
@@ -176,7 +184,13 @@ export function isNavigationItemAccessible(
   item: NavigationItemDefinition,
   role: Role,
   permissions?: PermissionCode[],
+  permissionGroupCodes: string[] = [],
 ): boolean {
+  if (
+    item.id === 'flow_tasks'
+    && !['admin', 'super_admin'].includes(role)
+    && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+  ) return false
   if (item.permission && permissions) return permissions.includes(item.permission)
   if (item.anyPermissions && permissions) {
     return item.anyPermissions.some(permission => permissions.includes(permission))
@@ -187,11 +201,12 @@ export function isNavigationItemAccessible(
 export function accessibleNavigationGroups(
   role: Role,
   permissions?: PermissionCode[],
+  permissionGroupCodes: string[] = [],
 ): NavigationGroupDefinition[] {
   return NAVIGATION_GROUPS.map(group => ({
     ...group,
     items: group.items.filter(item => (
-      isNavigationItemAccessible(item, role, permissions)
+      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes)
     )),
   })).filter(group => group.items.length > 0)
 }
@@ -199,9 +214,10 @@ export function accessibleNavigationGroups(
 export function defaultMobileDockConfig(
   role: Role,
   permissions?: PermissionCode[],
+  permissionGroupCodes: string[] = [],
 ): MobileDockConfig {
   return {
-    groups: accessibleNavigationGroups(role, permissions).map(group => ({
+    groups: accessibleNavigationGroups(role, permissions, permissionGroupCodes).map(group => ({
       id: group.id,
       items: group.items.map(item => item.id),
     })),
@@ -212,13 +228,14 @@ export function normalizeMobileDockConfig(
   value: MobileDockConfig | null | undefined,
   role: Role,
   permissions?: PermissionCode[],
+  permissionGroupCodes: string[] = [],
 ): MobileDockConfig {
   if (!value || !Array.isArray(value.groups)) {
-    return defaultMobileDockConfig(role, permissions)
+    return defaultMobileDockConfig(role, permissions, permissionGroupCodes)
   }
 
   const definitions = new Map(
-    accessibleNavigationGroups(role, permissions).map(group => [group.id, group]),
+    accessibleNavigationGroups(role, permissions, permissionGroupCodes).map(group => [group.id, group]),
   )
   const seenGroups = new Set<MobileNavigationGroupId>()
   const groups = value.groups.slice(0, MAX_DOCK_GROUPS).flatMap((rawGroup) => {
@@ -239,7 +256,7 @@ export function normalizeMobileDockConfig(
 
   return groups.length > 0
     ? { groups }
-    : defaultMobileDockConfig(role, permissions)
+    : defaultMobileDockConfig(role, permissions, permissionGroupCodes)
 }
 
 function moveEntry<T>(items: T[], fromIndex: number, toIndex: number): T[] {
@@ -310,6 +327,7 @@ export function routeIsActive(
   item: NavigationItemDefinition,
   taskRoutesAsQuery = false,
 ): boolean {
+  if (item.id === 'flow_tasks' && pathname.startsWith('/tasks')) return true
   if (taskRoutesAsQuery && item.id === 'online_query' && pathname.startsWith('/tasks')) return true
   if (taskRoutesAsQuery && item.id === 'online_query' && pathname.startsWith('/police-tasks')) return true
   if (item.end) return pathname === item.path

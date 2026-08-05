@@ -283,7 +283,10 @@ async def get_current_user(request: Request) -> dict:
                     row[5]
                 ),
                 "mobile_dock_config": normalize_mobile_dock_config(
-                    row[6], str(row[2]), permissions
+                    row[6],
+                    str(row[2]),
+                    permissions,
+                    [group["code"] for group in groups],
                 ),
                 "theme_mode": normalize_theme_mode(row[7]),
                 "member": member,
