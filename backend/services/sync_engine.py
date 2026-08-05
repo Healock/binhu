@@ -14,6 +14,7 @@ from services.online_source import (
     rebuild_projection,
     release_sheet_lock,
     replace_source_cache,
+    resolve_source_columns,
 )
 from services.police_dispatch import reconcile_police_dispatch_publications
 
@@ -267,13 +268,14 @@ class SyncEngine:
         parser = get_parser(sp["parser_type"])
         table = parser.table_name
         cols = parser.COLUMNS
+        source_columns = await resolve_source_columns(client, sp, parser)
 
         # 1. 从腾讯文档读取
         source_rows = await client.read_all_source_rows(
-            sp["file_id"], sp["data_sheet_id"], sp["header_row"], cols
+            sp["file_id"], sp["data_sheet_id"], sp["header_row"], source_columns
         )
         await replace_source_cache(conn, sp, source_rows)
-        raw_rows = [source["values"] for source in source_rows]
+        raw_rows = [parser.normalize_source_row(source["values"]) for source in source_rows]
 
         # 2. 解析 + 生成业务主键。业务明确允许时可合并同一对象的重复行。
         online, duplicate_count = deduplicate_rows(parser, raw_rows)

@@ -188,6 +188,62 @@ class TxDocsClient:
         )
         return [row["values"] for row in rows]
 
+    async def resolve_column_layout(
+        self,
+        file_id: str,
+        sheet_id: str,
+        header_row: int,
+        layouts: list[list[str]],
+    ) -> list[str]:
+        """根据真实表头选择兼容的物理列布局。"""
+        if not layouts:
+            raise ValueError("未配置腾讯表格列布局")
+        if len(layouts) == 1:
+            return list(layouts[0])
+
+        max_columns = max(len(layout) for layout in layouts)
+        response = await self.read_range(
+            file_id,
+            sheet_id,
+            f"A{header_row}:{column_letter(max_columns - 1)}{header_row}",
+        )
+        raw_rows = self._raw_rows(response)
+        raw_row = raw_rows[0] if raw_rows else []
+        cells = raw_row.get("values", []) if isinstance(raw_row, dict) else raw_row
+        if not isinstance(cells, list):
+            cells = []
+        headers = []
+        for cell in cells:
+            if isinstance(raw_row, list):
+                value = "" if cell is None else str(cell)
+            else:
+                value, _ = self._decode_cell(cell)
+            headers.append("".join(value.split()))
+
+        def score(layout: list[str]) -> int:
+            matched = 0
+            for index, expected in enumerate(layout):
+                if index >= len(headers):
+                    continue
+                actual = headers[index]
+                normalized = "".join(str(expected).split())
+                if actual == normalized or (
+                    normalized == "身份证号"
+                    and actual in {"身份证号码", "身份证"}
+                ):
+                    matched += 1
+            return matched
+
+        ranked = sorted(
+            ((score(layout), index, layout) for index, layout in enumerate(layouts)),
+            key=lambda item: (-item[0], item[1]),
+        )
+        matched, _, selected = ranked[0]
+        required_matches = min(3, len(selected))
+        if matched < required_matches:
+            raise ValueError("腾讯表格表头与业务列配置不一致，请检查表头行设置")
+        return list(selected)
+
     async def read_all_source_rows(
         self,
         file_id: str,

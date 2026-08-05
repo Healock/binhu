@@ -16,12 +16,34 @@ class BaseParser:
     parser_type: str = "base"
     table_name: str = ""
     COLUMNS: list[str] = []
+    SOURCE_COLUMN_LAYOUTS: tuple[tuple[str, ...], ...] = ()
     DATABASE_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {}
     COMMUNITY_COLUMN = "社区"
 
     def get_schema(self) -> list[ColumnDef]:
         """返回列定义列表"""
         return [ColumnDef(name=col) for col in self.COLUMNS]
+
+    def source_column_layouts(self) -> list[list[str]]:
+        """返回腾讯来源表支持的物理列布局，按优先级排列。"""
+        if self.SOURCE_COLUMN_LAYOUTS:
+            return [list(layout) for layout in self.SOURCE_COLUMN_LAYOUTS]
+        return [list(self.COLUMNS)]
+
+    def normalize_source_row(self, row: dict) -> dict[str, str]:
+        """从含兼容占位列的腾讯来源行提取正式业务字段。"""
+        return {
+            column: str(row.get(column, "") or "").strip()
+            for column in self.COLUMNS
+        }
+
+    @staticmethod
+    def source_row_values(
+        row: dict[str, str],
+        source_columns: list[str],
+    ) -> list[str]:
+        """按腾讯物理列布局构造整行写入值。"""
+        return [str(row.get(column, "") or "") for column in source_columns]
 
     def get_business_key(self) -> list[str]:
         """返回业务主键列名列表（用于增量比对）"""

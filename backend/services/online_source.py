@@ -32,6 +32,16 @@ def sheet_lock_name(spreadsheet_id: int) -> str:
     return f"binhu_sheet_write_{int(spreadsheet_id)}"
 
 
+async def resolve_source_columns(client, spreadsheet: dict, parser) -> list[str]:
+    """按当前工作表表头选择解析器支持的物理列布局。"""
+    return await client.resolve_column_layout(
+        spreadsheet["file_id"],
+        spreadsheet["data_sheet_id"],
+        int(spreadsheet.get("header_row") or 1),
+        parser.source_column_layouts(),
+    )
+
+
 async def acquire_sheet_lock(cur, spreadsheet_id: int, timeout: int = 5) -> bool:
     await cur.execute(
         "SELECT GET_LOCK(%s, %s)",
@@ -134,8 +144,9 @@ async def replace_source_cache(
     parser = get_parser(spreadsheet["parser_type"])
     prepared = []
     for source in source_rows:
-        values = {
-            column: str(source.get("values", {}).get(column, "") or "").strip()
+        values = parser.normalize_source_row(source.get("values", {}))
+        metadata = {
+            column: (source.get("cell_meta") or {}).get(column, {"type": "text"})
             for column in parser.COLUMNS
         }
         prepared.append((
@@ -146,7 +157,7 @@ async def replace_source_cache(
             parser.make_row_key(values),
             source_row_hash(values),
             stable_json(values),
-            stable_json(source.get("cell_meta") or {}),
+            stable_json(metadata),
         ))
 
     await conn.begin()

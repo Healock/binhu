@@ -358,6 +358,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         cursor = ConflictCursor(cached)
         conn = FakeConnection(cursor)
         client = AsyncMock()
+        client.resolve_column_layout.return_value = parser.source_column_layouts()[0]
         client.read_source_row.return_value = {
             "values": external,
             "cell_meta": {},
@@ -398,6 +399,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         cursor = BatchUpdateCursor(cached)
         conn = FakeConnection(cursor)
         client = AsyncMock()
+        client.resolve_column_layout.return_value = parser.source_column_layouts()[0]
         client.read_source_row.side_effect = [
             {"values": cached, "cell_meta": {}},
             {"values": verified, "cell_meta": {}},
@@ -431,6 +433,10 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["pending_sync"])
         self.assertEqual(len(client.batch_update.await_args.args[1]), 3)
+        self.assertEqual(
+            [request["column"] for request in client.batch_update.await_args.args[1]],
+            [11, 12, 14],
+        )
         cache_update.assert_awaited_once()
 
     async def test_area_accepts_multiple_leaders(self):

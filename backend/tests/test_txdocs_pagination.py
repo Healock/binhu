@@ -8,6 +8,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
+from services.parsers import get_parser
 
 
 def make_response(row_count: int, column_count: int) -> dict:
@@ -27,6 +28,77 @@ def make_response(row_count: int, column_count: int) -> dict:
 
 
 class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fullchain_layout_uses_registration_column_from_header(self):
+        parser = get_parser("全链条")
+        client = TxDocsClient("client", "token", "user")
+        current_layout = parser.source_column_layouts()[0]
+        client.read_range = AsyncMock(return_value={
+            "gridData": {
+                "rows": [{
+                    "values": [
+                        {"cellValue": {"text": column}}
+                        for column in current_layout
+                    ]
+                }]
+            }
+        })
+
+        selected = await client.resolve_column_layout(
+            "file", "sheet", 1, parser.source_column_layouts()
+        )
+        values, _ = client._decode_row({
+            "values": [
+                {"cellValue": {"text": value}}
+                for value in [
+                    "8.3", "8.5", "网格员", "冬梅", "人像圈层",
+                    "对象", "320000000000000000", "18800000000",
+                    "原地址", "", "2026-07-31 15:17:56", "无法核实",
+                    "无法核实", "无其他号码", "",
+                ]
+            ]
+        }, selected)
+
+        self.assertEqual(selected, current_layout)
+        self.assertEqual(parser.normalize_source_row(values)["创建时间"], "2026-07-31 15:17:56")
+        self.assertEqual(parser.normalize_source_row(values)["现住址"], "无法核实")
+        self.assertEqual(parser.normalize_source_row(values)["核查结果"], "无法核实")
+        self.assertEqual(parser.normalize_source_row(values)["研判"], "无其他号码")
+        self.assertEqual(parser.normalize_source_row(values)["二次反馈"], "")
+
+    async def test_fullchain_layout_keeps_legacy_fourteen_columns(self):
+        parser = get_parser("全链条")
+        client = TxDocsClient("client", "token", "user")
+        legacy_layout = parser.source_column_layouts()[1]
+        client.read_range = AsyncMock(return_value={
+            "gridData": {
+                "rows": [{
+                    "values": [
+                        {"cellValue": {"text": column}}
+                        for column in legacy_layout
+                    ]
+                }]
+            }
+        })
+
+        selected = await client.resolve_column_layout(
+            "file", "sheet", 1, parser.source_column_layouts()
+        )
+
+        self.assertEqual(selected, legacy_layout)
+
+    def test_fullchain_write_positions_follow_current_source_layout(self):
+        parser = get_parser("全链条")
+        source_columns = parser.source_column_layouts()[0]
+        values = {column: "" for column in parser.COLUMNS}
+        values.update({"创建时间": "创建", "研判": "无其他号码"})
+
+        row = parser.source_row_values(values, source_columns)
+
+        self.assertEqual(source_columns.index("研判"), 13)
+        self.assertEqual(row[9], "")
+        self.assertEqual(row[10], "创建")
+        self.assertEqual(row[13], "无其他号码")
+
     async def test_nine_column_table_is_limited_to_one_thousand_rows(self):
         client = TxDocsClient("client", "token", "user")
         client.get_sheet_row_total = AsyncMock(return_value=2001)
