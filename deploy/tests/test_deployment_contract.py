@@ -30,6 +30,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("-o BatchMode=yes", workflow)
         self.assertIn("-o StrictHostKeyChecking=yes", workflow)
         self.assertIn("-o PasswordAuthentication=no", workflow)
+        self.assertIn("curl --http1.1 --fail", workflow)
         self.assertNotIn("docker compose", workflow)
         self.assertNotIn("docker build", workflow)
 
