@@ -180,7 +180,7 @@ export default function MobileDock({
           <button
             type="button"
             className={`mobile-dock-bar__item${location.pathname === '/' ? ' is-active' : ''}`}
-            aria-label="岗位仪表盘"
+            aria-label="仪表盘"
             onClick={() => {
               if (!confirmPendingNavigation()) return
               setOpenGroupId(null)

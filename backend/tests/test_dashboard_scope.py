@@ -13,8 +13,10 @@ class ScopeCursor:
     def __init__(self, rows_by_kind=None):
         self.rows_by_kind = rows_by_kind or {}
         self.rows = []
+        self.executed_sql = []
 
     async def execute(self, sql, params=()):
+        self.executed_sql.append(sql)
         if "_area_leader_links" in sql:
             self.rows = list(self.rows_by_kind.get("areas", []))
         elif "FROM _communities" in sql:
@@ -62,6 +64,12 @@ class DashboardScopeTests(unittest.IsolatedAsyncioTestCase):
             ),
             ["长板社区"],
         )
+        community_sql = next(
+            sql for sql in cursor.executed_sql
+            if "LEFT JOIN _community_aliases" in sql
+        )
+        self.assertIn("ORDER BY community.name", community_sql)
+        self.assertNotIn("ORDER BY community.id", community_sql)
         self.assertEqual(responsibility_label("组员", ["长板社区"]), "本人")
         self.assertEqual(responsibility_label("自购房", []), "本人")
 

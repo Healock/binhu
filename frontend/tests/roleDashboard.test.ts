@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
-test('全端首页进入岗位仪表盘且在线汇总迁移到独立路由', () => {
+test('全端首页进入仪表盘且在线汇总迁移到独立路由', () => {
   const app = read('../src/App.tsx')
   const configurator = read('../src/components/DockConfigurator.tsx')
   assert.match(app, /path="\/" element=\{<RoleDashboard \/>\}/)
@@ -13,7 +13,7 @@ test('全端首页进入岗位仪表盘且在线汇总迁移到独立路由', ()
   assert.match(configurator, /locked=\{itemId === 'dashboard'\}/)
 })
 
-test('岗位仪表盘只消费后端模块并提供筛选直达', () => {
+test('仪表盘只消费后端模块并提供筛选直达', () => {
   const source = read('../src/pages/RoleDashboard.tsx')
   for (const moduleName of [
     'flow_tasks',
