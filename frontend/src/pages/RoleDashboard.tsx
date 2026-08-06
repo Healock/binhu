@@ -24,6 +24,7 @@ import {
   type RoleDashboardData,
 } from '../api/client'
 import { Panel } from '../components/ui'
+import { formatDashboardIdentityContext } from '../utils/dashboardIdentity'
 
 const percent = (value: unknown) => `${(Number(value || 0) * 100).toFixed(0)}%`
 const metric = (value: unknown, fallback = '0') => (
@@ -302,6 +303,11 @@ export default function RoleDashboard() {
   if (!data) {
     return <div className="app-page"><Alert type="error" showIcon message={error || '仪表盘读取失败'} action={<Button onClick={() => void load()}>重试</Button>} /></div>
   }
+  const identityContext = formatDashboardIdentityContext(
+    data.identity.departments,
+    data.scope.label,
+    data.scope.communities,
+  )
 
   return (
     <div className="app-page role-dashboard-page">
@@ -313,7 +319,7 @@ export default function RoleDashboard() {
               <h1>{data.identity.display_name}</h1>
               <Tag bordered={false} color="blue">{data.identity.position}</Tag>
             </div>
-            <p>{data.identity.departments.join('、') || '未关联部门'} · {data.scope.label}</p>
+            <p>{identityContext}</p>
           </div>
         </div>
         <div className="role-dashboard-hero__meta">
