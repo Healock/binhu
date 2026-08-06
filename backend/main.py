@@ -31,6 +31,7 @@ from routers.mobile_tasks import router as mobile_tasks_router
 from routers.police_dispatch import router as police_dispatch_router
 from routers.profiles import router as profiles_router
 from routers.dashboard import router as dashboard_router
+from routers.exports import router as exports_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
@@ -124,6 +125,7 @@ app.include_router(work_logs_router, dependencies=auth_dep)
 app.include_router(permission_groups_router, dependencies=auth_dep)
 app.include_router(profiles_router, dependencies=auth_dep)
 app.include_router(dashboard_router, dependencies=auth_dep)
+app.include_router(exports_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

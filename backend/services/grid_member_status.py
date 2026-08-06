@@ -53,6 +53,47 @@ def get_status_snapshot(
     }
 
 
+def apply_weekend_duty_status(
+    snapshot: dict[str, str | None],
+    *,
+    position: str,
+    as_of: date,
+    duty_positions: set[str],
+    duty_recorded: bool,
+    duty_date: date | None,
+) -> dict[str, str | None]:
+    """Project today's recorded weekend roster into the personnel status."""
+    if (
+        as_of.weekday() < 5
+        or position not in duty_positions
+        or snapshot.get("effective_status") == "离岗"
+    ):
+        return snapshot
+
+    result = dict(snapshot)
+    if not duty_recorded:
+        result.update({
+            "effective_status": "未排班",
+            "status_detail": "本周双休日备勤尚未安排",
+        })
+    elif duty_date == as_of:
+        result.update({
+            "effective_status": "在岗",
+            "status_detail": "今日备勤",
+        })
+    else:
+        if duty_date is None:
+            detail = "本周双休日休息"
+        else:
+            duty_day = "周六" if duty_date.weekday() == 5 else "周日"
+            detail = f"{duty_day}备勤，今日休息"
+        result.update({
+            "effective_status": "休息",
+            "status_detail": detail,
+        })
+    return result
+
+
 def active_member_sql(alias: str = "", date_placeholder: str = "%s") -> str:
     """生成“指定日期实际在岗”的 SQL 条件。"""
     prefix = f"{alias}." if alias else ""

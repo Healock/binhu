@@ -24,6 +24,7 @@ import {
   formatUTCTime,
   getVisitCoverage,
   getVisitSummary,
+  recordXlsxExport,
   type VisitCoverage,
   type VisitSummaryReport,
   type VisitSummaryCategory,
@@ -313,6 +314,14 @@ export default function VisitSummary() {
     setExporting(true)
     try {
       await recordActivity()
+      await recordXlsxExport({
+        export_type: 'visit_summary',
+        start_date: shownSummaryRange[0],
+        end_date: shownSummaryRange[1],
+        summary_type: shownCategoryLabel,
+        inspector_rows: visibleInspectorRows.length,
+        community_rows: visibleCommunityRows.length,
+      })
       await exportSummaryWorkbook({
         fileName: `走访汇总_${shownCategoryLabel}_${shownSummaryRange[0]}_至_${shownSummaryRange[1]}`,
         tables: [

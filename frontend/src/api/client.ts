@@ -476,6 +476,17 @@ export async function getReportTypes(): Promise<{ data: string[]; implemented: s
   return data
 }
 
+export async function recordXlsxExport(payload: {
+  export_type: 'online_summary' | 'visit_summary'
+  start_date: string
+  end_date: string
+  summary_type: string
+  inspector_rows: number
+  community_rows: number
+}): Promise<void> {
+  await api.post('/exports/xlsx', payload)
+}
+
 export interface SummaryReportConfig {
   available_types: string[]
   selected_types: string[]

@@ -13,11 +13,17 @@ from database import get_db
 from deps import require_permission, require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.grid_member_status import (
+    apply_weekend_duty_status,
     get_business_date,
     get_status_snapshot,
     validate_leave_period,
 )
-from services.personnel_positions import POSITION_CATEGORIES, normalize_position
+from services.personnel_positions import (
+    POSITION_CATEGORIES,
+    WEEKEND_DUTY_POSITION_CONFIG_KEY,
+    get_configured_positions,
+    normalize_position,
+)
 from services.privacy import mask_identity_number
 from services.member_departments import (
     get_member_departments,
@@ -360,10 +366,21 @@ def _member_to_dict(
     identity_access: bool,
     departments: list[dict] | None = None,
     account: dict | None = None,
+    weekend_duty_positions: set[str] | None = None,
+    weekend_duty_recorded: bool = False,
+    weekend_duty_date: date | None = None,
 ) -> dict:
     departments = departments or []
     primary_department = departments[0] if departments else None
     snapshot = get_status_snapshot(row[6], row[7], row[8], business_date)
+    snapshot = apply_weekend_duty_status(
+        snapshot,
+        position=str(row[3]),
+        as_of=business_date,
+        duty_positions=weekend_duty_positions or set(),
+        duty_recorded=weekend_duty_recorded,
+        duty_date=weekend_duty_date,
+    )
     result = {
         "id": row[0],
         "name": row[1],
@@ -525,6 +542,8 @@ async def list_members(
         member_ids = [int(row[0]) for row in rows]
         departments_by_member = await get_member_departments(cur, member_ids)
         accounts_by_member: dict[int, dict] = {}
+        weekend_duty_positions: set[str] = set()
+        weekend_duty_records: dict[int, date | None] = {}
         if member_ids:
             placeholders = ", ".join(["%s"] * len(member_ids))
             await cur.execute(
@@ -540,6 +559,23 @@ async def list_members(
                 }
                 for account_row in await cur.fetchall()
             }
+            if business_date.weekday() >= 5:
+                weekend_duty_positions = set(await get_configured_positions(
+                    cur,
+                    WEEKEND_DUTY_POSITION_CONFIG_KEY,
+                ))
+                week_start = business_date - timedelta(days=business_date.weekday())
+                placeholders = ", ".join(["%s"] * len(member_ids))
+                await cur.execute(
+                    f"SELECT member_id, duty_date "
+                    f"FROM _personnel_weekend_duty "
+                    f"WHERE week_start=%s AND member_id IN ({placeholders})",
+                    [week_start, *member_ids],
+                )
+                weekend_duty_records = {
+                    int(duty_row[0]): duty_row[1]
+                    for duty_row in await cur.fetchall()
+                }
 
     return {
         "data": [
@@ -550,6 +586,9 @@ async def list_members(
                 identity_access=can_manage_identity,
                 departments=departments_by_member.get(int(row[0]), []),
                 account=accounts_by_member.get(int(row[0])),
+                weekend_duty_positions=weekend_duty_positions,
+                weekend_duty_recorded=int(row[0]) in weekend_duty_records,
+                weekend_duty_date=weekend_duty_records.get(int(row[0])),
             )
             for row in rows
         ],

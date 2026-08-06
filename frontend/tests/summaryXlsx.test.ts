@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -44,4 +45,14 @@ test('汇总工作簿只导出当前可见行并保留数字格式', () => {
 test('导出文件名始终使用 XLSX 扩展名', () => {
   assert.equal(normalizeXlsxFileName('走访汇总.xlsx'), '走访汇总.xlsx')
   assert.equal(normalizeXlsxFileName('   '), '汇总数据.xlsx')
+})
+
+test('在线和走访汇总导出前都会写入操作记录', () => {
+  for (const page of ['Dashboard.tsx', 'VisitSummary.tsx']) {
+    const source = readFileSync(
+      new URL(`../src/pages/${page}`, import.meta.url),
+      'utf8',
+    )
+    assert.match(source, /await recordXlsxExport\([\s\S]*await exportSummaryWorkbook\(/)
+  }
 })
