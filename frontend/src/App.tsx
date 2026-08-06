@@ -28,7 +28,6 @@ import MobileTaskDetail from './pages/MobileTaskDetail'
 import PoliceAddressManagement from './pages/PoliceAddressManagement'
 import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
 import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
-import PeopleDirectory from './pages/PeopleDirectory'
 import PublicProfile from './pages/PublicProfile'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
@@ -111,7 +110,7 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/profile" element={<Profile />} />
-              <Route path="/people" element={<PeopleDirectory />} />
+              <Route path="/people" element={<Navigate to="/grid-members" replace />} />
               <Route path="/people/:userId" element={<PublicProfile />} />
               <Route path="/" element={<DashboardEntry />} />
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>

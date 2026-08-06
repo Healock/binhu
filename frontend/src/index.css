@@ -236,6 +236,28 @@
   margin-top: 12px;
 }
 
+.mobile-task-analysis {
+  padding: 10px 12px;
+  border: 1px solid var(--app-primary-border);
+  border-radius: 10px;
+  background: var(--app-primary-soft);
+}
+
+.mobile-task-analysis__label {
+  color: var(--app-primary-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mobile-task-analysis__value {
+  margin-top: 4px;
+  color: var(--app-text-strong);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .mobile-task-item-card__footer {
   margin-top: 12px;
   padding-top: 12px;
@@ -454,6 +476,12 @@ html[data-theme='dark'] {
   scrollbar-width: thin;
 }
 
+.contribution-calendar {
+  width: 100%;
+  max-width: 780px;
+  margin-inline: auto;
+}
+
 .contribution-calendar__scroll:focus-visible {
   border-radius: 6px;
   outline: 2px solid var(--app-primary);
@@ -491,6 +519,140 @@ html[data-theme='dark'] {
   color: var(--app-primary-text);
   background: var(--app-primary-soft);
   font-weight: 700;
+}
+
+.public-profile-page {
+  width: 100%;
+  max-width: 1180px;
+  margin-inline: auto;
+}
+
+.public-profile-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.public-profile-sidebar {
+  display: grid;
+  gap: 16px;
+}
+
+.public-profile-identity {
+  padding: 20px;
+}
+
+.public-profile-identity__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.public-profile-identity .public-profile-avatar {
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+}
+
+.public-profile-identity__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.public-profile-identity__tags .ant-tag {
+  margin: 0;
+}
+
+.public-profile-identity__joined {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-text-secondary);
+  font-size: 13px;
+}
+
+.public-profile-breakdown .app-card__body {
+  padding: 16px 18px 18px;
+}
+
+.public-profile-breakdown__list {
+  display: grid;
+  gap: 16px;
+}
+
+.public-profile-breakdown__item {
+  min-width: 0;
+}
+
+.public-profile-breakdown__track {
+  height: 7px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--contribution-0);
+}
+
+.public-profile-breakdown__bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--app-primary);
+}
+
+.public-profile-contribution .app-card__body {
+  padding: 22px 24px 20px;
+}
+
+.public-profile-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-border);
+}
+
+.public-profile-stat {
+  padding: 13px 10px;
+  border-radius: 10px;
+  text-align: center;
+  background: var(--app-surface-muted);
+}
+
+.public-profile-stat__value {
+  color: var(--app-text-strong);
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.public-profile-stat__label {
+  margin-top: 5px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.personnel-profile-link {
+  max-width: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  color: var(--app-primary);
+  background: transparent;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personnel-profile-link:hover {
+  color: var(--app-primary-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 * {
@@ -1388,6 +1550,16 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   background: rgb(51 65 85 / 0.72);
 }
 
+@media (max-width: 1199px) {
+  .public-profile-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .public-profile-sidebar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 767px) {
   .leave-settings-modal {
     top: max(12px, env(safe-area-inset-top));
@@ -1422,6 +1594,26 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   .app-card__header {
     flex-wrap: wrap;
     padding: 14px 16px;
+  }
+
+  .public-profile-sidebar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .public-profile-contribution .app-card__body {
+    padding: 18px 16px 16px;
+  }
+
+  .public-profile-stats {
+    gap: 8px;
+  }
+
+  .public-profile-stat {
+    padding: 11px 6px;
+  }
+
+  .public-profile-stat__value {
+    font-size: 18px;
   }
 
   .ops-tabs,

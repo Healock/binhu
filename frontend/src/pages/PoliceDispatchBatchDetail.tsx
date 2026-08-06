@@ -19,7 +19,7 @@ const actionLabels: Record<string, string> = {
   no_registration: '无需登记',
   transfer: '移交',
   duplicate_exclude: '重复排除',
-  manual: '人工判断',
+  manual: '待研判',
   '': '待审核',
 }
 
@@ -119,7 +119,7 @@ export default function PoliceDispatchBatchDetail() {
         <Space direction="vertical" size={2}>
           {item.duplicate_group_key && <Tag color="orange">{item.duplicate_kind === 'exact' ? '完全重复' : '重复有差异'}</Tag>}
           {item.allocation_mode === 'balanced' && <Tag color="blue">平均分配</Tag>}
-          {item.suggested_action === 'manual' && <Tag color="red">人工判断</Tag>}
+          {item.suggested_action === 'manual' && <Tag color="red">待研判</Tag>}
         </Space>
       ),
     },
@@ -234,7 +234,7 @@ export default function PoliceDispatchBatchDetail() {
               { value: 'transfer', label: '移交' },
               { value: 'balanced', label: '模糊分配' },
               { value: 'duplicate', label: '重复' },
-              { value: 'manual', label: '人工判断' },
+              { value: 'manual', label: '待研判' },
             ]}
           />
           <Button onClick={() => setKeyword(keywordInput.trim())}>查询</Button>

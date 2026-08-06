@@ -248,8 +248,11 @@ export default function GridMembers() {
       dataIndex: 'name',
       key: 'name',
       width: 110,
-      render: value => (
-        <span className="font-medium text-slate-800">{value}</span>
+      render: (_, member) => (
+        <MemberProfileLink
+          member={member}
+          onOpen={() => navigate(`/people/${member.account?.id}`)}
+        />
       ),
     },
     {
@@ -586,6 +589,7 @@ export default function GridMembers() {
                         <MobileMemberCard
                           key={member.id}
                           member={member}
+                          onViewProfile={() => navigate(`/people/${member.account?.id}`)}
                           onEdit={() => setEditing(member)}
                           onLeave={() => setLeaveEditing(member)}
                           onDelete={() => handleDelete(member.id, member.name)}
@@ -768,8 +772,31 @@ function MemberStatus({ member }: { member: GridMember }) {
   )
 }
 
+function MemberProfileLink({
+  member,
+  onOpen,
+}: {
+  member: GridMember
+  onOpen: () => void
+}) {
+  if (!member.account?.id) {
+    return <span className="font-medium text-[var(--app-text)]">{member.name}</span>
+  }
+  return (
+    <button
+      type="button"
+      className="personnel-profile-link"
+      aria-label={`查看${member.name}的个人资料`}
+      onClick={onOpen}
+    >
+      {member.name}
+    </button>
+  )
+}
+
 function MobileMemberCard({
   member,
+  onViewProfile,
   onEdit,
   onLeave,
   onDelete,
@@ -780,6 +807,7 @@ function MobileMemberCard({
   canManageIdentity,
 }: {
   member: GridMember
+  onViewProfile: () => void
   onEdit: () => void
   onLeave: () => void
   onDelete: () => void
@@ -799,10 +827,8 @@ function MobileMemberCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-base font-semibold text-slate-900">
-              {member.name}
-            </span>
+          <div className="flex flex-wrap items-center gap-2 text-base">
+            <MemberProfileLink member={member} onOpen={onViewProfile} />
             <Tag color="blue" className="m-0">
               {member.position || '组员'}
             </Tag>

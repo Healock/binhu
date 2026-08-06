@@ -216,6 +216,30 @@ def test_suggestions_require_review_and_balance_only_unmatched_pool():
     assert all(not row.get("final_action") for row in rows)
 
 
+def test_missing_phone_requires_analysis_and_is_not_assigned_to_community():
+    rows = [{
+        "source_row": 4,
+        "person_name": "甲",
+        "identity_number": "1",
+        "phone": "",
+        "original_address": "长板社区1号",
+        "transfer_note": "",
+        "source_name": "A",
+        "created_time": "",
+    }]
+
+    apply_preprocessing_suggestions(
+        rows,
+        [{"id": 1, "name": "长板", "aliases": [], "enabled": True}],
+        [],
+    )
+
+    assert rows[0]["suggested_action"] == "manual"
+    assert rows[0]["suggested_community_id"] is None
+    assert rows[0]["allocation_mode"] == "missing_phone"
+    assert "缺少手机号" in rows[0]["suggestion_reason"]
+
+
 def test_duplicate_group_marks_exact_and_conflicting_rows():
     rows = [
         {"source_row": 1, "person_name": "甲", "identity_number": "A1", "phone": "1", "original_address": "地址", "transfer_note": "", "source_name": "A", "created_time": ""},
@@ -549,6 +573,27 @@ def test_unique_task_cannot_be_excluded_as_duplicate():
         ))
 
     assert error.value.status_code == 400
+
+
+def test_missing_phone_cannot_be_reviewed_for_dispatch():
+    cursor = _ReviewCursor((
+        7, 1, "not_required", "", "甲", "32050020000101001X", "", "长板1号",
+    ))
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_review_one(
+            cursor,
+            11,
+            TaskReview(
+                expected_version=1,
+                final_action="dispatch",
+                final_community_id=1,
+            ),
+            {"id": 3, "username": "reviewer"},
+        ))
+
+    assert error.value.status_code == 400
+    assert "手机号" in str(error.value.detail)
 
 
 def test_feedback_workbook_has_three_formatted_sheets_and_text_identifiers():

@@ -108,13 +108,6 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
     icon: 'resources',
     items: [
       {
-        id: 'people',
-        path: '/people',
-        label: '人员主页',
-        shortLabel: '人员主页',
-        icon: 'members',
-      },
-      {
         id: 'grid_members',
         path: '/grid-members',
         label: '人员管理',

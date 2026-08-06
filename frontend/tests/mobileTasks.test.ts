@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -165,4 +166,19 @@ test('只有手机浏览器会直接启动 tel 协议', () => {
   assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Linux; Android 15)'), true)
   assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Windows NT 10.0)'), false)
   assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Macintosh)', false, 5), true)
+})
+
+test('已研判任务在列表和详情直接显示研判结果', () => {
+  const listSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(listSource, /task\.review_stage === 'analyzed' && task\.summary\.analysis/)
+  assert.match(listSource, /研判结果/)
+  assert.match(detailSource, /data\.workflow\.analysis_fields/)
+  assert.match(detailSource, /研判结果/)
 })

@@ -46,7 +46,7 @@ const actionLabels: Record<string, string> = {
   no_registration: '无需登记',
   transfer: '移交',
   duplicate_exclude: '重复排除',
-  manual: '人工判断',
+  manual: '待研判',
   '': '待审核',
 }
 
@@ -67,7 +67,7 @@ const categoryOptions = [
   { label: '移交', value: 'transfer' },
   { label: '模糊分配', value: 'balanced' },
   { label: '重复', value: 'duplicate' },
-  { label: '人工判断', value: 'manual' },
+  { label: '待研判', value: 'manual' },
 ]
 
 function CopyButton({ value }: { value: string }) {
@@ -94,7 +94,9 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
       ? { color: 'error', text: '内容冲突' }
       : item.publish_status === 'retryable'
         ? { color: 'orange', text: '可安全重试' }
-        : item.task_status === 'pending_review'
+        : item.task_status === 'pending_review' && item.suggested_action === 'manual'
+          ? { color: 'warning', text: '待研判' }
+          : item.task_status === 'pending_review'
           ? { color: 'orange', text: '待审核' }
           : item.task_status === 'completed'
             ? { color: 'success', text: '已完成' }
@@ -156,7 +158,7 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
           </Tag>
         )}
         {item.allocation_mode === 'balanced' && <Tag color="blue">模糊地址 · 平均分配</Tag>}
-        {item.suggested_action === 'manual' && <Tag color="red">必须逐条判断</Tag>}
+        {item.suggested_action === 'manual' && <Tag color="red">需人工研判</Tag>}
       </div>
       {item.publish_error && (
         <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
@@ -520,7 +522,7 @@ export default function PoliceDispatchWorkbench() {
                 ['待审核', activeBatch.counts.pending_review],
                 ['待发布', activeBatch.counts.pending_publish],
                 ['重复', activeBatch.counts.duplicate],
-                ['异常', activeBatch.counts.abnormal],
+                ['待研判', activeBatch.counts.abnormal],
               ].map(([label, value]) => (
                 <div key={String(label)} className="rounded-xl bg-white/10 px-2 py-2.5">
                   <div className="text-lg font-semibold">{value}</div>

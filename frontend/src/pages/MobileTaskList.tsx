@@ -234,6 +234,12 @@ export default function MobileTaskList() {
                   </dl>
                 )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
+                {task.review_stage === 'analyzed' && task.summary.analysis && (
+                  <div className="mobile-task-analysis">
+                    <div className="mobile-task-analysis__label">研判结果</div>
+                    <div className="mobile-task-analysis__value">{task.summary.analysis}</div>
+                  </div>
+                )}
                 <div className="mobile-task-item-card__footer flex items-center justify-between gap-3 border-t border-[var(--app-border)]">
                   <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
                     {task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}

@@ -782,6 +782,7 @@ export interface MobileTaskSummaryFields {
   address: string
   date: string
   result: string
+  analysis: string
 }
 
 export interface MobileTaskItem {
@@ -1488,7 +1489,7 @@ export interface PoliceDispatchTask {
   suggested_community_id: number | null
   suggested_community_name: string
   suggestion_reason: string
-  allocation_mode: 'matched' | 'balanced' | 'conflict' | ''
+  allocation_mode: 'matched' | 'balanced' | 'conflict' | 'missing_phone' | ''
   final_action: 'dispatch' | 'no_registration' | 'transfer' | 'duplicate_exclude' | ''
   final_community_id: number | null
   final_community_name: string

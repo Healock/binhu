@@ -18,6 +18,7 @@ from openpyxl.utils import get_column_letter
 
 MAX_POLICE_FILE_BYTES = 30 * 1024 * 1024
 FINAL_ACTIONS = {"dispatch", "no_registration", "transfer", "duplicate_exclude"}
+MISSING_PHONE_ANALYSIS_REASON = "缺少手机号，需基础管控先研判；补齐手机号后才能下发"
 
 
 class PoliceWorkbookError(ValueError):
@@ -360,6 +361,7 @@ def apply_preprocessing_suggestions(
     for row in rows:
         address = normalize_space(row.get("original_address", ""))
         note = normalize_space(row.get("transfer_note", ""))
+        phone = normalize_space(row.get("phone", ""))
         combined = f"{address} {note}"
         row.update({
             "suggested_action": "dispatch",
@@ -380,6 +382,14 @@ def apply_preprocessing_suggestions(
                 "suggested_action": "manual",
                 "suggestion_reason": f"缺少必要字段：{'、'.join(missing)}",
                 "allocation_mode": "conflict",
+            })
+            continue
+        if not phone:
+            row.update({
+                "suggested_action": "manual",
+                "suggested_community_id": None,
+                "suggestion_reason": MISSING_PHONE_ANALYSIS_REASON,
+                "allocation_mode": "missing_phone",
             })
             continue
         if any(word in combined for word in HOTEL_WORDS):
