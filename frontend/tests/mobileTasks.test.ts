@@ -50,10 +50,13 @@ test('基础管控和中队长手机端自动分流，桌面端可用同一岗�
   assert.equal(shouldUsePoliceDispatchWorkbench('组长', true), false)
 })
 
-test('流口岗手机导航复用旧配置 ID 并显示新名称', () => {
+test('统一仪表盘使用新固定入口，旧在线汇总 ID 保持兼容', () => {
+  const dashboard = navigationItemById('dashboard')!
   const summary = navigationItemById('online_summary')!
   const query = navigationItemById('online_query')!
-  assert.equal(mobileNavigationItemLabel(summary, '组员', true), '首页')
+  assert.equal(mobileNavigationItemLabel(dashboard, '组员', true), '首页')
+  assert.equal(summary.path, '/summary')
+  assert.equal(mobileNavigationItemLabel(summary, '组员', true), '在线汇总')
   assert.equal(mobileNavigationItemLabel(query, '组长'), '任务处理')
   assert.equal(mobileNavigationItemLabel(query, '基础管控'), '下发任务')
   assert.equal(routeIsActive('/tasks/全链条/row', query), false)

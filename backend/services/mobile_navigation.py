@@ -11,6 +11,7 @@ MAX_DOCK_GROUPS = 4
 
 GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     "workspace": (
+        "dashboard",
         "online_summary",
         "online_query",
         "flow_tasks",
@@ -174,13 +175,23 @@ def normalize_mobile_dock_config(
         seen_groups.add(group_id)
         groups.append({"id": group_id, "items": items})
 
-    return (
-        {"groups": groups}
-        if groups
-        else default_mobile_dock_config(
+    if not groups:
+        groups = default_mobile_dock_config(
             role, permissions, permission_group_codes
-        )
+        )["groups"]
+    workspace = next(
+        (group for group in groups if group["id"] == "workspace"), None
     )
+    if workspace is None:
+        workspace = {"id": "workspace", "items": ["dashboard"]}
+        groups.insert(0, workspace)
+    else:
+        workspace["items"] = [
+            "dashboard",
+            *[item for item in workspace["items"] if item != "dashboard"],
+        ]
+        groups = [workspace, *[group for group in groups if group is not workspace]]
+    return {"groups": groups[:MAX_DOCK_GROUPS]}
 
 
 def validate_mobile_dock_config(
@@ -230,7 +241,18 @@ def validate_mobile_dock_config(
         seen_groups.add(group_id)
         groups.append({"id": group_id, "items": items})
 
-    return {"groups": groups}
+    workspace = next(
+        (group for group in groups if group["id"] == "workspace"), None
+    )
+    if workspace is None:
+        groups.insert(0, {"id": "workspace", "items": ["dashboard"]})
+    else:
+        workspace["items"] = [
+            "dashboard",
+            *[item for item in workspace["items"] if item != "dashboard"],
+        ]
+        groups = [workspace, *[group for group in groups if group is not workspace]]
+    return {"groups": groups[:MAX_DOCK_GROUPS]}
 
 
 def serialize_mobile_dock_config(value: dict[str, Any]) -> str:

@@ -463,7 +463,7 @@ function DatabasesTab() {
           loading={loading}
           dataSource={tables}
           scroll={{ x: 900 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
           columns={[
             { title: '表名', dataIndex: 'name', width: 280, ellipsis: true },
             { title: '引擎', dataIndex: 'engine', width: 100 },
@@ -668,7 +668,7 @@ function BackupsTab() {
           loading={loading}
           dataSource={jobs}
           scroll={{ x: 1100 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
           columns={[
             { title: '任务', dataIndex: 'id', width: 80, render: value => `#${value}` },
             { title: '来源', dataIndex: 'trigger_source', width: 90, render: value => STATUS_LABELS[value] || value },

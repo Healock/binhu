@@ -51,8 +51,18 @@ export default function MobileTaskList() {
   const scope: MobileTaskScope = adminMode
     ? 'all'
     : requestedScope === 'community' ? 'community' : 'mine'
-  const [status, setStatus] = useState<MobileTaskStatus>('pending')
-  const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>('all')
+  const requestedStatus = searchParams.get('status')
+  const requestedReviewStage = searchParams.get('review_stage')
+  const [status, setStatus] = useState<MobileTaskStatus>(
+    ['pending', 'review', 'completed', 'all'].includes(requestedStatus || '')
+      ? requestedStatus as MobileTaskStatus
+      : 'pending',
+  )
+  const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>(
+    ['waiting_analysis', 'analyzed'].includes(requestedReviewStage || '')
+      ? requestedReviewStage as MobileTaskReviewStage
+      : 'all',
+  )
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [rows, setRows] = useState<MobileTaskItem[]>([])
@@ -90,8 +100,20 @@ export default function MobileTaskList() {
 
   useEffect(() => { void load() }, [load])
 
+  useEffect(() => {
+    const next = new URLSearchParams()
+    next.set('type', parserType)
+    next.set('scope', scope)
+    next.set('status', status)
+    if (status === 'review' && reviewStage !== 'all') next.set('review_stage', reviewStage)
+    setSearchParams(next, { replace: true })
+  }, [parserType, reviewStage, scope, setSearchParams, status])
+
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
-    setSearchParams({ type, scope: nextScope })
+    const next = new URLSearchParams(searchParams)
+    next.set('type', type)
+    next.set('scope', nextScope)
+    setSearchParams(next)
   }
 
   const dial = async (phone: string) => {

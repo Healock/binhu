@@ -11,6 +11,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from database import get_db
 from deps import require_permission
 from services.data_scope import community_names_for_scopes, community_scopes
+from services.dashboard_scope import (
+    formal_community,
+    member_position,
+    requested_responsibility_communities,
+)
 from services.permissions import VISIT_IMPORT, VISIT_SUMMARY_VIEW
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_timezone_name
@@ -99,6 +104,8 @@ async def summary(
     start_date: date = Query(...),
     end_date: date = Query(...),
     category: Literal["rental", "self_owned"] = Query("rental"),
+    scope: Literal["permission", "responsibility"] = Query("permission"),
+    community: str = Query("", max_length=100),
     user: dict = Depends(require_permission(VISIT_SUMMARY_VIEW)),
     conn=Depends(get_db),
 ):
@@ -107,7 +114,30 @@ async def summary(
             status_code=400,
             detail="开始日期不能晚于结束日期",
         )
-    scopes = community_scopes(user, VISIT_SUMMARY_VIEW)
+    inspector_scope = None
+    if scope == "responsibility":
+        if member_position(user) == "自购房" and category == "self_owned":
+            scopes = None
+            inspector_scope = str(
+                (user.get("member") or {}).get("name") or ""
+            ).strip()
+        else:
+            async with conn.cursor() as cur:
+                try:
+                    scopes = await requested_responsibility_communities(
+                        cur, user, VISIT_SUMMARY_VIEW, community
+                    )
+                except PermissionError as exc:
+                    raise HTTPException(403, str(exc)) from exc
+    else:
+        scopes = community_scopes(user, VISIT_SUMMARY_VIEW)
+        requested = str(community or "").strip()
+        if requested:
+            async with conn.cursor() as cur:
+                formal = await formal_community(cur, requested)
+            if not formal or (scopes is not None and formal not in scopes):
+                raise HTTPException(403, "所选社区超出当前账号的数据范围")
+            scopes = [formal]
     names = (
         await community_names_for_scopes(conn, scopes)
         if scopes is not None
@@ -120,6 +150,7 @@ async def summary(
         category=category,
         community_scope=scopes,
         community_names=names,
+        inspector_scope=inspector_scope,
     )
 
 

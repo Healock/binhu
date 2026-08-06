@@ -13,10 +13,12 @@ import {
   TeamOutlined,
   UploadOutlined,
   UserOutlined,
+  HomeOutlined,
 } from '@ant-design/icons'
 import type { NavigationIconName } from '../navigation/mobileNavigation'
 
 const ICONS = {
+  dashboard: HomeOutlined,
   workspace: AppstoreOutlined,
   resources: FolderOpenOutlined,
   system: SettingOutlined,

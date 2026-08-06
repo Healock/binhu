@@ -324,6 +324,7 @@ async def get_attendance_context(
     end_date: date,
     selected_positions: set[str],
     community_scope: list[str] | None = None,
+    member_names: list[str] | None = None,
 ) -> dict[str, Any]:
     if selected_positions:
         placeholders = ", ".join(["%s"] * len(selected_positions))
@@ -345,6 +346,18 @@ async def get_attendance_context(
                 scope_params = list(community_scope)
             else:
                 scope_clause = "AND 1=0"
+        member_clause = ""
+        member_params: list[str] = []
+        if member_names is not None:
+            normalized_names = [
+                str(name).strip() for name in member_names if str(name).strip()
+            ]
+            if normalized_names:
+                member_placeholders = ", ".join(["%s"] * len(normalized_names))
+                member_clause = f"AND member.name IN ({member_placeholders})"
+                member_params = normalized_names
+            else:
+                member_clause = "AND 1=0"
         await cur.execute(
             f"""
             SELECT member.id, member.name, community.name, member.position,
@@ -358,9 +371,10 @@ async def get_attendance_context(
               ON community.id=department.community_id
             WHERE member.position IN ({placeholders})
               {scope_clause}
+              {member_clause}
             ORDER BY member.name, link.sort_order, community.name
             """,
-            [*sorted(selected_positions), *scope_params],
+            [*sorted(selected_positions), *scope_params, *member_params],
         )
         member_rows = await cur.fetchall()
     else:

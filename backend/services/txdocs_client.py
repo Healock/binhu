@@ -542,7 +542,7 @@ class TxDocsClient:
     ) -> dict:
         """按原单元格类型构建单格更新，物理行号为一基。"""
         metadata = metadata or {"type": "text"}
-        cell_type = metadata.get("type")
+        cell_type = metadata.get("write_type") or metadata.get("type")
         cell_value: dict
         if cell_type == "number" and str(value).strip():
             try:
@@ -551,11 +551,11 @@ class TxDocsClient:
                 raise ValueError("该单元格必须填写数字") from exc
             cell_value = {"number": number}
         elif cell_type == "select":
-            options = metadata.get("options") or []
+            options = metadata.get("write_options") or metadata.get("options") or []
             by_text = {str(option.get("text") or ""): option for option in options}
             requested = (
                 [part.strip() for part in str(value).split(",") if part.strip()]
-                if metadata.get("multiple")
+                if metadata.get("write_multiple", metadata.get("multiple"))
                 else ([str(value).strip()] if str(value).strip() else [])
             )
             missing = [item for item in requested if item not in by_text]
@@ -565,7 +565,9 @@ class TxDocsClient:
                 "select": {
                     "value": [by_text[item].get("id") for item in requested],
                     "options": options,
-                    "multiple": bool(metadata.get("multiple")),
+                    "multiple": bool(
+                        metadata.get("write_multiple", metadata.get("multiple"))
+                    ),
                 }
             }
         else:

@@ -7,6 +7,7 @@ import type {
 } from '../types'
 
 export type NavigationIconName =
+  | 'dashboard'
   | 'workspace'
   | 'resources'
   | 'system'
@@ -49,8 +50,16 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
     icon: 'workspace',
     items: [
       {
-        id: 'online_summary',
+        id: 'dashboard',
         path: '/',
+        label: '岗位仪表盘',
+        shortLabel: '首页',
+        icon: 'dashboard',
+        end: true,
+      },
+      {
+        id: 'online_summary',
+        path: '/summary',
         label: '在线数据汇总',
         shortLabel: '在线汇总',
         icon: 'summary',
@@ -254,9 +263,25 @@ export function normalizeMobileDockConfig(
     return [{ id: rawGroup.id, items }]
   })
 
-  return groups.length > 0
-    ? { groups }
-    : defaultMobileDockConfig(role, permissions, permissionGroupCodes)
+  const normalized = groups.length > 0
+    ? groups
+    : defaultMobileDockConfig(role, permissions, permissionGroupCodes).groups
+  const workspaceDefinition = definitions.get('workspace')
+  const workspace = normalized.find(group => group.id === 'workspace')
+  if (workspaceDefinition) {
+    const dashboardId: MobileNavigationItemId = 'dashboard'
+    if (workspace) {
+      workspace.items = [dashboardId, ...workspace.items.filter(item => item !== dashboardId)]
+    } else {
+      normalized.unshift({ id: 'workspace', items: [dashboardId] })
+    }
+  }
+  return {
+    groups: [
+      ...normalized.filter(group => group.id === 'workspace'),
+      ...normalized.filter(group => group.id !== 'workspace'),
+    ].slice(0, MAX_DOCK_GROUPS),
+  }
 }
 
 function moveEntry<T>(items: T[], fromIndex: number, toIndex: number): T[] {
@@ -341,9 +366,8 @@ export function mobileNavigationItemLabel(
 ): string {
   const flowPost = position === '组员' || position === '组长'
   const internalPost = position === '基础管控' || position === '中队长'
-  if (flowPost && item.id === 'online_summary') return '首页'
+  if (item.id === 'dashboard') return '首页'
   if (flowPost && item.id === 'online_query') return '任务处理'
-  if (internalPost && item.id === 'online_summary') return '首页'
   if (internalPost && item.id === 'online_query') return '下发任务'
   return short ? item.shortLabel : item.label
 }

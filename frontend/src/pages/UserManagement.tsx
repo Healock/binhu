@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Input, Modal, Select, Switch, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
+import { Link } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import { EmptyState, LoadingState, PageHeader } from '../components/ui'
 import {
@@ -185,7 +186,13 @@ export default function UserManagement() {
       title: '姓名', dataIndex: 'display_name', width: 140,
       render: (value, user) => (
         <div>
-          <div className="font-medium text-slate-900">{value}</div>
+          <Link
+            className="font-medium text-[var(--app-primary)] hover:underline"
+            to={`/people/${user.id}`}
+            state={{ returnTo: '/users', returnLabel: '返回用户管理' }}
+          >
+            {user.member?.name || value}
+          </Link>
           {user.password_is_temporary && <Tag color="orange">临时密码</Tag>}
         </div>
       ),

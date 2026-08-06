@@ -179,8 +179,14 @@ export default function PoliceDispatchWorkbench() {
   const [tasks, setTasks] = useState<PoliceDispatchTask[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [status, setStatus] = useState('pending_review')
-  const [category, setCategory] = useState('all')
+  const requestedStatus = searchParams.get('status') || 'pending_review'
+  const requestedCategory = searchParams.get('category') || 'all'
+  const [status, setStatus] = useState(
+    statusOptions.some(option => option.value === requestedStatus) ? requestedStatus : 'pending_review',
+  )
+  const [category, setCategory] = useState(
+    categoryOptions.some(option => option.value === requestedCategory) ? requestedCategory : 'all',
+  )
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
   const [loading, setLoading] = useState(true)
@@ -222,7 +228,13 @@ export default function PoliceDispatchWorkbench() {
         ? requested
         : result.active_batch?.id || null
       setBatchId(nextId)
-      if (nextId) setSearchParams({ batch: String(nextId) }, { replace: true })
+      if (nextId) {
+        const next = new URLSearchParams(searchParams)
+        next.set('batch', String(nextId))
+        next.set('status', status)
+        next.set('category', category)
+        setSearchParams(next, { replace: true })
+      }
       setError('')
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '任务工作台读取失败')
@@ -261,9 +273,22 @@ export default function PoliceDispatchWorkbench() {
   useEffect(() => { void loadHome() }, [])
   useEffect(() => { if (batchId) void loadTasks(1) }, [batchId, status, category, appliedKeyword])
 
+  useEffect(() => {
+    if (!batchId) return
+    const next = new URLSearchParams(searchParams)
+    next.set('batch', String(batchId))
+    next.set('status', status)
+    next.set('category', category)
+    setSearchParams(next, { replace: true })
+  }, [batchId, category, setSearchParams, status])
+
   const changeBatch = (value: number) => {
     setBatchId(value)
-    setSearchParams({ batch: String(value) }, { replace: true })
+    const next = new URLSearchParams(searchParams)
+    next.set('batch', String(value))
+    next.set('status', status)
+    next.set('category', category)
+    setSearchParams(next, { replace: true })
     setPage(1)
   }
 
@@ -476,7 +501,7 @@ export default function PoliceDispatchWorkbench() {
     : []
 
   return (
-    <div className="mx-auto max-w-7xl space-y-4 pb-4">
+    <div className="police-dispatch-workbench mx-auto max-w-7xl space-y-4 pb-4">
       <section className="app-card overflow-hidden border-0 bg-gradient-to-br from-blue-700 to-indigo-700 p-5 text-white shadow-lg">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -612,7 +637,7 @@ export default function PoliceDispatchWorkbench() {
         <Spin spinning={detailLoading}>
           {selected && (
             <div className="space-y-4 pb-4">
-              <section className="rounded-2xl bg-slate-50 p-4">
+              <section className="app-surface-muted rounded-2xl p-4">
                 {[
                   ['来源', selected.source_name],
                   ['身份证号', selected.identity_number],

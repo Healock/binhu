@@ -21,7 +21,14 @@ from services.report_overview import (
 from services.report_view import project_report_payload
 from services.data_scope import (
     allowed_community_names,
+    community_names_for_scopes,
+    community_scopes,
     filter_report_payload,
+)
+from services.dashboard_scope import (
+    formal_community,
+    member_position,
+    requested_responsibility_communities,
 )
 from services.permissions import (
     ONLINE_SUMMARY_VIEW,
@@ -35,6 +42,7 @@ builder = DailyReportBuilder()
 REPORT_TYPES = ["全链条", "出租房屋核查", "寄递业", "疑似未注销模型三", "疑似返苏", "总汇总表"]
 # 分表已实现的类型
 IMPLEMENTED_SUBTYPES = [t for t in IMPLEMENTED_TYPES] + ["总汇总表"]
+ScopeMode = Literal["permission", "responsibility"]
 
 
 class SummaryConfigUpdate(BaseModel):
@@ -86,6 +94,66 @@ def _column_mode(
     if requested_mode:
         return requested_mode
     return "two" if user.get("report_column_mode") == "two" else "three"
+
+
+async def _requested_formal_communities(
+    cur,
+    user: dict,
+    scope: ScopeMode,
+    community: str,
+) -> list[str] | None:
+    if scope == "responsibility":
+        try:
+            return await requested_responsibility_communities(
+                cur, user, ONLINE_SUMMARY_VIEW, community
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+    allowed = community_scopes(user, ONLINE_SUMMARY_VIEW)
+    requested = str(community or "").strip()
+    if not requested:
+        return allowed
+    formal = await formal_community(cur, requested)
+    if not formal or (allowed is not None and formal not in allowed):
+        raise HTTPException(403, "所选社区超出当前账号的数据范围")
+    return [formal]
+
+
+async def _overview_community_names(conn, formal: list[str] | None):
+    return (
+        await community_names_for_scopes(conn, formal)
+        if formal is not None
+        else None
+    )
+
+
+async def _formal_communities_for_endpoint(
+    conn,
+    user: dict,
+    scope: ScopeMode,
+    community: str,
+) -> list[str] | None:
+    """兼容内部直接调用；真实 HTTP 请求始终由依赖注入数据库连接。"""
+    normalized_scope: ScopeMode = (
+        scope
+        if isinstance(scope, str) and scope in {"permission", "responsibility"}
+        else "permission"
+    )
+    normalized_community = community if isinstance(community, str) else ""
+    if not hasattr(conn, "cursor"):
+        if normalized_scope != "permission" or normalized_community.strip():
+            raise RuntimeError("职责范围请求需要数据库连接")
+        return community_scopes(user, ONLINE_SUMMARY_VIEW)
+    async with conn.cursor() as cur:
+        return await _requested_formal_communities(
+            cur, user, normalized_scope, normalized_community
+        )
+
+
+def _responsibility_inspector(user: dict, scope: ScopeMode) -> str | None:
+    if scope != "responsibility" or member_position(user) != "组员":
+        return None
+    return str((user.get("member") or {}).get("name") or "").strip() or None
 
 
 @router.get("/types")
@@ -150,14 +218,22 @@ async def get_overview(
     end_date: str = Query(..., description="yyyy-MM-dd"),
     parser_type: str = Query("全链条"),
     user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    scope: ScopeMode = Query("permission"),
+    community: str = Query("", max_length=100),
+    conn=Depends(get_db),
 ):
     """读取跟随当前业务类型和日期区间变化的数据概览。"""
     try:
+        async with conn.cursor() as cur:
+            formal = await _requested_formal_communities(
+                cur, user, scope, community
+            )
         return await get_online_overview(
             start_date,
             end_date,
             parser_type,
-            await allowed_community_names(user),
+            await _overview_community_names(conn, formal),
+            inspector=_responsibility_inspector(user, scope),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -174,9 +250,16 @@ async def get_overview_details(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    scope: ScopeMode = Query("permission"),
+    community: str = Query("", max_length=100),
+    conn=Depends(get_db),
 ):
     """读取与概览卡片数量严格一致的任务明细。"""
     try:
+        async with conn.cursor() as cur:
+            formal = await _requested_formal_communities(
+                cur, user, scope, community
+            )
         return await get_online_overview_details(
             start_date,
             end_date,
@@ -184,7 +267,8 @@ async def get_overview_details(
             category,
             page=page,
             page_size=page_size,
-            community=await allowed_community_names(user),
+            community=await _overview_community_names(conn, formal),
+            inspector=_responsibility_inspector(user, scope),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -196,16 +280,22 @@ async def get_report(
     parser_type: str = Query("全链条"),
     column_mode: Optional[Literal["two", "three"]] = Query(None),
     user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    scope: ScopeMode = Query("permission"),
+    community: str = Query("", max_length=100),
+    conn=Depends(get_db),
 ):
     """查看指定日期的分汇总表或总汇总表"""
+    formal = await _formal_communities_for_endpoint(
+        conn, user, scope, community
+    )
     if parser_type == "总汇总表":
         result = await get_summary(report_date)
     else:
         result = await builder.get_report(report_date, parser_type)
+    inspector = _responsibility_inspector(user, scope)
     result = filter_report_payload(
-        result,
-        user,
-        await allowed_community_names(user),
+        result, user, formal,
+        [inspector] if inspector else None,
     )
     return project_report_payload(result, _column_mode(column_mode, user))
 
@@ -217,21 +307,29 @@ async def get_report_range_endpoint(
     parser_type: str = Query("全链条"),
     column_mode: Optional[Literal["two", "three"]] = Query(None),
     user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    scope: ScopeMode = Query("permission"),
+    community: str = Query("", max_length=100),
+    conn=Depends(get_db),
 ):
     """按时间区间查看汇总表（任务流水去重后重算比例）。"""
     try:
+        formal = await _formal_communities_for_endpoint(
+            conn, user, scope, community
+        )
         if start_date > end_date:
             return {"exists": False, "message": "起始日期不能晚于结束日期"}
         if parser_type == "总汇总表":
             result = await get_summary_range(start_date, end_date)
         else:
             result = await get_report_range(start_date, end_date, parser_type)
+        inspector = _responsibility_inspector(user, scope)
         result = filter_report_payload(
-            result,
-            user,
-            await allowed_community_names(user),
+            result, user, formal,
+            [inspector] if inspector else None,
         )
         return project_report_payload(result, _column_mode(column_mode, user))
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()

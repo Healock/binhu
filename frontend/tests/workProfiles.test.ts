@@ -49,7 +49,7 @@ test('人员管理姓名进入个人资料且旧目录地址回到人员管理',
     new URL('../src/App.tsx', import.meta.url),
     'utf8',
   )
-  assert.match(membersSource, /navigate\(`\/people\/\$\{member\.account\?\.id\}`\)/)
+  assert.match(membersSource, /navigate\(`\/people\/\$\{member\.account\?\.id\}`,[\s\S]*returnTo: '\/grid-members'/)
   assert.match(appSource, /path="\/people" element=\{<Navigate to="\/grid-members" replace \/>\}/)
   assert.equal(appSource.includes('PeopleDirectory'), false)
 })
@@ -77,7 +77,8 @@ test('公开个人主页不渲染用户名或敏感字段', () => {
     assert.equal(source.includes(forbidden), false, forbidden)
   }
   assert.match(source, /public-profile-layout/)
-  assert.match(source, /返回人员管理/)
+  assert.match(source, /returnState\?\.returnTo \|\| '\/'/)
+  assert.match(source, /returnState\?\.returnLabel \|\| '返回仪表盘'/)
 })
 
 test('登录错误提示与按钮使用独立间距容器', () => {

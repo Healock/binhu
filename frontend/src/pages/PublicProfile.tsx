@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Empty, Select, Skeleton, Tag } from 'antd'
 import { ArrowLeftOutlined, CalendarOutlined } from '@ant-design/icons'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { getPublicProfile } from '../api/client'
 import type { PublicProfile as PublicProfileType } from '../types'
 import ContributionCalendar from '../components/ContributionCalendar'
@@ -13,12 +13,16 @@ function profileError(error: any): string {
 
 export default function PublicProfile() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { userId } = useParams()
   const profileId = Number(userId)
   const [year, setYear] = useState(new Date().getFullYear())
   const [profile, setProfile] = useState<PublicProfileType | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const returnState = location.state as { returnTo?: string; returnLabel?: string } | null
+  const returnTo = returnState?.returnTo || '/'
+  const returnLabel = returnState?.returnLabel || '返回仪表盘'
 
   useEffect(() => {
     if (!Number.isInteger(profileId) || profileId <= 0) {
@@ -52,8 +56,8 @@ export default function PublicProfile() {
         <PageHeader
           title="个人资料"
           actions={(
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/grid-members')}>
-              返回人员管理
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(returnTo)}>
+              {returnLabel}
             </Button>
           )}
         />
@@ -72,8 +76,8 @@ export default function PublicProfile() {
         title="个人资料"
         description="内部公开资料与平台记录的实际工作贡献"
         actions={(
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/grid-members')}>
-            返回人员管理
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(returnTo)}>
+            {returnLabel}
           </Button>
         )}
       />

@@ -107,6 +107,12 @@ export default function NotificationCenter() {
     void load(true)
   }
 
+  useEffect(() => {
+    const openFromDashboard = () => handleOpen()
+    window.addEventListener('binhu:open-notification-center', openFromDashboard)
+    return () => window.removeEventListener('binhu:open-notification-center', openFromDashboard)
+  }, [load])
+
   const handleRead = async (notification: AppNotification) => {
     if (notification.is_read) return
     try {

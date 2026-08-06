@@ -158,12 +158,12 @@ test('读取配置时去重、过滤未知项和无权限页面并保留顺序',
   assert.deepEqual(config, {
     groups: [
       {
-        id: 'resources',
-        items: ['communities'],
+        id: 'workspace',
+        items: ['dashboard', 'visit_summary', 'online_summary'],
       },
       {
-        id: 'workspace',
-        items: ['visit_summary', 'online_summary'],
+        id: 'resources',
+        items: ['communities'],
       },
     ],
   })
@@ -197,6 +197,7 @@ test('读取配置时丢弃空分类并保留其余有效分类', () => {
 
   assert.deepEqual(config, {
     groups: [
+      { id: 'workspace', items: ['dashboard'] },
       { id: 'resources', items: ['grid_members'] },
       { id: 'system', items: ['settings'] },
     ],
@@ -223,10 +224,21 @@ test('拖动分类和页面后按目标位置保存顺序', () => {
   )
   assert.deepEqual(
     movedItems.groups.find(group => group.id === 'workspace')?.items,
-    ['visit_summary', 'online_summary', 'online_query'],
+    ['dashboard', 'visit_summary', 'online_summary', 'online_query'],
   )
   assert.deepEqual(
     original.groups.map(group => group.id),
     ['workspace', 'resources', 'system'],
   )
+})
+
+test('仪表盘固定为 Dock 第一项且旧配置会自动补齐', () => {
+  const oldConfig = normalizeMobileDockConfig({
+    groups: [{ id: 'system', items: ['settings'] }],
+  }, 'member')
+  assert.deepEqual(oldConfig.groups[0], {
+    id: 'workspace',
+    items: ['dashboard'],
+  })
+  assert.equal(defaultMobileDockConfig('member').groups[0].items[0], 'dashboard')
 })

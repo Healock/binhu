@@ -281,6 +281,7 @@ async def get_visit_summary(
     attendance_context: dict[str, Any] | None = None,
     community_scope: list[str] | str | None = None,
     community_names: list[str] | None = None,
+    inspector_scope: str | None = None,
 ) -> dict[str, Any]:
     """查询闭区间内的走访，并按真实在岗人日计算社区人均值。"""
     if category not in VISIT_CATEGORY_LABELS:
@@ -316,6 +317,12 @@ async def get_visit_summary(
                 query_params = (*query_params, *allowed)
             else:
                 community_clause = "AND 1=0"
+        inspector_clause = ""
+        if inspector_scope is not None:
+            inspector_clause = (
+                "AND LOWER(TRIM(`操作人`))=LOWER(TRIM(%s))"
+            )
+            query_params = (*query_params, str(inspector_scope).strip())
         await cur.execute(
             f"""
             SELECT
@@ -330,6 +337,7 @@ async def get_visit_summary(
             FROM t_visit_details
             WHERE `业务日期` BETWEEN %s AND %s
               {community_clause}
+              {inspector_clause}
             GROUP BY
                 `业务日期`,
                 COALESCE(NULLIF(TRIM(`社区`), ''), '未分配社区'),
@@ -354,6 +362,11 @@ async def get_visit_summary(
                 community_scope=(
                     community_scope if isinstance(community_scope, list)
                     else ([community_scope] if community_scope else community_scope)
+                ),
+                member_names=(
+                    [str(inspector_scope).strip()]
+                    if inspector_scope is not None
+                    else None
                 ),
             )
 

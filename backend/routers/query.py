@@ -81,6 +81,38 @@ def _same_value(left: str, right: str, cell_type: str) -> bool:
     return str(left or "").strip() == str(right or "").strip()
 
 
+def _physical_cell_type(metadata: dict | None) -> str:
+    """返回腾讯真实物理类型，不能被前端编辑器类型覆盖。"""
+    if not isinstance(metadata, dict):
+        return "text"
+    return str(metadata.get("write_type") or metadata.get("type") or "text")
+
+
+def _editor_select_metadata(
+    source: dict,
+    options: list[dict],
+) -> dict:
+    """选择器元数据与腾讯物理写入元数据分别保存。"""
+    write_type = _physical_cell_type(source)
+    write_options = list(source.get("write_options") or source.get("options") or [])
+    write_multiple = bool(
+        source.get("write_multiple", source.get("multiple", False))
+    )
+    editor_options = (
+        _usable_select_options({"options": write_options})
+        if write_type == "select"
+        else []
+    ) or options
+    return {
+        "type": "select",
+        "multiple": False,
+        "options": editor_options,
+        "write_type": write_type,
+        "write_multiple": write_multiple,
+        "write_options": write_options,
+    }
+
+
 def _usable_select_options(metadata: dict | None) -> list[dict]:
     """过滤腾讯空白单元格偶尔返回的空下拉选项。"""
     if not isinstance(metadata, dict):
@@ -147,10 +179,13 @@ async def _managed_column_metadata(
     sheet_id: str | None = None,
 ) -> dict[str, dict]:
     """补齐社区、核查人和业务结果的稳定下拉选项。"""
-    metadata = {
-        column: dict((source_metadata or {}).get(column) or {"type": "text"})
-        for column in parser.COLUMNS
-    }
+    metadata = {}
+    for column in parser.COLUMNS:
+        source = dict((source_metadata or {}).get(column) or {"type": "text"})
+        source.setdefault("write_type", source.get("type", "text"))
+        source.setdefault("write_multiple", bool(source.get("multiple", False)))
+        source.setdefault("write_options", list(source.get("options") or []))
+        metadata[column] = source
     if parser.COMMUNITY_COLUMN in parser.COLUMNS:
         await cur.execute(
             """
@@ -164,11 +199,10 @@ async def _managed_column_metadata(
             """
         )
         communities = [str(row[0]) for row in await cur.fetchall() if row[0]]
-        metadata[parser.COMMUNITY_COLUMN] = {
-            "type": "select",
-            "multiple": False,
-            "options": [{"id": name, "text": name} for name in communities],
-        }
+        metadata[parser.COMMUNITY_COLUMN] = _editor_select_metadata(
+            metadata[parser.COMMUNITY_COLUMN],
+            [{"id": name, "text": name} for name in communities],
+        )
     if "核查人" in parser.COLUMNS:
         await cur.execute(
             """
@@ -186,11 +220,10 @@ async def _managed_column_metadata(
             """
         )
         members = [str(row[0]) for row in await cur.fetchall() if row[0]]
-        metadata["核查人"] = {
-            "type": "select",
-            "multiple": False,
-            "options": [{"id": name, "text": name} for name in members],
-        }
+        metadata["核查人"] = _editor_select_metadata(
+            metadata["核查人"],
+            [{"id": name, "text": name} for name in members],
+        )
     workflow = TASK_WORKFLOWS.get(parser.parser_type)
     if workflow and workflow.result_field in parser.COLUMNS:
         result_field = workflow.result_field
@@ -208,11 +241,9 @@ async def _managed_column_metadata(
                 {"id": text, "text": text}
                 for text in workflow.result_options
             ]
-        metadata[result_field] = {
-            "type": "select",
-            "multiple": False,
-            "options": options,
-        }
+        metadata[result_field] = _editor_select_metadata(
+            metadata[result_field], options
+        )
     return metadata
 
 
@@ -226,7 +257,7 @@ def _row_values_match(
         _same_value(
             actual.get(column, ""),
             expected.get(column, ""),
-            (actual_metadata.get(column) or {}).get("type", "text"),
+            _physical_cell_type(actual_metadata.get(column)),
         )
         for column in columns
     )
@@ -654,7 +685,7 @@ async def update_source_fields(
                 if not _same_value(
                     verified["values"].get(column, ""),
                     normalized_changes[column],
-                    metadata.get("type", "text"),
+                    _physical_cell_type(metadata),
                 ):
                     mismatched.append(column)
             if mismatched:

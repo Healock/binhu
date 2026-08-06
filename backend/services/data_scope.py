@@ -33,34 +33,66 @@ def filter_report_payload(
     payload: dict,
     user: dict,
     allowed_communities: list[str] | None = None,
+    allowed_inspectors: list[str] | None = None,
 ) -> dict:
     """裁剪人员、社区和扁平汇总表；总计由展示层重新计算。"""
     scopes = community_scopes(user, ONLINE_SUMMARY_VIEW)
-    if scopes is None or not payload.get("exists"):
+    if not payload.get("exists"):
+        return payload
+
+    explicit_scope = allowed_communities is not None
+    if scopes is None and not explicit_scope and allowed_inspectors is None:
         return payload
 
     result = deepcopy(payload)
-    accepted = set(allowed_communities or scopes)
-    for section_name in ("inspector", "community"):
-        section = result.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        section["data"] = [
-            row
-            for row in section.get("data") or []
-            if str(row.get("社区") or "").strip() in accepted
-        ] if scopes else []
-        section.pop("summary", None)
+    selected = allowed_communities if explicit_scope else scopes
+    accepted = set(selected or [])
+    community_filter_active = explicit_scope or scopes is not None
+    if community_filter_active:
+        for section_name in ("inspector", "community"):
+            section = result.get(section_name)
+            if not isinstance(section, dict):
+                continue
+            section["data"] = [
+                row
+                for row in section.get("data") or []
+                if str(row.get("社区") or "").strip() in accepted
+            ] if selected else []
+            section.pop("summary", None)
 
-    if isinstance(result.get("data"), list):
+    if allowed_inspectors is not None:
+        accepted_inspectors = {
+            str(name).strip().casefold()
+            for name in allowed_inspectors
+            if str(name).strip()
+        }
+        inspector = result.get("inspector")
+        if isinstance(inspector, dict):
+            inspector["data"] = [
+                row
+                for row in inspector.get("data") or []
+                if str(row.get("姓名") or "").strip().casefold()
+                in accepted_inspectors
+            ]
+        community = result.get("community")
+        if isinstance(community, dict):
+            # 社区聚合无法从已聚合行安全反推个人值；个人职责模式不返回整社区行。
+            community["data"] = []
+            community.pop("summary", None)
+        if isinstance(inspector, dict):
+            inspector.pop("summary", None)
+        if isinstance(result.get("data"), list):
+            result["data"] = []
+
+    if community_filter_active and isinstance(result.get("data"), list):
         result["data"] = [
             row
             for row in result["data"]
             if str(row.get("社区") or "").strip() in accepted
-        ] if scopes else []
+        ] if selected else []
         result.pop("summary", None)
 
-    if not scopes:
+    if (community_filter_active and not selected) or allowed_inspectors == []:
         result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
     return result
 

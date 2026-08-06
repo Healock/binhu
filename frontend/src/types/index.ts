@@ -259,6 +259,7 @@ export type MobileNavigationMode = 'sidebar' | 'dock'
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type MobileNavigationGroupId = 'workspace' | 'resources' | 'system'
 export type MobileNavigationItemId =
+  | 'dashboard'
   | 'online_summary'
   | 'online_query'
   | 'flow_tasks'

@@ -156,16 +156,14 @@ export default function PoliceAddressManagement() {
       <Panel
         title={`地址记录（${data.length}）`}
         extra={(
-          <Space.Compact>
-            <Input.Search
-              allowClear
-              placeholder="搜索名称、地址、社区或别名"
-              value={keyword}
-              onChange={event => setKeyword(event.target.value)}
-              onSearch={() => load()}
-              className="w-[320px] max-w-full"
-            />
-          </Space.Compact>
+          <Input.Search
+            allowClear
+            placeholder="搜索名称、地址、社区或别名"
+            value={keyword}
+            onChange={event => setKeyword(event.target.value)}
+            onSearch={() => load()}
+            className="w-[320px] max-w-full"
+          />
         )}
         padded={false}
       >
@@ -174,7 +172,7 @@ export default function PoliceAddressManagement() {
           columns={columns}
           dataSource={data}
           loading={loading}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
           scroll={{ x: 1400 }}
         />
       </Panel>

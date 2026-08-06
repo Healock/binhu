@@ -251,7 +251,7 @@ export default function GridMembers() {
       render: (_, member) => (
         <MemberProfileLink
           member={member}
-          onOpen={() => navigate(`/people/${member.account?.id}`)}
+          onOpen={() => navigate(`/people/${member.account?.id}`, { state: { returnTo: '/grid-members', returnLabel: '返回人员管理' } })}
         />
       ),
     },
@@ -589,7 +589,7 @@ export default function GridMembers() {
                         <MobileMemberCard
                           key={member.id}
                           member={member}
-                          onViewProfile={() => navigate(`/people/${member.account?.id}`)}
+                          onViewProfile={() => navigate(`/people/${member.account?.id}`, { state: { returnTo: '/grid-members', returnLabel: '返回人员管理' } })}
                           onEdit={() => setEditing(member)}
                           onLeave={() => setLeaveEditing(member)}
                           onDelete={() => handleDelete(member.id, member.name)}

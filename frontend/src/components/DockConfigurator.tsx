@@ -196,12 +196,14 @@ function SortablePage({
   itemId,
   index,
   total,
+  locked = false,
   onRemove,
   onMove,
 }: {
   itemId: MobileNavigationItemId
   index: number
   total: number
+  locked?: boolean
   onRemove: () => void
   onMove: (direction: -1 | 1) => void
 }) {
@@ -213,7 +215,7 @@ function SortablePage({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: `${ITEM_PREFIX}${itemId}` })
+  } = useSortable({ id: `${ITEM_PREFIX}${itemId}`, disabled: locked })
   if (!item) return null
 
   return (
@@ -229,7 +231,8 @@ function SortablePage({
       <button
         type="button"
         className="compact-action dock-config-drag-handle"
-        aria-label={`拖动${item.label}`}
+        aria-label={locked ? `${item.label}固定在首位` : `拖动${item.label}`}
+        disabled={locked}
         {...attributes}
         {...listeners}
       >
@@ -241,7 +244,7 @@ function SortablePage({
         <button
           type="button"
           className="compact-action"
-          disabled={index === 0}
+          disabled={locked || index === 0}
           aria-label={`向前移动${item.label}`}
           onClick={() => onMove(-1)}
         >
@@ -250,7 +253,7 @@ function SortablePage({
         <button
           type="button"
           className="compact-action"
-          disabled={index === total - 1}
+          disabled={locked || index === total - 1}
           aria-label={`向后移动${item.label}`}
           onClick={() => onMove(1)}
         >
@@ -259,7 +262,7 @@ function SortablePage({
         <button
           type="button"
           className="compact-action text-rose-600"
-          disabled={total <= 1}
+          disabled={locked || total <= 1}
           aria-label={`移除${item.label}`}
           onClick={onRemove}
         >
@@ -483,6 +486,7 @@ export default function DockConfigurator({
         overId,
         ITEM_PREFIX,
       ) as MobileNavigationItemId
+      if (activeItem === 'dashboard' || overItem === 'dashboard') return
       const oldIndex = selectedGroup.items.indexOf(activeItem)
       const newIndex = selectedGroup.items.indexOf(overItem)
       if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
@@ -508,8 +512,13 @@ export default function DockConfigurator({
 
   const moveItem = (index: number, direction: -1 | 1) => {
     if (!selectedGroup) return
+    if (selectedGroup.items[index] === 'dashboard') return
     const target = index + direction
-    if (target < 0 || target >= selectedGroup.items.length) return
+    if (
+      target < 0
+      || target >= selectedGroup.items.length
+      || selectedGroup.items[target] === 'dashboard'
+    ) return
     commit(reorderMobileDockItems(
       normalized,
       selectedGroup.id,
@@ -591,9 +600,10 @@ export default function DockConfigurator({
                         itemId={itemId}
                         index={index}
                         total={selectedGroup.items.length}
+                        locked={itemId === 'dashboard'}
                         onMove={direction => moveItem(index, direction)}
                         onRemove={() => {
-                          if (selectedGroup.items.length <= 1) return
+                          if (itemId === 'dashboard' || selectedGroup.items.length <= 1) return
                           commit(normalized.groups.map(group => (
                             group.id === selectedGroup.id
                               ? {
