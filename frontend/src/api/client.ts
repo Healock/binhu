@@ -549,12 +549,14 @@ export async function getOnlineDataOverview(
   startDate: string,
   endDate: string,
   parserType: string,
+  filters?: { scope?: 'permission' | 'responsibility'; community?: string },
 ): Promise<OnlineDataOverview> {
   const { data } = await api.get('/stats/overview', {
     params: {
       start_date: startDate,
       end_date: endDate,
       parser_type: parserType,
+      ...filters,
     },
   })
   return data
@@ -567,6 +569,8 @@ export async function getOnlineDataOverviewDetails(params: {
   category: OnlineOverviewCategory
   page?: number
   page_size?: number
+  scope?: 'permission' | 'responsibility'
+  community?: string
 }): Promise<OnlineOverviewDetails> {
   const { data } = await api.get('/stats/overview/details', {
     ...activeRequest,
@@ -584,12 +588,14 @@ export async function getReport(
   date: string,
   parser_type?: string,
   columnMode?: ReportColumnMode,
+  filters?: { scope?: 'permission' | 'responsibility'; community?: string },
 ): Promise<any> {
   const { data } = await api.get('/stats/report', {
     params: {
       report_date: date,
       parser_type: parser_type || '全链条',
       column_mode: columnMode,
+      ...filters,
     },
   })
   return data
@@ -600,6 +606,7 @@ export async function getReportRange(
   endDate: string,
   parserType: string,
   columnMode?: ReportColumnMode,
+  filters?: { scope?: 'permission' | 'responsibility'; community?: string },
 ): Promise<any> {
   const { data } = await api.get('/stats/report_range', {
     params: {
@@ -607,6 +614,7 @@ export async function getReportRange(
       end_date: endDate,
       parser_type: parserType,
       column_mode: columnMode,
+      ...filters,
     },
   })
   return data
@@ -1355,6 +1363,7 @@ export async function getVisitSummary(
   startDate: string,
   endDate: string,
   category: VisitSummaryCategory = 'rental',
+  filters?: { scope?: 'permission' | 'responsibility'; community?: string },
 ): Promise<VisitSummaryReport> {
   const { data } = await api.get('/visits/summary', {
     ...activeRequest,
@@ -1362,6 +1371,7 @@ export async function getVisitSummary(
       start_date: startDate,
       end_date: endDate,
       category,
+      ...filters,
     },
   })
   return data
@@ -1743,5 +1753,126 @@ export async function getPublicProfile(
     params: year ? { year } : undefined,
     ...activeRequest,
   })
+  return data
+}
+
+// ---- Role dashboard ----
+export interface DashboardMetricOverview {
+  exists?: boolean
+  total_tasks?: number
+  carryover_tasks?: number
+  new_tasks?: number
+  changed_tasks?: number
+  pending_tasks?: number
+  completed_tasks?: number
+  completion_rate?: number
+  unable_to_verify?: number
+  [key: string]: unknown
+}
+
+export interface RoleDashboardData {
+  business_date: string
+  last_success_at: string | null
+  period: { start_date: string; end_date: string; days: number }
+  identity: {
+    user_id: number
+    display_name: string
+    position: string
+    departments: string[]
+  }
+  scope: {
+    kind: 'responsibility'
+    label: string
+    communities: string[] | null
+  }
+  sync: {
+    id: number | null
+    status: string
+    trigger_source: string
+    stage: string
+    created_at: string | null
+    finished_at: string | null
+  }
+  notifications: {
+    unread_count: number
+    personal_unread_count: number
+    announcement_unread_count: number
+  }
+  contribution: {
+    total: number
+    active_days: number
+    longest_streak: number
+    days: Array<{ date: string; count: number }>
+    categories: Array<{ type: string; label: string; count: number }>
+    start_date: string
+    end_date: string
+    profile_user_id: number
+  }
+  flow_tasks: null | {
+    available: boolean
+    message?: string
+    scope?: string
+    community?: string
+    personal?: {
+      pending: number
+      review: number
+      new_today: number | null
+      carryover_today: number | null
+      completed_today: number | null
+    }
+    community_totals?: { pending: number; review: number }
+    daily_snapshot_available?: boolean
+    businesses: Array<{
+      parser_type: string
+      label: string
+      pending: number
+      unchecked: number
+      checked: number
+      completed: number
+      review: number
+    }>
+    week_overview?: DashboardMetricOverview
+  }
+  online_overview: null | {
+    scope: string
+    scope_label: string
+    communities: string[] | null
+    today: DashboardMetricOverview
+    week: DashboardMetricOverview
+    community_breakdown: Array<{
+      community: string
+      total: number
+      pending: number
+      completed: number
+      unable_to_verify: number
+      completion_rate: number
+    }>
+  }
+  visit_overview: null | {
+    category: 'rental' | 'self_owned'
+    scope: string
+    scope_label?: string
+    today: Record<string, any>
+    week: Record<string, any>
+    attendance?: Record<string, any>
+    community_breakdown: Array<Record<string, any>>
+  }
+  dispatch_overview: null | {
+    active_batch: PoliceDispatchBatch | null
+  }
+  management: null | {
+    sync: RoleDashboardData['sync']
+    online_writeback_enabled: boolean
+    dispatch_exceptions: number
+    latest_backup?: {
+      status: string
+      created_at: string | null
+      finished_at: string | null
+    }
+  }
+}
+
+export async function getRoleDashboard(): Promise<RoleDashboardData> {
+  const { data } = await api.get('/dashboard', activeRequest)
   return data
 }

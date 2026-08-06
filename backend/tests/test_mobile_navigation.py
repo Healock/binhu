@@ -101,6 +101,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
             result,
             {
                 "groups": [
+                    {"id": "workspace", "items": ["dashboard"]},
                     {
                         "id": "resources",
                         "items": ["grid_members"],
@@ -255,13 +256,21 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mobile_navigation_mode=%s", sql)
         self.assertIn("mobile_dock_config=%s", sql)
         self.assertEqual(params[0], "sidebar")
-        self.assertEqual(json.loads(params[1]), dock_config)
+        expected_dock_config = {
+            "groups": [{
+                "id": "workspace",
+                "items": ["dashboard", "visit_summary", "online_summary"],
+            }],
+        }
+        self.assertEqual(json.loads(params[1]), expected_dock_config)
         self.assertEqual(params[2], 7)
         self.assertEqual(
             result["user"]["mobile_navigation_mode"],
             "sidebar",
         )
-        self.assertEqual(result["user"]["mobile_dock_config"], dock_config)
+        self.assertEqual(
+            result["user"]["mobile_dock_config"], expected_dock_config
+        )
         pool.release.assert_called_once_with(connection)
 
     async def test_invalid_config_is_rejected_before_database_acquire(self):

@@ -16,6 +16,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import { EmptyState, LoadingState, PageHeader, Panel } from '../components/ui'
@@ -182,12 +183,30 @@ function SummaryCard({
 
 export default function VisitSummary() {
   const { recordActivity } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialQuery = useRef({
+    start: searchParams.get('start') || '',
+    end: searchParams.get('end') || '',
+    category: searchParams.get('category') || '',
+    scope: searchParams.get('scope') || '',
+    community: searchParams.get('community') || '',
+  }).current
+  const initialStart = initialQuery.start
+  const initialEnd = initialQuery.end
+  const initialRange = initialStart && initialEnd
+    ? [initialStart, initialEnd] as [string, string]
+    : null
+  const initialCategory: VisitSummaryCategory = initialQuery.category === 'self_owned'
+    ? 'self_owned'
+    : 'rental'
+  const responsibilityScope = initialQuery.scope === 'responsibility' ? 'responsibility' : 'permission'
+  const requestedCommunity = initialQuery.community
   const [coverage, setCoverage] = useState<VisitCoverage | null>(null)
   const [coverageLoading, setCoverageLoading] = useState(false)
   const [coverageError, setCoverageError] = useState('')
   const [missingOpen, setMissingOpen] = useState(false)
-  const [summaryRange, setSummaryRange] = useState<[string, string] | null>(null)
-  const [summaryCategory, setSummaryCategory] = useState<VisitSummaryCategory>('rental')
+  const [summaryRange, setSummaryRange] = useState<[string, string] | null>(initialRange)
+  const [summaryCategory, setSummaryCategory] = useState<VisitSummaryCategory>(initialCategory)
   const [shownSummaryRange, setShownSummaryRange] = useState<[string, string] | null>(null)
   const [shownSummaryCategory, setShownSummaryCategory] = useState<VisitSummaryCategory | null>(null)
   const [summaryReport, setSummaryReport] = useState<VisitSummaryReport | null>(null)
@@ -196,7 +215,7 @@ export default function VisitSummary() {
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<VisitSummaryRow[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<VisitSummaryRow[]>([])
   const [exporting, setExporting] = useState(false)
-  const rangeInitialized = useRef(false)
+  const rangeInitialized = useRef(Boolean(initialRange))
   const summaryRequestId = useRef(0)
 
   const loadSummary = useCallback(async (
@@ -208,7 +227,10 @@ export default function VisitSummary() {
     setSummaryLoading(true)
     setSummaryError('')
     try {
-      const nextReport = await getVisitSummary(range[0], range[1], category)
+      const nextReport = await getVisitSummary(range[0], range[1], category, {
+        scope: responsibilityScope,
+        community: requestedCommunity || undefined,
+      })
       if (requestId !== summaryRequestId.current) return
       setSummaryReport(nextReport)
       setShownSummaryRange(range)
@@ -224,7 +246,7 @@ export default function VisitSummary() {
         setSummaryLoading(false)
       }
     }
-  }, [])
+  }, [requestedCommunity, responsibilityScope])
 
   const loadCoverage = useCallback(async () => {
     setCoverageLoading(true)
@@ -241,17 +263,30 @@ export default function VisitSummary() {
         rangeInitialized.current = true
         setSummaryRange(initialRange)
         await loadSummary(initialRange, 'rental')
+      } else if (initialRange) {
+        await loadSummary(initialRange, initialCategory)
       }
     } catch {
       setCoverageError('走访数据范围读取失败，请稍后重试')
     } finally {
       setCoverageLoading(false)
     }
-  }, [loadSummary])
+  }, [initialCategory, initialEnd, initialStart, loadSummary])
 
   useEffect(() => {
     loadCoverage()
   }, [loadCoverage])
+
+  useEffect(() => {
+    if (!summaryRange) return
+    const next = new URLSearchParams()
+    next.set('start', summaryRange[0])
+    next.set('end', summaryRange[1])
+    next.set('category', summaryCategory)
+    if (responsibilityScope === 'responsibility') next.set('scope', 'responsibility')
+    if (requestedCommunity) next.set('community', requestedCommunity)
+    setSearchParams(next, { replace: true })
+  }, [requestedCommunity, responsibilityScope, setSearchParams, summaryCategory, summaryRange])
 
   const shownMissingDates = coverage?.missing_dates.slice(0, 10) || []
   const inspectorRows = (summaryReport?.inspector.data || []) as VisitSummaryRow[]

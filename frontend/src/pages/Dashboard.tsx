@@ -16,6 +16,7 @@ import {
 import type { TableColumnsType } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import MobileReportTable from '../components/MobileReportTable'
@@ -132,10 +133,15 @@ const reportTableSummary = (
 
 export default function Dashboard() {
   const { user, recordActivity } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const reportColumnMode = user?.report_column_mode || 'three'
   const today = formatDateInTimezone()
-  const [dateRange, setDateRange] = useState<[string, string]>([today, today])
-  const [reportType, setReportType] = useState('全链条')
+  const requestedStart = searchParams.get('start') || today
+  const requestedEnd = searchParams.get('end') || requestedStart
+  const [dateRange, setDateRange] = useState<[string, string]>([requestedStart, requestedEnd])
+  const [reportType, setReportType] = useState(searchParams.get('type') || '全链条')
+  const responsibilityScope = searchParams.get('scope') === 'responsibility' ? 'responsibility' : 'permission'
+  const requestedCommunity = searchParams.get('community') || ''
   const [types, setTypes] = useState<string[]>([])
   const [implemented, setImplemented] = useState<string[]>([])
   const [report, setReport] = useState<any>({ exists: false })
@@ -148,7 +154,12 @@ export default function Dashboard() {
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
   const [exporting, setExporting] = useState(false)
-  const [detailCategory, setDetailCategory] = useState<OnlineOverviewCategory | null>(null)
+  const requestedCategory = searchParams.get('category')
+  const [detailCategory, setDetailCategory] = useState<OnlineOverviewCategory | null>(
+    ['carryover', 'new', 'changed', 'pending', 'completed'].includes(requestedCategory || '')
+      ? requestedCategory as OnlineOverviewCategory
+      : null,
+  )
   const [detailRows, setDetailRows] = useState<OnlineOverviewDetailItem[]>([])
   const [detailTotal, setDetailTotal] = useState(0)
   const [detailPage, setDetailPage] = useState(1)
@@ -165,11 +176,11 @@ export default function Dashboard() {
     try {
       // 同一天走单日查询（查日报表，工作量口径）；不同天走区间查询（查快照存量）
       const reportRequest = startDate === endDate
-        ? getReport(startDate, reportType, reportColumnMode)
-        : getReportRange(startDate, endDate, reportType, reportColumnMode)
+        ? getReport(startDate, reportType, reportColumnMode, { scope: responsibilityScope, community: requestedCommunity || undefined })
+        : getReportRange(startDate, endDate, reportType, reportColumnMode, { scope: responsibilityScope, community: requestedCommunity || undefined })
       const [reportResult, overviewResult] = await Promise.allSettled([
         reportRequest,
-        getOnlineDataOverview(startDate, endDate, reportType),
+        getOnlineDataOverview(startDate, endDate, reportType, { scope: responsibilityScope, community: requestedCommunity || undefined }),
       ])
       if (reportResult.status === 'rejected') {
         throw reportResult.reason
@@ -193,7 +204,7 @@ export default function Dashboard() {
     } finally {
       setOverviewLoading(false)
     }
-  }, [startDate, endDate, reportType, reportColumnMode])
+  }, [startDate, endDate, reportType, reportColumnMode, requestedCommunity, responsibilityScope])
 
   const {
     syncing,
@@ -220,11 +231,21 @@ export default function Dashboard() {
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
   useEffect(() => { fetchReport() }, [fetchReport])
   useEffect(() => {
-    setDetailCategory(null)
     setDetailRows([])
     setDetailTotal(0)
     setDetailPage(1)
   }, [startDate, endDate, reportType])
+
+  useEffect(() => {
+    const next = new URLSearchParams()
+    next.set('start', startDate)
+    next.set('end', endDate)
+    next.set('type', reportType)
+    if (responsibilityScope === 'responsibility') next.set('scope', 'responsibility')
+    if (requestedCommunity) next.set('community', requestedCommunity)
+    if (detailCategory) next.set('category', detailCategory)
+    setSearchParams(next, { replace: true })
+  }, [detailCategory, endDate, reportType, requestedCommunity, responsibilityScope, setSearchParams, startDate])
 
   const isImplemented = implemented.includes(reportType)
   const isSummary = reportType === '总汇总表'
@@ -305,6 +326,8 @@ export default function Dashboard() {
         category,
         page,
         page_size: 20,
+        scope: responsibilityScope,
+        community: requestedCommunity || undefined,
       })
       setDetailRows(result.data)
       setDetailTotal(result.total)
@@ -318,6 +341,12 @@ export default function Dashboard() {
       setDetailLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (detailCategory) {
+      void loadOverviewDetails(detailCategory, 1)
+    }
+  }, [startDate, endDate, reportType])
 
   const overviewDetailColumns: TableColumnsType<OnlineOverviewDetailItem> = [
     {

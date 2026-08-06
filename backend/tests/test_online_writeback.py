@@ -510,6 +510,9 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
                     {"id": "长板", "text": "长板"},
                     {"id": "龙河", "text": "龙河"},
                 ],
+                "write_type": "text",
+                "write_multiple": False,
+                "write_options": [],
             },
         )
         self.assertEqual(
@@ -520,6 +523,45 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(metadata["核查结果"]["type"], "select")
+
+    async def test_managed_text_inspector_keeps_text_physical_write(self):
+        parser = get_parser("全链条")
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {"核查人": {"type": "text"}},
+        )
+
+        self.assertEqual(metadata["核查人"]["type"], "select")
+        self.assertEqual(metadata["核查人"]["write_type"], "text")
+        request = TxDocsClient("client", "token", "user").build_update_cell_request(
+            "sheet", 8, 4, "网格员甲", metadata["核查人"]
+        )
+        cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+        self.assertEqual(cell["cellValue"], {"text": "网格员甲"})
+
+    async def test_real_select_inspector_writes_tencent_option_id(self):
+        parser = get_parser("全链条")
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {"核查人": {
+                "type": "select",
+                "multiple": False,
+                "options": [{"id": "member-1", "text": "网格员甲"}],
+            }},
+        )
+
+        self.assertEqual(metadata["核查人"]["write_type"], "select")
+        request = TxDocsClient("client", "token", "user").build_update_cell_request(
+            "sheet", 8, 4, "网格员甲", metadata["核查人"]
+        )
+        select = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]["cellValue"]["select"]
+        self.assertEqual(select["value"], ["member-1"])
+        with self.assertRaisesRegex(ValueError, "无效的下拉选项"):
+            TxDocsClient("client", "token", "user").build_update_cell_request(
+                "sheet", 8, 4, "不存在的人", metadata["核查人"]
+            )
 
     async def test_blank_result_options_reuse_cached_tencent_option_ids(self):
         parser = get_parser("全链条")

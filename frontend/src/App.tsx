@@ -29,6 +29,7 @@ import PoliceAddressManagement from './pages/PoliceAddressManagement'
 import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
 import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import PublicProfile from './pages/PublicProfile'
+import RoleDashboard from './pages/RoleDashboard'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
   canAccessFlowTaskWorkbench,
@@ -44,24 +45,6 @@ function LazyPage({ children }: { children: ReactNode }) {
       {children}
     </Suspense>
   )
-}
-
-function DashboardEntry() {
-  const { user } = useAuth()
-  const mobile = useMobileViewport()
-  if (shouldUsePoliceDispatchWorkbench(user?.member?.position, mobile)) {
-    return user?.permissions?.includes('police.dispatch.manage')
-      ? <Navigate to="/police-tasks" replace />
-      : <Navigate to="/settings/personalization" replace />
-  }
-  if (shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
-    return user?.permissions?.includes('online.raw.view')
-      ? <MobileTaskHome />
-      : <Navigate to="/settings/personalization" replace />
-  }
-  return user?.permissions?.includes('online.summary.view')
-    ? <Dashboard />
-    : <Navigate to="/settings/personalization" replace />
 }
 
 function QueryEntry() {
@@ -112,7 +95,10 @@ function App() {
               <Route path="/profile" element={<Profile />} />
               <Route path="/people" element={<Navigate to="/grid-members" replace />} />
               <Route path="/people/:userId" element={<PublicProfile />} />
-              <Route path="/" element={<DashboardEntry />} />
+              <Route path="/" element={<RoleDashboard />} />
+              <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
+                <Route path="/summary" element={<Dashboard />} />
+              </Route>
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
                 <Route path="/query" element={<QueryEntry />} />
                 <Route path="/tasks/home" element={<MobileTaskHomeEntry />} />

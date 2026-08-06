@@ -142,7 +142,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
           <Alert type="info" showIcon message="当前账号没有数据下发权限" />
         )}
         {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div className="police-dispatch-upload-row grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
           <Dragger
             accept=".xls,.xlsx"
             maxCount={1}
@@ -179,7 +179,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
               ['重复记录', latest.counts.duplicate],
               ['待研判', latest.counts.abnormal],
             ].map(([label, value]) => (
-              <div key={String(label)} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <div key={String(label)} className="police-dispatch-summary-card rounded-xl p-3">
                 <Statistic title={label} value={value} suffix="条" valueStyle={{ fontSize: 22 }} />
               </div>
             ))}
