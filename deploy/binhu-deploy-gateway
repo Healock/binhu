@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly command_text="${SSH_ORIGINAL_COMMAND:-}"
+read -r action version commit backup_scope extra <<<"$command_text"
+
+if [[ "$action" != "deploy" || -n "${extra:-}" ]]; then
+  echo "Only the fixed Binhu deploy command is allowed." >&2
+  exit 64
+fi
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid version." >&2
+  exit 64
+fi
+if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Invalid commit." >&2
+  exit 64
+fi
+case "$backup_scope" in
+  none|online|daily|all) ;;
+  *)
+    echo "Invalid backup scope." >&2
+    exit 64
+    ;;
+esac
+
+exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy \
+  "$version" "$commit" "$backup_scope"
