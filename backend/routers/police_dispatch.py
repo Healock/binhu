@@ -942,7 +942,7 @@ async def get_task(
 async def _review_one(cur, task_id: int, data: TaskReview, user: dict) -> int:
     await cur.execute("""
         SELECT batch_id, version, publish_status, duplicate_group_key,
-               person_name, identity_number, original_address
+               person_name, identity_number, phone, original_address
         FROM _police_dispatch_tasks
         WHERE id=%s FOR UPDATE
     """, (task_id,))
@@ -961,7 +961,8 @@ async def _review_one(cur, task_id: int, data: TaskReview, user: dict) -> int:
             label for value, label in (
                 (row[4] if len(row) > 4 else "", "姓名"),
                 (row[5] if len(row) > 5 else "", "身份证号"),
-                (row[6] if len(row) > 6 else "", "地址"),
+                (row[6] if len(row) > 6 else "", "手机号"),
+                (row[7] if len(row) > 7 else "", "地址"),
             )
             if not str(value or "").strip()
         ]
@@ -1736,6 +1737,12 @@ async def publish_batch(
             }
             for row in await cur.fetchall()
         ]
+        missing_phone_count = sum(not item["phone"].strip() for item in pending)
+        if missing_phone_count:
+            raise HTTPException(
+                409,
+                f"有 {missing_phone_count} 条待下发任务缺少手机号，请先研判或补齐手机号",
+            )
         publish_date = await get_business_date(cur)
         await cur.execute("""
             UPDATE _police_dispatch_batches

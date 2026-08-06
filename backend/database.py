@@ -796,6 +796,44 @@ async def ensure_police_dispatch_schema(cur) -> None:
                     f"ADD COLUMN `{column_name}` {column_definition}"
                 )
 
+    # 0.13.1：手机号为空的记录不能继续自动下发。只重新打开尚未产生
+    # 腾讯外部结果的任务；已成功、发布中、待对账或冲突任务保持原状。
+    missing_phone_reason = "缺少手机号，需基础管控先研判；补齐手机号后才能下发"
+    await cur.execute("""
+        UPDATE _police_dispatch_tasks
+        SET suggested_action='manual', suggested_community_id=NULL,
+            suggestion_reason=%s, allocation_mode='missing_phone',
+            final_action='', final_community_id=NULL, review_note='',
+            reviewed_by=NULL, reviewer_name='', reviewed_at=NULL,
+            task_status='pending_review', publish_status='not_required',
+            publish_error='', version=version+1
+        WHERE TRIM(phone)=''
+          AND (
+              (task_status='pending_review' AND final_action='')
+              OR (
+                  final_action='dispatch'
+                  AND publish_status IN ('pending', 'retryable', 'not_required')
+              )
+          )
+          AND NOT (
+              suggested_action='manual'
+              AND suggested_community_id IS NULL
+              AND allocation_mode='missing_phone'
+              AND suggestion_reason=%s
+              AND final_action=''
+          )
+    """, (missing_phone_reason, missing_phone_reason))
+    await cur.execute("""
+        UPDATE _police_dispatch_batches AS batch
+        SET status='reviewing', completed_at=NULL
+        WHERE batch.status<>'reviewing'
+          AND EXISTS (
+              SELECT 1 FROM _police_dispatch_tasks AS task
+              WHERE task.batch_id=batch.id
+                AND task.task_status='pending_review'
+          )
+    """)
+
 
 async def ensure_work_activity_schema(cur) -> None:
     """Add permanent, privacy-safe work contribution events for 0.13.0."""

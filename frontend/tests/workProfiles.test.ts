@@ -54,6 +54,20 @@ test('人员管理姓名进入个人资料且旧目录地址回到人员管理',
   assert.equal(appSource.includes('PeopleDirectory'), false)
 })
 
+test('缺少手机号的下发任务显示为待研判', () => {
+  const workbenchSource = readFileSync(
+    new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+  const batchSource = readFileSync(
+    new URL('../src/pages/PoliceDispatchBatchDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(workbenchSource, /manual: '待研判'/)
+  assert.match(workbenchSource, /item\.suggested_action === 'manual'/)
+  assert.match(batchSource, /manual: '待研判'/)
+})
+
 test('公开个人主页不渲染用户名或敏感字段', () => {
   const source = readFileSync(
     new URL('../src/pages/PublicProfile.tsx', import.meta.url),

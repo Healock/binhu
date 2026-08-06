@@ -177,7 +177,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
               ['社区下发', latest.counts.dispatch],
               ['模糊平均分配', latest.counts.balanced],
               ['重复记录', latest.counts.duplicate],
-              ['异常判断', latest.counts.abnormal],
+              ['待研判', latest.counts.abnormal],
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
                 <Statistic title={label} value={value} suffix="条" valueStyle={{ fontSize: 22 }} />
