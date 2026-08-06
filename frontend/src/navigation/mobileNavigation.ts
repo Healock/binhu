@@ -52,7 +52,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
       {
         id: 'dashboard',
         path: '/',
-        label: '岗位仪表盘',
+        label: '仪表盘',
         shortLabel: '首页',
         icon: 'dashboard',
         end: true,

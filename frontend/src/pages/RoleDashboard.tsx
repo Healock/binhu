@@ -283,7 +283,7 @@ export default function RoleDashboard() {
       setData(await getRoleDashboard())
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '岗位仪表盘读取失败')
+      setError(reason?.response?.data?.detail || '仪表盘读取失败')
     } finally {
       setLoading(false)
     }

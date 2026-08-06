@@ -42,7 +42,7 @@ from services.visit_summary import (
 from services.work_activity import contribution_summary, profile_identity
 
 
-router = APIRouter(prefix="/api/dashboard", tags=["岗位仪表盘"])
+router = APIRouter(prefix="/api/dashboard", tags=["仪表盘"])
 
 
 def _iso_utc(value: Any) -> str | None:

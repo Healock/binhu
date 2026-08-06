@@ -84,7 +84,7 @@ async def role_responsibility_communities(cur, user: dict[str, Any]) -> list[str
                 community.name IN ({placeholders})
                 OR alias.alias IN ({placeholders})
               )
-            ORDER BY community.id
+            ORDER BY community.name
             """,
             [*names, *names],
         )
