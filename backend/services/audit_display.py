@@ -63,6 +63,9 @@ ACTION_LABELS: dict[str, str] = {
     "work_log.takeover": "接管工作日志",
     "work_log.refresh": "刷新工作日志系统数据",
     "work_log.export": "导出工作日志",
+    "online_summary.export": "导出在线数据汇总",
+    "visit_summary.export": "导出走访汇总",
+    "police_dispatch.feedback.export": "导出下发反馈表",
 }
 
 TARGET_TYPE_LABELS: dict[str, str] = {
@@ -89,6 +92,8 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "sync_schedule": "自动同步计划",
     "visit_import": "走访导入批次",
     "work_log_draft": "工作日志",
+    "online_summary": "在线数据汇总",
+    "visit_summary": "走访汇总",
 }
 
 RESULT_LABELS: dict[str, str] = {
@@ -177,6 +182,12 @@ DETAIL_LABELS: dict[str, str] = {
     "previous_owner": "原负责人",
     "version": "数据版本",
     "missing_count": "未填写字段数",
+    "file_format": "文件格式",
+    "summary_type": "汇总类型",
+    "start_date": "开始日期",
+    "end_date": "结束日期",
+    "inspector_rows": "人员明细行数",
+    "community_rows": "社区汇总行数",
 }
 
 VALUE_LABELS: dict[str, str] = {

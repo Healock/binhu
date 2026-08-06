@@ -1521,10 +1521,10 @@ async def workbench_home(
 @router.get("/batches/{batch_id}/feedback.xlsx")
 async def export_feedback(
     batch_id: int,
+    request: Request,
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
-    del user
     async with conn.cursor() as cur:
         batch = await _batch_payload(cur, batch_id)
         await cur.execute("""
@@ -1547,6 +1547,18 @@ async def export_feedback(
         ]
     content = await asyncio.to_thread(build_feedback_workbook, batch, tasks, datetime.now())
     filename = f"下发批次-{batch_id}-反馈.xlsx"
+    await record_admin_audit(
+        user,
+        "police_dispatch.feedback.export",
+        target_type="police_dispatch_batch",
+        target_name=str(batch_id),
+        detail={
+            "batch_id": batch_id,
+            "file_format": "XLSX",
+            "row_count": len(tasks),
+        },
+        **request_audit_fields(request),
+    )
     return StreamingResponse(
         io.BytesIO(content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

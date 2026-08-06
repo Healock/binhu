@@ -574,7 +574,9 @@ export default function GridMembers() {
                       onChange: changePage,
                     }}
                     rowClassName={member => (
-                      member.effective_status === '离岗' ? 'app-table-row--muted' : ''
+                      ['离岗', '休息'].includes(member.effective_status)
+                        ? 'app-table-row--muted'
+                        : ''
                     )}
                     rowKey="id"
                     scroll={{ x: 1250 }}
@@ -711,11 +713,17 @@ export default function GridMembers() {
 function getMemberStatusMeta(member: GridMember) {
   const isLongTerm = member.status === '离岗'
   const isActiveLeave = !isLongTerm && member.effective_status === '离岗'
+  const isWeekendRest = member.effective_status === '休息'
+  const isWeekendUnscheduled = member.effective_status === '未排班'
   const isUpcoming = !isLongTerm && member.leave_state === 'upcoming'
   const label = isLongTerm
     ? '长期离岗'
     : isActiveLeave
     ? '请假中'
+    : isWeekendRest
+    ? '休息'
+    : isWeekendUnscheduled
+    ? '未排班'
     : isUpcoming
     ? '待请假'
     : '正常'
@@ -723,6 +731,10 @@ function getMemberStatusMeta(member: GridMember) {
     ? 'default'
     : isActiveLeave
     ? 'orange'
+    : isWeekendRest
+    ? 'cyan'
+    : isWeekendUnscheduled
+    ? 'gold'
     : isUpcoming
     ? 'blue'
     : 'green'
@@ -740,6 +752,10 @@ function MemberStatus({ member }: { member: GridMember }) {
     ? 'bg-green-500'
     : color === 'orange'
     ? 'bg-orange-500'
+    : color === 'cyan'
+    ? 'bg-cyan-500'
+    : color === 'gold'
+    ? 'bg-amber-500'
     : color === 'blue'
     ? 'bg-blue-500'
     : 'bg-slate-400'
@@ -822,7 +838,7 @@ function MobileMemberCard({
   return (
     <Card
       size="small"
-      className={member.effective_status === '离岗' ? 'bg-slate-50' : ''}
+      className={['离岗', '休息'].includes(member.effective_status) ? 'bg-slate-50' : ''}
       styles={{ body: { padding: 16 } }}
     >
       <div className="flex items-start justify-between gap-3">

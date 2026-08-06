@@ -31,6 +31,7 @@ import {
   getReportRange,
   getReportTypes,
   getSystemConfig,
+  recordXlsxExport,
   type OnlineDataOverview,
   type OnlineOverviewCategory,
   type OnlineOverviewDetailItem,
@@ -285,6 +286,14 @@ export default function Dashboard() {
       await recordActivity()
       const inspectorColumns = inspectorTable.columns.filter((column: string) => column !== 'id')
       const communityColumns = communityTable.columns.filter((column: string) => column !== 'id')
+      await recordXlsxExport({
+        export_type: 'online_summary',
+        start_date: startDate,
+        end_date: endDate,
+        summary_type: reportType,
+        inspector_rows: visibleInspectorRows.length,
+        community_rows: visibleCommunityRows.length,
+      })
       await exportSummaryWorkbook({
         fileName: `在线数据汇总_${reportType}_${startDate}_至_${endDate}`,
         tables: [
