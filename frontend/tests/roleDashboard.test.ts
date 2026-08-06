@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { formatDashboardIdentityContext } from '../src/utils/dashboardIdentity.ts'
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
@@ -27,6 +28,17 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
   assert.match(source, /category: 'carryover'/)
   assert.match(source, /status=review/)
   assert.match(source, /今日尚无同步快照/)
+})
+
+test('社区部门与职责社区相同时只展示一次', () => {
+  assert.equal(
+    formatDashboardIdentityContext(['冬梅'], '所属社区：冬梅', ['冬梅']),
+    '所属社区：冬梅',
+  )
+  assert.equal(
+    formatDashboardIdentityContext(['内勤'], '全所', null),
+    '内勤 · 全所',
+  )
 })
 
 test('用户管理姓名链接到公开资料并保留返回来源', () => {
