@@ -138,22 +138,3 @@ jobs:
             "binhu-deploy@$DEPLOY_HOST" \
             "deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE" \
             < release-output/binhu-release.tar.gz
-      - name: Verify the public health endpoint
-        shell: bash
-        env:
-          PUBLIC_URL: ${{ secrets.BINHU_PUBLIC_URL }}
-        run: |
-          set -Eeuo pipefail
-          for attempt in $(seq 1 10); do
-            if payload="$(curl --http1.1 --fail --silent --show-error --max-time 15 \
-              "${PUBLIC_URL%/}/api/health")" \
-              && python -c \
-                'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("version") == sys.argv[2] else 1)' \
-                "$payload" "$EXPECTED_VERSION"
-            then
-              exit 0
-            fi
-            sleep 6
-          done
-          echo "Public health verification failed." >&2
-          exit 1

@@ -30,7 +30,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("-o BatchMode=yes", workflow)
         self.assertIn("-o StrictHostKeyChecking=yes", workflow)
         self.assertIn("-o PasswordAuthentication=no", workflow)
-        self.assertIn("curl --http1.1 --fail", workflow)
+        self.assertNotIn("BINHU_PUBLIC_URL", workflow)
         self.assertNotIn("docker compose", workflow)
         self.assertNotIn("docker build", workflow)
 
@@ -55,6 +55,8 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertNotRegex(script, re.compile(r"mysql\s+[^\n]*<"))
         self.assertIn("rollback_after_error", script)
         self.assertIn("archive exceeds extraction limits", script)
+        self.assertIn("BINHU_DEPLOY_PUBLIC_URL", script)
+        self.assertIn("curl --http1.1 --fail", script)
         self.assertIn('[[ "$work_dir" == "$state_dir/work/"* ]]', script)
 
     def test_gateway_rejects_any_command_outside_fixed_grammar(self) -> None:

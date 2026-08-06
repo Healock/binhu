@@ -726,9 +726,9 @@ Pull Request 和 `CI` 工作流没有生产 Secret，也不能连接服务器。
 
 1. 在受控电脑生成一把仅供 GitHub Actions 使用的 Ed25519 密钥，不设置为日常 root 登录密钥，也不放进仓库。
 2. 使用已经验证的人工运维入口，把公钥和 `deploy/` 下三个服务器脚本复制到临时目录。
-3. 以 root 执行 `install-server-deployer.sh <公钥文件>`。安装器创建锁定密码的 `binhu-deploy` 账号、强制命令、固定 sudo 规则和 root 所有的发布目录。
+3. 以 root 执行 `install-server-deployer.sh <公钥文件> <平台 HTTPS 地址>`。安装器创建锁定密码的 `binhu-deploy` 账号、强制命令、固定 sudo 规则和 root 所有的发布目录，并把正式 HTTPS 地址写入服务器私密配置用于发布后自检。
 4. 检查该密钥不能打开交互 Shell、不能端口转发，错误命令会被拒绝；同时确认原人工运维入口仍可用于紧急回退。
-5. 在 GitHub 建立 `production` Environment，并保存 `BINHU_DEPLOY_HOST`、`BINHU_DEPLOY_PORT`、`BINHU_DEPLOY_SSH_KEY`、`BINHU_DEPLOY_KNOWN_HOSTS` 和 `BINHU_PUBLIC_URL` 五个 Secret。主机指纹必须从已经信任的人工 SSH 连接核对，不能只相信临时网络扫描。
+5. 在 GitHub 建立 `production` Environment，并保存 `BINHU_DEPLOY_HOST`、`BINHU_DEPLOY_PORT`、`BINHU_DEPLOY_SSH_KEY` 和 `BINHU_DEPLOY_KNOWN_HOSTS` 四个 Secret。主机指纹必须从已经信任的人工 SSH 连接核对，不能只相信临时网络扫描。
 
 GitHub 不保存 root 密钥、服务器 `.env`、数据库密码或腾讯凭据。`binhu-deploy` 的公钥授权行固定带
 `restrict` 和服务器强制命令；即使工作流配置写错，也不能把它变成普通远程终端。
@@ -740,7 +740,8 @@ GitHub 不保存 root 密钥、服务器 `.env`、数据库密码或腾讯凭据
 ### 发布、回退和记录
 
 服务器收到发布包后按固定顺序执行：校验包与提交、检查磁盘、检查 Compose、确认没有运行中的同步或备份、
-构建候选后端、保存旧程序和旧镜像、创建并校验所选数据库备份、切换、核验健康版本和前端资源。成功记录在
+构建候选后端、保存旧程序和旧镜像、创建并校验所选数据库备份、切换、核验内部健康版本、前端资源和正式
+HTTPS 健康接口。公网自检由服务器在固定脚本内执行，避免 GitHub Runner 到国内 443 的链路策略被误判为应用故障。成功记录在
 `/var/lib/binhu-deploy/history/`，当前结果在 `current.json`；程序和即时数据库备份保存在项目的
 `deploy-backups/automated/` 下。
 
