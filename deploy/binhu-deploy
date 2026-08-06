@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+[[ -r /etc/binhu-deploy.conf ]] && source /etc/binhu-deploy.conf
+: "${BINHU_PROJECT_DIR:=/root/binhu}"
+: "${BINHU_DEPLOY_STATE_DIR:=/var/lib/binhu-deploy}"
+: "${BINHU_DEPLOY_MIN_FREE_KB:=1048576}"
+: "${BINHU_DEPLOY_MAX_BUNDLE_BYTES:=134217728}"
+
+log() {
+  printf '[binhu-deploy] %s\n' "$*"
+}
+
+fail() {
+  printf '[binhu-deploy] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 3 ]] || fail "expected version, commit and backup scope"
+readonly release_version="$1"
+readonly release_commit="$2"
+readonly backup_scope="$3"
+[[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid version"
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit"
+case "$backup_scope" in
+  none|online|daily|all) ;;
+  *) fail "invalid backup scope" ;;
+esac
+
+for command_name in docker curl python3 tar gzip sha256sum flock head awk \
+  readlink install date mktemp wc df grep seq sleep cp rm; do
+  command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
+done
+
+readonly project_dir="$(readlink -f "$BINHU_PROJECT_DIR")"
+readonly state_dir="$(readlink -m "$BINHU_DEPLOY_STATE_DIR")"
+[[ -d "$project_dir" && -f "$project_dir/docker-compose.yml" ]] || fail "invalid project directory"
+[[ -f "$project_dir/.env" ]] || fail "production .env is missing"
+[[ "$state_dir" == /var/lib/binhu-deploy ]] || fail "unexpected deployment state directory"
+
+install -d -o root -g root -m 0750 "$state_dir/incoming" "$state_dir/work" \
+  "$state_dir/releases" "$state_dir/history"
+exec 9>"/run/lock/binhu-deploy.lock"
+flock -n 9 || fail "another deployment is already running"
+
+readonly started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+readonly timestamp="$(date -u +%Y%m%d_%H%M%S)"
+readonly short_commit="${release_commit:0:12}"
+readonly release_id="${release_version}-${short_commit}-${timestamp}"
+readonly incoming_bundle="$(mktemp "$state_dir/incoming/${release_id}.XXXXXX.tar.gz")"
+readonly work_dir="$(mktemp -d "$state_dir/work/${release_id}.XXXXXX")"
+readonly release_dir="$state_dir/releases/$release_id"
+switched=0
+program_backup=""
+rollback_tag=""
+previous_version=""
+
+cleanup() {
+  [[ "$incoming_bundle" == "$state_dir/incoming/"* ]] \
+    || fail "unsafe incoming cleanup target"
+  [[ "$work_dir" == "$state_dir/work/"* ]] \
+    || fail "unsafe work cleanup target"
+  rm -f -- "$incoming_bundle"
+  rm -rf -- "$work_dir"
+}
+trap cleanup EXIT
+
+write_history() {
+  local status="$1"
+  local finished_at
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  python3 - "$state_dir/history/${release_id}.json" "$status" <<PY
+import json
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+payload = {
+    "schema": 1,
+    "status": sys.argv[2],
+    "version": "$release_version",
+    "commit": "$release_commit",
+    "backup_scope": "$backup_scope",
+    "previous_version": "$previous_version",
+    "started_at": "$started_at",
+    "finished_at": "$finished_at",
+    "release_dir": "$release_dir",
+    "program_backup": "$program_backup",
+    "rollback_image": "$rollback_tag",
+}
+target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+  cp -f "$state_dir/history/${release_id}.json" "$state_dir/current.json"
+}
+
+rollback_after_error() {
+  local exit_code="$1"
+  local line_number="$2"
+  trap - ERR
+  set +e
+  log "deployment failed at line ${line_number}; starting application rollback"
+  if [[ "$switched" -eq 1 && -n "$program_backup" && -n "$rollback_tag" ]]; then
+    tar -xzf "$program_backup" -C "$project_dir"
+    docker tag "$rollback_tag" binhu-backend:latest
+    (
+      cd "$project_dir"
+      docker compose up -d --no-deps --force-recreate ops-agent backend
+    )
+    for _ in $(seq 1 45); do
+      if curl -fsS http://127.0.0.1:37125/api/health 2>/dev/null \
+        | grep -q "\"version\":\"${previous_version}\""; then
+        log "rollback restored version ${previous_version}"
+        break
+      fi
+      sleep 2
+    done
+  fi
+  write_history "failed" || true
+  exit "$exit_code"
+}
+trap 'rollback_after_error "$?" "$LINENO"' ERR
+
+log "receiving release ${release_version} (${short_commit})"
+head -c "$((BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1))" > "$incoming_bundle"
+bundle_size="$(wc -c < "$incoming_bundle")"
+[[ "$bundle_size" -gt 0 ]] || fail "empty release bundle"
+[[ "$bundle_size" -le "$BINHU_DEPLOY_MAX_BUNDLE_BYTES" ]] || fail "release bundle exceeds size limit"
+
+python3 - "$incoming_bundle" <<'PY'
+import sys
+import tarfile
+from pathlib import PurePosixPath
+
+allowed = {"source.tar.gz", "frontend-dist.tar.gz", "manifest.json", "SHA256SUMS"}
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    members = archive.getmembers()
+    names = {member.name for member in members}
+    if names != allowed or len(members) != len(allowed):
+        raise SystemExit("unexpected release bundle contents")
+    for member in members:
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts or not member.isfile():
+            raise SystemExit("unsafe release bundle member")
+PY
+tar -xzf "$incoming_bundle" -C "$work_dir"
+
+python3 - "$work_dir/manifest.json" "$work_dir/SHA256SUMS" \
+  "$release_version" "$release_commit" "$backup_scope" <<'PY'
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+checksums_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+if manifest.get("schema") != 1:
+    raise SystemExit("unsupported manifest schema")
+if manifest.get("version") != sys.argv[3]:
+    raise SystemExit("manifest version mismatch")
+if manifest.get("commit") != sys.argv[4]:
+    raise SystemExit("manifest commit mismatch")
+if manifest.get("backup_scope") != sys.argv[5]:
+    raise SystemExit("manifest backup scope mismatch")
+checksum_lines = checksums_path.read_text(encoding="ascii").splitlines()
+checksum_pattern = re.compile(
+    r"^([0-9a-f]{64})  (source\.tar\.gz|frontend-dist\.tar\.gz)$"
+)
+checksums = {}
+for line in checksum_lines:
+    match = checksum_pattern.fullmatch(line)
+    if not match or match.group(2) in checksums:
+        raise SystemExit("invalid checksum list")
+    checksums[match.group(2)] = match.group(1)
+if set(checksums) != {"source.tar.gz", "frontend-dist.tar.gz"}:
+    raise SystemExit("incomplete checksum list")
+for filename in ("source.tar.gz", "frontend-dist.tar.gz"):
+    path = manifest_path.parent / filename
+    metadata = manifest.get("files", {}).get(filename, {})
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if (
+        metadata.get("sha256") != digest
+        or checksums[filename] != digest
+        or metadata.get("size") != path.stat().st_size
+    ):
+        raise SystemExit(f"manifest file mismatch: {filename}")
+PY
+
+validate_inner_archive() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+import tarfile
+from pathlib import PurePosixPath
+
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    members = archive.getmembers()
+    size_limit = 64 * 1024 * 1024 if sys.argv[2] == "source" else 128 * 1024 * 1024
+    if len(members) > 20000 or sum(member.size for member in members) > size_limit:
+        raise SystemExit("archive exceeds extraction limits")
+    for member in members:
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise SystemExit("unsafe archive path")
+        if member.isdev() or member.isfifo() or member.issym() or member.islnk():
+            raise SystemExit("links and special files are not allowed")
+        if sys.argv[2] == "source" and any(
+            part in {".env", ".git", "AGENTS.local.md"} for part in path.parts
+        ):
+            raise SystemExit("source archive contains a private path")
+        if sys.argv[2] == "source" and path.parts[:2] == ("frontend", "dist"):
+            raise SystemExit("source archive cannot contain built frontend files")
+        if sys.argv[2] == "frontend" and path.parts and path.parts[0] != "dist":
+            raise SystemExit("frontend archive must be rooted at dist")
+PY
+}
+validate_inner_archive "$work_dir/source.tar.gz" source
+validate_inner_archive "$work_dir/frontend-dist.tar.gz" frontend
+
+[[ ! -e "$release_dir" ]] || fail "release directory already exists"
+install -d -o root -g root -m 0750 "$release_dir/source/frontend"
+tar -xzf "$work_dir/source.tar.gz" -C "$release_dir/source"
+tar -xzf "$work_dir/frontend-dist.tar.gz" -C "$release_dir/source/frontend"
+cp "$work_dir/manifest.json" "$release_dir/manifest.json"
+[[ "$(tr -d '\r\n' < "$release_dir/source/VERSION")" == "$release_version" ]] \
+  || fail "source VERSION mismatch"
+[[ -f "$release_dir/source/frontend/dist/index.html" ]] || fail "frontend index is missing"
+[[ ! -e "$release_dir/source/.env" && ! -e "$release_dir/source/AGENTS.local.md" ]] \
+  || fail "release contains a private local file"
+
+available_kb="$(df -Pk "$project_dir" | awk 'NR == 2 {print $4}')"
+[[ "$available_kb" =~ ^[0-9]+$ && "$available_kb" -ge "$BINHU_DEPLOY_MIN_FREE_KB" ]] \
+  || fail "not enough free disk space"
+(
+  cd "$project_dir"
+  docker compose config --quiet
+)
+active_jobs="$(docker exec binhu-mysql sh -c \
+  'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -Nse "SELECT (SELECT COUNT(*) FROM OnlineData._sync_log WHERE status IN ('"'"'pending'"'"','"'"'running'"'"')) + (SELECT COUNT(*) FROM OnlineData._backup_jobs WHERE status IN ('"'"'pending'"'"','"'"'running'"'"'));"' \
+  2>/dev/null)"
+[[ "$active_jobs" == "0" ]] || fail "sync or backup task is active"
+
+previous_version="$(tr -d '\r\n' < "$project_dir/VERSION")"
+[[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "current VERSION is invalid"
+readonly candidate_tag="binhu-backend:auto-candidate-${release_version}-${timestamp}"
+rollback_tag="binhu-backend:auto-rollback-${previous_version}-${timestamp}"
+log "building candidate image"
+docker build --pull=false -t "$candidate_tag" \
+  -f "$release_dir/source/backend/Dockerfile" "$release_dir/source/backend"
+
+readonly backup_dir="$project_dir/deploy-backups/automated/$release_id"
+install -d -o root -g root -m 0700 "$backup_dir"
+program_backup="$backup_dir/program.tar.gz"
+tar -czf "$program_backup" -C "$project_dir" \
+  VERSION docker-compose.yml backend frontend/dist nginx
+gzip -t "$program_backup"
+docker tag binhu-backend:latest "$rollback_tag"
+
+backup_database() {
+  local database_name="$1"
+  local destination="$backup_dir/${database_name}.sql.gz"
+  docker exec binhu-mysql sh -c \
+    'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --default-character-set=utf8mb4 --databases '"$database_name" \
+    | gzip -c > "$destination"
+  [[ -s "$destination" ]]
+  gzip -t "$destination"
+  zgrep -m1 "Current Database: \`${database_name}\`" "$destination" >/dev/null
+  sha256sum "$destination" > "$destination.sha256"
+}
+
+case "$backup_scope" in
+  online) backup_database OnlineData ;;
+  daily) backup_database daily_report ;;
+  all)
+    backup_database OnlineData
+    backup_database OnlineDataArchive
+    backup_database daily_report
+    ;;
+esac
+
+log "switching from ${previous_version} to ${release_version}"
+readonly dist_target="$(readlink -m "$project_dir/frontend/dist")"
+[[ "$dist_target" == "$project_dir/frontend/dist" ]] || fail "unexpected frontend target"
+rm -rf -- "$dist_target"
+install -d -o root -g root -m 0755 "$dist_target"
+tar -C "$release_dir/source" -cf - . | tar -C "$project_dir" -xf -
+docker tag "$candidate_tag" binhu-backend:latest
+switched=1
+(
+  cd "$project_dir"
+  docker compose config --quiet
+  docker compose up -d --no-deps --force-recreate ops-agent backend
+)
+
+ready=0
+for _ in $(seq 1 60); do
+  if health="$(curl -fsS http://127.0.0.1:37125/api/health 2>/dev/null)" \
+    && printf '%s' "$health" | grep -q "\"version\":\"${release_version}\""; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+[[ "$ready" -eq 1 ]] || fail "health check did not reach the requested version"
+
+main_asset="$(python3 - "$project_dir/frontend/dist/index.html" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+html = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'src="/(assets/[^"]+\.js)"', html)
+if not match:
+    raise SystemExit("main frontend asset not found")
+print(match.group(1))
+PY
+)"
+[[ -f "$project_dir/frontend/dist/$main_asset" ]] || fail "frontend asset is missing"
+curl -fsS "http://127.0.0.1:37125/$main_asset" >/dev/null
+[[ "$(docker inspect -f '{{.State.Running}}' binhu-backend)" == "true" ]]
+[[ "$(docker inspect -f '{{.State.Running}}' binhu-ops-agent)" == "true" ]]
+[[ "$(docker inspect -f '{{.State.Health.Status}}' binhu-ops-agent)" == "healthy" ]]
+
+error_lines="$(docker logs --since "$started_at" binhu-backend 2>&1 \
+  | grep -Eic 'Traceback|ERROR|CRITICAL|Exception' || true)"
+write_history "success"
+log "deployment succeeded"
+printf 'DEPLOY_RESULT=success\n'
+printf 'DEPLOY_VERSION=%s\n' "$release_version"
+printf 'DEPLOY_COMMIT=%s\n' "$release_commit"
+printf 'PREVIOUS_VERSION=%s\n' "$previous_version"
+printf 'BACKUP_SCOPE=%s\n' "$backup_scope"
+printf 'STARTUP_ERROR_LINES=%s\n' "$error_lines"
