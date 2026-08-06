@@ -29,15 +29,29 @@ test('热力图只接收所选年度日期并保留年度边界', () => {
   assert.equal(contributionDateLabel('2026/8/6'), '2026年8月6日')
 })
 
-test('所有角色都能在基础资料中配置人员主页入口', () => {
+test('不再提供独立人员主页导航入口', () => {
   for (const role of ['member', 'leader', 'admin', 'super_admin'] as const) {
     const config = defaultMobileDockConfig(role)
     assert.equal(
-      config.groups.some(group => group.items.includes('people')),
-      true,
+      config.groups.some(group => (group.items as string[]).includes('people')),
+      false,
       role,
     )
   }
+})
+
+test('人员管理姓名进入个人资料且旧目录地址回到人员管理', () => {
+  const membersSource = readFileSync(
+    new URL('../src/pages/GridMembers.tsx', import.meta.url),
+    'utf8',
+  )
+  const appSource = readFileSync(
+    new URL('../src/App.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(membersSource, /navigate\(`\/people\/\$\{member\.account\?\.id\}`\)/)
+  assert.match(appSource, /path="\/people" element=\{<Navigate to="\/grid-members" replace \/>\}/)
+  assert.equal(appSource.includes('PeopleDirectory'), false)
 })
 
 test('公开个人主页不渲染用户名或敏感字段', () => {
@@ -48,6 +62,8 @@ test('公开个人主页不渲染用户名或敏感字段', () => {
   for (const forbidden of ['username', '身份证号', '手机号', 'permission_groups']) {
     assert.equal(source.includes(forbidden), false, forbidden)
   }
+  assert.match(source, /public-profile-layout/)
+  assert.match(source, /返回人员管理/)
 })
 
 test('登录错误提示与按钮使用独立间距容器', () => {

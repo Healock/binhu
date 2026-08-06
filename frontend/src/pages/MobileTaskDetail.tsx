@@ -214,6 +214,9 @@ export default function MobileTaskDetail() {
     : data.task.summary.date
   const phone = selectedSource ? firstValue(selectedSource.values, data.workflow.phone_fields) : data.task.summary.phone
   const address = selectedSource ? firstValue(selectedSource.values, data.workflow.address_fields) : data.task.summary.address
+  const analysis = selectedSource
+    ? firstValue(selectedSource.values, data.workflow.analysis_fields)
+    : data.task.summary.analysis
   const phoneOptions = mobileTaskPhoneOptions(phone)
 
   return (
@@ -254,6 +257,12 @@ export default function MobileTaskDetail() {
               onSelect={value => void copy(value, '电话号码')}
             />
             {address && <Button className="col-span-2 min-h-11" icon={<CopyOutlined />} onClick={() => void copy(address, '地址')}>复制地址</Button>}
+          </div>
+        )}
+        {analysis && (
+          <div className="mobile-task-analysis mt-4">
+            <div className="mobile-task-analysis__label">研判结果</div>
+            <div className="mobile-task-analysis__value">{analysis}</div>
           </div>
         )}
       </section>

@@ -92,6 +92,13 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["phone"], "18800000000")
         self.assertEqual(summary["source"], "模型来源甲")
 
+    def test_analyzed_card_summary_includes_analysis_result(self):
+        summary = TASK_WORKFLOWS["寄递业"].summary({
+            "核查结果": "无法核实",
+            "研判": "无其他号码",
+        })
+        self.assertEqual(summary["analysis"], "无其他号码")
+
     def test_delivery_card_uses_reference_identity_as_fallback(self):
         summary = TASK_WORKFLOWS["寄递业"].summary({
             "参考身份证号码": "320000000000000001",

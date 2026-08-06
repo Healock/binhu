@@ -265,7 +265,6 @@ export type MobileNavigationItemId =
   | 'visit_summary'
   | 'data_upload'
   | 'work_log'
-  | 'people'
   | 'grid_members'
   | 'communities'
   | 'police_addresses'

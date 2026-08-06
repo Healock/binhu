@@ -782,6 +782,7 @@ export interface MobileTaskSummaryFields {
   address: string
   date: string
   result: string
+  analysis: string
 }
 
 export interface MobileTaskItem {
