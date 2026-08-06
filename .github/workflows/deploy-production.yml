@@ -43,7 +43,7 @@ jobs:
       BACKUP_SCOPE: ${{ inputs.backup_scope }}
     steps:
       - name: Check out selected source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -61,7 +61,7 @@ jobs:
           [[ "$version" == "$EXPECTED_VERSION" ]]
           printf 'RELEASE_COMMIT=%s\n' "$release_commit" >> "$GITHUB_ENV"
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
@@ -79,7 +79,7 @@ jobs:
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
@@ -100,7 +100,7 @@ jobs:
             --backup-scope "$BACKUP_SCOPE" \
             --output release-output/binhu-release.tar.gz
       - name: Preserve release bundle for audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binhu-${{ inputs.expected_version }}-${{ github.run_id }}
           path: release-output/binhu-release.tar.gz
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           for attempt in $(seq 1 10); do
-            if payload="$(curl --fail --silent --show-error --max-time 15 \
+            if payload="$(curl --http1.1 --fail --silent --show-error --max-time 15 \
               "${PUBLIC_URL%/}/api/health")" \
               && python -c \
                 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("version") == sys.argv[2] else 1)' \
