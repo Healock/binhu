@@ -50,6 +50,11 @@ def test_contribution_summary_uses_business_timezone_and_streaks():
         {"date": "2026-08-03", "count": 3},
         {"date": "2026-08-05", "count": 1},
     ]
+    assert summary["categories"][0] == {
+        "type": "online_task_update",
+        "label": "指令核查处理",
+        "count": 3,
+    }
 
 
 class SchemaCursor:

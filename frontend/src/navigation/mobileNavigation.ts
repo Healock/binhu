@@ -77,8 +77,8 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
       {
         id: 'flow_tasks',
         path: '/tasks/home',
-        label: '流口任务处理',
-        shortLabel: '流口任务',
+        label: '流口指令核查',
+        shortLabel: '流口核查',
         icon: 'query',
         permission: 'online.raw.view',
       },
@@ -367,7 +367,7 @@ export function mobileNavigationItemLabel(
   const flowPost = position === '组员' || position === '组长'
   const internalPost = position === '基础管控' || position === '中队长'
   if (item.id === 'dashboard') return '首页'
-  if (flowPost && item.id === 'online_query') return '任务处理'
+  if (flowPost && item.id === 'online_query') return '指令核查'
   if (internalPost && item.id === 'online_query') return '下发任务'
   return short ? item.shortLabel : item.label
 }

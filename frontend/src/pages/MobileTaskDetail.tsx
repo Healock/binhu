@@ -214,10 +214,40 @@ export default function MobileTaskDetail() {
     : data.task.summary.date
   const phone = selectedSource ? firstValue(selectedSource.values, data.workflow.phone_fields) : data.task.summary.phone
   const address = selectedSource ? firstValue(selectedSource.values, data.workflow.address_fields) : data.task.summary.address
+  const identityNumber = selectedSource
+    ? firstValue(selectedSource.values, data.workflow.identity_fields)
+    : data.task.summary.identity_number
+  const source = selectedSource
+    ? firstValue(selectedSource.values, data.workflow.source_fields)
+    : data.task.summary.source
+  const currentAddress = selectedSource?.values.现住址?.trim() || ''
+  const originalAddress = selectedSource
+    ? firstValue(
+        selectedSource.values,
+        data.workflow.address_fields.filter(field => field !== '现住址'),
+      )
+    : data.task.summary.address
   const analysis = selectedSource
     ? firstValue(selectedSource.values, data.workflow.analysis_fields)
     : data.task.summary.analysis
   const phoneOptions = mobileTaskPhoneOptions(phone)
+  const phoneDisplay = phoneOptions.length > 0 ? phoneOptions.join('、') : phone
+  const detailFacts = [
+    { label: '身份证号', value: identityNumber || '未填写' },
+    { label: '手机号', value: phoneDisplay || '未填写' },
+    ...(data.workflow.source_fields.length > 0 || source
+      ? [{ label: '来源', value: source || '未填写' }]
+      : []),
+    ...(originalAddress
+      ? [{ label: currentAddress ? '原地址' : '地址', value: originalAddress, wide: true }]
+      : []),
+    ...(currentAddress
+      ? [{ label: '现住址', value: currentAddress, wide: true }]
+      : []),
+    ...(!originalAddress && !currentAddress
+      ? [{ label: '地址', value: '未填写', wide: true }]
+      : []),
+  ]
 
   return (
     <div className="mobile-task-page">
@@ -239,6 +269,18 @@ export default function MobileTaskDetail() {
           </div>
           {(selectedSource?.needs_review || data.task.conflict) && <Tag color="warning">需复核</Tag>}
         </div>
+
+        <dl className="mobile-task-detail-facts">
+          {detailFacts.map(fact => (
+            <div
+              key={fact.label}
+              className={`mobile-task-detail-facts__item${fact.wide ? ' is-wide' : ''}`}
+            >
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
 
         {(phone || address) && (
           <div className="mt-4 grid grid-cols-2 gap-2">
