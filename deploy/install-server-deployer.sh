@@ -6,12 +6,13 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   echo "Run this installer as root." >&2
   exit 1
 fi
-if [[ $# -ne 1 || ! -f "$1" ]]; then
-  echo "Usage: $0 /path/to/github-actions-deploy-key.pub" >&2
+if [[ $# -ne 2 || ! -f "$1" ]]; then
+  echo "Usage: $0 /path/to/github-actions-deploy-key.pub https://public-platform-address" >&2
   exit 64
 fi
 
 readonly public_key_file="$1"
+readonly public_health_url="$2"
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly deploy_user="binhu-deploy"
 readonly deploy_home="/home/${deploy_user}"
@@ -38,6 +39,10 @@ if [[ ! "$public_key" =~ ^ssh-ed25519[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?
   echo "The deployment key must be an Ed25519 public key." >&2
   exit 64
 fi
+if [[ ! "$public_health_url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+  echo "The public platform address must be a simple HTTPS URL." >&2
+  exit 64
+fi
 
 if ! id "$deploy_user" >/dev/null 2>&1; then
   useradd --create-home --home-dir "$deploy_home" --shell /bin/bash "$deploy_user"
@@ -60,6 +65,7 @@ BINHU_PROJECT_DIR=$project_dir
 BINHU_DEPLOY_STATE_DIR=$state_dir
 BINHU_DEPLOY_MIN_FREE_KB=1048576
 BINHU_DEPLOY_MAX_BUNDLE_BYTES=134217728
+BINHU_DEPLOY_PUBLIC_URL=$public_health_url
 EOF
 chown root:root /etc/binhu-deploy.conf
 chmod 0644 /etc/binhu-deploy.conf

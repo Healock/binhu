@@ -7,6 +7,7 @@ umask 077
 : "${BINHU_DEPLOY_STATE_DIR:=/var/lib/binhu-deploy}"
 : "${BINHU_DEPLOY_MIN_FREE_KB:=1048576}"
 : "${BINHU_DEPLOY_MAX_BUNDLE_BYTES:=134217728}"
+: "${BINHU_DEPLOY_PUBLIC_URL:=}"
 
 log() {
   printf '[binhu-deploy] %s\n' "$*"
@@ -38,6 +39,8 @@ readonly state_dir="$(readlink -m "$BINHU_DEPLOY_STATE_DIR")"
 [[ -d "$project_dir" && -f "$project_dir/docker-compose.yml" ]] || fail "invalid project directory"
 [[ -f "$project_dir/.env" ]] || fail "production .env is missing"
 [[ "$state_dir" == /var/lib/binhu-deploy ]] || fail "unexpected deployment state directory"
+[[ "$BINHU_DEPLOY_PUBLIC_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]] \
+  || fail "invalid or missing public health URL"
 
 install -d -o root -g root -m 0750 "$state_dir/incoming" "$state_dir/work" \
   "$state_dir/releases" "$state_dir/history"
@@ -321,6 +324,17 @@ curl -fsS "http://127.0.0.1:37125/$main_asset" >/dev/null
 [[ "$(docker inspect -f '{{.State.Running}}' binhu-backend)" == "true" ]]
 [[ "$(docker inspect -f '{{.State.Running}}' binhu-ops-agent)" == "true" ]]
 [[ "$(docker inspect -f '{{.State.Health.Status}}' binhu-ops-agent)" == "healthy" ]]
+
+public_health="$(curl --http1.1 --fail --silent --show-error --max-time 15 \
+  "${BINHU_DEPLOY_PUBLIC_URL%/}/api/health")"
+python3 - "$public_health" "$release_version" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+if payload.get("version") != sys.argv[2]:
+    raise SystemExit("public health endpoint returned the wrong version")
+PY
 
 error_lines="$(docker logs --since "$started_at" binhu-backend 2>&1 \
   | grep -Eic 'Traceback|ERROR|CRITICAL|Exception' || true)"
