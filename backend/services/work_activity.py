@@ -18,7 +18,7 @@ POLICE_DISPATCH_REVIEW = "police_dispatch_review"
 WORK_LOG = "work_log"
 
 ACTIVITY_LABELS = {
-    ONLINE_TASK_UPDATE: "核查任务处理",
+    ONLINE_TASK_UPDATE: "指令核查处理",
     POLICE_DISPATCH_REVIEW: "下发任务审核",
     WORK_LOG: "工作日志编制",
 }

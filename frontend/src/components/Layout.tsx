@@ -62,7 +62,7 @@ export default function Layout() {
         permissionGroupCodes,
       )
     ) {
-      links.push({ key: 'flow-tasks', path: '/tasks/home', label: '任务处理' })
+      links.push({ key: 'flow-tasks', path: '/tasks/home', label: '指令核查' })
     }
     const systemAdmin = !user.member && (user.role === 'admin' || user.role === 'super_admin')
     if (

@@ -828,6 +828,8 @@ export interface MobileTaskDetailData {
     title_fields: string[]
     address_fields: string[]
     date_fields: string[]
+    identity_fields: string[]
+    source_fields: string[]
     secondary_fields: string[]
     analysis_fields: string[]
     columns: string[]

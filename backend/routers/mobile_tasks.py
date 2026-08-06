@@ -623,6 +623,8 @@ async def get_mobile_task_detail(
             "title_fields": list(workflow.title_fields),
             "address_fields": list(workflow.address_fields),
             "date_fields": list(workflow.date_fields),
+            "identity_fields": list(workflow.identity_fields),
+            "source_fields": list(workflow.source_fields),
             "secondary_fields": list(workflow.secondary_fields),
             "analysis_fields": list(workflow.analysis_fields),
             "columns": parser.COLUMNS,

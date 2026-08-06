@@ -236,6 +236,41 @@
   margin-top: 12px;
 }
 
+.mobile-task-detail-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin: 16px 0 0;
+}
+
+.mobile-task-detail-facts__item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-muted);
+}
+
+.mobile-task-detail-facts__item.is-wide {
+  grid-column: 1 / -1;
+}
+
+.mobile-task-detail-facts__item dt {
+  margin: 0;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.mobile-task-detail-facts__item dd {
+  min-width: 0;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--app-text-strong);
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .mobile-task-analysis {
   padding: 10px 12px;
   border: 1px solid var(--app-primary-border);
@@ -1858,6 +1893,14 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
 }
 
 @media (max-width: 767px) {
+  .mobile-task-detail-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mobile-task-detail-facts__item.is-wide {
+    grid-column: auto;
+  }
+
   .role-dashboard-hero {
     align-items: flex-start;
     flex-direction: column;

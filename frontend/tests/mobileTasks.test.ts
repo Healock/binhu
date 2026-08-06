@@ -57,7 +57,7 @@ test('统一仪表盘使用新固定入口，旧在线汇总 ID 保持兼容', (
   assert.equal(mobileNavigationItemLabel(dashboard, '组员', true), '首页')
   assert.equal(summary.path, '/summary')
   assert.equal(mobileNavigationItemLabel(summary, '组员', true), '在线汇总')
-  assert.equal(mobileNavigationItemLabel(query, '组长'), '任务处理')
+  assert.equal(mobileNavigationItemLabel(query, '组长'), '指令核查')
   assert.equal(mobileNavigationItemLabel(query, '基础管控'), '下发任务')
   assert.equal(routeIsActive('/tasks/全链条/row', query), false)
   assert.equal(routeIsActive('/tasks/全链条/row', query, true), true)
@@ -69,7 +69,7 @@ test('管理员手机导航使用独立流口任务入口', () => {
   const query = navigationItemById('online_query')!
 
   assert.equal(flowTasks.path, '/tasks/home')
-  assert.equal(flowTasks.shortLabel, '流口任务')
+  assert.equal(flowTasks.shortLabel, '流口核查')
   assert.equal(routeIsActive('/tasks/全链条/row', flowTasks), true)
   assert.equal(routeIsActive('/tasks/全链条/row', query, false), false)
 })
@@ -184,4 +184,15 @@ test('已研判任务在列表和详情直接显示研判结果', () => {
   assert.match(listSource, /研判结果/)
   assert.match(detailSource, /data\.workflow\.analysis_fields/)
   assert.match(detailSource, /研判结果/)
+})
+
+test('任务详情直接展示身份证号、手机号、来源和地址', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /mobile-task-detail-facts/)
+  for (const label of ['身份证号', '手机号', '来源', '原地址', '现住址']) {
+    assert.equal(detailSource.includes(label), true, label)
+  }
 })
