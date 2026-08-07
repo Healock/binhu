@@ -815,7 +815,12 @@ html[data-theme='dark'] ::selection {
   width: 100%;
   height: 620px;
   overflow: hidden;
+  overflow-anchor: none;
   background: var(--app-surface);
+}
+
+.query-spreadsheet-card {
+  overflow-anchor: none;
 }
 
 .query-spreadsheet .univer-app {

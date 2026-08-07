@@ -36,6 +36,7 @@ import {
   applyQuerySheetValues,
   buildQuerySheetRows,
   canEditQuerySheetCell,
+  isQuerySheetHorizontalScrollbarPointer,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
@@ -151,6 +152,60 @@ export function QuerySpreadsheet({
   }
   themeModeRef.current = themeMode
   filterCriteriaRef.current = filterCriteria
+
+  useEffect(() => {
+    const container = containerRef.current
+    const pageScroller = container?.closest('main')
+    if (!container || !(pageScroller instanceof HTMLElement)) return
+
+    let lockedScrollTop: number | null = null
+    let firstReleaseFrame = 0
+    let secondReleaseFrame = 0
+
+    function restorePagePosition() {
+      if (lockedScrollTop !== null && pageScroller.scrollTop !== lockedScrollTop) {
+        pageScroller.scrollTop = lockedScrollTop
+      }
+    }
+    function unlock() {
+      restorePagePosition()
+      lockedScrollTop = null
+      pageScroller.removeEventListener('scroll', restorePagePosition)
+      window.removeEventListener('pointerup', finishGesture)
+      window.removeEventListener('pointercancel', finishGesture)
+    }
+    function finishGesture() {
+      restorePagePosition()
+      firstReleaseFrame = window.requestAnimationFrame(() => {
+        secondReleaseFrame = window.requestAnimationFrame(unlock)
+      })
+    }
+    function handlePointerDown(event: PointerEvent) {
+      const bounds = container.getBoundingClientRect()
+      if (!isQuerySheetHorizontalScrollbarPointer(
+        event.clientY,
+        bounds.top,
+        bounds.bottom,
+      )) return
+
+      if (firstReleaseFrame) window.cancelAnimationFrame(firstReleaseFrame)
+      if (secondReleaseFrame) window.cancelAnimationFrame(secondReleaseFrame)
+      window.removeEventListener('pointerup', finishGesture)
+      window.removeEventListener('pointercancel', finishGesture)
+      lockedScrollTop = pageScroller.scrollTop
+      pageScroller.addEventListener('scroll', restorePagePosition)
+      window.addEventListener('pointerup', finishGesture, { once: true })
+      window.addEventListener('pointercancel', finishGesture, { once: true })
+    }
+
+    container.addEventListener('pointerdown', handlePointerDown, true)
+    return () => {
+      container.removeEventListener('pointerdown', handlePointerDown, true)
+      if (firstReleaseFrame) window.cancelAnimationFrame(firstReleaseFrame)
+      if (secondReleaseFrame) window.cancelAnimationFrame(secondReleaseFrame)
+      unlock()
+    }
+  }, [])
 
   useEffect(() => {
     const container = containerRef.current

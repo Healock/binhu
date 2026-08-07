@@ -7,6 +7,7 @@ import {
   saveUserPreferences,
 } from '../api/client'
 import type { User, UserPreferences } from '../types'
+import { clearRoleDashboardCaches } from '../utils/dashboardCache'
 
 interface AuthContextValue {
   user: User | null
@@ -56,6 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       )
     }
     await res.json()
+    clearRoleDashboardCaches(window.sessionStorage)
     setUser(await getCurrentUser())
   }
 
@@ -65,6 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       { method: 'POST' },
       { handleUnauthorized: false, markActivity: false },
     ).catch(() => {})
+    clearRoleDashboardCaches(window.sessionStorage)
     setUser(null)
   }
 

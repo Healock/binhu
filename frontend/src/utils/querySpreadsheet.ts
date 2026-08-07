@@ -76,14 +76,28 @@ const QUERY_SHEET_LONG_TEXT_COLUMNS = new Set([
 ])
 
 /**
- * 腾讯表格的业务值本质上都是显示文本。显式使用 FORCE_STRING，避免
- * Univer 把 7.30、身份证号或长手机号重新推断为数字。
+ * 腾讯表格的业务值本质上都是显示文本。显式声明 STRING，既避免 Univer
+ * 把 7.30、身份证号或长手机号重新推断为数字，也不会在公式栏暴露
+ * FORCE_STRING 使用的前导单引号标记。
  */
 export function querySheetTextCell(value: unknown): ICellData {
   return {
     v: stringifyCell(value),
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
   }
+}
+
+/** 判断指针是否落在嵌入式工作表底部的横向滚动条热区。 */
+export function isQuerySheetHorizontalScrollbarPointer(
+  clientY: number,
+  top: number,
+  bottom: number,
+  hitArea = 30,
+): boolean {
+  return Number.isFinite(clientY)
+    && bottom > top
+    && clientY >= bottom - hitArea
+    && clientY <= bottom + 1
 }
 
 /** 把文本近似换算成像素宽度，不调用 Univer 的列宽命令和撤销栈。 */

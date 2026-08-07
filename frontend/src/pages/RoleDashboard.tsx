@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Alert,
   Button,
@@ -24,6 +24,12 @@ import {
   type RoleDashboardData,
 } from '../api/client'
 import { Panel } from '../components/ui'
+import { useAuth } from '../context/AuthContext'
+import {
+  DASHBOARD_CACHE_FRESH_MS,
+  readRoleDashboardCache,
+  writeRoleDashboardCache,
+} from '../utils/dashboardCache'
 import { formatDashboardIdentityContext } from '../utils/dashboardIdentity'
 
 const percent = (value: unknown) => `${(Number(value || 0) * 100).toFixed(0)}%`
@@ -274,23 +280,38 @@ function ManagementOverview({ data }: { data: RoleDashboardData }) {
 }
 
 export default function RoleDashboard() {
+  const { user } = useAuth()
   const [data, setData] = useState<RoleDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const load = async () => {
-    setLoading(true)
+  const load = useCallback(async (showSpinner = true) => {
+    if (showSpinner) setLoading(true)
     try {
-      setData(await getRoleDashboard())
+      const next = await getRoleDashboard()
+      setData(next)
+      if (user?.id) writeRoleDashboardCache(window.sessionStorage, user.id, next)
       setError('')
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '仪表盘读取失败')
     } finally {
       setLoading(false)
     }
-  }
+  }, [user?.id])
 
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    if (!user?.id) return
+    const cached = readRoleDashboardCache(window.sessionStorage, user.id)
+    if (cached) {
+      setData(cached.data)
+      setLoading(false)
+      if (cached.ageMs <= DASHBOARD_CACHE_FRESH_MS) return
+      void load(false)
+      return
+    }
+    setData(null)
+    void load(true)
+  }, [load, user?.id])
 
   const syncLabel = useMemo(() => {
     if (!data?.last_success_at) return '尚无成功同步记录'
@@ -328,7 +349,7 @@ export default function RoleDashboard() {
           <button type="button" onClick={() => window.dispatchEvent(new Event('binhu:open-notification-center'))}>
             <BellOutlined /> {data.notifications.unread_count ? `${data.notifications.unread_count} 条未读` : '消息中心'}
           </button>
-          <Button type="text" icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
+          <Button type="text" icon={<ReloadOutlined />} loading={loading} onClick={() => void load(true)}>刷新</Button>
         </div>
       </section>
 
