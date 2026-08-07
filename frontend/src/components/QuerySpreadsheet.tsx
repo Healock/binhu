@@ -156,28 +156,50 @@ export function QuerySpreadsheet({
   useEffect(() => {
     const container = containerRef.current
     const pageScroller = container?.closest('main')
-    if (!container || !(pageScroller instanceof HTMLElement)) return
+    const documentScroller = document.scrollingElement
+    if (!container || !(pageScroller instanceof HTMLElement) || !documentScroller) return
 
-    let lockedScrollTop: number | null = null
-    let firstReleaseFrame = 0
-    let secondReleaseFrame = 0
+    let lockedPosition: {
+      mainLeft: number
+      mainTop: number
+      documentLeft: number
+      documentTop: number
+    } | null = null
+    let releaseFrame = 0
+    let releaseTimer = 0
 
     function restorePagePosition() {
-      if (lockedScrollTop !== null && pageScroller.scrollTop !== lockedScrollTop) {
-        pageScroller.scrollTop = lockedScrollTop
+      if (!lockedPosition) return
+      if (pageScroller.scrollLeft !== lockedPosition.mainLeft) pageScroller.scrollLeft = lockedPosition.mainLeft
+      if (pageScroller.scrollTop !== lockedPosition.mainTop) pageScroller.scrollTop = lockedPosition.mainTop
+      if (documentScroller.scrollLeft !== lockedPosition.documentLeft) {
+        documentScroller.scrollLeft = lockedPosition.documentLeft
+      }
+      if (documentScroller.scrollTop !== lockedPosition.documentTop) {
+        documentScroller.scrollTop = lockedPosition.documentTop
       }
     }
     function unlock() {
       restorePagePosition()
-      lockedScrollTop = null
+      lockedPosition = null
       pageScroller.removeEventListener('scroll', restorePagePosition)
+      documentScroller.removeEventListener('scroll', restorePagePosition)
+      window.removeEventListener('scroll', restorePagePosition)
       window.removeEventListener('pointerup', finishGesture)
       window.removeEventListener('pointercancel', finishGesture)
     }
     function finishGesture() {
+      window.removeEventListener('pointerup', finishGesture)
+      window.removeEventListener('pointercancel', finishGesture)
+      if (!lockedPosition) return
       restorePagePosition()
-      firstReleaseFrame = window.requestAnimationFrame(() => {
-        secondReleaseFrame = window.requestAnimationFrame(unlock)
+      releaseFrame = window.requestAnimationFrame(() => {
+        releaseFrame = 0
+        restorePagePosition()
+        releaseTimer = window.setTimeout(() => {
+          releaseTimer = 0
+          unlock()
+        }, 160)
       })
     }
     function handlePointerDown(event: PointerEvent) {
@@ -188,12 +210,26 @@ export function QuerySpreadsheet({
         bounds.bottom,
       )) return
 
-      if (firstReleaseFrame) window.cancelAnimationFrame(firstReleaseFrame)
-      if (secondReleaseFrame) window.cancelAnimationFrame(secondReleaseFrame)
+      if (releaseFrame) {
+        window.cancelAnimationFrame(releaseFrame)
+        releaseFrame = 0
+      }
+      if (releaseTimer) {
+        window.clearTimeout(releaseTimer)
+        releaseTimer = 0
+      }
+      unlock()
       window.removeEventListener('pointerup', finishGesture)
       window.removeEventListener('pointercancel', finishGesture)
-      lockedScrollTop = pageScroller.scrollTop
+      lockedPosition = {
+        mainLeft: pageScroller.scrollLeft,
+        mainTop: pageScroller.scrollTop,
+        documentLeft: documentScroller.scrollLeft,
+        documentTop: documentScroller.scrollTop,
+      }
       pageScroller.addEventListener('scroll', restorePagePosition)
+      documentScroller.addEventListener('scroll', restorePagePosition)
+      window.addEventListener('scroll', restorePagePosition)
       window.addEventListener('pointerup', finishGesture, { once: true })
       window.addEventListener('pointercancel', finishGesture, { once: true })
     }
@@ -201,8 +237,8 @@ export function QuerySpreadsheet({
     container.addEventListener('pointerdown', handlePointerDown, true)
     return () => {
       container.removeEventListener('pointerdown', handlePointerDown, true)
-      if (firstReleaseFrame) window.cancelAnimationFrame(firstReleaseFrame)
-      if (secondReleaseFrame) window.cancelAnimationFrame(secondReleaseFrame)
+      if (releaseFrame) window.cancelAnimationFrame(releaseFrame)
+      if (releaseTimer) window.clearTimeout(releaseTimer)
       unlock()
     }
   }, [])
