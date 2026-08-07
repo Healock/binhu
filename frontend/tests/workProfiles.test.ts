@@ -102,3 +102,15 @@ test('登录页使用公安平台品牌文案和分层视觉素材', () => {
   assert.equal(source.includes('守护滨湖平安'), false)
   assert.equal(source.includes('滨湖新城智慧平台'), false)
 })
+
+test('登录页右侧表单区域跟随深色主题', () => {
+  const styles = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(styles, /html\[data-theme='dark'\] \.login-form-panel/)
+  assert.match(styles, /html\[data-theme='dark'\] \.login-form-card/)
+  assert.match(styles, /html\[data-theme='dark'\] \.login-form__field \.ant-input-affix-wrapper/)
+  assert.match(styles, /html\[data-theme='dark'\] \.login-product-brand h2/)
+  assert.match(styles, /html\[data-theme='dark'\] \.login-form__field input:-webkit-autofill/)
+})

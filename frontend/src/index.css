@@ -973,6 +973,87 @@ html[data-theme='dark'] ::selection {
   background: #fff2f0;
 }
 
+html[data-theme='dark'] .login-page {
+  background: #080d17;
+}
+
+html[data-theme='dark'] .login-form-panel {
+  background:
+    radial-gradient(circle at 82% 8%, rgb(38 72 112 / 0.38), transparent 36%),
+    linear-gradient(145deg, #0d1725 0%, #080f1a 100%);
+}
+
+html[data-theme='dark'] .login-product-brand img {
+  filter: drop-shadow(0 12px 24px rgb(0 0 0 / 0.34));
+}
+
+html[data-theme='dark'] .login-product-brand h2 {
+  color: #dcecff;
+}
+
+html[data-theme='dark'] .login-product-brand p {
+  color: #7890ad;
+}
+
+html[data-theme='dark'] .login-form-card {
+  border-color: rgb(64 86 116 / 0.76);
+  background: rgb(15 24 38 / 0.9);
+  box-shadow: 0 24px 68px rgb(0 0 0 / 0.34);
+}
+
+html[data-theme='dark'] .login-form-card__heading h3 {
+  color: #edf5ff;
+}
+
+html[data-theme='dark'] .login-form-card__heading p {
+  color: #8ea0b8;
+}
+
+html[data-theme='dark'] .login-form__field {
+  color: #c8d5e5;
+}
+
+html[data-theme='dark'] .login-form__field .ant-input-affix-wrapper {
+  border-color: #34465f;
+  background: #111c2c;
+}
+
+html[data-theme='dark'] .login-form__field .ant-input-affix-wrapper:hover {
+  border-color: #4c709a;
+}
+
+html[data-theme='dark'] .login-form__field .ant-input-affix-wrapper-focused {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgb(59 130 246 / 0.18);
+}
+
+html[data-theme='dark'] .login-form__field .ant-input-prefix,
+html[data-theme='dark'] .login-form__field .ant-input-password-icon {
+  color: #8196b1;
+}
+
+html[data-theme='dark'] .login-form__field .ant-input {
+  color: #edf5ff;
+}
+
+html[data-theme='dark'] .login-form__field .ant-input::placeholder {
+  color: #708198;
+}
+
+html[data-theme='dark'] .login-form__field input:-webkit-autofill,
+html[data-theme='dark'] .login-form__field input:-webkit-autofill:hover,
+html[data-theme='dark'] .login-form__field input:-webkit-autofill:focus {
+  caret-color: #edf5ff;
+  -webkit-text-fill-color: #edf5ff;
+  -webkit-box-shadow: 0 0 0 1000px #111c2c inset;
+}
+
+html[data-theme='dark'] .login-form .ant-alert-error {
+  border-color: #71333a;
+  color: #fecaca;
+  background: #2b171d;
+}
+
 @media (max-width: 900px) {
   .login-page {
     display: block;
