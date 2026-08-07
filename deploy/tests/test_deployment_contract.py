@@ -30,6 +30,14 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("-o BatchMode=yes", workflow)
         self.assertIn("-o StrictHostKeyChecking=yes", workflow)
         self.assertIn("-o PasswordAuthentication=no", workflow)
+        self.assertIn(
+            'bundle_size="$(wc -c < release-output/binhu-release.tar.gz)"',
+            workflow,
+        )
+        self.assertIn(
+            '"deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $bundle_size"',
+            workflow,
+        )
         self.assertNotIn("BINHU_PUBLIC_URL", workflow)
         self.assertNotIn("docker compose", workflow)
         self.assertNotIn("docker build", workflow)
@@ -58,6 +66,9 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("BINHU_DEPLOY_PUBLIC_URL", script)
         self.assertIn("curl --http1.1 --fail", script)
         self.assertIn('[[ "$work_dir" == "$state_dir/work/"* ]]', script)
+        self.assertIn('head -c "$expected_bundle_size"', script)
+        self.assertIn('[[ "$bundle_size" == "$expected_bundle_size" ]]', script)
+        self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
 
     def test_gateway_rejects_any_command_outside_fixed_grammar(self) -> None:
         gateway = ROOT / "deploy/binhu-deploy-gateway"
@@ -66,7 +77,10 @@ class DeploymentContractTests(unittest.TestCase):
             "bash",
             "deploy 0.15.0 deadbeef none",
             "deploy 0.15.0 " + "a" * 40 + " invalid",
-            "deploy 0.15.0 " + "a" * 40 + " none extra",
+            "deploy 0.15.0 " + "a" * 40 + " none",
+            "deploy 0.15.0 " + "a" * 40 + " none 0",
+            "deploy 0.15.0 " + "a" * 40 + " none 134217729",
+            "deploy 0.15.0 " + "a" * 40 + " none 1024 extra",
         ):
             with self.subTest(command=command):
                 environment = os.environ.copy()

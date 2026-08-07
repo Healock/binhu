@@ -744,8 +744,9 @@ flowchart LR
 ```
 
 GitHub 使用独立的 Ed25519 密钥连接 `binhu-deploy` 账号。服务器 `authorized_keys` 对这把密钥使用强制命令
-和 `restrict`，因此它不能打开 Shell、转发端口或执行任意 sudo；网关只接受版本、40 位提交号和四种备份范围，
-发布包从标准输入交给 root 所有的固定脚本。GitHub 不持有生产 root 密钥、Docker Socket、MySQL 密码或腾讯凭据。
+和 `restrict`，因此它不能打开 Shell、转发端口或执行任意 sudo；网关只接受版本、40 位提交号、四种备份范围
+和发布包精确字节数，固定脚本只读取该长度后再校验包内容。GitHub 不持有生产 root 密钥、Docker Socket、
+MySQL 密码或腾讯凭据。
 
 发布包只包含目标 Git 提交的跟踪文件和该提交现场构建的 `frontend/dist`，不包含 `.env`、`AGENTS.local.md`
 或未跟踪资料。服务器会校验外层成员、路径、文件类型、两层 SHA-256、版本和提交，再从隔离目录构建候选后端

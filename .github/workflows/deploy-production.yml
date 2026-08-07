@@ -126,6 +126,8 @@ jobs:
           DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
         run: |
           set -Eeuo pipefail
+          bundle_size="$(wc -c < release-output/binhu-release.tar.gz)"
+          [[ "$bundle_size" =~ ^[1-9][0-9]*$ ]]
           ssh -F /dev/null \
             -i "$RUNNER_TEMP/binhu-ssh/deploy_key" \
             -o BatchMode=yes \
@@ -136,5 +138,5 @@ jobs:
             -o ConnectTimeout=15 \
             -p "$DEPLOY_PORT" \
             "binhu-deploy@$DEPLOY_HOST" \
-            "deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE" \
+            "deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $bundle_size" \
             < release-output/binhu-release.tar.gz
