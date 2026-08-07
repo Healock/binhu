@@ -9,6 +9,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class MigrationInfrastructureContractTests(unittest.TestCase):
+    def test_linux_runtime_files_are_exported_with_lf_endings(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        for rule in (
+            "*.py text eol=lf",
+            "*.sh text eol=lf",
+            "*.service text eol=lf",
+            "*.timer text eol=lf",
+            "*.conf text eol=lf",
+            "deploy/binhu-nginx-profile text eol=lf",
+        ):
+            self.assertIn(rule, attributes)
+
     def test_wireguard_is_host_only_and_has_keepalive(self) -> None:
         script = (ROOT / "deploy/install-wireguard-link.sh").read_text(encoding="utf-8")
         self.assertIn("Address = 10.77.0.1/30", script)
