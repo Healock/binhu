@@ -33,13 +33,60 @@ from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
 FlowScope = Literal["mine", "community", "all"]
-TaskStatus = Literal["pending", "review", "completed", "all"]
+TaskStatus = Literal[
+    "pending",
+    "unchecked",
+    "checked",
+    "review",
+    "completed",
+    "all",
+]
 ReviewStage = Literal["all", "waiting_analysis", "analyzed"]
+Priority = Literal[
+    "all",
+    "analyzed",
+    "source_exception",
+    "pending_sync",
+    "ordinary",
+    "waiting_analysis",
+    "completed",
+]
+SortMode = Literal["priority", "updated_desc", "updated_asc"]
+EMPTY_FILTER_VALUE = "__empty__"
+PRIORITY_KEYS = (
+    "analyzed",
+    "source_exception",
+    "pending_sync",
+    "ordinary",
+    "waiting_analysis",
+    "completed",
+)
+PRIORITY_LABELS = {
+    "analyzed": "已研判",
+    "source_exception": "来源异常",
+    "pending_sync": "待同步",
+    "ordinary": "普通待处理",
+    "waiting_analysis": "等待研判",
+    "completed": "已完成",
+}
 
 
 class TaskBatchUpdate(BaseModel):
     changes: dict[str, str]
     expected_revision: int = Field(gt=0)
+
+
+class TaskSearch(BaseModel):
+    scope: FlowScope = "mine"
+    status: TaskStatus = "pending"
+    review_stage: ReviewStage = "all"
+    communities: list[str] = Field(default_factory=list, max_length=50)
+    inspectors: list[str] = Field(default_factory=list, max_length=50)
+    priority: Priority = "all"
+    sort: SortMode = "priority"
+    keyword: str = Field(default="", max_length=100)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=50)
 
 
 def _iso_utc(value) -> str | None:
@@ -113,6 +160,127 @@ def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
         if stage == "analyzed"
         else f"({unable} AND NOT ({analysis}))"
     )
+
+
+def _priority_case(parser_type: str) -> str:
+    workflow = TASK_WORKFLOWS[parser_type]
+    source_exception = "projection.conflict=1 OR projection.source_count>1"
+    if workflow.valid_results:
+        analyzed = "0"
+        waiting = "0"
+    else:
+        analysis = " OR ".join(
+            f"{_json_field(field)}<>''" for field in workflow.analysis_fields
+        ) or "0"
+        unable = f"{_json_field(workflow.result_field)} LIKE '%%无法核实%%'"
+        analyzed = f"({unable} AND ({analysis}))"
+        waiting = f"({unable} AND NOT ({analysis}))"
+    return (
+        "CASE "
+        "WHEN projection.task_state='completed' THEN 'completed' "
+        f"WHEN {analyzed} THEN 'analyzed' "
+        f"WHEN {source_exception} THEN 'source_exception' "
+        "WHEN projection.pending_state='pending' THEN 'pending_sync' "
+        f"WHEN {waiting} THEN 'waiting_analysis' "
+        "ELSE 'ordinary' END"
+    )
+
+
+def _priority_order(parser_type: str) -> str:
+    bucket = _priority_case(parser_type)
+    return (
+        f"CASE {bucket} "
+        "WHEN 'analyzed' THEN 0 "
+        "WHEN 'source_exception' THEN 1 "
+        "WHEN 'pending_sync' THEN 2 "
+        "WHEN 'ordinary' THEN 3 "
+        "WHEN 'waiting_analysis' THEN 4 "
+        "ELSE 5 END"
+    )
+
+
+def _priority_bucket(
+    parser_type: str,
+    values: dict,
+    source_count: int,
+    conflict: bool,
+    pending: bool,
+    task_state_value: str,
+) -> str:
+    workflow = TASK_WORKFLOWS[parser_type]
+    if task_state_value == "completed" or workflow.state(values) == "completed":
+        return "completed"
+    if workflow.review_stage(values) == "analyzed":
+        return "analyzed"
+    if conflict or source_count > 1:
+        return "source_exception"
+    if pending:
+        return "pending_sync"
+    if workflow.review_stage(values) == "waiting_analysis":
+        return "waiting_analysis"
+    return "ordinary"
+
+
+def _multi_filter_condition(
+    column: str,
+    values: list[str],
+) -> tuple[str, list[str]]:
+    normalized = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+    if not normalized:
+        return "1=1", []
+    include_empty = EMPTY_FILTER_VALUE in normalized
+    non_empty = [value for value in normalized if value != EMPTY_FILTER_VALUE]
+    predicates: list[str] = []
+    params: list[str] = []
+    if non_empty:
+        placeholders = ", ".join(["%s"] * len(non_empty))
+        predicates.append(f"projection.{column} IN ({placeholders})")
+        params.extend(non_empty)
+    if include_empty:
+        predicates.append(f"TRIM(COALESCE(projection.{column}, ''))='' ")
+    return "(" + " OR ".join(predicates) + ")", params
+
+
+def _task_where(
+    context: dict,
+    parser_type: str,
+    data: TaskSearch,
+    *,
+    include_priority: bool = True,
+) -> tuple[str, list]:
+    scope_where, scope_params = _scope_where(context, data.scope)
+    where_parts = ["projection.parser_type=%s", scope_where]
+    params: list = [parser_type, *scope_params]
+    review_condition = _review_condition(parser_type)
+    if data.status == "pending":
+        where_parts.append("projection.task_state<>'completed'")
+    elif data.status == "unchecked":
+        where_parts.append("projection.task_state='unchecked'")
+    elif data.status == "checked":
+        where_parts.append("projection.task_state='checked'")
+    elif data.status == "completed":
+        where_parts.append("projection.task_state='completed'")
+    elif data.status == "review":
+        where_parts.append(review_condition)
+    if data.review_stage != "all":
+        where_parts.append(_review_stage_condition(parser_type, data.review_stage))
+    community_condition, community_params = _multi_filter_condition(
+        "community", data.communities
+    )
+    inspector_condition, inspector_params = _multi_filter_condition(
+        "inspector", data.inspectors
+    )
+    where_parts.extend([community_condition, inspector_condition])
+    params.extend(community_params)
+    params.extend(inspector_params)
+    keyword = data.keyword.strip()
+    if keyword:
+        where_parts.append("projection.search_text LIKE %s")
+        params.append(f"%{keyword}%")
+    if include_priority and data.priority != "all":
+        where_parts.append(f"({_priority_case(parser_type)})=%s")
+        params.append(data.priority)
+    return " AND ".join(where_parts), params
 
 
 async def _flow_context(conn, user: dict) -> dict:
@@ -320,6 +488,14 @@ def _task_record(
         "source_count": int(source_count or 0),
         "conflict": bool(conflict),
         "pending_sync": bool(pending),
+        "priority": _priority_bucket(
+            parser_type,
+            normalized,
+            int(source_count or 0),
+            bool(conflict),
+            bool(pending),
+            task_state_value,
+        ),
     }
 
 
@@ -400,37 +576,104 @@ async def get_mobile_task_home(
     }
 
 
-@router.get("/{parser_type}")
-async def list_mobile_tasks(
+def _empty_facets() -> dict:
+    return {
+        "total": 0,
+        "priority_counts": {key: 0 for key in PRIORITY_KEYS},
+        "status_counts": {key: 0 for key in ("unchecked", "checked", "completed")},
+    }
+
+
+async def _task_facets(cur, parser_type: str, where_sql: str, params: list) -> dict:
+    facets = _empty_facets()
+    bucket_sql = _priority_case(parser_type)
+    await cur.execute(
+        f"""
+        SELECT bucket, COUNT(*)
+        FROM (
+            SELECT {bucket_sql} AS bucket
+            FROM _online_source_projection AS projection
+            WHERE {where_sql}
+        ) AS priority_rows
+        GROUP BY bucket
+        """,
+        params,
+    )
+    for bucket, count in await cur.fetchall():
+        if str(bucket) in facets["priority_counts"]:
+            facets["priority_counts"][str(bucket)] = int(count or 0)
+    await cur.execute(
+        f"""
+        SELECT projection.task_state, COUNT(*)
+        FROM _online_source_projection AS projection
+        WHERE {where_sql}
+        GROUP BY projection.task_state
+        """,
+        params,
+    )
+    for state, count in await cur.fetchall():
+        if str(state) in facets["status_counts"]:
+            facets["status_counts"][str(state)] = int(count or 0)
+    facets["total"] = sum(facets["priority_counts"].values())
+    return facets
+
+
+async def _task_filter_options(
+    cur,
     parser_type: str,
-    scope: FlowScope = Query("mine"),
-    status: TaskStatus = Query("pending"),
-    review_stage: ReviewStage = Query("all"),
-    keyword: str | None = Query(None, max_length=100),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=50),
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
-    conn=Depends(get_db),
-):
+    context: dict,
+    scope: FlowScope,
+) -> dict:
+    scope_where, scope_params = _scope_where(context, scope)
+    where_sql = f"projection.parser_type=%s AND {scope_where}"
+    params = [parser_type, *scope_params]
+    result = {"communities": [], "inspectors": []}
+    for column, key, empty_label in (
+        ("community", "communities", "社区未填写"),
+        ("inspector", "inspectors", "未分配核查人"),
+    ):
+        await cur.execute(
+            f"""
+            SELECT projection.{column}, COUNT(*)
+            FROM _online_source_projection AS projection
+            WHERE {where_sql}
+            GROUP BY projection.{column}
+            ORDER BY CASE WHEN TRIM(COALESCE(projection.{column}, ''))='' THEN 1 ELSE 0 END,
+                     projection.{column}
+            """,
+            params,
+        )
+        for value, count in await cur.fetchall():
+            normalized = str(value or "").strip()
+            result[key].append({
+                "value": normalized or EMPTY_FILTER_VALUE,
+                "label": normalized or empty_label,
+                "count": int(count or 0),
+            })
+    return result
+
+
+async def _list_mobile_tasks_data(
+    parser_type: str,
+    data: TaskSearch,
+    user: dict,
+    conn,
+) -> dict:
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
-    where, params = _scope_where(context, scope)
-    where_parts = ["projection.parser_type=%s", where]
-    query_params: list = [parser_type, *params]
-    review_condition = _review_condition(parser_type)
-    if status == "pending":
-        where_parts.append("projection.task_state<>'completed'")
-    elif status == "completed":
-        where_parts.append("projection.task_state='completed'")
-    elif status == "review":
-        where_parts.append(review_condition)
-        where_parts.append(_review_stage_condition(parser_type, review_stage))
-    if keyword and keyword.strip():
-        where_parts.append("projection.search_text LIKE %s")
-        query_params.append(f"%{keyword.strip()}%")
-    where_sql = " AND ".join(where_parts)
-
+    where_sql, query_params = _task_where(context, parser_type, data)
+    facet_data = data.model_copy(update={
+        "status": "all",
+        "review_stage": "all",
+        "priority": "all",
+    })
+    base_where, base_params = _task_where(
+        context,
+        parser_type,
+        facet_data,
+        include_priority=False,
+    )
     async with conn.cursor() as cur:
         spreadsheets = await _enabled_spreadsheets(cur, parser_type)
         ready = await _source_ready(cur, spreadsheets)
@@ -438,10 +681,22 @@ async def list_mobile_tasks(
             return {
                 "data": [],
                 "total": 0,
-                "page": page,
-                "page_size": page_size,
+                "page": data.page,
+                "page_size": data.page_size,
                 "source_ready": False,
                 "message": "来源定位尚未建立，请等待一次正常同步",
+                "facets": _empty_facets(),
+                "priority_labels": PRIORITY_LABELS,
+                "filters": {
+                    "scope": data.scope,
+                    "status": data.status,
+                    "review_stage": data.review_stage,
+                    "communities": data.communities,
+                    "inspectors": data.inspectors,
+                    "priority": data.priority,
+                    "sort": data.sort,
+                    "keyword_present": bool(data.keyword.strip()),
+                },
             }
         await cur.execute(
             f"SELECT COUNT(*) FROM _online_source_projection AS projection "
@@ -449,6 +704,23 @@ async def list_mobile_tasks(
             query_params,
         )
         total = int((await cur.fetchone())[0] or 0)
+        facets = await _task_facets(cur, parser_type, base_where, base_params)
+        completed_last = (
+            "CASE WHEN projection.task_state='completed' THEN 1 ELSE 0 END"
+        )
+        if data.sort == "updated_asc":
+            order_sql = (
+                f"{completed_last}, projection.updated_at ASC, projection.row_key"
+            )
+        elif data.sort == "updated_desc":
+            order_sql = (
+                f"{completed_last}, projection.updated_at DESC, projection.row_key"
+            )
+        else:
+            order_sql = (
+                f"{_priority_order(parser_type)}, "
+                "projection.updated_at DESC, projection.row_key"
+            )
         await cur.execute(
             f"""
             SELECT projection.row_key, projection.values_json,
@@ -456,12 +728,10 @@ async def list_mobile_tasks(
                    projection.pending_state, projection.task_state
             FROM _online_source_projection AS projection
             WHERE {where_sql}
-            ORDER BY {review_condition} DESC,
-                     FIELD(projection.task_state, 'unchecked', 'checked', 'completed'),
-                     projection.updated_at DESC, projection.row_key
+            ORDER BY {order_sql}
             LIMIT %s OFFSET %s
             """,
-            [*query_params, page_size, (page - 1) * page_size],
+            [*query_params, data.page_size, (data.page - 1) * data.page_size],
         )
         rows = await cur.fetchall()
     return {
@@ -478,11 +748,90 @@ async def list_mobile_tasks(
             for row in rows
         ],
         "total": total,
-        "page": page,
-        "page_size": page_size,
+        "page": data.page,
+        "page_size": data.page_size,
         "source_ready": True,
         "message": "",
+        "facets": facets,
+        "priority_labels": PRIORITY_LABELS,
+        "filters": {
+            "scope": data.scope,
+            "status": data.status,
+            "review_stage": data.review_stage,
+            "communities": data.communities,
+            "inspectors": data.inspectors,
+            "priority": data.priority,
+            "sort": data.sort,
+            "keyword_present": bool(data.keyword.strip()),
+        },
     }
+
+
+@router.get("/{parser_type}/filter-options")
+async def get_mobile_task_filter_options(
+    parser_type: str,
+    scope: FlowScope = Query("mine"),
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    context = await _flow_context(conn, user)
+    async with conn.cursor() as cur:
+        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
+        if not await _source_ready(cur, spreadsheets):
+            return {
+                "source_ready": False,
+                "communities": [],
+                "inspectors": [],
+            }
+        options = await _task_filter_options(cur, parser_type, context, scope)
+    return {"source_ready": True, **options}
+
+
+@router.post("/{parser_type}/search")
+async def search_mobile_tasks(
+    parser_type: str,
+    data: TaskSearch,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    return await _list_mobile_tasks_data(parser_type, data, user, conn)
+
+
+@router.get("/{parser_type}")
+async def list_mobile_tasks(
+    parser_type: str,
+    scope: FlowScope = Query("mine"),
+    status: TaskStatus = Query("pending"),
+    review_stage: ReviewStage = Query("all"),
+    community: list[str] = Query(default=[]),
+    inspector: list[str] = Query(default=[]),
+    priority: Priority = Query("all"),
+    sort: SortMode = Query("priority"),
+    keyword: str | None = Query(None, max_length=100),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    return await _list_mobile_tasks_data(
+        parser_type,
+        TaskSearch(
+            scope=scope,
+            status=status,
+            review_stage=review_stage,
+            communities=community,
+            inspectors=inspector,
+            priority=priority,
+            sort=sort,
+            keyword=keyword or "",
+            page=page,
+            page_size=page_size,
+        ),
+        user,
+        conn,
+    )
 
 
 @router.get("/{parser_type}/{row_key}")

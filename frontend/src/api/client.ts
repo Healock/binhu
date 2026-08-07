@@ -761,9 +761,24 @@ export async function deleteQuerySourceRow(
 
 // ---- Flow-post mobile task workbench ----
 export type MobileTaskScope = 'mine' | 'community' | 'all'
-export type MobileTaskStatus = 'pending' | 'review' | 'completed' | 'all'
+export type MobileTaskStatus =
+  | 'pending'
+  | 'unchecked'
+  | 'checked'
+  | 'review'
+  | 'completed'
+  | 'all'
 export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
 export type MobileTaskReviewStage = 'all' | 'waiting_analysis' | 'analyzed'
+export type MobileTaskPriority =
+  | 'all'
+  | 'analyzed'
+  | 'source_exception'
+  | 'pending_sync'
+  | 'ordinary'
+  | 'waiting_analysis'
+  | 'completed'
+export type MobileTaskSort = 'priority' | 'updated_desc' | 'updated_asc'
 
 export interface MobileTaskBusinessSummary {
   parser_type: string
@@ -816,6 +831,19 @@ export interface MobileTaskItem {
   source_count: number
   conflict: boolean
   pending_sync: boolean
+  priority: Exclude<MobileTaskPriority, 'all'>
+}
+
+export interface MobileTaskFilterOption {
+  value: string
+  label: string
+  count: number
+}
+
+export interface MobileTaskFacets {
+  total: number
+  priority_counts: Record<Exclude<MobileTaskPriority, 'all'>, number>
+  status_counts: Record<MobileTaskState, number>
 }
 
 export interface MobileTaskSource {
@@ -864,6 +892,10 @@ export async function listMobileTasks(params: {
   scope: MobileTaskScope
   status: MobileTaskStatus
   review_stage?: MobileTaskReviewStage
+  communities?: string[]
+  inspectors?: string[]
+  priority?: MobileTaskPriority
+  sort?: MobileTaskSort
   keyword?: string
   page?: number
   page_size?: number
@@ -874,18 +906,50 @@ export async function listMobileTasks(params: {
   page_size: number
   source_ready: boolean
   message: string
+  facets: MobileTaskFacets
+  priority_labels: Record<Exclude<MobileTaskPriority, 'all'>, string>
+  filters: {
+    scope: MobileTaskScope
+    status: MobileTaskStatus
+    review_stage: MobileTaskReviewStage
+    communities: string[]
+    inspectors: string[]
+    priority: MobileTaskPriority
+    sort: MobileTaskSort
+    keyword_present: boolean
+  }
 }> {
-  const { data } = await api.get(`/mobile-tasks/${encodeURIComponent(params.parser_type)}`, {
-    ...activeRequest,
-    params: {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(params.parser_type)}/search`,
+    {
       scope: params.scope,
       status: params.status,
       review_stage: params.review_stage || 'all',
-      keyword: params.keyword,
+      communities: params.communities || [],
+      inspectors: params.inspectors || [],
+      priority: params.priority || 'all',
+      sort: params.sort || 'priority',
+      keyword: params.keyword || '',
       page: params.page || 1,
       page_size: params.page_size || 20,
     },
-  })
+    activeRequest,
+  )
+  return data
+}
+
+export async function getMobileTaskFilterOptions(
+  parserType: string,
+  scope: MobileTaskScope,
+): Promise<{
+  source_ready: boolean
+  communities: MobileTaskFilterOption[]
+  inspectors: MobileTaskFilterOption[]
+}> {
+  const { data } = await api.get(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
+    { ...activeRequest, params: { scope } },
+  )
   return data
 }
 

@@ -8,10 +8,15 @@ import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message 
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
+  getMobileTaskFilterOptions,
   listMobileTasks,
+  type MobileTaskFacets,
+  type MobileTaskFilterOption,
   type MobileTaskItem,
+  type MobileTaskPriority,
   type MobileTaskReviewStage,
   type MobileTaskScope,
+  type MobileTaskSort,
   type MobileTaskStatus,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -23,17 +28,73 @@ import {
 import MobilePhonePicker from '../components/MobilePhonePicker'
 
 const STATUS_OPTIONS = [
-  { label: '待处理', value: 'pending' },
-  { label: '需复核', value: 'review' },
+  { label: '待处理（未完成）', value: 'pending' },
+  { label: '未核查', value: 'unchecked' },
+  { label: '已核查未完成', value: 'checked' },
   { label: '已完成', value: 'completed' },
   { label: '全部', value: 'all' },
-]
+] satisfies Array<{ label: string; value: MobileTaskStatus }>
+
+const PRIORITY_OPTIONS = [
+  { label: '全部优先级', value: 'all' },
+  { label: '已研判', value: 'analyzed' },
+  { label: '来源异常', value: 'source_exception' },
+  { label: '待同步', value: 'pending_sync' },
+  { label: '普通待处理', value: 'ordinary' },
+  { label: '等待研判', value: 'waiting_analysis' },
+  { label: '已完成', value: 'completed' },
+] satisfies Array<{ label: string; value: MobileTaskPriority }>
+
+const SORT_OPTIONS = [
+  { label: '默认优先级', value: 'priority' },
+  { label: '最近更新', value: 'updated_desc' },
+  { label: '最早更新', value: 'updated_asc' },
+] satisfies Array<{ label: string; value: MobileTaskSort }>
 
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
   checked: { text: '待补结果', color: 'orange' },
   completed: { text: '已完成', color: 'green' },
 } as const
+
+const PRIORITY_CARDS: Array<{ key: MobileTaskPriority; label: string }> = [
+  { key: 'analyzed', label: '已研判' },
+  { key: 'source_exception', label: '来源异常' },
+  { key: 'pending_sync', label: '待同步' },
+  { key: 'ordinary', label: '普通待处理' },
+  { key: 'waiting_analysis', label: '等待研判' },
+  { key: 'completed', label: '已完成' },
+  { key: 'all', label: '全部' },
+]
+
+const EMPTY_FACETS: MobileTaskFacets = {
+  total: 0,
+  priority_counts: {
+    analyzed: 0,
+    source_exception: 0,
+    pending_sync: 0,
+    ordinary: 0,
+    waiting_analysis: 0,
+    completed: 0,
+  },
+  status_counts: { unchecked: 0, checked: 0, completed: 0 },
+}
+
+function readMulti(searchParams: URLSearchParams, key: string) {
+  return searchParams.getAll(key).filter(Boolean)
+}
+
+function readPriority(value: string | null): MobileTaskPriority {
+  return PRIORITY_OPTIONS.some(option => option.value === value)
+    ? value as MobileTaskPriority
+    : 'all'
+}
+
+function readSort(value: string | null): MobileTaskSort {
+  return SORT_OPTIONS.some(option => option.value === value)
+    ? value as MobileTaskSort
+    : 'priority'
+}
 
 export default function MobileTaskList() {
   const navigate = useNavigate()
@@ -54,7 +115,7 @@ export default function MobileTaskList() {
   const requestedStatus = searchParams.get('status')
   const requestedReviewStage = searchParams.get('review_stage')
   const [status, setStatus] = useState<MobileTaskStatus>(
-    ['pending', 'review', 'completed', 'all'].includes(requestedStatus || '')
+    ['pending', 'unchecked', 'checked', 'review', 'completed', 'all'].includes(requestedStatus || '')
       ? requestedStatus as MobileTaskStatus
       : 'pending',
   )
@@ -63,15 +124,44 @@ export default function MobileTaskList() {
       ? requestedReviewStage as MobileTaskReviewStage
       : 'all',
   )
+  const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
+  const [inspectors, setInspectors] = useState<string[]>(readMulti(searchParams, 'inspector'))
+  const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
+  const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
+  const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
+  const [facets, setFacets] = useState<MobileTaskFacets>(EMPTY_FACETS)
   const [rows, setRows] = useState<MobileTaskItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [optionsLoading, setOptionsLoading] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState('')
+
+  const loadOptions = useCallback(async () => {
+    setOptionsLoading(true)
+    try {
+      const result = await getMobileTaskFilterOptions(parserType, scope)
+      setCommunityOptions(result.communities)
+      setInspectorOptions(result.inspectors)
+      const communityValues = new Set(result.communities.map(option => option.value))
+      const inspectorValues = new Set(result.inspectors.map(option => option.value))
+      setCommunities(current => current.filter(value => communityValues.has(value)))
+      setInspectors(current => current.filter(value => inspectorValues.has(value)))
+    } catch {
+      setCommunityOptions([])
+      setInspectorOptions([])
+    } finally {
+      setOptionsLoading(false)
+    }
+  }, [parserType, scope])
+
+  useEffect(() => { void loadOptions() }, [loadOptions])
 
   const load = useCallback(async (targetPage = 1, append = false) => {
     append ? setLoadingMore(true) : setLoading(true)
@@ -82,12 +172,17 @@ export default function MobileTaskList() {
         scope,
         status,
         review_stage: reviewStage,
+        communities,
+        inspectors,
+        priority,
+        sort,
         keyword: keyword || undefined,
         page: targetPage,
       })
       setRows(current => append ? [...current, ...result.data] : result.data)
       setTotal(result.total)
       setPage(targetPage)
+      setFacets(result.facets || EMPTY_FACETS)
       setSourceMessage(result.message || '')
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || reason?.message || '任务列表读取失败')
@@ -96,7 +191,7 @@ export default function MobileTaskList() {
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [keyword, parserType, reviewStage, scope, status])
+  }, [communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status])
 
   useEffect(() => { void load() }, [load])
 
@@ -105,16 +200,56 @@ export default function MobileTaskList() {
     next.set('type', parserType)
     next.set('scope', scope)
     next.set('status', status)
-    if (status === 'review' && reviewStage !== 'all') next.set('review_stage', reviewStage)
+    if (reviewStage !== 'all') next.set('review_stage', reviewStage)
+    communities.forEach(value => next.append('community', value))
+    inspectors.forEach(value => next.append('inspector', value))
+    if (priority !== 'all') next.set('priority', priority)
+    if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [parserType, reviewStage, scope, setSearchParams, status])
+  }, [communities, inspectors, parserType, priority, reviewStage, scope, setSearchParams, sort, status])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
-    const next = new URLSearchParams(searchParams)
+    const next = new URLSearchParams()
     next.set('type', type)
     next.set('scope', nextScope)
+    next.set('status', 'pending')
+    setCommunities([])
+    setInspectors([])
+    setPriority('all')
+    setSort('priority')
+    setStatus('pending')
+    setReviewStage('all')
     setSearchParams(next)
   }
+
+  const clearFilters = () => {
+    setCommunities([])
+    setInspectors([])
+    setPriority('all')
+    setSort('priority')
+    setStatus('pending')
+    setReviewStage('all')
+    setKeyword('')
+    setKeywordInput('')
+  }
+
+  const selectPriorityCard = (nextPriority: MobileTaskPriority) => {
+    setReviewStage('all')
+    setStatus('all')
+    if (nextPriority === 'all') {
+      setPriority('all')
+      return
+    }
+    setPriority(nextPriority)
+  }
+
+  const filtersActive = communities.length > 0
+    || inspectors.length > 0
+    || priority !== 'all'
+    || status !== 'pending'
+    || reviewStage !== 'all'
+    || sort !== 'priority'
+    || Boolean(keyword)
 
   const dial = async (phone: string) => {
     await recordActivity().catch(() => {})
@@ -134,16 +269,15 @@ export default function MobileTaskList() {
   return (
     <div className="mobile-task-page">
       <section className="app-card mobile-task-filter-card">
-        <div className="flex items-center gap-3">
+        <div className="mobile-task-filter-grid">
           <Select
-            className="min-w-0 flex-1"
             size="large"
             value={parserType}
             onChange={value => updateQuery(value, scope)}
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
           />
           {adminMode ? (
-            <Tag color="blue">全所</Tag>
+            <Tag color="blue" className="mobile-task-scope-tag">全所</Tag>
           ) : (
             <Segmented
               className="mobile-task-scope-switch"
@@ -152,49 +286,120 @@ export default function MobileTaskList() {
               options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
             />
           )}
-        </div>
-        <div className="mobile-task-filter-card__row">
-          <Segmented
-            className="mobile-task-status-switch w-full"
-            block
-            value={status}
-            onChange={value => setStatus(value as MobileTaskStatus)}
-            options={STATUS_OPTIONS}
+          <Select
+            mode="multiple"
+            size="large"
+            value={communities}
+            loading={optionsLoading}
+            maxTagCount="responsive"
+            showSearch
+            allowClear
+            optionFilterProp="label"
+            placeholder="筛选社区"
+            options={communityOptions.map(option => ({
+              value: option.value,
+              label: `${option.label}（${option.count}）`,
+            }))}
+            onChange={values => setCommunities(values)}
           />
+          <Select
+            mode="multiple"
+            size="large"
+            value={inspectors}
+            loading={optionsLoading}
+            maxTagCount="responsive"
+            showSearch
+            allowClear
+            optionFilterProp="label"
+            placeholder="筛选核查人"
+            options={inspectorOptions.map(option => ({
+              value: option.value,
+              label: `${option.label}（${option.count}）`,
+            }))}
+            onChange={values => setInspectors(values)}
+          />
+          <div className="mobile-task-filter-search flex gap-2">
+            <Input
+              allowClear
+              value={keywordInput}
+              prefix={<SearchOutlined />}
+              placeholder="搜索姓名、电话或地址"
+              onChange={event => setKeywordInput(event.target.value)}
+              onPressEnter={() => setKeyword(keywordInput.trim())}
+            />
+            <Button type="primary" className="min-h-11" onClick={() => setKeyword(keywordInput.trim())}>查询</Button>
+          </div>
         </div>
-        {status === 'review' && (
-          <div className="mobile-task-filter-card__row">
-            <Segmented
-              block
-              className="w-full"
+
+        <div className="mobile-task-priority-grid" aria-label="任务快捷筛选">
+          {PRIORITY_CARDS.map(card => {
+            const count = card.key === 'all'
+              ? facets.total
+              : facets.priority_counts[card.key]
+            const active = card.key === 'all'
+              ? priority === 'all' && status === 'all'
+              : priority === card.key
+            return (
+              <button
+                key={card.key}
+                type="button"
+                className={`mobile-task-priority-card${active ? ' is-active' : ''}`}
+                onClick={() => selectPriorityCard(card.key)}
+              >
+                <span>{card.label}</span>
+                <strong>{count}</strong>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="mobile-task-more-toggle">
+          <Button type="link" onClick={() => setMoreOpen(value => !value)}>
+            {moreOpen ? '收起更多筛选' : '更多筛选'}
+          </Button>
+          {filtersActive && (
+            <Button type="link" onClick={clearFilters}>清除筛选</Button>
+          )}
+        </div>
+        {moreOpen && (
+          <div className="mobile-task-more-grid">
+            <Select
+              value={status}
+              options={STATUS_OPTIONS}
+              onChange={value => setStatus(value as MobileTaskStatus)}
+              placeholder="精确任务状态"
+            />
+            <Select
               value={reviewStage}
-              onChange={value => setReviewStage(value as MobileTaskReviewStage)}
               options={[
                 { label: '全部复核', value: 'all' },
                 { label: '等待研判', value: 'waiting_analysis' },
                 { label: '已研判', value: 'analyzed' },
               ]}
+              onChange={value => setReviewStage(value as MobileTaskReviewStage)}
+              placeholder="复核阶段"
+            />
+            <Select
+              value={priority}
+              options={PRIORITY_OPTIONS}
+              onChange={value => setPriority(value as MobileTaskPriority)}
+              placeholder="优先级"
+            />
+            <Select
+              value={sort}
+              options={SORT_OPTIONS}
+              onChange={value => setSort(value as MobileTaskSort)}
+              placeholder="更新时间"
             />
           </div>
         )}
-        <div className="mobile-task-filter-card__row flex gap-2">
-          <Input
-            allowClear
-            value={keywordInput}
-            prefix={<SearchOutlined />}
-            placeholder="搜索姓名、电话或地址"
-            onChange={event => setKeywordInput(event.target.value)}
-            onPressEnter={() => setKeyword(keywordInput.trim())}
-          />
-          <Button type="primary" className="min-h-11" onClick={() => setKeyword(keywordInput.trim())}>查询</Button>
-        </div>
       </section>
 
       {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       {sourceMessage && <Alert type="warning" showIcon message={sourceMessage} />}
 
       <div className="flex items-center justify-between px-1 text-sm text-[var(--app-text-secondary)]">
-        <span>共 {total} 条</span>
+        <span>当前筛选共 {total} 条</span>
         {keyword && <button type="button" className="text-[var(--app-primary)]" onClick={() => { setKeyword(''); setKeywordInput('') }}>清除搜索</button>}
       </div>
 
@@ -227,6 +432,7 @@ export default function MobileTaskList() {
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
                       {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
                       {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
+                      {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
                       {task.pending_sync && <Tag color="blue">待同步</Tag>}
                     </div>
                     <p className="mt-1 text-xs text-[var(--app-text-secondary)]">{task.community || '社区未填写'} · {task.inspector || '待分配'}</p>
@@ -235,24 +441,9 @@ export default function MobileTaskList() {
                 </div>
                 {(task.summary.identity_number || phoneDisplay || task.summary.source) && (
                   <dl className="mobile-task-item-card__details">
-                    {task.summary.identity_number && (
-                      <div className="mobile-task-item-card__detail-row">
-                        <dt>身份证号</dt>
-                        <dd>{task.summary.identity_number}</dd>
-                      </div>
-                    )}
-                    {phoneDisplay && (
-                      <div className="mobile-task-item-card__detail-row">
-                        <dt>手机号</dt>
-                        <dd>{phoneDisplay}</dd>
-                      </div>
-                    )}
-                    {task.summary.source && (
-                      <div className="mobile-task-item-card__detail-row">
-                        <dt>来源</dt>
-                        <dd>{task.summary.source}</dd>
-                      </div>
-                    )}
+                    {task.summary.identity_number && <div className="mobile-task-item-card__detail-row"><dt>身份证号</dt><dd>{task.summary.identity_number}</dd></div>}
+                    {phoneDisplay && <div className="mobile-task-item-card__detail-row"><dt>手机号</dt><dd>{phoneDisplay}</dd></div>}
+                    {task.summary.source && <div className="mobile-task-item-card__detail-row"><dt>来源</dt><dd>{task.summary.source}</dd></div>}
                   </dl>
                 )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
