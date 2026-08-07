@@ -8,6 +8,10 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from fastapi import HTTPException
 
 from routers.mobile_tasks import (
+    EMPTY_FILTER_VALUE,
+    TaskSearch,
+    _multi_filter_condition,
+    _priority_bucket,
     _scope_where,
     _source_in_community,
     _validate_assignment,
@@ -161,6 +165,47 @@ class MobileTaskWorkflowTests(unittest.TestCase):
                 "name": "网格员甲",
             }, "all")
         self.assertEqual(raised.exception.status_code, 403)
+
+    def test_task_search_accepts_multiselect_and_empty_values(self):
+        request = TaskSearch(
+            communities=["长板", EMPTY_FILTER_VALUE],
+            inspectors=["网格员甲"],
+            status="checked",
+            review_stage="analyzed",
+            priority="source_exception",
+            sort="updated_asc",
+        )
+        self.assertEqual(request.status, "checked")
+        self.assertEqual(request.communities, ["长板", EMPTY_FILTER_VALUE])
+        self.assertEqual(request.sort, "updated_asc")
+
+    def test_multiselect_where_contains_only_requested_values_and_empty_bucket(self):
+        where, params = _multi_filter_condition(
+            "community", ["长板", EMPTY_FILTER_VALUE, "长板"]
+        )
+        self.assertIn("projection.community IN (%s)", where)
+        self.assertIn("TRIM(COALESCE(projection.community, ''))=''", where)
+        self.assertEqual(params, ["长板"])
+
+    def test_priority_buckets_follow_default_order_and_completed_is_last(self):
+        analyzed = {"核查结果": "无法核实", "研判": "无其他号码"}
+        waiting = {"核查结果": "无法核实"}
+        self.assertEqual(
+            _priority_bucket("全链条", analyzed, 2, True, True, "checked"),
+            "analyzed",
+        )
+        self.assertEqual(
+            _priority_bucket("全链条", {}, 1, False, True, "unchecked"),
+            "pending_sync",
+        )
+        self.assertEqual(
+            _priority_bucket("全链条", waiting, 1, False, False, "checked"),
+            "waiting_analysis",
+        )
+        self.assertEqual(
+            _priority_bucket("全链条", {"核查结果": "已登记"}, 1, False, True, "completed"),
+            "completed",
+        )
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):

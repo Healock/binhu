@@ -196,3 +196,38 @@ test('任务详情直接展示身份证号、手机号、来源和地址', () =>
     assert.equal(detailSource.includes(label), true, label)
   }
 })
+
+test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更多筛选可用', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+  assert.match(clientSource, /api\.post\(\s*`\/mobile-tasks\//)
+  assert.match(clientSource, /filter-options/)
+  assert.match(clientSource, /communities: params\.communities \|\| \[\]/)
+  assert.match(clientSource, /inspectors: params\.inspectors \|\| \[\]/)
+  assert.match(pageSource, /mode="multiple"/)
+  assert.match(pageSource, /getMobileTaskFilterOptions/)
+  assert.match(pageSource, /priority_counts/)
+  assert.match(pageSource, /更多筛选/)
+  assert.match(pageSource, /setSearchParams\(next, \{ replace: true \}\)/)
+  assert.equal(pageSource.includes("next.set('keyword'"), false)
+})
+
+test('流口任务数量卡顺序固定为已研判优先、已完成沉底', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const analyzedIndex = pageSource.indexOf("{ key: 'analyzed'")
+  const waitingIndex = pageSource.indexOf("{ key: 'waiting_analysis'")
+  const completedIndex = pageSource.indexOf("{ key: 'completed'")
+  assert.ok(analyzedIndex >= 0)
+  assert.ok(waitingIndex > analyzedIndex)
+  assert.ok(completedIndex > waitingIndex)
+  assert.match(pageSource, /setReviewStage\('all'\)/)
+})
