@@ -134,7 +134,7 @@ EOF
       exit 1
     }
     known_hosts="$(tr -d '\r' < "$2")"
-    [[ "$known_hosts" =~ \[10\.77\.0\.1\]:22[[:space:]]+ssh-ed25519[[:space:]]+[A-Za-z0-9+/=]+ ]] || {
+    [[ "$known_hosts" =~ \[10\.77\.0\.1\]:51234[[:space:]]+ssh-ed25519[[:space:]]+[A-Za-z0-9+/=]+ ]] || {
       echo "known_hosts must contain the verified WireGuard SSH host key." >&2
       exit 64
     }

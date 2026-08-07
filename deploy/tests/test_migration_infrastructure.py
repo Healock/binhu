@@ -56,6 +56,10 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
         self.assertIn("wg-quick@wg0.service", service)
         self.assertIn("ConditionPathIsMountPoint=/backup", service)
         self.assertIn("10.77.0.1", service)
+        self.assertIn("--port 51234", service)
+        self.assertIn("\\[10\\.77\\.0\\.1\\]:51234", (
+            ROOT / "deploy/install-offsite-backup.sh"
+        ).read_text(encoding="utf-8"))
         self.assertIn("StrictHostKeyChecking=yes", program)
         self.assertIn("PasswordAuthentication=no", program)
         self.assertNotIn("StrictHostKeyChecking=no", program)

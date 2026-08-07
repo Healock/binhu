@@ -883,7 +883,8 @@ WireGuard 上传到旧云。安装顺序固定为：
 1. 在物理服务器执行 `deploy/install-offsite-backup.sh sender-init`，只生成专用密钥和服务文件，不启动上传。
 2. 把输出的公钥通过已验证的人工运维通道交给旧云，执行
    `deploy/install-offsite-backup.sh receiver <发送端公钥文件>`。
-3. 从旧云已经信任的 SSH 主机公钥生成 `[10.77.0.1]:22` `known_hosts` 条目，不能只信任临时网络扫描。
+3. 从旧云已经信任的 SSH 主机公钥生成 `[10.77.0.1]:51234` `known_hosts` 条目，不能只信任临时网络扫描；
+   异地备份复用旧云现有 SSH 端口，不额外开放公网 22 端口。
 4. 在物理服务器执行 `deploy/install-offsite-backup.sh sender-activate <已验证known_hosts文件>`。
 5. 手工启动一次 push 和 ingest 服务，核对文件名、大小、gzip、三库标识和 SHA-256 后再等待定时任务。
 
