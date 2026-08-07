@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -9,6 +10,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class MigrationInfrastructureContractTests(unittest.TestCase):
+    def test_offsite_program_parses_as_python_36(self) -> None:
+        program = (ROOT / "deploy/binhu_offsite_backup.py").read_text(
+            encoding="utf-8"
+        )
+        ast.parse(program, feature_version=(3, 6))
+
     def test_linux_runtime_files_are_exported_with_lf_endings(self) -> None:
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         for rule in (
