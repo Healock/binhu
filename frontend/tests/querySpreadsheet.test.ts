@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { BorderStyleTypes, CellValueType } from '@univerjs/core'
 import {
@@ -47,6 +48,16 @@ test('只在工作表底部横向滚动条热区锁定页面纵向位置', () =>
   assert.equal(isQuerySheetHorizontalScrollbarPointer(769, 200, 800), false)
   assert.equal(isQuerySheetHorizontalScrollbarPointer(801, 200, 800), true)
   assert.equal(isQuerySheetHorizontalScrollbarPointer(802, 200, 800), false)
+})
+
+test('横向滚动保护同时锁定实际发生滚动的浏览器文档', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /document\.scrollingElement/)
+  assert.match(componentSource, /documentScroller\.scrollTop/)
+  assert.match(componentSource, /window\.addEventListener\('scroll', restorePagePosition\)/)
 })
 
 test('工作表自动列宽保留合理的最小值和最大值', () => {
