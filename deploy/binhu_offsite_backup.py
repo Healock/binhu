@@ -7,8 +7,6 @@ files.  A root-owned ingest timer moves accepted files out of the writable
 inbox and applies the seven-day retention policy.
 """
 
-from __future__ import annotations
-
 import argparse
 import gzip
 import hashlib
@@ -21,6 +19,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 
 BACKUP_NAME = re.compile(r"binhu-db-\d{8}T\d{6}Z-job\d+\.sql\.gz")
@@ -57,7 +56,10 @@ def _safe_child(root: Path, name: str) -> Path:
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -65,11 +67,11 @@ def _sha256(path: Path) -> str:
 def validate_backup(
     path: Path,
     *,
-    expected_size: int | None = None,
-    expected_sha256: str | None = None,
+    expected_size: Optional[int] = None,
+    expected_sha256: Optional[str] = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_uncompressed_bytes: int = DEFAULT_MAX_UNCOMPRESSED_BYTES,
-) -> tuple[int, str]:
+) -> Tuple[int, str]:
     if not path.is_file() or path.is_symlink():
         raise BackupError("backup is not a regular file")
     size = path.stat().st_size
@@ -89,7 +91,10 @@ def validate_backup(
     total = 0
     try:
         with gzip.open(path, "rb") as source:
-            while chunk := source.read(1024 * 1024):
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
                 total += len(chunk)
                 if total > max_uncompressed_bytes:
                     raise BackupError("backup expands beyond the allowed limit")
@@ -105,7 +110,7 @@ def validate_backup(
     return size, digest
 
 
-def _parse_upload_command(command_text: str) -> tuple[str, int, str]:
+def _parse_upload_command(command_text: str) -> Tuple[str, int, str]:
     try:
         parts = shlex.split(command_text)
     except ValueError as exc:
@@ -172,7 +177,10 @@ def receive_backup(inbox: Path, stream, command_text: str) -> dict:
             }
         return {"status": "stored", "filename": name, "size": size, "sha256": checksum}
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def ingest_backups(inbox: Path, archive: Path, retention_days: int) -> dict:
@@ -184,7 +192,7 @@ def ingest_backups(inbox: Path, archive: Path, retention_days: int) -> dict:
     archive.mkdir(parents=True, exist_ok=True)
     os.chmod(archive, 0o700)
 
-    ingested: list[str] = []
+    ingested: List[str] = []
     for source in sorted(inbox.iterdir()):
         if not source.is_file() or source.is_symlink() or not BACKUP_NAME.fullmatch(source.name):
             continue
@@ -216,7 +224,7 @@ def ingest_backups(inbox: Path, archive: Path, retention_days: int) -> dict:
     )
     protected = archived[0] if archived else None
     cutoff = time.time() - retention_days * 86400
-    removed: list[str] = []
+    removed: List[str] = []
     for item in archived:
         if item == protected or item.stat().st_mtime >= cutoff:
             continue
@@ -225,7 +233,7 @@ def ingest_backups(inbox: Path, archive: Path, retention_days: int) -> dict:
     return {"status": "ok", "ingested": ingested, "removed": removed}
 
 
-def _load_state(path: Path) -> dict:
+def _load_state(path: Path) -> Dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -233,7 +241,7 @@ def _load_state(path: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _write_state(path: Path, value: dict) -> None:
+def _write_state(path: Path, value: Dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".state.", dir=path.parent)
     temporary = Path(temporary_name)
@@ -246,7 +254,10 @@ def _write_state(path: Path, value: dict) -> None:
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def push_latest_backup(
@@ -316,7 +327,6 @@ def push_latest_backup(
                 stderr=subprocess.PIPE,
                 timeout=1800,
                 check=False,
-                text=False,
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BackupError("off-site backup SSH transfer failed") from exc
@@ -337,7 +347,7 @@ def push_latest_backup(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="action", required=True)
+    subparsers = parser.add_subparsers(dest="action")
 
     receive = subparsers.add_parser("receive")
     receive.add_argument("--inbox", type=Path, required=True)
@@ -358,8 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.action:
+        parser.error("an action is required")
     try:
         if args.action == "receive":
             result = receive_backup(
