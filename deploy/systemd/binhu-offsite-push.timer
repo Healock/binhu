@@ -1,0 +1,13 @@
+[Unit]
+Description=Upload Binhu backups after the daily 02:00 backup
+
+[Timer]
+OnCalendar=*-*-* 02:20:00 Asia/Shanghai
+OnBootSec=15min
+OnUnitInactiveSec=30min
+Persistent=true
+RandomizedDelaySec=60s
+Unit=binhu-offsite-push.service
+
+[Install]
+WantedBy=timers.target
