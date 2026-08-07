@@ -88,3 +88,17 @@ test('登录错误提示与按钮使用独立间距容器', () => {
   )
   assert.match(source, /<div className="grid gap-3 pt-1">[\s\S]*<Alert[\s\S]*<Button/)
 })
+
+test('登录页使用公安平台品牌文案和分层视觉素材', () => {
+  const source = readFileSync(
+    new URL('../src/pages/Login.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /守护平安滨湖/)
+  assert.match(source, /滨湖公安智慧平台/)
+  assert.match(source, /loginBlueGrid/)
+  assert.match(source, /loginSilkCity/)
+  assert.match(source, /policeEmblem/)
+  assert.equal(source.includes('守护滨湖平安'), false)
+  assert.equal(source.includes('滨湖新城智慧平台'), false)
+})
