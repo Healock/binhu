@@ -6,6 +6,9 @@ import {
   UserOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
+import loginBlueGrid from '../assets/login/login-blue-grid.png'
+import loginSilkCity from '../assets/login/login-silk-city.png'
+import policeEmblem from '../assets/login/police-emblem.png'
 
 export default function Login() {
   const { login } = useAuth()
@@ -43,58 +46,72 @@ export default function Login() {
   }
 
   return (
-    <div className="login-page flex min-h-screen">
-      <section className="hidden w-[44%] flex-col bg-[#17335c] p-10 text-white md:flex lg:p-14">
-        <div className="flex items-center gap-3">
-          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-lg font-semibold text-[#17335c]">
-            滨
-          </span>
-          <div>
-            <div className="text-lg font-semibold">滨湖智慧平台</div>
-            <div className="text-xs text-blue-100/75">数据管理中心</div>
-          </div>
+    <div className="login-page">
+      <section
+        className="login-brand-panel"
+        style={{ backgroundImage: `url(${loginBlueGrid})` }}
+        aria-label="数智赋能，守护平安滨湖"
+      >
+        <img className="login-brand-panel__city" src={loginSilkCity} alt="" aria-hidden="true" />
+
+        <div className="login-brand-panel__agency">
+          <span className="login-brand-panel__agency-mark">吴</span>
+          <span>吴江公安 · 智慧警务</span>
         </div>
+
+        <div className="login-brand-panel__message">
+          <div className="login-brand-panel__location">SUZHOU · WUJIANG</div>
+          <h1>
+            <span>数智赋能</span>
+            <span>守护平安滨湖</span>
+          </h1>
+        </div>
+
+        <div className="login-brand-panel__values">智慧 <i /> 协同 <i /> 高效</div>
       </section>
 
-      <main className="flex flex-1 items-center justify-center p-5 sm:p-8">
-        <div className="w-full max-w-[400px]">
-          <div className="mb-7 md:hidden">
-            <div className="mb-3 flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-700 font-semibold text-white">滨</span>
-              <span className="text-lg font-semibold text-slate-900">滨湖智慧平台</span>
-            </div>
-            <p className="text-sm text-slate-500">数据管理中心</p>
-          </div>
+      <main className="login-form-panel">
+        <div className="login-form-shell">
+          <header className="login-product-brand">
+            <img src={policeEmblem} alt="中华人民共和国人民警察警徽" />
+            <h2>滨湖公安智慧平台</h2>
+            <p>BINHU PUBLIC SECURITY SMART PLATFORM</p>
+          </header>
 
-          <div className="app-card app-card--padded">
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold text-slate-900">登录系统</h2>
+          <div className="login-form-card">
+            <div className="login-form-card__heading">
+              <h3>登录系统</h3>
+              <p>请使用平台账号进入系统</p>
             </div>
 
-            <form onSubmit={handleSubmit} className="grid gap-5">
-              <div className="grid gap-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
+            <form onSubmit={handleSubmit} className="login-form">
+              <label className="login-form__field">
+                <span>用户名</span>
                 <Input
                   size="large"
-                  prefix={<UserOutlined className="text-slate-400" />}
+                  prefix={<UserOutlined />}
                   value={username}
                   onChange={event => setUsername(event.target.value)}
                   placeholder="请输入用户名"
                   autoFocus
                   autoComplete="username"
+                  aria-label="用户名"
                 />
-              </div>
-              <div className="grid gap-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">密码</label>
+              </label>
+
+              <label className="login-form__field">
+                <span>密码</span>
                 <Input.Password
                   size="large"
-                  prefix={<LockOutlined className="text-slate-400" />}
+                  prefix={<LockOutlined />}
                   value={password}
                   onChange={event => setPassword(event.target.value)}
                   placeholder="请输入密码"
                   autoComplete="current-password"
+                  aria-label="密码"
                 />
-              </div>
+              </label>
+
               <div className="grid gap-3 pt-1">
                 {error && <Alert type="error" showIcon message={error} />}
                 <Button
