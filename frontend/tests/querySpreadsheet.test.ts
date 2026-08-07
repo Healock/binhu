@@ -8,6 +8,7 @@ import {
   canEditQuerySheetCell,
   fitQuerySheetColumnWidth,
   isQuerySheetFullscreen,
+  isQuerySheetHorizontalScrollbarPointer,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
@@ -30,15 +31,22 @@ test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅
   assert.deepEqual(querySheetPalette(true), querySheetPalette(false))
 })
 
-test('腾讯日期和长数字以强制文本写入工作表', () => {
+test('腾讯日期和长数字以普通字符串写入工作表且不显示前导单引号', () => {
   assert.deepEqual(querySheetTextCell('7.30'), {
     v: '7.30',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
   })
   assert.deepEqual(querySheetTextCell(320525199110160250n), {
     v: '320525199110160250',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
   })
+})
+
+test('只在工作表底部横向滚动条热区锁定页面纵向位置', () => {
+  assert.equal(isQuerySheetHorizontalScrollbarPointer(790, 200, 800), true)
+  assert.equal(isQuerySheetHorizontalScrollbarPointer(769, 200, 800), false)
+  assert.equal(isQuerySheetHorizontalScrollbarPointer(801, 200, 800), true)
+  assert.equal(isQuerySheetHorizontalScrollbarPointer(802, 200, 800), false)
 })
 
 test('工作表自动列宽保留合理的最小值和最大值', () => {
