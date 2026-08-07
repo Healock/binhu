@@ -25,6 +25,8 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             "*.timer text eol=lf",
             "*.conf text eol=lf",
             "deploy/binhu-nginx-profile text eol=lf",
+            "deploy/binhu-deploy text eol=lf",
+            "deploy/binhu-deploy-gateway text eol=lf",
         ):
             self.assertIn(rule, attributes)
 
