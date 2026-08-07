@@ -472,6 +472,10 @@ html[data-theme='dark'] .mobile-task-hero {
   --contribution-4: #1e3a8a;
   --app-radius: 10px;
   --app-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+  --app-scrollbar-track: rgb(148 163 184 / 0.14);
+  --app-scrollbar-thumb: #a7b4c5;
+  --app-scrollbar-thumb-hover: #7f91a8;
+  --app-scrollbar-thumb-active: #5d7189;
 }
 
 html[data-theme='dark'] {
@@ -502,6 +506,87 @@ html[data-theme='dark'] {
   --contribution-3: #3b82f6;
   --contribution-4: #93c5fd;
   --app-shadow: 0 1px 3px rgb(0 0 0 / 0.34);
+  --app-scrollbar-track: rgb(71 85 105 / 0.16);
+  --app-scrollbar-thumb: #46566c;
+  --app-scrollbar-thumb-hover: #61738c;
+  --app-scrollbar-thumb-active: #8293aa;
+}
+
+* {
+  scrollbar-color: var(--app-scrollbar-thumb) var(--app-scrollbar-track);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--app-scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-width: 36px;
+  min-height: 36px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: var(--app-scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--app-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background-color: var(--app-scrollbar-thumb-active);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--app-scrollbar-track);
+}
+
+*::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+}
+
+.rc-virtual-list {
+  --rc-virtual-list-scrollbar-bg: var(--app-scrollbar-thumb) !important;
+}
+
+.rc-virtual-list-scrollbar-thumb {
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  border-radius: 999px !important;
+  background-clip: padding-box !important;
+  transition: background-color 160ms ease;
+}
+
+.rc-virtual-list-scrollbar-thumb:hover {
+  background: var(--app-scrollbar-thumb-hover) !important;
+}
+
+.ant-table-sticky-scroll {
+  height: 10px !important;
+  border-radius: 999px;
+  background: var(--app-scrollbar-track) !important;
+}
+
+.ant-table-sticky-scroll-bar {
+  box-sizing: border-box;
+  height: 10px !important;
+  border: 2px solid transparent;
+  border-radius: 999px !important;
+  background: var(--app-scrollbar-thumb) !important;
+  background-clip: padding-box !important;
+}
+
+.ant-table-sticky-scroll-bar:hover,
+.ant-table-sticky-scroll-bar-active {
+  background: var(--app-scrollbar-thumb-hover) !important;
 }
 
 .contribution-calendar__scroll {
