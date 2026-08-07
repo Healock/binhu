@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "Run this profile switcher as root." >&2
+  exit 1
+fi
+if [[ $# -ne 1 || ! "$1" =~ ^(new|old)-(maintenance|production|proxy|legacy)$ ]]; then
+  echo "Usage: $0 new-maintenance|new-production|old-maintenance|old-proxy|old-legacy" >&2
+  exit 64
+fi
+
+readonly profile="$1"
+readonly config_file="/etc/binhu-nginx-profile.conf"
+[[ -f "$config_file" ]] || {
+  echo "Missing ${config_file}." >&2
+  exit 1
+}
+# shellcheck disable=SC1090
+source "$config_file"
+: "${BINHU_NGINX_ACTIVE_FILE:?Missing BINHU_NGINX_ACTIVE_FILE}"
+: "${BINHU_NGINX_PROFILE_DIR:?Missing BINHU_NGINX_PROFILE_DIR}"
+
+readonly active_file="$(readlink -m "$BINHU_NGINX_ACTIVE_FILE")"
+readonly profile_dir="$(readlink -m "$BINHU_NGINX_PROFILE_DIR")"
+readonly source_file="$(readlink -m "$profile_dir/${profile}.conf")"
+[[ ( "$active_file" == /etc/nginx/* || "$active_file" == /www/server/panel/vhost/nginx/* ) \
+  && "$profile_dir" == /etc/nginx/* ]] || {
+  echo "Nginx profile paths must stay below /etc/nginx." >&2
+  exit 1
+}
+[[ "$source_file" == "$profile_dir/"* && -f "$source_file" ]] || {
+  echo "Requested Nginx profile is not installed." >&2
+  exit 64
+}
+
+readonly active_dir="$(dirname "$active_file")"
+install -d -o root -g root -m 0755 "$active_dir"
+temporary="$(mktemp "$active_dir/.binhu-profile.XXXXXX")"
+rollback="$(mktemp "$active_dir/.binhu-rollback.XXXXXX")"
+trap 'rm -f -- "$temporary" "$rollback"' EXIT
+
+had_active=0
+if [[ -f "$active_file" ]]; then
+  cp -p -- "$active_file" "$rollback"
+  had_active=1
+fi
+install -o root -g root -m 0644 "$source_file" "$temporary"
+mv -f -- "$temporary" "$active_file"
+
+restore_previous() {
+  if [[ "$had_active" -eq 1 ]]; then
+    cp -p -- "$rollback" "$active_file"
+  else
+    rm -f -- "$active_file"
+  fi
+  nginx -t >/dev/null 2>&1 || true
+  systemctl reload nginx >/dev/null 2>&1 || true
+}
+
+if ! nginx -t; then
+  restore_previous
+  echo "Nginx validation failed; previous profile restored." >&2
+  exit 1
+fi
+if ! systemctl reload nginx; then
+  restore_previous
+  echo "Nginx reload failed; previous profile restored." >&2
+  exit 1
+fi
+printf '%s\n' "$profile" > /var/lib/binhu-nginx-active-profile
+chmod 0644 /var/lib/binhu-nginx-active-profile
+echo "Activated Nginx profile: ${profile}"

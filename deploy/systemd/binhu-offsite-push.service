@@ -1,0 +1,20 @@
+[Unit]
+Description=Copy the latest Binhu database backup to the old cloud host
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target wg-quick@wg0.service
+ConditionPathIsMountPoint=/backup
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/binhu-offsite-backup push --source-dir /backup/binhu/platform-backups --state /var/lib/binhu-offsite/sender-state.json --host 10.77.0.1 --port 22 --user binhu-backup --identity /etc/binhu-offsite/id_ed25519 --known-hosts /etc/binhu-offsite/known_hosts
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadOnlyPaths=/backup/binhu/platform-backups /etc/binhu-offsite
+ReadWritePaths=/var/lib/binhu-offsite
+ProtectHome=true

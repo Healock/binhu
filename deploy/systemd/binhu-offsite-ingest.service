@@ -1,0 +1,17 @@
+[Unit]
+Description=Validate and archive Binhu off-site database backups
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/binhu-offsite-backup ingest --inbox /var/lib/binhu-offsite/inbox --archive /var/lib/binhu-offsite/archive --retention-days 7
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/binhu-offsite
+ProtectHome=true
