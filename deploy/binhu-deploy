@@ -18,16 +18,21 @@ fail() {
   exit 1
 }
 
-[[ $# -eq 3 ]] || fail "expected version, commit and backup scope"
+[[ $# -eq 4 ]] || fail "expected version, commit, backup scope and bundle size"
 readonly release_version="$1"
 readonly release_commit="$2"
 readonly backup_scope="$3"
+readonly expected_bundle_size="$4"
 [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid version"
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit"
 case "$backup_scope" in
   none|online|daily|all) ;;
   *) fail "invalid backup scope" ;;
 esac
+[[ "$expected_bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] \
+  || fail "invalid bundle size"
+(( expected_bundle_size <= BINHU_DEPLOY_MAX_BUNDLE_BYTES )) \
+  || fail "release bundle exceeds size limit"
 
 for command_name in docker curl python3 tar gzip sha256sum flock head awk \
   readlink install date mktemp wc df grep seq sleep cp rm; do
@@ -125,10 +130,9 @@ rollback_after_error() {
 trap 'rollback_after_error "$?" "$LINENO"' ERR
 
 log "receiving release ${release_version} (${short_commit})"
-head -c "$((BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1))" > "$incoming_bundle"
+head -c "$expected_bundle_size" > "$incoming_bundle"
 bundle_size="$(wc -c < "$incoming_bundle")"
-[[ "$bundle_size" -gt 0 ]] || fail "empty release bundle"
-[[ "$bundle_size" -le "$BINHU_DEPLOY_MAX_BUNDLE_BYTES" ]] || fail "release bundle exceeds size limit"
+[[ "$bundle_size" == "$expected_bundle_size" ]] || fail "incomplete release bundle"
 
 python3 - "$incoming_bundle" <<'PY'
 import sys
