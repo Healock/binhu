@@ -4,11 +4,11 @@
 
 ## 当前运行基线（2026-08-08）
 
-- 当前开发发布版本为 `0.16.0`，正式代码来自 `main`；实际生产版本仍应以健康接口为准。0.16.0 的数据库分域和迁移必须在维护窗口内单独执行，不能把本地构建结果直接当作生产迁移完成。
+- 当前开发发布版本为 `0.17.0`，正式代码来自 `main`；实际生产版本仍应以健康接口为准。八库分域迁移记录继续按 `0.16.0` 保留，不能把本地构建结果直接当作生产迁移完成。
 - 正式发布统一使用 GitHub Actions 的 `Deploy production` 工作流；开发电脑不再逐文件上传程序。
 - 生产服务由 `binhu-backend`、`binhu-mysql` 和 `binhu-ops-agent` 三个容器组成。后端只监听服务器本机，公网统一经过 nginx HTTPS。
 - 所有登录用户访问 `/` 先进入仪表盘；在线数据汇总使用 `/summary`；电脑端 `/query` 为 Univer 在线工作表，手机端按岗位转入相应任务工作台。
-- 数据库使用同一个 MySQL 实例，目标域划分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。现网旧表仍在前三个库中；其余域按维护窗口逐步迁移，未完成核对前不得打开对应切换开关。本地开发电脑没有项目 MySQL 或 Docker 运行环境。
+- 数据库使用同一个 MySQL 实例，目标域划分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。截至 2026-08-08，走访、下发、小区地址和平台基础域已完成迁移并切换；日报、辖区档案/人员标记新功能和工单域仍按维护窗口推进。本地开发电脑没有项目 MySQL 或 Docker 运行环境。
 - 2026-08-06 完成一次容量整理：磁盘使用率从 96% 降至 83%，保留当前版和上一版后端镜像，数据库卷、每日备份、发布源码留档及自动发布记录均未删除。
 - GitHub 旧的已合并功能分支已经清理，目前远端只保留 `main`。`main` 尚未启用 GitHub 分支保护，因此仍必须人为坚持“功能分支 → PR → CI → 合并”的流程。
 - 生产业务已经运行在物理服务器；旧云的平台容器保持停止，只保留主机 Nginx、WireGuard 和异地备份接收能力。旧可信地址通过 WireGuard 透明代理到同一套新平台，不形成双写。
@@ -936,7 +936,7 @@ GitHub 自动发布在正式切换同日迁移。新服务器复用现有专用�
 
 `RegistryData` 和 `WorkflowData` 的表由后端启动兼容初始化。首次在服务器创建数据库时，必须先执行 `backend/init.sql` 中的数据库创建和授权部分，再启动后端；不要在生产库直接运行测试导入或手工修改新业务表。
 
-正式迁移前按 [八库业务域与新档案规划](database-domain-plan.md) 执行只读测量、逐表复制、数量和关键摘要比对、备份恢复演练及回退验证。当前版本只验证代码编译和自动化测试，真实 MySQL、跨库迁移、备份恢复和生产数据均未验证。
+正式迁移按 [八库业务域与新档案规划](database-domain-plan.md) 分阶段执行。2026-08-08 已完成走访、下发、小区地址、平台基础、工作日志和身份证 HMAC 回填；人员标记快照因当前没有标记分配而无可回填记录，Registry/Workflow 新功能仍待后续维护窗口。旧表全部保留，未执行长期双写或删除。
 
 _最后核对：2026-08-08_
 
@@ -944,7 +944,7 @@ _最后核对：2026-08-08_
 
 本版本的代码发布和数据库迁移是两件事。先通过 GitHub `Deploy production` 发布兼容代码，`backup_scope=all` 才表示八库完整备份；确认备份清单、SHA-256、磁盘空间和同步/备份空闲后，才进入维护窗口。
 
-迁移窗口只允许按以下顺序执行：`measure` 只读测量 → `visit` → `dispatch` → `platform` → `work_logs` → `registry_addresses` → 身份证 HMAC/标记快照回填 → 最后启用 Registry/Workflow 功能。每个域都要先 dry-run、备份目标库、按批复制、比较行数和主键范围，再打开对应 `*_DOMAIN_ACTIVE` 开关。`--apply` 之前必须停止相关写入；复制完成后保留旧表，不得长期双写。
+迁移窗口只允许按以下顺序执行：`measure` 只读测量 → `visit` → `dispatch` → `platform` → `work_logs` → `registry_addresses` → 身份证 HMAC/标记快照回填 → 最后启用 Registry/Workflow 功能。前六个阶段和 HMAC 回填已完成；后续开启 Registry/Workflow 前仍要单独备份、核对权限和回退条件。
 
 示例（在后端容器或具备生产依赖的维护环境执行，不在本机执行）：
 
@@ -953,6 +953,73 @@ python -m migrations.domain_migration measure --schema OnlineData
 python -m migrations.domain_migration migrate --domain visit
 python -m migrations.domain_migration migrate --domain visit --apply
 python -m migrations.domain_migration verify --domain visit
+python -m migrations.domain_migration migrate --domain platform --apply
+python -m migrations.domain_migration verify --domain platform
 ```
 
 Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。新库产生业务写入后不能自动切回旧表；异常时先冻结入口、备份新库，再制定反向复制方案。附件目录由 `BINHU_WORKFLOW_ATTACHMENT_DIR` 指定，数据库备份 manifest 同时记录八库段摘要和附件归档摘要。
+
+### 2026-08-08 走访域迁移结果
+
+- 维护入口期间停止同步、每日备份和在线回写，完成迁移前八库备份后执行 `migrate --domain visit --apply`。
+- `OnlineData._visit_import_batches` 35 行、`t_visit_details` 10,678 行、`_visit_import_issues` 299 行，均已复制到 `VisitData`；三张表的结构、行数和主键边界全部一致，`verify --domain visit` 返回 `consistent=true`。
+- `BINHU_VISIT_DOMAIN_ACTIVE=true` 已生效，后端实际 SQL 路由到 `VisitData`；旧 `OnlineData` 走访表保留不删除，作为只读回退材料，不进行长期双写。
+- 迁移后八库备份已保存到独立备份盘：`/backup/binhu/migration/0.16.0-visit-migrated-20260808T105005Z-eight-db.sql.gz`，大小 5,116,192 字节，SHA-256 为 `41af35ccd45c61d9b9b007efda456efecbe9da4edf6e84bd0e444e28a68cf9a9`，压缩完整性和八库标识均已核验。
+- Nginx 已恢复 `new-production`；同步按 5 分钟、每日备份按 02:00 且保留 7 天、在线回写总开关已恢复。`DISPATCH_DOMAIN_ACTIVE`、`PLATFORM_DOMAIN_ACTIVE`、`DAILY_DOMAIN_ACTIVE`、`REGISTRY_ADDRESS_DOMAIN_ACTIVE` 仍保持关闭。
+
+### 2026-08-08 下发与小区地址域迁移结果
+
+- 第二个维护窗口同时迁移 `dispatch` 和 `registry_addresses` 两个独立路由域；迁移期间维护页生效，同步、每日备份和在线回写关闭，运行中的同步、备份和下发发布任务均为 0。
+- `DispatchData` 已创建 `_police_dispatch_batches`、`_police_dispatch_tasks`、`_police_dispatch_publish_results`，源库和目标库均为 0 行；字段、主键范围和索引定义一致。
+- `RegistryData` 已接收 `_police_address_entries` 93 行、`_police_address_sources` 93 行、`_police_address_imports` 2 行、`_police_address_import_conflicts` 0 行；结构、数量、主键范围和索引定义均与 `OnlineData` 一致。
+- 迁移前八库备份为 `/backup/binhu/migration/0.16.0-phase2-pre-migration-20260808T142953Z-eight-db.sql.gz`，SHA-256 为 `c4e84e652cd3ac8d14e12ce84f5474669312e0dcfde4f4cb1186025211fc785d`。
+- 迁移后八库备份为 `/backup/binhu/migration/0.16.0-phase2-dispatch-address-migrated-20260808T143135Z-eight-db.sql.gz`，大小 5,061,835 字节，SHA-256 为 `d62465771c8b3ba43ece62d4a40ab5bdbf906e8513348b9a818be91b268a6725`；gzip、八库标识和 manifest 均已核验。
+- `BINHU_DISPATCH_DOMAIN_ACTIVE=true`、`BINHU_REGISTRY_ADDRESS_DOMAIN_ACTIVE=true` 已生效；`VISIT_DOMAIN_ACTIVE=true` 保持不变。平台、日报、Registry/Workflow 功能仍关闭，旧表全部保留且不双写。
+- Nginx 已恢复 `new-production`，新直达入口和旧云透明代理入口均返回 `0.16.0`；同步恢复为 5 分钟、每日备份恢复为 02:00/保留 7 天、在线回写恢复开启。恢复后的自动同步任务 `3411` 已成功完成 12/12 步，近期后端和运维代理错误日志为空。
+
+### 2026-08-08 平台基础域迁移结果
+
+- 第三个维护窗口迁移 `platform` 域；维护期间同步、每日备份和在线回写关闭，迁移前八库备份已完成并通过 gzip、八库标识和 SHA-256 校验。
+- `PlatformData` 共迁移 24 张平台基础表，源库与目标库的字段结构、行数、单列主键边界和关键表索引定义均一致。关键数量为用户 75、人员 72、用户权限组关系 3。
+- `_sync_schedule` 与 `_sync_log` 仍按当前代码白名单保留在 `OnlineData`，不属于本阶段遗漏；同步任务已实际成功完成 12/12 步。
+- `BINHU_PLATFORM_DOMAIN_ACTIVE=true` 已生效，后端与运维代理已重建并恢复生产配置；`BINHU_VISIT_DOMAIN_ACTIVE`、`BINHU_DISPATCH_DOMAIN_ACTIVE`、`BINHU_REGISTRY_ADDRESS_DOMAIN_ACTIVE` 继续为真，`BINHU_DAILY_DOMAIN_ACTIVE=false`、`REGISTRY_FEATURE_ENABLED=false`、`WORKFLOW_FEATURE_ENABLED=false` 继续保持关闭。
+- 迁移前备份：`/backup/binhu/migration/0.16.0-platform-pre-migration-20260808T155700Z.sql.gz`，SHA-256 为 `8c3db54c52efc07192ef345ea7eaac00578aa7f04d8cfeae21f0007f772aee6a`。
+- 迁移后备份：`/backup/binhu/migration/0.16.0-platform-migrated-20260808T160239Z.sql.gz`，SHA-256 为 `98e9c457df9c957354fa9af619baeddab923b40ca3625014fad178e7730636e2`。
+- 只读验收：三个生产容器正常，健康接口返回 `0.16.0`，迁移状态表显示 `dispatch`、`platform`、`registry_addresses`、`visit` 均为 `copied`，近期后端和运维代理错误日志无新增错误。
+
+### 2026-08-08 日报工作日志域迁移结果
+
+- 第四个维护窗口先切换 `new-maintenance`，等待自动同步任务 `3428` 成功完成后，关闭同步计划、每日备份计划和在线回写总开关。
+- 迁移前八库备份已完成并通过 gzip、八库标识和 SHA-256 校验：`/backup/binhu/migration/0.16.0-worklogs-pre-migration-20260808T163351Z.sql.gz`，SHA-256 为 `2664fbf2d677914b44e7585a79bc66b709286264a8353a3630ccaa00ec8990b4`。
+- 执行 `migrate --domain work_logs --apply` 和 `verify --domain work_logs`：`OnlineData._work_log_drafts` 与 `daily_report._work_log_drafts` 均为 3 行，字段结构和主键边界一致，验证结果为 `consistent=true`。
+- 迁移后八库备份已完成并校验：`/backup/binhu/migration/0.16.0-worklogs-migrated-20260808T163528Z.sql.gz`，SHA-256 为 `6f36ed8dbaa9a6f5c361103e79127411f86d3454e3e68468a0a81f54b18822c9`。
+- 已保存环境回退副本 `/srv/binhu/.env.worklogs-pre-switch-20260808T163552Z`，随后启用 `BINHU_DAILY_DOMAIN_ACTIVE=true` 并重建后端、运维代理。应用实际将 `_work_log_drafts` 路由到 `daily_report._work_log_drafts`。
+- 已恢复 `new-production`、5 分钟同步、02:00 每日备份/保留 7 天和在线回写；同步任务 `3429` 已成功完成。当前 `REGISTRY_FEATURE_ENABLED=false`、`WORKFLOW_FEATURE_ENABLED=false`，新档案、人员标记和工单功能仍关闭。
+- 三个生产容器正常，健康接口返回 `0.16.0`，近期后端和运维代理错误日志为空。旧 `OnlineData._work_log_drafts` 保留，不删除、不长期双写。
+
+### 2026-08-08 身份 HMAC 与任务标记快照回填结果
+
+- 只读预览确认 `BINHU_REGISTRY_HMAC_KEY` 未配置，当前投影摘要使用应用密钥回退；在线投影共 673 条，其中 339 条有身份证字段，334 条没有可用身份证字段，格式异常为 0。
+- 在维护状态下生成专用 HMAC v1 密钥，保存到服务器私密配置，并以 root-only 文件备份；密钥值不进入数据库、日志、Git 或发布包。
+- 339 条已有身份证摘要全部按专用密钥重算，正式回填 339 条；随后复核现有摘要与当前值 0 条不一致，334 条无身份证字段继续为空。
+- `RegistryData.watch_people`、`watch_assignments` 和 `online_task_watch_snapshots` 均为 0 条，没有执行虚构标记或测试任务写入。
+- HMAC 回填后的八库备份：`/backup/binhu/migration/0.16.0-hmac-backfilled-20260808T174803Z.sql.gz`，SHA-256 为 `b283849786e3837ae611747afa647d0025c6b1ad776433b4fb6368b8888549a6`。
+- 重建后第一次同步 `3442` 因后端重建被取消，未产生部分业务写入；下一次同步 `3443` 成功完成 12/12 步。当前健康接口、容器、同步、每日备份和在线回写均已恢复，Registry/Workflow 功能仍关闭。
+
+### 服务器显示时间 2026-08-09 的 Registry/Workflow 开放结果
+
+- 按项目管理人明确授权，服务器保持现有系统时间，不执行回拨；本次操作的逻辑迁移窗口记录为服务器显示的 `2026-08-09`，不代表修改了系统时钟。
+- 维护期间先切换 `new-maintenance`，关闭同步计划、每日备份计划和在线回写；创建并校验八库备份后，启用 `BINHU_REGISTRY_FEATURE_ENABLED=true` 与 `BINHU_WORKFLOW_FEATURE_ENABLED=true`，重建 `binhu-backend`、`binhu-ops-agent`，再恢复 `new-production`。
+- 生产验收：健康接口返回 `0.16.0`；三个容器正常；RegistryData 26 张表、WorkflowData 14 张表；辖区档案、人员标记、任务快照和工单均为 0 行；照片调取流程 1 个已发布版本/1 个基础管控处理节点，请假流程保持未发布。
+- 权限核验：社区民警使用 `community_registry_viewer` 且仅有 `own_department` 只读档案权限；内勤岗位可维护全所档案和处理工单；超级管理员拥有 `workflow.config.manage`；功能权限没有因开关开启而扩大。
+- 备份副本：`/backup/binhu/migration/0.16.0-registry-workflow-pre-switch-20260808T192125Z.sql.gz`；SHA-256 为 `c942942ea0af8768f9fbdb25e3c3c389e22fe373ccb90d7a8a9c629882c9fc68`。同名 manifest 和附件归档一并保留；附件目录为空。
+- 恢复后同步计划为 5 分钟、每日备份为 02:00/保留 7 天，在线回写维持切换前的关闭状态；最近同步任务 `3459` 成功，后端与运维代理近期错误计数为 0。旧表、旧备份和迁移副本均未删除。
+
+## v0.17.0 超级管理员预约维护
+
+- 入口：系统设置中的“平台维护模式”。开始时间为空表示立即维护，结束时间为空表示持续到超级管理员手动关闭；填写结束时间后会自动恢复。
+- 保存时页面按系统设置时区显示，后端统一换算并保存 UTC。不要为了配合预约维护修改宿主机系统时钟。
+- 维护期间普通用户无法新登录，已有普通会话访问业务接口也会收到 503 并回到登录页；超级管理员仍可登录、关闭或调整维护配置。
+- 登录页公开接口只返回非敏感维护状态。发布后可在未启用维护时直接检查 `/api/maintenance/status`，不需要创建测试业务数据。
+- 应用级维护不能阻止健康检查、静态登录页和超级管理员请求。数据库迁移、容器重建、Compose 切换或需要完全冻结入口时，继续使用 Nginx `new-maintenance`。
+- 回退时恢复上一版程序即可；旧版本会忽略新增的 `_system_config` 键，不需要恢复数据库备份。

@@ -1192,6 +1192,14 @@ class DatabaseManager:
                     "('weekend_duty_positions', '[\"组长\", \"组员\"]')"
                 )
                 await cur.execute(
+                    "INSERT IGNORE INTO _system_config "
+                    "(config_key, config_value) VALUES "
+                    "('maintenance_enabled', '0'), "
+                    "('maintenance_start_at', ''), "
+                    "('maintenance_end_at', ''), "
+                    "('maintenance_message', '平台正在维护中，请稍后再试')"
+                )
+                await cur.execute(
                     "SELECT config_value FROM _system_config "
                     "WHERE config_key='timezone'"
                 )

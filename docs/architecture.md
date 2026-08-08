@@ -1,6 +1,6 @@
 # 系统是怎么工作的
 
-> 当前基线（v0.16.0）：平台仍使用同一个 MySQL 实例，业务域规划为八个数据库：`PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。其中 `OnlineData`、`OnlineDataArchive`、`daily_report` 继续承载现网旧表；其余域在迁移窗口逐步复制、核对后切换，旧表暂不删除。文档后面保留的“三库”文字是历史版本说明，不代表当前迁移状态。
+> 当前基线（v0.17.0）：平台仍使用同一个 MySQL 实例和八个业务域数据库；新增应用级预约维护模式，数据库迁移、容器重建等底层维护仍由 Nginx 维护页承接。旧表和迁移备份暂不删除。
 
 ## 先说人话
 
@@ -43,7 +43,7 @@ flowchart LR
 | `RegistryData` | 辖区房屋、地址、房屋相关人员、机构、人员标记和任务标记快照 |
 | `WorkflowData` | 工单类型、流程版本、节点、工单、评论、附件元数据和事件流水 |
 
-迁移完成后，走访和下发数据分别保存在 `VisitData`、`DispatchData`；迁移窗口前仍由旧表兼容读取。辖区档案和工单功能分别使用 `RegistryData`、`WorkflowData`，功能开关在迁移核对完成前保持关闭。
+迁移完成后，走访和下发数据分别保存在 `VisitData`、`DispatchData`；旧表继续保留作为只读回退材料。辖区档案和工单功能分别使用 `RegistryData`、`WorkflowData`；服务器显示时间的授权维护窗口已完成开关切换，旧表和迁移备份继续保留。
 
 | 表 | 用途 |
 |---|---|
@@ -856,9 +856,9 @@ OAuth 凭据加密和异地备份仍未完成，具体见 [风险清单](known-r
 
 ## 八库分域和未来业务
 
-平台数据库正在按业务域分阶段拆分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。当前只接入新库连接、辖区档案/人员标记基础表和通用工单基础表，旧数据尚未迁移；完整边界、索引和迁移顺序见 [八库业务域与新档案规划](database-domain-plan.md)。
+平台数据库正在按业务域分阶段拆分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。走访、下发、小区地址、平台基础、工作日志、身份证 HMAC 回填以及 Registry/Workflow 功能切换均已在真实 MySQL 中完成；当前没有人员标记分配，因此没有历史任务快照可回填。完整边界、索引和迁移顺序见 [八库业务域与新档案规划](database-domain-plan.md)。
 
-_源码核对：2026-08-08_
+_源码核对：2026-08-08；服务器窗口记录：2026-08-09_
 
 ## v0.16.0 业务域基础
 
@@ -867,3 +867,11 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 分域迁移由 `backend/migrations/domain_migration.py` 执行。默认是只读 dry-run，只有明确传入 `--apply` 才复制数据和写入迁移状态；旧表不会删除。`backend/services/domain_routing.py` 只对固定白名单表名做路由，且每个域有独立开关，迁移窗口前可以继续使用旧短表名。
 
 `RegistryData` 保存辖区房屋、地址版本、房屋相关人员和机构关系、人员标记及指令任务标记快照；`WorkflowData` 保存流程版本、工单、节点、事件、评论和附件元数据。身份证和手机号按当前策略明文保存并同时保存 HMAC 摘要，HMAC 密钥只存在服务器私密配置中。
+
+## v0.17.0 应用级维护模式
+
+维护状态继续保存在 `_system_config`，不新增业务表。公共接口 `GET /api/maintenance/status` 只返回是否维护、开始/结束时间、维护说明、服务器时间和系统时区，不返回账号、任务或数据库信息。
+
+普通账号在维护期间登录或使用已有会话访问业务接口时，由后端统一返回 `503 maintenance_mode`；超级管理员权限组和旧版超级管理员角色继续放行。开始时间为空表示立即生效，结束时间到达后自动恢复。登录页展示维护说明和预计恢复时间，系统设置只向超级管理员提供配置入口。
+
+该能力不能代替服务器维护页：数据库迁移、容器重建、反向代理切换和需要阻止全部请求的操作，仍先切换 Nginx `new-maintenance`，再执行固定运维流程。

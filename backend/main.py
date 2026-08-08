@@ -36,6 +36,7 @@ from routers.registry import router as registry_router
 from routers.registry_extended import router as registry_extended_router
 from routers.workflow import router as workflow_router
 from routers.workflow_extended import router as workflow_extended_router
+from routers.maintenance import router as maintenance_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
@@ -116,6 +117,7 @@ async def health_check():
 
 # auth 路由（login 端点无需鉴权，logout/me 需要鉴权在路由内处理）
 app.include_router(auth_router)
+app.include_router(maintenance_router)
 
 # 业务路由（全部需要登录）
 auth_dep = [Depends(get_current_user)]

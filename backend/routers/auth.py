@@ -18,6 +18,10 @@ from services.mobile_navigation import (
 )
 from services.ops_redaction import redact_text
 from services.theme_preferences import normalize_theme_mode
+from services.maintenance import (
+    is_database_user_super_admin,
+    maintenance_status,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -74,6 +78,41 @@ async def login(req: LoginRequest, request: Request, response: Response):
             ) = row
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+            # 登录阶段也必须拦截普通账号，避免维护期间创建新会话。
+            await cur.execute(
+                "SELECT config_key, config_value FROM _system_config "
+                "WHERE config_key IN "
+                "('maintenance_enabled', 'maintenance_start_at', "
+                "'maintenance_end_at', 'maintenance_message', 'timezone')"
+            )
+            maintenance_config = {
+                str(item[0]): str(item[1] or "")
+                for item in await cur.fetchall()
+            }
+            await cur.execute("SELECT UTC_TIMESTAMP()")
+            maintenance_server_time_row = await cur.fetchone()
+            maintenance_server_time = (
+                maintenance_server_time_row[0]
+                if maintenance_server_time_row
+                else None
+            )
+            current_maintenance = maintenance_status(
+                maintenance_config,
+                now=maintenance_server_time,
+            )
+            if current_maintenance["active"] and not await is_database_user_super_admin(
+                cur, int(user_id), str(role)
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "maintenance_mode",
+                        "message": current_maintenance["message"],
+                        "maintenance": current_maintenance,
+                    },
+                    headers={"Retry-After": "300"},
+                )
 
             await conn.begin()
             await cur.execute(
