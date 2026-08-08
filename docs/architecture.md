@@ -1,5 +1,7 @@
 # 系统是怎么工作的
 
+> 当前基线（v0.16.0）：平台仍使用同一个 MySQL 实例，业务域规划为八个数据库：`PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。其中 `OnlineData`、`OnlineDataArchive`、`daily_report` 继续承载现网旧表；其余域在迁移窗口逐步复制、核对后切换，旧表暂不删除。文档后面保留的“三库”文字是历史版本说明，不代表当前迁移状态。
+
 ## 先说人话
 
 这个系统目前有三种数据入口：
@@ -28,15 +30,20 @@ flowchart LR
     F --> H["可选：写回腾讯文档"]
 ```
 
-## 三个数据库分别放什么
+## 八个数据库分别放什么
 
 | 数据库 | 通俗解释 |
 |---|---|
-| `OnlineData` | 当前正在使用的数据，以及用户、配置和同步记录 |
-| `OnlineDataArchive` | 已经从腾讯文档移除的数据，留作历史查询 |
-| `daily_report` | 每日快照、每日统计和总汇总 |
+| `PlatformData` | 用户、人员、部门、社区、权限、通知、审计、出勤排班和实际工作事件 |
+| `OnlineData` | 腾讯配置、同步任务、来源行、来源投影、缓存、在线业务和回写记录 |
+| `OnlineDataArchive` | 已经从腾讯文档移除的在线业务，只读保存 |
+| `daily_report` | 每日快照、任务流水、日报统计和工作日志草稿 |
+| `VisitData` | 走访导入批次、走访明细和导入异常 |
+| `DispatchData` | 全链条下发批次、下发任务和发布结果 |
+| `RegistryData` | 辖区房屋、地址、房屋相关人员、机构、人员标记和任务标记快照 |
+| `WorkflowData` | 工单类型、流程版本、节点、工单、评论、附件元数据和事件流水 |
 
-走访和星级评定数据保存在 `OnlineData`，不写入另外两个数据库：
+迁移完成后，走访和下发数据分别保存在 `VisitData`、`DispatchData`；迁移窗口前仍由旧表兼容读取。辖区档案和工单功能分别使用 `RegistryData`、`WorkflowData`，功能开关在迁移核对完成前保持关闭。
 
 | 表 | 用途 |
 |---|---|
@@ -733,7 +740,7 @@ flowchart LR
 其次使用账号显示姓名，账号已删除时回退到记录发生时保存的用户名。同步触发审计在读取时按任务编号关联 `_sync_log`，展示当前真实任务状态；审计原行仍保持创建时状态且不被覆盖。页面默认只展示这些可读字段，
 登录账号、原始操作代码、原始目标和原始 JSON 放在展开项中，便于排障时核对且不破坏审计证据。
 
-备份使用 MySQL 客户端直接导出三个数据库，不通过 Docker Socket。流程是：
+备份使用 MySQL 客户端直接导出八个数据库，不通过 Docker Socket。正式发布的 `backup_scope=all` 会生成八个独立压缩备份文件；旧版本发布记录中的“三库”仅表示当时的历史备份范围。流程是：
 
 1. 先写临时 SQL 文件。
 2. 压缩成临时 gzip 文件。
@@ -847,4 +854,16 @@ npm.cmd run build
 
 OAuth 凭据加密和异地备份仍未完成，具体见 [风险清单](known-risks.md)。
 
-_源码核对：2026-08-06_
+## 八库分域和未来业务
+
+平台数据库正在按业务域分阶段拆分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。当前只接入新库连接、辖区档案/人员标记基础表和通用工单基础表，旧数据尚未迁移；完整边界、索引和迁移顺序见 [八库业务域与新档案规划](database-domain-plan.md)。
+
+_源码核对：2026-08-08_
+
+## v0.16.0 业务域基础
+
+v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。跨库只保存稳定 ID、业务类型和来源键，不建立跨库外键；请假审批等需要原子性的操作使用同一 MySQL 连接和完整 schema 名称完成事务。
+
+分域迁移由 `backend/migrations/domain_migration.py` 执行。默认是只读 dry-run，只有明确传入 `--apply` 才复制数据和写入迁移状态；旧表不会删除。`backend/services/domain_routing.py` 只对固定白名单表名做路由，且每个域有独立开关，迁移窗口前可以继续使用旧短表名。
+
+`RegistryData` 保存辖区房屋、地址版本、房屋相关人员和机构关系、人员标记及指令任务标记快照；`WorkflowData` 保存流程版本、工单、节点、事件、评论和附件元数据。身份证和手机号按当前策略明文保存并同时保存 HMAC 摘要，HMAC 密钥只存在服务器私密配置中。

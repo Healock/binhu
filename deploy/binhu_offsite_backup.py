@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restricted off-site transfer for Binhu three-database backups.
+"""Restricted off-site transfer for Binhu eight-database backups.
 
 The receiver is intended to be used as an SSH forced command.  It accepts one
 validated backup stream and cannot list, read, replace, or delete archived
@@ -30,6 +30,11 @@ DATABASE_MARKERS = (
     b"USE `OnlineData`;",
     b"USE `OnlineDataArchive`;",
     b"USE `daily_report`;",
+    b"USE `PlatformData`;",
+    b"USE `VisitData`;",
+    b"USE `DispatchData`;",
+    b"USE `RegistryData`;",
+    b"USE `WorkflowData`;",
 )
 DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 DEFAULT_MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
@@ -106,7 +111,7 @@ def validate_backup(
     except (OSError, EOFError) as exc:
         raise BackupError("backup gzip validation failed") from exc
     if not all(found.values()):
-        raise BackupError("backup does not contain all three database markers")
+        raise BackupError("backup does not contain all eight database markers")
     return size, digest
 
 

@@ -659,6 +659,15 @@ export interface QueryDataRow extends Record<string, unknown> {
   __physical_row?: number | null
   __editable_fields?: string[]
   __can_delete?: boolean
+  __inspector_mismatch?: boolean
+}
+
+export interface QueryDependentOptions {
+  community_aliases: Record<string, string>
+  inspectors_by_community: Record<string, string[]>
+  fallback_inspectors: string[]
+  community_column: string
+  inspector_column: string
 }
 
 export interface QuerySourceRow {
@@ -686,6 +695,7 @@ export interface QueryResponse {
   pending_count: number
   scope_message?: string
   row_manage_message?: string
+  dependent_options?: QueryDependentOptions
 }
 
 export async function queryData(params: {
@@ -832,6 +842,19 @@ export interface MobileTaskItem {
   conflict: boolean
   pending_sync: boolean
   priority: Exclude<MobileTaskPriority, 'all'>
+  watch_marks: MobileTaskWatchMark[]
+  first_dispatch_at: string | null
+}
+
+export interface MobileTaskWatchMark {
+  category_id: number
+  name: string
+  color: string
+  alert_level: 'normal' | 'notice' | 'warning' | 'critical'
+  assignment_status: string
+  source_type: string
+  snapshot_status: string
+  snapshot_reason: string
 }
 
 export interface MobileTaskFilterOption {
@@ -894,6 +917,7 @@ export async function listMobileTasks(params: {
   review_stage?: MobileTaskReviewStage
   communities?: string[]
   inspectors?: string[]
+  watch_categories?: number[]
   priority?: MobileTaskPriority
   sort?: MobileTaskSort
   keyword?: string
@@ -914,6 +938,7 @@ export async function listMobileTasks(params: {
     review_stage: MobileTaskReviewStage
     communities: string[]
     inspectors: string[]
+    watch_categories: number[]
     priority: MobileTaskPriority
     sort: MobileTaskSort
     keyword_present: boolean
@@ -927,6 +952,7 @@ export async function listMobileTasks(params: {
       review_stage: params.review_stage || 'all',
       communities: params.communities || [],
       inspectors: params.inspectors || [],
+      watch_categories: params.watch_categories || [],
       priority: params.priority || 'all',
       sort: params.sort || 'priority',
       keyword: params.keyword || '',
@@ -945,6 +971,13 @@ export async function getMobileTaskFilterOptions(
   source_ready: boolean
   communities: MobileTaskFilterOption[]
   inspectors: MobileTaskFilterOption[]
+  watch_categories: Array<{
+    value: number
+    label: string
+    color: string
+    alert_level: string
+    count: number
+  }>
 }> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
@@ -974,6 +1007,8 @@ export async function updateMobileTask(
   revision: number
   pending_sync: boolean
   message: string
+  warnings?: string[]
+  inspector_mismatch?: boolean
 }> {
   const { data } = await api.patch(
     `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
@@ -1952,4 +1987,330 @@ export interface RoleDashboardData {
 export async function getRoleDashboard(): Promise<RoleDashboardData> {
   const { data } = await api.get('/dashboard', activeRequest)
   return data
+}
+
+export interface RegistryProperty {
+  id: number
+  community_id: number | null
+  community_name: string
+  natural_address: string
+  building: string
+  room: string
+  normalized_address: string
+  status: string
+  version: number
+  updated_at: string | null
+}
+
+export interface RegistryPerson {
+  id: number
+  name: string
+  identity_number: string
+  has_identity: boolean
+  is_temporary: boolean
+  verification_status: string
+  status: string
+  updated_at: string | null
+}
+
+export interface RegistryOrganization {
+  id: number
+  name: string
+  organization_type: string
+  license_number: string
+  status: string
+  notes: string
+  updated_at: string | null
+}
+
+export interface WatchCategory {
+  id: number
+  code: string
+  name: string
+  parent_id: number | null
+  color: string
+  alert_level: string
+  is_active: boolean
+  description?: string
+}
+
+export interface WatchPerson {
+  id: number
+  name: string
+  identity_number: string
+  has_identity: boolean
+  verification_status: string
+  status: string
+  created_at: string | null
+}
+
+export const registryApi = {
+  async properties(params: { community_id?: number; page?: number; page_size?: number } = {}) {
+    return (await api.get('/registry/properties', { ...activeRequest, params })).data as {
+      data: RegistryProperty[]; total: number; page: number; page_size: number
+    }
+  },
+  async property(id: number) {
+    return (await api.get(`/registry/properties/${id}`, activeRequest)).data
+  },
+  async createProperty(payload: Record<string, unknown>) {
+    return (await api.post('/registry/properties', payload)).data
+  },
+  async updateProperty(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/properties/${id}`, payload)).data
+  },
+  async changePropertyStatus(id: number, payload: { status: 'active' | 'inactive'; reason?: string }) {
+    return (await api.post(`/registry/properties/${id}/status`, payload)).data
+  },
+  async addPropertyAlias(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/properties/${id}/aliases`, payload)).data
+  },
+  async changeAliasStatus(id: number, payload: { status: 'active' | 'inactive'; reason?: string }) {
+    return (await api.put(`/registry/aliases/${id}/status`, payload)).data
+  },
+  async addPropertyPersonRelation(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/properties/${id}/people`, payload)).data
+  },
+  async updatePropertyPersonRelation(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/property-person-relations/${id}`, payload)).data
+  },
+  async addPropertyOrganizationRelation(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/properties/${id}/organizations`, payload)).data
+  },
+  async updatePropertyOrganizationRelation(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/property-organization-relations/${id}`, payload)).data
+  },
+  async updateOrganization(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/organizations/${id}`, payload)).data
+  },
+  async attachOrganizationMember(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/organizations/${id}/members`, payload)).data
+  },
+  async updateOrganizationMembership(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/organization-memberships/${id}`, payload)).data
+  },
+  async mergePerson(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/people/${id}/merge`, payload)).data
+  },
+  async undoMerge(id: number) {
+    return (await api.post(`/registry/merges/${id}/undo`, {})).data
+  },
+  async mergeHistory(params: { page?: number; page_size?: number } = {}) {
+    return (await api.get('/registry/merges', { ...activeRequest, params })).data
+  },
+  async people(params: { page?: number; page_size?: number } = {}) {
+    return (await api.get('/registry/people', { ...activeRequest, params })).data as {
+      data: RegistryPerson[]; total: number; page: number; page_size: number
+    }
+  },
+  async searchPeople(payload: Record<string, unknown>) {
+    return (await api.post('/registry/people/search', payload, activeRequest)).data as {
+      data: RegistryPerson[]; total: number; page: number; page_size: number
+    }
+  },
+  async roleTypes() {
+    return (await api.get('/registry/role-types', activeRequest)).data as { data: Array<{ id: number; code: string; name: string; subject_type: 'person' | 'organization'; is_active: boolean }> }
+  },
+  async person(id: number) {
+    return (await api.get(`/registry/people/${id}`, activeRequest)).data
+  },
+  async createPerson(payload: Record<string, unknown>) {
+    return (await api.post('/registry/people', payload)).data
+  },
+  async updatePerson(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/people/${id}`, payload)).data
+  },
+  async addPhone(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/people/${id}/phones`, payload)).data
+  },
+  async organizations(params: { keyword?: string; page?: number; page_size?: number } = {}) {
+    return (await api.get('/registry/organizations', { ...activeRequest, params })).data as {
+      data: RegistryOrganization[]; total: number; page: number; page_size: number
+    }
+  },
+  async organization(id: number) {
+    return (await api.get(`/registry/organizations/${id}`, activeRequest)).data
+  },
+  async createOrganization(payload: Record<string, unknown>) {
+    return (await api.post('/registry/organizations', payload)).data
+  },
+  async candidates(status = 'pending') {
+    return (await api.get('/registry/change-candidates', { ...activeRequest, params: { status } })).data
+  },
+  async reviewCandidate(id: number, payload: { action: 'accept' | 'reject'; reason: string }) {
+    return (await api.post(`/registry/change-candidates/${id}/review`, payload)).data
+  },
+  async conflicts(status = 'pending') {
+    return (await api.get('/registry/conflicts', { ...activeRequest, params: { status } })).data
+  },
+  async reviewConflict(id: number, payload: { action: 'accept' | 'reject'; reason: string }) {
+    return (await api.post(`/registry/conflicts/${id}/review`, payload)).data
+  },
+  async watchCategories() {
+    return (await api.get('/registry/watch/categories', activeRequest)).data as { data: WatchCategory[] }
+  },
+  async createWatchCategory(payload: Record<string, unknown>) {
+    return (await api.post('/registry/watch/categories', payload)).data
+  },
+  async updateWatchCategory(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/watch/categories/${id}`, payload)).data
+  },
+  async watchPeople(params: { page?: number; page_size?: number } = {}) {
+    return (await api.get('/registry/watch/people', { ...activeRequest, params })).data as {
+      data: WatchPerson[]; total: number; page: number; page_size: number
+    }
+  },
+  async watchPerson(id: number) {
+    return (await api.get(`/registry/watch/people/${id}`, activeRequest)).data
+  },
+  async createWatchPerson(payload: Record<string, unknown>) {
+    return (await api.post('/registry/watch/people', payload)).data
+  },
+  async updateWatchPerson(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/watch/people/${id}`, payload)).data
+  },
+  async createWatchAssignment(payload: Record<string, unknown>) {
+    return (await api.post('/registry/watch/assignments', payload)).data
+  },
+  async updateWatchAssignment(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/registry/watch/assignments/${id}`, payload)).data
+  },
+}
+
+export interface WorkflowType {
+  id: number
+  code: string
+  name: string
+  description: string
+  form_schema: { fields?: Array<Record<string, unknown>> }
+  default_due_hours: number | null
+  enabled: boolean
+}
+
+export interface WorkOrderSummary {
+  id: number
+  ticket_no: string
+  type_code: string
+  title: string
+  requester_user_id: number
+  current_assignee_user_id: number | null
+  current_queue: string
+  status: string
+  priority: string
+  due_at: string | null
+  version_no: number
+  updated_at: string
+  overdue: boolean
+}
+
+export interface WorkOrderStep {
+  id: number
+  step_order: number
+  name: string
+  step_type: 'approval' | 'handling'
+  status: string
+  assignee_user_id: number | null
+  queue: string
+  due_at: string | null
+  decision: string
+  decision_note: string
+  decided_by: number | null
+  decided_at: string | null
+  version_no: number
+}
+
+export interface WorkOrderAttachment {
+  file_id: string
+  original_name: string
+  mime_type: string
+  size_bytes: number
+  sha256: string
+  retention_until: string | null
+  deleted_at: string | null
+  created_at: string
+}
+
+export interface WorkOrderDetail extends WorkOrderSummary {
+  description: string
+  requester_user_id: number
+  form_data: Record<string, unknown>
+  type_detail?: Record<string, unknown>
+  steps: WorkOrderStep[]
+  links: Array<{ object_type: string; object_id: string; object_ref: string }>
+  events: Array<Record<string, any>>
+  comments: Array<{ user_id: number; content: string; created_at: string }>
+  attachments: WorkOrderAttachment[]
+}
+
+export const workflowApi = {
+  async types() {
+    return (await api.get('/workflow/types', activeRequest)).data as { data: WorkflowType[] }
+  },
+  async createType(payload: Record<string, unknown>) {
+    return (await api.post('/workflow/types', payload)).data
+  },
+  async versions(typeId: number) {
+    return (await api.get(`/workflow/types/${typeId}/versions`, activeRequest)).data
+  },
+  async version(versionId: number) {
+    return (await api.get(`/workflow/versions/${versionId}`, activeRequest)).data
+  },
+  async createVersion(typeId: number, payload: Record<string, unknown>) {
+    return (await api.post(`/workflow/types/${typeId}/versions`, payload)).data
+  },
+  async updateVersion(versionId: number, payload: Record<string, unknown>) {
+    return (await api.put(`/workflow/versions/${versionId}`, payload)).data
+  },
+  async publishVersion(versionId: number) {
+    return (await api.post(`/workflow/versions/${versionId}/publish`)).data
+  },
+  async search(payload: Record<string, unknown>) {
+    return (await api.post('/workflow/tickets/search', payload, activeRequest)).data as {
+      data: WorkOrderSummary[]; total: number; page: number; page_size: number
+    }
+  },
+  async ticket(id: number) {
+    return (await api.get(`/workflow/tickets/${id}`, activeRequest)).data as WorkOrderDetail
+  },
+  async createTicket(payload: Record<string, unknown>) {
+    return (await api.post('/workflow/tickets', payload)).data
+  },
+  async claim(id: number, expectedVersion: number) {
+    return (await api.post(`/workflow/tickets/${id}/claim`, { expected_version: expectedVersion })).data
+  },
+  async decide(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/workflow/tickets/${id}/decision`, payload)).data
+  },
+  async supplement(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/workflow/tickets/${id}/supplement`, payload)).data
+  },
+  async withdraw(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/workflow/tickets/${id}/withdraw`, payload)).data
+  },
+  async transfer(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/workflow/tickets/${id}/transfer`, payload)).data
+  },
+  async comments(id: number, content: string, expectedVersion: number) {
+    return (await api.post(`/workflow/tickets/${id}/comments`, {
+      content,
+      expected_version: expectedVersion,
+    })).data
+  },
+  async attachments(id: number) {
+    return (await api.get(`/workflow/tickets/${id}/attachments`, activeRequest)).data
+  },
+  async uploadAttachment(id: number, file: File, expectedVersion: number) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('expected_version', String(expectedVersion))
+    return (await api.post(`/workflow/tickets/${id}/attachments`, form)).data
+  },
+  async deleteAttachment(id: number, fileId: string, expectedVersion: number) {
+    return (await api.delete(`/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}`, {
+      params: { expected_version: expectedVersion },
+    })).data
+  },
+  attachmentUrl(id: number, fileId: string, inline = false) {
+    return `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`
+  },
 }

@@ -118,6 +118,122 @@ async def effective_edit_communities(
     return await _hard_communities(cur, user)
 
 
+async def inspector_option_context(
+    cur,
+    user: dict[str, Any],
+) -> dict[str, Any]:
+    """返回按正式社区分组的核查人选项。
+
+    下拉选项只能来自当前账号的在线回写地域。社区有可分配人员时
+    使用社区名单；社区为空、无法识别或没有人员时，前端使用
+    ``fallback_inspectors``。
+    """
+    allowed = await effective_edit_communities(cur, user)
+    await cur.execute(
+        """
+        SELECT community.name, alias.alias
+        FROM _communities AS community
+        LEFT JOIN _community_aliases AS alias
+          ON alias.community_id=community.id
+        JOIN _departments AS department
+          ON department.community_id=community.id
+         AND department.department_type='community'
+         AND department.is_active=1
+        WHERE community.is_active=1
+        ORDER BY community.id, alias.id
+        """
+    )
+    aliases: dict[str, str] = {}
+    formal_names: list[str] = []
+    for formal_value, alias_value in await cur.fetchall():
+        formal = str(formal_value or "").strip()
+        if not formal:
+            continue
+        aliases[formal] = formal
+        if formal not in formal_names:
+            formal_names.append(formal)
+        alias = str(alias_value or "").strip()
+        if alias:
+            aliases[alias] = formal
+
+    allowed_set = set(formal_names if allowed is None else allowed)
+    # Only expose communities the account can actually edit.  The row-level
+    # validator remains authoritative, but the editor must not advertise
+    # unrelated communities in the first place.
+    aliases = {
+        alias: formal
+        for alias, formal in aliases.items()
+        if formal in allowed_set
+    }
+    await cur.execute(
+        """
+        SELECT DISTINCT community.name, member.name
+        FROM _grid_members AS member
+        JOIN _grid_member_department_links AS link
+          ON link.member_id=member.id
+        JOIN _departments AS department
+          ON department.id=link.department_id
+         AND department.department_type='community'
+         AND department.is_active=1
+        JOIN _communities AS community
+          ON community.id=department.community_id
+         AND community.is_active=1
+        WHERE member.position IN ('组长', '组员')
+          AND member.status='在岗'
+        ORDER BY community.name, member.name
+        """
+    )
+    by_community: dict[str, list[str]] = {
+        name: [] for name in formal_names if name in allowed_set
+    }
+    fallback: list[str] = []
+    for community_value, member_value in await cur.fetchall():
+        community = str(community_value or "").strip()
+        member = str(member_value or "").strip()
+        if not community or not member or community not in allowed_set:
+            continue
+        members = by_community.setdefault(community, [])
+        if member not in members:
+            members.append(member)
+        if member not in fallback:
+            fallback.append(member)
+
+    return {
+        "community_aliases": aliases,
+        "inspectors_by_community": by_community,
+        "fallback_inspectors": fallback,
+        "community_column": "社区",
+        "inspector_column": "核查人",
+    }
+
+
+def inspector_assignment_mismatch(
+    context: dict[str, Any],
+    community_value: str | None,
+    inspector_value: str | None,
+) -> bool:
+    inspector = str(inspector_value or "").strip()
+    if not inspector:
+        return False
+    community = str(community_value or "").strip()
+    formal = (context.get("community_aliases") or {}).get(community, "")
+    local = list((context.get("inspectors_by_community") or {}).get(formal) or [])
+    allowed = local or list(context.get("fallback_inspectors") or [])
+    return inspector not in allowed
+
+
+def validate_inspector_assignment(
+    context: dict[str, Any],
+    community_value: str | None,
+    inspector_value: str | None,
+) -> None:
+    inspector = str(inspector_value or "").strip()
+    if not inspector:
+        return
+    if inspector_assignment_mismatch(context, community_value, inspector):
+        raise ValueError("所选核查人不属于当前社区或当前账号可编辑范围")
+
+
 def effective_view_communities(user: dict[str, Any]) -> list[str] | None:
     """返回在线原始数据查看范围；None 表示全所。
 

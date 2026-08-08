@@ -1,15 +1,21 @@
-"""Read-only metadata for the three application databases."""
+"""Read-only metadata for the eight application databases."""
 
 from datetime import datetime
 import re
 
 from database import db_manager
+from config import settings
 
 
 DATABASES = {
-    "OnlineData": "当前业务数据和系统配置",
-    "OnlineDataArchive": "从在线表格移除的历史数据",
-    "daily_report": "每日快照和统计报表",
+    settings.MYSQL_PLATFORM_DB: "账号、人员、权限、通知、审计、排班和平台配置",
+    settings.MYSQL_ONLINE_DATA_DB: "腾讯配置、同步、来源投影、在线业务表和回写记录",
+    settings.MYSQL_ARCHIVE_DB: "从在线表格移除的只读历史数据",
+    settings.MYSQL_DAILY_REPORT_DB: "每日快照、任务流水和工作日志草稿",
+    settings.MYSQL_VISIT_DB: "走访批次、明细和导入异常",
+    settings.MYSQL_DISPATCH_DB: "下发批次、任务和发布结果",
+    settings.MYSQL_REGISTRY_DB: "辖区档案、小区地址、人员标记和任务标记快照",
+    settings.MYSQL_WORKFLOW_DB: "流程配置、工单、事件和附件元数据",
 }
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]+$")
 
@@ -19,30 +25,32 @@ def _iso_utc(value: datetime | None) -> str | None:
 
 
 async def _last_activity(cur, database_name: str) -> datetime | None:
-    if database_name == "OnlineData":
+    if database_name == settings.MYSQL_ONLINE_DATA_DB:
         await cur.execute(
-            """
+            f"""
             SELECT MAX(activity_at) FROM (
-                SELECT MAX(finished_at) AS activity_at FROM OnlineData._sync_log
+                SELECT MAX(finished_at) AS activity_at FROM `{settings.MYSQL_ONLINE_DATA_DB}`._sync_log
                 UNION ALL
-                SELECT MAX(updated_at) FROM OnlineData._config_spreadsheets
+                SELECT MAX(updated_at) FROM `{settings.MYSQL_ONLINE_DATA_DB}`._config_spreadsheets
                 UNION ALL
-                SELECT MAX(updated_at) FROM OnlineData._config_oauth_tokens
-                UNION ALL
-                SELECT MAX(updated_at) FROM OnlineData._users
-                UNION ALL
-                SELECT MAX(updated_at) FROM OnlineData._grid_members
-                UNION ALL
-                SELECT MAX(finished_at) FROM OnlineData._visit_import_batches
+                SELECT MAX(updated_at) FROM `{settings.MYSQL_ONLINE_DATA_DB}`._config_oauth_tokens
             ) activity
             """
         )
         row = await cur.fetchone()
         return row[0] if row else None
 
-    if database_name == "daily_report":
+    if database_name == settings.MYSQL_DAILY_REPORT_DB:
         await cur.execute(
-            "SELECT MAX(generated_at) FROM daily_report._daily_report_meta"
+            f"SELECT MAX(generated_at) FROM `{settings.MYSQL_DAILY_REPORT_DB}`._daily_report_meta"
+        )
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+    if database_name != settings.MYSQL_ARCHIVE_DB:
+        await cur.execute(
+            "SELECT MAX(update_time) FROM information_schema.tables WHERE table_schema=%s",
+            (database_name,),
         )
         row = await cur.fetchone()
         return row[0] if row else None
@@ -51,10 +59,10 @@ async def _last_activity(cur, database_name: str) -> datetime | None:
         """
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema='OnlineDataArchive'
+        WHERE table_schema=%s
           AND table_name LIKE %s
         """,
-        ("%\\_archive",),
+        (settings.MYSQL_ARCHIVE_DB, "%\\_archive"),
     )
     latest = None
     for (table_name,) in await cur.fetchall():
@@ -62,7 +70,7 @@ async def _last_activity(cur, database_name: str) -> datetime | None:
             continue
         await cur.execute(
             f"SELECT MAX(_archived_at) "
-            f"FROM `OnlineDataArchive`.`{table_name}`"
+            f"FROM `{settings.MYSQL_ARCHIVE_DB}`.`{table_name}`"
         )
         row = await cur.fetchone()
         if row and row[0] and (latest is None or row[0] > latest):
@@ -75,19 +83,19 @@ async def get_database_overview() -> list[dict]:
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(DATABASES))
             await cur.execute(
-                """
+                f"""
                 SELECT table_schema, COUNT(*),
                        COALESCE(SUM(table_rows), 0),
                        COALESCE(SUM(data_length), 0),
                        COALESCE(SUM(index_length), 0),
                        MAX(update_time)
                 FROM information_schema.tables
-                WHERE table_schema IN (
-                    'OnlineData', 'OnlineDataArchive', 'daily_report'
-                )
+                WHERE table_schema IN ({placeholders})
                 GROUP BY table_schema
-                """
+                """,
+                tuple(DATABASES),
             )
             by_name = {row[0]: row for row in await cur.fetchall()}
             result = []

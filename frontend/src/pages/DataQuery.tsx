@@ -35,6 +35,7 @@ import {
   updateQuerySourceCell,
   type QueryColumnMeta,
   type QueryDataRow,
+  type QueryDependentOptions,
   type QuerySourceRow,
   type QueryWritebackAudit,
 } from '../api/client'
@@ -53,6 +54,8 @@ import {
 import {
   buildQuerySheetRequestFilters,
   isQuerySheetFullscreen,
+  queryInspectorMismatch,
+  queryInspectorOptions,
   toggleQuerySheetFullscreen,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
@@ -81,6 +84,7 @@ export default function DataQuery() {
   const [rows, setRows] = useState<QueryDataRow[]>([])
   const [columns, setColumns] = useState<string[]>([])
   const [columnMeta, setColumnMeta] = useState<QueryColumnMeta[]>([])
+  const [dependentOptions, setDependentOptions] = useState<QueryDependentOptions | undefined>()
   const [total, setTotal] = useState(0)
   const [mobilePage, setMobilePage] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -182,6 +186,7 @@ export default function DataQuery() {
       setRows(result.data)
       setColumns(result.columns)
       setColumnMeta(result.column_meta || [])
+      setDependentOptions(result.dependent_options)
       setTotal(result.total)
       setScopeMessage(result.scope_message || '')
       setRowManageMessage(result.row_manage_message || '')
@@ -204,6 +209,7 @@ export default function DataQuery() {
       setSourceReady(false)
       setWritebackEnabled(false)
       setCanAdd(false)
+      setDependentOptions(undefined)
       setRequiredFields([])
       setPendingCount(0)
       setScopeMessage('')
@@ -300,7 +306,11 @@ export default function DataQuery() {
           __revision: result.revision,
           __row_key: result.row_key,
           __pending: result.pending_sync,
+          __inspector_mismatch: Boolean(result.inspector_mismatch),
         })
+        if (result.warnings?.length) {
+          result.warnings.forEach(warning => messageApi.warning(warning))
+        }
         if (result.pending_sync && !wasPending) {
           newlyPendingSourceIds.add(sourceId)
         }
@@ -606,6 +616,7 @@ export default function DataQuery() {
               rows={rows}
               columns={columns}
               columnMeta={columnMeta}
+              dependentOptions={dependentOptions}
               drafts={draftRows}
               canAdd={canAdd}
               revision={sheetRevision}
@@ -695,6 +706,12 @@ export default function DataQuery() {
         <div className="grid max-h-[60vh] grid-cols-1 gap-4 overflow-y-auto pr-2 md:grid-cols-2">
           {columns.map(column => {
             const meta = metaByColumn[column]
+            const inspectorOptions = column === dependentOptions?.inspector_column
+              ? queryInspectorOptions(dependentOptions, addValues)
+              : null
+            const options = inspectorOptions
+              ? inspectorOptions.map(value => ({ value, label: value }))
+              : (meta?.options || []).map(option => ({ value: option.text, label: option.text }))
             return (
               <label key={column} className="block">
                 <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">{column}</span>
@@ -703,8 +720,9 @@ export default function DataQuery() {
                     className="w-full"
                     value={addValues[column] || undefined}
                     onChange={value => setAddValues(current => ({ ...current, [column]: value }))}
-                    options={(meta.options || []).map(option => ({ value: option.text, label: option.text }))}
+                    options={options}
                     allowClear
+                    showSearch
                   />
                 ) : (
                   <Input.TextArea
@@ -717,6 +735,15 @@ export default function DataQuery() {
             )
           })}
         </div>
+        {queryInspectorMismatch(dependentOptions, addValues) && (
+          <Alert
+            className="mt-4"
+            type="warning"
+            showIcon
+            message="核查人与社区不一致"
+            description="原核查人已保留；重新选择时只能选择当前社区人员。"
+          />
+        )}
       </Modal>
 
       <Drawer
@@ -752,6 +779,12 @@ export default function DataQuery() {
               const meta = managedMeta?.type === 'select'
                 ? managedMeta
                 : sourceMeta || managedMeta
+              const inspectorOptions = column === dependentOptions?.inspector_column
+                ? queryInspectorOptions(dependentOptions, drawerDraft)
+                : null
+              const options = inspectorOptions
+                ? inspectorOptions.map(value => ({ value, label: value }))
+                : (meta?.options || []).map(option => ({ value: option.text, label: option.text }))
               return (
                 <label key={column} className="block">
                   <span className="mb-1 flex items-center justify-between text-sm font-medium text-[var(--app-text)]">
@@ -763,8 +796,9 @@ export default function DataQuery() {
                       className="w-full"
                       value={drawerDraft[column] || undefined}
                       onChange={value => setDrawerDraft(current => ({ ...current, [column]: value || '' }))}
-                      options={(meta.options || []).map(option => ({ value: option.text, label: option.text }))}
+                      options={options}
                       allowClear
+                      showSearch
                     />
                   ) : editable ? (
                     <Input.TextArea
@@ -780,6 +814,14 @@ export default function DataQuery() {
                 </label>
               )
             })}
+            {queryInspectorMismatch(dependentOptions, drawerDraft) && (
+              <Alert
+                type="warning"
+                showIcon
+                message="核查人与社区不一致"
+                description="原值不会自动清空；重新选择核查人时只能选择当前社区在岗人员。"
+              />
+            )}
             {selectedDrawerSource?.can_delete && (
               <Popconfirm
                 title="确认删除腾讯原始行？"

@@ -45,7 +45,7 @@ export interface NavigationGroupDefinition {
 export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
   {
     id: 'workspace',
-    label: '数据工作台',
+    label: '工作台',
     dockLabel: '工作台',
     icon: 'workspace',
     items: [
@@ -58,37 +58,12 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         end: true,
       },
       {
-        id: 'online_summary',
-        path: '/summary',
-        label: '在线数据汇总',
-        shortLabel: '在线汇总',
-        icon: 'summary',
-        end: true,
-        permission: 'online.summary.view',
-      },
-      {
         id: 'online_query',
         path: '/query',
         label: '在线数据查询',
         shortLabel: '在线查询',
         icon: 'query',
         permission: 'online.raw.view',
-      },
-      {
-        id: 'flow_tasks',
-        path: '/tasks/home',
-        label: '流口指令核查',
-        shortLabel: '流口核查',
-        icon: 'query',
-        permission: 'online.raw.view',
-      },
-      {
-        id: 'visit_summary',
-        path: '/visit-summary',
-        label: '走访汇总',
-        shortLabel: '走访汇总',
-        icon: 'visit',
-        permission: 'visit.summary.view',
       },
       {
         id: 'data_upload',
@@ -107,6 +82,63 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'worklog',
         permission: 'worklog.manage',
         roles: ['super_admin', 'admin'],
+      },
+    ],
+  },
+  {
+    id: 'tasks',
+    label: '任务处理',
+    dockLabel: '任务',
+    icon: 'query',
+    items: [
+      {
+        id: 'flow_tasks',
+        path: '/tasks/home',
+        label: '流口指令核查',
+        shortLabel: '流口核查',
+        icon: 'query',
+        permission: 'online.raw.view',
+      },
+      {
+        id: 'police_tasks',
+        path: '/police-tasks',
+        label: '下发任务处理',
+        shortLabel: '下发任务',
+        icon: 'worklog',
+        permission: 'police.dispatch.manage',
+      },
+      {
+        id: 'workflow_tickets',
+        path: '/workflow',
+        label: '工单中心',
+        shortLabel: '工单',
+        icon: 'worklog',
+        permission: 'workflow.ticket.view',
+      },
+    ],
+  },
+  {
+    id: 'summaries',
+    label: '统计汇总',
+    dockLabel: '汇总',
+    icon: 'summary',
+    items: [
+      {
+        id: 'online_summary',
+        path: '/summary',
+        label: '在线数据汇总',
+        shortLabel: '在线汇总',
+        icon: 'summary',
+        end: true,
+        permission: 'online.summary.view',
+      },
+      {
+        id: 'visit_summary',
+        path: '/visit-summary',
+        label: '走访汇总',
+        shortLabel: '走访汇总',
+        icon: 'visit',
+        permission: 'visit.summary.view',
       },
     ],
   },
@@ -142,6 +174,22 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         roles: ['super_admin', 'admin'],
       },
       {
+        id: 'registry',
+        path: '/registry',
+        label: '辖区档案',
+        shortLabel: '辖区档案',
+        icon: 'resources',
+        permission: 'registry.property.view',
+      },
+      {
+        id: 'watch_people',
+        path: '/watch-people',
+        label: '人员标记',
+        shortLabel: '人员标记',
+        icon: 'members',
+        permission: 'registry.watch.view',
+      },
+      {
         id: 'users',
         path: '/users',
         label: '用户管理',
@@ -175,6 +223,15 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'settings',
       },
       {
+        id: 'workflow_config',
+        path: '/settings/workflow',
+        label: '工单流程配置',
+        shortLabel: '流程配置',
+        icon: 'worklog',
+        permission: 'workflow.config.manage',
+        roles: ['super_admin'],
+      },
+      {
         id: 'operations',
         path: '/operations',
         label: '运维中心',
@@ -194,15 +251,36 @@ export function isNavigationItemAccessible(
   role: Role,
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
+  position?: string | null,
 ): boolean {
   if (
     item.id === 'flow_tasks'
+    && !['组长', '组员'].includes(position || '')
     && !['admin', 'super_admin'].includes(role)
     && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   ) return false
-  if (item.permission && permissions) return permissions.includes(item.permission)
-  if (item.anyPermissions && permissions) {
-    return item.anyPermissions.some(permission => permissions.includes(permission))
+  if (
+    item.id === 'police_tasks'
+    && !['基础管控', '中队长'].includes(position || '')
+    && !(
+      !position
+      && (
+        ['admin', 'super_admin'].includes(role)
+        || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+      )
+    )
+  ) return false
+  if (item.permission) {
+    // Permission data is authoritative.  If it is unavailable, fail closed
+    // for permission-gated items instead of exposing a menu by accident.
+    return permissions
+      ? permissions.includes(item.permission)
+      : role === 'super_admin' || Boolean(item.roles?.includes(role))
+  }
+  if (item.anyPermissions) {
+    return permissions
+      ? item.anyPermissions.some(permission => permissions.includes(permission))
+      : role === 'super_admin' || Boolean(item.roles?.includes(role))
   }
   return !item.roles || item.roles.includes(role)
 }
@@ -211,11 +289,12 @@ export function accessibleNavigationGroups(
   role: Role,
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
+  position?: string | null,
 ): NavigationGroupDefinition[] {
   return NAVIGATION_GROUPS.map(group => ({
     ...group,
     items: group.items.filter(item => (
-      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes)
+      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes, position)
     )),
   })).filter(group => group.items.length > 0)
 }
@@ -224,9 +303,11 @@ export function defaultMobileDockConfig(
   role: Role,
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
+  position?: string | null,
 ): MobileDockConfig {
   return {
-    groups: accessibleNavigationGroups(role, permissions, permissionGroupCodes).map(group => ({
+    version: 2,
+    groups: accessibleNavigationGroups(role, permissions, permissionGroupCodes, position).slice(0, MAX_DOCK_GROUPS).map(group => ({
       id: group.id,
       items: group.items.map(item => item.id),
     })),
@@ -238,13 +319,14 @@ export function normalizeMobileDockConfig(
   role: Role,
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
+  position?: string | null,
 ): MobileDockConfig {
-  if (!value || !Array.isArray(value.groups)) {
-    return defaultMobileDockConfig(role, permissions, permissionGroupCodes)
+  if (!value || value.version !== 2 || !Array.isArray(value.groups)) {
+    return defaultMobileDockConfig(role, permissions, permissionGroupCodes, position)
   }
 
   const definitions = new Map(
-    accessibleNavigationGroups(role, permissions, permissionGroupCodes).map(group => [group.id, group]),
+    accessibleNavigationGroups(role, permissions, permissionGroupCodes, position).map(group => [group.id, group]),
   )
   const seenGroups = new Set<MobileNavigationGroupId>()
   const groups = value.groups.slice(0, MAX_DOCK_GROUPS).flatMap((rawGroup) => {
@@ -265,7 +347,7 @@ export function normalizeMobileDockConfig(
 
   const normalized = groups.length > 0
     ? groups
-    : defaultMobileDockConfig(role, permissions, permissionGroupCodes).groups
+    : defaultMobileDockConfig(role, permissions, permissionGroupCodes, position).groups
   const workspaceDefinition = definitions.get('workspace')
   const workspace = normalized.find(group => group.id === 'workspace')
   if (workspaceDefinition) {
@@ -276,7 +358,23 @@ export function normalizeMobileDockConfig(
       normalized.unshift({ id: 'workspace', items: [dashboardId] })
     }
   }
+  const presentGroups = new Set(normalized.map(group => group.id))
+  for (const definition of accessibleNavigationGroups(
+    role,
+    permissions,
+    permissionGroupCodes,
+    position,
+  )) {
+    if (normalized.length >= MAX_DOCK_GROUPS) break
+    if (presentGroups.has(definition.id)) continue
+    normalized.push({
+      id: definition.id,
+      items: definition.items.map(item => item.id),
+    })
+    presentGroups.add(definition.id)
+  }
   return {
+    version: 2,
     groups: [
       ...normalized.filter(group => group.id === 'workspace'),
       ...normalized.filter(group => group.id !== 'workspace'),
@@ -308,6 +406,7 @@ export function reorderMobileDockGroups(
   ))
   const toIndex = config.groups.findIndex(group => group.id === overGroupId)
   return {
+    version: 2,
     groups: moveEntry(config.groups, fromIndex, toIndex),
   }
 }
@@ -319,6 +418,7 @@ export function reorderMobileDockItems(
   overItemId: MobileNavigationItemId,
 ): MobileDockConfig {
   return {
+    version: 2,
     groups: config.groups.map((group) => {
       if (group.id !== groupId) return group
       return {
@@ -350,11 +450,8 @@ export function navigationItemById(
 export function routeIsActive(
   pathname: string,
   item: NavigationItemDefinition,
-  taskRoutesAsQuery = false,
 ): boolean {
   if (item.id === 'flow_tasks' && pathname.startsWith('/tasks')) return true
-  if (taskRoutesAsQuery && item.id === 'online_query' && pathname.startsWith('/tasks')) return true
-  if (taskRoutesAsQuery && item.id === 'online_query' && pathname.startsWith('/police-tasks')) return true
   if (item.end) return pathname === item.path
   return pathname === item.path || pathname.startsWith(`${item.path}/`)
 }
@@ -364,10 +461,7 @@ export function mobileNavigationItemLabel(
   position?: string | null,
   short = false,
 ): string {
-  const flowPost = position === '组员' || position === '组长'
-  const internalPost = position === '基础管控' || position === '中队长'
   if (item.id === 'dashboard') return '首页'
-  if (flowPost && item.id === 'online_query') return '指令核查'
-  if (internalPost && item.id === 'online_query') return '下发任务'
+  void position
   return short ? item.shortLabel : item.label
 }

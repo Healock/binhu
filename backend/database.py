@@ -1,4 +1,4 @@
-"""MySQL 多数据库连接池管理（OnlineData / OnlineDataArchive / daily_report）"""
+"""MySQL 多数据库连接池管理（同一实例内的八个业务域数据库）。"""
 
 import aiomysql
 from config import settings
@@ -14,13 +14,22 @@ from services.permissions import (
     parse_permissions,
     serialize_permissions,
 )
+from services.domain_schema import ensure_registry_schema, ensure_workflow_schema
+from services.domain_routing import DomainRoutingCursor
 
 # 数据库名称映射
 DB_NAMES = {
     "online_data": settings.MYSQL_ONLINE_DATA_DB,
     "archive": settings.MYSQL_ARCHIVE_DB,
     "daily_report": settings.MYSQL_DAILY_REPORT_DB,
+    "platform": settings.MYSQL_PLATFORM_DB,
+    "visit": settings.MYSQL_VISIT_DB,
+    "dispatch": settings.MYSQL_DISPATCH_DB,
+    "registry": settings.MYSQL_REGISTRY_DB,
+    "workflow": settings.MYSQL_WORKFLOW_DB,
 }
+
+OPTIONAL_DB_KEYS = {"platform", "visit", "dispatch", "registry", "workflow"}
 
 
 async def _ensure_column(cur, table: str, column: str, definition: str) -> None:
@@ -114,19 +123,34 @@ async def ensure_permission_schema(cur) -> None:
         )
     # 新权限只追加到相应预设组，不覆盖超级管理员已经调整过的其他权限。
     permission_additions = {
-        "flow_post": {ONLINE_RAW_EDIT},
-        "global_viewer": {ONLINE_RAW_EDIT},
+        "flow_post": {ONLINE_RAW_EDIT, "workflow.ticket.create", "workflow.ticket.view"},
+        "global_viewer": {ONLINE_RAW_EDIT, "workflow.ticket.create", "workflow.ticket.view"},
         "internal_business": {
             ONLINE_RAW_EDIT,
             ONLINE_RAW_ROW_MANAGE,
             POLICE_ADDRESS_MANAGE,
             POLICE_DISPATCH_MANAGE,
+            "registry.property.view",
+            "registry.property.manage",
+            "registry.watch.view",
+            "registry.watch.manage",
+            "registry.import.manage",
+            "workflow.ticket.handle",
+            "workflow.attachment.view",
         },
         "admin": {
             ONLINE_RAW_EDIT,
             ONLINE_RAW_ROW_MANAGE,
             POLICE_ADDRESS_MANAGE,
             POLICE_DISPATCH_MANAGE,
+            "registry.property.view",
+            "registry.property.manage",
+            "registry.watch.view",
+            "registry.watch.manage",
+            "registry.import.manage",
+            "workflow.ticket.handle",
+            "workflow.attachment.view",
+            "workflow.ticket.manage",
         },
     }
     for code, additions in permission_additions.items():
@@ -208,6 +232,29 @@ async def ensure_permission_schema(cur) -> None:
             (position, permission_group_id, updated_by)
         SELECT position, permission_group_id, updated_by
         FROM _position_permission_groups
+    """)
+    # 0.16.0 起社区民警不再继承 admin 的全所维护权限；保留其他人工叠加组，
+    # 只移除旧默认 admin 链接并换成按关联社区只读的系统组。
+    await cur.execute("""
+        DELETE link
+        FROM _position_permission_group_links AS link
+        JOIN _permission_groups AS permission_group
+          ON permission_group.id=link.permission_group_id
+        WHERE link.position='社区民警' AND permission_group.code='admin'
+    """)
+    await cur.execute("""
+        INSERT IGNORE INTO _position_permission_group_links
+            (position, permission_group_id)
+        SELECT '社区民警', id
+        FROM _permission_groups
+        WHERE code='community_registry_viewer'
+    """)
+    await cur.execute("""
+        UPDATE _position_permission_groups AS mapping
+        JOIN _permission_groups AS permission_group
+          ON permission_group.code='community_registry_viewer'
+        SET mapping.permission_group_id=permission_group.id
+        WHERE mapping.position='社区民警'
     """)
 
     await _ensure_column(
@@ -467,6 +514,8 @@ async def ensure_online_editor_schema(cur) -> None:
             values_json JSON NOT NULL,
             community VARCHAR(200) NOT NULL DEFAULT '',
             inspector VARCHAR(100) NOT NULL DEFAULT '',
+            identity_hmac CHAR(64) DEFAULT NULL,
+            first_dispatch_at DATETIME DEFAULT NULL,
             task_state VARCHAR(20) NOT NULL DEFAULT '',
             source_count INT NOT NULL DEFAULT 1,
             conflict TINYINT(1) NOT NULL DEFAULT 0,
@@ -479,6 +528,9 @@ async def ensure_online_editor_schema(cur) -> None:
             INDEX idx_source_projection_pending (parser_type, pending_state),
             INDEX idx_source_projection_tasks (
                 parser_type, community, inspector, task_state
+            ),
+            INDEX idx_source_projection_identity (
+                parser_type, identity_hmac
             )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
@@ -495,12 +547,30 @@ async def ensure_online_editor_schema(cur) -> None:
         "task_state",
         "VARCHAR(20) NOT NULL DEFAULT '' AFTER inspector",
     )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "identity_hmac",
+        "CHAR(64) DEFAULT NULL AFTER inspector",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "first_dispatch_at",
+        "DATETIME DEFAULT NULL AFTER identity_hmac",
+    )
     await _ensure_index(
         cur,
         "_online_source_projection",
         "idx_source_projection_tasks",
         "INDEX idx_source_projection_tasks "
         "(parser_type, community, inspector, task_state)",
+    )
+    await _ensure_index(
+        cur,
+        "_online_source_projection",
+        "idx_source_projection_identity",
+        "INDEX idx_source_projection_identity (parser_type, identity_hmac)",
     )
     # 只读取已有来源缓存完成兼容回填，不访问或改写腾讯文档。
     await cur.execute("""
@@ -971,24 +1041,33 @@ async def ensure_bootstrap_admin(cur) -> bool:
 
 
 class DatabaseManager:
-    """管理三个数据库的连接池"""
+    """管理同一 MySQL 实例中的八个业务域连接池。"""
     _pools: dict[str, aiomysql.Pool] = {}
 
     @classmethod
     async def init_all(cls):
-        """创建三个数据库的连接池"""
+        """创建八个数据库的连接池；迁移期的新域连接可选。"""
         for key, db_name in DB_NAMES.items():
-            cls._pools[key] = await aiomysql.create_pool(
-                host=settings.MYSQL_HOST,
-                port=settings.MYSQL_PORT,
-                user=settings.MYSQL_USER,
-                password=settings.MYSQL_PASSWORD,
-                db=db_name,
-                minsize=2,
-                maxsize=settings.MYSQL_POOL_SIZE,
-                charset="utf8mb4",
-                autocommit=True,
-            )
+            if key in OPTIONAL_DB_KEYS and not settings.MYSQL_DOMAIN_DATABASES_ENABLED:
+                continue
+            try:
+                cls._pools[key] = await aiomysql.create_pool(
+                    host=settings.MYSQL_HOST,
+                    port=settings.MYSQL_PORT,
+                    user=settings.MYSQL_USER,
+                    password=settings.MYSQL_PASSWORD,
+                    db=db_name,
+                    minsize=2,
+                    maxsize=settings.MYSQL_POOL_SIZE,
+                    charset="utf8mb4",
+                    autocommit=True,
+                    cursorclass=DomainRoutingCursor,
+                )
+            except Exception as exc:
+                if key in OPTIONAL_DB_KEYS and "unknown database" in str(exc).lower():
+                    print(f"[DB] optional domain database is not ready: {db_name}")
+                    continue
+                raise
         # 确保新表存在（不需要删 volume 重建）
         async with cls._pools["online_data"].acquire() as conn:
             async with conn.cursor() as cur:
@@ -1783,8 +1862,16 @@ class DatabaseManager:
                         PRIMARY KEY (report_date, parser_type),
                         INDEX idx_ledger_run_date (report_date)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                      COLLATE=utf8mb4_unicode_ci
+                    COLLATE=utf8mb4_unicode_ci
                 """)
+        if "registry" in cls._pools:
+            async with cls._pools["registry"].acquire() as conn:
+                async with conn.cursor() as cur:
+                    await ensure_registry_schema(cur)
+        if "workflow" in cls._pools:
+            async with cls._pools["workflow"].acquire() as conn:
+                async with conn.cursor() as cur:
+                    await ensure_workflow_schema(cur)
         return cls
 
     @classmethod

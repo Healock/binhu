@@ -30,6 +30,17 @@ SYSTEM_MANAGE = "system.manage"
 OPS_MANAGE = "ops.manage"
 POLICE_DISPATCH_MANAGE = "police.dispatch.manage"
 POLICE_ADDRESS_MANAGE = "police.address.manage"
+REGISTRY_PROPERTY_VIEW = "registry.property.view"
+REGISTRY_PROPERTY_MANAGE = "registry.property.manage"
+REGISTRY_WATCH_VIEW = "registry.watch.view"
+REGISTRY_WATCH_MANAGE = "registry.watch.manage"
+REGISTRY_IMPORT_MANAGE = "registry.import.manage"
+WORKFLOW_TICKET_CREATE = "workflow.ticket.create"
+WORKFLOW_TICKET_VIEW = "workflow.ticket.view"
+WORKFLOW_TICKET_HANDLE = "workflow.ticket.handle"
+WORKFLOW_TICKET_MANAGE = "workflow.ticket.manage"
+WORKFLOW_CONFIG_MANAGE = "workflow.config.manage"
+WORKFLOW_ATTACHMENT_VIEW = "workflow.attachment.view"
 
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
@@ -56,6 +67,17 @@ PERMISSION_CATALOG = [
     (OPS_MANAGE, "平台管理", "使用运维中心"),
     (POLICE_DISPATCH_MANAGE, "业务操作", "管理全链条数据预处理、审核和发布"),
     (POLICE_ADDRESS_MANAGE, "基础资料", "管理小区地址库"),
+    (REGISTRY_PROPERTY_VIEW, "基础资料", "查看辖区人房档案"),
+    (REGISTRY_PROPERTY_MANAGE, "基础资料", "维护辖区人房档案"),
+    (REGISTRY_WATCH_VIEW, "基础资料", "查看人员标记"),
+    (REGISTRY_WATCH_MANAGE, "基础资料", "维护人员标记"),
+    (REGISTRY_IMPORT_MANAGE, "业务操作", "管理档案导入与待审核变更"),
+    (WORKFLOW_TICKET_CREATE, "业务操作", "发起工单"),
+    (WORKFLOW_TICKET_VIEW, "业务操作", "查看工单"),
+    (WORKFLOW_TICKET_HANDLE, "业务操作", "处理工单"),
+    (WORKFLOW_TICKET_MANAGE, "业务操作", "管理全所工单"),
+    (WORKFLOW_CONFIG_MANAGE, "平台管理", "配置和发布工单流程"),
+    (WORKFLOW_ATTACHMENT_VIEW, "业务操作", "查看工单附件"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}
@@ -68,6 +90,8 @@ COMMON_VIEW_PERMISSIONS = {
     COMMUNITY_VIEW,
     NOTIFICATION_VIEW,
     PREFERENCES_MANAGE,
+    WORKFLOW_TICKET_CREATE,
+    WORKFLOW_TICKET_VIEW,
 }
 
 FLOW_POST_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {ONLINE_RAW_EDIT}
@@ -85,6 +109,20 @@ INTERNAL_BUSINESS_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
     ATTENDANCE_MANAGE,
     POLICE_DISPATCH_MANAGE,
     POLICE_ADDRESS_MANAGE,
+    REGISTRY_PROPERTY_VIEW,
+    REGISTRY_PROPERTY_MANAGE,
+    REGISTRY_WATCH_VIEW,
+    REGISTRY_WATCH_MANAGE,
+    REGISTRY_IMPORT_MANAGE,
+    WORKFLOW_TICKET_HANDLE,
+    WORKFLOW_ATTACHMENT_VIEW,
+}
+
+# 社区民警需要保留日常查看能力，但辖区档案和人员标记只读，
+# 数据范围由其关联的社区部门决定，不能复用 admin 组的全所维护权限。
+COMMUNITY_REGISTRY_VIEW_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
+    REGISTRY_PROPERTY_VIEW,
+    REGISTRY_WATCH_VIEW,
 }
 
 DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
@@ -114,8 +152,15 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "description": "负责人员、社区和日常业务管理",
         "data_scope": "all",
         "permissions": INTERNAL_BUSINESS_PERMISSIONS
-        | {PERSONNEL_MANAGE, COMMUNITY_MANAGE},
+        | {PERSONNEL_MANAGE, COMMUNITY_MANAGE, WORKFLOW_TICKET_MANAGE},
         "sort_order": 40,
+    },
+    "community_registry_viewer": {
+        "name": "社区档案查看组",
+        "description": "社区民警只读查看所关联社区的人房档案和人员标记",
+        "data_scope": "own_department",
+        "permissions": COMMUNITY_REGISTRY_VIEW_PERMISSIONS,
+        "sort_order": 25,
     },
     "super_admin": {
         "name": "超级管理员",
@@ -133,7 +178,7 @@ POSITION_DEFAULT_GROUP = {
     "片长": "global_viewer",
     "中队长": "internal_business",
     "基础管控": "internal_business",
-    "社区民警": "admin",
+    "社区民警": "community_registry_viewer",
     "所队领导": "admin",
 }
 

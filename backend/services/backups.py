@@ -1,14 +1,16 @@
-"""Daily and manual three-database backups with atomic files and retention."""
+"""Daily and manual eight-database backups with atomic files and retention."""
 
 import asyncio
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import tarfile
 
 from config import settings
 from database import db_manager
@@ -22,6 +24,11 @@ BACKUP_DATABASES = (
     settings.MYSQL_ONLINE_DATA_DB,
     settings.MYSQL_ARCHIVE_DB,
     settings.MYSQL_DAILY_REPORT_DB,
+    settings.MYSQL_PLATFORM_DB,
+    settings.MYSQL_VISIT_DB,
+    settings.MYSQL_DISPATCH_DB,
+    settings.MYSQL_REGISTRY_DB,
+    settings.MYSQL_WORKFLOW_DB,
 )
 PLATFORM_FILENAME = re.compile(
     r"^binhu-db-\d{8}T\d{6}Z-job\d+\.sql\.gz$"
@@ -289,6 +296,8 @@ def _create_backup_file(task_id: int) -> tuple[str, int, str]:
     raw_path = backup_dir / f".{filename}.sql.partial"
     gzip_path = backup_dir / f".{filename}.partial"
     final_path = backup_dir / filename
+    manifest_path = backup_dir / f"{filename}.manifest.json"
+    manifest_partial = backup_dir / f".{filename}.manifest.partial"
     client = shutil.which("mysqldump") or shutil.which("mariadb-dump")
     if not client:
         raise RuntimeError("容器内没有可用的 mysqldump 客户端")
@@ -332,6 +341,8 @@ def _create_backup_file(task_id: int) -> tuple[str, int, str]:
             shutil.copyfileobj(source, target, length=1024 * 1024)
 
         preview = bytearray()
+        database_markers = {database.encode("utf-8"): False for database in BACKUP_DATABASES}
+        scan_tail = b""
         with gzip.open(gzip_path, "rb") as source:
             while True:
                 chunk = source.read(1024 * 1024)
@@ -339,23 +350,119 @@ def _create_backup_file(task_id: int) -> tuple[str, int, str]:
                     break
                 if len(preview) < 1024 * 1024:
                     preview.extend(chunk[: 1024 * 1024 - len(preview)])
-        if b"CREATE DATABASE" not in preview or b"OnlineData" not in preview:
-            raise RuntimeError("备份内容完整性检查未通过")
+                scan = scan_tail + chunk
+                for marker in database_markers:
+                    if marker in scan:
+                        database_markers[marker] = True
+                scan_tail = scan[-256:]
+        missing = [
+            marker for marker, found in database_markers.items() if not found
+        ]
+        if b"CREATE DATABASE" not in preview or missing:
+            names = ",".join(item.decode("utf-8", errors="replace") for item in missing)
+            raise RuntimeError(f"八库备份内容完整性检查未通过{': ' + names if names else ''}")
 
         digest = hashlib.sha256()
         with gzip_path.open("rb") as source:
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
 
+        section_manifest = _database_section_manifest(raw_path)
+        attachment_manifest = _create_attachment_archive(backup_dir, stamp, task_id)
         os.replace(gzip_path, final_path)
         try:
             final_path.chmod(0o600)
         except OSError:
             pass
+        manifest = {
+            "schema": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "database_backup": {
+                "filename": filename,
+                "size_bytes": final_path.stat().st_size,
+                "sha256": digest.hexdigest(),
+            },
+            "databases": section_manifest,
+            "attachments": attachment_manifest,
+        }
+        manifest_partial.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        try:
+            manifest_partial.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(manifest_partial, manifest_path)
         return filename, final_path.stat().st_size, digest.hexdigest()
     finally:
         raw_path.unlink(missing_ok=True)
         gzip_path.unlink(missing_ok=True)
+        manifest_partial.unlink(missing_ok=True)
+
+
+def _database_section_manifest(raw_path: Path) -> list[dict]:
+    marker = re.compile(rb"(?:Current Database:|USE)\s+`([^`]+)`")
+    sections = {
+        database: {"database": database, "size_bytes": 0, "sha256": hashlib.sha256()}
+        for database in BACKUP_DATABASES
+    }
+    current: str | None = None
+    with raw_path.open("rb") as source:
+        for line in source:
+            match = marker.search(line)
+            if match:
+                candidate = match.group(1).decode("utf-8", errors="replace")
+                current = candidate if candidate in sections else None
+            if current:
+                sections[current]["size_bytes"] += len(line)
+                sections[current]["sha256"].update(line)
+    return [
+        {
+            "database": database,
+            "size_bytes": int(sections[database]["size_bytes"]),
+            "sha256": sections[database]["sha256"].hexdigest(),
+            "included": sections[database]["size_bytes"] > 0,
+        }
+        for database in BACKUP_DATABASES
+    ]
+
+
+def _create_attachment_archive(backup_dir: Path, stamp: str, task_id: int) -> dict:
+    source_root = Path(settings.WORKFLOW_ATTACHMENT_DIR).resolve()
+    if not source_root.is_dir():
+        return {"status": "not_present", "file_count": 0}
+    filename = f"binhu-attachments-{stamp}-job{task_id}.tar.gz"
+    partial = backup_dir / f".{filename}.partial"
+    final = backup_dir / filename
+    file_entries = []
+    try:
+        with tarfile.open(partial, "w:gz") as archive:
+            for path in sorted(source_root.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                resolved = path.resolve()
+                if source_root not in resolved.parents:
+                    continue
+                relative = resolved.relative_to(source_root)
+                digest = hashlib.sha256()
+                with resolved.open("rb") as attachment:
+                    while chunk := attachment.read(1024 * 1024):
+                        digest.update(chunk)
+                archive.add(resolved, arcname=relative.as_posix(), recursive=False)
+                file_entries.append({"path": relative.as_posix(), "size_bytes": resolved.stat().st_size, "sha256": digest.hexdigest()})
+        digest = hashlib.sha256()
+        with partial.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        os.replace(partial, final)
+        try:
+            final.chmod(0o600)
+        except OSError:
+            pass
+        return {
+            "status": "success", "filename": filename, "size_bytes": final.stat().st_size,
+            "sha256": digest.hexdigest(), "file_count": len(file_entries), "files": file_entries,
+        }
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 async def run_backup_task(task_id: int) -> None:
@@ -432,6 +539,16 @@ def _safe_platform_path(filename: str) -> Path | None:
     return candidate
 
 
+def _related_backup_paths(filename: str) -> list[Path]:
+    database_path = _safe_platform_path(filename)
+    if database_path is None:
+        return []
+    root = database_path.parent
+    attachment_name = filename.replace("binhu-db-", "binhu-attachments-", 1).replace(".sql.gz", ".tar.gz")
+    candidates = [database_path, root / f"{filename}.manifest.json", root / attachment_name]
+    return [candidate for candidate in candidates if candidate.resolve().parent == root]
+
+
 async def cleanup_expired_backups() -> int:
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
@@ -475,7 +592,8 @@ async def cleanup_expired_backups() -> int:
             path = _safe_platform_path(filename)
             if path is None:
                 continue
-            path.unlink(missing_ok=True)
+            for related in _related_backup_paths(filename):
+                related.unlink(missing_ok=True)
             removed_ids.append(job_id)
 
         if removed_ids:
@@ -524,8 +642,9 @@ async def recover_interrupted_backups() -> int:
 
     backup_dir = Path(settings.BACKUP_DIR)
     if backup_dir.exists():
-        for partial in backup_dir.glob(".binhu-db-*.partial"):
-            partial.unlink(missing_ok=True)
+        for pattern in (".binhu-db-*.partial", ".binhu-db-*.manifest.partial", ".binhu-attachments-*.partial"):
+            for partial in backup_dir.glob(pattern):
+                partial.unlink(missing_ok=True)
     for task_id in task_ids:
         try:
             await create_backup_failure_notifications(

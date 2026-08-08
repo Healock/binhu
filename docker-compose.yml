@@ -40,7 +40,21 @@ services:
       MYSQL_ONLINE_DATA_DB: OnlineData
       MYSQL_ARCHIVE_DB: OnlineDataArchive
       MYSQL_DAILY_REPORT_DB: daily_report
+      MYSQL_PLATFORM_DB: PlatformData
+      MYSQL_VISIT_DB: VisitData
+      MYSQL_DISPATCH_DB: DispatchData
+      MYSQL_REGISTRY_DB: RegistryData
+      MYSQL_WORKFLOW_DB: WorkflowData
+      MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}
+      PLATFORM_DOMAIN_ACTIVE: ${BINHU_PLATFORM_DOMAIN_ACTIVE:-false}
+      VISIT_DOMAIN_ACTIVE: ${BINHU_VISIT_DOMAIN_ACTIVE:-false}
+      DISPATCH_DOMAIN_ACTIVE: ${BINHU_DISPATCH_DOMAIN_ACTIVE:-false}
+      DAILY_DOMAIN_ACTIVE: ${BINHU_DAILY_DOMAIN_ACTIVE:-false}
+      REGISTRY_ADDRESS_DOMAIN_ACTIVE: ${BINHU_REGISTRY_ADDRESS_DOMAIN_ACTIVE:-false}
+      REGISTRY_FEATURE_ENABLED: ${BINHU_REGISTRY_FEATURE_ENABLED:-false}
+      WORKFLOW_FEATURE_ENABLED: ${BINHU_WORKFLOW_FEATURE_ENABLED:-false}
       ENCRYPTION_KEY: ${BINHU_ENCRYPTION_KEY:?Set BINHU_ENCRYPTION_KEY in .env}
+      REGISTRY_HMAC_KEY: ${BINHU_REGISTRY_HMAC_KEY:-}
       SESSION_COOKIE_SECURE: ${BINHU_SESSION_COOKIE_SECURE:-true}
       CORS_ALLOWED_ORIGINS: ${BINHU_CORS_ALLOWED_ORIGINS:-}
       BOOTSTRAP_ADMIN_USERNAME: ${BINHU_BOOTSTRAP_ADMIN_USERNAME:-}
@@ -48,11 +62,13 @@ services:
       OPS_AGENT_URL: http://ops-agent:9001
       OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
       BACKUP_DIR: /app/backups
+      WORKFLOW_ATTACHMENT_DIR: /app/workflow-attachments
       STATIC_DIR: /app/static
     volumes:
       - ./frontend/dist:/app/static:ro
       - ./VERSION:/app/VERSION:ro
       - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
+      - ${BINHU_WORKFLOW_ATTACHMENT_DIR:-/data/binhu/workflow-attachments}:/app/workflow-attachments
     logging:
       driver: json-file
       options:

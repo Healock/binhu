@@ -36,7 +36,10 @@ class MultiPermissionGroupTests(unittest.IsolatedAsyncioTestCase):
     def test_new_positions_have_categories_and_default_groups(self):
         self.assertIn("社区民警", POSITION_CATEGORIES["police_leadership"])
         self.assertIn("所队领导", POSITION_CATEGORIES["police_leadership"])
-        self.assertEqual(POSITION_DEFAULT_GROUP["社区民警"], "admin")
+        self.assertEqual(
+            POSITION_DEFAULT_GROUP["社区民警"],
+            "community_registry_viewer",
+        )
         self.assertEqual(POSITION_DEFAULT_GROUP["所队领导"], "admin")
 
     async def test_community_police_requires_department_and_leader_uses_internal(self):

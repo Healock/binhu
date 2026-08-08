@@ -29,7 +29,7 @@ import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
 import '@univerjs/preset-sheets-filter/lib/index.css'
 
-import type { QueryColumnMeta, QueryDataRow } from '../api/client'
+import type { QueryColumnMeta, QueryDataRow, QueryDependentOptions } from '../api/client'
 import { useAppThemeMode } from './AppThemeProvider'
 import type { QueryDisplayRow } from '../utils/queryGrid'
 import {
@@ -42,6 +42,8 @@ import {
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
+  queryInspectorMismatch,
+  queryInspectorOptions,
   querySheetTextCell,
   resolveQuerySheetColumnWidth,
   resolveQuerySheetThinBorderStyle,
@@ -58,6 +60,7 @@ export interface QuerySpreadsheetProps {
   rows: QueryDataRow[]
   columns: string[]
   columnMeta: QueryColumnMeta[]
+  dependentOptions?: QueryDependentOptions
   drafts: QueryDisplayRow[]
   canAdd: boolean
   revision: number
@@ -116,6 +119,7 @@ export function QuerySpreadsheet({
   rows,
   columns,
   columnMeta,
+  dependentOptions,
   drafts,
   canAdd,
   revision,
@@ -340,6 +344,13 @@ export function QuerySpreadsheet({
           if (canEditQuerySheetCell(source, descriptor, column, canAdd)) {
             worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.editable)
           }
+          if (
+            dependentOptions
+            && column === dependentOptions.inspector_column
+            && queryInspectorMismatch(dependentOptions, descriptor.data)
+          ) {
+            worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.warning)
+          }
         })
       })
     }
@@ -347,20 +358,42 @@ export function QuerySpreadsheet({
     applyAppearance(themeModeRef.current === 'dark')
 
     const metaByColumn = Object.fromEntries(columnMeta.map(meta => [meta.field, meta]))
+    const buildValidationRule = (options: string[], multiple = false) => univerAPI
+      .newDataValidation()
+      .requireValueInList(options, multiple, true)
+      .setAllowBlank(true)
+      .setAllowInvalid(true)
+      .build()
     columns.forEach((column, columnIndex) => {
       const meta = metaByColumn[column]
+      if (dependentOptions && column === dependentOptions.inspector_column) return
       const options = meta?.type === 'select'
         ? (meta.options || []).map(option => option.text).filter(Boolean)
         : []
       if (!options.length) return
-      const rule = univerAPI
-        .newDataValidation()
-        .requireValueInList(options, Boolean(meta.multiple), true)
-        .setAllowBlank(true)
-        .setAllowInvalid(true)
-        .build()
+      const rule = buildValidationRule(options, Boolean(meta.multiple))
       worksheet.getRange(1, columnIndex, sheetRows.length, 1).setDataValidation(rule)
     })
+
+    const inspectorColumnIndex = dependentOptions
+      ? columns.indexOf(dependentOptions.inspector_column)
+      : -1
+    const applyInspectorValidation = (rowIndex: number) => {
+      if (!dependentOptions || inspectorColumnIndex < 0) return
+      const descriptor = sheetRows[rowIndex]
+      if (!descriptor) return
+      const options = queryInspectorOptions(dependentOptions, descriptor.data)
+      descriptor.data.__inspector_mismatch = queryInspectorMismatch(
+        dependentOptions,
+        descriptor.data,
+      )
+      if (options.length) {
+        worksheet
+          .getRange(rowIndex + 1, inspectorColumnIndex)
+          .setDataValidation(buildValidationRule(options))
+      }
+    }
+    sheetRows.forEach((_, rowIndex) => applyInspectorValidation(rowIndex))
 
     const firstBlankRow = sheetRows.findIndex(row => row.kind === 'blank')
     const filterDataRowCount = firstBlankRow >= 0 ? firstBlankRow : sheetRows.length
@@ -396,6 +429,7 @@ export function QuerySpreadsheet({
           worksheet
             .getRange(descriptorIndex + 1, columnIndex)
             .setValue(querySheetTextCell(change.before))
+          applyInspectorValidation(descriptorIndex)
         }
       } finally {
         suppressCommands = false
@@ -415,6 +449,11 @@ export function QuerySpreadsheet({
       const formulas = dataRange.getFormulas()
       const changes = applyQuerySheetValues(sheetRows, columns, values)
       if (!changes.length) return
+      const changedRows = new Set(
+        changes.map(change => sheetRows.findIndex(item => item.data === change.row)),
+      )
+      changedRows.forEach(rowIndex => applyInspectorValidation(rowIndex))
+      applyAppearance(themeModeRef.current === 'dark')
 
       const blocked: QuerySheetCellChange[] = []
       const accepted: QuerySheetCellChange[] = []
@@ -506,6 +545,8 @@ export function QuerySpreadsheet({
           callbacksRef.current.onBlocked(
             saving ? '上一项修改仍在写回，请稍候' : '这个单元格为只读；蓝色单元格才可编辑',
           )
+        } else if (column === dependentOptions?.inspector_column) {
+          applyInspectorValidation(params.row - 1)
         }
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeClipboardPaste, params => {
@@ -582,7 +623,7 @@ export function QuerySpreadsheet({
     }
   // `revision` is the explicit rebuild boundary. Draft edits update the parent state,
   // but must not destroy and recreate the workbook while the user is typing.
-  }, [businessType, canAdd, columnMeta, columns, revision, source])
+  }, [businessType, canAdd, columnMeta, columns, dependentOptions, revision, source])
 
   useEffect(() => {
     applyAppearanceRef.current?.(themeMode === 'dark')

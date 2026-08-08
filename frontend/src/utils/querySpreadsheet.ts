@@ -1,5 +1,5 @@
 import { CellValueType, type ICellData } from '@univerjs/core'
-import type { QueryDataRow } from '../api/client.ts'
+import type { QueryDataRow, QueryDependentOptions } from '../api/client.ts'
 import {
   canEditQueryCell,
   createQueryDraftRow,
@@ -189,6 +189,7 @@ export interface QuerySheetPalette {
   header: string
   pending: string
   text: string
+  warning: string
 }
 
 export function querySheetPalette(_darkMode: boolean): QuerySheetPalette {
@@ -202,7 +203,29 @@ export function querySheetPalette(_darkMode: boolean): QuerySheetPalette {
     header: '#e8eef8',
     pending: '#fffbe6',
     text: '#172033',
+    warning: '#fff7e6',
   }
+}
+
+export function queryInspectorOptions(
+  context: QueryDependentOptions | undefined,
+  row: Record<string, unknown>,
+): string[] {
+  if (!context) return []
+  const community = String(row[context.community_column] || '').trim()
+  const formal = context.community_aliases[community] || ''
+  const local = formal ? context.inspectors_by_community[formal] || [] : []
+  return [...(local.length ? local : context.fallback_inspectors)]
+}
+
+export function queryInspectorMismatch(
+  context: QueryDependentOptions | undefined,
+  row: Record<string, unknown>,
+): boolean {
+  if (!context) return false
+  const inspector = String(row[context.inspector_column] || '').trim()
+  if (!inspector) return false
+  return !queryInspectorOptions(context, row).includes(inspector)
 }
 
 function hasColorFilter(criteria: QuerySheetFilterCriteria): boolean {

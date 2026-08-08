@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  accessibleNavigationGroups,
   defaultMobileDockConfig,
   normalizeMobileDockConfig,
   reorderMobileDockGroups,
@@ -12,7 +13,7 @@ test('普通账号默认 Dock 隐藏超级管理员页面', () => {
 
   assert.deepEqual(
     config.groups.map(group => group.id),
-    ['workspace', 'resources', 'system'],
+    ['workspace', 'system'],
   )
   assert.equal(
     config.groups.some(group => group.items.includes('users')),
@@ -24,8 +25,9 @@ test('普通账号默认 Dock 隐藏超级管理员页面', () => {
   )
 })
 
-test('超级管理员默认 Dock 包含用户管理和运维中心', () => {
+test('超级管理员默认 Dock 使用前四类，设置类仍可配置加入', () => {
   const config = defaultMobileDockConfig('super_admin')
+  const accessible = accessibleNavigationGroups('super_admin')
 
   assert.equal(
     config.groups.some(group => group.items.includes('users')),
@@ -33,6 +35,10 @@ test('超级管理员默认 Dock 包含用户管理和运维中心', () => {
   )
   assert.equal(
     config.groups.some(group => group.items.includes('operations')),
+    false,
+  )
+  assert.equal(
+    accessible.some(group => group.items.some(item => item.id === 'operations')),
     true,
   )
   assert.equal(
@@ -156,14 +162,15 @@ test('读取配置时去重、过滤未知项和无权限页面并保留顺序',
   }, 'member')
 
   assert.deepEqual(config, {
+    version: 2,
     groups: [
       {
         id: 'workspace',
-        items: ['dashboard', 'visit_summary', 'online_summary'],
+        items: ['dashboard'],
       },
       {
-        id: 'resources',
-        items: ['communities'],
+        id: 'system',
+        items: ['settings'],
       },
     ],
   })
@@ -196,9 +203,9 @@ test('读取配置时丢弃空分类并保留其余有效分类', () => {
   }, 'member')
 
   assert.deepEqual(config, {
+    version: 2,
     groups: [
       { id: 'workspace', items: ['dashboard'] },
-      { id: 'resources', items: ['grid_members'] },
       { id: 'system', items: ['settings'] },
     ],
   })
@@ -213,22 +220,28 @@ test('拖动分类和页面后按目标位置保存顺序', () => {
   )
   assert.deepEqual(
     movedGroups.groups.map(group => group.id),
-    ['system', 'workspace', 'resources'],
+    ['system', 'workspace'],
   )
 
   const movedItems = reorderMobileDockItems(
-    movedGroups,
+    {
+      version: 2,
+      groups: [
+        { id: 'workspace', items: ['dashboard', 'online_query'] },
+        { id: 'system', items: ['settings'] },
+      ],
+    },
     'workspace',
-    'visit_summary',
-    'online_summary',
+    'online_query',
+    'dashboard',
   )
   assert.deepEqual(
     movedItems.groups.find(group => group.id === 'workspace')?.items,
-    ['dashboard', 'visit_summary', 'online_summary', 'online_query'],
+    ['online_query', 'dashboard'],
   )
   assert.deepEqual(
     original.groups.map(group => group.id),
-    ['workspace', 'resources', 'system'],
+    ['workspace', 'system'],
   )
 })
 

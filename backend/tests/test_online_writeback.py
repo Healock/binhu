@@ -330,10 +330,12 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(cursor.many_rows), 1)
         projection = cursor.many_rows[0]
-        self.assertEqual(projection[5], "completed")
-        self.assertEqual(projection[6], 2)
-        self.assertEqual(projection[7], 0)
-        self.assertEqual(projection[9], "pending")
+        # identity_hmac and first_dispatch_at were added before the workflow
+        # fields in the projection tuple.
+        self.assertEqual(projection[7], "completed")
+        self.assertEqual(projection[8], 2)
+        self.assertEqual(projection[9], 0)
+        self.assertEqual(projection[11], "pending")
         self.assertEqual(json.loads(projection[2])["现住址"], "新址")
 
     async def test_non_mergeable_duplicates_are_exposed_as_conflict(self):
@@ -348,8 +350,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         await rebuild_projection(cursor, "全链条")
 
-        self.assertEqual(cursor.many_rows[0][6], 2)
-        self.assertEqual(cursor.many_rows[0][7], 1)
+        self.assertEqual(cursor.many_rows[0][8], 2)
+        self.assertEqual(cursor.many_rows[0][9], 1)
 
     async def test_fullchain_projection_retains_registration_value(self):
         parser = get_parser("全链条")
@@ -369,7 +371,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         projection_values = json.loads(cursor.many_rows[0][2])
         self.assertEqual(projection_values["登记情况"], "已登记")
-        self.assertIn("已登记", cursor.many_rows[0][8])
+        self.assertIn("已登记", cursor.many_rows[0][10])
 
     async def test_external_change_returns_409_and_refreshes_cache(self):
         parser = get_parser("全链条")

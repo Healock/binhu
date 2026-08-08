@@ -2,6 +2,7 @@ import ast
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -430,11 +431,14 @@ class BackupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.insert_count, 1)
 
     def test_backup_file_is_atomic_gzip_and_hashes_download_file(self):
-        sql = (
-            b"-- backup\n"
-            b"CREATE DATABASE /*!32312 IF NOT EXISTS*/ `OnlineData`;\n"
-            b"USE `OnlineData`;\n"
-            b"CREATE TABLE `sample` (`id` int);\n"
+        sql = b"-- backup\n" + b"".join(
+            (
+                f"CREATE DATABASE /*!32312 IF NOT EXISTS*/ `{database}`;\n"
+                f"-- Current Database: `{database}`\n"
+                f"USE `{database}`;\n"
+                "CREATE TABLE `sample` (`id` int);\n"
+            ).encode("utf-8")
+            for database in backups.BACKUP_DATABASES
         )
 
         def fake_run(command, **kwargs):
@@ -442,6 +446,8 @@ class BackupTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("--single-transaction", command)
             self.assertIn("OnlineDataArchive", command)
             self.assertIn("daily_report", command)
+            self.assertIn("PlatformData", command)
+            self.assertIn("WorkflowData", command)
             kwargs["stdout"].write(sql)
             return subprocess.CompletedProcess(command, 0, b"", b"")
 
@@ -469,6 +475,9 @@ class BackupTests(unittest.IsolatedAsyncioTestCase):
             )
             with gzip.open(path, "rb") as source:
                 self.assertEqual(source.read(), sql)
+            manifest = json.loads((path.parent / f"{filename}.manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual([item["database"] for item in manifest["databases"]], list(backups.BACKUP_DATABASES))
+            self.assertTrue(all(item["included"] for item in manifest["databases"]))
             self.assertEqual(
                 [item for item in Path(directory).iterdir() if item.name.startswith(".")],
                 [],

@@ -30,6 +30,10 @@ import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
 import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import PublicProfile from './pages/PublicProfile'
 import RoleDashboard from './pages/RoleDashboard'
+import RegistryManagement from './pages/RegistryManagement'
+import WatchPeopleManagement from './pages/WatchPeopleManagement'
+import WorkflowTickets from './pages/WorkflowTickets'
+import WorkflowConfig from './pages/WorkflowConfig'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
   canAccessFlowTaskWorkbench,
@@ -131,6 +135,15 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="police.address.manage" />}>
                 <Route path="/police-addresses" element={<PoliceAddressManagement />} />
               </Route>
+              <Route element={<ProtectedRoute requirePermission="registry.property.view" />}>
+                <Route path="/registry" element={<RegistryManagement />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="registry.watch.view" />}>
+                <Route path="/watch-people" element={<WatchPeopleManagement />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="workflow.ticket.view" />}>
+                <Route path="/workflow" element={<WorkflowTickets />} />
+              </Route>
 
               {/* 用户管理仅超管 */}
               <Route element={<ProtectedRoute requirePermission="user.manage" />}>
@@ -151,6 +164,9 @@ function App() {
                   <Route path="spreadsheets" element={<SpreadsheetSettings />} />
                   <Route path="oauth" element={<OAuthSettings />} />
                   <Route path="system" element={<SystemSettings />} />
+                </Route>
+                <Route element={<ProtectedRoute requirePermission="workflow.config.manage" />}>
+                  <Route path="workflow" element={<WorkflowConfig />} />
                 </Route>
               </Route>
             </Route>
