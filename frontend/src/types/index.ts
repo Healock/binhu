@@ -253,11 +253,21 @@ export type PermissionCode =
   | 'community.manage' | 'user.manage' | 'permission.manage'
   | 'announcement.manage' | 'system.manage' | 'ops.manage'
   | 'police.dispatch.manage' | 'police.address.manage'
+  | 'registry.property.view' | 'registry.property.manage'
+  | 'registry.watch.view' | 'registry.watch.manage' | 'registry.import.manage'
+  | 'workflow.ticket.create' | 'workflow.ticket.view'
+  | 'workflow.ticket.handle' | 'workflow.ticket.manage'
+  | 'workflow.config.manage' | 'workflow.attachment.view'
 export type TableDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
 export type MobileNavigationMode = 'sidebar' | 'dock'
 export type ThemeMode = 'light' | 'dark' | 'system'
-export type MobileNavigationGroupId = 'workspace' | 'resources' | 'system'
+export type MobileNavigationGroupId =
+  | 'workspace'
+  | 'tasks'
+  | 'summaries'
+  | 'resources'
+  | 'system'
 export type MobileNavigationItemId =
   | 'dashboard'
   | 'online_summary'
@@ -266,6 +276,11 @@ export type MobileNavigationItemId =
   | 'visit_summary'
   | 'data_upload'
   | 'work_log'
+  | 'police_tasks'
+  | 'workflow_tickets'
+  | 'registry'
+  | 'watch_people'
+  | 'workflow_config'
   | 'grid_members'
   | 'communities'
   | 'police_addresses'
@@ -280,6 +295,7 @@ export interface MobileDockGroupConfig {
 }
 
 export interface MobileDockConfig {
+  version?: number
   groups: MobileDockGroupConfig[]
 }
 

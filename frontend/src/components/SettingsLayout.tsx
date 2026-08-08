@@ -4,6 +4,7 @@ import {
   BgColorsOutlined,
   ClockCircleOutlined,
   FileTextOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { PageHeader } from './ui'
@@ -17,6 +18,7 @@ export default function SettingsLayout() {
     { path: '/settings/spreadsheets', label: '在线表格配置', icon: <FileTextOutlined />, superOnly: true },
     { path: '/settings/oauth', label: '腾讯文档 OAuth', icon: <ApiOutlined />, superOnly: true },
     { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, superOnly: true },
+    { path: '/settings/workflow', label: '工单流程配置', icon: <ApartmentOutlined />, superOnly: true },
     { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
   ]
 

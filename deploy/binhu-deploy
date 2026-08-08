@@ -283,8 +283,45 @@ case "$backup_scope" in
     backup_database OnlineData
     backup_database OnlineDataArchive
     backup_database daily_report
+    backup_database PlatformData
+    backup_database VisitData
+    backup_database DispatchData
+    backup_database RegistryData
+    backup_database WorkflowData
     ;;
 esac
+
+python3 - "$backup_dir" "$backup_scope" <<'PY'
+import gzip
+import hashlib
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(sys.argv[1])
+databases = []
+for path in sorted(root.glob("*.sql.gz")):
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    with gzip.open(path, "rb") as source:
+        marker_found = b"Current Database:" in source.read(1024 * 1024)
+    databases.append({
+        "database": path.name.removesuffix(".sql.gz"),
+        "filename": path.name,
+        "size_bytes": path.stat().st_size,
+        "sha256": digest,
+        "database_marker_found": marker_found,
+    })
+payload = {
+    "schema": 1,
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    "backup_scope": sys.argv[2],
+    "databases": databases,
+}
+(root / "backup-manifest.json").write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+)
+PY
 
 log "switching from ${previous_version} to ${release_version}"
 readonly dist_target="$(readlink -m "$project_dir/frontend/dist")"

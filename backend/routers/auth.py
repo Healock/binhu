@@ -250,6 +250,7 @@ async def update_preferences(
                     for group in user.get("permission_groups") or []
                     if isinstance(group, dict)
                 ],
+                (user.get("member") or {}).get("position"),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -288,6 +289,7 @@ async def update_preferences(
                     for group in user.get("permission_groups") or []
                     if isinstance(group, dict)
                 ],
+                (user.get("member") or {}).get("position"),
             ),
             "theme_mode": normalize_theme_mode(
                 updated_user.get("theme_mode"),

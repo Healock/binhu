@@ -42,10 +42,12 @@ export default function PersonalizationSettings() {
         user.role,
         user.permissions,
         user.permission_groups?.map(group => group.code),
+        user.member?.position,
       ),
       user.role,
       user.permissions,
       user.permission_groups?.map(group => group.code),
+      user.member?.position,
     ))
   }, [user])
 
@@ -138,6 +140,7 @@ export default function PersonalizationSettings() {
                     user.role,
                     user.permissions,
                     user.permission_groups?.map(group => group.code),
+                    user.member?.position,
                   ),
                 )}
               >
@@ -151,6 +154,7 @@ export default function PersonalizationSettings() {
               value={dockConfig}
               role={user.role}
               permissions={user.permissions}
+              position={user.member?.position}
               permissionGroupCodes={user.permission_groups?.map(group => group.code)}
               onChange={setDockConfig}
             />

@@ -70,6 +70,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('[[ "$bundle_size" == "$expected_bundle_size" ]]', script)
         self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
 
+    @unittest.skipIf(os.name == "nt", "受限部署网关测试需要 Linux bash")
     def test_gateway_rejects_any_command_outside_fixed_grammar(self) -> None:
         gateway = ROOT / "deploy/binhu-deploy-gateway"
         for command in (

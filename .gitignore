@@ -38,3 +38,9 @@ backups/
 # 临时文件
 rename_changes.html
 scratch/
+
+# User-maintained release notes and reference documents are preserved locally
+# but are not part of the application release bundle.
+/更新日志/
+/docs/全民防自动登记分阶段开发计划.md
+/docs/腾讯表格日期字段录入说明.md

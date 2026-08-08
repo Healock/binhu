@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # MySQL（共享连接，3个数据库）
+    # MySQL（同一实例，八个按业务域划分的数据库）
     MYSQL_HOST: str = "localhost"
     MYSQL_PORT: int = 3306
     MYSQL_USER: str = "binhu"
@@ -13,9 +13,30 @@ class Settings(BaseSettings):
     MYSQL_ONLINE_DATA_DB: str = "OnlineData"
     MYSQL_ARCHIVE_DB: str = "OnlineDataArchive"
     MYSQL_DAILY_REPORT_DB: str = "daily_report"
+    MYSQL_PLATFORM_DB: str = "PlatformData"
+    MYSQL_VISIT_DB: str = "VisitData"
+    MYSQL_DISPATCH_DB: str = "DispatchData"
+    MYSQL_REGISTRY_DB: str = "RegistryData"
+    MYSQL_WORKFLOW_DB: str = "WorkflowData"
+    # New domain schemas may be created during a separate maintenance step.
+    # Missing optional schemas must not prevent the legacy platform from booting.
+    MYSQL_DOMAIN_DATABASES_ENABLED: bool = True
+    PLATFORM_DOMAIN_ACTIVE: bool = False
+    VISIT_DOMAIN_ACTIVE: bool = False
+    DISPATCH_DOMAIN_ACTIVE: bool = False
+    DAILY_DOMAIN_ACTIVE: bool = False
+    REGISTRY_ADDRESS_DOMAIN_ACTIVE: bool = False
+    REGISTRY_FEATURE_ENABLED: bool = False
+    WORKFLOW_FEATURE_ENABLED: bool = False
 
     # Encryption
     ENCRYPTION_KEY: str
+    REGISTRY_HMAC_KEY: str = ""
+
+    @property
+    def registry_hmac_key(self) -> str:
+        """Use a dedicated key when configured, with a staged-deploy fallback."""
+        return self.REGISTRY_HMAC_KEY or self.ENCRYPTION_KEY
 
     # API rate limiting
     API_RATE_LIMIT_DELAY_MS: int = 200
@@ -42,6 +63,7 @@ class Settings(BaseSettings):
     OPS_AGENT_URL: str = "http://ops-agent:9001"
     OPS_AGENT_TOKEN: str = ""
     BACKUP_DIR: str = "../backups"
+    WORKFLOW_ATTACHMENT_DIR: str = "../workflow-attachments"
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 
     @property

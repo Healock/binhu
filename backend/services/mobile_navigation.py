@@ -8,47 +8,63 @@ from typing import Any, Iterable
 
 DEFAULT_MOBILE_NAVIGATION_MODE = "dock"
 MAX_DOCK_GROUPS = 4
+DOCK_CONFIG_VERSION = 2
 
 GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     "workspace": (
         "dashboard",
-        "online_summary",
         "online_query",
-        "flow_tasks",
-        "visit_summary",
         "data_upload",
         "work_log",
+    ),
+    "tasks": (
+        "flow_tasks",
+        "police_tasks",
+        "workflow_tickets",
+    ),
+    "summaries": (
+        "online_summary",
+        "visit_summary",
     ),
     "resources": (
         "grid_members",
         "communities",
         "police_addresses",
+        "registry",
+        "watch_people",
         "users",
         "permission_groups",
     ),
     "system": (
         "settings",
+        "workflow_config",
         "operations",
     ),
 }
 
 SUPER_ADMIN_ITEMS = {"users", "permission_groups", "operations"}
-ADMIN_ITEMS = {"data_upload", "work_log", "police_addresses", "flow_tasks"}
+ADMIN_ITEMS = {"data_upload", "work_log", "police_addresses"}
 
 ITEM_PERMISSIONS: dict[str, str] = {
     "online_summary": "online.summary.view",
     "online_query": "online.raw.view",
     "flow_tasks": "online.raw.view",
+    "police_tasks": "police.dispatch.manage",
+    "workflow_tickets": "workflow.ticket.view",
     "visit_summary": "visit.summary.view",
     "data_upload": "visit.import",
     "work_log": "worklog.manage",
     "grid_members": "personnel.basic.view",
     "communities": "community.view",
     "police_addresses": "police.address.manage",
+    "registry": "registry.property.view",
+    "watch_people": "registry.watch.view",
     "users": "user.manage",
     "permission_groups": "permission.manage",
+    "workflow_config": "workflow.config.manage",
     "operations": "ops.manage",
 }
+
 ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "data_upload": ("visit.import", "police.dispatch.manage"),
 }
@@ -62,18 +78,28 @@ def normalize_mobile_navigation_mode(value: Any) -> str:
     )
 
 
+def _admin_code_access(
+    role: str,
+    permission_group_codes: Iterable[str] | None,
+) -> bool:
+    return role in {"admin", "super_admin"} or bool(
+        {str(code).strip() for code in permission_group_codes or []}
+        & {"admin", "super_admin"}
+    )
+
+
 def _item_is_accessible(
     item_id: str,
     role: str,
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
+    position: str | None = None,
 ) -> bool:
-    if item_id == "flow_tasks":
-        admin_codes = {"admin", "super_admin"}
-        group_codes = {
-            str(code).strip() for code in permission_group_codes or []
-        }
-        if role not in admin_codes and not (group_codes & admin_codes):
+    admin_access = _admin_code_access(role, permission_group_codes)
+    if item_id == "flow_tasks" and position not in {"组长", "组员"} and not admin_access:
+        return False
+    if item_id == "police_tasks":
+        if position not in {"基础管控", "中队长"} and not (not position and admin_access):
             return False
     if permissions is not None:
         alternatives = ITEM_PERMISSION_ALTERNATIVES.get(item_id)
@@ -92,23 +118,25 @@ def default_mobile_dock_config(
     role: str,
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    """返回当前角色默认可见的全部分类和页面。"""
-    return {
-        "groups": [
-            {
-                "id": group_id,
-                "items": [
-                    item_id
-                    for item_id in item_ids
-                    if _item_is_accessible(
-                        item_id, role, permissions, permission_group_codes
-                    )
-                ],
-            }
-            for group_id, item_ids in GROUP_ITEMS.items()
-        ],
-    }
+    position: str | None = None,
+) -> dict[str, Any]:
+    """返回新版本默认 Dock；所有岗位按同一分类顺序取前四组。"""
+    groups = []
+    for group_id, item_ids in GROUP_ITEMS.items():
+        items = [
+            item_id
+            for item_id in item_ids
+            if _item_is_accessible(
+                item_id,
+                role,
+                permissions,
+                permission_group_codes,
+                position,
+            )
+        ]
+        if items:
+            groups.append({"id": group_id, "items": items})
+    return {"version": DOCK_CONFIG_VERSION, "groups": groups[:MAX_DOCK_GROUPS]}
 
 
 def _load_config(value: Any) -> dict[str, Any] | None:
@@ -131,16 +159,18 @@ def normalize_mobile_dock_config(
     role: str,
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    """读取配置时过滤未知、重复和无权限入口。
-
-    角色变化可能让原配置暂时失效；如果已经没有任何可用分类，就恢复该角色默认值。
-    """
+    position: str | None = None,
+) -> dict[str, Any]:
+    """过滤配置；旧版本配置故意不迁移，直接返回 v2 默认值。"""
     parsed = _load_config(value)
-    raw_groups = parsed.get("groups") if parsed else None
+    if not parsed or parsed.get("version") != DOCK_CONFIG_VERSION:
+        return default_mobile_dock_config(
+            role, permissions, permission_group_codes, position
+        )
+    raw_groups = parsed.get("groups")
     if not isinstance(raw_groups, list):
         return default_mobile_dock_config(
-            role, permissions, permission_group_codes
+            role, permissions, permission_group_codes, position
         )
 
     groups: list[dict[str, Any]] = []
@@ -151,7 +181,6 @@ def normalize_mobile_dock_config(
         group_id = str(raw_group.get("id") or "")
         if group_id not in GROUP_ITEMS or group_id in seen_groups:
             continue
-
         raw_items = raw_group.get("items")
         if not isinstance(raw_items, list):
             continue
@@ -164,34 +193,46 @@ def normalize_mobile_dock_config(
                 item_id not in allowed
                 or item_id in seen_items
                 or not _item_is_accessible(
-                    item_id, role, permissions, permission_group_codes
+                    item_id,
+                    role,
+                    permissions,
+                    permission_group_codes,
+                    position,
                 )
             ):
                 continue
             seen_items.add(item_id)
             items.append(item_id)
-        if not items:
-            continue
-        seen_groups.add(group_id)
-        groups.append({"id": group_id, "items": items})
+        if items:
+            seen_groups.add(group_id)
+            groups.append({"id": group_id, "items": items})
 
+    accessible_defaults = default_mobile_dock_config(
+        role, permissions, permission_group_codes, position
+    )["groups"]
     if not groups:
-        groups = default_mobile_dock_config(
-            role, permissions, permission_group_codes
-        )["groups"]
-    workspace = next(
-        (group for group in groups if group["id"] == "workspace"), None
-    )
+        return {
+            "version": DOCK_CONFIG_VERSION,
+            "groups": accessible_defaults,
+        }
+    workspace = next((group for group in groups if group["id"] == "workspace"), None)
     if workspace is None:
-        workspace = {"id": "workspace", "items": ["dashboard"]}
-        groups.insert(0, workspace)
+        groups.insert(0, {"id": "workspace", "items": ["dashboard"]})
     else:
         workspace["items"] = [
             "dashboard",
             *[item for item in workspace["items"] if item != "dashboard"],
         ]
         groups = [workspace, *[group for group in groups if group is not workspace]]
-    return {"groups": groups[:MAX_DOCK_GROUPS]}
+    present = {group["id"] for group in groups}
+    for candidate in accessible_defaults:
+        if len(groups) >= MAX_DOCK_GROUPS:
+            break
+        if candidate["id"] in present:
+            continue
+        groups.append(candidate)
+        present.add(candidate["id"])
+    return {"version": DOCK_CONFIG_VERSION, "groups": groups[:MAX_DOCK_GROUPS]}
 
 
 def validate_mobile_dock_config(
@@ -199,10 +240,13 @@ def validate_mobile_dock_config(
     role: str,
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
-) -> dict[str, list[dict[str, Any]]]:
+    position: str | None = None,
+) -> dict[str, Any]:
     """保存配置前做严格校验，避免静默接受错误或越权入口。"""
     parsed = _load_config(value)
-    raw_groups = parsed.get("groups") if parsed else None
+    if not parsed or parsed.get("version") != DOCK_CONFIG_VERSION:
+        raise ValueError("Dock 配置版本过旧，请刷新后重试")
+    raw_groups = parsed.get("groups")
     if not isinstance(raw_groups, list):
         raise ValueError("Dock 配置格式不正确")
     if not 1 <= len(raw_groups) <= MAX_DOCK_GROUPS:
@@ -218,7 +262,6 @@ def validate_mobile_dock_config(
             raise ValueError(f"未知的 Dock 分类：{group_id or '空值'}")
         if group_id in seen_groups:
             raise ValueError("Dock 分类不能重复")
-
         raw_items = raw_group.get("items")
         if not isinstance(raw_items, list) or not raw_items:
             raise ValueError("每个 Dock 分类至少保留一个页面")
@@ -232,18 +275,19 @@ def validate_mobile_dock_config(
             if item_id in seen_items:
                 raise ValueError("同一分类中的页面不能重复")
             if not _item_is_accessible(
-                item_id, role, permissions, permission_group_codes
+                item_id,
+                role,
+                permissions,
+                permission_group_codes,
+                position,
             ):
                 raise ValueError("Dock 配置包含当前账号无权访问的页面")
             seen_items.add(item_id)
             items.append(item_id)
-
         seen_groups.add(group_id)
         groups.append({"id": group_id, "items": items})
 
-    workspace = next(
-        (group for group in groups if group["id"] == "workspace"), None
-    )
+    workspace = next((group for group in groups if group["id"] == "workspace"), None)
     if workspace is None:
         groups.insert(0, {"id": "workspace", "items": ["dashboard"]})
     else:
@@ -252,7 +296,17 @@ def validate_mobile_dock_config(
             *[item for item in workspace["items"] if item != "dashboard"],
         ]
         groups = [workspace, *[group for group in groups if group is not workspace]]
-    return {"groups": groups[:MAX_DOCK_GROUPS]}
+    present = {group["id"] for group in groups}
+    for candidate in default_mobile_dock_config(
+        role, permissions, permission_group_codes, position
+    )["groups"]:
+        if len(groups) >= MAX_DOCK_GROUPS:
+            break
+        if candidate["id"] in present:
+            continue
+        groups.append(candidate)
+        present.add(candidate["id"])
+    return {"version": DOCK_CONFIG_VERSION, "groups": groups[:MAX_DOCK_GROUPS]}
 
 
 def serialize_mobile_dock_config(value: dict[str, Any]) -> str:

@@ -16,7 +16,7 @@ on:
       backup_scope:
         description: Database backup required before switching the application
         required: true
-        default: online
+        default: all
         type: choice
         options:
           - none

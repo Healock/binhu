@@ -48,7 +48,8 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertIn("flow_tasks", admin_items)
         self.assertNotIn("users", admin_items)
         self.assertIn("users", super_items)
-        self.assertIn("operations", super_items)
+        # 设置是第五组，默认 Dock 最多四组；用户可在个性化设置中替换进入。
+        self.assertNotIn("operations", super_items)
         self.assertIn("data_upload", super_items)
         self.assertIn("work_log", super_items)
         self.assertIn("flow_tasks", super_items)
@@ -75,6 +76,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
     def test_normalize_filters_unknown_duplicate_and_forbidden_items(self):
         result = normalize_mobile_dock_config(
             {
+                "version": 2,
                 "groups": [
                     {
                         "id": "resources",
@@ -100,11 +102,20 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertEqual(
             result,
             {
+                "version": 2,
                 "groups": [
                     {"id": "workspace", "items": ["dashboard"]},
                     {
                         "id": "resources",
                         "items": ["grid_members"],
+                    },
+                    {
+                        "id": "tasks",
+                        "items": ["workflow_tickets"],
+                    },
+                    {
+                        "id": "summaries",
+                        "items": ["online_summary", "visit_summary"],
                     },
                 ],
             },
@@ -146,6 +157,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "无权访问"):
             validate_mobile_dock_config(
                 {
+                    "version": 2,
                     "groups": [
                         {"id": "resources", "items": ["users"]},
                     ],
@@ -171,8 +183,9 @@ class MobileNavigationConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "分类不能重复"):
             validate_mobile_dock_config(
                 {
+                    "version": 2,
                     "groups": [
-                        {"id": "workspace", "items": ["online_summary"]},
+                        {"id": "workspace", "items": ["dashboard"]},
                         {"id": "workspace", "items": ["online_query"]},
                     ],
                 },
@@ -182,6 +195,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "无权访问"):
             validate_mobile_dock_config(
                 {
+                    "version": 2,
                     "groups": [
                         {"id": "system", "items": ["operations"]},
                     ],
@@ -193,6 +207,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "1 至 4"):
             validate_mobile_dock_config(
                 {
+                    "version": 2,
                     "groups": [
                         {"id": "workspace", "items": ["online_summary"]},
                     ]
@@ -204,6 +219,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "至少保留一个页面"):
             validate_mobile_dock_config(
                 {
+                    "version": 2,
                     "groups": [
                         {"id": "workspace", "items": []},
                     ],
@@ -225,9 +241,10 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
         pool.acquire = AsyncMock(return_value=connection)
         pool.release = MagicMock()
         dock_config = {
+            "version": 2,
             "groups": [
                 {
-                    "id": "workspace",
+                    "id": "summaries",
                     "items": ["visit_summary", "online_summary"],
                 },
             ],
@@ -257,9 +274,24 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mobile_dock_config=%s", sql)
         self.assertEqual(params[0], "sidebar")
         expected_dock_config = {
+            "version": 2,
             "groups": [{
                 "id": "workspace",
-                "items": ["dashboard", "visit_summary", "online_summary"],
+                "items": ["dashboard"],
+            }, {
+                "id": "summaries",
+                "items": ["visit_summary", "online_summary"],
+            }, {
+                "id": "tasks",
+                "items": ["workflow_tickets"],
+            }, {
+                "id": "resources",
+                "items": [
+                    "grid_members",
+                    "communities",
+                    "registry",
+                    "watch_people",
+                ],
             }],
         }
         self.assertEqual(json.loads(params[1]), expected_dock_config)

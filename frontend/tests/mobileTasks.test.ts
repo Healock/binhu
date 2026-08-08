@@ -54,14 +54,15 @@ test('统一仪表盘使用新固定入口，旧在线汇总 ID 保持兼容', (
   const dashboard = navigationItemById('dashboard')!
   const summary = navigationItemById('online_summary')!
   const query = navigationItemById('online_query')!
+  const flowTasks = navigationItemById('flow_tasks')!
   assert.equal(mobileNavigationItemLabel(dashboard, '组员', true), '首页')
   assert.equal(summary.path, '/summary')
   assert.equal(mobileNavigationItemLabel(summary, '组员', true), '在线汇总')
-  assert.equal(mobileNavigationItemLabel(query, '组长'), '指令核查')
-  assert.equal(mobileNavigationItemLabel(query, '基础管控'), '下发任务')
+  assert.equal(mobileNavigationItemLabel(query, '组长'), '在线数据查询')
+  assert.equal(mobileNavigationItemLabel(flowTasks, '组长'), '流口指令核查')
   assert.equal(routeIsActive('/tasks/全链条/row', query), false)
-  assert.equal(routeIsActive('/tasks/全链条/row', query, true), true)
-  assert.equal(routeIsActive('/police-tasks', query, true), true)
+  assert.equal(routeIsActive('/tasks/全链条/row', flowTasks), true)
+  assert.equal(routeIsActive('/police-tasks', query), false)
 })
 
 test('管理员手机导航使用独立流口任务入口', () => {
@@ -71,7 +72,7 @@ test('管理员手机导航使用独立流口任务入口', () => {
   assert.equal(flowTasks.path, '/tasks/home')
   assert.equal(flowTasks.shortLabel, '流口核查')
   assert.equal(routeIsActive('/tasks/全链条/row', flowTasks), true)
-  assert.equal(routeIsActive('/tasks/全链条/row', query, false), false)
+  assert.equal(routeIsActive('/tasks/全链条/row', query), false)
 })
 
 test('批量保存只提交实际变化且不自动补造字段', () => {

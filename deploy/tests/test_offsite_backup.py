@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deploy.binhu_offsite_backup import (
+    DATABASE_MARKERS,
     BackupError,
     ingest_backups,
     push_latest_backup,
@@ -20,15 +21,7 @@ from deploy.binhu_offsite_backup import (
 
 
 def backup_payload(extra: bytes = b"") -> bytes:
-    raw = b"\n".join(
-        (
-            b"-- MySQL dump",
-            b"USE `OnlineData`;",
-            b"USE `OnlineDataArchive`;",
-            b"USE `daily_report`;",
-            extra,
-        )
-    )
+    raw = b"\n".join((b"-- MySQL dump", *DATABASE_MARKERS, extra))
     output = io.BytesIO()
     with gzip.GzipFile(fileobj=output, mode="wb") as archive:
         archive.write(raw)

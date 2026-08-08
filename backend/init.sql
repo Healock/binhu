@@ -1,13 +1,23 @@
 SET NAMES utf8mb4;
--- 滨湖智慧平台 - 三库初始化脚本
+-- 滨湖智慧平台 - 八库初始化脚本
 -- MySQL 容器首次启动时自动执行（root 身份）
--- OnlineData 由 docker-compose MYSQL_DATABASE 自动创建，这里建另外两个库
+-- OnlineData 由 docker-compose MYSQL_DATABASE 自动创建，其余业务域库在这里创建。
 
 CREATE DATABASE IF NOT EXISTS OnlineDataArchive CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE DATABASE IF NOT EXISTS daily_report CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS PlatformData CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS VisitData CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS DispatchData CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS RegistryData CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS WorkflowData CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 GRANT ALL PRIVILEGES ON OnlineDataArchive.* TO 'binhu'@'%';
 GRANT ALL PRIVILEGES ON daily_report.* TO 'binhu'@'%';
+GRANT ALL PRIVILEGES ON PlatformData.* TO 'binhu'@'%';
+GRANT ALL PRIVILEGES ON VisitData.* TO 'binhu'@'%';
+GRANT ALL PRIVILEGES ON DispatchData.* TO 'binhu'@'%';
+GRANT ALL PRIVILEGES ON RegistryData.* TO 'binhu'@'%';
+GRANT ALL PRIVILEGES ON WorkflowData.* TO 'binhu'@'%';
 FLUSH PRIVILEGES;
 
 -- ============================================================

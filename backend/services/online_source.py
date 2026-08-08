@@ -8,7 +8,12 @@ from collections import defaultdict
 from typing import Any
 
 from services.parsers import get_parser
-from services.task_workflow import task_state
+from services.task_workflow import TASK_WORKFLOWS, task_state
+from services.watch_matching import (
+    parse_dispatch_time,
+    projection_identity,
+    sync_current_task_snapshots,
+)
 
 
 def json_value(value: Any, fallback):
@@ -58,6 +63,13 @@ async def release_sheet_lock(cur, spreadsheet_id: int) -> None:
 
 async def rebuild_projection(cur, parser_type: str) -> None:
     parser = get_parser(parser_type)
+    await cur.execute(
+        "SELECT row_key, first_dispatch_at FROM _online_source_projection WHERE parser_type=%s",
+        (parser_type,),
+    )
+    previous_first_dispatch = {
+        str(row[0]): row[1] for row in await cur.fetchall() if row[1]
+    }
     await cur.execute(
         "SELECT row_key, values_json FROM _online_source_rows "
         "WHERE parser_type=%s ORDER BY spreadsheet_id, physical_row",
@@ -112,6 +124,21 @@ async def rebuild_projection(cur, parser_type: str) -> None:
             stable_json(parent),
             parser.community_value(parent),
             str(parent.get("核查人", "") or "").strip(),
+            projection_identity(parser_type, parent, parser.COLUMNS),
+            parse_dispatch_time(
+                parent,
+                list(dict.fromkeys([
+                    *(
+                        list(getattr(TASK_WORKFLOWS.get(parser_type), "date_fields", []))
+                        if parser_type in TASK_WORKFLOWS else []
+                    ),
+                    "下发日期",
+                    "下发时间",
+                    "创建时间",
+                    "日期",
+                ])),
+                previous_first_dispatch.get(row_key),
+            ),
             task_state(parser_type, parent),
             len(source_rows),
             int(conflict),
@@ -127,12 +154,14 @@ async def rebuild_projection(cur, parser_type: str) -> None:
         await cur.executemany(
             """
             INSERT INTO _online_source_projection (
-                parser_type, row_key, values_json, community, inspector, task_state,
+                parser_type, row_key, values_json, community, inspector,
+                identity_hmac, first_dispatch_at, task_state,
                 source_count, conflict, search_text, pending_state
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             projection_rows,
         )
+    await sync_current_task_snapshots(cur, parser_type)
 
 
 async def replace_source_cache(

@@ -32,11 +32,16 @@ from routers.police_dispatch import router as police_dispatch_router
 from routers.profiles import router as profiles_router
 from routers.dashboard import router as dashboard_router
 from routers.exports import router as exports_router
+from routers.registry import router as registry_router
+from routers.registry_extended import router as registry_extended_router
+from routers.workflow import router as workflow_router
+from routers.workflow_extended import router as workflow_extended_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
 from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 from services.visit_import import recover_interrupted_visit_imports
+from services.workflow_scheduler import run_workflow_scheduler
 
 
 @asynccontextmanager
@@ -60,15 +65,19 @@ async def lifespan(app: FastAPI):
         )
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
+    workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
     try:
         yield
     finally:
         scheduler_task.cancel()
         backup_scheduler_task.cancel()
+        workflow_scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
+        with suppress(asyncio.CancelledError):
+            await workflow_scheduler_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await close_db()
@@ -126,6 +135,10 @@ app.include_router(permission_groups_router, dependencies=auth_dep)
 app.include_router(profiles_router, dependencies=auth_dep)
 app.include_router(dashboard_router, dependencies=auth_dep)
 app.include_router(exports_router, dependencies=auth_dep)
+app.include_router(registry_router, dependencies=auth_dep)
+app.include_router(registry_extended_router, dependencies=auth_dep)
+app.include_router(workflow_router, dependencies=auth_dep)
+app.include_router(workflow_extended_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

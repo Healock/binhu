@@ -270,6 +270,19 @@ export default function MobileTaskDetail() {
           {(selectedSource?.needs_review || data.task.conflict) && <Tag color="warning">需复核</Tag>}
         </div>
 
+        {data.task.watch_marks?.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {data.task.watch_marks.map(mark => (
+              <Tag key={mark.category_id} color={mark.color}>
+                {mark.name}{mark.source_type ? ` · ${mark.source_type}` : ''}
+              </Tag>
+            ))}
+          </div>
+        )}
+        {data.task.first_dispatch_at && (
+          <p className="mt-2 text-xs text-[var(--app-text-muted)]">首次下发：{data.task.first_dispatch_at}</p>
+        )}
+
         <dl className="mobile-task-detail-facts">
           {detailFacts.map(fact => (
             <div

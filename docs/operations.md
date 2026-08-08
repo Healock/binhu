@@ -2,16 +2,16 @@
 
 开始较大的功能、修复或数据库改动前，先看 [高效开发与验证流程](development-workflow.md)，提前确定检查范围，避免上线时临时追加和重复验证。
 
-## 当前运行基线（2026-08-07）
+## 当前运行基线（2026-08-08）
 
-- 当前发布版本为 `0.15.8`，正式代码来自 `main`；实际生产版本仍应以健康接口为准。
+- 当前开发发布版本为 `0.16.0`，正式代码来自 `main`；实际生产版本仍应以健康接口为准。0.16.0 的数据库分域和迁移必须在维护窗口内单独执行，不能把本地构建结果直接当作生产迁移完成。
 - 正式发布统一使用 GitHub Actions 的 `Deploy production` 工作流；开发电脑不再逐文件上传程序。
 - 生产服务由 `binhu-backend`、`binhu-mysql` 和 `binhu-ops-agent` 三个容器组成。后端只监听服务器本机，公网统一经过 nginx HTTPS。
 - 所有登录用户访问 `/` 先进入仪表盘；在线数据汇总使用 `/summary`；电脑端 `/query` 为 Univer 在线工作表，手机端按岗位转入相应任务工作台。
-- 数据库仍分为 `OnlineData`、`OnlineDataArchive` 和 `daily_report`，生产数据只在服务器 MySQL 数据卷中。本地开发电脑没有项目 MySQL 或 Docker 运行环境。
+- 数据库使用同一个 MySQL 实例，目标域划分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。现网旧表仍在前三个库中；其余域按维护窗口逐步迁移，未完成核对前不得打开对应切换开关。本地开发电脑没有项目 MySQL 或 Docker 运行环境。
 - 2026-08-06 完成一次容量整理：磁盘使用率从 96% 降至 83%，保留当前版和上一版后端镜像，数据库卷、每日备份、发布源码留档及自动发布记录均未删除。
 - GitHub 旧的已合并功能分支已经清理，目前远端只保留 `main`。`main` 尚未启用 GitHub 分支保护，因此仍必须人为坚持“功能分支 → PR → CI → 合并”的流程。
-- 生产业务和三个数据库已经运行在物理服务器；旧云的三个平台容器保持停止，只保留主机 Nginx、WireGuard 和异地备份接收能力。旧可信地址通过 WireGuard 透明代理到同一套新平台，不形成双写。
+- 生产业务已经运行在物理服务器；旧云的平台容器保持停止，只保留主机 Nginx、WireGuard 和异地备份接收能力。旧可信地址通过 WireGuard 透明代理到同一套新平台，不形成双写。
 
 版本号、容量和容器状态会变化。执行生产操作前仍要以健康接口、GitHub 工作流和服务器只读检查为准，不能只照抄本节数值。
 
@@ -892,7 +892,7 @@ deploy/install-nginx-migration-profiles.sh old <旧云活动站点文件> <旧�
 WireGuard 访问该入口，不能经 FRP 绕回，也不能启动第二套可写后端。切换器只接受固定 profile 名称，每次先
 执行 `nginx -t`，加载失败时自动恢复上一文件。
 
-正式切换前使用 `new-maintenance`；旧云在最终备份期间使用 `old-maintenance`。最终三库恢复和只读核对完成后，
+正式切换前使用 `new-maintenance`；旧云在最终备份期间使用 `old-maintenance`。最终八库恢复和只读核对完成后，
 先启用 `new-production`，再启用 `old-proxy`。旧可信入口采用透明代理而不是重定向，以尽量保留原站点会话。
 
 ### 每日异地备份
@@ -906,7 +906,7 @@ WireGuard 上传到旧云。安装顺序固定为：
 3. 从旧云已经信任的 SSH 主机公钥生成 `[10.77.0.1]:51234` `known_hosts` 条目，不能只信任临时网络扫描；
    异地备份复用旧云现有 SSH 端口，不额外开放公网 22 端口。
 4. 在物理服务器执行 `deploy/install-offsite-backup.sh sender-activate <已验证known_hosts文件>`。
-5. 手工启动一次 push 和 ingest 服务，核对文件名、大小、gzip、三库标识和 SHA-256 后再等待定时任务。
+5. 手工启动一次 push 和 ingest 服务，核对文件名、大小、gzip、八库标识和 SHA-256 后再等待定时任务。
 
 接收账号使用 `restrict`、来源地址、强制命令和专用拒绝式 Shell，只能上传一个符合命名和 256MB 上限的
 备份流。旧云 root 校验后把文件改为 root 所有并移出可写收件箱，归档目录保存 7 天且始终保留最近一次成功
@@ -915,7 +915,7 @@ WireGuard 上传到旧云。安装顺序固定为：
 ### 正式切换和自动发布
 
 维护窗口开始后，旧入口先进入维护状态，再等待同步和备份结束，关闭同步、每日备份和在线回写并停止旧后端。
-最终三库备份必须同时留在旧云、物理服务器独立备份盘和服务器外部。物理服务器覆盖演练库前还要再次备份
+最终八库备份必须同时留在旧云、物理服务器独立备份盘和服务器外部。物理服务器覆盖演练库前还要再次备份
 演练状态；恢复后保持三个开关关闭，逐表核对结构和数量，再开放入口。
 
 项目管理人开始登录验收后，才恢复每 5 分钟同步、02:00 每日备份和在线回写。项目管理人使用现有任务验证
@@ -930,4 +930,29 @@ GitHub 自动发布在正式切换同日迁移。新服务器复用现有专用�
 也使用该入口并保持严格 TLS 校验。旧可信入口继续作为经 WireGuard 转发的备用入口；任何发布或诊断脚本
 都不得加入跳过证书校验的选项。
 
-_最后核对：2026-08-07_
+## 八库分域和新业务数据库
+
+新业务数据库连接已加入配置和 Compose：`PlatformData`、`VisitData`、`DispatchData`、`RegistryData`、`WorkflowData`，连同现有 `OnlineData`、`OnlineDataArchive`、`daily_report` 构成八库目标布局。当前迁移采用分阶段方式；新库缺失时后端会跳过可选连接，避免旧表平台因准备工作未完成而无法启动。
+
+`RegistryData` 和 `WorkflowData` 的表由后端启动兼容初始化。首次在服务器创建数据库时，必须先执行 `backend/init.sql` 中的数据库创建和授权部分，再启动后端；不要在生产库直接运行测试导入或手工修改新业务表。
+
+正式迁移前按 [八库业务域与新档案规划](database-domain-plan.md) 执行只读测量、逐表复制、数量和关键摘要比对、备份恢复演练及回退验证。当前版本只验证代码编译和自动化测试，真实 MySQL、跨库迁移、备份恢复和生产数据均未验证。
+
+_最后核对：2026-08-08_
+
+## v0.16.0 八库迁移操作顺序
+
+本版本的代码发布和数据库迁移是两件事。先通过 GitHub `Deploy production` 发布兼容代码，`backup_scope=all` 才表示八库完整备份；确认备份清单、SHA-256、磁盘空间和同步/备份空闲后，才进入维护窗口。
+
+迁移窗口只允许按以下顺序执行：`measure` 只读测量 → `visit` → `dispatch` → `platform` → `work_logs` → `registry_addresses` → 身份证 HMAC/标记快照回填 → 最后启用 Registry/Workflow 功能。每个域都要先 dry-run、备份目标库、按批复制、比较行数和主键范围，再打开对应 `*_DOMAIN_ACTIVE` 开关。`--apply` 之前必须停止相关写入；复制完成后保留旧表，不得长期双写。
+
+示例（在后端容器或具备生产依赖的维护环境执行，不在本机执行）：
+
+```text
+python -m migrations.domain_migration measure --schema OnlineData
+python -m migrations.domain_migration migrate --domain visit
+python -m migrations.domain_migration migrate --domain visit --apply
+python -m migrations.domain_migration verify --domain visit
+```
+
+Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。新库产生业务写入后不能自动切回旧表；异常时先冻结入口、备份新库，再制定反向复制方案。附件目录由 `BINHU_WORKFLOW_ATTACHMENT_DIR` 指定，数据库备份 manifest 同时记录八库段摘要和附件归档摘要。

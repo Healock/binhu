@@ -1,0 +1,555 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Alert,
+  Button,
+  Descriptions,
+  Divider,
+  Drawer,
+  Empty,
+  Form,
+  Input,
+  List,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Timeline,
+  Upload,
+  message,
+} from 'antd'
+import type { TableColumnsType } from 'antd'
+import {
+  DeleteOutlined,
+  DownloadOutlined,
+  InboxOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
+import { PageHeader, Panel } from '../components/ui'
+import {
+  workflowApi,
+  type WorkOrderDetail,
+  type WorkOrderSummary,
+  type WorkflowType,
+} from '../api/client'
+import { useAuth } from '../context/AuthContext'
+
+const STATUS_LABELS: Record<string, string> = {
+  draft: '草稿', queued: '待领取', in_progress: '处理中', pending_requester: '待补充',
+  approved: '已通过', completed: '已完成', rejected: '已驳回', cancelled: '已取消', withdrawn: '已撤回',
+  pending: '待开始', returned: '已退回',
+}
+
+const EVENT_LABELS: Record<string, string> = {
+  submit: '提交工单', claim: '领取工单', approve: '通过', reject: '驳回', return: '退回补充',
+  complete: '完成', cancel: '取消', withdraw: '撤回', transfer: '转派', supplement: '补充材料',
+  comment: '添加评论', attachment_upload: '上传附件', attachment_delete: '删除附件',
+}
+
+const TERMINAL = new Set(['approved', 'completed', 'rejected', 'cancelled', 'withdrawn'])
+
+function apiError(reason: any, fallback: string) {
+  return reason?.response?.data?.detail || reason?.message || fallback
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+export default function WorkflowTickets() {
+  const { user } = useAuth()
+  const permissions = new Set(user?.permissions || [])
+  const canCreate = permissions.has('workflow.ticket.create')
+  const canHandle = permissions.has('workflow.ticket.handle') || permissions.has('workflow.ticket.manage')
+  const canManage = permissions.has('workflow.ticket.manage')
+  const canAttach = permissions.has('workflow.attachment.view')
+  const position = user?.member?.position || ''
+  const canViewAll = canManage || ['基础管控', '中队长', '所队领导'].includes(position)
+
+  const [view, setView] = useState('created')
+  const [rows, setRows] = useState<WorkOrderSummary[]>([])
+  const [types, setTypes] = useState<WorkflowType[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [keyword, setKeyword] = useState('')
+  const [typeCode, setTypeCode] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [detail, setDetail] = useState<WorkOrderDetail | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [action, setAction] = useState('')
+  const [actionOpen, setActionOpen] = useState(false)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [createForm] = Form.useForm()
+  const [actionForm] = Form.useForm()
+  const selectedCreateTypeCode = Form.useWatch('type_code', createForm)
+  const selectedCreateType = types.find(item => item.code === selectedCreateTypeCode)
+
+  const typeName = useMemo(
+    () => Object.fromEntries(types.map(item => [item.code, item.name])),
+    [types],
+  )
+
+  const load = async (nextPage = page, nextPageSize = pageSize) => {
+    setLoading(true)
+    setError('')
+    try {
+      const [result, typeResult] = await Promise.all([
+        workflowApi.search({ view, keyword, type_code: typeCode, page: nextPage, page_size: nextPageSize }),
+        types.length ? Promise.resolve({ data: types }) : workflowApi.types(),
+      ])
+      setRows(result.data)
+      setTotal(result.total)
+      setPage(nextPage)
+      setPageSize(nextPageSize)
+      setTypes(typeResult.data)
+    } catch (reason) {
+      setError(apiError(reason, '工单读取失败'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void load(1) }, [view])
+
+  const refreshDetail = async (ticketId = detail?.id) => {
+    if (!ticketId) return
+    setDetail(await workflowApi.ticket(ticketId))
+  }
+
+  const openCreate = () => {
+    createForm.resetFields()
+    createForm.setFieldsValue({
+      type_code: types.find(item => item.enabled)?.code || 'photo_request',
+      priority: 'normal',
+    })
+    setCreateOpen(true)
+  }
+
+  const create = async () => {
+    try {
+      const values = await createForm.validateFields()
+      const selectedType = types.find(item => item.code === values.type_code)
+      const formData = values.type_code === 'leave_request'
+        ? {
+            leave_type: values.leave_type || 'temporary_leave',
+            start_date: values.start_date,
+            end_date: values.end_date,
+            reason: values.reason || '',
+            affects_weekend_duty: Boolean(values.affects_weekend_duty),
+          }
+        : values.type_code === 'photo_request'
+        ? {
+            subject_type: values.subject_type || 'task',
+            subject_id: values.subject_id || '',
+            request_reason: values.reason || '',
+            requested_from: values.requested_from || null,
+            requested_to: values.requested_to || null,
+          }
+        : values.custom_fields || {}
+      await workflowApi.createTicket({
+        type_code: values.type_code,
+        title: values.title,
+        description: values.description || '',
+        priority: values.priority,
+        form_data: formData,
+        links: [],
+      })
+      message.success('工单已提交')
+      setCreateOpen(false)
+      await load(1)
+    } catch (reason: any) {
+      if (!reason?.errorFields) message.error(apiError(reason, '工单提交失败'))
+    }
+  }
+
+  const openDetail = async (row: WorkOrderSummary) => {
+    try {
+      setDetail(await workflowApi.ticket(row.id))
+      setDetailOpen(true)
+    } catch (reason) {
+      message.error(apiError(reason, '工单详情读取失败'))
+    }
+  }
+
+  const claim = async (row: WorkOrderSummary) => {
+    try {
+      await workflowApi.claim(row.id, row.version_no)
+      message.success('工单已领取')
+      await load()
+      if (detail?.id === row.id) await refreshDetail(row.id)
+    } catch (reason) {
+      message.error(apiError(reason, '领取失败'))
+    }
+  }
+
+  const openAction = (nextAction: string) => {
+    actionForm.resetFields()
+    actionForm.setFieldsValue({
+      result_status: detail?.type_code === 'photo_request' ? 'found' : undefined,
+      target_queue: detail?.current_queue || '基础管控',
+    })
+    setAction(nextAction)
+    setActionOpen(true)
+  }
+
+  const submitAction = async () => {
+    if (!detail) return
+    try {
+      const values = await actionForm.validateFields()
+      setActionLoading(true)
+      if (action === 'transfer') {
+        await workflowApi.transfer(detail.id, {
+          expected_version: detail.version_no,
+          target_queue: values.target_queue,
+          target_user_id: null,
+          reason: values.note,
+        })
+      } else if (action === 'supplement') {
+        await workflowApi.supplement(detail.id, {
+          expected_version: detail.version_no,
+          note: values.note || '',
+          form_data: { supplement_note: values.note || '' },
+        })
+      } else if (action === 'withdraw') {
+        await workflowApi.withdraw(detail.id, {
+          expected_version: detail.version_no,
+          reason: values.note || '',
+        })
+      } else if (action === 'comment') {
+        await workflowApi.comments(detail.id, values.note, detail.version_no)
+      } else {
+        await workflowApi.decide(detail.id, {
+          action,
+          note: values.note || '',
+          result_status: values.result_status || '',
+          expected_version: detail.version_no,
+        })
+      }
+      message.success(action === 'comment' ? '评论已添加' : '工单状态已更新')
+      setActionOpen(false)
+      await refreshDetail(detail.id)
+      await load()
+    } catch (reason: any) {
+      if (!reason?.errorFields) message.error(apiError(reason, '操作失败'))
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const upload = async (file: File) => {
+    if (!detail) return false
+    try {
+      await workflowApi.uploadAttachment(detail.id, file, detail.version_no)
+      message.success('附件已上传')
+      await refreshDetail(detail.id)
+    } catch (reason) {
+      message.error(apiError(reason, '附件上传失败'))
+    }
+    return false
+  }
+
+  const deleteAttachment = async (fileId: string) => {
+    if (!detail) return
+    try {
+      await workflowApi.deleteAttachment(detail.id, fileId, detail.version_no)
+      message.success('附件已删除，操作记录仍会保留')
+      await refreshDetail(detail.id)
+    } catch (reason) {
+      message.error(apiError(reason, '附件删除失败'))
+    }
+  }
+
+  const columns: TableColumnsType<WorkOrderSummary> = [
+    { title: '工单编号', dataIndex: 'ticket_no', width: 190 },
+    { title: '类型', dataIndex: 'type_code', width: 130, render: value => typeName[value] || value },
+    { title: '标题', dataIndex: 'title', ellipsis: true },
+    {
+      title: '状态', dataIndex: 'status', width: 110,
+      render: value => <Tag color={['completed', 'approved'].includes(value) ? 'green' : value === 'rejected' ? 'red' : 'blue'}>{STATUS_LABELS[value] || value}</Tag>,
+    },
+    { title: '队列', dataIndex: 'current_queue', width: 120, render: value => value || '—' },
+    {
+      title: '截止时间', dataIndex: 'due_at', width: 180,
+      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value || '未设置'}</span>,
+    },
+    {
+      title: '操作', width: 150,
+      render: (_, row) => (
+        <Space>
+          <Button size="small" onClick={() => void openDetail(row)}>详情</Button>
+          {row.status === 'queued' && canHandle && <Button size="small" type="primary" onClick={() => void claim(row)}>领取</Button>}
+        </Space>
+      ),
+    },
+  ]
+
+  const requesterOwnsDetail = Boolean(detail && user?.id === detail.requester_user_id)
+  const canProcessDetail = Boolean(detail && canHandle && ['queued', 'in_progress'].includes(detail.status))
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title="工单中心"
+        description="请假、照片调取等流程统一在这里发起、领取和处理。版本冲突会要求刷新，不会静默覆盖他人的操作。"
+        actions={(
+          <Space>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+            {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工单</Button>}
+          </Space>
+        )}
+      />
+      {error && <Alert type="error" showIcon message={error} />}
+      <Panel>
+        <Tabs
+          activeKey={view}
+          onChange={value => { setView(value); setPage(1) }}
+          items={[
+            { key: 'created', label: '我的发起' },
+            { key: 'claimable', label: '待领取' },
+            { key: 'handling', label: '处理中' },
+            { key: 'supplement', label: '待补充' },
+            { key: 'processed', label: '已处理' },
+            ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
+          ]}
+        />
+        <div className="mb-4 flex flex-wrap gap-3">
+          <Select
+            allowClear
+            className="min-w-44"
+            placeholder="全部工单类型"
+            value={typeCode || undefined}
+            onChange={value => setTypeCode(value || '')}
+            options={types.map(item => ({ value: item.code, label: item.name }))}
+          />
+          <Input.Search
+            allowClear
+            className="max-w-sm"
+            placeholder="搜索工单编号或标题"
+            value={keyword}
+            onChange={event => setKeyword(event.target.value)}
+            onSearch={() => void load(1)}
+          />
+          <Button onClick={() => void load(1)}>查询</Button>
+        </div>
+        <Table
+          rowKey="id"
+          loading={loading}
+          columns={columns}
+          dataSource={rows}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            onChange: (next, size) => void load(next, size),
+          }}
+          scroll={{ x: 1100 }}
+        />
+      </Panel>
+
+      <Drawer
+        open={detailOpen}
+        width="min(96vw, 820px)"
+        title={detail?.ticket_no || '工单详情'}
+        onClose={() => setDetailOpen(false)}
+        extra={<Button icon={<ReloadOutlined />} onClick={() => void refreshDetail()}>刷新</Button>}
+      >
+        {detail && (
+          <div className="space-y-5">
+            <Descriptions
+              bordered
+              size="small"
+              column={1}
+              items={[
+                { key: 'title', label: '标题', children: detail.title },
+                { key: 'type', label: '类型', children: typeName[detail.type_code] || detail.type_code },
+                { key: 'status', label: '状态', children: STATUS_LABELS[detail.status] || detail.status },
+                { key: 'queue', label: '当前队列', children: detail.current_queue || '—' },
+                { key: 'due', label: '截止时间', children: detail.due_at || '未设置' },
+                { key: 'description', label: '说明', children: detail.description || '无' },
+              ]}
+            />
+
+            {detail.type_detail && (
+              <Descriptions
+                title={detail.type_code === 'leave_request' ? '请假信息' : '照片调取信息'}
+                bordered
+                size="small"
+                column={1}
+                items={Object.entries(detail.type_detail).map(([key, value]) => ({
+                  key,
+                  label: key,
+                  children: value === null || value === '' ? '—' : String(value),
+                }))}
+              />
+            )}
+
+            <Space wrap>
+              {detail.status === 'queued' && canHandle && <Button type="primary" onClick={() => void claim(detail)}>领取</Button>}
+              {canProcessDetail && <Button onClick={() => openAction('approve')}>通过</Button>}
+              {canProcessDetail && <Button onClick={() => openAction('complete')}>完成</Button>}
+              {canProcessDetail && <Button onClick={() => openAction('return')}>退回补充</Button>}
+              {canProcessDetail && <Button danger onClick={() => openAction('reject')}>驳回</Button>}
+              {canProcessDetail && <Button onClick={() => openAction('transfer')}>转派</Button>}
+              {requesterOwnsDetail && detail.status === 'pending_requester' && <Button type="primary" onClick={() => openAction('supplement')}>补充材料</Button>}
+              {requesterOwnsDetail && !TERMINAL.has(detail.status) && <Button danger onClick={() => openAction('withdraw')}>撤回</Button>}
+              <Button onClick={() => openAction('comment')}>添加评论</Button>
+            </Space>
+
+            <Divider orientation="left">流程节点</Divider>
+            <Timeline
+              items={(detail.steps || []).map(step => ({
+                color: ['approved', 'completed'].includes(step.status) ? 'green' : step.status === 'rejected' ? 'red' : step.status === 'in_progress' ? 'blue' : 'gray',
+                children: (
+                  <div>
+                    <div className="font-medium">{step.step_order}. {step.name}</div>
+                    <div className="text-sm text-[var(--app-text-secondary)]">
+                      {STATUS_LABELS[step.status] || step.status} · {step.queue || '未配置队列'}
+                      {step.decision_note ? ` · ${step.decision_note}` : ''}
+                    </div>
+                  </div>
+                ),
+              }))}
+            />
+
+            <Divider orientation="left">附件</Divider>
+            {canAttach && (
+              <Upload beforeUpload={upload} showUploadList={false} accept=".jpg,.jpeg,.png,.webp,.heic,.pdf">
+                <Button icon={<InboxOutlined />}>上传附件</Button>
+              </Upload>
+            )}
+            <List
+              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无附件" /> }}
+              dataSource={(detail.attachments || []).filter(item => !item.deleted_at)}
+              renderItem={item => (
+                <List.Item
+                  actions={[
+                    <a key="download" href={workflowApi.attachmentUrl(detail.id, item.file_id)}>
+                      <DownloadOutlined /> 下载
+                    </a>,
+                    <Popconfirm key="delete" title="删除这个附件？" onConfirm={() => void deleteAttachment(item.file_id)}>
+                      <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
+                    </Popconfirm>,
+                  ]}
+                >
+                  <List.Item.Meta title={item.original_name} description={`${formatBytes(item.size_bytes)} · ${item.mime_type}`} />
+                </List.Item>
+              )}
+            />
+
+            <Divider orientation="left">评论</Divider>
+            <List
+              locale={{ emptyText: '暂无评论' }}
+              dataSource={detail.comments || []}
+              renderItem={item => <List.Item><List.Item.Meta title={`账号 #${item.user_id}`} description={<><div>{item.content}</div><div>{item.created_at}</div></>} /></List.Item>}
+            />
+
+            <Divider orientation="left">事件记录</Divider>
+            <Table
+              size="small"
+              pagination={false}
+              dataSource={detail.events || []}
+              rowKey={(row: any, index) => `${row.event_type}-${row.created_at}-${index}`}
+              columns={[
+                { title: '事件', dataIndex: 'event_type', render: value => EVENT_LABELS[value] || value },
+                { title: '状态', render: (_: any, row: any) => `${STATUS_LABELS[row.from_status] || row.from_status || '—'} → ${STATUS_LABELS[row.to_status] || row.to_status || '—'}` },
+                { title: '时间', dataIndex: 'created_at', width: 190 },
+              ]}
+            />
+          </div>
+        )}
+      </Drawer>
+
+      <Modal
+        open={createOpen}
+        title="新建工单"
+        okText="提交"
+        cancelText="取消"
+        onOk={() => void create()}
+        onCancel={() => setCreateOpen(false)}
+      >
+        <Form form={createForm} layout="vertical">
+          <Form.Item name="type_code" label="工单类型" rules={[{ required: true }]}>
+            <Select options={types.filter(item => item.enabled).map(item => ({ value: item.code, label: item.name }))} />
+          </Form.Item>
+          <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input maxLength={200} /></Form.Item>
+          <Form.Item name="description" label="说明"><Input.TextArea rows={3} maxLength={5000} /></Form.Item>
+          <Form.Item name="priority" label="优先级">
+            <Select options={[{ value: 'normal', label: '普通' }, { value: 'high', label: '重要' }, { value: 'urgent', label: '紧急' }]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {({ getFieldValue }) => getFieldValue('type_code') === 'leave_request' ? (
+              <>
+                <Form.Item name="leave_type" label="请假类型" rules={[{ required: true }]}>
+                  <Select options={[{ value: 'temporary_leave', label: '事假' }, { value: 'sick_leave', label: '病假' }, { value: 'annual_leave', label: '年假' }]} />
+                </Form.Item>
+                <Form.Item name="start_date" label="开始日期" rules={[{ required: true }]}><Input placeholder="YYYY-MM-DD" /></Form.Item>
+                <Form.Item name="end_date" label="结束日期" rules={[{ required: true }]}><Input placeholder="YYYY-MM-DD" /></Form.Item>
+                <Form.Item name="reason" label="原因"><Input.TextArea maxLength={1000} /></Form.Item>
+              </>
+            ) : getFieldValue('type_code') === 'photo_request' ? (
+              <>
+                <Form.Item name="subject_type" label="对象类型"><Select options={[{ value: 'task', label: '指令任务' }, { value: 'person', label: '人员' }, { value: 'other', label: '其他' }]} /></Form.Item>
+                <Form.Item name="subject_id" label="对象编号"><Input maxLength={190} /></Form.Item>
+                <Form.Item name="reason" label="申请理由" rules={[{ required: true }]}><Input.TextArea rows={3} maxLength={1000} /></Form.Item>
+              </>
+            ) : (
+              <>
+                {(selectedCreateType?.form_schema?.fields || []).map((field: any) => (
+                  <Form.Item
+                    key={field.name}
+                    name={['custom_fields', field.name]}
+                    label={field.label || field.name}
+                    rules={[{ required: Boolean(field.required), message: `请填写${field.label || field.name}` }]}
+                  >
+                    {field.type === 'textarea' ? <Input.TextArea rows={3} />
+                      : field.type === 'select' ? <Select options={(field.options || []).map((option: string) => ({ value: option, label: option }))} />
+                      : <Input type={field.type === 'number' ? 'number' : 'text'} />}
+                  </Form.Item>
+                ))}
+              </>
+            )}
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={actionOpen}
+        title={{ transfer: '转派工单', supplement: '补充材料', withdraw: '撤回工单', comment: '添加评论', approve: '通过工单', complete: '完成工单', return: '退回补充', reject: '驳回工单' }[action] || '处理工单'}
+        okText="确认"
+        cancelText="取消"
+        confirmLoading={actionLoading}
+        onOk={() => void submitAction()}
+        onCancel={() => setActionOpen(false)}
+      >
+        <Form form={actionForm} layout="vertical">
+          {action === 'transfer' && (
+            <Form.Item name="target_queue" label="目标岗位队列" rules={[{ required: true }]}>
+              <Select options={['基础管控', '中队长', '组长', '组员', '社区民警', '所队领导'].map(value => ({ value, label: value }))} />
+            </Form.Item>
+          )}
+          {detail?.type_code === 'photo_request' && ['approve', 'complete'].includes(action) && (
+            <Form.Item name="result_status" label="调取结果" rules={[{ required: true }]}>
+              <Select options={[{ value: 'found', label: '已找到照片' }, { value: 'not_found', label: '未找到照片' }]} />
+            </Form.Item>
+          )}
+          <Form.Item
+            name="note"
+            label={action === 'comment' ? '评论内容' : action === 'supplement' ? '补充说明' : '处理说明'}
+            rules={[{ required: ['transfer', 'return', 'reject', 'comment', 'supplement'].includes(action), message: '请填写说明' }]}
+          >
+            <Input.TextArea rows={4} maxLength={2000} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  )
+}

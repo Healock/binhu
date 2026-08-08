@@ -80,11 +80,10 @@ export default function MobileDock({
       role,
       permissions,
       permissionGroupCodes,
+      position,
     ),
-    [config, permissionGroupCodes, permissions, role],
+    [config, permissionGroupCodes, permissions, position, role],
   )
-  const legacyTaskRoutes = ['组员', '组长', '基础管控', '中队长']
-    .includes(String(position || ''))
   const groups = normalized.groups.flatMap((groupConfig) => {
     const definition = navigationGroupById(groupConfig.id)
     if (!definition) return []
@@ -149,11 +148,7 @@ export default function MobileDock({
             }}
           >
             {openGroup.items.map((item) => {
-              const active = routeIsActive(
-                location.pathname,
-                item,
-                legacyTaskRoutes,
-              )
+              const active = routeIsActive(location.pathname, item)
               return (
                 <button
                   key={item.id}
@@ -194,7 +189,7 @@ export default function MobileDock({
           </button>
           {groups.map(({ definition, items }) => {
             const active = items.some(item => (
-              routeIsActive(location.pathname, item, legacyTaskRoutes)
+              routeIsActive(location.pathname, item)
             ))
             const expanded = openGroupId === definition.id
             return (

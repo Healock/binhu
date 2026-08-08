@@ -84,6 +84,10 @@ function readMulti(searchParams: URLSearchParams, key: string) {
   return searchParams.getAll(key).filter(Boolean)
 }
 
+function readMultiNumber(searchParams: URLSearchParams, key: string) {
+  return searchParams.getAll(key).map(Number).filter(value => Number.isInteger(value) && value > 0)
+}
+
 function readPriority(value: string | null): MobileTaskPriority {
   return PRIORITY_OPTIONS.some(option => option.value === value)
     ? value as MobileTaskPriority
@@ -126,12 +130,14 @@ export default function MobileTaskList() {
   )
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
   const [inspectors, setInspectors] = useState<string[]>(readMulti(searchParams, 'inspector'))
+  const [watchCategories, setWatchCategories] = useState<number[]>(readMultiNumber(searchParams, 'watch_category'))
   const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
+  const [watchCategoryOptions, setWatchCategoryOptions] = useState<Array<{ value: number; label: string; color: string; alert_level: string; count: number }>>([])
   const [facets, setFacets] = useState<MobileTaskFacets>(EMPTY_FACETS)
   const [rows, setRows] = useState<MobileTaskItem[]>([])
   const [total, setTotal] = useState(0)
@@ -149,13 +155,17 @@ export default function MobileTaskList() {
       const result = await getMobileTaskFilterOptions(parserType, scope)
       setCommunityOptions(result.communities)
       setInspectorOptions(result.inspectors)
+      setWatchCategoryOptions(result.watch_categories || [])
       const communityValues = new Set(result.communities.map(option => option.value))
       const inspectorValues = new Set(result.inspectors.map(option => option.value))
       setCommunities(current => current.filter(value => communityValues.has(value)))
       setInspectors(current => current.filter(value => inspectorValues.has(value)))
+      const watchValues = new Set((result.watch_categories || []).map(option => option.value))
+      setWatchCategories(current => current.filter(value => watchValues.has(value)))
     } catch {
       setCommunityOptions([])
       setInspectorOptions([])
+      setWatchCategoryOptions([])
     } finally {
       setOptionsLoading(false)
     }
@@ -174,6 +184,7 @@ export default function MobileTaskList() {
         review_stage: reviewStage,
         communities,
         inspectors,
+        watch_categories: watchCategories,
         priority,
         sort,
         keyword: keyword || undefined,
@@ -191,7 +202,7 @@ export default function MobileTaskList() {
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status])
+  }, [communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
 
   useEffect(() => { void load() }, [load])
 
@@ -203,10 +214,11 @@ export default function MobileTaskList() {
     if (reviewStage !== 'all') next.set('review_stage', reviewStage)
     communities.forEach(value => next.append('community', value))
     inspectors.forEach(value => next.append('inspector', value))
+    watchCategories.forEach(value => next.append('watch_category', String(value)))
     if (priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [communities, inspectors, parserType, priority, reviewStage, scope, setSearchParams, sort, status])
+  }, [communities, inspectors, parserType, priority, reviewStage, scope, setSearchParams, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -215,6 +227,7 @@ export default function MobileTaskList() {
     next.set('status', 'pending')
     setCommunities([])
     setInspectors([])
+    setWatchCategories([])
     setPriority('all')
     setSort('priority')
     setStatus('pending')
@@ -225,6 +238,7 @@ export default function MobileTaskList() {
   const clearFilters = () => {
     setCommunities([])
     setInspectors([])
+    setWatchCategories([])
     setPriority('all')
     setSort('priority')
     setStatus('pending')
@@ -245,6 +259,7 @@ export default function MobileTaskList() {
 
   const filtersActive = communities.length > 0
     || inspectors.length > 0
+    || watchCategories.length > 0
     || priority !== 'all'
     || status !== 'pending'
     || reviewStage !== 'all'
@@ -391,6 +406,19 @@ export default function MobileTaskList() {
               onChange={value => setSort(value as MobileTaskSort)}
               placeholder="更新时间"
             />
+            <Select
+              mode="multiple"
+              value={watchCategories}
+              options={watchCategoryOptions.map(option => ({
+                value: option.value,
+                label: `${option.label}（${option.count}）`,
+              }))}
+              onChange={setWatchCategories}
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="人员标记分类"
+            />
           </div>
         )}
       </section>
@@ -434,6 +462,9 @@ export default function MobileTaskList() {
                       {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
                       {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
                       {task.pending_sync && <Tag color="blue">待同步</Tag>}
+                      {task.watch_marks?.map(mark => (
+                        <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
+                      ))}
                     </div>
                     <p className="mt-1 text-xs text-[var(--app-text-secondary)]">{task.community || '社区未填写'} · {task.inspector || '待分配'}</p>
                   </div>
@@ -455,7 +486,9 @@ export default function MobileTaskList() {
                 )}
                 <div className="mobile-task-item-card__footer flex items-center justify-between gap-3 border-t border-[var(--app-border)]">
                   <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
-                    {task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
+                    {task.first_dispatch_at
+                      ? `首次下发 ${task.first_dispatch_at}`
+                      : task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
                   </div>
                   <MobilePhonePicker
                     phones={phoneOptions}

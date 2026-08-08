@@ -21,11 +21,6 @@ import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
-import {
-  canAccessFlowTaskWorkbench,
-  isFlowTaskPosition,
-  isPoliceDispatchTaskPosition,
-} from '../utils/mobileTaskRouting'
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -43,6 +38,7 @@ export default function Layout() {
           user.role,
           user.permissions,
           permissionGroupCodes,
+          user.member?.position,
         )
       : [],
     [permissionGroupCodes, user],
@@ -50,29 +46,6 @@ export default function Layout() {
   const mobileNavigationMode = user?.mobile_navigation_mode || 'dock'
   const mobileWorkbenchPosition = ['组员', '组长', '基础管控', '中队长']
     .includes(user?.member?.position || '')
-  const desktopTaskLinks = useMemo(() => {
-    if (!user) return []
-    const links: Array<{ key: string; path: string; label: string }> = []
-    if (
-      user.permissions.includes('online.raw.view')
-      && isFlowTaskPosition(user.member?.position)
-      && canAccessFlowTaskWorkbench(
-        user.member?.position,
-        user.role,
-        permissionGroupCodes,
-      )
-    ) {
-      links.push({ key: 'flow-tasks', path: '/tasks/home', label: '指令核查' })
-    }
-    const systemAdmin = !user.member && (user.role === 'admin' || user.role === 'super_admin')
-    if (
-      user.permissions.includes('police.dispatch.manage')
-      && (isPoliceDispatchTaskPosition(user.member?.position) || systemAdmin)
-    ) {
-      links.push({ key: 'dispatch-tasks', path: '/police-tasks', label: '下发任务处理' })
-    }
-    return links
-  }, [permissionGroupCodes, user])
   const dockConfig = useMemo(
     () => user
       ? normalizeMobileDockConfig(
@@ -80,6 +53,7 @@ export default function Layout() {
           user.role,
           user.permissions,
           permissionGroupCodes,
+          user.member?.position,
         )
       : { groups: [] },
     [permissionGroupCodes, user],
@@ -225,30 +199,6 @@ export default function Layout() {
                     {mobileWorkbenchPosition && (
                       <span className="md:hidden">{mobileNavigationItemLabel(item, user.member.position)}</span>
                     )}
-                  </NavLink>
-                ))}
-                {group.id === 'workspace' && desktopTaskLinks.map(link => (
-                  <NavLink
-                    key={link.key}
-                    to={link.path}
-                    onClick={(event) => {
-                      if (!confirmPendingNavigation()) event.preventDefault()
-                    }}
-                    className={() => {
-                      const active = link.key === 'flow-tasks'
-                        ? location.pathname.startsWith('/tasks')
-                        : location.pathname.startsWith('/police-tasks')
-                      return `hidden min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors md:flex ${
-                        active
-                          ? 'bg-blue-50 text-blue-700'
-                          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                      }`
-                    }}
-                  >
-                    <span className="flex w-5 justify-center text-base">
-                      <NavigationIcon name="query" />
-                    </span>
-                    <span>{link.label}</span>
                   </NavLink>
                 ))}
               </div>

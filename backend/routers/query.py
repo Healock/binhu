@@ -15,7 +15,10 @@ from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
     can_manage_rows,
     effective_view_communities,
+    inspector_assignment_mismatch,
+    inspector_option_context,
     row_edit_capabilities,
+    validate_inspector_assignment,
     validate_new_row_scope,
     validate_row_changes,
 )
@@ -177,6 +180,7 @@ async def _managed_column_metadata(
     *,
     spreadsheet_id: int | None = None,
     sheet_id: str | None = None,
+    inspector_context: dict | None = None,
 ) -> dict[str, dict]:
     """补齐社区、核查人和业务结果的稳定下拉选项。"""
     metadata = {}
@@ -187,43 +191,58 @@ async def _managed_column_metadata(
         source.setdefault("write_options", list(source.get("options") or []))
         metadata[column] = source
     if parser.COMMUNITY_COLUMN in parser.COLUMNS:
-        await cur.execute(
-            """
-            SELECT community.name
-            FROM _communities AS community
-            JOIN _departments AS department
-              ON department.community_id=community.id
-             AND department.department_type='community'
-             AND department.is_active=1
-            ORDER BY community.id
-            """
-        )
-        communities = [str(row[0]) for row in await cur.fetchall() if row[0]]
+        if inspector_context is not None:
+            communities = sorted({
+                str(value).strip()
+                for value in (inspector_context.get("community_aliases") or {}).values()
+                if str(value).strip()
+            })
+        else:
+            await cur.execute(
+                """
+                SELECT community.name
+                FROM _communities AS community
+                JOIN _departments AS department
+                  ON department.community_id=community.id
+                 AND department.department_type='community'
+                 AND department.is_active=1
+                WHERE community.is_active=1
+                ORDER BY community.id
+                """
+            )
+            communities = [str(row[0]) for row in await cur.fetchall() if row[0]]
         metadata[parser.COMMUNITY_COLUMN] = _editor_select_metadata(
             metadata[parser.COMMUNITY_COLUMN],
             [{"id": name, "text": name} for name in communities],
         )
     if "核查人" in parser.COLUMNS:
-        await cur.execute(
-            """
-            SELECT DISTINCT member.name
-            FROM _grid_members AS member
-            JOIN _grid_member_department_links AS link
-              ON link.member_id=member.id
-            JOIN _departments AS department
-              ON department.id=link.department_id
-             AND department.department_type='community'
-             AND department.is_active=1
-            WHERE member.position IN ('组长', '组员')
-              AND member.status='在岗'
-            ORDER BY member.name
-            """
-        )
-        members = [str(row[0]) for row in await cur.fetchall() if row[0]]
+        members = list((inspector_context or {}).get("fallback_inspectors") or [])
+        if not inspector_context:
+            await cur.execute(
+                """
+                SELECT DISTINCT member.name
+                FROM _grid_members AS member
+                JOIN _grid_member_department_links AS link
+                  ON link.member_id=member.id
+                JOIN _departments AS department
+                  ON department.id=link.department_id
+                 AND department.department_type='community'
+                 AND department.is_active=1
+                WHERE member.position IN ('组长', '组员')
+                  AND member.status='在岗'
+                ORDER BY member.name
+                """
+            )
+            members = [str(row[0]) for row in await cur.fetchall() if row[0]]
         metadata["核查人"] = _editor_select_metadata(
             metadata["核查人"],
             [{"id": name, "text": name} for name in members],
         )
+        # 真实腾讯下拉选项保存在 write_options；编辑器只展示当前账号的
+        # 安全兜底名单，逐行名单由响应中的 dependent_options 提供。
+        metadata["核查人"]["options"] = [
+            {"id": name, "text": name} for name in members
+        ]
     workflow = TASK_WORKFLOWS.get(parser.parser_type)
     if workflow and workflow.result_field in parser.COLUMNS:
         result_field = workflow.result_field
@@ -595,12 +614,14 @@ async def update_source_fields(
         after = dict(current_values)
         after.update(normalized_changes)
         async with conn.cursor() as cur:
+            inspector_context = await inspector_option_context(cur, user)
             current["cell_meta"] = await _managed_column_metadata(
                 cur,
                 parser,
                 current.get("cell_meta") or {},
                 spreadsheet_id=source["spreadsheet_id"],
                 sheet_id=source["sheet_id"],
+                inspector_context=inspector_context,
             )
             try:
                 await validate_row_changes(
@@ -608,6 +629,15 @@ async def update_source_fields(
                 )
             except PermissionError as exc:
                 raise HTTPException(403, str(exc)) from exc
+            if "核查人" in ordered_columns:
+                try:
+                    validate_inspector_assignment(
+                        inspector_context,
+                        parser.community_value(after),
+                        after.get("核查人"),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
             if any(column in set(parser.get_business_key()) for column in ordered_columns):
                 try:
                     parser.validate_existing_row_key(after)
@@ -744,12 +774,21 @@ async def update_source_fields(
             ONLINE_TASK_UPDATE,
             event_key=f"writeback:{audit_id}",
         )
+    warnings = []
+    if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
+        inspector_context,
+        parser.community_value(verified_values),
+        verified_values.get("核查人"),
+    ):
+        warnings.append("核查人与当前社区不一致")
     return {
         "message": "已写回腾讯表格，汇总将在下次同步后更新",
         "values": verified_values,
         "row_key": new_key,
         "revision": revision,
         "pending_sync": True,
+        "warnings": warnings,
+        "inspector_mismatch": bool(warnings),
     }
 
 
@@ -918,6 +957,7 @@ async def _legacy_query(
         "required_fields": new_row_required_fields(parser),
         "pending_count": 0,
         "row_manage_message": "",
+        "dependent_options": {},
     }
     if scopes == []:
         result["scope_message"] = "当前账号尚未分配社区部门，暂无业务数据"
@@ -1024,8 +1064,12 @@ async def _projection_query(
         )
         metadata_row = await cur.fetchone()
         source_metadata = json_value(metadata_row[0], {}) if metadata_row else {}
+        inspector_context = await inspector_option_context(cur, user)
         column_metadata = await _managed_column_metadata(
-            cur, parser, source_metadata
+            cur,
+            parser,
+            source_metadata,
+            inspector_context=inspector_context,
         )
         await cur.execute(
             "SELECT COUNT(*) FROM _online_writeback_audit "
@@ -1062,6 +1106,14 @@ async def _projection_query(
                 "__can_delete": bool(
                     enabled and direct_source and can_manage_rows(user)
                 ),
+                "__inspector_mismatch": bool(
+                    "核查人" in parser.COLUMNS
+                    and inspector_assignment_mismatch(
+                        inspector_context,
+                        parser.community_value(values),
+                        values.get("核查人"),
+                    )
+                ),
             })
             data.append(record)
 
@@ -1089,6 +1141,7 @@ async def _projection_query(
         "required_fields": new_row_required_fields(parser),
         "pending_count": pending_count,
         "row_manage_message": row_manage_message,
+        "dependent_options": inspector_context,
         "scope_message": (
             "当前账号尚未分配社区部门，暂无业务数据" if scopes == [] else ""
         ),

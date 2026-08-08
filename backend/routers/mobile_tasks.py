@@ -29,6 +29,8 @@ from services.parsers import get_parser
 from services.permissions import ONLINE_RAW_EDIT, ONLINE_RAW_VIEW
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
+from config import settings
+from services.watch_matching import task_watch_payload
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
@@ -82,6 +84,7 @@ class TaskSearch(BaseModel):
     review_stage: ReviewStage = "all"
     communities: list[str] = Field(default_factory=list, max_length=50)
     inspectors: list[str] = Field(default_factory=list, max_length=50)
+    watch_categories: list[int] = Field(default_factory=list, max_length=50)
     priority: Priority = "all"
     sort: SortMode = "priority"
     keyword: str = Field(default="", max_length=100)
@@ -277,6 +280,21 @@ def _task_where(
     if keyword:
         where_parts.append("projection.search_text LIKE %s")
         params.append(f"%{keyword}%")
+    if data.watch_categories:
+        if not settings.REGISTRY_FEATURE_ENABLED:
+            where_parts.append("1=0")
+        else:
+            placeholders = ",".join(["%s"] * len(data.watch_categories))
+            registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+            where_parts.append(
+                f"EXISTS (SELECT 1 FROM `{registry}`.online_task_watch_snapshots watch_snapshot "
+                f"JOIN `{registry}`.watch_assignments watch_assignment "
+                "ON watch_assignment.id=watch_snapshot.assignment_id "
+                "WHERE watch_snapshot.parser_type=projection.parser_type "
+                "AND watch_snapshot.row_key=projection.row_key "
+                f"AND watch_assignment.category_id IN ({placeholders}))"
+            )
+            params.extend(data.watch_categories)
     if include_priority and data.priority != "all":
         where_parts.append(f"({_priority_case(parser_type)})=%s")
         params.append(data.priority)
@@ -469,9 +487,11 @@ def _task_record(
     conflict: bool,
     pending: bool,
     task_state_value: str,
+    watch: dict | None = None,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
+    watch = watch or {}
     return {
         "row_key": str(row_key),
         "parser_type": parser_type,
@@ -496,6 +516,8 @@ def _task_record(
             bool(pending),
             task_state_value,
         ),
+        "watch_marks": list(watch.get("watch_marks") or []),
+        "first_dispatch_at": _iso_utc(watch.get("first_dispatch_at")),
     }
 
 
@@ -627,7 +649,7 @@ async def _task_filter_options(
     scope_where, scope_params = _scope_where(context, scope)
     where_sql = f"projection.parser_type=%s AND {scope_where}"
     params = [parser_type, *scope_params]
-    result = {"communities": [], "inspectors": []}
+    result = {"communities": [], "inspectors": [], "watch_categories": []}
     for column, key, empty_label in (
         ("community", "communities", "社区未填写"),
         ("inspector", "inspectors", "未分配核查人"),
@@ -650,6 +672,31 @@ async def _task_filter_options(
                 "label": normalized or empty_label,
                 "count": int(count or 0),
             })
+    if settings.REGISTRY_FEATURE_ENABLED:
+        registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+        await cur.execute(
+            f"""
+            SELECT category.id, category.name, category.color, category.alert_level,
+                   COUNT(DISTINCT projection.row_key)
+            FROM _online_source_projection projection
+            JOIN `{registry}`.online_task_watch_snapshots snapshot
+              ON snapshot.parser_type=projection.parser_type
+             AND snapshot.row_key=projection.row_key
+            JOIN `{registry}`.watch_assignments assignment
+              ON assignment.id=snapshot.assignment_id
+            JOIN `{registry}`.watch_categories category
+              ON category.id=assignment.category_id
+            WHERE {where_sql}
+            GROUP BY category.id, category.name, category.color, category.alert_level
+            ORDER BY category.sort_order, category.id
+            """,
+            params,
+        )
+        result["watch_categories"] = [
+            {"value": int(row[0]), "label": str(row[1]), "color": str(row[2]),
+             "alert_level": str(row[3]), "count": int(row[4] or 0)}
+            for row in await cur.fetchall()
+        ]
     return result
 
 
@@ -693,6 +740,7 @@ async def _list_mobile_tasks_data(
                     "review_stage": data.review_stage,
                     "communities": data.communities,
                     "inspectors": data.inspectors,
+                    "watch_categories": data.watch_categories,
                     "priority": data.priority,
                     "sort": data.sort,
                     "keyword_present": bool(data.keyword.strip()),
@@ -734,6 +782,11 @@ async def _list_mobile_tasks_data(
             [*query_params, data.page_size, (data.page - 1) * data.page_size],
         )
         rows = await cur.fetchall()
+        watch_by_row = await task_watch_payload(
+            cur,
+            parser_type,
+            [str(row[0]) for row in rows],
+        ) if settings.REGISTRY_FEATURE_ENABLED else {}
     return {
         "data": [
             _task_record(
@@ -744,6 +797,7 @@ async def _list_mobile_tasks_data(
                 bool(row[3]),
                 str(row[4] or "") == "pending",
                 str(row[5] or ""),
+                watch_by_row.get(str(row[0])),
             )
             for row in rows
         ],
@@ -760,6 +814,7 @@ async def _list_mobile_tasks_data(
             "review_stage": data.review_stage,
             "communities": data.communities,
             "inspectors": data.inspectors,
+            "watch_categories": data.watch_categories,
             "priority": data.priority,
             "sort": data.sort,
             "keyword_present": bool(data.keyword.strip()),
@@ -807,6 +862,7 @@ async def list_mobile_tasks(
     review_stage: ReviewStage = Query("all"),
     community: list[str] = Query(default=[]),
     inspector: list[str] = Query(default=[]),
+    watch_category: list[int] = Query(default=[]),
     priority: Priority = Query("all"),
     sort: SortMode = Query("priority"),
     keyword: str | None = Query(None, max_length=100),
@@ -823,6 +879,7 @@ async def list_mobile_tasks(
             review_stage=review_stage,
             communities=community,
             inspectors=inspector,
+            watch_categories=watch_category,
             priority=priority,
             sort=sort,
             keyword=keyword or "",
@@ -878,6 +935,8 @@ async def get_mobile_task_detail(
             await _assignee_options(cur, context["community"])
             if context["position"] == "组长" else []
         )
+        watch_by_row = await task_watch_payload(cur, parser_type, [row_key]) \
+            if settings.REGISTRY_FEATURE_ENABLED else {}
 
         sources = []
         for (
@@ -965,6 +1024,7 @@ async def get_mobile_task_detail(
             bool(parent_row[2]) and len(sources) > 1,
             str(parent_row[3] or "") == "pending",
             str(parent_row[4] or ""),
+            watch_by_row.get(row_key),
         ),
         "workflow": {
             "result_field": workflow.result_field,

@@ -28,6 +28,40 @@ from services.theme_preferences import normalize_theme_mode
 from services.member_departments import get_member_departments
 
 
+FEATURE_PERMISSION_GATES = {
+    "registry": {
+        "registry.property.view",
+        "registry.property.manage",
+        "registry.watch.view",
+        "registry.watch.manage",
+        "registry.import.manage",
+    },
+    "workflow": {
+        "workflow.ticket.create",
+        "workflow.ticket.view",
+        "workflow.ticket.handle",
+        "workflow.ticket.manage",
+        "workflow.config.manage",
+        "workflow.attachment.view",
+    },
+}
+
+
+def _apply_feature_permission_gates(
+    permissions: list[str],
+    permission_scopes: dict[str, str],
+) -> tuple[list[str], dict[str, str]]:
+    """在功能迁移完成前，彻底从权限上下文移除未启用域。"""
+    disabled: set[str] = set()
+    if not settings.REGISTRY_FEATURE_ENABLED:
+        disabled.update(FEATURE_PERMISSION_GATES["registry"])
+    if not settings.WORKFLOW_FEATURE_ENABLED:
+        disabled.update(FEATURE_PERMISSION_GATES["workflow"])
+    result = [item for item in permissions if item not in disabled]
+    scopes = {key: value for key, value in permission_scopes.items() if key in result}
+    return result, scopes
+
+
 def _auth_error(code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -227,6 +261,17 @@ async def get_current_user(request: Request) -> dict:
                 permission_scopes = {
                     permission: data_scope for permission in permissions
                 }
+
+            permissions, permission_scopes = _apply_feature_permission_gates(
+                permissions,
+                permission_scopes,
+            )
+            if permissions:
+                data_scope = (
+                    "all"
+                    if all(value == "all" for value in permission_scopes.values())
+                    else "own_department"
+                )
             else:
                 permissions = sorted({
                     PERSONNEL_BASIC_VIEW,
@@ -287,6 +332,7 @@ async def get_current_user(request: Request) -> dict:
                     str(row[2]),
                     permissions,
                     [group["code"] for group in groups],
+                    row[14],
                 ),
                 "theme_mode": normalize_theme_mode(row[7]),
                 "member": member,
