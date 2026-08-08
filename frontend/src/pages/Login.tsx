@@ -102,32 +102,31 @@ export default function Login() {
           <div className="login-form-card">
             {maintenance?.active && (
               <Alert
-                className="mb-4"
+                className="login-maintenance-alert"
                 type="warning"
                 showIcon
                 message="平台正在维护中"
                 description={(
-                  <span>
-                    {maintenance.message}
+                  <div className="login-maintenance-alert__body">
+                    <p>{maintenance.message}</p>
                     {maintenance.end_at
-                      ? ` 预计于 ${formatUTCTime(maintenance.end_at, maintenance.timezone)} 恢复。`
-                      : ''}
-                    {' '}超级管理员仍可登录处理维护配置。
-                  </span>
+                      ? <p className="login-maintenance-alert__meta">预计恢复：{formatUTCTime(maintenance.end_at, maintenance.timezone)}</p>
+                      : null}
+                  </div>
                 )}
               />
             )}
             {maintenance?.scheduled && !maintenance.active && (
               <Alert
-                className="mb-4"
+                className="login-maintenance-alert"
                 type="info"
                 showIcon
                 message="平台已预约维护"
                 description={(
-                  <span>
-                    计划于 {formatUTCTime(maintenance.start_at, maintenance.timezone)} 开始维护。
-                    {' '}维护期间普通账号将暂时无法登录。
-                  </span>
+                  <div className="login-maintenance-alert__body">
+                    <p>开始时间：{formatUTCTime(maintenance.start_at, maintenance.timezone)}</p>
+                    <p className="login-maintenance-alert__meta">维护期间普通账号暂时无法登录。</p>
+                  </div>
                 )}
               />
             )}

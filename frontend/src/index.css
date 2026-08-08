@@ -1155,6 +1155,50 @@ html[data-theme='dark'] ::selection {
   border-radius: 8px;
 }
 
+.login-form-card > .login-maintenance-alert {
+  margin-bottom: 24px;
+  border-radius: 12px;
+}
+
+.login-maintenance-alert .ant-alert-icon {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.login-maintenance-alert .ant-alert-message {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.login-maintenance-alert .ant-alert-description {
+  margin-top: 8px;
+  line-height: 1.65;
+}
+
+.login-maintenance-alert__body p {
+  margin: 0;
+}
+
+.login-maintenance-alert__meta {
+  margin-top: 5px !important;
+  color: inherit;
+  font-size: 12px;
+  opacity: 0.84;
+}
+
+.maintenance-mode-options {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.maintenance-mode-options .ant-radio-button-wrapper {
+  min-width: 0;
+  padding-inline: 10px;
+  text-align: center;
+}
+
 .login-form .ant-alert-error {
   border-color: #ffccc7;
   color: #8c1d18;
@@ -1242,6 +1286,18 @@ html[data-theme='dark'] .login-form .ant-alert-error {
   background: #2b171d;
 }
 
+html[data-theme='dark'] .login-maintenance-alert.ant-alert-warning {
+  border-color: #805322;
+  color: #f6d7a7;
+  background: #2d2118;
+}
+
+html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
+  border-color: #315b82;
+  color: #c8e1fb;
+  background: #142638;
+}
+
 @media (max-width: 900px) {
   .login-page {
     display: block;
@@ -1279,6 +1335,11 @@ html[data-theme='dark'] .login-form .ant-alert-error {
 
   .login-form-card {
     padding: 28px 24px 30px;
+  }
+
+  .maintenance-mode-options .ant-radio-button-wrapper {
+    padding-inline: 5px;
+    font-size: 12px;
   }
 }
 
