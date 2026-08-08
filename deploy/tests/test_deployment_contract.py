@@ -58,6 +58,17 @@ class DeploymentContractTests(unittest.TestCase):
         script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
         self.assertIn("sync or backup task is active", script)
         self.assertIn("mysqldump", script)
+        for database in (
+            "OnlineData",
+            "OnlineDataArchive",
+            "daily_report",
+            "PlatformData",
+            "VisitData",
+            "DispatchData",
+            "RegistryData",
+            "WorkflowData",
+        ):
+            self.assertIn(f"backup_database {database}", script)
         self.assertNotIn("docker compose down", script)
         self.assertNotIn("sha256sum -c", script)
         self.assertNotRegex(script, re.compile(r"mysql\s+[^\n]*<"))
