@@ -62,11 +62,10 @@ DOMAIN_TABLES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     ),
 }
 
-SAFE_IDENTIFIERS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
-
-
 def quote_identifier(value: str) -> str:
-    if not value or any(char not in SAFE_IDENTIFIERS for char in value):
+    # MySQL business tables contain Chinese column names. Permit Unicode
+    # letters/digits while retaining the conservative punctuation policy.
+    if not value or any(not (char.isalnum() or char in "_$") for char in value):
         raise ValueError(f"unsafe identifier: {value!r}")
     return f"`{value}`"
 

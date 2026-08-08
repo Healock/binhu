@@ -45,3 +45,7 @@ def test_migration_whitelist_covers_required_domains_and_rejects_identifiers():
         pass
     else:
         raise AssertionError("unsafe identifier was accepted")
+
+
+def test_quote_identifier_accepts_unicode_business_columns():
+    assert quote_identifier("业务日期") == "`业务日期`"
