@@ -2284,6 +2284,35 @@ export interface WorkOrderDetail extends WorkOrderSummary {
   attachments: WorkOrderAttachment[]
 }
 
+export interface PhotoImportItem {
+  safe_name: string
+  person_name: string
+  identity_masked: string
+  size_bytes: number
+  sha256: string
+  match_status: 'matched' | 'unmatched' | 'duplicate' | 'conflict' | 'failed'
+  match_reason: string
+  matched_ticket_ids: number[]
+}
+
+export interface PhotoImportBatch {
+  id: number
+  batch_no: string
+  status: 'preview' | 'processing' | 'completed' | 'partial' | 'failed'
+  total_files: number
+  matched_files: number
+  unmatched_files: number
+  conflict_files: number
+  duplicate_files: number
+  failed_files: number
+  error_message: string
+  previewed_at: string | null
+  confirmed_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  items?: PhotoImportItem[]
+}
+
 export const workflowApi = {
   async types() {
     return (await api.get('/workflow/types', activeRequest)).data as { data: WorkflowType[] }
@@ -2354,5 +2383,22 @@ export const workflowApi = {
   },
   attachmentUrl(id: number, fileId: string, inline = false) {
     return `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`
+  },
+  async previewPhotoImport(file: File) {
+    const form = new FormData()
+    form.append('file', file)
+    return (await api.post('/workflow/photo-imports/preview', form, activeRequest)).data as PhotoImportBatch
+  },
+  async confirmPhotoImport(batchId: number) {
+    return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, activeRequest)).data as PhotoImportBatch
+  },
+  async photoImports(page = 1, pageSize = 20) {
+    return (await api.get('/workflow/photo-imports', {
+      ...activeRequest,
+      params: { page, page_size: pageSize },
+    })).data as { data: PhotoImportBatch[]; total: number; page: number; page_size: number }
+  },
+  async photoImport(batchId: number) {
+    return (await api.get(`/workflow/photo-imports/${batchId}`, activeRequest)).data as PhotoImportBatch
   },
 }

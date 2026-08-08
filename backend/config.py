@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     OPS_AGENT_TOKEN: str = ""
     BACKUP_DIR: str = "../backups"
     WORKFLOW_ATTACHMENT_DIR: str = "../workflow-attachments"
+    WORKFLOW_PHOTO_IMPORT_DIR: str = "../workflow-photo-imports"
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 
     @property

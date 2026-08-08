@@ -24,6 +24,7 @@ import type { TableColumnsType } from 'antd'
 import {
   DeleteOutlined,
   DownloadOutlined,
+  EyeOutlined,
   InboxOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -47,6 +48,13 @@ const EVENT_LABELS: Record<string, string> = {
   submit: '提交工单', claim: '领取工单', approve: '通过', reject: '驳回', return: '退回补充',
   complete: '完成', cancel: '取消', withdraw: '撤回', transfer: '转派', supplement: '补充材料',
   comment: '添加评论', attachment_upload: '上传附件', attachment_delete: '删除附件',
+}
+
+const PHOTO_DETAIL_LABELS: Record<string, string> = {
+  subject_type: '对象类型', subject_id: '对象编号', subject_name: '对象姓名',
+  identity_number: '身份证号', source_parser_type: '任务类型', source_row_key: '任务行号',
+  requested_from: '开始时间', requested_to: '结束时间', request_reason: '申请理由',
+  result_status: '调取结果', result_note: '处理说明',
 }
 
 const TERMINAL = new Set(['approved', 'completed', 'rejected', 'cancelled', 'withdrawn'])
@@ -146,10 +154,12 @@ export default function WorkflowTickets() {
             affects_weekend_duty: Boolean(values.affects_weekend_duty),
           }
         : values.type_code === 'photo_request'
-        ? {
-            subject_type: values.subject_type || 'task',
-            subject_id: values.subject_id || '',
-            request_reason: values.reason || '',
+              ? {
+                  subject_type: values.subject_type || 'task',
+                  subject_id: values.subject_id || '',
+                  subject_name: values.subject_name || '',
+                  identity_number: values.identity_number || '',
+                  request_reason: values.reason || '',
             requested_from: values.requested_from || null,
             requested_to: values.requested_to || null,
           }
@@ -386,7 +396,7 @@ export default function WorkflowTickets() {
                 column={1}
                 items={Object.entries(detail.type_detail).map(([key, value]) => ({
                   key,
-                  label: key,
+                  label: detail.type_code === 'photo_request' ? (PHOTO_DETAIL_LABELS[key] || key) : key,
                   children: value === null || value === '' ? '—' : String(value),
                 }))}
               />
@@ -432,6 +442,16 @@ export default function WorkflowTickets() {
               renderItem={item => (
                 <List.Item
                   actions={[
+                    ...(item.mime_type.startsWith('image/') ? [
+                      <a
+                        key="preview"
+                        href={workflowApi.attachmentUrl(detail.id, item.file_id, true)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <EyeOutlined /> 预览
+                      </a>,
+                    ] : []),
                     <a key="download" href={workflowApi.attachmentUrl(detail.id, item.file_id)}>
                       <DownloadOutlined /> 下载
                     </a>,
@@ -499,6 +519,8 @@ export default function WorkflowTickets() {
               <>
                 <Form.Item name="subject_type" label="对象类型"><Select options={[{ value: 'task', label: '指令任务' }, { value: 'person', label: '人员' }, { value: 'other', label: '其他' }]} /></Form.Item>
                 <Form.Item name="subject_id" label="对象编号"><Input maxLength={190} /></Form.Item>
+                <Form.Item name="subject_name" label="对象姓名" rules={[{ required: true, message: '请填写对象姓名' }]}><Input maxLength={100} /></Form.Item>
+                <Form.Item name="identity_number" label="身份证号" rules={[{ required: true, message: '请填写身份证号' }]}><Input maxLength={50} /></Form.Item>
                 <Form.Item name="reason" label="申请理由" rules={[{ required: true }]}><Input.TextArea rows={3} maxLength={1000} /></Form.Item>
               </>
             ) : (

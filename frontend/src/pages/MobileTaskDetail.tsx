@@ -1,5 +1,6 @@
 import {
   ArrowLeftOutlined,
+  CameraOutlined,
   CopyOutlined,
   PhoneOutlined,
   SaveOutlined,
@@ -11,6 +12,7 @@ import {
   Descriptions,
   Empty,
   Input,
+  Modal,
   Select,
   Skeleton,
   Tag,
@@ -21,6 +23,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getMobileTaskDetail,
   updateMobileTask,
+  workflowApi,
   type MobileTaskDetailData,
   type MobileTaskSource,
 } from '../api/client'
@@ -69,6 +72,9 @@ export default function MobileTaskDetail() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
+  const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
+  const [photoReason, setPhotoReason] = useState('')
+  const [photoSubmitting, setPhotoSubmitting] = useState(false)
 
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
@@ -196,6 +202,36 @@ export default function MobileTaskDetail() {
     window.location.href = `tel:${phone}`
   }
 
+  const submitPhotoRequest = async () => {
+    if (!identityNumber || !title.trim() || !photoReason.trim()) return
+    setPhotoSubmitting(true)
+    try {
+      await workflowApi.createTicket({
+        type_code: 'photo_request',
+        title: `${title.trim()}照片调取`,
+        description: photoReason.trim(),
+        priority: 'normal',
+        form_data: {
+          subject_type: 'task',
+          subject_id: rowKey,
+          subject_name: title.trim(),
+          identity_number: identityNumber,
+          request_reason: photoReason.trim(),
+          source_parser_type: parserType,
+          source_row_key: rowKey,
+        },
+        links: [{ object_type: 'mobile_task', object_id: `${parserType}:${rowKey}` }],
+      })
+      message.success('照片调取工单已提交')
+      setPhotoReason('')
+      setPhotoRequestOpen(false)
+    } catch (reason: any) {
+      message.error(detailError(reason, '照片调取工单提交失败'))
+    } finally {
+      setPhotoSubmitting(false)
+    }
+  }
+
   if (loading && !data) {
     return <div className="app-card p-5"><Skeleton active paragraph={{ rows: 10 }} /></div>
   }
@@ -313,6 +349,14 @@ export default function MobileTaskDetail() {
             />
             {address && <Button className="col-span-2 min-h-11" icon={<CopyOutlined />} onClick={() => void copy(address, '地址')}>复制地址</Button>}
           </div>
+        )}
+        {user?.permissions.includes('workflow.ticket.create') && (
+          <Button
+            className="mt-2 w-full min-h-11"
+            icon={<CameraOutlined />}
+            disabled={!identityNumber}
+            onClick={() => setPhotoRequestOpen(true)}
+          >{identityNumber ? '调取照片' : '缺少身份证号，无法调取照片'}</Button>
         )}
         {analysis && (
           <div className="mobile-task-analysis mt-4">
@@ -458,6 +502,28 @@ export default function MobileTaskDetail() {
           }]}
         />
       )}
+
+      <Modal
+        open={photoRequestOpen}
+        title="提交照片调取申请"
+        okText="提交工单"
+        cancelText="取消"
+        confirmLoading={photoSubmitting}
+        onOk={() => void submitPhotoRequest()}
+        onCancel={() => { if (!photoSubmitting) setPhotoRequestOpen(false) }}
+      >
+        <p className="mb-3 text-sm text-[var(--app-text-secondary)]">
+          对象：{title || '未填写姓名'} · 身份证号：{identityNumber}
+        </p>
+        <Input.TextArea
+          rows={4}
+          maxLength={1000}
+          showCount
+          value={photoReason}
+          onChange={event => setPhotoReason(event.target.value)}
+          placeholder="请说明需要调取照片的原因"
+        />
+      </Modal>
     </div>
   )
 }

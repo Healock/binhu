@@ -26,6 +26,7 @@ from services.workflow_support import (
     workflow_community_scope,
     workflow_notification,
 )
+from services.registry_security import hmac_digest, normalize_identity
 
 
 router = APIRouter(prefix="/api/workflow", tags=["工单"])
@@ -62,6 +63,24 @@ class Decision(BaseModel):
     action: str = Field(pattern="^(approve|reject|return|complete|cancel)$")
     note: str = Field(default="", max_length=2000)
     result_status: str = Field(default="", pattern="^(|found|not_found)$")
+
+
+def _photo_form_values(form_data: dict) -> dict[str, str]:
+    subject_name = str(form_data.get("subject_name") or "").strip()
+    identity_number = normalize_identity(str(form_data.get("identity_number") or ""))
+    if not subject_name:
+        raise HTTPException(422, "请填写对象姓名")
+    if not re.fullmatch(r"(?:\d{15}|\d{17}[0-9X])", identity_number):
+        raise HTTPException(422, "请填写有效身份证号")
+    identity_hmac, hmac_version = hmac_digest(identity_number, kind="identity")
+    return {
+        "subject_name": subject_name[:100],
+        "identity_number": identity_number[:50],
+        "identity_hmac": identity_hmac or "",
+        "identity_hmac_version": str(hmac_version),
+        "source_parser_type": str(form_data.get("source_parser_type") or "")[:100],
+        "source_row_key": str(form_data.get("source_row_key") or "")[:190],
+    }
 
 
 async def get_workflow_db():
@@ -453,12 +472,17 @@ async def create_ticket(
                 (ticket_id, user["id"], json.dumps({"type_code": data.type_code}, ensure_ascii=False)),
             )
             if data.type_code == "photo_request":
+                photo_values = _photo_form_values(data.form_data)
                 await cur.execute(
                     "INSERT INTO photo_request_details "
-                    "(work_order_id, subject_type, subject_id, request_reason, requested_from, requested_to) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    "(work_order_id, subject_type, subject_id, subject_name, identity_number, identity_hmac, "
+                    "identity_hmac_version, source_parser_type, source_row_key, request_reason, requested_from, requested_to) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (ticket_id, str(form_data.get("subject_type") or "")[:40],
                      str(form_data.get("subject_id") or "")[:190],
+                     photo_values["subject_name"], photo_values["identity_number"],
+                     photo_values["identity_hmac"], int(photo_values["identity_hmac_version"]),
+                     photo_values["source_parser_type"], photo_values["source_row_key"],
                      str(form_data.get("request_reason") or "")[:1000],
                      form_data.get("requested_from") or None,
                      form_data.get("requested_to") or None),
@@ -543,7 +567,8 @@ async def get_ticket(
             detail_row = await cur.fetchone()
         elif row[2] == "photo_request":
             await cur.execute(
-                "SELECT subject_type, subject_id, requested_from, requested_to, request_reason, result_status, result_note "
+                "SELECT subject_type, subject_id, subject_name, identity_number, source_parser_type, source_row_key, "
+                "requested_from, requested_to, request_reason, result_status, result_note "
                 "FROM photo_request_details WHERE work_order_id=%s",
                 (ticket_id,),
             )
@@ -584,9 +609,11 @@ async def get_ticket(
     elif row[2] == "photo_request" and detail_row:
         payload["type_detail"] = {
             "subject_type": detail_row[0], "subject_id": detail_row[1],
-            "requested_from": _iso(detail_row[2]), "requested_to": _iso(detail_row[3]),
-            "request_reason": detail_row[4], "result_status": detail_row[5],
-            "result_note": detail_row[6],
+            "subject_name": detail_row[2], "identity_number": detail_row[3],
+            "source_parser_type": detail_row[4], "source_row_key": detail_row[5],
+            "requested_from": _iso(detail_row[6]), "requested_to": _iso(detail_row[7]),
+            "request_reason": detail_row[8], "result_status": detail_row[9],
+            "result_note": detail_row[10],
         }
     return payload
 

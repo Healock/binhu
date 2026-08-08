@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert,
   Button,
@@ -16,6 +16,8 @@ import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
   getVisitImportIssues,
+  type PhotoImportBatch,
+  workflowApi,
   uploadStarRating,
   uploadVisitDetail,
   type VisitImportIssue,
@@ -24,6 +26,7 @@ import {
 
 const { Dragger } = Upload
 const MAX_FILE_BYTES = 20 * 1024 * 1024
+const MAX_PHOTO_ZIP_BYTES = 200 * 1024 * 1024
 const ISSUE_PAGE_SIZE = 50
 
 const statusMeta = {
@@ -161,7 +164,13 @@ export default function DataUploadCenter() {
   const { user } = useAuth()
   const canUpload = Boolean(user?.permissions.includes('visit.import'))
   const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
-  const canUseUploadCenter = canUpload || canManagePoliceDispatch
+  const canManagePhotoImport = Boolean(
+    (user?.permissions.includes('workflow.ticket.handle')
+      && user.member?.position === '基础管控')
+      || user?.role === 'super_admin'
+      || user?.permissions.includes('workflow.ticket.manage'),
+  )
+  const canUseUploadCenter = canUpload || canManagePoliceDispatch || canManagePhotoImport
   const [detailFileList, setDetailFileList] = useState<UploadFile[]>([])
   const [detailFile, setDetailFile] = useState<File | null>(null)
   const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])
@@ -174,6 +183,23 @@ export default function DataUploadCenter() {
   const [issueTotal, setIssueTotal] = useState(0)
   const [issuePage, setIssuePage] = useState(1)
   const [issueLoading, setIssueLoading] = useState(false)
+  const [photoFileList, setPhotoFileList] = useState<UploadFile[]>([])
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [photoBatch, setPhotoBatch] = useState<PhotoImportBatch | null>(null)
+  const [photoError, setPhotoError] = useState('')
+  const [photoLoading, setPhotoLoading] = useState(false)
+  const [photoHistory, setPhotoHistory] = useState<PhotoImportBatch[]>([])
+
+  const loadPhotoHistory = async () => {
+    if (!canManagePhotoImport) return
+    try {
+      setPhotoHistory((await workflowApi.photoImports(1, 20)).data)
+    } catch {
+      // 当前批次仍可继续使用；历史列表读取失败不阻断上传。
+    }
+  }
+
+  useEffect(() => { void loadPhotoHistory() }, [canManagePhotoImport])
 
   const resetResult = () => {
     setResult(null)
@@ -247,6 +273,64 @@ export default function DataUploadCenter() {
     }
   }
 
+  const beforePhotoUpload: UploadProps['beforeUpload'] = file => {
+    setPhotoError('')
+    setPhotoBatch(null)
+    setPhotoFile(null)
+    setPhotoFileList([])
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setPhotoError('照片批次只支持 ZIP 文件')
+      return Upload.LIST_IGNORE
+    }
+    if (file.size > MAX_PHOTO_ZIP_BYTES) {
+      setPhotoError('照片 ZIP 不能超过 200MB')
+      return Upload.LIST_IGNORE
+    }
+    setPhotoFile(file)
+    setPhotoFileList([selectedUploadFile(file)])
+    return false
+  }
+
+  const handlePhotoPreview = async () => {
+    if (!photoFile) return
+    setPhotoLoading(true)
+    setPhotoError('')
+    try {
+      setPhotoBatch(await workflowApi.previewPhotoImport(photoFile))
+      await loadPhotoHistory()
+    } catch (error: any) {
+      setPhotoError(error?.response?.data?.detail || '照片 ZIP 解析失败，请检查文件名和内容')
+    } finally {
+      setPhotoLoading(false)
+    }
+  }
+
+  const handlePhotoConfirm = async () => {
+    if (!photoBatch) return
+    setPhotoLoading(true)
+    setPhotoError('')
+    try {
+      setPhotoBatch(await workflowApi.confirmPhotoImport(photoBatch.id))
+      await loadPhotoHistory()
+    } catch (error: any) {
+      setPhotoError(error?.response?.data?.detail || '照片批次确认失败，请刷新后重试')
+    } finally {
+      setPhotoLoading(false)
+    }
+  }
+
+  const handlePhotoHistoryDetail = async (batchId: number) => {
+    setPhotoLoading(true)
+    setPhotoError('')
+    try {
+      setPhotoBatch(await workflowApi.photoImport(batchId))
+    } catch (error: any) {
+      setPhotoError(error?.response?.data?.detail || '照片批次详情读取失败，请稍后重试')
+    } finally {
+      setPhotoLoading(false)
+    }
+  }
+
   const loadIssuePage = async (page: number) => {
     if (!result || (result.status === 'duplicate' && issueTotal === 0)) return
     setIssueLoading(true)
@@ -282,7 +366,7 @@ export default function DataUploadCenter() {
           type="info"
           showIcon
           message="当前账号没有上传权限"
-          description="只有管理员和超级管理员可以导入数据。"
+          description="当前账号没有可用的数据上传权限。"
         />
       )}
 
@@ -363,6 +447,119 @@ export default function DataUploadCenter() {
           )}
         </Panel>
       </div>
+
+      {canManagePhotoImport && (
+        <Panel
+          title="照片调取批次"
+          description="文件名使用“姓名_身份证号.jpg”格式；先预览匹配结果，确认后才会挂载照片并完成工单。"
+        >
+          <Dragger
+            accept=".zip"
+            maxCount={1}
+            fileList={photoFileList}
+            beforeUpload={beforePhotoUpload}
+            onRemove={() => {
+              setPhotoFile(null)
+              setPhotoFileList([])
+              setPhotoBatch(null)
+              setPhotoError('')
+            }}
+            disabled={photoLoading}
+          >
+            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+            <p className="ant-upload-text">拖入照片 ZIP，或点击选择</p>
+            <p className="ant-upload-hint">支持 JPG、PNG、WebP、HEIC；单个 ZIP 最大 200MB。</p>
+          </Dragger>
+          <div className="mt-3 flex justify-end gap-2">
+            <Button
+              type="primary"
+              icon={<UploadOutlined />}
+              loading={photoLoading && !photoBatch}
+              disabled={!photoFile || photoLoading || Boolean(photoBatch && photoBatch.status !== 'preview')}
+              onClick={() => void handlePhotoPreview()}
+            >预览匹配结果</Button>
+            {photoBatch?.status === 'preview' && (
+              <Button
+                type="primary"
+                loading={photoLoading}
+                disabled={photoLoading}
+                onClick={() => void handlePhotoConfirm()}
+              >确认导入并通知</Button>
+            )}
+          </div>
+          {photoError && <Alert className="mt-3" type="error" showIcon message={photoError} />}
+          {photoBatch && (
+            <div className="mt-4 space-y-3">
+              <Alert
+                type={photoBatch.status === 'completed' ? 'success' : photoBatch.status === 'partial' ? 'warning' : 'info'}
+                showIcon
+                message={`批次 ${photoBatch.batch_no}：${photoBatch.status === 'preview' ? '等待确认' : photoBatch.status === 'completed' ? '已完成' : photoBatch.status === 'partial' ? '部分完成' : '处理中'}`}
+              />
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {[
+                  ['照片总数', photoBatch.total_files],
+                  ['可匹配', photoBatch.matched_files],
+                  ['未匹配', photoBatch.unmatched_files],
+                  ['冲突提醒', photoBatch.conflict_files],
+                  ['重复', photoBatch.duplicate_files],
+                  ['失败', photoBatch.failed_files],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-lg border border-[var(--app-border)] p-3">
+                    <Statistic title={label} value={value} suffix="张" />
+                  </div>
+                ))}
+              </div>
+              {(photoBatch.items?.length || 0) > 0 && (
+                <Table
+                  size="small"
+                  rowKey={(row: any) => `${row.safe_name}-${row.sha256}`}
+                  dataSource={photoBatch.items}
+                  pagination={{ pageSize: 10, showSizeChanger: false }}
+                  scroll={{ x: 760 }}
+                  columns={[
+                    { title: '文件名', dataIndex: 'safe_name', width: 260, ellipsis: true },
+                    { title: '姓名', dataIndex: 'person_name', width: 100 },
+                    { title: '身份证号', dataIndex: 'identity_masked', width: 130 },
+                    {
+                      title: '匹配结果', dataIndex: 'match_status', width: 110,
+                      render: value => <Tag color={value === 'matched' ? 'green' : value === 'duplicate' ? 'blue' : value === 'unmatched' ? 'orange' : value === 'conflict' ? 'gold' : 'red'}>{value === 'matched' ? '可匹配' : value === 'duplicate' ? '重复' : value === 'unmatched' ? '未匹配' : value === 'conflict' ? '冲突提醒' : '失败'}</Tag>,
+                    },
+                    { title: '说明', dataIndex: 'match_reason', width: 260, ellipsis: true },
+                  ]}
+                />
+              )}
+            </div>
+          )}
+          {photoHistory.length > 0 && (
+            <div className="mt-5">
+              <div className="mb-2 text-sm font-medium text-[var(--app-text-strong)]">最近照片批次</div>
+              <Table
+                size="small"
+                rowKey="id"
+                dataSource={photoHistory}
+                pagination={false}
+                scroll={{ x: 760 }}
+                columns={[
+                  { title: '批次', dataIndex: 'batch_no', width: 230 },
+                  { title: '状态', dataIndex: 'status', width: 100, render: value => value === 'completed' ? '已完成' : value === 'partial' ? '部分完成' : value === 'preview' ? '待确认' : '处理中' },
+                  { title: '照片', dataIndex: 'total_files', width: 80 },
+                  { title: '可匹配', dataIndex: 'matched_files', width: 90 },
+                  { title: '未匹配', dataIndex: 'unmatched_files', width: 90 },
+                  { title: '时间', dataIndex: 'created_at', width: 190 },
+                  {
+                    title: '操作', width: 90, fixed: 'right',
+                    render: (_: unknown, row: PhotoImportBatch) => (
+                      <Button type="link" size="small" onClick={() => void handlePhotoHistoryDetail(row.id)}>
+                        查看
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            </div>
+          )}
+        </Panel>
+      )}
 
       <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
 
