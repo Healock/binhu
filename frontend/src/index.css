@@ -1199,6 +1199,32 @@ html[data-theme='dark'] ::selection {
   text-align: center;
 }
 
+.maintenance-settings-panel__content {
+  gap: 12px !important;
+}
+
+.maintenance-settings-panel__content > .ant-alert {
+  margin: 0;
+}
+
+.maintenance-settings-panel__state {
+  padding-block: 10px;
+}
+
+.maintenance-settings-panel__content > label,
+.maintenance-settings-panel__content > .grid {
+  margin: 0;
+}
+
+.maintenance-settings-panel__content > label .ant-input,
+.maintenance-settings-panel__content > label .ant-input-textarea {
+  margin-top: 0;
+}
+
+html[data-theme='dark'] .maintenance-settings-panel__state {
+  background: rgb(15 23 42 / 0.28);
+}
+
 .login-form .ant-alert-error {
   border-color: #ffccc7;
   color: #8c1d18;

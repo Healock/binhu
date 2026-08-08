@@ -11,6 +11,12 @@ async def _ensure_column(cur, table: str, column: str, definition: str) -> None:
         await cur.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
 
 
+async def _ensure_index(cur, table: str, index_name: str, definition: str) -> None:
+    await cur.execute(f"SHOW INDEX FROM `{table}` WHERE Key_name=%s", (index_name,))
+    if not await cur.fetchone():
+        await cur.execute(f"ALTER TABLE `{table}` ADD {definition}")
+
+
 async def ensure_registry_schema(cur) -> None:
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_properties (
@@ -655,6 +661,12 @@ async def ensure_workflow_schema(cur) -> None:
             work_order_id BIGINT PRIMARY KEY,
             subject_type VARCHAR(40) NOT NULL,
             subject_id VARCHAR(190) NOT NULL,
+            subject_name VARCHAR(100) NOT NULL DEFAULT '',
+            identity_number VARCHAR(50) DEFAULT NULL,
+            identity_hmac CHAR(64) DEFAULT NULL,
+            identity_hmac_version SMALLINT UNSIGNED DEFAULT NULL,
+            source_parser_type VARCHAR(100) NOT NULL DEFAULT '',
+            source_row_key VARCHAR(190) NOT NULL DEFAULT '',
             requested_from DATETIME DEFAULT NULL,
             requested_to DATETIME DEFAULT NULL,
             request_reason VARCHAR(1000) NOT NULL DEFAULT '',
@@ -662,13 +674,67 @@ async def ensure_workflow_schema(cur) -> None:
             result_note VARCHAR(2000) NOT NULL DEFAULT '',
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_photo_subject (subject_type, subject_id),
+            INDEX idx_photo_identity (identity_hmac, result_status),
             INDEX idx_photo_result (result_status, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_column(cur, "photo_request_details", "subject_name", "VARCHAR(100) NOT NULL DEFAULT '' AFTER subject_id")
+    await _ensure_column(cur, "photo_request_details", "identity_number", "VARCHAR(50) DEFAULT NULL AFTER subject_name")
+    await _ensure_column(cur, "photo_request_details", "identity_hmac", "CHAR(64) DEFAULT NULL AFTER identity_number")
+    await _ensure_column(cur, "photo_request_details", "identity_hmac_version", "SMALLINT UNSIGNED DEFAULT NULL AFTER identity_hmac")
+    await _ensure_column(cur, "photo_request_details", "source_parser_type", "VARCHAR(100) NOT NULL DEFAULT '' AFTER identity_hmac_version")
+    await _ensure_column(cur, "photo_request_details", "source_row_key", "VARCHAR(190) NOT NULL DEFAULT '' AFTER source_parser_type")
+    await _ensure_index(cur, "photo_request_details", "idx_photo_identity", "INDEX idx_photo_identity (identity_hmac, result_status)")
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_request_import_batches (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            batch_no VARCHAR(50) NOT NULL UNIQUE,
+            storage_key VARCHAR(500) NOT NULL,
+            zip_sha256 CHAR(64) NOT NULL UNIQUE,
+            uploaded_by BIGINT NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'preview',
+            total_files INT UNSIGNED NOT NULL DEFAULT 0,
+            matched_files INT UNSIGNED NOT NULL DEFAULT 0,
+            unmatched_files INT UNSIGNED NOT NULL DEFAULT 0,
+            conflict_files INT UNSIGNED NOT NULL DEFAULT 0,
+            duplicate_files INT UNSIGNED NOT NULL DEFAULT 0,
+            failed_files INT UNSIGNED NOT NULL DEFAULT 0,
+            error_message VARCHAR(1000) NOT NULL DEFAULT '',
+            previewed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            confirmed_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_photo_import_status (status, created_at),
+            INDEX idx_photo_import_uploader (uploaded_by, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_request_import_items (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            batch_id BIGINT NOT NULL,
+            member_name VARCHAR(500) NOT NULL,
+            safe_name VARCHAR(255) NOT NULL,
+            person_name VARCHAR(100) NOT NULL DEFAULT '',
+            identity_hmac CHAR(64) DEFAULT NULL,
+            identity_hmac_version SMALLINT UNSIGNED DEFAULT NULL,
+            file_sha256 CHAR(64) NOT NULL,
+            size_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            match_status VARCHAR(20) NOT NULL DEFAULT 'unmatched',
+            match_reason VARCHAR(500) NOT NULL DEFAULT '',
+            matched_ticket_ids JSON NOT NULL,
+            notification_sent TINYINT(1) NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_photo_import_item (batch_id, safe_name, file_sha256),
+            INDEX idx_photo_import_item_batch (batch_id, match_status),
+            INDEX idx_photo_import_item_identity (identity_hmac, match_status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     photo_form_schema = (
         '{"fields":['
         '{"name":"subject_type","label":"对象类型","type":"select","required":true,"options":["task","person","other"]},'
         '{"name":"subject_id","label":"对象编号","type":"text","required":false},'
+        '{"name":"subject_name","label":"对象姓名","type":"text","required":true},'
+        '{"name":"identity_number","label":"身份证号","type":"text","required":true},'
         '{"name":"request_reason","label":"申请理由","type":"textarea","required":true},'
         '{"name":"requested_from","label":"开始时间","type":"datetime","required":false},'
         '{"name":"requested_to","label":"结束时间","type":"datetime","required":false}'

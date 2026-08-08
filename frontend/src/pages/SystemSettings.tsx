@@ -333,18 +333,19 @@ export default function SystemSettings() {
   return (
     <div className="space-y-6">
       <Panel
+        className="maintenance-settings-panel"
         title="平台维护模式"
         description="仅超级管理员可以配置；维护期间普通用户不能登录或访问业务接口。"
       >
-        <div className="flex flex-col gap-4">
+        <div className="maintenance-settings-panel__content flex flex-col gap-3">
           <Alert
             type="warning"
             showIcon
             message="底层维护仍使用服务器维护页"
             description="数据库迁移、容器重建等操作继续先切换 Nginx 维护页；这里的维护模式适合预约业务停用，不会修改服务器系统时钟。"
           />
-          <div className="rounded-lg border border-[var(--app-border)] px-4 py-3">
-            <div className="mb-2 text-sm font-medium text-[var(--app-text-strong)]">维护状态</div>
+          <div className="maintenance-settings-panel__state rounded-lg border border-[var(--app-border)] px-4 py-3">
+            <div className="mb-1.5 text-sm font-medium text-[var(--app-text-strong)]">维护状态</div>
             <Radio.Group
               className="maintenance-mode-options"
               value={maintenanceMode}
@@ -365,7 +366,7 @@ export default function SystemSettings() {
                 { label: '预约维护', value: 'scheduled' },
               ]}
             />
-            <p className="mt-2 text-xs text-[var(--app-text-secondary)]">
+            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
               {maintenanceMode === 'off'
                 ? '平台正常开放。'
                 : maintenanceMode === 'immediate'
@@ -374,9 +375,9 @@ export default function SystemSettings() {
             </p>
           </div>
           {maintenanceMode === 'scheduled' && (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-2">
               <label className="block text-sm text-[var(--app-text-strong)]">
-                <span className="mb-1.5 block font-medium">开始时间（{timezone}）</span>
+                <span className="mb-1 block font-medium">开始时间（{timezone}）</span>
                 <Input
                   type="datetime-local"
                   value={maintenanceStartAt}
@@ -385,7 +386,7 @@ export default function SystemSettings() {
                 />
               </label>
               <label className="block text-sm text-[var(--app-text-strong)]">
-                <span className="mb-1.5 block font-medium">结束时间（{timezone}，可选）</span>
+                <span className="mb-1 block font-medium">结束时间（{timezone}，可选）</span>
                 <Input
                   type="datetime-local"
                   value={maintenanceEndAt}
@@ -396,7 +397,7 @@ export default function SystemSettings() {
             </div>
           )}
           <label className="block text-sm text-[var(--app-text-strong)]">
-            <span className="mb-1.5 block font-medium">维护说明</span>
+            <span className="mb-1 block font-medium">维护说明</span>
             <Input.TextArea
               value={maintenanceMessage}
               onChange={event => setMaintenanceMessage(event.target.value)}

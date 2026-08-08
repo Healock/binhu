@@ -99,6 +99,8 @@ ACTION_LABELS: dict[str, str] = {
     "workflow.ticket.withdraw": "撤回或取消工单",
     "workflow.attachment.upload": "上传工单附件",
     "workflow.attachment.delete": "删除工单附件",
+    "workflow.photo_import.preview": "预览照片调取批次",
+    "workflow.photo_import.confirm": "确认照片调取批次",
 }
 
 TARGET_TYPE_LABELS: dict[str, str] = {
@@ -144,6 +146,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "workflow_version": "工单流程版本",
     "work_order": "工单",
     "work_order_attachment": "工单附件",
+    "photo_import_batch": "照片调取批次",
 }
 
 RESULT_LABELS: dict[str, str] = {
