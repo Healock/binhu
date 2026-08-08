@@ -16,6 +16,17 @@ const api = axios.create({
 const activeRequest = { headers: { 'X-User-Activity': '1' } }
 let unauthorizedRedirectStarted = false
 
+export interface MaintenanceStatus {
+  enabled: boolean
+  active: boolean
+  scheduled: boolean
+  start_at: string | null
+  end_at: string | null
+  message: string
+  server_time: string
+  timezone: string
+}
+
 export function resetUnauthorizedRedirectForTests(): void {
   unauthorizedRedirectStarted = false
 }
@@ -40,6 +51,24 @@ export function handleUnauthorized(detail?: unknown): void {
     : '登录状态已失效'
   unauthorizedRedirectStarted = true
   sessionStorage.setItem('auth_exit_reason', JSON.stringify({ code, message }))
+  window.location.href = '/login'
+}
+
+export function handleMaintenance(detail?: unknown): void {
+  if (window.location.pathname.includes('/login') || unauthorizedRedirectStarted) {
+    return
+  }
+  const payload = detail && typeof detail === 'object'
+    ? detail as { code?: unknown; message?: unknown }
+    : null
+  const message = typeof payload?.message === 'string'
+    ? payload.message
+    : '平台正在维护中，请稍后再试'
+  unauthorizedRedirectStarted = true
+  sessionStorage.setItem('auth_exit_reason', JSON.stringify({
+    code: 'maintenance_mode',
+    message,
+  }))
   window.location.href = '/login'
 }
 
@@ -68,6 +97,12 @@ export async function fetchWithAuth(
       ? (body as { detail?: unknown }).detail
       : null
     handleUnauthorized(detail)
+  } else if (response.status === 503 && options.handleUnauthorized !== false) {
+    const body = await response.clone().json().catch(() => null)
+    const detail = body && typeof body === 'object'
+      ? (body as { detail?: unknown }).detail
+      : null
+    handleMaintenance(detail)
   }
   return response
 }
@@ -89,6 +124,8 @@ api.interceptors.response.use(
   (error) => {
     if (error?.response?.status === 401) {
       handleUnauthorized(error?.response?.data?.detail)
+    } else if (error?.response?.status === 503) {
+      handleMaintenance(error?.response?.data?.detail)
     }
     return Promise.reject(error)
   }
@@ -1784,6 +1821,11 @@ export function policeDispatchFeedbackUrl(id: number): string {
 export async function getSystemConfig(): Promise<Record<string, string>> {
   const { data } = await api.get('/system/config')
   return data.data
+}
+
+export async function getMaintenanceStatus(): Promise<MaintenanceStatus> {
+  const { data } = await api.get('/maintenance/status')
+  return data as MaintenanceStatus
 }
 
 export async function updateSystemConfig(config: Record<string, string>): Promise<void> {

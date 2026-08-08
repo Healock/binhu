@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Descriptions,
+  Input,
   InputNumber,
   Select,
   Switch,
@@ -57,6 +58,46 @@ const COMMON_INTERVALS = new Set(
     .filter((value): value is number => typeof value === 'number'),
 )
 
+function formatDateTimeInput(value: string | undefined, timezone: string): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`
+}
+
+function parseDateTimeInput(value: string, timezone: string): string {
+  if (!value) return ''
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/)
+  if (!match) return ''
+  const target = Date.UTC(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    Number(match[4]), Number(match[5]),
+  )
+  let candidate = target
+  for (let index = 0; index < 4; index += 1) {
+    const rendered = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(candidate))
+    const values = Object.fromEntries(rendered.map(part => [part.type, part.value]))
+    const renderedTarget = Date.UTC(
+      Number(values.year), Number(values.month) - 1, Number(values.day),
+      Number(values.hour), Number(values.minute),
+    )
+    const correction = target - renderedTarget
+    candidate += correction
+    if (correction === 0) break
+  }
+  return new Date(candidate).toISOString().replace('.000Z', 'Z')
+}
+
 export default function SystemSettings() {
   const [timezone, setTimezone] = useState('Asia/Shanghai')
   const [schedule, setSchedule] = useState<SyncSchedule>({
@@ -88,11 +129,22 @@ export default function SystemSettings() {
   const [onlineWritebackEnabled, setOnlineWritebackEnabled] = useState(false)
   const [savingWriteback, setSavingWriteback] = useState(false)
   const [writebackMsg, setWritebackMsg] = useState('')
+  const [maintenanceEnabled, setMaintenanceEnabled] = useState(false)
+  const [maintenanceStartAt, setMaintenanceStartAt] = useState('')
+  const [maintenanceEndAt, setMaintenanceEndAt] = useState('')
+  const [maintenanceMessage, setMaintenanceMessage] = useState('平台正在维护中，请稍后再试')
+  const [savingMaintenance, setSavingMaintenance] = useState(false)
+  const [maintenanceMsg, setMaintenanceMsg] = useState('')
 
   useEffect(() => {
     Promise.all([getSystemConfig(), getSyncSchedule()])
       .then(([config, currentSchedule]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
+        const configuredTimezone = config.timezone || 'Asia/Shanghai'
+        setMaintenanceEnabled(String(config.maintenance_enabled || '0') === '1')
+        setMaintenanceStartAt(formatDateTimeInput(config.maintenance_start_at, configuredTimezone))
+        setMaintenanceEndAt(formatDateTimeInput(config.maintenance_end_at, configuredTimezone))
+        setMaintenanceMessage(config.maintenance_message || '平台正在维护中，请稍后再试')
         setIdleMinutes(Number(config.session_idle_minutes || 30))
         setOnlineWritebackEnabled(
           String(config.online_writeback_enabled || '0') === '1',
@@ -231,8 +283,108 @@ export default function SystemSettings() {
     }
   }
 
+  const handleSaveMaintenance = async () => {
+    setSavingMaintenance(true)
+    setMaintenanceMsg('')
+    try {
+      const startAt = parseDateTimeInput(maintenanceStartAt, timezone)
+      const endAt = parseDateTimeInput(maintenanceEndAt, timezone)
+      if (startAt && endAt && new Date(endAt) <= new Date(startAt)) {
+        setMaintenanceMsg('维护结束时间必须晚于开始时间')
+        return
+      }
+      await updateSystemConfig({
+        maintenance_enabled: maintenanceEnabled ? '1' : '0',
+        maintenance_start_at: startAt,
+        maintenance_end_at: endAt,
+        maintenance_message: maintenanceMessage.trim(),
+      })
+      setMaintenanceMsg(
+        maintenanceEnabled
+          ? (startAt ? '维护预约已保存' : '维护模式已启用，普通用户将立即看到维护提示')
+          : '维护模式已关闭，平台恢复正常访问',
+      )
+    } catch (error: any) {
+      setMaintenanceMsg(error?.response?.data?.detail || '维护设置保存失败')
+    } finally {
+      setSavingMaintenance(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
+      <Panel
+        title="平台维护模式"
+        description="仅超级管理员可以配置；维护期间普通用户不能登录或访问业务接口，超级管理员仍可登录处理维护。"
+      >
+        <div className="flex flex-col gap-4">
+          <Alert
+            type="warning"
+            showIcon
+            message="底层维护仍使用服务器维护页"
+            description="数据库迁移、容器重建等操作继续先切换 Nginx 维护页；这里的维护模式适合预约业务停用，不会修改服务器系统时钟。"
+          />
+          <div className="flex min-h-11 items-center justify-between gap-4 rounded-lg border border-[var(--app-border)] px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-[var(--app-text-strong)]">启用维护模式</div>
+              <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
+                不填写开始时间表示立即生效；填写结束时间后会自动恢复。
+              </div>
+            </div>
+            <Switch checked={maintenanceEnabled} onChange={setMaintenanceEnabled} loading={loading} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block text-sm text-[var(--app-text-strong)]">
+              <span className="mb-1.5 block font-medium">开始时间（{timezone}）</span>
+              <Input
+                type="datetime-local"
+                value={maintenanceStartAt}
+                onChange={event => setMaintenanceStartAt(event.target.value)}
+                disabled={loading}
+              />
+            </label>
+            <label className="block text-sm text-[var(--app-text-strong)]">
+              <span className="mb-1.5 block font-medium">结束时间（{timezone}）</span>
+              <Input
+                type="datetime-local"
+                value={maintenanceEndAt}
+                onChange={event => setMaintenanceEndAt(event.target.value)}
+                disabled={loading}
+              />
+            </label>
+          </div>
+          <label className="block text-sm text-[var(--app-text-strong)]">
+            <span className="mb-1.5 block font-medium">维护说明</span>
+            <Input.TextArea
+              value={maintenanceMessage}
+              onChange={event => setMaintenanceMessage(event.target.value)}
+              maxLength={500}
+              showCount
+              autoSize={{ minRows: 2, maxRows: 4 }}
+              placeholder="例如：系统升级，预计稍后恢复"
+              disabled={loading}
+            />
+          </label>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              loading={savingMaintenance}
+              disabled={loading}
+              onClick={handleSaveMaintenance}
+            >
+              保存维护设置
+            </Button>
+          </div>
+          {maintenanceMsg && (
+            <Alert
+              type={maintenanceMsg.includes('失败') || maintenanceMsg.includes('必须') ? 'error' : 'success'}
+              showIcon
+              message={maintenanceMsg}
+            />
+          )}
+        </div>
+      </Panel>
+
       <Panel
         title="自动同步"
         description="按固定间隔读取腾讯文档；修改设置后会重新开始倒计时"

@@ -6,6 +6,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
+import { formatUTCTime, getMaintenanceStatus, type MaintenanceStatus } from '../api/client'
 import loginBlueGrid from '../assets/login/login-blue-grid.png'
 import loginSilkCity from '../assets/login/login-silk-city.png'
 import policeEmblem from '../assets/login/police-emblem.png'
@@ -17,6 +18,7 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null)
 
   useEffect(() => {
     const raw = sessionStorage.getItem('auth_exit_reason')
@@ -27,6 +29,25 @@ export default function Login() {
       setError(reason.message || '登录状态已失效，请重新登录')
     } catch {
       setError('登录状态已失效，请重新登录')
+    }
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    const refresh = () => {
+      getMaintenanceStatus()
+        .then(status => {
+          if (!disposed) setMaintenance(status)
+        })
+        .catch(() => {
+          if (!disposed) setMaintenance(null)
+        })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 30_000)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
     }
   }, [])
 
@@ -79,6 +100,37 @@ export default function Login() {
           </header>
 
           <div className="login-form-card">
+            {maintenance?.active && (
+              <Alert
+                className="mb-4"
+                type="warning"
+                showIcon
+                message="平台正在维护中"
+                description={(
+                  <span>
+                    {maintenance.message}
+                    {maintenance.end_at
+                      ? ` 预计于 ${formatUTCTime(maintenance.end_at, maintenance.timezone)} 恢复。`
+                      : ''}
+                    {' '}超级管理员仍可登录处理维护配置。
+                  </span>
+                )}
+              />
+            )}
+            {maintenance?.scheduled && !maintenance.active && (
+              <Alert
+                className="mb-4"
+                type="info"
+                showIcon
+                message="平台已预约维护"
+                description={(
+                  <span>
+                    计划于 {formatUTCTime(maintenance.start_at, maintenance.timezone)} 开始维护。
+                    {' '}维护期间普通账号将暂时无法登录。
+                  </span>
+                )}
+              />
+            )}
             <div className="login-form-card__heading">
               <h3>登录系统</h3>
               <p>请使用平台账号进入系统</p>

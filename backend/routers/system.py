@@ -10,6 +10,7 @@ from services.personnel_positions import (
     serialize_position_config,
     serialize_rental_position_config,
 )
+from services.maintenance import validate_maintenance_config
 
 router = APIRouter(
     prefix="/api/system",
@@ -36,7 +37,33 @@ async def update_config(
 ):
     """更新系统配置"""
     async with conn.cursor() as cur:
+        maintenance_updates: dict[str, str] = {}
+        maintenance_keys = {
+            "maintenance_enabled",
+            "maintenance_start_at",
+            "maintenance_end_at",
+            "maintenance_message",
+        }
+        if maintenance_keys.intersection(config):
+            await cur.execute(
+                "SELECT config_key, config_value FROM _system_config "
+                "WHERE config_key IN "
+                "('maintenance_enabled', 'maintenance_start_at', "
+                "'maintenance_end_at', 'maintenance_message')"
+            )
+            merged = {
+                str(row[0]): str(row[1] or "")
+                for row in await cur.fetchall()
+            }
+            merged.update({key: config[key] for key in maintenance_keys if key in config})
+            try:
+                maintenance_updates = validate_maintenance_config(merged)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         for k, v in config.items():
+            if k in maintenance_updates:
+                continue
             if k == "session_idle_minutes":
                 try:
                     v = int(v)
@@ -64,6 +91,12 @@ async def update_config(
                 "INSERT INTO _system_config (config_key, config_value) VALUES (%s, %s) "
                 "ON DUPLICATE KEY UPDATE config_value = %s",
                 (k, str(v), str(v)),
+            )
+        for k, v in maintenance_updates.items():
+            await cur.execute(
+                "INSERT INTO _system_config (config_key, config_value) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE config_value = %s",
+                (k, v, v),
             )
     await record_admin_audit(
         user,

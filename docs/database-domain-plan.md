@@ -1,6 +1,6 @@
 # 八库业务域与新档案规划
 
-本文描述按业务域拆分数据库和新增辖区档案、人员标记、通用工单的长期结构。当前版本只创建新库连接和基础表，不迁移既有生产数据。
+本文描述按业务域拆分数据库和新增辖区档案、人员标记、通用工单的长期结构。迁移采用维护窗口分阶段进行，旧表在核对完成后仍保留只读回退材料，不进行长期双写。
 
 ## 数据库边界
 
@@ -60,12 +60,26 @@
 
 ## 当前状态
 
+- 2026-08-08 已完成第一阶段走访域迁移：`_visit_import_batches`（35 行）、`t_visit_details`（10,678 行）和 `_visit_import_issues`（299 行）已从 `OnlineData` 复制到 `VisitData`。
+- 三张表的字段结构、行数和主键边界均已通过真实 MySQL `verify --domain visit` 核验；`BINHU_VISIT_DOMAIN_ACTIVE=true` 已切换到新库，旧表保留。
+- 第二阶段已把空的下发三表迁入 `DispatchData`，并把小区地址 93 条、地址来源 93 条、历史导入 2 条和冲突 0 条迁入 `RegistryData`；两个域均通过结构、数量、主键边界和索引对比。
+- `DISPATCH_DOMAIN_ACTIVE=true` 和 `REGISTRY_ADDRESS_DOMAIN_ACTIVE=true` 已切换；迁移前后八库备份均已完成并校验。Registry/Workflow 功能及平台、日报业务域仍未切换。
+- 第三阶段已完成 `PlatformData` 迁移：24 张平台基础表已从 `OnlineData` 复制并通过结构、行数、主键边界和关键索引核验；用户 75、人员 72、用户权限组关系 3 条与源库一致。
+- `BINHU_PLATFORM_DOMAIN_ACTIVE=true` 已切换并重建后端与运维代理；同步任务已成功完成 12/12 步，近期后端和运维代理错误日志无新增错误。
+- `_sync_schedule` 与 `_sync_log` 按当前固定路由继续保留在 `OnlineData`，没有纳入本阶段 `PlatformData` 迁移；这不是漏迁，后续仍以代码白名单和真实同步验收为准。
+- 第三阶段迁移前备份为 `/backup/binhu/migration/0.16.0-platform-pre-migration-20260808T155700Z.sql.gz`（SHA-256：`8c3db54c52efc07192ef345ea7eaac00578aa7f04d8cfeae21f0007f772aee6a`），迁移后备份为 `/backup/binhu/migration/0.16.0-platform-migrated-20260808T160239Z.sql.gz`（SHA-256：`98e9c457df9c957354fa9af619baeddab923b40ca3625014fad178e7730636e2`）。
+- 第四阶段已完成日报域中的工作日志草稿迁移：`_work_log_drafts` 3 条从 `OnlineData` 复制到 `daily_report`，结构、行数和主键边界一致；`BINHU_DAILY_DOMAIN_ACTIVE=true` 已切换。
+- 第四阶段迁移前备份为 `/backup/binhu/migration/0.16.0-worklogs-pre-migration-20260808T163351Z.sql.gz`（SHA-256：`2664fbf2d677914b44e7585a79bc66b709286264a8353a3630ccaa00ec8990b4`），迁移后备份为 `/backup/binhu/migration/0.16.0-worklogs-migrated-20260808T163528Z.sql.gz`（SHA-256：`6f36ed8dbaa9a6f5c361103e79127411f86d3454e3e68468a0a81f54b18822c9`）。
+- 第五阶段已完成身份证 HMAC 回填：生产服务器生成专用 HMAC v1 密钥并保存到 root-only 私密配置；在线投影 673 条中 339 条有身份证字段，全部重算并核对一致，334 条无身份证字段继续为空。
+- `RegistryData` 当前辖区人员、人员标记分配和任务标记快照均为 0 条，因此本阶段没有可回填的历史快照，不向业务表制造测试数据。
+- 第五阶段迁移后八库备份为 `/backup/binhu/migration/0.16.0-hmac-backfilled-20260808T174803Z.sql.gz`（SHA-256：`b283849786e3837ae611747afa647d0025c6b1ad776433b4fb6368b8888549a6`）；HMAC 私密配置备份不进入数据库备份或 Git。
+
 - 八个数据库名称、连接池、固定表白名单路由和初始化 schema 已加入代码。
 - `domain_migration` 默认只读，复合主键表不会按单一主键错误分页；旧表和旧数据库暂不清理。
-- 真实 MySQL 的测量、复制、索引 EXPLAIN、备份恢复和生产切换尚未执行；必须按维护窗口逐域完成。
+- 真实 MySQL 的走访、下发、小区地址、平台基础、工作日志和身份证 HMAC 域测量、复制、逐表核对、备份及生产切换已完成；人员标记快照因当前没有标记分配而无可回填记录。
 - `RegistryData`、`WorkflowData` 功能开关在迁移完成前保持关闭，避免新页面在空库上产生业务写入。
 
 - 新数据库名称已经加入配置和 Compose。
 - 新数据库缺失时，旧三库平台会记录提示并继续启动，方便分阶段迁移。
 - `RegistryData`、`WorkflowData` 基础表由后端启动兼容初始化。
-- 当前未连接真实 MySQL，未迁移生产数据，未执行跨库备份恢复演练。
+- 生产迁移已完成走访、下发、小区地址、平台基础、工作日志和 HMAC 回填六个阶段；旧表和各阶段迁移前后八库备份继续保留，尚未执行删除或恢复操作。

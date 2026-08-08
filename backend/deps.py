@@ -26,6 +26,7 @@ from services.permissions import (
 )
 from services.theme_preferences import normalize_theme_mode
 from services.member_departments import get_member_departments
+from services.maintenance import enforce_maintenance, is_super_admin_user
 
 
 FEATURE_PERMISSION_GATES = {
@@ -191,7 +192,9 @@ async def get_current_user(request: Request) -> dict:
             await cur.execute(
                 "SELECT config_key, config_value FROM _system_config "
                 "WHERE config_key IN "
-                "('session_idle_minutes', 'permission_enforcement_enabled')"
+                "('session_idle_minutes', 'permission_enforcement_enabled', "
+                "'maintenance_enabled', 'maintenance_start_at', "
+                "'maintenance_end_at', 'maintenance_message', 'timezone')"
             )
             config = {str(item[0]): str(item[1]) for item in await cur.fetchall()}
             try:
@@ -290,6 +293,16 @@ async def get_current_user(request: Request) -> dict:
                 permission_scopes = {
                     permission: data_scope for permission in permissions
                 }
+
+            # 维护模式由后端强制执行；超级管理员仍可登录和处理维护配置。
+            # 不能只依赖前端隐藏菜单，否则已有会话仍可继续访问业务接口。
+            maintenance_user = {
+                "role": row[2],
+                "permission_group": {"code": groups[0]["code"]} if groups else None,
+                "permission_groups": groups,
+            }
+            if not is_super_admin_user(maintenance_user):
+                enforce_maintenance(config, maintenance_user, now=server_time)
 
             primary_group = groups[0]
 

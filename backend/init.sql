@@ -37,7 +37,11 @@ INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('weekend_duty_positions', '["组长", "组员"]'),
     ('session_idle_minutes', '30'),
     ('permission_enforcement_enabled', '0'),
-    ('online_writeback_enabled', '0');
+    ('online_writeback_enabled', '0'),
+    ('maintenance_enabled', '0'),
+    ('maintenance_start_at', ''),
+    ('maintenance_end_at', ''),
+    ('maintenance_message', '平台正在维护中，请稍后再试');
 CREATE TABLE IF NOT EXISTS _grid_members (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,
