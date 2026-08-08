@@ -5,6 +5,7 @@ import {
   Descriptions,
   Input,
   InputNumber,
+  Radio,
   Select,
   Switch,
 } from 'antd'
@@ -57,6 +58,8 @@ const COMMON_INTERVALS = new Set(
     .map(option => option.value)
     .filter((value): value is number => typeof value === 'number'),
 )
+
+type MaintenanceMode = 'off' | 'immediate' | 'scheduled'
 
 function formatDateTimeInput(value: string | undefined, timezone: string): string {
   if (!value) return ''
@@ -129,7 +132,7 @@ export default function SystemSettings() {
   const [onlineWritebackEnabled, setOnlineWritebackEnabled] = useState(false)
   const [savingWriteback, setSavingWriteback] = useState(false)
   const [writebackMsg, setWritebackMsg] = useState('')
-  const [maintenanceEnabled, setMaintenanceEnabled] = useState(false)
+  const [maintenanceMode, setMaintenanceMode] = useState<MaintenanceMode>('off')
   const [maintenanceStartAt, setMaintenanceStartAt] = useState('')
   const [maintenanceEndAt, setMaintenanceEndAt] = useState('')
   const [maintenanceMessage, setMaintenanceMessage] = useState('平台正在维护中，请稍后再试')
@@ -141,9 +144,17 @@ export default function SystemSettings() {
       .then(([config, currentSchedule]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
         const configuredTimezone = config.timezone || 'Asia/Shanghai'
-        setMaintenanceEnabled(String(config.maintenance_enabled || '0') === '1')
-        setMaintenanceStartAt(formatDateTimeInput(config.maintenance_start_at, configuredTimezone))
-        setMaintenanceEndAt(formatDateTimeInput(config.maintenance_end_at, configuredTimezone))
+        const configuredStartAt = formatDateTimeInput(config.maintenance_start_at, configuredTimezone)
+        const configuredEndAt = formatDateTimeInput(config.maintenance_end_at, configuredTimezone)
+        setMaintenanceMode(
+          String(config.maintenance_enabled || '0') !== '1'
+            ? 'off'
+            : configuredStartAt
+              ? 'scheduled'
+              : 'immediate',
+        )
+        setMaintenanceStartAt(configuredStartAt)
+        setMaintenanceEndAt(configuredEndAt)
         setMaintenanceMessage(config.maintenance_message || '平台正在维护中，请稍后再试')
         setIdleMinutes(Number(config.session_idle_minutes || 30))
         setOnlineWritebackEnabled(
@@ -287,21 +298,29 @@ export default function SystemSettings() {
     setSavingMaintenance(true)
     setMaintenanceMsg('')
     try {
-      const startAt = parseDateTimeInput(maintenanceStartAt, timezone)
-      const endAt = parseDateTimeInput(maintenanceEndAt, timezone)
+      if (maintenanceMode === 'scheduled' && !maintenanceStartAt) {
+        setMaintenanceMsg('预约维护需要填写开始时间')
+        return
+      }
+      const startAt = maintenanceMode === 'scheduled'
+        ? parseDateTimeInput(maintenanceStartAt, timezone)
+        : ''
+      const endAt = maintenanceMode === 'scheduled'
+        ? parseDateTimeInput(maintenanceEndAt, timezone)
+        : ''
       if (startAt && endAt && new Date(endAt) <= new Date(startAt)) {
         setMaintenanceMsg('维护结束时间必须晚于开始时间')
         return
       }
       await updateSystemConfig({
-        maintenance_enabled: maintenanceEnabled ? '1' : '0',
+        maintenance_enabled: maintenanceMode === 'off' ? '0' : '1',
         maintenance_start_at: startAt,
         maintenance_end_at: endAt,
         maintenance_message: maintenanceMessage.trim(),
       })
       setMaintenanceMsg(
-        maintenanceEnabled
-          ? (startAt ? '维护预约已保存' : '维护模式已启用，普通用户将立即看到维护提示')
+        maintenanceMode !== 'off'
+          ? (maintenanceMode === 'scheduled' ? '维护预约已保存' : '维护模式已启用，普通用户将立即看到维护提示')
           : '维护模式已关闭，平台恢复正常访问',
       )
     } catch (error: any) {
@@ -315,7 +334,7 @@ export default function SystemSettings() {
     <div className="space-y-6">
       <Panel
         title="平台维护模式"
-        description="仅超级管理员可以配置；维护期间普通用户不能登录或访问业务接口，超级管理员仍可登录处理维护。"
+        description="仅超级管理员可以配置；维护期间普通用户不能登录或访问业务接口。"
       >
         <div className="flex flex-col gap-4">
           <Alert
@@ -324,35 +343,58 @@ export default function SystemSettings() {
             message="底层维护仍使用服务器维护页"
             description="数据库迁移、容器重建等操作继续先切换 Nginx 维护页；这里的维护模式适合预约业务停用，不会修改服务器系统时钟。"
           />
-          <div className="flex min-h-11 items-center justify-between gap-4 rounded-lg border border-[var(--app-border)] px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-[var(--app-text-strong)]">启用维护模式</div>
-              <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-                不填写开始时间表示立即生效；填写结束时间后会自动恢复。
-              </div>
+          <div className="rounded-lg border border-[var(--app-border)] px-4 py-3">
+            <div className="mb-2 text-sm font-medium text-[var(--app-text-strong)]">维护状态</div>
+            <Radio.Group
+              className="maintenance-mode-options"
+              value={maintenanceMode}
+              onChange={event => {
+                const nextMode = event.target.value as MaintenanceMode
+                setMaintenanceMode(nextMode)
+                if (nextMode !== 'scheduled') {
+                  setMaintenanceStartAt('')
+                  setMaintenanceEndAt('')
+                }
+              }}
+              optionType="button"
+              buttonStyle="solid"
+              disabled={loading || savingMaintenance}
+              options={[
+                { label: '关闭维护', value: 'off' },
+                { label: '立即维护', value: 'immediate' },
+                { label: '预约维护', value: 'scheduled' },
+              ]}
+            />
+            <p className="mt-2 text-xs text-[var(--app-text-secondary)]">
+              {maintenanceMode === 'off'
+                ? '平台正常开放。'
+                : maintenanceMode === 'immediate'
+                  ? '保存后立即进入维护，普通用户将无法登录或访问业务接口。'
+                  : '填写开始时间后保存，平台会在指定时间自动进入维护。'}
+            </p>
+          </div>
+          {maintenanceMode === 'scheduled' && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm text-[var(--app-text-strong)]">
+                <span className="mb-1.5 block font-medium">开始时间（{timezone}）</span>
+                <Input
+                  type="datetime-local"
+                  value={maintenanceStartAt}
+                  onChange={event => setMaintenanceStartAt(event.target.value)}
+                  disabled={loading || savingMaintenance}
+                />
+              </label>
+              <label className="block text-sm text-[var(--app-text-strong)]">
+                <span className="mb-1.5 block font-medium">结束时间（{timezone}，可选）</span>
+                <Input
+                  type="datetime-local"
+                  value={maintenanceEndAt}
+                  onChange={event => setMaintenanceEndAt(event.target.value)}
+                  disabled={loading || savingMaintenance}
+                />
+              </label>
             </div>
-            <Switch checked={maintenanceEnabled} onChange={setMaintenanceEnabled} loading={loading} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="block text-sm text-[var(--app-text-strong)]">
-              <span className="mb-1.5 block font-medium">开始时间（{timezone}）</span>
-              <Input
-                type="datetime-local"
-                value={maintenanceStartAt}
-                onChange={event => setMaintenanceStartAt(event.target.value)}
-                disabled={loading}
-              />
-            </label>
-            <label className="block text-sm text-[var(--app-text-strong)]">
-              <span className="mb-1.5 block font-medium">结束时间（{timezone}）</span>
-              <Input
-                type="datetime-local"
-                value={maintenanceEndAt}
-                onChange={event => setMaintenanceEndAt(event.target.value)}
-                disabled={loading}
-              />
-            </label>
-          </div>
+          )}
           <label className="block text-sm text-[var(--app-text-strong)]">
             <span className="mb-1.5 block font-medium">维护说明</span>
             <Input.TextArea
@@ -372,7 +414,11 @@ export default function SystemSettings() {
               disabled={loading}
               onClick={handleSaveMaintenance}
             >
-              保存维护设置
+              {maintenanceMode === 'off'
+                ? '保存并关闭维护'
+                : maintenanceMode === 'scheduled'
+                  ? '保存预约维护'
+                  : '立即启用维护'}
             </Button>
           </div>
           {maintenanceMsg && (
