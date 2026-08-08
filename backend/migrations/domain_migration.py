@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 from typing import Any
@@ -68,6 +69,17 @@ def quote_identifier(value: str) -> str:
     if not value or any(char not in SAFE_IDENTIFIERS for char in value):
         raise ValueError(f"unsafe identifier: {value!r}")
     return f"`{value}`"
+
+
+async def close_connection(conn) -> None:
+    """Close an aiomysql connection across supported client versions."""
+    conn.close()
+    wait_closed = getattr(conn, "wait_closed", None)
+    if wait_closed is None:
+        return
+    result = wait_closed()
+    if inspect.isawaitable(result):
+        await result
 
 
 async def open_connection():
@@ -303,8 +315,7 @@ async def migrate_domain(domain: str, apply: bool, chunk_size: int) -> dict[str,
                 )
             return {"domain": domain, "source_schema": source_schema, "target_schema": target_schema, **detail}
     finally:
-        conn.close()
-        await conn.wait_closed()
+        await close_connection(conn)
 
 
 async def verify_domain(domain: str) -> dict[str, Any]:
@@ -361,8 +372,7 @@ async def verify_domain(domain: str) -> dict[str, Any]:
             return {"domain": domain, "source_schema": source_schema, "target_schema": target_schema, "tables": checks,
                     "consistent": all(item["consistent"] for item in checks)}
     finally:
-        conn.close()
-        await conn.wait_closed()
+        await close_connection(conn)
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -373,8 +383,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 print(json.dumps(await measure_schema(cur, args.schema), ensure_ascii=False, indent=2, default=str))
                 return
     finally:
-        conn.close()
-        await conn.wait_closed()
+        await close_connection(conn)
     if args.command == "migrate":
         if not args.apply:
             print(json.dumps(await migrate_domain(args.domain, False, args.chunk_size), ensure_ascii=False, indent=2))

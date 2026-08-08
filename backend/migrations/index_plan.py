@@ -9,12 +9,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 
 import aiomysql
 
 from config import settings
 from migrations.domain_migration import quote_identifier
+
+
+async def close_connection(conn) -> None:
+    """Close an aiomysql connection across supported client versions."""
+    conn.close()
+    wait_closed = getattr(conn, "wait_closed", None)
+    if wait_closed is None:
+        return
+    result = wait_closed()
+    if inspect.isawaitable(result):
+        await result
 
 
 CANDIDATES = (
@@ -85,8 +97,7 @@ async def plan(apply: bool) -> list[dict]:
                 })
             return result
     finally:
-        conn.close()
-        await conn.wait_closed()
+        await close_connection(conn)
 
 
 if __name__ == "__main__":

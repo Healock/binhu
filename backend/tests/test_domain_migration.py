@@ -50,6 +50,19 @@ def test_primary_key_columns_preserves_composite_order():
     assert len(cursor.calls) == 1
 
 
+def test_close_connection_supports_clients_without_wait_closed():
+    class ConnectionWithoutWaitClosed:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    connection = ConnectionWithoutWaitClosed()
+    asyncio.run(domain_migration.close_connection(connection))
+    assert connection.closed is True
+
+
 def test_migrate_dry_run_does_not_create_state_or_copy_business_tables():
     cursor = _Cursor()
     connection = _Connection(cursor)
