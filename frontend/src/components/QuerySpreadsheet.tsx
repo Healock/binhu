@@ -36,6 +36,7 @@ import {
   applyQuerySheetValues,
   buildQuerySheetRows,
   canEditQuerySheetCell,
+  isQuerySheetAutomaticTextConversion,
   isQuerySheetHorizontalScrollbarPointer,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
@@ -45,6 +46,7 @@ import {
   queryInspectorMismatch,
   queryInspectorOptions,
   querySheetTextCell,
+  querySheetCellKey,
   resolveQuerySheetColumnWidth,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
@@ -417,6 +419,33 @@ export function QuerySpreadsheet({
     let saving = false
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined
     let selectedWorksheetRow = -1
+    const pendingEditedCells = new Set<string>()
+    const explicitEditedValues = new Map<string, string>()
+    let pendingPaste: { range: IRange; values: string[][] } | null = null
+
+    const markEditedRange = (range: IRange, values?: string[][]) => {
+      const rowCount = range.endRow - range.startRow + 1
+      const columnCount = range.endColumn - range.startColumn + 1
+      for (let rowOffset = 0; rowOffset < rowCount; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < columnCount; columnOffset += 1) {
+          const row = range.startRow + rowOffset
+          const column = range.startColumn + columnOffset
+          if (row < 1 || column < 0) continue
+          const key = querySheetCellKey(row, column)
+          pendingEditedCells.add(key)
+          const value = values?.[rowOffset]?.[columnOffset]
+          if (value !== undefined) explicitEditedValues.set(key, value)
+        }
+      }
+    }
+
+    const richTextToPlainText = (value: unknown): string | undefined => {
+      if (value && typeof (value as { toPlainText?: unknown }).toPlainText === 'function') {
+        return (value as { toPlainText: () => string }).toPlainText()
+      }
+      if (typeof value === 'string') return value
+      return undefined
+    }
 
     const restoreChanges = (changes: QuerySheetCellChange[]) => {
       suppressCommands = true
@@ -444,10 +473,61 @@ export function QuerySpreadsheet({
 
     const reconcileValues = async () => {
       if (disposed || saving) return
-      const dataRange = worksheet.getRange(1, 0, sheetRows.length, columns.length)
-      const values = dataRange.getValues()
-      const formulas = dataRange.getFormulas()
-      const changes = applyQuerySheetValues(sheetRows, columns, values)
+      if (!pendingEditedCells.size) return
+      const editedCells = new Set(pendingEditedCells)
+      const editedValues = new Map(explicitEditedValues)
+      pendingEditedCells.clear()
+      explicitEditedValues.clear()
+      const values: unknown[][] = []
+      const formulas: string[][] = []
+      editedCells.forEach(key => {
+        const [rowText, columnText] = key.split(':')
+        const worksheetRow = Number(rowText)
+        const rowOffset = worksheetRow - 1
+        const columnIndex = Number(columnText)
+        if (!Number.isInteger(rowOffset) || !Number.isInteger(columnIndex)) return
+        const cell = worksheet.getRange(worksheetRow, columnIndex)
+        values[rowOffset] ||= []
+        formulas[rowOffset] ||= []
+        values[rowOffset][columnIndex] = editedValues.has(key)
+          ? editedValues.get(key)
+          : cell.getValue()
+        formulas[rowOffset][columnIndex] = cell.getFormula()
+      })
+      const automaticConversions: QuerySheetCellChange[] = []
+      for (const key of editedCells) {
+        if (editedValues.has(key)) continue
+        const [rowText, columnText] = key.split(':')
+        const rowOffset = Number(rowText) - 1
+        const columnIndex = Number(columnText)
+        const descriptor = sheetRows[rowOffset]
+        const column = columns[columnIndex]
+        if (!descriptor || !column) continue
+        const before = String(descriptor.data[column] ?? '')
+        const after = String(values[rowOffset]?.[columnIndex] ?? '')
+        if (!isQuerySheetAutomaticTextConversion(column, before, after)) continue
+        automaticConversions.push({ row: descriptor.data, column, before, after })
+        if (values[rowOffset]) values[rowOffset][columnIndex] = before
+      }
+      if (automaticConversions.length) {
+        restoreChanges(automaticConversions)
+        callbacksRef.current.onBlocked('检测到表格自动转换了长数字，已恢复原值，未写回腾讯表格；如需修改请重新明确输入完整文本')
+        automaticConversions.forEach(change => {
+          const descriptorIndex = sheetRows.findIndex(item => item.data === change.row)
+          const columnIndex = columns.indexOf(change.column)
+          if (descriptorIndex >= 0 && columnIndex >= 0) {
+            editedCells.delete(querySheetCellKey(descriptorIndex + 1, columnIndex))
+          }
+        })
+      }
+      const changes = applyQuerySheetValues(sheetRows, columns, values, editedCells)
+      changes.forEach(change => {
+        const descriptorIndex = sheetRows.findIndex(item => item.data === change.row)
+        const columnIndex = columns.indexOf(change.column)
+        change.explicitTextEdit = descriptorIndex >= 0
+          && columnIndex >= 0
+          && editedValues.has(querySheetCellKey(descriptorIndex + 1, columnIndex))
+      })
       if (!changes.length) return
       const changedRows = new Set(
         changes.map(change => sheetRows.findIndex(item => item.data === change.row)),
@@ -575,6 +655,16 @@ export function QuerySpreadsheet({
         ) {
           params.cancel = true
           callbacksRef.current.onBlocked('粘贴区域包含只读单元格，本次粘贴已取消')
+        } else if (active) {
+          pendingPaste = {
+            range: {
+              startRow: active.startRow,
+              startColumn: active.startColumn,
+              endRow: active.startRow + rowCount - 1,
+              endColumn: active.startColumn + columnCount - 1,
+            },
+            values: pasted,
+          }
         }
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeCommandExecute, event => {
@@ -596,6 +686,15 @@ export function QuerySpreadsheet({
             callbacksRef.current.onBlocked(
               saving ? '上一项修改仍在写回，请稍候' : '所选区域包含只读单元格，操作已取消',
             )
+          } else {
+            ranges.forEach(range => markEditedRange(
+              range,
+              event.id === ClearSelectionContentCommand.id || event.id === ClearSelectionAllCommand.id
+                ? Array.from({ length: range.endRow - range.startRow + 1 }, () => (
+                  Array.from({ length: range.endColumn - range.startColumn + 1 }, () => '')
+                ))
+                : undefined,
+            ))
           }
           return
         }
@@ -609,8 +708,39 @@ export function QuerySpreadsheet({
           scheduleReconcile()
         }
       }),
-      univerAPI.addEvent(univerAPI.Event.SheetEditEnded, scheduleReconcile),
-      univerAPI.addEvent(univerAPI.Event.ClipboardPasted, scheduleReconcile),
+      univerAPI.addEvent(univerAPI.Event.BeforeSheetEditEnd, params => {
+        if (params.isConfirm && params.row >= 1 && params.column >= 0) {
+          const editValue = richTextToPlainText(params.value)
+          markEditedRange(
+            {
+              startRow: params.row,
+              startColumn: params.column,
+              endRow: params.row,
+              endColumn: params.column,
+            },
+            editValue === undefined ? undefined : [[editValue]],
+          )
+        }
+      }),
+      univerAPI.addEvent(univerAPI.Event.SheetEditEnded, params => {
+        if (!params.isConfirm) return
+        if (params.row >= 1 && params.column >= 0) {
+          markEditedRange({
+            startRow: params.row,
+            startColumn: params.column,
+            endRow: params.row,
+            endColumn: params.column,
+          })
+        }
+        scheduleReconcile()
+      }),
+      univerAPI.addEvent(univerAPI.Event.ClipboardPasted, () => {
+        if (pendingPaste) {
+          markEditedRange(pendingPaste.range, pendingPaste.values)
+          pendingPaste = null
+        }
+        scheduleReconcile()
+      }),
     ]
 
     return () => {

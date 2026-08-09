@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -57,6 +59,7 @@ class CellUpdate(BaseModel):
     column: str = Field(min_length=1, max_length=200)
     value: str = Field(default="", max_length=10000)
     expected_revision: int = Field(gt=0)
+    explicit_text_edit: bool = False
 
 
 class SourceRowCreate(BaseModel):
@@ -89,6 +92,35 @@ def _physical_cell_type(metadata: dict | None) -> str:
     if not isinstance(metadata, dict):
         return "text"
     return str(metadata.get("write_type") or metadata.get("type") or "text")
+
+
+def _looks_like_automatic_text_coercion(
+    column: str,
+    before: str,
+    after: str,
+    physical_type: str,
+) -> bool:
+    """Detect the known spreadsheet number-coercion corruption pattern.
+
+    This is intentionally conservative and only applies to physical text cells.
+    A caller that explicitly typed the replacement text can opt in through the
+    ``explicit_text_edit`` flag; the normal Univer auto-reconcile path does not.
+    """
+    if physical_type not in {"text", "string"} or not before or before == after:
+        return False
+    if re.search(r"(身份证|证件|手机号|手机|电话)", str(column)):
+        if (
+            re.fullmatch(r"\d{15,30}[xX]?", before)
+            and re.fullmatch(r"\d{12,32}", after)
+            and before[:12] == after[:12]
+        ):
+            return True
+    if re.fullmatch(r"-?\d+\.\d*0", before) and re.fullmatch(r"-?\d+(?:\.\d+)?", after):
+        try:
+            return Decimal(before) == Decimal(after)
+        except (InvalidOperation, ValueError):
+            return False
+    return False
 
 
 def _editor_select_metadata(
@@ -551,6 +583,7 @@ async def update_source_fields(
     request: Request,
     user: dict,
     conn,
+    explicit_text_edit: bool = False,
 ) -> dict:
     """在一把工作表锁内批量校验、写入并回读同一腾讯来源行。"""
     if parser_type not in QUERY_TYPES:
@@ -611,8 +644,6 @@ async def update_source_fields(
             await _refresh_spreadsheet(conn, client, source["spreadsheet"])
             raise HTTPException(409, "腾讯表格已被其他人修改，已刷新来源行")
 
-        after = dict(current_values)
-        after.update(normalized_changes)
         async with conn.cursor() as cur:
             inspector_context = await inspector_option_context(cur, user)
             current["cell_meta"] = await _managed_column_metadata(
@@ -623,6 +654,23 @@ async def update_source_fields(
                 sheet_id=source["sheet_id"],
                 inspector_context=inspector_context,
             )
+            ordered_columns = [
+                column
+                for column in ordered_columns
+                if not _same_value(
+                    current_values.get(column, ""),
+                    normalized_changes[column],
+                    _physical_cell_type(current["cell_meta"].get(column)),
+                )
+            ]
+            normalized_changes = {
+                column: normalized_changes[column]
+                for column in ordered_columns
+            }
+            if not ordered_columns:
+                raise HTTPException(400, "提交值与腾讯当前值相同，无需写回")
+            after = dict(current_values)
+            after.update(normalized_changes)
             try:
                 await validate_row_changes(
                     cur, user, parser, current_values, after, ordered_columns
@@ -643,6 +691,23 @@ async def update_source_fields(
                     parser.validate_existing_row_key(after)
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from exc
+            suspicious_columns = [
+                column
+                for column in ordered_columns
+                if not explicit_text_edit
+                and _looks_like_automatic_text_coercion(
+                    column,
+                    current_values.get(column, ""),
+                    normalized_changes[column],
+                    _physical_cell_type(current["cell_meta"].get(column)),
+                )
+            ]
+            if suspicious_columns:
+                raise HTTPException(
+                    400,
+                    "检测到身份证、手机号或小数文本疑似被表格自动转换，请重新明确输入完整文本后再保存："
+                    + "、".join(suspicious_columns),
+                )
             if (
                 parser.COMMUNITY_COLUMN in ordered_columns
                 and not parser.community_value(after)
@@ -1261,6 +1326,7 @@ async def update_source_cell(
         request=request,
         user=user,
         conn=conn,
+        explicit_text_edit=data.explicit_text_edit,
     )
 
 

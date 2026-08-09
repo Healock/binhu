@@ -19,6 +19,39 @@ export interface QuerySheetCellChange {
   column: string
   before: string
   after: string
+  explicitTextEdit?: boolean
+}
+
+export function querySheetCellKey(row: number, column: number): string {
+  return `${row}:${column}`
+}
+
+/**
+ * Univer may internally coerce long textual values to JavaScript numbers after
+ * an edit.  Such a value must never be sent back to Tencent as an intentional
+ * user change unless the edit path supplied the exact text explicitly.
+ */
+export function isQuerySheetAutomaticTextConversion(
+  column: string,
+  before: string,
+  after: string,
+): boolean {
+  if (!before || before === after) return false
+  const normalizedColumn = String(column || '')
+  const isIdentityOrPhone = /(身份证|证件|手机号|手机|电话)/u.test(normalizedColumn)
+  const isLongTextNumber = /^\d{15,30}[xX]?$/.test(before)
+    && /^\d{12,32}$/.test(after)
+    && before.slice(0, 12) === after.slice(0, 12)
+  if (isIdentityOrPhone && isLongTextNumber) return true
+
+  // Preserve meaningful trailing zeroes such as 7.30.  Only treat it as an
+  // automatic conversion when the new value is the same numeric value.
+  if (/^-?\d+\.\d*0$/.test(before) && /^-?\d+(?:\.\d+)?$/.test(after)) {
+    const beforeNumber = Number(before)
+    const afterNumber = Number(after)
+    if (Number.isFinite(beforeNumber) && beforeNumber === afterNumber) return true
+  }
+  return false
 }
 
 export interface QuerySheetCustomFilter {
@@ -396,11 +429,15 @@ export function applyQuerySheetValues(
   sheetRows: QuerySheetRow[],
   columns: string[],
   values: unknown[][],
+  editedCells?: ReadonlySet<string>,
 ): QuerySheetCellChange[] {
   const changes: QuerySheetCellChange[] = []
   for (let rowOffset = 0; rowOffset < sheetRows.length; rowOffset += 1) {
     const descriptor = sheetRows[rowOffset]
     for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+      if (editedCells && !editedCells.has(querySheetCellKey(rowOffset + 1, columnIndex))) {
+        continue
+      }
       const column = columns[columnIndex]
       const before = stringifyCell(descriptor.data[column])
       const after = stringifyCell(values[rowOffset]?.[columnIndex])

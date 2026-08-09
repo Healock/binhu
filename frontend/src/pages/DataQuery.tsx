@@ -299,6 +299,7 @@ export default function DataQuery() {
           column: change.column,
           value: change.after,
           expected_revision: expectedRevision,
+          explicit_text_edit: Boolean(change.explicitTextEdit),
         })
         revisions.set(sourceId, result.revision)
         const wasPending = Boolean(change.row.__pending)
@@ -394,7 +395,12 @@ export default function DataQuery() {
         (column, value, expectedRevision) => updateQuerySourceCell(
           selectedType,
           selectedDrawerSource.id,
-          { column, value, expected_revision: expectedRevision },
+          {
+            column,
+            value,
+            expected_revision: expectedRevision,
+            explicit_text_edit: true,
+          },
         ),
       )
       messageApi.success('修改已写回腾讯表格')
