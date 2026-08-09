@@ -775,7 +775,12 @@ export async function getQuerySourceRows(
 export async function updateQuerySourceCell(
   type: string,
   sourceId: number,
-  payload: { column: string; value: string; expected_revision: number },
+  payload: {
+    column: string
+    value: string
+    expected_revision: number
+    explicit_text_edit?: boolean
+  },
 ): Promise<{
   values: Record<string, string>
   row_key: string

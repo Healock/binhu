@@ -10,18 +10,67 @@ import {
   fitQuerySheetColumnWidth,
   isQuerySheetFullscreen,
   isQuerySheetHorizontalScrollbarPointer,
+  isQuerySheetAutomaticTextConversion,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
   querySheetTextCell,
+  querySheetCellKey,
   resolveQuerySheetColumnWidth,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   toggleQuerySheetFullscreen,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
+
+test('automatic spreadsheet coercion is detected and blocked', () => {
+  assert.equal(
+    isQuerySheetAutomaticTextConversion('身份证号', '32052519911016025X', '320525199110160260'),
+    true,
+  )
+  assert.equal(
+    isQuerySheetAutomaticTextConversion('手机号', '1380013800013900138000', '1380013800013900137984'),
+    true,
+  )
+  assert.equal(isQuerySheetAutomaticTextConversion('日期', '7.30', '7.3'), true)
+  assert.equal(
+    isQuerySheetAutomaticTextConversion('身份证号', '32052519911016025X', '32052519911016025X'),
+    false,
+  )
+})
+
+test('spreadsheet reconciliation only applies explicitly edited cells', () => {
+  const rows = buildQuerySheetRows([{
+    [columns[0]]: 'community-before',
+    [columns[1]]: 'inspector-before',
+    [columns[2]]: 'name-before',
+    __row_key: 'one',
+    __source_count: 1,
+    __source_id: 12,
+    __revision: 3,
+    __editable_fields: [columns[0], columns[1]],
+  }], [], columns, false, index => `blank-${index}`)
+  const changes = applyQuerySheetValues(
+    rows,
+    columns,
+    [['community-after', 'inspector-auto', 'name-auto']],
+    new Set([querySheetCellKey(1, 0)]),
+  )
+  assert.deepEqual(changes.map(change => [change.column, change.before, change.after]), [
+    [columns[0], 'community-before', 'community-after'],
+  ])
+})
+
+test('spreadsheet reconciliation reads edited cells instead of the whole sheet', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.doesNotMatch(componentSource, /dataRange\.getValues\(\)/)
+  assert.match(componentSource, /cell\.getValue\(\)/)
+})
 
 const columns = ['社区', '核查人', '姓名']
 

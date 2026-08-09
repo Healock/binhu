@@ -11,6 +11,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from routers.grid_members import _replace_area_leaders
 from routers.query import (
     CellUpdate,
+    _looks_like_automatic_text_coercion,
     _managed_column_metadata,
     _row_values_match,
     new_row_required_fields,
@@ -208,6 +209,81 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
+    def test_detects_known_text_number_coercion_patterns(self):
+        self.assertTrue(_looks_like_automatic_text_coercion(
+            "身份证号",
+            "32052519911016025X",
+            "320525199110160260",
+            "text",
+        ))
+        self.assertTrue(_looks_like_automatic_text_coercion(
+            "手机号",
+            "1380013800013900138000",
+            "1380013800013900137984",
+            "text",
+        ))
+        self.assertTrue(_looks_like_automatic_text_coercion(
+            "下发日期",
+            "7.30",
+            "7.3",
+            "text",
+        ))
+        self.assertFalse(_looks_like_automatic_text_coercion(
+            "身份证号",
+            "32052519911016025X",
+            "320525199110160260",
+            "number",
+        ))
+
+    async def test_suspicious_automatic_coercion_is_rejected_before_audit(self):
+        parser = get_parser("全链条")
+        cached = {column: "" for column in parser.COLUMNS}
+        cached.update({
+            "社区": "长板",
+            "身份证号": "32052519911016025X",
+            "电话号码": "13800138000",
+            "下发日期": "7.30",
+        })
+        cursor = BatchUpdateCursor(cached)
+        conn = FakeConnection(cursor)
+        client = AsyncMock()
+        client.read_source_row.return_value = {
+            "values": cached,
+            "cell_meta": {
+                column: {"type": "text", "write_type": "text"}
+                for column in parser.COLUMNS
+            },
+        }
+        request = Request({
+            "type": "http", "method": "PATCH", "path": "/", "headers": [],
+            "scheme": "http", "server": ("test", 80), "client": ("127.0.0.1", 1),
+        })
+        metadata = {
+            column: {"type": "text", "write_type": "text"}
+            for column in parser.COLUMNS
+        }
+
+        with patch("routers.query._oauth_client", AsyncMock(return_value=client)), \
+             patch("routers.query.resolve_source_columns", AsyncMock(return_value=parser.COLUMNS)), \
+             patch("routers.query.inspector_option_context", AsyncMock(return_value={})), \
+             patch("routers.query._managed_column_metadata", AsyncMock(return_value=metadata)), \
+             patch("routers.query.validate_row_changes", AsyncMock()), \
+             patch("routers.query._insert_writeback_audit", AsyncMock()) as insert_audit:
+            with self.assertRaises(HTTPException) as raised:
+                await update_source_fields(
+                    parser_type="全链条",
+                    source_id=1,
+                    changes={"身份证号": "320525199110160260"},
+                    expected_revision=1,
+                    request=request,
+                    user=make_user("超级管理员", view_scope="all"),
+                    conn=conn,
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        insert_audit.assert_not_awaited()
+        client.batch_update.assert_not_awaited()
+
     async def test_view_scope_can_expand_but_edit_scope_stays_with_position(self):
         user = make_user("组员", communities=["长板"], view_scope="all")
 

@@ -1065,4 +1065,5 @@ async def update_mobile_task(
         request=request,
         user=user,
         conn=conn,
+        explicit_text_edit=True,
     )
