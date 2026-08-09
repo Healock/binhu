@@ -6,6 +6,7 @@ import json
 import hashlib
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -881,67 +882,100 @@ async def preview_photo_import(
     zip_sha256 = hashlib.sha256(content).hexdigest()
     await conn.begin()
     storage_key = None
+    existing_batch_id: int | None = None
+    restored_existing = False
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT id, batch_no, status FROM photo_request_import_batches WHERE zip_sha256=%s",
+                "SELECT id, batch_no, status, storage_key FROM photo_request_import_batches "
+                "WHERE zip_sha256=%s FOR UPDATE",
                 (zip_sha256,),
             )
             existing = await cur.fetchone()
             if existing:
-                await conn.rollback()
-                return await get_photo_import_detail(int(existing[0]), user, conn)
-            token = str(uuid.uuid4())
-            storage_key = save_photo_import_zip(token, content)
-            batch_no = f"PHOTO-{datetime.utcnow():%Y%m%d}-{token[:8].upper()}"
-            await cur.execute(
-                "INSERT INTO photo_request_import_batches "
-                "(batch_no, storage_key, zip_sha256, uploaded_by, status, total_files) "
-                "VALUES (%s,%s,%s,%s,'preview',%s)",
-                (batch_no, storage_key, zip_sha256, user["id"], len(parsed)),
-            )
-            batch_id = int(cur.lastrowid)
-            counts = {"matched": 0, "unmatched": 0, "duplicate": 0, "conflict": 0, "failed": 0}
-            for item in parsed:
-                identity_hmac, hmac_version = (
-                    hmac_digest(item.identity_number, kind="identity")
-                    if item.identity_number else (None, None)
-                )
-                matches, duplicate_all = (
-                    await _photo_matches(cur, identity_hmac or "", item.sha256)
-                    if identity_hmac else ([], False)
-                )
-                ticket_ids = [int(row[0]) for row in matches]
-                if item.parse_error:
-                    status, reason = "unmatched", item.parse_error
-                elif not matches:
-                    status, reason = "unmatched", "没有处理中照片工单"
+                existing_batch_id = int(existing[0])
+                batch_no = str(existing[1])
+                existing_storage_key = str(existing[3])
+                if str(existing[2]) == "preview":
+                    try:
+                        resolve_photo_import_zip(existing_storage_key)
+                    except FileNotFoundError:
+                        storage_key = save_photo_import_zip(
+                            Path(existing_storage_key).stem,
+                            content,
+                        )
+                        await cur.execute(
+                            "UPDATE photo_request_import_batches "
+                            "SET storage_key=%s, error_message='' WHERE id=%s",
+                            (storage_key, existing_batch_id),
+                        )
+                        restored_existing = True
+                        await conn.commit()
+                    else:
+                        await conn.rollback()
                 else:
-                    status = "duplicate" if duplicate_all else "matched"
-                    reason = "照片已经挂载到对应工单" if duplicate_all else ""
-                    if any(str(row[3] or "").strip() != item.person_name for row in matches):
-                        reason = "姓名与工单记录不一致，请人工核对"
-                counts[status] += 1
+                    await conn.rollback()
+            else:
+                token = str(uuid.uuid4())
+                storage_key = save_photo_import_zip(token, content)
+                batch_no = f"PHOTO-{datetime.utcnow():%Y%m%d}-{token[:8].upper()}"
                 await cur.execute(
-                    "INSERT INTO photo_request_import_items "
-                    "(batch_id, member_name, safe_name, person_name, identity_hmac, identity_hmac_version, "
-                    "file_sha256, size_bytes, match_status, match_reason, matched_ticket_ids) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                     (batch_id, item.member_name[:500], item.safe_name[:255], item.person_name[:100],
-                     identity_hmac, hmac_version, item.sha256, item.size_bytes, status, reason,
-                     json.dumps(ticket_ids)),
+                    "INSERT INTO photo_request_import_batches "
+                    "(batch_no, storage_key, zip_sha256, uploaded_by, status, total_files) "
+                    "VALUES (%s,%s,%s,%s,'preview',%s)",
+                    (batch_no, storage_key, zip_sha256, user["id"], len(parsed)),
                 )
-            await cur.execute(
-                "UPDATE photo_request_import_batches SET matched_files=%s, unmatched_files=%s, "
-                "conflict_files=%s, duplicate_files=%s, failed_files=%s WHERE id=%s",
-                (counts["matched"], counts["unmatched"], counts["conflict"], counts["duplicate"], counts["failed"], batch_id),
-            )
-        await conn.commit()
+                batch_id = int(cur.lastrowid)
+                counts = {"matched": 0, "unmatched": 0, "duplicate": 0, "conflict": 0, "failed": 0}
+                for item in parsed:
+                    identity_hmac, hmac_version = (
+                        hmac_digest(item.identity_number, kind="identity")
+                        if item.identity_number else (None, None)
+                    )
+                    matches, duplicate_all = (
+                        await _photo_matches(cur, identity_hmac or "", item.sha256)
+                        if identity_hmac else ([], False)
+                    )
+                    ticket_ids = [int(row[0]) for row in matches]
+                    if item.parse_error:
+                        status, reason = "unmatched", item.parse_error
+                    elif not matches:
+                        status, reason = "unmatched", "没有处理中照片工单"
+                    else:
+                        status = "duplicate" if duplicate_all else "matched"
+                        reason = "照片已经挂载到对应工单" if duplicate_all else ""
+                        if any(str(row[3] or "").strip() != item.person_name for row in matches):
+                            reason = "姓名与工单记录不一致，请人工核对"
+                    counts[status] += 1
+                    await cur.execute(
+                        "INSERT INTO photo_request_import_items "
+                        "(batch_id, member_name, safe_name, person_name, identity_hmac, identity_hmac_version, "
+                        "file_sha256, size_bytes, match_status, match_reason, matched_ticket_ids) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                         (batch_id, item.member_name[:500], item.safe_name[:255], item.person_name[:100],
+                         identity_hmac, hmac_version, item.sha256, item.size_bytes, status, reason,
+                         json.dumps(ticket_ids)),
+                    )
+                await cur.execute(
+                    "UPDATE photo_request_import_batches SET matched_files=%s, unmatched_files=%s, "
+                    "conflict_files=%s, duplicate_files=%s, failed_files=%s WHERE id=%s",
+                    (counts["matched"], counts["unmatched"], counts["conflict"], counts["duplicate"], counts["failed"], batch_id),
+                )
+                await conn.commit()
     except Exception:
         await conn.rollback()
         if storage_key:
             remove_photo_import_zip(storage_key)
         raise
+    if existing_batch_id is not None:
+        if restored_existing:
+            await record_admin_audit(
+                user, "workflow.photo_import.preview", target_type="photo_import_batch",
+                target_name=batch_no,
+                detail={"batch_id": existing_batch_id, "restored_preview_file": True},
+                **request_audit_fields(request),
+            )
+        return await get_photo_import_detail(existing_batch_id, user, conn)
     await record_admin_audit(
         user, "workflow.photo_import.preview", target_type="photo_import_batch",
         target_name=batch_no,
@@ -1078,6 +1112,11 @@ async def confirm_photo_import(
         if hashlib.sha256(content).hexdigest() != str(batch[1]):
             raise ValueError("照片批次文件校验失败")
         members = read_photo_zip_members(content)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            422,
+            "照片批次原文件不存在，请重新上传同一个 ZIP 恢复后再确认",
+        ) from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
