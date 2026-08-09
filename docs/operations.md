@@ -888,9 +888,9 @@ deploy/install-nginx-migration-profiles.sh new <物理服务器活动站点文�
 deploy/install-nginx-migration-profiles.sh old <旧云活动站点文件> <旧云HTTPS名称>
 ```
 
-物理服务器生产配置同时提供外部 HTTPS 和只监听 `10.77.0.2:18080` 的专线入口。迁移期间旧云 `old-proxy`
-曾通过 WireGuard 访问该入口；该网页代理已于 2026年8月9日退役，旧配置只作为私密回退材料保留，未经项目
-管理人再次明确授权不得启用。切换器只接受固定 profile 名称，每次先执行 `nginx -t`，加载失败时自动恢复上一文件。
+物理服务器生产配置当前只提供外部 HTTPS；迁移期间曾额外提供只监听 `10.77.0.2:18080` 的专线入口，旧云
+`old-proxy` 曾通过 WireGuard 访问该入口。该网页代理和专线监听已于 2026年8月9日退役，旧配置只作为私密回退材料
+保留，未经项目管理人再次明确授权不得启用。切换器只接受固定 profile 名称，每次先执行 `nginx -t`，加载失败时自动恢复上一文件。
 
 正式切换时曾使用 `new-maintenance`、`old-maintenance` 和 `old-proxy` 完成入口过渡。这些旧云 profile 现在只用于
 审计和紧急恢复设计参考，不属于日常入口；当前用户统一使用物理服务器的 FRP 可信 HTTPS 地址。

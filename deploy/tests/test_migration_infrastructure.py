@@ -81,7 +81,7 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         switcher = (ROOT / "deploy/binhu-nginx-profile").read_text(encoding="utf-8")
-        self.assertIn("listen 10.77.0.2:18080", new_profile)
+        self.assertNotIn("listen 10.77.0.2:18080", new_profile)
         self.assertIn("proxy_pass http://10.77.0.2:18080", old_profile)
         self.assertNotIn("frp-cat.com", old_profile)
         self.assertIn("nginx -t", switcher)
