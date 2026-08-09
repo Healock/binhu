@@ -77,8 +77,8 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
       {
         id: 'work_log',
         path: '/work-log',
-        label: '工作日志生成',
-        shortLabel: '工作日志',
+        label: '文件生成',
+        shortLabel: '文件生成',
         icon: 'worklog',
         permission: 'worklog.manage',
         roles: ['super_admin', 'admin'],
