@@ -507,6 +507,29 @@ export async function exportWorkLog(draftId: number): Promise<Blob> {
   return data
 }
 
+export interface WorkLogDailyDetailPreferences {
+  rental_target: number
+  self_owned_target: number
+}
+
+export async function getWorkLogDailyDetailPreferences(): Promise<WorkLogDailyDetailPreferences> {
+  const { data } = await api.get('/work-logs/daily-detail/preferences')
+  return data
+}
+
+export async function exportWorkLogDailyDetail(payload: {
+  business_date: string
+  rental_target: number
+  self_owned_target: number
+}): Promise<Blob> {
+  const { data } = await api.post(
+    '/work-logs/daily-detail/export',
+    payload,
+    { responseType: 'blob', timeout: 120000 },
+  )
+  return data
+}
+
 // ---- Stats / 日报 ----
 export async function getReportTypes(): Promise<{ data: string[]; implemented: string[] }> {
   const { data } = await api.get('/stats/types')

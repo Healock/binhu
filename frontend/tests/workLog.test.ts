@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   deriveWorkLogValues,
@@ -44,4 +45,15 @@ test('工作日志分组表头可以展开为实际填写列', () => {
     columns.map(column => column.key),
     ['community', 'pending', 'resolved'],
   )
+})
+
+test('工作日志页面提供独立的每日明细一键导出和目标数输入', () => {
+  const source = readFileSync(
+    new URL('../src/pages/WorkLog.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /出租房目标数/)
+  assert.match(source, /自购房目标数/)
+  assert.match(source, /生成每日明细 XLSX/)
+  assert.match(source, /exportWorkLogDailyDetail/)
 })
