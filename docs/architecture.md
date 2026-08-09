@@ -859,7 +859,7 @@ OAuth 凭据加密和异地备份仍未完成，具体见 [风险清单](known-r
 
 平台数据库正在按业务域分阶段拆分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。走访、下发、小区地址、平台基础、工作日志、身份证 HMAC 回填以及 Registry/Workflow 功能切换均已在真实 MySQL 中完成；当前没有人员标记分配，因此没有历史任务快照可回填。完整边界、索引和迁移顺序见 [八库业务域与新档案规划](database-domain-plan.md)。
 
-_源码核对：2026-08-08；服务器窗口记录：2026-08-09_
+_源码核对：2026-08-09；服务器窗口记录：2026-08-09_
 
 ## v0.16.0 业务域基础
 
@@ -884,3 +884,5 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 上传先创建 `photo_request_import_batches` 和 `photo_request_import_items` 预览记录，确认时重新校验 ZIP、照片实际 MIME、大小、SHA-256 和工单状态。在同一事务中写入受保护附件元数据、更新照片工单及流程节点、记录事件并通过消息中心通知申请人。重复照片按工单和 SHA-256 幂等；无匹配、格式错误或附件上限等情况进入批次明细，不自动完成工单。
 
 `0.17.4` 同时兼容 ZIP 的 UTF-8 文件名和 Windows 工具常见的未标记 GBK 文件名。仅具备照片批次处理权限的页面可以查看完整文件名、姓名和身份证号用于人工核对；普通日志、操作记录和通知仍不得保存这些原始字段。历史预览批次中的旧乱码名称在读取和确认时兼容修复，不要求重新上传 ZIP。
+
+`0.17.5` 把预览 ZIP 固定写入由 `BINHU_WORKFLOW_PHOTO_IMPORT_DIR` 配置的持久化目录，生产 Compose 默认绑定服务器 `/data/binhu/workflow-photo-imports`。数据库批次记录和 ZIP 文件因此可以跨容器重建共同保留。若旧版本留下的预览记录仍在、文件已经丢失，重新上传相同 SHA-256 的 ZIP 会在事务锁保护下恢复原批次文件；批次编号、预览明细和匹配统计保持不变，之后再由用户明确确认入库。

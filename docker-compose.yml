@@ -63,12 +63,14 @@ services:
       OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
       BACKUP_DIR: /app/backups
       WORKFLOW_ATTACHMENT_DIR: /app/workflow-attachments
+      WORKFLOW_PHOTO_IMPORT_DIR: /app/workflow-photo-imports
       STATIC_DIR: /app/static
     volumes:
       - ./frontend/dist:/app/static:ro
       - ./VERSION:/app/VERSION:ro
       - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
       - ${BINHU_WORKFLOW_ATTACHMENT_DIR:-/data/binhu/workflow-attachments}:/app/workflow-attachments
+      - ${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:-/data/binhu/workflow-photo-imports}:/app/workflow-photo-imports
     logging:
       driver: json-file
       options:

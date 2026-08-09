@@ -238,6 +238,69 @@ class PhotoImportPreviewRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("photo_request_import_items" in statement for statement in statements))
         self.assertFalse(any("work_order_attachments" in statement for statement in statements))
 
+    async def test_reupload_restores_missing_existing_preview_zip(self):
+        content = make_zip({"张三_32050020000101001X.jpg": JPEG})
+        connection = _PreviewConnection()
+        connection.cursor_obj.fetchone = AsyncMock(return_value=(
+            9,
+            "PHOTO-OLD",
+            "preview",
+            "existing-token.zip",
+        ))
+        request = MagicMock()
+        user = {
+            "id": 7,
+            "role": "admin",
+            "permissions": ["workflow.ticket.handle"],
+            "member": {"position": "基础管控"},
+        }
+        audit = AsyncMock()
+        with patch("routers.workflow_extended.record_admin_audit", new=audit), \
+             patch("routers.workflow_extended.request_audit_fields", return_value={}), \
+             patch("routers.workflow_extended.resolve_photo_import_zip", side_effect=FileNotFoundError), \
+             patch("routers.workflow_extended.save_photo_import_zip", return_value="existing-token.zip") as save_zip, \
+             patch("routers.workflow_extended.get_photo_import_detail", new=AsyncMock(return_value={"id": 9})):
+            result = await preview_photo_import(request, _Upload(content), user, connection)
+
+        self.assertEqual(result["id"], 9)
+        save_zip.assert_called_once_with("existing-token", content)
+        connection.commit.assert_awaited_once()
+        statements = [call.args[0] for call in connection.cursor_obj.execute.call_args_list]
+        self.assertTrue(any("FOR UPDATE" in statement for statement in statements))
+        self.assertTrue(any("SET storage_key=%s" in statement for statement in statements))
+        self.assertEqual(
+            audit.await_args.kwargs["detail"],
+            {"batch_id": 9, "restored_preview_file": True},
+        )
+
+    async def test_reupload_keeps_existing_preview_when_zip_is_present(self):
+        content = make_zip({"张三_32050020000101001X.jpg": JPEG})
+        connection = _PreviewConnection()
+        connection.cursor_obj.fetchone = AsyncMock(return_value=(
+            9,
+            "PHOTO-OLD",
+            "preview",
+            "existing-token.zip",
+        ))
+        request = MagicMock()
+        user = {
+            "id": 7,
+            "role": "admin",
+            "permissions": ["workflow.ticket.handle"],
+            "member": {"position": "基础管控"},
+        }
+        with patch("routers.workflow_extended.record_admin_audit", new=AsyncMock()) as audit, \
+             patch("routers.workflow_extended.resolve_photo_import_zip"), \
+             patch("routers.workflow_extended.save_photo_import_zip") as save_zip, \
+             patch("routers.workflow_extended.get_photo_import_detail", new=AsyncMock(return_value={"id": 9})):
+            result = await preview_photo_import(request, _Upload(content), user, connection)
+
+        self.assertEqual(result["id"], 9)
+        save_zip.assert_not_called()
+        connection.rollback.assert_awaited_once()
+        connection.commit.assert_not_awaited()
+        audit.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()
