@@ -2292,7 +2292,7 @@ export interface WorkOrderDetail extends WorkOrderSummary {
 export interface PhotoImportItem {
   safe_name: string
   person_name: string
-  identity_masked: string
+  identity_number: string
   size_bytes: number
   sha256: string
   match_status: 'matched' | 'unmatched' | 'duplicate' | 'conflict' | 'failed'

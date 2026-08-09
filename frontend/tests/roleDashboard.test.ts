@@ -30,6 +30,20 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
   assert.match(source, /今日尚无同步快照/)
 })
 
+test('仪表盘使用双列瀑布流并在手机端回到单列', () => {
+  const styles = read('../src/index.css')
+  assert.match(styles, /\.role-dashboard-sections\s*\{[\s\S]*columns: 2;/)
+  assert.match(styles, /\.role-dashboard-sections > \*\s*\{[\s\S]*break-inside: avoid;/)
+  assert.match(styles, /\.role-dashboard-sections\s*\{\s*columns: 1;/)
+})
+
+test('手机 Dock 不再单列首页且顶部品牌返回仪表盘', () => {
+  const dock = read('../src/components/MobileDock.tsx')
+  const layout = read('../src/components/Layout.tsx')
+  assert.doesNotMatch(dock, /<span>首页<\/span>/)
+  assert.match(layout, /aria-label="返回仪表盘"[\s\S]*navigate\('\/'\)/)
+})
+
 test('社区部门与职责社区相同时只展示一次', () => {
   assert.equal(
     formatDashboardIdentityContext(['冬梅'], '所属社区：冬梅', ['冬梅']),

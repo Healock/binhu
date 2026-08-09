@@ -1648,15 +1648,14 @@ html.query-sheet-fullscreen-active .app-route-transition {
 }
 
 .role-dashboard-sections {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  gap: 16px;
+  columns: 2;
+  column-gap: 16px;
 }
 
-.role-dashboard-sections > .ant-alert,
-.role-dashboard-sections > .app-card:first-child:last-child {
-  grid-column: 1 / -1;
+.role-dashboard-sections > * {
+  width: 100%;
+  margin: 0 0 16px;
+  break-inside: avoid;
 }
 
 .role-dashboard-metric-grid {
@@ -2607,7 +2606,7 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   }
 
   .role-dashboard-sections {
-    grid-template-columns: minmax(0, 1fr);
+    columns: 1;
   }
 
   .role-dashboard-metric-grid {

@@ -27,6 +27,7 @@ _IDENTITY = re.compile(r"^(?:\d{15}|\d{17}[0-9X])$")
 class ParsedPhoto:
     member_name: str
     safe_name: str
+    legacy_safe_name: str
     person_name: str
     identity_number: str
     size_bytes: int
@@ -37,6 +38,24 @@ class ParsedPhoto:
 
 def normalize_identity(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).upper()
+
+
+def repair_legacy_zip_text(value: str) -> str:
+    """修复未标记 UTF-8、被 zipfile 按 CP437 解码的中文文件名。"""
+    text = str(value or "")
+    try:
+        candidate = text.encode("cp437").decode("gb18030")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    original_cjk = sum("\u3400" <= char <= "\u9fff" for char in text)
+    candidate_cjk = sum("\u3400" <= char <= "\u9fff" for char in candidate)
+    return candidate if candidate_cjk > original_cjk else text
+
+
+def decoded_zip_member_name(item: zipfile.ZipInfo) -> str:
+    if item.flag_bits & 0x800:
+        return item.filename
+    return repair_legacy_zip_text(item.filename)
 
 
 def _photo_member_parts(member_name: str) -> tuple[str, str]:
@@ -96,13 +115,18 @@ def inspect_photo_zip(content: bytes) -> list[ParsedPhoto]:
             total_uncompressed += item.file_size
             if total_uncompressed > MAX_PHOTO_IMPORT_UNCOMPRESSED_BYTES:
                 raise ValueError("ZIP 解压后的总大小不能超过 500MB")
-            safe_name, extension = _photo_member_parts(item.filename)
+            member_name = decoded_zip_member_name(item)
+            safe_name, extension = _photo_member_parts(member_name)
+            try:
+                legacy_safe_name, _ = _photo_member_parts(item.filename)
+            except ValueError:
+                legacy_safe_name = safe_name
             if safe_name in seen_safe_names:
                 raise ValueError("ZIP 内不允许包含同名照片")
             seen_safe_names.add(safe_name)
             parse_error = ""
             try:
-                _, person_name, identity_number = parse_photo_filename(item.filename)
+                _, person_name, identity_number = parse_photo_filename(member_name)
             except ValueError as exc:
                 # 文件路径和扩展名已经在上面严格校验；其余命名/身份证问题保留到
                 # 批次明细中，便于基础管控一次性看到并处理，而不是拒绝整批 ZIP。
@@ -122,8 +146,9 @@ def inspect_photo_zip(content: bytes) -> list[ParsedPhoto]:
                 raise ValueError(f"{safe_name}：{exc}") from exc
             parsed.append(
                 ParsedPhoto(
-                    member_name=item.filename,
+                    member_name=member_name,
                     safe_name=safe_name,
+                    legacy_safe_name=legacy_safe_name,
                     person_name=person_name,
                     identity_number=identity_number,
                     size_bytes=len(data),
@@ -144,7 +169,7 @@ def read_photo_zip_members(content: bytes) -> dict[str, bytes]:
         for item in archive.infolist():
             if item.is_dir():
                 continue
-            safe_name, _ = _photo_member_parts(item.filename)
+            safe_name, _ = _photo_member_parts(decoded_zip_member_name(item))
             result[safe_name] = archive.read(item)
     return result
 

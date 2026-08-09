@@ -79,10 +79,19 @@ export default function Layout() {
             <MenuOutlined />
           </button>
         )}
-        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-label="返回仪表盘"
+          className="flex min-w-0 items-center gap-2 border-0 bg-transparent p-0 text-left"
+          onClick={() => {
+            if (!confirmPendingNavigation()) return
+            setAccountOpen(false)
+            navigate('/')
+          }}
+        >
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">滨</span>
           <span className="font-semibold text-slate-800">滨湖智慧平台</span>
-        </div>
+        </button>
         {user && (
           <Popover
             open={accountOpen}

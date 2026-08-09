@@ -519,7 +519,7 @@ export default function DataUploadCenter() {
                   columns={[
                     { title: '文件名', dataIndex: 'safe_name', width: 260, ellipsis: true },
                     { title: '姓名', dataIndex: 'person_name', width: 100 },
-                    { title: '身份证号', dataIndex: 'identity_masked', width: 130 },
+                    { title: '身份证号', dataIndex: 'identity_number', width: 190 },
                     {
                       title: '匹配结果', dataIndex: 'match_status', width: 110,
                       render: value => <Tag color={value === 'matched' ? 'green' : value === 'duplicate' ? 'blue' : value === 'unmatched' ? 'orange' : value === 'conflict' ? 'gold' : 'red'}>{value === 'matched' ? '可匹配' : value === 'duplicate' ? '重复' : value === 'unmatched' ? '未匹配' : value === 'conflict' ? '冲突提醒' : '失败'}</Tag>,
