@@ -447,6 +447,7 @@ export default function WorkLog() {
       ? parsed
       : dayjs()
   })
+  const [dailyDetailDate, setDailyDetailDate] = useState<Dayjs>(businessDate)
   const [draft, setDraft] = useState<WorkLogDraft | null>(null)
   const [manualValues, setManualValues] = useState<Values>({})
   const [overrideValues, setOverrideValues] = useState<Values>({})
@@ -687,13 +688,13 @@ export default function WorkLog() {
     setDailyDetailExporting(true)
     try {
       const blob = await exportWorkLogDailyDetail({
-        business_date: businessDate.format('YYYY-MM-DD'),
+        business_date: dailyDetailDate.format('YYYY-MM-DD'),
         rental_target: rentalTarget,
         self_owned_target: selfOwnedTarget,
       })
       saveBlob(
         blob,
-        `${businessDate.format('MMDD')}滨湖网格工作每日明细.xlsx`,
+        `${dailyDetailDate.format('MMDD')}滨湖网格工作每日明细.xlsx`,
       )
       message.success('工作每日明细 XLSX 已生成，目标数已保存')
     } catch (error) {
@@ -715,78 +716,22 @@ export default function WorkLog() {
     <div>
       {contextHolder}
       <PageHeader
-        title="工作日志生成"
-        description="可填写并导出工作日志 PDF，也可按系统数据一键生成工作每日明细 XLSX"
-        actions={(
-          <Space wrap>
-            <Button
-              icon={<FolderOpenOutlined />}
-              onClick={() => navigate('/work-log/drafts')}
-            >
-              草稿管理
-            </Button>
-            {draft && (
-              <>
-                <Tag color={
-                  saveState === 'failed' || saveState === 'conflict'
-                    ? 'error'
-                    : saveState === 'saving'
-                      ? 'processing'
-                      : 'success'
-                }>
-                  {saveLabel}
-                </Tag>
-                {draft.can_edit ? (
-                  <Button
-                    icon={<ReloadOutlined />}
-                    disabled={dirty || saveState === 'saving'}
-                    onClick={refreshSystemData}
-                  >
-                    刷新系统数据
-                  </Button>
-                ) : (
-                  <Button icon={<SwapOutlined />} onClick={takeover}>
-                    接管编辑
-                  </Button>
-                )}
-                <Button
-                  type="primary"
-                  icon={<CloudDownloadOutlined />}
-                  loading={exporting}
-                  onClick={prepareExport}
-                >
-                  导出 PDF
-                </Button>
-              </>
-            )}
-          </Space>
-        )}
+        title="文件生成"
+        description="一键生成工作每日明细 XLSX，或编制并导出工作日志 PDF"
       />
 
-      <Panel className="mb-4">
+      <Panel
+        className="mb-4"
+        title="工作每日明细"
+        description="按人员名册、走访数据和日报快照直接生成，无需创建工作日志草稿"
+      >
         <div className="flex flex-wrap items-end gap-4">
           <div>
-            <div className="mb-2 text-sm font-medium">日志类型</div>
-            <Segmented
-              value={reportType}
-              onChange={value => setReportType(String(value))}
-              options={(schema?.report_types || [
-                { value: 'daily', label: '日报', enabled: true },
-                { value: 'weekly', label: '周报', enabled: false },
-                { value: 'monthly', label: '月报', enabled: false },
-              ]).map(item => ({
-                value: item.value,
-                label: item.enabled ? item.label : `${item.label} · 等待模板`,
-                disabled: !item.enabled,
-              }))}
-            />
-          </div>
-          <div>
-            <div className="mb-2 text-sm font-medium">日报日期</div>
+            <div className="mb-2 text-sm font-medium">业务日期</div>
             <DatePicker
-              value={businessDate}
+              value={dailyDetailDate}
               allowClear={false}
-              onChange={value => value && setBusinessDate(value)}
+              onChange={value => value && setDailyDetailDate(value)}
             />
           </div>
           <div>
@@ -817,10 +762,85 @@ export default function WorkLog() {
           >
             生成每日明细 XLSX
           </Button>
+        </div>
+      </Panel>
+
+      <Panel
+        className="mb-4"
+        title="工作日志"
+        description="创建当日日报草稿，确认系统取数和人工内容后导出 PDF"
+        extra={(
+          <Button
+            icon={<FolderOpenOutlined />}
+            onClick={() => navigate('/work-log/drafts')}
+          >
+            草稿管理
+          </Button>
+        )}
+      >
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <div className="mb-2 text-sm font-medium">日志类型</div>
+            <Segmented
+              value={reportType}
+              onChange={value => setReportType(String(value))}
+              options={(schema?.report_types || [
+                { value: 'daily', label: '日报', enabled: true },
+                { value: 'weekly', label: '周报', enabled: false },
+                { value: 'monthly', label: '月报', enabled: false },
+              ]).map(item => ({
+                value: item.value,
+                label: item.enabled ? item.label : `${item.label} · 等待模板`,
+                disabled: !item.enabled,
+              }))}
+            />
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-medium">日报日期</div>
+            <DatePicker
+              value={businessDate}
+              allowClear={false}
+              onChange={value => value && setBusinessDate(value)}
+            />
+          </div>
           <div className="text-sm text-slate-500">
             正文日期为 {businessDate.format('YYYY 年 M 月 D 日')}，落款为{' '}
             {businessDate.add(1, 'day').format('YYYY 年 M 月 D 日')}
           </div>
+          {draft && (
+            <Space wrap>
+              <Tag color={
+                saveState === 'failed' || saveState === 'conflict'
+                  ? 'error'
+                  : saveState === 'saving'
+                    ? 'processing'
+                    : 'success'
+              }>
+                {saveLabel}
+              </Tag>
+              {draft.can_edit ? (
+                <Button
+                  icon={<ReloadOutlined />}
+                  disabled={dirty || saveState === 'saving'}
+                  onClick={refreshSystemData}
+                >
+                  刷新系统数据
+                </Button>
+              ) : (
+                <Button icon={<SwapOutlined />} onClick={takeover}>
+                  接管编辑
+                </Button>
+              )}
+              <Button
+                type="primary"
+                icon={<CloudDownloadOutlined />}
+                loading={exporting}
+                onClick={prepareExport}
+              >
+                导出 PDF
+              </Button>
+            </Space>
+          )}
         </div>
       </Panel>
 

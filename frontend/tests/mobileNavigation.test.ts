@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   accessibleNavigationGroups,
@@ -141,6 +142,16 @@ test('工作日志只出现在管理员和超级管理员导航中', () => {
     superAdmin.groups.some(group => group.items.includes('work_log')),
     true,
   )
+})
+
+test('文件生成保留原工作日志导航 ID', () => {
+  const source = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /id: 'work_log'/)
+  assert.match(source, /label: '文件生成'/)
+  assert.match(source, /shortLabel: '文件生成'/)
 })
 
 test('读取配置时去重、过滤未知项和无权限页面并保留顺序', () => {
