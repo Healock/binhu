@@ -4,11 +4,17 @@ import zipfile
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock, patch
 
-from routers.workflow_extended import _can_upload_photo_batch, _photo_matches
+from routers.workflow_extended import (
+    _can_upload_photo_batch,
+    _photo_matches,
+    get_photo_import_detail,
+)
 from routers.workflow_extended import preview_photo_import
 from services.photo_import import (
     inspect_photo_zip,
     parse_photo_filename,
+    read_photo_zip_members,
+    repair_legacy_zip_text,
 )
 
 
@@ -22,6 +28,16 @@ def make_zip(entries: dict[str, bytes]) -> bytes:
         for name, content in entries.items():
             archive.writestr(name, content)
     return output.getvalue()
+
+
+def make_legacy_gbk_zip(name: str, content: bytes) -> bytes:
+    encoded_name = name.encode("gbk")
+    placeholder = ("a" * len(encoded_name)).encode("ascii")
+    archive = make_zip({placeholder.decode("ascii"): content})
+    self_count = archive.count(placeholder)
+    if self_count != 2:
+        raise AssertionError(f"unexpected ZIP filename occurrence count: {self_count}")
+    return archive.replace(placeholder, encoded_name)
 
 
 class PhotoImportParserTests(unittest.TestCase):
@@ -41,6 +57,24 @@ class PhotoImportParserTests(unittest.TestCase):
         self.assertEqual([item.person_name for item in parsed], ["张三", "李四"])
         self.assertEqual(parsed[0].identity_number, "32050020000101001X")
         self.assertEqual(parsed[1].extension, ".png")
+
+    def test_legacy_gbk_zip_filename_is_recovered(self):
+        filename = "张三_32050020000101001X.jpg"
+        content = make_legacy_gbk_zip(filename, JPEG)
+
+        parsed = inspect_photo_zip(content)
+
+        self.assertEqual(parsed[0].safe_name, filename)
+        self.assertEqual(parsed[0].person_name, "张三")
+        self.assertEqual(parsed[0].identity_number, "32050020000101001X")
+        self.assertEqual(read_photo_zip_members(content), {filename: JPEG})
+
+    def test_legacy_database_text_can_be_repaired_for_existing_preview(self):
+        garbled = "张三_32050020000101001X.jpg".encode("gbk").decode("cp437")
+        self.assertEqual(
+            repair_legacy_zip_text(garbled),
+            "张三_32050020000101001X.jpg",
+        )
 
     def test_invalid_filename_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -126,6 +160,33 @@ class _PreviewConnection:
         return self.cursor_obj
 
 
+class _DetailCursor:
+    def __init__(self, garbled_name: str, garbled_person: str):
+        self.execute = AsyncMock()
+        self.fetchone = AsyncMock(return_value=(
+            42, "PHOTO-42", "preview", 1, 0, 1, 0, 0, 0, "",
+            None, None, None, None,
+        ))
+        self.fetchall = AsyncMock(return_value=[(
+            garbled_name, garbled_person, "hmac", len(JPEG), "sha",
+            "unmatched", "没有处理中照片工单", "[]",
+        )])
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class _DetailConnection:
+    def __init__(self, garbled_name: str, garbled_person: str):
+        self.cursor_obj = _DetailCursor(garbled_name, garbled_person)
+
+    def cursor(self):
+        return self.cursor_obj
+
+
 class _Upload:
     filename = "photos.zip"
 
@@ -137,6 +198,23 @@ class _Upload:
 
 
 class PhotoImportPreviewRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_protected_detail_returns_repaired_full_identity(self):
+        filename = "张三_32050020000101001X.jpg"
+        connection = _DetailConnection(
+            filename.encode("gbk").decode("cp437"),
+            "张三".encode("gbk").decode("cp437"),
+        )
+
+        result = await get_photo_import_detail(42, {"id": 7}, connection)
+
+        self.assertEqual(result["items"][0]["safe_name"], filename)
+        self.assertEqual(result["items"][0]["person_name"], "张三")
+        self.assertEqual(
+            result["items"][0]["identity_number"],
+            "32050020000101001X",
+        )
+        self.assertNotIn("identity_masked", result["items"][0])
+
     async def test_preview_only_creates_preview_rows_and_not_attachments(self):
         content = make_zip({"张三_32050020000101001X.jpg": JPEG})
         connection = _PreviewConnection()

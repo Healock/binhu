@@ -6,7 +6,6 @@ import json
 import hashlib
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -39,7 +38,9 @@ from services.workflow_support import (
 from services.photo_import import (
     MAX_PHOTO_IMPORT_ZIP_BYTES,
     inspect_photo_zip,
+    parse_photo_filename,
     read_photo_zip_members,
+    repair_legacy_zip_text,
     remove_photo_import_zip,
     resolve_photo_import_zip,
     save_photo_import_zip,
@@ -986,10 +987,17 @@ async def get_photo_import_detail(batch_id: int, user: dict, conn) -> dict:
                 ticket_ids = json.loads(raw_ids or "[]") if isinstance(raw_ids, str) else raw_ids
             except (TypeError, ValueError):
                 ticket_ids = []
-            masked = "已隐藏"
+            safe_name = repair_legacy_zip_text(str(row[0] or ""))
+            person_name = repair_legacy_zip_text(str(row[1] or ""))
+            identity_number = ""
+            try:
+                _, parsed_name, identity_number = parse_photo_filename(safe_name)
+                person_name = parsed_name
+            except ValueError:
+                pass
             items.append({
-                "safe_name": f"{row[1]}_已隐藏{Path(str(row[0])).suffix.lower()}",
-                "person_name": row[1], "identity_masked": masked,
+                "safe_name": safe_name,
+                "person_name": person_name, "identity_number": identity_number,
                 "size_bytes": int(row[3]), "sha256": row[4], "match_status": row[5],
                 "match_reason": row[6], "matched_ticket_ids": [int(x) for x in (ticket_ids or [])],
             })
@@ -1090,7 +1098,7 @@ async def confirm_photo_import(
             )
             ticket_counts: dict[int, int] = {}
             counts = {"matched": 0, "unmatched": 0, "duplicate": 0, "conflict": 0, "failed": 0}
-            item_success_tickets: dict[tuple[str, str], set[int]] = {}
+            item_success_tickets: dict[tuple[str, str, str], set[int]] = {}
             for item in parsed:
                 identity_hmac, hmac_version = (
                     hmac_digest(item.identity_number, kind="identity")
@@ -1102,7 +1110,7 @@ async def confirm_photo_import(
                 )
                 ticket_ids = [int(row[0]) for row in matches]
                 reason = ""
-                item_key = (item.safe_name, item.sha256)
+                item_key = (item.safe_name, item.legacy_safe_name, item.sha256)
                 item_success_tickets[item_key] = set()
                 if item.parse_error:
                     status = "unmatched"
@@ -1154,8 +1162,9 @@ async def confirm_photo_import(
                 await cur.execute(
                     "UPDATE photo_request_import_items SET identity_hmac=%s, identity_hmac_version=%s, "
                     "match_status=%s, match_reason=%s, matched_ticket_ids=%s, notification_sent=%s "
-                    "WHERE batch_id=%s AND safe_name=%s AND file_sha256=%s",
-                    (identity_hmac, hmac_version, status, reason, json.dumps(ticket_ids), 0, batch_id, item.safe_name, item.sha256),
+                    "WHERE batch_id=%s AND safe_name IN (%s,%s) AND file_sha256=%s",
+                    (identity_hmac, hmac_version, status, reason, json.dumps(ticket_ids), 0,
+                     batch_id, item.safe_name, item.legacy_safe_name, item.sha256),
                 )
             completed_ticket_ids: set[int] = set()
             for ticket_id, photo_count in ticket_counts.items():
@@ -1200,12 +1209,12 @@ async def confirm_photo_import(
                     content=f"工单 #{ticket_id} 的照片已调取完成，可以打开工单查看。",
                 )
                 completed_ticket_ids.add(ticket_id)
-            for (safe_name, file_sha256), ticket_ids_for_item in item_success_tickets.items():
+            for (safe_name, legacy_safe_name, file_sha256), ticket_ids_for_item in item_success_tickets.items():
                 if ticket_ids_for_item & completed_ticket_ids:
                     await cur.execute(
                         "UPDATE photo_request_import_items SET notification_sent=1 "
-                        "WHERE batch_id=%s AND safe_name=%s AND file_sha256=%s",
-                        (batch_id, safe_name, file_sha256),
+                        "WHERE batch_id=%s AND safe_name IN (%s,%s) AND file_sha256=%s",
+                        (batch_id, safe_name, legacy_safe_name, file_sha256),
                     )
             status = "completed" if counts["unmatched"] == 0 and counts["failed"] == 0 else "partial"
             await cur.execute(

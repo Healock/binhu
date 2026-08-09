@@ -172,21 +172,6 @@ export default function MobileDock({
 
       <div className="mobile-dock-bar">
         <div className="mobile-dock-bar__items">
-          <button
-            type="button"
-            className={`mobile-dock-bar__item${location.pathname === '/' ? ' is-active' : ''}`}
-            aria-label="仪表盘"
-            onClick={() => {
-              if (!confirmPendingNavigation()) return
-              setOpenGroupId(null)
-              navigate('/')
-            }}
-          >
-            <span className="mobile-dock-bar__icon">
-              <NavigationIcon name="dashboard" />
-            </span>
-            <span>首页</span>
-          </button>
           {groups.map(({ definition, items }) => {
             const active = items.some(item => (
               routeIsActive(location.pathname, item)
