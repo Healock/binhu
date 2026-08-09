@@ -24,6 +24,13 @@ from services.work_activity import (
 )
 from services.work_log_data import build_system_snapshot
 from services.work_log_pdf import build_daily_pdf
+from services.work_log_daily_detail import (
+    MAX_VISIT_TARGET,
+    build_daily_detail_export,
+    load_target_preferences,
+    normalize_targets,
+    save_target_preferences,
+)
 from services.work_log_schema import (
     TEMPLATE_VERSION,
     default_manual_values,
@@ -53,6 +60,12 @@ class DraftSave(BaseModel):
 
 class VersionRequest(BaseModel):
     version: int = Field(ge=1)
+
+
+class DailyDetailExportRequest(BaseModel):
+    business_date: date
+    rental_target: int = Field(ge=0, le=MAX_VISIT_TARGET)
+    self_owned_target: int = Field(ge=0, le=MAX_VISIT_TARGET)
 
 
 def _json_load(value: Any, default):
@@ -300,6 +313,60 @@ def _missing_items(draft: dict) -> list[dict]:
 async def schema(user: dict = Depends(require_admin)):
     del user
     return get_schema()
+
+
+@router.get("/daily-detail/preferences")
+async def daily_detail_preferences(
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    return await load_target_preferences(conn, int(user["id"]))
+
+
+@router.post("/daily-detail/export")
+async def export_daily_detail(
+    data: DailyDetailExportRequest,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    targets = normalize_targets({
+        "rental_target": data.rental_target,
+        "self_owned_target": data.self_owned_target,
+    })
+    content, filename, row_count = await build_daily_detail_export(
+        conn,
+        data.business_date,
+        **targets,
+    )
+    await save_target_preferences(conn, int(user["id"]), targets)
+    await record_admin_audit(
+        user,
+        "work_log_detail.export",
+        target_type="work_log_daily_detail",
+        target_name=data.business_date.isoformat(),
+        detail={
+            "business_date": data.business_date.isoformat(),
+            "row_count": row_count,
+            "rental_target": targets["rental_target"],
+            "self_owned_target": targets["self_owned_target"],
+            "file_format": "XLSX",
+        },
+        **request_audit_fields(request),
+    )
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''"
+                + quote(filename)
+            )
+        },
+    )
 
 
 @router.get("/drafts")

@@ -30,15 +30,19 @@ class SummaryCursor:
     async def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.connection.calls.append((normalized, params))
-        self.rows = list(self.connection.inspector_rows)
+        if "FROM OnlineData._grid_members g" in normalized:
+            self.rows = list(self.connection.active_member_rows)
+        else:
+            self.rows = list(self.connection.inspector_rows)
 
     async def fetchall(self):
         return list(self.rows)
 
 
 class SummaryConnection:
-    def __init__(self, inspector_rows, community_rows=()):
+    def __init__(self, inspector_rows, community_rows=(), active_member_rows=()):
         self.inspector_rows = inspector_rows
+        self.active_member_rows = active_member_rows
         self.calls = []
 
     def cursor(self):
@@ -75,6 +79,7 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
                 (date(2026, 7, 1), "长板", "张三", 4, 1, 0, 0, 3),
                 (date(2026, 7, 1), "长板", "李四", 2, 0, 1, 1, 1),
             ],
+            active_member_rows=[("长板", "张三"), ("长板", "李四")],
         )
 
         result = await get_visit_summary(
@@ -119,6 +124,11 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(community_total["人均日走访户数"], 3.0)
         self.assertEqual(community_total["人均日变动数"], 1.5)
         self.assertEqual(community_total["在岗人日"], 2.0)
+        self.assertEqual(community_total["网格员人数"], 2)
+        self.assertEqual(
+            result["community"]["data"][0]["网格员人数"],
+            2,
+        )
         self.assertEqual(
             result["overview"],
             {
@@ -137,9 +147,10 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            [params for _, params in connection.calls],
-            [(date(2026, 7, 1), date(2026, 7, 31))],
+            connection.calls[0][1],
+            (date(2026, 7, 1), date(2026, 7, 31)),
         )
+        self.assertEqual(connection.calls[-1][1], ("2026-07-31",))
 
     async def test_empty_range_still_returns_zero_totals(self):
         result = await get_visit_summary(

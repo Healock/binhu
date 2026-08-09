@@ -2,9 +2,12 @@ import json
 import os
 import sys
 from datetime import date, datetime
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import unittest
+
+from openpyxl import load_workbook
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -30,6 +33,11 @@ from services.work_log_data import (
     build_system_snapshot,
 )
 from services.work_log_pdf import _display, build_daily_pdf
+from services.work_log_daily_detail import (
+    build_daily_detail_data,
+    build_daily_detail_workbook,
+    normalize_targets,
+)
 from services.work_log_schema import (
     TEMPLATE_VERSION,
     default_manual_values,
@@ -66,6 +74,11 @@ class CountConnection:
 
     def cursor(self):
         return CountCursor(self.count)
+
+
+class EmptyConnection:
+    def cursor(self):
+        return CountCursor(0)
 
 
 class DraftCursor:
@@ -871,6 +884,143 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("background: #eef2f6", captured["html"])
         self.assertNotIn("{{", captured["html"])
         self.assertNotIn("PRIVATE_MARKER_SHOULD_NOT_RENDER", captured["html"])
+
+    def test_daily_detail_workbook_keeps_layout_and_clears_other_sections(self):
+        rows = [
+            {
+                "group_key": "area:东片",
+                "group_label": "东片\n片长甲",
+                "community": "长板",
+                "name": "网格员甲",
+                "attendance": "是",
+                "visit_target": 10,
+                "visits": 8,
+                "ratings": 6,
+                "checked_instructions": 5,
+                "completed_instructions": 3,
+            },
+            {
+                "group_key": "area:东片",
+                "group_label": "东片\n片长甲",
+                "community": "长板",
+                "name": "网格员乙",
+                "attendance": "否",
+                "visit_target": 10,
+                "visits": 0,
+                "ratings": 0,
+                "checked_instructions": 2,
+                "completed_instructions": 1,
+            },
+        ]
+        content, filename = build_daily_detail_workbook(
+            date(2026, 8, 9),
+            rows,
+        )
+        workbook = load_workbook(BytesIO(content), data_only=False)
+        self.assertEqual(workbook.sheetnames, ["Sheet1"])
+        sheet = workbook["Sheet1"]
+        self.assertEqual(filename, "0809滨湖网格工作每日明细.xlsx")
+        self.assertEqual(sheet["B2"].value, "8月9号")
+        self.assertEqual(sheet["A4"].value, 1)
+        self.assertEqual(sheet["J4"].value, 8)
+        self.assertEqual(sheet["L4"].value, 5)
+        self.assertEqual(sheet["M4"].value, 3)
+        self.assertIsNone(sheet["F4"].value)
+        self.assertIsNone(sheet["N4"].value)
+        self.assertIsNone(sheet["V4"].value)
+        self.assertIn("B4:B5", {str(item) for item in sheet.merged_cells.ranges})
+        self.assertIn("C4:C5", {str(item) for item in sheet.merged_cells.ranges})
+        self.assertEqual(sheet.max_row, 67)
+        for row in sheet.iter_rows(min_row=1, max_row=67, min_col=1, max_col=22):
+            for cell in row:
+                self.assertIsNone(cell.fill.fill_type)
+
+    async def test_daily_detail_uses_role_specific_visits_and_snapshot_tasks(self):
+        roster = [
+            {
+                "name": "网格员甲",
+                "position": "组员",
+                "group_key": "area:东片",
+                "group_label": "东片",
+                "community": "长板",
+                "attendance": "是",
+            },
+            {
+                "name": "自购房乙",
+                "position": "自购房",
+                "group_key": "internal:自购房",
+                "group_label": "自购房",
+                "community": "",
+                "attendance": "是",
+            },
+        ]
+        rental = {
+            "inspector": {"data": [{
+                "姓名": "网格员甲",
+                "走访户数": 4,
+                "星级评定数": 3,
+            }]},
+        }
+        self_owned = {
+            "inspector": {"data": [{
+                "姓名": "自购房乙",
+                "走访户数": 6,
+                "星级评定数": 5,
+            }]},
+        }
+        online = {
+            "exists": True,
+            "inspector": {"data": [{
+                "姓名": "网格员甲",
+                "已核查": 2,
+                "已完成": 3,
+            }]},
+        }
+        with (
+            patch(
+                "services.work_log_daily_detail._load_roster",
+                new=AsyncMock(return_value=roster),
+            ),
+            patch(
+                "services.work_log_daily_detail.get_known_personnel_positions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "services.work_log_daily_detail.get_configured_positions",
+                new=AsyncMock(return_value=["组员"]),
+            ),
+            patch(
+                "services.work_log_daily_detail.get_visit_summary",
+                new=AsyncMock(side_effect=[rental, self_owned]),
+            ),
+            patch(
+                "services.work_log_daily_detail.get_summary",
+                new=AsyncMock(return_value=online),
+            ),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(),
+                date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            )
+        self.assertEqual(result[0]["visit_target"], 10)
+        self.assertEqual(result[0]["visits"], 4)
+        self.assertEqual(result[0]["ratings"], 3)
+        self.assertEqual(result[0]["checked_instructions"], 5)
+        self.assertEqual(result[0]["completed_instructions"], 3)
+        self.assertEqual(result[1]["visit_target"], 15)
+        self.assertEqual(result[1]["visits"], 6)
+        self.assertIsNone(result[1]["checked_instructions"])
+
+    def test_daily_detail_targets_are_bounded(self):
+        self.assertEqual(
+            normalize_targets({
+                "rental_target": -1,
+                "self_owned_target": 1200,
+            }),
+            {"rental_target": 0, "self_owned_target": 999},
+        )
 
 
 if __name__ == "__main__":

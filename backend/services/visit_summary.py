@@ -17,6 +17,7 @@ from services.personnel_positions import (
     get_configured_positions,
     get_known_personnel_positions,
 )
+from services.report_members import get_active_members
 
 VISIT_CATEGORY_RENTAL = "rental"
 VISIT_CATEGORY_SELF_OWNED = "self_owned"
@@ -41,6 +42,7 @@ INSPECTOR_COLUMNS = [
 COMMUNITY_COLUMNS = [
     "社区",
     "走访户数",
+    "网格员人数",
     "在岗人日",
     "人均日走访户数",
     "新增",
@@ -151,6 +153,7 @@ def _inspector_row(
 def _community_row(
     community: str,
     values: dict[str, int],
+    member_count: int,
     person_days: Decimal,
     displayed_person_days: Decimal,
     *,
@@ -163,6 +166,7 @@ def _community_row(
     row = {
         "社区": community,
         "走访户数": visits,
+        "网格员人数": int(member_count or 0),
         "在岗人日": _round_person_days(displayed_person_days),
         "人均日走访户数": (
             _round_ratio(visits, person_days)
@@ -221,6 +225,9 @@ def _build_total(
         for row in materialized
     )
     total["在岗人日"] = _round_person_days(person_days)
+    total["网格员人数"] = sum(
+        _int(row.get("网格员人数")) for row in materialized
+    )
     total["人均日走访户数"] = (
         _round_ratio(visits, person_days)
         if attendance_complete
@@ -369,6 +376,16 @@ async def get_visit_summary(
                     else None
                 ),
             )
+        active_online_members = await get_active_members(
+            cur,
+            end_date.isoformat(),
+        )
+
+    community_member_counts: dict[str, int] = {}
+    for community, _name in active_online_members:
+        community_member_counts[community] = (
+            community_member_counts.get(community, 0) + 1
+        )
 
     inspector_totals: dict[tuple[str, str], dict[str, int]] = {}
     daily_visits: dict[tuple[date, str], dict[str, int]] = defaultdict(
@@ -420,6 +437,7 @@ async def get_visit_summary(
         _community_row(
             community,
             community_totals.get(community, _empty_values()),
+            community_member_counts.get(community, 0),
             attendance["community_person_days"].get(
                 community,
                 Decimal(0),

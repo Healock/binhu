@@ -47,6 +47,25 @@ test('导出文件名始终使用 XLSX 扩展名', () => {
   assert.equal(normalizeXlsxFileName('   '), '汇总数据.xlsx')
 })
 
+test('走访社区汇总把网格员人数放在在岗人日前并按整数导出', () => {
+  const workbook = buildSummaryWorkbook({
+    fileName: '走访汇总',
+    tables: [{
+      sheet: '社区汇总',
+      columns: ['社区', '走访户数', '网格员人数', '在岗人日'],
+      rows: [{ 社区: '长板', 走访户数: 12, 网格员人数: 4, 在岗人日: 3.5 }],
+      total: { 社区: '总计', 走访户数: 12, 网格员人数: 4, 在岗人日: 3.5 },
+    }],
+  })
+  const sheet = workbook.sheets[0]
+  assert.deepEqual(
+    sheet.data[0].map(cell => typeof cell === 'object' && cell ? cell.value : cell),
+    ['社区', '走访户数', '网格员人数', '在岗人日'],
+  )
+  assert.equal((sheet.data[1][2] as { format: string }).format, '#,##0')
+  assert.equal((sheet.data[1][3] as { format: string }).format, '0.0')
+})
+
 test('在线和走访汇总导出前都会写入操作记录', () => {
   for (const page of ['Dashboard.tsx', 'VisitSummary.tsx']) {
     const source = readFileSync(

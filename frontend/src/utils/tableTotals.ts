@@ -12,6 +12,7 @@ const REPORT_SUM_COLUMNS = new Set([
 
 const VISIT_SUM_COLUMNS = new Set([
   '走访户数',
+  '网格员人数',
   '新增',
   '变更',
   '注销',

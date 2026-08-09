@@ -18,6 +18,7 @@ import {
   CloudDownloadOutlined,
   CopyOutlined,
   DeleteOutlined,
+  FileExcelOutlined,
   FolderOpenOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -31,7 +32,9 @@ import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   createWorkLogDraft,
   exportWorkLog,
+  exportWorkLogDailyDetail,
   getWorkLogDraft,
+  getWorkLogDailyDetailPreferences,
   getWorkLogMissing,
   getWorkLogSchema,
   refreshWorkLogDraft,
@@ -453,6 +456,9 @@ export default function WorkLog() {
   const [dirty, setDirty] = useState(false)
   const [changeSequence, setChangeSequence] = useState(0)
   const [exporting, setExporting] = useState(false)
+  const [dailyDetailExporting, setDailyDetailExporting] = useState(false)
+  const [rentalTarget, setRentalTarget] = useState(10)
+  const [selfOwnedTarget, setSelfOwnedTarget] = useState(15)
   const savingRef = useRef(false)
   const latestSequence = useRef(0)
   const manualRef = useRef<Values>({})
@@ -463,6 +469,17 @@ export default function WorkLog() {
     getWorkLogSchema()
       .then(setSchema)
       .catch(error => message.error(errorMessage(error, '读取工作日志字段失败')))
+  }, [])
+
+  useEffect(() => {
+    getWorkLogDailyDetailPreferences()
+      .then(preferences => {
+        setRentalTarget(preferences.rental_target)
+        setSelfOwnedTarget(preferences.self_owned_target)
+      })
+      .catch(error => message.error(
+        errorMessage(error, '读取每日明细目标数失败'),
+      ))
   }, [])
 
   const applyDraft = useCallback((next: WorkLogDraft) => {
@@ -666,6 +683,26 @@ export default function WorkLog() {
     }
   }
 
+  const exportDailyDetail = async () => {
+    setDailyDetailExporting(true)
+    try {
+      const blob = await exportWorkLogDailyDetail({
+        business_date: businessDate.format('YYYY-MM-DD'),
+        rental_target: rentalTarget,
+        self_owned_target: selfOwnedTarget,
+      })
+      saveBlob(
+        blob,
+        `${businessDate.format('MMDD')}滨湖网格工作每日明细.xlsx`,
+      )
+      message.success('工作每日明细 XLSX 已生成，目标数已保存')
+    } catch (error) {
+      message.error(errorMessage(error, '生成工作每日明细失败'))
+    } finally {
+      setDailyDetailExporting(false)
+    }
+  }
+
   const saveLabel = {
     idle: dirty ? '等待保存' : '未修改',
     saving: '保存中',
@@ -679,7 +716,7 @@ export default function WorkLog() {
       {contextHolder}
       <PageHeader
         title="工作日志生成"
-        description="按原工作日志顺序填写全部内容，确认后导出固定版式 PDF"
+        description="可填写并导出工作日志 PDF，也可按系统数据一键生成工作每日明细 XLSX"
         actions={(
           <Space wrap>
             <Button
@@ -752,6 +789,34 @@ export default function WorkLog() {
               onChange={value => value && setBusinessDate(value)}
             />
           </div>
+          <div>
+            <div className="mb-2 text-sm font-medium">出租房目标数</div>
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={rentalTarget}
+              onChange={value => setRentalTarget(value ?? 10)}
+            />
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-medium">自购房目标数</div>
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={selfOwnedTarget}
+              onChange={value => setSelfOwnedTarget(value ?? 15)}
+            />
+          </div>
+          <Button
+            type="primary"
+            icon={<FileExcelOutlined />}
+            loading={dailyDetailExporting}
+            onClick={exportDailyDetail}
+          >
+            生成每日明细 XLSX
+          </Button>
           <div className="text-sm text-slate-500">
             正文日期为 {businessDate.format('YYYY 年 M 月 D 日')}，落款为{' '}
             {businessDate.add(1, 'day').format('YYYY 年 M 月 D 日')}

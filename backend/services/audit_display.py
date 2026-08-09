@@ -63,6 +63,7 @@ ACTION_LABELS: dict[str, str] = {
     "work_log.takeover": "接管工作日志",
     "work_log.refresh": "刷新工作日志系统数据",
     "work_log.export": "导出工作日志",
+    "work_log_detail.export": "导出工作每日明细",
     "online_summary.export": "导出在线数据汇总",
     "visit_summary.export": "导出走访汇总",
     "police_dispatch.feedback.export": "导出下发反馈表",
@@ -104,6 +105,7 @@ ACTION_LABELS: dict[str, str] = {
 }
 
 TARGET_TYPE_LABELS: dict[str, str] = {
+    "work_log_daily_detail": "工作每日明细",
     "container": "系统日志",
     "backup": "数据库备份",
     "backup_schedule": "备份计划",
