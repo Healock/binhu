@@ -151,6 +151,10 @@
   gap: 12px;
 }
 
+.mobile-task-list {
+  align-items: start;
+}
+
 .mobile-task-filter-card {
   padding: 14px;
 }
@@ -324,6 +328,25 @@
   box-shadow: 0 8px 24px rgb(15 23 42 / 0.09);
 }
 
+.mobile-task-item-card.is-selection-mode {
+  cursor: pointer;
+}
+
+.mobile-task-item-card.is-selected,
+.mobile-task-item-card.is-selected:hover {
+  border-color: var(--app-primary);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--app-primary) 28%, transparent),
+    0 12px 28px color-mix(in srgb, var(--app-primary) 18%, transparent);
+  transform: translateY(-1px);
+}
+
+.mobile-task-item-card.is-selection-disabled {
+  cursor: not-allowed;
+  filter: saturate(0.72);
+  opacity: 0.58;
+}
+
 .mobile-task-item-card__body {
   padding: 12px;
 }
@@ -344,10 +367,6 @@
   gap: 7px;
 }
 
-.mobile-task-item-card__checkbox {
-  flex-shrink: 0;
-}
-
 .mobile-task-item-card__title-row {
   display: flex;
   min-width: 0;
@@ -357,8 +376,9 @@
 }
 
 .mobile-task-item-card__title-row h2 {
-  flex: 1;
-  min-width: 0;
+  min-width: 3em;
+  max-width: 5.5em;
+  flex: 0 1 auto;
   margin: 0;
   overflow: hidden;
   color: var(--app-text-strong);
@@ -381,8 +401,9 @@
 
 .mobile-phone-native-select--header {
   width: auto;
+  min-width: 0;
   max-width: 112px;
-  flex: 0 1 auto;
+  flex: 1 1 0;
 }
 
 .mobile-phone-native-select--header .mobile-phone-native-select__control {
@@ -390,9 +411,9 @@
 }
 
 .mobile-task-item-card__phone-copy.ant-btn {
-  width: auto;
+  width: 100%;
   min-width: 0;
-  max-width: 112px;
+  max-width: 100%;
   height: 24px;
   flex: 0 1 auto;
   padding: 0 2px;
