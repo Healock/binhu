@@ -93,6 +93,41 @@ export function buildMobileTaskChanges(
   )
 }
 
+/**
+ * 将保存响应合并回当前详情页时，保留本次明确提交的值。
+ *
+ * 回写接口通常会返回完整来源行，但腾讯下拉单元格在某些响应中只
+ * 返回选项 ID，或者暂时省略刚写入的文本。直接用响应覆盖整行会让
+ * 用户刚选中的结果在保存结束后看起来像被清空。这里只对本次提交
+ * 的非空字段做安全兜底；用户明确清空的字段仍以空值为准。
+ */
+export function mergeMobileTaskSaveValues(
+  sourceValues: Record<string, string>,
+  changes: Record<string, string>,
+  responseValues: Record<string, string>,
+  cellMeta: Record<string, {
+    type?: string
+    options?: Array<{ id: string | number; text: string }>
+  }> = {},
+): Record<string, string> {
+  const merged = { ...sourceValues, ...responseValues }
+
+  for (const [field, requested] of Object.entries(changes)) {
+    const responseValue = responseValues[field]
+    const options = cellMeta[field]?.options || []
+    const optionText = options.find(option => String(option.id) === String(responseValue))?.text
+    if (optionText && responseValue !== optionText) {
+      merged[field] = String(optionText)
+      continue
+    }
+    if (String(requested || '').trim() && !String(responseValue || '').trim()) {
+      merged[field] = requested
+    }
+  }
+
+  return merged
+}
+
 export function mobileTaskSourceDifferences(
   sources: Pick<MobileTaskSource, 'values'>[],
   columns: string[],
