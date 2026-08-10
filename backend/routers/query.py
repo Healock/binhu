@@ -133,11 +133,19 @@ def _editor_select_metadata(
     write_multiple = bool(
         source.get("write_multiple", source.get("multiple", False))
     )
-    editor_options = (
+    usable_write_options = (
         _usable_select_options({"options": write_options})
         if write_type == "select"
         else []
-    ) or options
+    )
+    editor_options = usable_write_options or options
+    # Some Tencent responses expose the cell as a select but omit its option
+    # definitions (this is especially common for blank cells).  The caller
+    # supplies a cached or workflow fallback list in that case.  Keep the same
+    # list for physical writeback; otherwise the editor displays a valid value
+    # while build_update_cell_request rejects it as an unknown option.
+    if write_type == "select" and not usable_write_options:
+        write_options = list(options)
     return {
         "type": "select",
         "multiple": False,

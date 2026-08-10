@@ -40,14 +40,14 @@
 @media (min-width: 768px) {
   .mobile-task-page {
     width: 100%;
-    max-width: 1120px;
+    max-width: 1440px;
     margin-inline: auto;
     gap: 20px;
   }
 
   .mobile-task-business-list,
   .mobile-task-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .mobile-task-load-more {
@@ -300,16 +300,16 @@
 }
 
 .mobile-task-item-card {
-  min-height: 132px;
-  padding: 15px;
+  min-height: 112px;
+  padding: 10px;
   text-align: left;
 }
 
 .mobile-task-item-card__details {
   display: grid;
-  gap: 7px;
-  margin: 12px 0 0;
-  padding: 10px 11px;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 8px 9px;
   border-radius: 10px;
   color: var(--app-text);
   background: var(--app-surface-muted);
@@ -335,8 +335,32 @@
   color: var(--app-text-strong);
 }
 
+.mobile-task-item-card__detail-row--primary dt,
+.mobile-task-item-card__detail-row--primary dd {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.mobile-task-item-card__detail-row--primary dd {
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
 .mobile-task-item-card__address {
-  margin-top: 12px;
+  margin-top: 8px;
+}
+
+.mobile-task-item-card__source-tag {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.mobile-task-bulk-toolbar {
+  padding: 10px 12px;
 }
 
 .mobile-task-detail-facts {
@@ -397,8 +421,21 @@
 }
 
 .mobile-task-item-card__footer {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+@media (min-width: 1200px) {
+  .mobile-task-list {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+
+@media (min-width: 1500px) {
+  .mobile-task-list {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
 }
 
 .mobile-task-source-panel {

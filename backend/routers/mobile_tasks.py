@@ -29,6 +29,7 @@ from services.parsers import get_parser
 from services.permissions import ONLINE_RAW_EDIT, ONLINE_RAW_VIEW
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
+from services.audit import record_admin_audit, request_audit_fields
 from config import settings
 from services.watch_matching import task_watch_payload
 
@@ -76,6 +77,11 @@ PRIORITY_LABELS = {
 class TaskBatchUpdate(BaseModel):
     changes: dict[str, str]
     expected_revision: int = Field(gt=0)
+
+
+class BulkAssignmentRequest(BaseModel):
+    row_keys: list[str] = Field(min_length=1, max_length=100)
+    inspector: str = Field(min_length=1, max_length=100)
 
 
 class TaskSearch(BaseModel):
@@ -1067,3 +1073,166 @@ async def update_mobile_task(
         conn=conn,
         explicit_text_edit=True,
     )
+
+
+@router.post("/{parser_type}/bulk-assign")
+async def bulk_assign_mobile_tasks(
+    parser_type: str,
+    data: BulkAssignmentRequest,
+    request: Request,
+    user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
+    conn=Depends(get_db),
+):
+    """Manually assign a selected set of unassigned tasks to one inspector.
+
+    Tencent writeback is inherently row/version based, so each physical source
+    row is still revalidated and written through the existing safe path.  The
+    endpoint only provides the batch selection and a compact result summary;
+    it never bypasses the per-row permission, revision, hash, or option checks.
+    """
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    context = await _flow_context(conn, user)
+    if not context.get("admin_mode") and context.get("position") != "组长":
+        raise HTTPException(403, "只有组长可以批量分配核查人")
+
+    row_keys = list(dict.fromkeys(str(value).strip() for value in data.row_keys if str(value).strip()))
+    inspector = str(data.inspector).strip()
+    if not row_keys or not inspector:
+        raise HTTPException(400, "请选择任务和在岗组员")
+
+    projection_by_key: dict[str, dict] = {}
+    source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
+    skipped: list[dict[str, str]] = []
+    async with conn.cursor() as cur:
+        if not await _writeback_enabled(cur):
+            raise HTTPException(503, "在线回写已由超级管理员暂停")
+        scope_where, scope_params = _scope_where(context, "community")
+        key_placeholders = ", ".join(["%s"] * len(row_keys))
+        await cur.execute(
+            f"""
+            SELECT projection.row_key, projection.community, projection.inspector,
+                   projection.task_state, projection.conflict, projection.source_count
+            FROM _online_source_projection AS projection
+            WHERE projection.parser_type=%s
+              AND projection.row_key IN ({key_placeholders})
+              AND {scope_where}
+            """,
+            [parser_type, *row_keys, *scope_params],
+        )
+        for row in await cur.fetchall():
+            projection_by_key[str(row[0])] = {
+                "community": str(row[1] or "").strip(),
+                "inspector": str(row[2] or "").strip(),
+                "state": str(row[3] or "").strip(),
+                "conflict": bool(row[4]),
+                "source_count": int(row[5] or 0),
+            }
+        missing_scope = [key for key in row_keys if key not in projection_by_key]
+        if missing_scope:
+            raise HTTPException(403, "部分任务不在当前账号可操作范围内，请刷新后重试")
+
+        # Validate the selected person separately for every community.  Aliases
+        # are accepted, but the person must still be an on-duty group member of
+        # the task's formal community.
+        for community in sorted({item["community"] for item in projection_by_key.values()}):
+            await cur.execute(
+                """
+                SELECT 1
+                FROM _grid_members AS member
+                JOIN _grid_member_department_links AS link ON link.member_id=member.id
+                JOIN _departments AS department
+                  ON department.id=link.department_id
+                 AND department.department_type='community'
+                 AND department.is_active=1
+                JOIN _communities AS formal ON formal.id=department.community_id
+                LEFT JOIN _community_aliases AS alias ON alias.community_id=formal.id
+                WHERE (formal.name=%s OR alias.alias=%s)
+                  AND member.name=%s
+                  AND member.position='组员'
+                  AND member.status='在岗'
+                  AND formal.is_active=1
+                LIMIT 1
+                """,
+                (community, community, inspector),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(400, "只能分配给对应社区的在岗组员")
+
+        await cur.execute(
+            f"""
+            SELECT id, row_key, revision
+            FROM _online_source_rows
+            WHERE parser_type=%s AND row_key IN ({key_placeholders})
+            ORDER BY row_key, id
+            """,
+            [parser_type, *row_keys],
+        )
+        for source_id, row_key, revision in await cur.fetchall():
+            source_rows_by_key.setdefault(str(row_key), []).append((int(source_id), int(revision)))
+
+    update_count = 0
+    failed_count = 0
+    for row_key in row_keys:
+        item = projection_by_key[row_key]
+        if item["inspector"]:
+            skipped.append({"row_key": row_key, "reason": "已有核查人"})
+            continue
+        if item["state"] == "completed":
+            skipped.append({"row_key": row_key, "reason": "任务已完成"})
+            continue
+        if item["conflict"]:
+            skipped.append({"row_key": row_key, "reason": "来源存在冲突"})
+            continue
+        sources = source_rows_by_key.get(row_key) or []
+        if not sources:
+            skipped.append({"row_key": row_key, "reason": "找不到来源行"})
+            continue
+        task_ok = True
+        for source_id, revision in sources:
+            try:
+                await update_source_fields(
+                    parser_type=parser_type,
+                    source_id=source_id,
+                    changes={"核查人": inspector},
+                    expected_revision=revision,
+                    request=request,
+                    user=user,
+                    conn=conn,
+                    explicit_text_edit=True,
+                )
+            except HTTPException as exc:
+                task_ok = False
+                failed_count += 1
+                reason = {
+                    400: "数据校验未通过",
+                    403: "没有该任务的编辑权限",
+                    409: "任务已变化，请刷新后重试",
+                    502: "腾讯回写校验失败",
+                }.get(exc.status_code, "保存失败")
+                skipped.append({"row_key": row_key, "reason": reason})
+                break
+        if task_ok:
+            update_count += 1
+
+    await record_admin_audit(
+        user,
+        "mobile_tasks.bulk_assign",
+        target_type="mobile_task",
+        target_name=parser_type,
+        detail={
+            "task_count": len(row_keys),
+            "updated_count": update_count,
+            "skipped_count": len(skipped),
+            "failed_count": failed_count,
+            "inspector": inspector,
+        },
+        **request_audit_fields(request),
+    )
+    return {
+        "updated": update_count,
+        "skipped": len(skipped),
+        "failed": failed_count,
+        "details": skipped,
+        "inspector": inspector,
+    }
