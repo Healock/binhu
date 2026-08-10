@@ -139,8 +139,9 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         address_fields=("地址",),
         date_fields=("截止时间",),
         identity_fields=("身份证号",),
-        valid_results=("近期反吴", "在吴", "离吴"),
-        result_options=("近期反吴", "离吴", "在吴"),
+        # “近期反吴”是旧版本曾经写入的错拼值，只用于兼容历史数据。
+        valid_results=("近期返吴", "近期反吴", "在吴", "离吴"),
+        result_options=("近期返吴", "离吴", "在吴"),
     ),
     "疑似返苏": TaskWorkflow(
         parser_type="疑似返苏",

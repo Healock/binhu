@@ -75,6 +75,22 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             task_state("疑似未注销模型三", {"核查结果": "在吴"}),
             "completed",
         )
+        self.assertEqual(
+            task_state("疑似未注销模型三", {"核查结果": "离吴"}),
+            "completed",
+        )
+        self.assertEqual(
+            task_state("疑似未注销模型三", {"核查结果": "近期返吴"}),
+            "completed",
+        )
+        self.assertEqual(
+            task_state("疑似未注销模型三", {"核查结果": "近期反吴"}),
+            "completed",
+        )
+        self.assertEqual(
+            TASK_WORKFLOWS["疑似未注销模型三"].result_options,
+            ("近期返吴", "离吴", "在吴"),
+        )
 
     def test_unverifiable_always_needs_review_and_uses_analysis_stage(self):
         workflow = TASK_WORKFLOWS["寄递业"]

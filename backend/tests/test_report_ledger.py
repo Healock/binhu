@@ -54,6 +54,7 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("'completed'", builder.ledger_state_sql("task"))
         self.assertNotIn("'checked'", builder.ledger_state_sql("task"))
         self.assertEqual(builder.ledger_unable_sql("task"), "0")
+        self.assertIn("近期返吴", builder.ledger_reached_bottom_sql("task"))
         self.assertIn("近期反吴", builder.ledger_reached_bottom_sql("task"))
 
     async def test_daily_rate_divides_completed_by_completed_plus_unable(self):

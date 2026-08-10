@@ -25,7 +25,7 @@ class SuspectUnrevokedReportTests(unittest.TestCase):
         self.assertIn("t.`下发社区`", sql)
         self.assertNotIn("现住址", sql)
         self.assertIn("0,", sql)
-        for result in ("近期反吴", "在吴", "离吴"):
+        for result in ("近期返吴", "近期反吴", "在吴", "离吴"):
             self.assertIn(f"'{result}'", sql)
         self.assertIn(
             "TRIM(IFNULL(prev.`核查结果`, '')) "

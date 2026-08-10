@@ -710,7 +710,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [item["text"] for item in metadata["核查结果"]["options"]],
-            ["近期反吴", "离吴", "在吴"],
+            ["近期返吴", "离吴", "在吴"],
         )
 
 

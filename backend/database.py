@@ -584,7 +584,7 @@ async def ensure_online_editor_schema(cur) -> None:
                     CASE WHEN TRIM(COALESCE(
                         JSON_UNQUOTE(JSON_EXTRACT(values_json, '$.\"核查结果\"')),
                         ''
-                    )) IN ('近期反吴', '在吴', '离吴')
+                    )) IN ('近期返吴', '近期反吴', '在吴', '离吴')
                     THEN 'completed' ELSE 'unchecked' END
                 WHEN parser_type='疑似返苏' THEN
                     CASE
@@ -615,6 +615,18 @@ async def ensure_online_editor_schema(cur) -> None:
               '全链条', '出租房屋核查', '寄递业',
               '疑似未注销模型三', '疑似返苏'
           )
+    """)
+    # 修复旧版本把正确结果“近期返吴”误判为未核查的投影状态。
+    # 历史错拼值仍按已完成兼容；这里只更新本地投影，不写腾讯来源表。
+    await cur.execute("""
+        UPDATE _online_source_projection
+        SET task_state='completed'
+        WHERE parser_type='疑似未注销模型三'
+          AND task_state<>'completed'
+          AND TRIM(COALESCE(
+              JSON_UNQUOTE(JSON_EXTRACT(values_json, '$.\"核查结果\"')),
+              ''
+          )) IN ('近期返吴', '近期反吴')
     """)
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _online_source_cache_state (
