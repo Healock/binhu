@@ -1,10 +1,11 @@
 import {
+  CheckSquareOutlined,
   CopyOutlined,
   ExclamationCircleOutlined,
   PhoneOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Checkbox, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
+import { Alert, Button, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -158,6 +159,7 @@ export default function MobileTaskList() {
   const [moreOpen, setMoreOpen] = useState(false)
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState('')
+  const [selectionMode, setSelectionMode] = useState(false)
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
@@ -196,6 +198,7 @@ export default function MobileTaskList() {
   }, [rows])
 
   useEffect(() => {
+    setSelectionMode(false)
     setSelectedRows(new Set())
     setBulkInspector(undefined)
   }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
@@ -231,6 +234,12 @@ export default function MobileTaskList() {
     })
   }
 
+  const leaveSelectionMode = () => {
+    setSelectionMode(false)
+    setSelectedRows(new Set())
+    setBulkInspector(undefined)
+  }
+
   const submitBulkAssignment = async () => {
     if (!bulkInspector || !selectedRows.size) return
     setBulkSaving(true)
@@ -241,6 +250,7 @@ export default function MobileTaskList() {
       })
       if (result.updated) message.success(`已分配 ${result.updated} 条任务给 ${result.inspector}`)
       if (result.skipped) message.warning(`有 ${result.skipped} 条任务未处理，请查看原因后刷新`)
+      setSelectionMode(false)
       setSelectedRows(new Set())
       setBulkOpen(false)
       setBulkInspector(undefined)
@@ -580,24 +590,39 @@ export default function MobileTaskList() {
       {canBulkAssign && (
         <section className="app-card mobile-task-bulk-toolbar">
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="small" onClick={selectAllLoaded} disabled={!selectableRows.length}>
-              全选当前列表未分配任务
-            </Button>
-            <Button size="small" onClick={() => setSelectedRows(new Set())} disabled={!selectedCount}>
-              清除选择
-            </Button>
-            <span className="text-xs text-[var(--app-text-secondary)]">已选 {selectedCount} 条</span>
             <Button
-              type="primary"
+              type={selectionMode ? 'primary' : 'default'}
               size="small"
-              disabled={!selectedCount}
-              onClick={() => setBulkOpen(true)}
+              icon={<CheckSquareOutlined />}
+              disabled={!selectionMode && !selectableRows.length}
+              onClick={() => selectionMode ? leaveSelectionMode() : setSelectionMode(true)}
             >
-              批量分配核查人
+              {selectionMode ? '退出选择' : '选择'}
             </Button>
+            {selectionMode && (
+              <>
+                <Button size="small" onClick={selectAllLoaded} disabled={!selectableRows.length}>
+                  全选未分配任务
+                </Button>
+                <Button size="small" onClick={() => setSelectedRows(new Set())} disabled={!selectedCount}>
+                  清空
+                </Button>
+                <span className="text-xs text-[var(--app-text-secondary)]">已选 {selectedCount} 条</span>
+                <Button
+                  type="primary"
+                  size="small"
+                  disabled={!selectedCount}
+                  onClick={() => setBulkOpen(true)}
+                >
+                  批量分配核查人
+                </Button>
+              </>
+            )}
           </div>
           <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-            选中第一条后会锁定同一社区；只处理未分配任务，分配对象必须是任务所属社区的在岗组员。
+            {selectionMode
+              ? '直接点击卡片进行多选；选中第一条后会锁定同一社区，只处理未分配任务。'
+              : '点击“选择”进入多选模式，再直接点击任务卡片进行批量分配。'}
           </div>
         </section>
       )}
@@ -617,38 +642,51 @@ export default function MobileTaskList() {
             const primaryPhone = copyPhones[0] || ''
             const extraPhoneCount = Math.max(copyPhones.length - 1, 0)
             const taskCommunity = assignmentCommunity(task)
-            const canSelect = canBulkAssign
+            const isAssignable = canBulkAssign
               && !task.inspector
               && task.state !== 'completed'
               && Boolean(taskCommunity)
               && Boolean(assignment.inspectors_by_community[taskCommunity]?.length)
+            const canSelect = isAssignable
               && (!selectedCommunity || selectedCommunity === taskCommunity)
+            const isSelected = selectedRows.has(task.row_key)
             const sourceTags = mobileTaskSourceTags(task.summary.source)
+            const openOrSelectTask = () => {
+              if (selectionMode) {
+                if (!isAssignable) {
+                  message.info('该任务当前不能参与批量分配')
+                  return
+                }
+                toggleSelected(task.row_key, !isSelected)
+                return
+              }
+              navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+            }
             return (
               <article
                 key={task.row_key}
                 role="button"
                 tabIndex={0}
-                className="mobile-task-item-card"
-                onClick={() => navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)}
+                aria-pressed={selectionMode ? isSelected : undefined}
+                aria-disabled={selectionMode && !canSelect ? true : undefined}
+                className={[
+                  'mobile-task-item-card',
+                  selectionMode ? 'is-selection-mode' : '',
+                  isSelected ? 'is-selected' : '',
+                  selectionMode && !canSelect ? 'is-selection-disabled' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={openOrSelectTask}
                 onKeyDown={event => {
-                  if (event.key === 'Enter' && event.target === event.currentTarget) {
-                    navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+                  if (event.target !== event.currentTarget) return
+                  if (event.key === 'Enter' || (selectionMode && event.key === ' ')) {
+                    event.preventDefault()
+                    openOrSelectTask()
                   }
                 }}
               >
                 <div className="mobile-task-item-card__body">
                   <div className="mobile-task-item-card__header">
                     <div className="mobile-task-item-card__header-main">
-                      {canBulkAssign && (
-                        <Checkbox
-                          className="mobile-task-item-card__checkbox"
-                          checked={selectedRows.has(task.row_key)}
-                          disabled={!canSelect}
-                          onClick={event => event.stopPropagation()}
-                          onChange={event => toggleSelected(task.row_key, event.target.checked)}
-                        />
-                      )}
                       <div className="mobile-task-item-card__title-row">
                         <h2 title={task.summary.title}>{task.summary.title}</h2>
                         {primaryPhone && (
@@ -743,7 +781,7 @@ export default function MobileTaskList() {
                     <div className="mobile-task-item-card__ownership">
                       <span title={task.community || '社区未填写'}>{task.community || '社区未填写'}</span>
                       <span aria-hidden="true">·</span>
-                      <span title={task.inspector || '待分配'}>核查人 {task.inspector || '待分配'}</span>
+                      <span title={task.inspector || '待分配'}>{task.inspector || '待分配'}</span>
                     </div>
                     <div className="mobile-task-item-card__date">
                       {task.first_dispatch_at
