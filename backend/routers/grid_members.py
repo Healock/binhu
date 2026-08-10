@@ -415,8 +415,8 @@ def _member_to_dict(
         })
     else:
         for field in (
-            "phone", "notes", "leave_start_date", "leave_end_date",
-            "leave_reason", "leave_source",
+            "notes", "leave_start_date", "leave_end_date", "leave_reason",
+            "leave_source",
         ):
             result.pop(field, None)
     if identity_access:
@@ -453,14 +453,15 @@ async def list_members(
             params.extend([f"%{keyword}%"] * 4)
         else:
             where_parts.append(
-                "(member.name LIKE %s OR member.position LIKE %s OR EXISTS ("
+                "(member.name LIKE %s OR member.phone LIKE %s OR "
+                "member.position LIKE %s OR EXISTS ("
                 "SELECT 1 FROM _grid_member_department_links AS keyword_link "
                 "JOIN _departments AS keyword_department "
                 "ON keyword_department.id=keyword_link.department_id "
                 "WHERE keyword_link.member_id=member.id "
                 "AND keyword_department.name LIKE %s))"
             )
-            params.extend([f"%{keyword}%"] * 3)
+            params.extend([f"%{keyword}%"] * 4)
     if community:
         where_parts.append(
             "EXISTS (SELECT 1 FROM _grid_member_department_links AS filter_link "
