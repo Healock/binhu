@@ -152,7 +152,7 @@
 }
 
 .mobile-task-list {
-  align-items: start;
+  align-items: stretch;
 }
 
 .mobile-task-filter-card {
@@ -314,9 +314,11 @@
 }
 
 .mobile-task-item-card {
+  display: flex;
   overflow: hidden;
   min-width: 0;
   min-height: 112px;
+  flex-direction: column;
   padding: 0;
   cursor: pointer;
   text-align: left;
@@ -348,6 +350,9 @@
 }
 
 .mobile-task-item-card__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   padding: 12px;
 }
 
@@ -382,7 +387,7 @@
   margin: 0;
   overflow: hidden;
   color: var(--app-text-strong);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 650;
   line-height: 1.35;
   white-space: nowrap;
@@ -419,7 +424,7 @@
   padding: 0 2px;
   color: var(--app-text-strong);
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -447,7 +452,7 @@
   flex-shrink: 0;
   color: var(--app-text-secondary);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -464,13 +469,20 @@
   margin-top: 7px;
 }
 
+.mobile-task-item-card__state.ant-tag,
+.mobile-task-item-card__flags .ant-tag,
+.mobile-task-source-cloud--card .ant-tag {
+  font-size: 13px;
+  line-height: 20px;
+}
+
 .mobile-task-item-card__key-info {
   display: grid;
   gap: 6px;
   margin: 9px 0 0;
   padding: 0;
   color: var(--app-text);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .mobile-task-item-card__key-row {
@@ -498,12 +510,12 @@
 }
 
 .mobile-task-item-card__key-row--identity dt {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .mobile-task-item-card__key-row--identity dd {
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: clamp(12px, 0.82vw, 13px);
+  font-size: clamp(13px, 0.88vw, 14px);
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
@@ -522,7 +534,7 @@
 .mobile-task-item-card__key-row--address dd {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -610,7 +622,8 @@
 }
 
 .mobile-task-source-cloud--card {
-  margin-top: 6px;
+  margin-top: auto;
+  padding-top: 8px;
 }
 
 .mobile-task-source-cloud--card > div {
@@ -670,7 +683,7 @@
 
 .mobile-task-analysis__label {
   color: var(--app-primary-text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -679,7 +692,7 @@
   display: -webkit-box;
   overflow: hidden;
   color: var(--app-text-strong);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.55;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
@@ -706,7 +719,7 @@
   align-items: center;
   gap: 2px 6px;
   color: var(--app-text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
@@ -738,6 +751,10 @@
   color: var(--app-text-muted);
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.mobile-task-item-card__dial.ant-btn {
+  font-size: 14px;
 }
 
 @media (min-width: 768px) {
