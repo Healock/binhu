@@ -123,6 +123,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "police_address_import": "小区地址导入批次",
     "police_dispatch_batch": "数据下发批次",
     "police_dispatch_task": "数据下发任务",
+    "mobile_task": "流口核查任务",
     "online_source_row": "腾讯原始行",
     "spreadsheet": "在线表格配置",
     "system_config": "系统设置",
