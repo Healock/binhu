@@ -323,6 +323,8 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   )
   assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn[\s\S]*font-variant-numeric:\s*tabular-nums/)
   assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn[\s\S]*font-weight:\s*650/)
+  assert.match(styleSource, /\.mobile-phone-native-select--card\s*\{[\s\S]*width:\s*auto/)
+  assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn[\s\S]*justify-content:\s*flex-start/)
   assert.equal(pageSource.includes('mobile-phone-native-select--header'), false)
   assert.match(styleSource, /\.mobile-task-item-card__footer-meta[\s\S]*font-size:\s*12px/)
   assert.match(styleSource, /\.mobile-task-item-card__key-row--old-address dt,[\s\S]*color:\s*var\(--app-text-muted\)[\s\S]*font-size:\s*12px/)
