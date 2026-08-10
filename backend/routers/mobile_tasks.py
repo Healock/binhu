@@ -649,25 +649,36 @@ async def _task_filter_options(
     context: dict,
     scope: FlowScope,
     user: dict,
+    communities: list[str] | None = None,
 ) -> dict:
     scope_where, scope_params = _scope_where(context, scope)
     where_sql = f"projection.parser_type=%s AND {scope_where}"
     params = [parser_type, *scope_params]
+    inspector_where = where_sql
+    inspector_params = list(params)
+    community_condition, community_params = _multi_filter_condition(
+        "community", communities or []
+    )
+    if community_condition != "1=1":
+        inspector_where = f"{inspector_where} AND {community_condition}"
+        inspector_params.extend(community_params)
     result = {"communities": [], "inspectors": [], "watch_categories": []}
     for column, key, empty_label in (
         ("community", "communities", "社区未填写"),
         ("inspector", "inspectors", "未分配核查人"),
     ):
+        option_where = inspector_where if column == "inspector" else where_sql
+        option_params = inspector_params if column == "inspector" else params
         await cur.execute(
             f"""
             SELECT projection.{column}, COUNT(*)
             FROM _online_source_projection AS projection
-            WHERE {where_sql}
+            WHERE {option_where}
             GROUP BY projection.{column}
             ORDER BY CASE WHEN TRIM(COALESCE(projection.{column}, ''))='' THEN 1 ELSE 0 END,
                      projection.{column}
             """,
-            params,
+            option_params,
         )
         for value, count in await cur.fetchall():
             normalized = str(value or "").strip()
@@ -848,6 +859,7 @@ async def _list_mobile_tasks_data(
 async def get_mobile_task_filter_options(
     parser_type: str,
     scope: FlowScope = Query("mine"),
+    community: list[str] = Query(default=[]),
     user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
     conn=Depends(get_db),
 ):
@@ -868,7 +880,14 @@ async def get_mobile_task_filter_options(
                     "inspectors_by_community": {},
                 },
             }
-        options = await _task_filter_options(cur, parser_type, context, scope, user)
+        options = await _task_filter_options(
+            cur,
+            parser_type,
+            context,
+            scope,
+            user,
+            communities=community,
+        )
     return {"source_ready": True, **options}
 
 
