@@ -889,6 +889,8 @@ export interface MobileTaskSummaryFields {
   phone: string
   source: string
   address: string
+  current_address: string
+  original_address: string
   date: string
   result: string
   analysis: string

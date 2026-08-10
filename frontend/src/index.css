@@ -540,6 +540,25 @@
   -webkit-line-clamp: 2;
 }
 
+.mobile-task-item-card__key-row--old-address {
+  margin-top: -1px;
+  align-items: start;
+}
+
+.mobile-task-item-card__key-row--old-address dt,
+.mobile-task-item-card__key-row--old-address dd {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mobile-task-item-card__key-row--old-address dd {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .mobile-task-copy-value {
   display: flex;
   width: 100%;

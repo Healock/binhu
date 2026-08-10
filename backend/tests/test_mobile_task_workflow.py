@@ -45,6 +45,18 @@ class FilterOptionsCursor:
 
 
 class MobileTaskWorkflowTests(unittest.TestCase):
+    def test_task_summary_keeps_current_and_original_addresses(self):
+        workflow = TASK_WORKFLOWS["全链条"]
+        summary = workflow.summary({"现住址": "新住址", "地址": "原地址"})
+        self.assertEqual(summary["address"], "新住址")
+        self.assertEqual(summary["current_address"], "新住址")
+        self.assertEqual(summary["original_address"], "原地址")
+
+        original_only = workflow.summary({"地址": "原地址"})
+        self.assertEqual(original_only["address"], "原地址")
+        self.assertEqual(original_only["current_address"], "")
+        self.assertEqual(original_only["original_address"], "原地址")
+
     def test_standard_workflow_uses_three_internal_states(self):
         self.assertEqual(task_state("全链条", {}), "unchecked")
         self.assertEqual(

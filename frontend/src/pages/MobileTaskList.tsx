@@ -651,6 +651,14 @@ export default function MobileTaskList() {
               && (!selectedCommunity || selectedCommunity === taskCommunity)
             const isSelected = selectedRows.has(task.row_key)
             const sourceTags = mobileTaskSourceTags(task.summary.source)
+            const currentAddress = String(task.summary.current_address || '').trim()
+            const originalAddress = String(task.summary.original_address || '').trim()
+            const primaryAddress = currentAddress || originalAddress || task.summary.address
+            const showOriginalAddress = Boolean(
+              currentAddress
+              && originalAddress
+              && currentAddress !== originalAddress,
+            )
             const openOrSelectTask = () => {
               if (selectionMode) {
                 if (!isAssignable) {
@@ -732,7 +740,7 @@ export default function MobileTaskList() {
                       ))}
                     </div>
                   )}
-                  {(task.summary.identity_number || task.summary.address) && (
+                  {(task.summary.identity_number || primaryAddress) && (
                     <dl className="mobile-task-item-card__key-info">
                       {task.summary.identity_number && (
                         <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
@@ -752,10 +760,16 @@ export default function MobileTaskList() {
                           </dd>
                         </div>
                       )}
-                      {task.summary.address && (
+                      {primaryAddress && (
                         <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--address">
-                          <dt>地址</dt>
-                          <dd title={task.summary.address}>{task.summary.address}</dd>
+                          <dt>{currentAddress ? '现住址' : '地址'}</dt>
+                          <dd title={primaryAddress}>{primaryAddress}</dd>
+                        </div>
+                      )}
+                      {showOriginalAddress && (
+                        <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--old-address">
+                          <dt>原地址</dt>
+                          <dd title={originalAddress}>{originalAddress}</dd>
                         </div>
                       )}
                     </dl>
