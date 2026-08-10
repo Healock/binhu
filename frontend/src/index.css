@@ -344,7 +344,7 @@
 
 .mobile-task-item-card__title-row .ant-tag,
 .mobile-task-item-card__flags .ant-tag,
-.mobile-task-item-card__source-tag.ant-tag {
+.mobile-task-source-cloud .ant-tag {
   margin-inline-end: 0;
 }
 
@@ -439,16 +439,43 @@
   margin-top: 8px;
 }
 
-.mobile-task-item-card__source-tag {
-  display: inline-flex;
-  max-width: 100%;
+.mobile-task-source-cloud {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 7px;
   margin-top: 8px;
-  overflow: hidden;
-  border-color: transparent;
+}
+
+.mobile-task-source-cloud > span {
+  flex-shrink: 0;
+  padding-top: 2px;
   color: var(--app-text-secondary);
-  background: var(--app-surface-muted);
+  font-size: 12px;
+}
+
+.mobile-task-source-cloud > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.mobile-task-source-cloud__tag.ant-tag {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border-color: color-mix(in srgb, var(--app-primary-border) 72%, transparent);
+  color: var(--app-primary-text);
+  background: var(--app-primary-soft);
   white-space: normal;
-  line-height: 1.35;
+}
+
+.mobile-task-source-cloud--detail {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-muted);
 }
 
 .mobile-task-bulk-toolbar {

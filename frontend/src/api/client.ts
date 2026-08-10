@@ -958,6 +958,7 @@ export interface MobileTaskDetailData {
     identity_fields: string[]
     source_fields: string[]
     secondary_fields: string[]
+    extra_edit_fields?: string[]
     analysis_fields: string[]
     columns: string[]
   }
@@ -1036,6 +1037,11 @@ export async function getMobileTaskFilterOptions(
   source_ready: boolean
   communities: MobileTaskFilterOption[]
   inspectors: MobileTaskFilterOption[]
+  assignment: {
+    enabled: boolean
+    community_aliases: Record<string, string>
+    inspectors_by_community: Record<string, string[]>
+  }
   watch_categories: Array<{
     value: number
     label: string

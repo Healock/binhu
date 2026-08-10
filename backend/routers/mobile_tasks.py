@@ -22,11 +22,12 @@ from services.business_time import get_business_date
 from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
     effective_view_communities,
+    inspector_option_context,
     row_edit_capabilities,
 )
 from services.online_source import json_value
 from services.parsers import get_parser
-from services.permissions import ONLINE_RAW_EDIT, ONLINE_RAW_VIEW
+from services.permissions import ONLINE_RAW_EDIT, ONLINE_RAW_VIEW, has_permission
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 from services.audit import record_admin_audit, request_audit_fields
@@ -71,6 +72,12 @@ PRIORITY_LABELS = {
     "ordinary": "普通待处理",
     "waiting_analysis": "等待研判",
     "completed": "已完成",
+}
+FLOW_TASK_ELEVATED_POSITIONS = {
+    "片长",
+    "基础管控",
+    "中队长",
+    "所队领导",
 }
 
 
@@ -136,6 +143,15 @@ def is_flow_task_admin(user: dict) -> bool:
         or bool(group_codes & {"admin", "super_admin"})
         or legacy_group in {"admin", "super_admin"}
     )
+
+
+def is_flow_task_elevated(user: dict) -> bool:
+    position = str((user.get("member") or {}).get("position") or "").strip()
+    return is_flow_task_admin(user) or position in FLOW_TASK_ELEVATED_POSITIONS
+
+
+def _can_assign_tasks(context: dict) -> bool:
+    return bool(context.get("admin_mode")) or context.get("position") == "组长"
 
 
 def _json_field(field: str) -> str:
@@ -206,6 +222,14 @@ def _priority_order(parser_type: str) -> str:
         "WHEN 'waiting_analysis' THEN 4 "
         "ELSE 5 END"
     )
+
+
+def _address_order(parser_type: str) -> str:
+    fields = TASK_WORKFLOWS[parser_type].address_fields
+    candidates = ", ".join(f"NULLIF({_json_field(field)}, '')" for field in fields)
+    raw_value = f"COALESCE({candidates}, '')" if candidates else "''"
+    normalized = f"LOWER(REGEXP_REPLACE({raw_value}, '[[:space:]]+', ''))"
+    return f"CASE WHEN {normalized}='' THEN 1 ELSE 0 END, {normalized}"
 
 
 def _priority_bucket(
@@ -308,7 +332,7 @@ def _task_where(
 
 
 async def _flow_context(conn, user: dict) -> dict:
-    if is_flow_task_admin(user):
+    if is_flow_task_elevated(user):
         view_communities = effective_view_communities(user)
         community_values = (
             None
@@ -418,33 +442,6 @@ async def _aggregate_live(cur, context: dict, scope: FlowScope) -> dict[str, dic
             item["pending"] += amount
         item["review"] += int(review or 0)
     return totals
-
-
-async def _assignee_options(cur, community: str) -> list[dict[str, str]]:
-    await cur.execute(
-        """
-        SELECT DISTINCT member.name
-        FROM _grid_members AS member
-        JOIN _grid_member_department_links AS link
-          ON link.member_id=member.id
-        JOIN _departments AS department
-          ON department.id=link.department_id
-         AND department.department_type='community'
-         AND department.is_active=1
-        JOIN _communities AS community
-          ON community.id=department.community_id
-        WHERE community.name=%s
-          AND member.position='组员'
-          AND member.status='在岗'
-        ORDER BY member.name
-        """,
-        (community,),
-    )
-    return [
-        {"id": str(row[0]), "text": str(row[0])}
-        for row in await cur.fetchall()
-        if row[0]
-    ]
 
 
 async def _validate_assignment(
@@ -651,6 +648,7 @@ async def _task_filter_options(
     parser_type: str,
     context: dict,
     scope: FlowScope,
+    user: dict,
 ) -> dict:
     scope_where, scope_params = _scope_where(context, scope)
     where_sql = f"projection.parser_type=%s AND {scope_where}"
@@ -703,6 +701,23 @@ async def _task_filter_options(
              "alert_level": str(row[3]), "count": int(row[4] or 0)}
             for row in await cur.fetchall()
         ]
+    assignment_enabled = (
+        _can_assign_tasks(context)
+        and has_permission(user, ONLINE_RAW_EDIT)
+    )
+    assignment_context = (
+        await inspector_option_context(cur, user, assignment_only=True)
+        if assignment_enabled
+        else {
+            "community_aliases": {},
+            "inspectors_by_community": {},
+        }
+    )
+    result["assignment"] = {
+        "enabled": assignment_enabled,
+        "community_aliases": assignment_context["community_aliases"],
+        "inspectors_by_community": assignment_context["inspectors_by_community"],
+    }
     return result
 
 
@@ -773,6 +788,7 @@ async def _list_mobile_tasks_data(
         else:
             order_sql = (
                 f"{_priority_order(parser_type)}, "
+                f"{_address_order(parser_type)}, "
                 "projection.updated_at DESC, projection.row_key"
             )
         await cur.execute(
@@ -845,8 +861,14 @@ async def get_mobile_task_filter_options(
                 "source_ready": False,
                 "communities": [],
                 "inspectors": [],
+                "watch_categories": [],
+                "assignment": {
+                    "enabled": False,
+                    "community_aliases": {},
+                    "inspectors_by_community": {},
+                },
             }
-        options = await _task_filter_options(cur, parser_type, context, scope)
+        options = await _task_filter_options(cur, parser_type, context, scope, user)
     return {"source_ready": True, **options}
 
 
@@ -937,9 +959,10 @@ async def get_mobile_task_detail(
         )
         raw_sources = await cur.fetchall()
         enabled = await _writeback_enabled(cur)
-        assignee_options = (
-            await _assignee_options(cur, context["community"])
-            if context["position"] == "组长" else []
+        assignment_context = (
+            await inspector_option_context(cur, user, assignment_only=True)
+            if _can_assign_tasks(context) and has_permission(user, ONLINE_RAW_EDIT)
+            else None
         )
         watch_by_row = await task_watch_payload(cur, parser_type, [row_key]) \
             if settings.REGISTRY_FEATURE_ENABLED else {}
@@ -970,11 +993,23 @@ async def get_mobile_task_detail(
                 spreadsheet_id=int(spreadsheet_id),
                 sheet_id=str(sheet_id),
             )
-            if "核查人" in metadata and context["position"] == "组长":
+            raw_community = parser.community_value(values)
+            formal_community = (
+                (assignment_context or {}).get("community_aliases", {})
+                .get(str(raw_community or "").strip(), "")
+            )
+            assignee_options = list(
+                (assignment_context or {}).get("inspectors_by_community", {})
+                .get(formal_community, [])
+            )
+            if "核查人" in metadata and assignee_options:
                 metadata["核查人"] = {
                     "type": "select",
                     "multiple": False,
-                    "options": list(assignee_options),
+                    "options": [
+                        {"id": name, "text": name}
+                        for name in assignee_options
+                    ],
                 }
             source_task = _task_record(
                 parser_type,
@@ -1041,6 +1076,7 @@ async def get_mobile_task_detail(
             "identity_fields": list(workflow.identity_fields),
             "source_fields": list(workflow.source_fields),
             "secondary_fields": list(workflow.secondary_fields),
+            "extra_edit_fields": list(getattr(parser, "MOBILE_EDITABLE_FIELDS", ())),
             "analysis_fields": list(workflow.analysis_fields),
             "columns": parser.COLUMNS,
         },
@@ -1093,8 +1129,8 @@ async def bulk_assign_mobile_tasks(
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
     context = await _flow_context(conn, user)
-    if not context.get("admin_mode") and context.get("position") != "组长":
-        raise HTTPException(403, "只有组长可以批量分配核查人")
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
 
     row_keys = list(dict.fromkeys(str(value).strip() for value in data.row_keys if str(value).strip()))
     inspector = str(data.inspector).strip()
@@ -1107,7 +1143,10 @@ async def bulk_assign_mobile_tasks(
     async with conn.cursor() as cur:
         if not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
-        scope_where, scope_params = _scope_where(context, "community")
+        scope_where, scope_params = _scope_where(
+            context,
+            "all" if context.get("admin_mode") else "community",
+        )
         key_placeholders = ", ".join(["%s"] * len(row_keys))
         await cur.execute(
             f"""
@@ -1132,32 +1171,19 @@ async def bulk_assign_mobile_tasks(
         if missing_scope:
             raise HTTPException(403, "部分任务不在当前账号可操作范围内，请刷新后重试")
 
-        # Validate the selected person separately for every community.  Aliases
-        # are accepted, but the person must still be an on-duty group member of
-        # the task's formal community.
+        assignment_context = await inspector_option_context(
+            cur,
+            user,
+            assignment_only=True,
+        )
+        community_aliases = assignment_context["community_aliases"]
+        inspectors_by_community = assignment_context["inspectors_by_community"]
         for community in sorted({item["community"] for item in projection_by_key.values()}):
-            await cur.execute(
-                """
-                SELECT 1
-                FROM _grid_members AS member
-                JOIN _grid_member_department_links AS link ON link.member_id=member.id
-                JOIN _departments AS department
-                  ON department.id=link.department_id
-                 AND department.department_type='community'
-                 AND department.is_active=1
-                JOIN _communities AS formal ON formal.id=department.community_id
-                LEFT JOIN _community_aliases AS alias ON alias.community_id=formal.id
-                WHERE (formal.name=%s OR alias.alias=%s)
-                  AND member.name=%s
-                  AND member.position='组员'
-                  AND member.status='在岗'
-                  AND formal.is_active=1
-                LIMIT 1
-                """,
-                (community, community, inspector),
-            )
-            if not await cur.fetchone():
-                raise HTTPException(400, "只能分配给对应社区的在岗组员")
+            formal = community_aliases.get(community, "")
+            if not formal:
+                raise HTTPException(403, "部分任务社区不在当前账号可分配范围内")
+            if inspector not in inspectors_by_community.get(formal, []):
+                raise HTTPException(400, "只能分配给任务所属社区的在岗组员")
 
         await cur.execute(
             f"""

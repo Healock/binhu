@@ -121,6 +121,8 @@ async def effective_edit_communities(
 async def inspector_option_context(
     cur,
     user: dict[str, Any],
+    *,
+    assignment_only: bool = False,
 ) -> dict[str, Any]:
     """返回按正式社区分组的核查人选项。
 
@@ -165,8 +167,13 @@ async def inspector_option_context(
         for alias, formal in aliases.items()
         if formal in allowed_set
     }
+    position_condition = (
+        "member.position='组员'"
+        if assignment_only
+        else "member.position IN ('组长', '组员')"
+    )
     await cur.execute(
-        """
+        f"""
         SELECT DISTINCT community.name, member.name
         FROM _grid_members AS member
         JOIN _grid_member_department_links AS link
@@ -178,7 +185,7 @@ async def inspector_option_context(
         JOIN _communities AS community
           ON community.id=department.community_id
          AND community.is_active=1
-        WHERE member.position IN ('组长', '组员')
+        WHERE {position_condition}
           AND member.status='在岗'
         ORDER BY community.name, member.name
         """
@@ -252,6 +259,8 @@ def editable_fields_for_row(
     user: dict[str, Any],
     columns: list[str],
     values: dict[str, str],
+    *,
+    extra_fields: tuple[str, ...] = (),
 ) -> list[str]:
     role_class = _role_class(user)
     if role_class in {"area", "global"}:
@@ -259,6 +268,7 @@ def editable_fields_for_row(
     if role_class != "community":
         return []
     result = [column for column in columns if column in GRID_STANDARD_FIELDS]
+    result.extend(column for column in extra_fields if column in columns)
     if "实际情况" in columns:
         result.append("实际情况")
     primary_result = str(
@@ -279,7 +289,12 @@ async def row_edit_capabilities(
     formal = await formal_community(cur, parser.community_value(values))
     within_scope = allowed is None or bool(formal and formal in allowed)
     fields = (
-        editable_fields_for_row(user, parser.COLUMNS, values)
+        editable_fields_for_row(
+            user,
+            parser.COLUMNS,
+            values,
+            extra_fields=getattr(parser, "MOBILE_EDITABLE_FIELDS", ()),
+        )
         if within_scope
         else []
     )
@@ -318,7 +333,12 @@ async def validate_row_changes(
     capabilities = await row_edit_capabilities(cur, user, parser, before)
     editable = set(capabilities["editable_fields"])
     if _role_class(user) == "community" and capabilities["can_edit"]:
-        editable = set(editable_fields_for_row(user, parser.COLUMNS, after))
+        editable = set(editable_fields_for_row(
+            user,
+            parser.COLUMNS,
+            after,
+            extra_fields=getattr(parser, "MOBILE_EDITABLE_FIELDS", ()),
+        ))
     if any(column not in editable for column in columns):
         raise PermissionError("当前岗位不能修改该字段或该社区数据")
     role_class = _role_class(user)

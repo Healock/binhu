@@ -255,7 +255,7 @@ export function isNavigationItemAccessible(
 ): boolean {
   if (
     item.id === 'flow_tasks'
-    && !['组长', '组员'].includes(position || '')
+    && !['组长', '组员', '片长', '基础管控', '中队长', '所队领导'].includes(position || '')
     && !['admin', 'super_admin'].includes(role)
     && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   ) return false

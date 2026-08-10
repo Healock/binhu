@@ -9,7 +9,7 @@ import {
 } from '../api/client'
 import { sortMobileTaskBusinesses } from '../utils/mobileTasks'
 import { useAuth } from '../context/AuthContext'
-import { isFlowTaskAdmin } from '../utils/mobileTaskRouting'
+import { isFlowTaskElevated } from '../utils/mobileTaskRouting'
 
 function metricValue(value: number | null, snapshotAvailable: boolean) {
   if (!snapshotAvailable || value === null) return '—'
@@ -31,7 +31,8 @@ function formatSyncTime(value: string | null) {
 export default function MobileTaskHome() {
   const navigate = useNavigate()
   const { user } = useAuth()
-  const adminMode = isFlowTaskAdmin(
+  const adminMode = isFlowTaskElevated(
+    user?.member?.position,
     user?.role,
     user?.permission_groups?.map(group => group.code),
   )

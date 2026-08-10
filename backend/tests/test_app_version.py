@@ -7,7 +7,7 @@ from app_version import APP_VERSION, read_app_version
 
 class AppVersionTests(unittest.TestCase):
     def test_repository_version_is_used(self):
-        self.assertEqual(APP_VERSION, "0.17.7")
+        self.assertEqual(APP_VERSION, "0.17.8")
 
     def test_valid_environment_version_takes_priority(self):
         with patch.dict(
@@ -18,7 +18,7 @@ class AppVersionTests(unittest.TestCase):
 
     def test_invalid_environment_version_is_ignored(self):
         with patch.dict(os.environ, {"APP_VERSION": "latest"}):
-            self.assertEqual(read_app_version(), "0.17.7")
+            self.assertEqual(read_app_version(), "0.17.8")
 
 
 if __name__ == "__main__":

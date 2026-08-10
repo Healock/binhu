@@ -5,7 +5,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import { Alert, Button, Checkbox, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
@@ -21,10 +21,11 @@ import {
   type MobileTaskStatus,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { isFlowTaskAdmin, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
+import { isFlowTaskElevated, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
 import {
   mobileTaskCanLaunchTelephone,
   mobileTaskPhoneOptions,
+  mobileTaskSourceTags,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
 
@@ -81,6 +82,12 @@ const EMPTY_FACETS: MobileTaskFacets = {
   status_counts: { unchecked: 0, checked: 0, completed: 0 },
 }
 
+const EMPTY_ASSIGNMENT = {
+  enabled: false,
+  community_aliases: {} as Record<string, string>,
+  inspectors_by_community: {} as Record<string, string[]>,
+}
+
 function readMulti(searchParams: URLSearchParams, key: string) {
   return searchParams.getAll(key).filter(Boolean)
 }
@@ -110,7 +117,8 @@ export default function MobileTaskList() {
     ? requestedType
     : MOBILE_TASK_TYPES[0]
   const requestedScope = searchParams.get('scope')
-  const adminMode = isFlowTaskAdmin(
+  const adminMode = isFlowTaskElevated(
+    user?.member?.position,
     user?.role,
     user?.permission_groups?.map(group => group.code),
   )
@@ -138,6 +146,7 @@ export default function MobileTaskList() {
   const [keyword, setKeyword] = useState('')
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
+  const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
   const [watchCategoryOptions, setWatchCategoryOptions] = useState<Array<{ value: number; label: string; color: string; alert_level: string; count: number }>>([])
   const [facets, setFacets] = useState<MobileTaskFacets>(EMPTY_FACETS)
   const [rows, setRows] = useState<MobileTaskItem[]>([])
@@ -153,9 +162,31 @@ export default function MobileTaskList() {
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
   const [bulkSaving, setBulkSaving] = useState(false)
-  const isGroupLeader = user?.member?.position === '组长'
-
-  const selectableRows = rows.filter(task => !task.inspector && task.state !== 'completed')
+  const canBulkAssign = assignment.enabled
+  const assignmentCommunity = useCallback((task: MobileTaskItem) => (
+    assignment.community_aliases[String(task.community || '').trim()] || ''
+  ), [assignment.community_aliases])
+  const selectedTasks = useMemo(
+    () => rows.filter(task => selectedRows.has(task.row_key)),
+    [rows, selectedRows],
+  )
+  const selectedCommunities = useMemo(() => Array.from(new Set(
+    selectedTasks.map(assignmentCommunity).filter(Boolean),
+  )), [assignmentCommunity, selectedTasks])
+  const selectedCommunity = selectedCommunities.length === 1
+    ? selectedCommunities[0]
+    : ''
+  const bulkInspectorOptions = selectedCommunity
+    ? assignment.inspectors_by_community[selectedCommunity] || []
+    : []
+  const selectableRows = rows.filter(task => {
+    const community = assignmentCommunity(task)
+    return canBulkAssign
+      && !task.inspector
+      && task.state !== 'completed'
+      && Boolean(community)
+      && Boolean(assignment.inspectors_by_community[community]?.length)
+  })
   const selectedCount = selectedRows.size
 
   useEffect(() => {
@@ -169,6 +200,12 @@ export default function MobileTaskList() {
   }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
 
   const toggleSelected = (rowKey: string, checked: boolean) => {
+    const task = rows.find(item => item.row_key === rowKey)
+    const community = task ? assignmentCommunity(task) : ''
+    if (checked && selectedCommunity && community !== selectedCommunity) {
+      message.warning(`本次已锁定为${selectedCommunity}，请分开选择其他社区任务`)
+      return
+    }
     setSelectedRows(current => {
       const next = new Set(current)
       if (checked) next.add(rowKey)
@@ -178,9 +215,17 @@ export default function MobileTaskList() {
   }
 
   const selectAllLoaded = () => {
+    const communities = Array.from(new Set(selectableRows.map(assignmentCommunity)))
+    const targetCommunity = selectedCommunity || (communities.length === 1 ? communities[0] : '')
+    if (!targetCommunity) {
+      message.info('请先筛选到一个社区，或先勾选一条任务再全选')
+      return
+    }
     setSelectedRows(current => {
       const next = new Set(current)
-      selectableRows.forEach(task => next.add(task.row_key))
+      selectableRows
+        .filter(task => assignmentCommunity(task) === targetCommunity)
+        .forEach(task => next.add(task.row_key))
       return next
     })
   }
@@ -212,6 +257,7 @@ export default function MobileTaskList() {
       const result = await getMobileTaskFilterOptions(parserType, scope)
       setCommunityOptions(result.communities)
       setInspectorOptions(result.inspectors)
+      setAssignment(result.assignment || EMPTY_ASSIGNMENT)
       setWatchCategoryOptions(result.watch_categories || [])
       const communityValues = new Set(result.communities.map(option => option.value))
       const inspectorValues = new Set(result.inspectors.map(option => option.value))
@@ -222,6 +268,7 @@ export default function MobileTaskList() {
     } catch {
       setCommunityOptions([])
       setInspectorOptions([])
+      setAssignment(EMPTY_ASSIGNMENT)
       setWatchCategoryOptions([])
     } finally {
       setOptionsLoading(false)
@@ -229,6 +276,12 @@ export default function MobileTaskList() {
   }, [parserType, scope])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
+
+  useEffect(() => {
+    if (bulkInspector && !bulkInspectorOptions.includes(bulkInspector)) {
+      setBulkInspector(undefined)
+    }
+  }, [bulkInspector, bulkInspectorOptions])
 
   const load = useCallback(async (targetPage = 1, append = false) => {
     append ? setLoadingMore(true) : setLoading(true)
@@ -489,7 +542,7 @@ export default function MobileTaskList() {
         {keyword && <button type="button" className="text-[var(--app-primary)]" onClick={() => { setKeyword(''); setKeywordInput('') }}>清除搜索</button>}
       </div>
 
-      {isGroupLeader && (
+      {canBulkAssign && (
         <section className="app-card mobile-task-bulk-toolbar">
           <div className="flex flex-wrap items-center gap-2">
             <Button size="small" onClick={selectAllLoaded} disabled={!selectableRows.length}>
@@ -509,7 +562,7 @@ export default function MobileTaskList() {
             </Button>
           </div>
           <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-            仅处理当前选择中尚未分配核查人的任务，不会覆盖已有分配；分配对象只能是本社区在岗组员。
+            选中第一条后会锁定同一社区；只处理未分配任务，分配对象必须是任务所属社区的在岗组员。
           </div>
         </section>
       )}
@@ -526,7 +579,14 @@ export default function MobileTaskList() {
             const phoneDisplay = phoneOptions.length > 0
               ? phoneOptions.join('、')
               : task.summary.phone
-            const canSelect = isGroupLeader && !task.inspector && task.state !== 'completed'
+            const taskCommunity = assignmentCommunity(task)
+            const canSelect = canBulkAssign
+              && !task.inspector
+              && task.state !== 'completed'
+              && Boolean(taskCommunity)
+              && Boolean(assignment.inspectors_by_community[taskCommunity]?.length)
+              && (!selectedCommunity || selectedCommunity === taskCommunity)
+            const sourceTags = mobileTaskSourceTags(task.summary.source)
             return (
               <article
                 key={task.row_key}
@@ -538,7 +598,7 @@ export default function MobileTaskList() {
               >
                 <div className="mobile-task-item-card__header">
                   <div className="flex min-w-0 items-start gap-2">
-                    {isGroupLeader && (
+                    {canBulkAssign && (
                       <Checkbox
                         className="mt-1"
                         checked={selectedRows.has(task.row_key)}
@@ -586,7 +646,16 @@ export default function MobileTaskList() {
                   </dl>
                 )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
-                {task.summary.source && <Tag className="mobile-task-item-card__source-tag">来源：{task.summary.source}</Tag>}
+                {sourceTags.length > 0 && (
+                  <div className="mobile-task-source-cloud">
+                    <span>来源</span>
+                    <div>
+                      {sourceTags.map(tag => (
+                        <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {task.review_stage === 'analyzed' && task.summary.analysis && (
                   <div className="mobile-task-analysis">
                     <div className="mobile-task-analysis__label">研判结果</div>
@@ -628,12 +697,16 @@ export default function MobileTaskList() {
         okText="确认分配"
         cancelText="取消"
         confirmLoading={bulkSaving}
-        okButtonProps={{ disabled: !bulkInspector || !selectedCount }}
+        okButtonProps={{ disabled: !bulkInspector || !selectedCount || !selectedCommunity }}
         onOk={() => void submitBulkAssignment()}
         onCancel={() => { if (!bulkSaving) setBulkOpen(false) }}
       >
         <div className="space-y-3 text-sm">
-          <p>将把当前选中的 {selectedCount} 条未分配任务手动分配给一名本社区在岗组员。</p>
+          {selectedCommunity ? (
+            <p>将把当前选中的 {selectedCount} 条{selectedCommunity}任务分配给该社区的一名在岗组员。</p>
+          ) : (
+            <Alert type="warning" showIcon message="批量分配必须一次只选择同一社区的任务" />
+          )}
           <Select
             className="w-full"
             size="large"
@@ -641,7 +714,7 @@ export default function MobileTaskList() {
             optionFilterProp="label"
             placeholder="请选择核查人"
             value={bulkInspector}
-            options={inspectorOptions.map(option => ({ value: option.value, label: option.label }))}
+            options={bulkInspectorOptions.map(value => ({ value, label: value }))}
             onChange={setBulkInspector}
           />
           <p className="text-xs text-[var(--app-text-secondary)]">已有核查人的任务、已完成任务、来源冲突任务会被跳过，不会被覆盖。</p>

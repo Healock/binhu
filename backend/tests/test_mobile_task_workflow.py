@@ -10,12 +10,14 @@ from fastapi import HTTPException
 from routers.mobile_tasks import (
     EMPTY_FILTER_VALUE,
     TaskSearch,
+    _address_order,
     _multi_filter_condition,
     _priority_bucket,
     _scope_where,
     _source_in_community,
     _validate_assignment,
     is_flow_task_admin,
+    is_flow_task_elevated,
     require_flow_user,
 )
 from services.parsers import get_parser
@@ -157,6 +159,20 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(where, "1=1")
         self.assertEqual(params, [])
 
+    def test_elevated_positions_can_open_managed_task_scope(self):
+        for position in ("片长", "基础管控", "中队长", "所队领导"):
+            with self.subTest(position=position):
+                self.assertTrue(is_flow_task_elevated({
+                    "role": "member",
+                    "member": {"position": position},
+                    "permission_groups": [],
+                }))
+        self.assertFalse(is_flow_task_elevated({
+            "role": "member",
+            "member": {"position": "组员"},
+            "permission_groups": [],
+        }))
+
     def test_flow_position_cannot_expand_to_all_scope(self):
         with self.assertRaises(HTTPException) as raised:
             _scope_where({
@@ -206,6 +222,13 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             _priority_bucket("全链条", {"核查结果": "已登记"}, 1, False, True, "completed"),
             "completed",
         )
+
+    def test_default_address_order_uses_business_address_fields_and_empty_last(self):
+        sql = _address_order("全链条")
+        self.assertIn("现住址", sql)
+        self.assertIn("地址", sql)
+        self.assertIn("REGEXP_REPLACE", sql)
+        self.assertIn("CASE WHEN", sql)
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):

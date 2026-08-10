@@ -8,6 +8,7 @@ import {
   mobileTaskCanLaunchTelephone,
   mobileTaskPhoneOptions,
   mobileTaskPhoneValue,
+  mobileTaskSourceTags,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
@@ -15,7 +16,9 @@ import {
 } from '../src/utils/mobileTasks.ts'
 import {
   canAccessFlowTaskWorkbench,
+  canBulkAssignMobileTasks,
   isFlowTaskAdmin,
+  isFlowTaskElevated,
   isFlowTaskPosition,
   isPoliceDispatchTaskPosition,
   shouldUseMobileTaskWorkbench,
@@ -40,6 +43,16 @@ test('管理员和超级管理员可以进入流口岗任务工作台', () => {
   assert.equal(isFlowTaskAdmin('member', ['admin']), true)
   assert.equal(canAccessFlowTaskWorkbench('', 'super_admin'), true)
   assert.equal(canAccessFlowTaskWorkbench('社区民警', 'member', []), false)
+})
+
+test('组长及上级任务岗位可以批量分配，组员不可以', () => {
+  assert.equal(canBulkAssignMobileTasks('组长', 'member'), true)
+  assert.equal(canBulkAssignMobileTasks('组员', 'member'), false)
+  for (const position of ['片长', '基础管控', '中队长', '所队领导']) {
+    assert.equal(isFlowTaskElevated(position, 'member'), true, position)
+    assert.equal(canAccessFlowTaskWorkbench(position, 'member'), true, position)
+    assert.equal(canBulkAssignMobileTasks(position, 'member'), true, position)
+  }
 })
 
 test('基础管控和中队长手机端自动分流，桌面端可用同一岗位准入', () => {
@@ -166,6 +179,14 @@ test('连续或分隔保存的多个手机号会拆成独立拨号选项', () =>
   assert.deepEqual(mobileTaskPhoneOptions('+86 18856221510'), ['18856221510'])
 })
 
+test('来源文本按空格和常用分隔符拆成去重标签', () => {
+  assert.deepEqual(mobileTaskSourceTags('平安码 人像圈层'), ['平安码', '人像圈层'])
+  assert.deepEqual(
+    mobileTaskSourceTags('平安码、人像圈层 / 平安码'),
+    ['平安码', '人像圈层'],
+  )
+})
+
 test('只有手机浏览器会直接启动 tel 协议', () => {
   assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Linux; Android 15)'), true)
   assert.equal(mobileTaskCanLaunchTelephone('Mozilla/5.0 (Windows NT 10.0)'), false)
@@ -198,7 +219,7 @@ test('任务详情直接展示身份证号、手机号、来源和地址', () =>
   }
 })
 
-test('任务卡片使用可读密度并保持身份证号为完整横向主体', () => {
+test('任务卡片使用可读密度、完整身份证主体和来源标签云', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
@@ -209,10 +230,30 @@ test('任务卡片使用可读密度并保持身份证号为完整横向主体',
   )
   assert.match(pageSource, /mobile-task-item-card__identity/)
   assert.match(pageSource, /mobile-task-item-card__flags/)
-  assert.match(pageSource, /mobile-task-item-card__source-tag/)
+  assert.match(pageSource, /mobile-task-source-cloud/)
+  assert.match(pageSource, /mobileTaskSourceTags/)
   assert.match(styleSource, /repeat\(auto-fit, minmax\(236px, 1fr\)\)/)
   assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
+})
+
+test('模型三备注会进入手机任务编辑字段', () => {
+  const detail = {
+    workflow: {
+      result_field: '核查结果',
+      title_fields: [],
+      secondary_fields: [],
+      extra_edit_fields: ['备注'],
+      phone_fields: [],
+      address_fields: [],
+      date_fields: [],
+      columns: [],
+    },
+  }
+  assert.deepEqual(
+    mobileTaskEditorFields(detail, ['核查结果', '备注'], { 核查结果: '', 备注: '' }),
+    ['核查结果', '备注'],
+  )
 })
 
 test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更多筛选可用', () => {

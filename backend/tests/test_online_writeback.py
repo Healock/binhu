@@ -23,6 +23,7 @@ from services.online_edit_permissions import (
     editable_fields_for_row,
     effective_edit_communities,
     effective_view_communities,
+    inspector_option_context,
     validate_row_change,
     validate_row_changes,
 )
@@ -345,6 +346,34 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             after,
             ["核查结果", "二次反馈"],
         )
+
+    async def test_model_three_mobile_remark_is_editable_without_changing_result(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("疑似未注销模型三")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({"下发社区": "长板", "身份证号": "1", "联系方式": "2"})
+        after = {**before, "备注": "已联系，待补充材料"}
+
+        await validate_row_changes(
+            SqlAwareCursor(formal={"长板": "长板"}),
+            user,
+            parser,
+            before,
+            after,
+            ["备注"],
+        )
+
+    async def test_assignment_options_only_include_active_group_members(self):
+        cursor = SqlAwareCursor()
+        await inspector_option_context(
+            cursor,
+            make_user("基础管控"),
+            assignment_only=True,
+        )
+        self.assertTrue(any(
+            "member.position='组员'" in sql
+            for sql, _ in cursor.calls
+        ))
 
     async def test_batch_validation_cannot_unlock_cross_community_row(self):
         user = make_user("组员", communities=["长板"])

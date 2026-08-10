@@ -36,6 +36,15 @@ export function mobileTaskPhoneValue(value: string): string {
   return mobileTaskPhoneOptions(value)[0] || ''
 }
 
+export function mobileTaskSourceTags(value: string): string[] {
+  const tags: string[] = []
+  for (const part of String(value || '').split(/[\s，,、;；|/＋+]+/u)) {
+    const tag = part.trim()
+    if (tag && !tags.includes(tag)) tags.push(tag)
+  }
+  return tags
+}
+
 export function mobileTaskCanLaunchTelephone(
   userAgent: string,
   userAgentMobile = false,
@@ -112,6 +121,7 @@ export function mobileTaskEditorFields(
     '现住址',
     detail.workflow.result_field,
     ...(result.includes('无法核实') ? detail.workflow.secondary_fields : []),
+    ...(detail.workflow.extra_edit_fields || []),
   ]
   return candidates.filter((field, index) => (
     candidates.indexOf(field) === index && editableFields.includes(field)
