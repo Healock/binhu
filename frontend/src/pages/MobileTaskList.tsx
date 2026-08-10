@@ -5,7 +5,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import { Alert, Button, Checkbox, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
@@ -162,6 +162,7 @@ export default function MobileTaskList() {
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
   const [bulkSaving, setBulkSaving] = useState(false)
+  const optionsRequestId = useRef(0)
   const canBulkAssign = assignment.enabled
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
@@ -252,28 +253,37 @@ export default function MobileTaskList() {
   }
 
   const loadOptions = useCallback(async () => {
+    const requestId = ++optionsRequestId.current
     setOptionsLoading(true)
     try {
-      const result = await getMobileTaskFilterOptions(parserType, scope)
+      const result = await getMobileTaskFilterOptions(parserType, scope, communities)
+      if (requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
       setInspectorOptions(result.inspectors)
       setAssignment(result.assignment || EMPTY_ASSIGNMENT)
       setWatchCategoryOptions(result.watch_categories || [])
       const communityValues = new Set(result.communities.map(option => option.value))
       const inspectorValues = new Set(result.inspectors.map(option => option.value))
-      setCommunities(current => current.filter(value => communityValues.has(value)))
-      setInspectors(current => current.filter(value => inspectorValues.has(value)))
+      setCommunities(current => {
+        const next = current.filter(value => communityValues.has(value))
+        return next.length === current.length ? current : next
+      })
+      setInspectors(current => {
+        const next = current.filter(value => inspectorValues.has(value))
+        return next.length === current.length ? current : next
+      })
       const watchValues = new Set((result.watch_categories || []).map(option => option.value))
       setWatchCategories(current => current.filter(value => watchValues.has(value)))
     } catch {
+      if (requestId !== optionsRequestId.current) return
       setCommunityOptions([])
       setInspectorOptions([])
       setAssignment(EMPTY_ASSIGNMENT)
       setWatchCategoryOptions([])
     } finally {
-      setOptionsLoading(false)
+      if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
-  }, [parserType, scope])
+  }, [communities, parserType, scope])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
 
@@ -426,7 +436,11 @@ export default function MobileTaskList() {
               value: option.value,
               label: `${option.label}（${option.count}）`,
             }))}
-            onChange={values => setCommunities(values)}
+            onChange={values => {
+              setCommunities(values)
+              setInspectors([])
+              setInspectorOptions([])
+            }}
           />
           <Select
             mode="multiple"

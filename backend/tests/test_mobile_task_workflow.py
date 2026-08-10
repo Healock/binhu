@@ -15,6 +15,7 @@ from routers.mobile_tasks import (
     _priority_bucket,
     _scope_where,
     _source_in_community,
+    _task_filter_options,
     _validate_assignment,
     is_flow_task_admin,
     is_flow_task_elevated,
@@ -22,6 +23,25 @@ from routers.mobile_tasks import (
 )
 from services.parsers import get_parser
 from services.task_workflow import TASK_WORKFLOWS, task_state
+
+
+class FilterOptionsCursor:
+    def __init__(self):
+        self.rows = []
+        self.executions = []
+
+    async def execute(self, sql, params=()):
+        normalized = " ".join(str(sql).split())
+        self.executions.append((normalized, list(params)))
+        if "SELECT projection.community, COUNT(*)" in normalized:
+            self.rows = [("冬梅", 12), ("长板", 8)]
+        elif "SELECT projection.inspector, COUNT(*)" in normalized:
+            self.rows = [("网格员甲", 7), ("", 5)]
+        else:
+            self.rows = []
+
+    async def fetchall(self):
+        return self.rows
 
 
 class MobileTaskWorkflowTests(unittest.TestCase):
@@ -229,6 +249,49 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertIn("地址", sql)
         self.assertIn("REGEXP_REPLACE", sql)
         self.assertIn("CASE WHEN", sql)
+
+
+class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inspector_options_and_counts_follow_selected_community(self):
+        cursor = FilterOptionsCursor()
+        result = await _task_filter_options(
+            cursor,
+            "全链条",
+            {
+                "admin_mode": True,
+                "community_values": None,
+                "name": "管理员甲",
+                "position": "管理员",
+            },
+            "all",
+            {"permissions": []},
+            communities=["冬梅"],
+        )
+
+        self.assertEqual(
+            result["communities"],
+            [
+                {"value": "冬梅", "label": "冬梅", "count": 12},
+                {"value": "长板", "label": "长板", "count": 8},
+            ],
+        )
+        self.assertEqual(
+            result["inspectors"],
+            [
+                {"value": "网格员甲", "label": "网格员甲", "count": 7},
+                {
+                    "value": EMPTY_FILTER_VALUE,
+                    "label": "未分配核查人",
+                    "count": 5,
+                },
+            ],
+        )
+        community_query, community_params = cursor.executions[0]
+        inspector_query, inspector_params = cursor.executions[1]
+        self.assertNotIn("projection.community IN", community_query)
+        self.assertEqual(community_params, ["全链条"])
+        self.assertIn("projection.community IN (%s)", inspector_query)
+        self.assertEqual(inspector_params, ["全链条", "冬梅"])
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):

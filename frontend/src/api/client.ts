@@ -1033,6 +1033,7 @@ export async function listMobileTasks(params: {
 export async function getMobileTaskFilterOptions(
   parserType: string,
   scope: MobileTaskScope,
+  communities: string[] = [],
 ): Promise<{
   source_ready: boolean
   communities: MobileTaskFilterOption[]
@@ -1050,9 +1051,12 @@ export async function getMobileTaskFilterOptions(
     count: number
   }>
 }> {
+  const params = new URLSearchParams()
+  params.set('scope', scope)
+  communities.forEach(value => params.append('community', value))
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
-    { ...activeRequest, params: { scope } },
+    { ...activeRequest, params },
   )
   return data
 }
