@@ -66,12 +66,23 @@ class TaskWorkflow:
         return ""
 
     def summary(self, values: dict[str, str]) -> dict[str, str]:
+        current_address = (
+            str(values.get("现住址", "") or "").strip()
+            if "现住址" in self.address_fields
+            else ""
+        )
+        original_address = self.first_value(
+            values,
+            tuple(field for field in self.address_fields if field != "现住址"),
+        )
         return {
             "title": self.first_value(values, self.title_fields) or "未填写姓名",
             "identity_number": self.first_value(values, self.identity_fields),
             "phone": self.first_value(values, self.phone_fields),
             "source": self.first_value(values, self.source_fields),
-            "address": self.first_value(values, self.address_fields),
+            "address": current_address or original_address,
+            "current_address": current_address,
+            "original_address": original_address,
             "date": self.first_value(values, self.date_fields),
             "result": str(values.get(self.result_field, "") or "").strip(),
             "analysis": self.first_value(values, self.analysis_fields),
