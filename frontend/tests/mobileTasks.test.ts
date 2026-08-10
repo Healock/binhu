@@ -301,7 +301,7 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
     pageSource.indexOf('mobile-task-analysis') < pageSource.indexOf('mobile-task-source-cloud mobile-task-source-cloud--card'),
   )
   assert.equal(pageSource.includes('<span>来源</span>'), false)
-  assert.match(styleSource, /repeat\(auto-fit, minmax\(236px, 1fr\)\)/)
+  assert.match(styleSource, /repeat\(auto-fit, minmax\(264px, 1fr\)\)/)
   assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
   assert.match(styleSource, /\.mobile-task-copy-value/)
   assert.match(styleSource, /--mobile-task-footer-bg:\s*#eef3f8/)
@@ -313,8 +313,15 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /\.mobile-task-item-card__body\s*\{[\s\S]*flex:\s*1[\s\S]*flex-direction:\s*column/)
   assert.match(styleSource, /\.mobile-task-source-cloud--card\s*\{[\s\S]*margin-top:\s*auto/)
   assert.match(styleSource, /\.mobile-task-item-card\.is-selected[\s\S]*box-shadow:/)
-  assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*min-width:\s*3em/)
-  assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*font-size:\s*17px/)
+  assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*min-width:\s*0/)
+  assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*font-size:\s*20px/)
+  assert.match(pageSource, /mobile-task-item-card__key-row--phone/)
+  assert.match(pageSource, /className="mobile-phone-native-select--card"/)
+  assert.ok(
+    pageSource.indexOf('mobile-task-item-card__key-row--phone')
+      < pageSource.indexOf('mobile-task-item-card__key-row--identity'),
+  )
+  assert.equal(pageSource.includes('mobile-phone-native-select--header'), false)
   assert.match(styleSource, /\.mobile-task-item-card__footer-meta[\s\S]*font-size:\s*12px/)
   assert.match(styleSource, /\.mobile-task-item-card__key-row--old-address dt,[\s\S]*color:\s*var\(--app-text-muted\)[\s\S]*font-size:\s*12px/)
   const keyInfoStyle = styleSource.match(/\.mobile-task-item-card__key-info\s*\{([^}]*)\}/)?.[1] || ''
