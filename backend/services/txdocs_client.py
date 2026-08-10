@@ -561,15 +561,12 @@ class TxDocsClient:
             missing = [item for item in requested if item not in by_text]
             if missing:
                 raise ValueError(f"无效的下拉选项: {', '.join(missing)}")
-            cell_value = {
-                "select": {
-                    "value": [by_text[item].get("id") for item in requested],
-                    "options": options,
-                    "multiple": bool(
-                        metadata.get("write_multiple", metadata.get("multiple"))
-                    ),
-                }
-            }
+            # 腾讯文档的区域更新接口只接受 text、link 和 number 三种
+            # cellValue。范围读取虽然会把现有下拉格返回为 select，直接
+            # 把 select 对象写回却不会保存选中值，写后回读会重新变空。
+            # 因此仍先用真实选项列表校验用户选择，再提交显示文本；该
+            # 请求只更新单元格值，不修改原有下拉规则或其他格式。
+            cell_value = {"text": ",".join(requested)}
         else:
             cell_value = {"text": str(value)}
         return {

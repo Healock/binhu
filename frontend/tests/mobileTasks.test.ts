@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   buildMobileTaskChanges,
+  mergeMobileTaskSaveValues,
   mobileTaskEditorFields,
   mobileTaskCanLaunchTelephone,
   mobileTaskPhoneOptions,
@@ -94,6 +95,35 @@ test('批量保存只提交实际变化且不自动补造字段', () => {
     { 核查人: '甲', 现住址: '长板一号', 核查结果: '', 研判: '不可编辑' },
     ['核查人', '现住址', '核查结果'],
   ), { 现住址: '长板一号' })
+})
+
+test('任务详情保存合并响应时保留下拉结果并把选项 ID 还原为文本', () => {
+  const source = { 核查人: '甲', 现住址: '长板一号', 核查结果: '' }
+  const changes = { 核查结果: '已登记' }
+  const meta = {
+    核查结果: {
+      type: 'select',
+      options: [{ id: 'result-1', text: '已登记' }],
+    },
+  }
+
+  assert.equal(
+    mergeMobileTaskSaveValues(source, changes, { ...source, 核查结果: 'result-1' }, meta).核查结果,
+    '已登记',
+  )
+  assert.equal(
+    mergeMobileTaskSaveValues(source, changes, { ...source }, meta).核查结果,
+    '已登记',
+  )
+  assert.equal(
+    mergeMobileTaskSaveValues(
+      { ...source, 核查结果: '已登记' },
+      { 核查结果: '' },
+      { ...source, 核查结果: '' },
+      meta,
+    ).核查结果,
+    '',
+  )
 })
 
 test('重复腾讯来源只列出真正不同的字段并保留空白差异', () => {
@@ -235,6 +265,14 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /repeat\(auto-fit, minmax\(236px, 1fr\)\)/)
   assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
+})
+
+test('任务详情桌面端使用更紧凑的最大宽度', () => {
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(styleSource, /\.mobile-task-detail-page\s*\{[\s\S]*max-width: 1240px/)
 })
 
 test('模型三备注会进入手机任务编辑字段', () => {

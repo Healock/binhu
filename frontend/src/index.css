@@ -45,6 +45,10 @@
     gap: 20px;
   }
 
+  .mobile-task-detail-page {
+    max-width: 1240px;
+  }
+
   .mobile-task-business-list {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }

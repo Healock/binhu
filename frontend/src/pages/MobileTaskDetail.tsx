@@ -34,6 +34,7 @@ import {
 } from '../utils/navigationGuard'
 import {
   buildMobileTaskChanges,
+  mergeMobileTaskSaveValues,
   mobileTaskCanLaunchTelephone,
   mobileTaskEditorFields,
   mobileTaskPhoneOptions,
@@ -153,26 +154,32 @@ export default function MobileTaskDetail() {
         changes,
         expected_revision: selectedSource.revision,
       })
+      const savedValues = mergeMobileTaskSaveValues(
+        selectedSource.values,
+        changes,
+        result.values,
+        selectedSource.cell_meta,
+      )
       setData(current => current ? {
         ...current,
         task: { ...current.task, pending_sync: true },
         sources: current.sources.map(source => source.id === selectedSource.id ? {
           ...source,
-          values: result.values,
+          values: savedValues,
           revision: result.revision,
           state: mobileTaskSourceState(
             parserType,
             current.workflow.result_field,
-            result.values,
+            savedValues,
           ),
           needs_review: mobileTaskSourceNeedsReview(
             current.workflow.result_field,
             current.workflow.secondary_fields,
-            result.values,
+            savedValues,
           ),
         } : source),
       } : current)
-      setFormValues({ ...result.values })
+      setFormValues(savedValues)
       setSavedMessage('已写回腾讯表格，汇总待同步')
     } catch (reason: any) {
       const status = reason?.response?.status
@@ -285,7 +292,7 @@ export default function MobileTaskDetail() {
   ]
 
   return (
-    <div className="mobile-task-page">
+    <div className="mobile-task-page mobile-task-detail-page">
       <div className="flex items-center justify-between gap-3">
         <Button type="text" className="min-h-11 px-1" icon={<ArrowLeftOutlined />} onClick={() => { if (confirmPendingNavigation()) navigate(-1) }}>返回</Button>
         <div className="flex items-center gap-2">

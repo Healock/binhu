@@ -647,7 +647,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
         self.assertEqual(cell["cellValue"], {"text": "网格员甲"})
 
-    async def test_real_select_inspector_writes_tencent_option_id(self):
+    async def test_real_select_inspector_validates_option_then_writes_text(self):
         parser = get_parser("全链条")
         metadata = await _managed_column_metadata(
             ManagedMetadataCursor(),
@@ -663,8 +663,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         request = TxDocsClient("client", "token", "user").build_update_cell_request(
             "sheet", 8, 4, "网格员甲", metadata["核查人"]
         )
-        select = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]["cellValue"]["select"]
-        self.assertEqual(select["value"], ["member-1"])
+        cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+        self.assertEqual(cell["cellValue"], {"text": "网格员甲"})
         with self.assertRaisesRegex(ValueError, "无效的下拉选项"):
             TxDocsClient("client", "token", "user").build_update_cell_request(
                 "sheet", 8, 4, "不存在的人", metadata["核查人"]
@@ -714,7 +714,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-    async def test_business_fallback_options_are_also_used_for_select_writeback(self):
+    async def test_business_fallback_options_validate_select_text_writeback(self):
         parser = get_parser("\u5168\u94fe\u6761")
         result_field = "\u6838\u67e5\u7ed3\u679c"
         metadata = await _managed_column_metadata(
@@ -736,8 +736,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
-            ["cellValue"]["select"]["value"],
-            [first_option["id"]],
+            ["cellValue"],
+            {"text": first_option["text"]},
         )
 
 
