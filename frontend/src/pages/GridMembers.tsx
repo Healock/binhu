@@ -558,7 +558,7 @@ export default function GridMembers() {
                 <div className="hidden md:block">
                   <AppTable<GridMember>
                     columns={memberColumns.filter(column => (
-                      (canViewSensitive || !['phone', 'notes'].includes(String(column.key)))
+                      (canViewSensitive || column.key !== 'notes')
                       && (canManageIdentity || column.key !== 'id_card_number')
                     ))}
                     dataSource={state.rows}
@@ -865,13 +865,13 @@ function MobileMemberCard({
         </div>
       )}
 
-      {(canViewSensitive || canManageIdentity) && <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
-        {canViewSensitive && <div className="flex min-w-0 gap-3">
+      <div className="mt-3 space-y-2 rounded-lg bg-slate-100/70 px-3 py-2.5 text-sm">
+        <div className="flex min-w-0 gap-3">
           <span className="w-16 shrink-0 text-slate-500">电话</span>
           <span className="min-w-0 truncate text-slate-700" title={member.phone || '-'}>
             {member.phone || '-'}
           </span>
-        </div>}
+        </div>
         {canManageIdentity && <div className="flex min-w-0 gap-3">
           <span className="w-16 shrink-0 text-slate-500">身份证</span>
           <span
@@ -889,7 +889,7 @@ function MobileMemberCard({
             </span>
           </div>
         )}
-      </div>}
+      </div>
 
       {(canManage || canManageAttendance || canDelete) && <div className="mt-4 flex gap-2 border-t border-slate-200 pt-3">
         {canManage && <Button block icon={<EditOutlined />} onClick={onEdit}>

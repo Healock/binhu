@@ -137,6 +137,24 @@ class GridMemberIdentityAccountTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(visible["has_id_card"])
         self.assertEqual(visible["id_card_number"], "99999919990101999X")
 
+    def test_phone_is_visible_without_sensitive_permission(self):
+        row = (
+            1, "人员甲", "南厍", "组员", "13800000000", "内部备注", "在岗",
+            None, None, "", "manual", None, None, None, None, None,
+        )
+
+        result = _member_to_dict(
+            row,
+            date(2026, 8, 10),
+            sensitive=False,
+            identity_access=False,
+        )
+
+        self.assertEqual(result["phone"], "13800000000")
+        self.assertNotIn("notes", result)
+        self.assertNotIn("leave_reason", result)
+        self.assertNotIn("id_card_number", result)
+
     async def test_non_super_admin_cannot_create_or_update_identity(self):
         create_payload = GridMemberCreate(
             name="人员甲",

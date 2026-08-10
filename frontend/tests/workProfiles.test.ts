@@ -54,6 +54,17 @@ test('人员管理姓名进入个人资料且旧目录地址回到人员管理',
   assert.equal(appSource.includes('PeopleDirectory'), false)
 })
 
+test('人员管理电话对所有页面查看者显示但备注仍受敏感权限控制', () => {
+  const source = readFileSync(
+    new URL('../src/pages/GridMembers.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /canViewSensitive \|\| column\.key !== 'notes'/)
+  assert.equal(source.includes("['phone', 'notes']"), false)
+  assert.match(source, /<span className="w-16 shrink-0 text-slate-500">电话<\/span>[\s\S]*\{member\.phone \|\| '-'\}/)
+  assert.equal(source.includes('{canViewSensitive && <div className="flex min-w-0 gap-3">\n          <span className="w-16 shrink-0 text-slate-500">电话</span>'), false)
+})
+
 test('缺少手机号的下发任务显示为待研判', () => {
   const workbenchSource = readFileSync(
     new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
