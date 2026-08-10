@@ -7,6 +7,7 @@ from services.txdocs_client import TxDocsClient
 from services.parsers import get_parser
 from services.business_time import get_business_date
 from services.schema_compat import get_database_column_map, quote_identifier
+from services.report_table_utils import table_exists
 from services.online_source import (
     acquire_sheet_lock,
     cleanup_expired_writeback_audit,
@@ -459,7 +460,8 @@ class SyncEngine:
         async with conn.cursor() as cur:
             today = (await get_business_date(cur)).isoformat()
             snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
-            await cur.execute(f"DROP TABLE IF EXISTS daily_report.`{snapshot_table}`")
+            if await table_exists(cur, "daily_report", snapshot_table):
+                await cur.execute(f"DROP TABLE daily_report.`{snapshot_table}`")
             await cur.execute(
                 f"CREATE TABLE daily_report.`{snapshot_table}` AS SELECT * FROM OnlineData.`{table}`"
             )

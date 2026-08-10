@@ -5,6 +5,7 @@
 """
 
 from database import db_manager
+from services.report_table_utils import table_exists
 
 
 class BaseReportBuilder:
@@ -142,8 +143,10 @@ class BaseReportBuilder:
         reset_ledger: bool | None = None,
     ) -> dict:
         """生成包含跨日结转的当天任务日报。"""
-        t_inspector = f"`{date_str}_daily_{self.table_suffix}_inspector`"
-        t_community = f"`{date_str}_daily_{self.table_suffix}_community`"
+        inspector_table = f"{date_str}_daily_{self.table_suffix}_inspector"
+        community_table = f"{date_str}_daily_{self.table_suffix}_community"
+        t_inspector = f"`{inspector_table}`"
+        t_community = f"`{community_table}`"
 
         pool = db_manager.get_pool("daily_report")
         conn = await pool.acquire()
@@ -161,8 +164,10 @@ class BaseReportBuilder:
                         "message": f"{date_str} 没有同步快照，不能生成日报",
                     }
 
-                await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-                await cur.execute(f"CREATE TABLE IF NOT EXISTS {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+                if not await table_exists(cur, "daily_report", inspector_table):
+                    await cur.execute(f"CREATE TABLE {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+                if not await table_exists(cur, "daily_report", community_table):
+                    await cur.execute(f"CREATE TABLE {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
                 from services.report_ledger import (
                     aggregate_ledger_into_reports,
                     refresh_daily_ledger,

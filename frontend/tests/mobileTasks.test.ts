@@ -318,9 +318,11 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /mobile-task-item-card__key-row--phone/)
   assert.match(pageSource, /className="mobile-phone-native-select--card"/)
   assert.ok(
-    pageSource.indexOf('mobile-task-item-card__key-row--phone')
-      < pageSource.indexOf('mobile-task-item-card__key-row--identity'),
+    pageSource.indexOf('mobile-task-item-card__key-row--identity')
+      < pageSource.indexOf('mobile-task-item-card__key-row--phone'),
   )
+  assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn[\s\S]*font-variant-numeric:\s*tabular-nums/)
+  assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn[\s\S]*font-weight:\s*650/)
   assert.equal(pageSource.includes('mobile-phone-native-select--header'), false)
   assert.match(styleSource, /\.mobile-task-item-card__footer-meta[\s\S]*font-size:\s*12px/)
   assert.match(styleSource, /\.mobile-task-item-card__key-row--old-address dt,[\s\S]*color:\s*var\(--app-text-muted\)[\s\S]*font-size:\s*12px/)

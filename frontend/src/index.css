@@ -422,8 +422,11 @@
   padding: 0 2px;
   color: var(--app-text-strong);
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: clamp(13px, 0.88vw, 14px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  line-height: 1.4;
 }
 
 .mobile-task-item-card__phone-copy.ant-btn:hover,
@@ -444,6 +447,7 @@
 .mobile-task-item-card__phone-label > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
+  font: inherit;
 }
 
 .mobile-task-item-card__phone-extra {
