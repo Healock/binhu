@@ -304,6 +304,8 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /repeat\(auto-fit, minmax\(264px, 1fr\)\)/)
   assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
   assert.match(styleSource, /\.mobile-task-copy-value/)
+  assert.match(styleSource, /\.mobile-task-copy-value\s*\{[\s\S]*display:\s*inline-flex[\s\S]*width:\s*auto[\s\S]*justify-content:\s*flex-start/)
+  assert.match(styleSource, /\.mobile-task-copy-value:hover,[\s\S]*\.mobile-task-copy-value:focus-visible[\s\S]*background:\s*var\(--app-surface-muted\)/)
   assert.match(styleSource, /--mobile-task-footer-bg:\s*#eef3f8/)
   assert.match(styleSource, /html\[data-theme='dark'\][\s\S]*--mobile-task-footer-bg:\s*#0b1320/)
   assert.match(styleSource, /\.mobile-task-item-card__footer[\s\S]*background:\s*var\(--mobile-task-footer-bg\)/)

@@ -572,19 +572,30 @@
 }
 
 .mobile-task-copy-value {
-  display: flex;
-  width: 100%;
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 0;
+  justify-content: flex-start;
+  gap: 3px;
+  height: 26px;
+  flex: 0 1 auto;
+  padding: 0 2px;
   border: 0;
-  color: inherit;
+  border-radius: 4px;
+  color: var(--app-text-strong);
   background: transparent;
-  font: inherit;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: clamp(13px, 0.88vw, 14px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  line-height: 1.4;
   text-align: left;
+  white-space: nowrap;
   cursor: copy;
+  transition: color 0.15s ease, background-color 0.15s ease;
 }
 
 .mobile-task-copy-value__text {
@@ -597,8 +608,14 @@
 .mobile-task-copy-value .anticon {
   flex-shrink: 0;
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: 11px;
   opacity: 0.76;
+}
+
+.mobile-task-copy-value:hover,
+.mobile-task-copy-value:focus-visible {
+  color: var(--app-text-strong);
+  background: var(--app-surface-muted);
 }
 
 .mobile-task-copy-value:hover .anticon,
@@ -608,7 +625,6 @@
 }
 
 .mobile-task-copy-value:focus-visible {
-  border-radius: 4px;
   outline: 2px solid var(--app-primary-border);
   outline-offset: 2px;
 }
