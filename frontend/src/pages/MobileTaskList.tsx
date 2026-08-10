@@ -697,27 +697,6 @@ export default function MobileTaskList() {
                     <div className="mobile-task-item-card__header-main">
                       <div className="mobile-task-item-card__title-row">
                         <h2 title={task.summary.title}>{task.summary.title}</h2>
-                        {primaryPhone && (
-                          <MobilePhonePicker
-                            phones={copyPhones}
-                            mode="copy"
-                            label={(
-                              <span className="mobile-task-item-card__phone-label">
-                                <span>{primaryPhone}</span>
-                                {extraPhoneCount > 0 && (
-                                  <span className="mobile-task-item-card__phone-extra">+{extraPhoneCount}</span>
-                                )}
-                                <CopyOutlined aria-hidden="true" />
-                              </span>
-                            )}
-                            className="mobile-phone-native-select--header"
-                            buttonProps={{
-                              type: 'text',
-                              className: 'mobile-task-item-card__phone-copy',
-                            }}
-                            onSelect={phone => void copyValue(phone, '手机号')}
-                          />
-                        )}
                       </div>
                     </div>
                     <Tag color={state.color} className="mobile-task-item-card__state">{state.text}</Tag>
@@ -740,8 +719,34 @@ export default function MobileTaskList() {
                       ))}
                     </div>
                   )}
-                  {(task.summary.identity_number || primaryAddress) && (
+                  {(primaryPhone || task.summary.identity_number || primaryAddress) && (
                     <dl className="mobile-task-item-card__key-info">
+                      {primaryPhone && (
+                        <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--phone">
+                          <dt>手机号</dt>
+                          <dd>
+                            <MobilePhonePicker
+                              phones={copyPhones}
+                              mode="copy"
+                              label={(
+                                <span className="mobile-task-item-card__phone-label">
+                                  <span>{primaryPhone}</span>
+                                  {extraPhoneCount > 0 && (
+                                    <span className="mobile-task-item-card__phone-extra">+{extraPhoneCount}</span>
+                                  )}
+                                  <CopyOutlined aria-hidden="true" />
+                                </span>
+                              )}
+                              className="mobile-phone-native-select--card"
+                              buttonProps={{
+                                type: 'text',
+                                className: 'mobile-task-item-card__phone-copy',
+                              }}
+                              onSelect={phone => void copyValue(phone, '手机号')}
+                            />
+                          </dd>
+                        </div>
+                      )}
                       {task.summary.identity_number && (
                         <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
                           <dt>身份证号</dt>
