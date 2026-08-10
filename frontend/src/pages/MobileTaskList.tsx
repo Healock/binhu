@@ -2,7 +2,6 @@ import {
   CopyOutlined,
   ExclamationCircleOutlined,
   PhoneOutlined,
-  RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
 import { Alert, Button, Checkbox, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
@@ -403,18 +402,25 @@ export default function MobileTaskList() {
     window.location.href = `tel:${phone}`
   }
 
-  const copyCardValue = async (
-    event: SyntheticEvent,
+  const copyValue = async (
     value: string,
     label: '身份证号' | '手机号',
   ) => {
-    event.stopPropagation()
     try {
       await navigator.clipboard.writeText(value)
       message.success(`${label}已复制`)
     } catch {
       message.error(`${label}复制失败，请长按或选中文字复制`)
     }
+  }
+
+  const copyCardValue = async (
+    event: SyntheticEvent,
+    value: string,
+    label: '身份证号' | '手机号',
+  ) => {
+    event.stopPropagation()
+    await copyValue(value, label)
   }
 
   return (
@@ -605,9 +611,11 @@ export default function MobileTaskList() {
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
             const phoneOptions = mobileTaskPhoneOptions(task.summary.phone)
-            const phoneDisplay = phoneOptions.length > 0
-              ? phoneOptions.join('、')
-              : task.summary.phone
+            const copyPhones = phoneOptions.length > 0
+              ? phoneOptions
+              : task.summary.phone ? [task.summary.phone] : []
+            const primaryPhone = copyPhones[0] || ''
+            const extraPhoneCount = Math.max(copyPhones.length - 1, 0)
             const taskCommunity = assignmentCommunity(task)
             const canSelect = canBulkAssign
               && !task.inspector
@@ -629,110 +637,119 @@ export default function MobileTaskList() {
                   }
                 }}
               >
-                <div className="mobile-task-item-card__header">
-                  <div className="flex min-w-0 items-start gap-2">
-                    {canBulkAssign && (
-                      <Checkbox
-                        className="mt-1"
-                        checked={selectedRows.has(task.row_key)}
-                        disabled={!canSelect}
-                        onClick={event => event.stopPropagation()}
-                        onChange={event => toggleSelected(task.row_key, event.target.checked)}
-                      />
-                    )}
-                    <div className="min-w-0">
+                <div className="mobile-task-item-card__body">
+                  <div className="mobile-task-item-card__header">
+                    <div className="mobile-task-item-card__header-main">
+                      {canBulkAssign && (
+                        <Checkbox
+                          className="mobile-task-item-card__checkbox"
+                          checked={selectedRows.has(task.row_key)}
+                          disabled={!canSelect}
+                          onClick={event => event.stopPropagation()}
+                          onChange={event => toggleSelected(task.row_key, event.target.checked)}
+                        />
+                      )}
                       <div className="mobile-task-item-card__title-row">
                         <h2 title={task.summary.title}>{task.summary.title}</h2>
-                        <Tag color={state.color}>{state.text}</Tag>
+                        {primaryPhone && (
+                          <MobilePhonePicker
+                            phones={copyPhones}
+                            mode="copy"
+                            label={(
+                              <span className="mobile-task-item-card__phone-label">
+                                <span>{primaryPhone}</span>
+                                {extraPhoneCount > 0 && (
+                                  <span className="mobile-task-item-card__phone-extra">+{extraPhoneCount}</span>
+                                )}
+                                <CopyOutlined aria-hidden="true" />
+                              </span>
+                            )}
+                            className="mobile-phone-native-select--header"
+                            buttonProps={{
+                              type: 'text',
+                              className: 'mobile-task-item-card__phone-copy',
+                            }}
+                            onSelect={phone => void copyValue(phone, '手机号')}
+                          />
+                        )}
                       </div>
-                      <p className="mobile-task-item-card__assignment">
-                        <span>{task.community || '社区未填写'}</span>
-                        <span aria-hidden="true">·</span>
-                        <span>{task.inspector || '待分配'}</span>
-                      </p>
                     </div>
+                    <Tag color={state.color} className="mobile-task-item-card__state">{state.text}</Tag>
                   </div>
-                  <RightOutlined className="mt-1 shrink-0 text-[var(--app-text-muted)]" />
-                </div>
-                {(task.needs_review
-                  || task.review_stage === 'waiting_analysis'
-                  || task.review_stage === 'analyzed'
-                  || task.conflict
-                  || task.source_count > 1
-                  || task.pending_sync
-                  || Boolean(task.watch_marks?.length)) && (
-                  <div className="mobile-task-item-card__flags">
-                    {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
-                    {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
-                    {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
-                    {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
-                    {task.pending_sync && <Tag color="blue">待同步</Tag>}
-                    {task.watch_marks?.map(mark => (
-                      <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
-                    ))}
-                  </div>
-                )}
-                {(task.summary.identity_number || phoneDisplay) && (
-                  <dl className="mobile-task-item-card__details">
-                    {task.summary.identity_number && (
-                      <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary">
-                        <dt>身份证号</dt>
-                        <dd className="mobile-task-item-card__identity">
-                          <button
-                            type="button"
-                            className="mobile-task-copy-value"
-                            title="点击复制身份证号"
-                            aria-label="复制身份证号"
-                            onClick={event => void copyCardValue(event, task.summary.identity_number, '身份证号')}
-                            onKeyDown={event => event.stopPropagation()}
-                          >
-                            <span className="mobile-task-copy-value__text">{task.summary.identity_number}</span>
-                            <CopyOutlined aria-hidden="true" />
-                          </button>
-                        </dd>
-                      </div>
-                    )}
-                    {phoneDisplay && (
-                      <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary">
-                        <dt>手机号</dt>
-                        <dd className="mobile-task-item-card__phone">
-                          <button
-                            type="button"
-                            className="mobile-task-copy-value"
-                            title="点击复制手机号"
-                            aria-label="复制手机号"
-                            onClick={event => void copyCardValue(event, phoneDisplay, '手机号')}
-                            onKeyDown={event => event.stopPropagation()}
-                          >
-                            <span className="mobile-task-copy-value__text">{phoneDisplay}</span>
-                            <CopyOutlined aria-hidden="true" />
-                          </button>
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
-                )}
-                {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
-                {task.review_stage === 'analyzed' && task.summary.analysis && (
-                  <div className="mobile-task-analysis">
-                    <div className="mobile-task-analysis__label">研判结果</div>
-                    <div className="mobile-task-analysis__value">{task.summary.analysis}</div>
-                  </div>
-                )}
-                {sourceTags.length > 0 && (
-                  <div className="mobile-task-source-cloud mobile-task-source-cloud--card">
-                    <div>
-                      {sourceTags.map(tag => (
-                        <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+                  {(task.needs_review
+                    || task.review_stage === 'waiting_analysis'
+                    || task.review_stage === 'analyzed'
+                    || task.conflict
+                    || task.source_count > 1
+                    || task.pending_sync
+                    || Boolean(task.watch_marks?.length)) && (
+                    <div className="mobile-task-item-card__flags">
+                      {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
+                      {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
+                      {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
+                      {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
+                      {task.pending_sync && <Tag color="blue">待同步</Tag>}
+                      {task.watch_marks?.map(mark => (
+                        <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
                       ))}
                     </div>
-                  </div>
-                )}
-                <div className="mobile-task-item-card__footer flex items-center justify-between gap-3 border-t border-[var(--app-border)]">
-                  <div className="min-w-0 text-xs text-[var(--app-text-secondary)]">
-                    {task.first_dispatch_at
-                      ? `首次下发 ${task.first_dispatch_at}`
-                      : task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
+                  )}
+                  {(task.summary.identity_number || task.summary.address) && (
+                    <dl className="mobile-task-item-card__key-info">
+                      {task.summary.identity_number && (
+                        <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
+                          <dt>身份证号</dt>
+                          <dd className="mobile-task-item-card__identity">
+                            <button
+                              type="button"
+                              className="mobile-task-copy-value"
+                              title="点击复制身份证号"
+                              aria-label="复制身份证号"
+                              onClick={event => void copyCardValue(event, task.summary.identity_number, '身份证号')}
+                              onKeyDown={event => event.stopPropagation()}
+                            >
+                              <span className="mobile-task-copy-value__text">{task.summary.identity_number}</span>
+                              <CopyOutlined aria-hidden="true" />
+                            </button>
+                          </dd>
+                        </div>
+                      )}
+                      {task.summary.address && (
+                        <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--address">
+                          <dt>地址</dt>
+                          <dd title={task.summary.address}>{task.summary.address}</dd>
+                        </div>
+                      )}
+                    </dl>
+                  )}
+                  {task.review_stage === 'analyzed' && task.summary.analysis && (
+                    <div className="mobile-task-analysis">
+                      <div className="mobile-task-analysis__label">研判结果</div>
+                      <div className="mobile-task-analysis__value">{task.summary.analysis}</div>
+                    </div>
+                  )}
+                  {sourceTags.length > 0 && (
+                    <div className="mobile-task-source-cloud mobile-task-source-cloud--card">
+                      <div>
+                        {sourceTags.map(tag => (
+                          <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="mobile-task-item-card__footer">
+                  <div className="mobile-task-item-card__footer-meta">
+                    <div className="mobile-task-item-card__ownership">
+                      <span title={task.community || '社区未填写'}>{task.community || '社区未填写'}</span>
+                      <span aria-hidden="true">·</span>
+                      <span title={task.inspector || '待分配'}>核查人 {task.inspector || '待分配'}</span>
+                    </div>
+                    <div className="mobile-task-item-card__date">
+                      {task.first_dispatch_at
+                        ? `首次下发 ${task.first_dispatch_at}`
+                        : task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
+                    </div>
                   </div>
                   <MobilePhonePicker
                     phones={phoneOptions}

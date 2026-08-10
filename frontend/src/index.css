@@ -299,6 +299,9 @@
 .mobile-task-business-card:active,
 .mobile-task-item-card:active {
   transform: scale(0.995);
+}
+
+.mobile-task-business-card:active {
   background: var(--app-surface-muted);
 }
 
@@ -307,9 +310,11 @@
 }
 
 .mobile-task-item-card {
+  overflow: hidden;
   min-width: 0;
   min-height: 112px;
-  padding: 12px;
+  padding: 0;
+  cursor: pointer;
   text-align: left;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
@@ -319,22 +324,40 @@
   box-shadow: 0 8px 24px rgb(15 23 42 / 0.09);
 }
 
+.mobile-task-item-card__body {
+  padding: 12px;
+}
+
 .mobile-task-item-card__header {
   display: flex;
   min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 7px;
+}
+
+.mobile-task-item-card__header-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+}
+
+.mobile-task-item-card__checkbox {
+  flex-shrink: 0;
 }
 
 .mobile-task-item-card__title-row {
   display: flex;
   min-width: 0;
+  flex: 1;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
 }
 
 .mobile-task-item-card__title-row h2 {
+  flex: 1;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -346,32 +369,71 @@
   text-overflow: ellipsis;
 }
 
-.mobile-task-item-card__title-row .ant-tag,
+.mobile-task-item-card__state.ant-tag,
 .mobile-task-item-card__flags .ant-tag,
 .mobile-task-source-cloud .ant-tag {
   margin-inline-end: 0;
 }
 
-.mobile-task-item-card__title-row .ant-tag {
+.mobile-task-item-card__state.ant-tag {
   flex-shrink: 0;
 }
 
-.mobile-task-item-card__assignment {
+.mobile-phone-native-select--header {
+  width: auto;
+  max-width: 112px;
+  flex: 0 1 auto;
+}
+
+.mobile-phone-native-select--header .mobile-phone-native-select__control {
+  min-height: 100%;
+}
+
+.mobile-task-item-card__phone-copy.ant-btn {
+  width: auto;
+  min-width: 0;
+  max-width: 112px;
+  height: 24px;
+  flex: 0 1 auto;
+  padding: 0 2px;
+  color: var(--app-text-strong);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mobile-task-item-card__phone-copy.ant-btn:hover,
+.mobile-task-item-card__phone-copy.ant-btn:focus-visible {
+  color: var(--app-text-strong) !important;
+  background: var(--app-surface-muted) !important;
+}
+
+.mobile-task-item-card__phone-label {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 5px;
-  margin: 4px 0 0;
+  gap: 3px;
   overflow: hidden;
-  color: var(--app-text-secondary);
-  font-size: 12px;
-  line-height: 1.35;
   white-space: nowrap;
 }
 
-.mobile-task-item-card__assignment span:not([aria-hidden]) {
+.mobile-task-item-card__phone-label > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.mobile-task-item-card__phone-extra {
+  flex-shrink: 0;
+  color: var(--app-text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mobile-task-item-card__phone-label .anticon {
+  flex-shrink: 0;
+  color: var(--app-text-muted);
+  font-size: 11px;
 }
 
 .mobile-task-item-card__flags {
@@ -381,47 +443,44 @@
   margin-top: 7px;
 }
 
-.mobile-task-item-card__details {
+.mobile-task-item-card__key-info {
   display: grid;
-  gap: 5px;
-  margin: 8px 0 0;
-  padding: 8px 9px;
-  border: 1px solid color-mix(in srgb, var(--app-border) 72%, transparent);
-  border-radius: 10px;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding: 0;
   color: var(--app-text);
-  background: var(--app-surface-muted);
   font-size: 12px;
 }
 
-.mobile-task-item-card__detail-row {
+.mobile-task-item-card__key-row {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: 7px;
   align-items: baseline;
 }
 
-.mobile-task-item-card__detail-row dt {
+.mobile-task-item-card__key-row dt {
   margin: 0;
   color: var(--app-text-secondary);
 }
 
-.mobile-task-item-card__detail-row dd {
+.mobile-task-item-card__key-row dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--app-text-strong);
 }
 
-.mobile-task-item-card__detail-row--primary dt,
-.mobile-task-item-card__detail-row--primary dd {
+.mobile-task-item-card__key-row--identity dt,
+.mobile-task-item-card__key-row--identity dd {
   line-height: 1.4;
 }
 
-.mobile-task-item-card__detail-row--primary dt {
+.mobile-task-item-card__key-row--identity dt {
   font-size: 12px;
 }
 
-.mobile-task-item-card__detail-row--primary dd {
+.mobile-task-item-card__key-row--identity dd {
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: clamp(12px, 0.82vw, 13px);
   font-weight: 650;
@@ -435,8 +494,17 @@
   text-overflow: ellipsis;
 }
 
-.mobile-task-item-card__phone {
-  line-height: 1.5 !important;
+.mobile-task-item-card__key-row--address {
+  align-items: start;
+}
+
+.mobile-task-item-card__key-row--address dd {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .mobile-task-copy-value {
@@ -464,13 +532,14 @@
 
 .mobile-task-copy-value .anticon {
   flex-shrink: 0;
-  color: var(--app-primary);
+  color: var(--app-text-muted);
   font-size: 12px;
   opacity: 0.76;
 }
 
 .mobile-task-copy-value:hover .anticon,
 .mobile-task-copy-value:focus-visible .anticon {
+  color: var(--app-text-secondary);
   opacity: 1;
 }
 
@@ -478,10 +547,6 @@
   border-radius: 4px;
   outline: 2px solid var(--app-primary-border);
   outline-offset: 2px;
-}
-
-.mobile-task-item-card__address {
-  margin-top: 7px;
 }
 
 .mobile-task-source-cloud {
@@ -602,8 +667,56 @@
 }
 
 .mobile-task-item-card__footer {
-  margin-top: 7px;
-  padding-top: 7px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--app-border);
+  background: var(--mobile-task-footer-bg);
+}
+
+.mobile-task-item-card__footer-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.mobile-task-item-card__ownership {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.mobile-task-item-card__ownership span:not([aria-hidden]) {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mobile-task-item-card__ownership span:last-child {
+  flex: 1;
+  flex-shrink: 1;
+}
+
+.mobile-task-item-card__date {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--app-text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 @media (min-width: 768px) {
@@ -779,6 +892,7 @@ html[data-theme='dark'] .mobile-task-hero {
   --app-surface: #ffffff;
   --app-surface-muted: #f8fafc;
   --app-surface-subtle: #f1f5f9;
+  --mobile-task-footer-bg: #eef3f8;
   --app-border: #e2e8f0;
   --app-border-strong: #cbd5e1;
   --app-text: #172033;
@@ -814,6 +928,7 @@ html[data-theme='dark'] {
   --app-surface: #101826;
   --app-surface-muted: #151f2e;
   --app-surface-subtle: #1a2638;
+  --mobile-task-footer-bg: #0b1320;
   --app-border: #253247;
   --app-border-strong: #34445c;
   --app-text: #e5edf7;
