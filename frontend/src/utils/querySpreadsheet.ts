@@ -120,19 +120,6 @@ export function querySheetTextCell(value: unknown): ICellData {
   }
 }
 
-/** 判断指针是否落在嵌入式工作表底部的横向滚动条热区。 */
-export function isQuerySheetHorizontalScrollbarPointer(
-  clientY: number,
-  top: number,
-  bottom: number,
-  hitArea = 30,
-): boolean {
-  return Number.isFinite(clientY)
-    && bottom > top
-    && clientY >= bottom - hitArea
-    && clientY <= bottom + 1
-}
-
 /** 把文本近似换算成像素宽度，不调用 Univer 的列宽命令和撤销栈。 */
 export function measureQuerySheetTextWidth(value: unknown): number {
   const lines = stringifyCell(value).split(/\r?\n/)

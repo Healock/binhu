@@ -37,7 +37,6 @@ import {
   buildQuerySheetRows,
   canEditQuerySheetCell,
   isQuerySheetAutomaticTextConversion,
-  isQuerySheetHorizontalScrollbarPointer,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
@@ -174,6 +173,16 @@ export function QuerySpreadsheet({
     let releaseFrame = 0
     let releaseTimer = 0
 
+    function clearReleaseSchedule() {
+      if (releaseFrame) {
+        window.cancelAnimationFrame(releaseFrame)
+        releaseFrame = 0
+      }
+      if (releaseTimer) {
+        window.clearTimeout(releaseTimer)
+        releaseTimer = 0
+      }
+    }
     function restorePagePosition() {
       if (!lockedPosition) return
       if (pageScroller.scrollLeft !== lockedPosition.mainLeft) pageScroller.scrollLeft = lockedPosition.mainLeft
@@ -202,28 +211,18 @@ export function QuerySpreadsheet({
       releaseFrame = window.requestAnimationFrame(() => {
         releaseFrame = 0
         restorePagePosition()
-        releaseTimer = window.setTimeout(() => {
-          releaseTimer = 0
-          unlock()
-        }, 160)
+        window.requestAnimationFrame(restorePagePosition)
       })
+      // Univer may focus its hidden editor and recalculate the canvas after the
+      // pointer is released. Keep the outer page fixed through that delayed work.
+      releaseTimer = window.setTimeout(() => {
+        releaseTimer = 0
+        unlock()
+      }, 420)
     }
     function handlePointerDown(event: PointerEvent) {
-      const bounds = container.getBoundingClientRect()
-      if (!isQuerySheetHorizontalScrollbarPointer(
-        event.clientY,
-        bounds.top,
-        bounds.bottom,
-      )) return
-
-      if (releaseFrame) {
-        window.cancelAnimationFrame(releaseFrame)
-        releaseFrame = 0
-      }
-      if (releaseTimer) {
-        window.clearTimeout(releaseTimer)
-        releaseTimer = 0
-      }
+      if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return
+      clearReleaseSchedule()
       unlock()
       window.removeEventListener('pointerup', finishGesture)
       window.removeEventListener('pointercancel', finishGesture)
@@ -243,8 +242,7 @@ export function QuerySpreadsheet({
     container.addEventListener('pointerdown', handlePointerDown, true)
     return () => {
       container.removeEventListener('pointerdown', handlePointerDown, true)
-      if (releaseFrame) window.cancelAnimationFrame(releaseFrame)
-      if (releaseTimer) window.clearTimeout(releaseTimer)
+      clearReleaseSchedule()
       unlock()
     }
   }, [])
@@ -318,6 +316,33 @@ export function QuerySpreadsheet({
     const headerRange = worksheet.getRange(0, 0, 1, columns.length)
     headerRange.setFontWeight('bold')
 
+    const applyRowAppearance = (rowIndex: number, darkMode: boolean) => {
+      const palette = querySheetPalette(darkMode)
+      const descriptor = sheetRows[rowIndex]
+      if (!descriptor) return
+      const worksheetRow = rowIndex + 1
+      const rowRange = worksheet.getRange(worksheetRow, 0, 1, columns.length)
+      let rowBackground = palette.background
+      if (descriptor.kind === 'data') {
+        if (descriptor.data.__conflict) rowBackground = palette.conflict
+        else if (descriptor.data.__pending) rowBackground = palette.pending
+      }
+      rowRange.setBackgroundColor(rowBackground)
+      rowRange.setFontColor(palette.text)
+      columns.forEach((column, columnIndex) => {
+        if (canEditQuerySheetCell(source, descriptor, column, canAdd)) {
+          worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.editable)
+        }
+        if (
+          dependentOptions
+          && column === dependentOptions.inspector_column
+          && queryInspectorMismatch(dependentOptions, descriptor.data)
+        ) {
+          worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.warning)
+        }
+      })
+    }
+
     const applyAppearance = (darkMode: boolean) => {
       const palette = querySheetPalette(darkMode)
       univerAPI.toggleDarkMode(darkMode)
@@ -332,29 +357,7 @@ export function QuerySpreadsheet({
       }
       headerRange.setBackgroundColor(palette.header)
       headerRange.setFontColor(palette.text)
-
-      sheetRows.forEach((descriptor, rowIndex) => {
-        const worksheetRow = rowIndex + 1
-        if (descriptor.kind === 'data') {
-          if (descriptor.data.__conflict) {
-            worksheet.getRange(worksheetRow, 0, 1, columns.length).setBackgroundColor(palette.conflict)
-          } else if (descriptor.data.__pending) {
-            worksheet.getRange(worksheetRow, 0, 1, columns.length).setBackgroundColor(palette.pending)
-          }
-        }
-        columns.forEach((column, columnIndex) => {
-          if (canEditQuerySheetCell(source, descriptor, column, canAdd)) {
-            worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.editable)
-          }
-          if (
-            dependentOptions
-            && column === dependentOptions.inspector_column
-            && queryInspectorMismatch(dependentOptions, descriptor.data)
-          ) {
-            worksheet.getRange(worksheetRow, columnIndex).setBackgroundColor(palette.warning)
-          }
-        })
-      })
+      sheetRows.forEach((_, rowIndex) => applyRowAppearance(rowIndex, darkMode))
     }
     applyAppearanceRef.current = applyAppearance
     applyAppearance(themeModeRef.current === 'dark')
@@ -533,7 +536,7 @@ export function QuerySpreadsheet({
         changes.map(change => sheetRows.findIndex(item => item.data === change.row)),
       )
       changedRows.forEach(rowIndex => applyInspectorValidation(rowIndex))
-      applyAppearance(themeModeRef.current === 'dark')
+      changedRows.forEach(rowIndex => applyRowAppearance(rowIndex, themeModeRef.current === 'dark'))
 
       const blocked: QuerySheetCellChange[] = []
       const accepted: QuerySheetCellChange[] = []
@@ -560,8 +563,12 @@ export function QuerySpreadsheet({
       callbacksRef.current.onSavingChange?.(true)
       try {
         await callbacksRef.current.onCommit(sourceChanges)
+        changedRows.forEach(rowIndex => applyRowAppearance(rowIndex, themeModeRef.current === 'dark'))
       } catch {
-        if (!disposed) restoreChanges(sourceChanges)
+        if (!disposed) {
+          restoreChanges(sourceChanges)
+          changedRows.forEach(rowIndex => applyRowAppearance(rowIndex, themeModeRef.current === 'dark'))
+        }
       } finally {
         saving = false
         callbacksRef.current.onSavingChange?.(false)

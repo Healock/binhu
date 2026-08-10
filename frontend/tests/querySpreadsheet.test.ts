@@ -9,7 +9,6 @@ import {
   canEditQuerySheetCell,
   fitQuerySheetColumnWidth,
   isQuerySheetFullscreen,
-  isQuerySheetHorizontalScrollbarPointer,
   isQuerySheetAutomaticTextConversion,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
@@ -92,14 +91,7 @@ test('腾讯日期和长数字以普通字符串写入工作表且不显示前�
   })
 })
 
-test('只在工作表底部横向滚动条热区锁定页面纵向位置', () => {
-  assert.equal(isQuerySheetHorizontalScrollbarPointer(790, 200, 800), true)
-  assert.equal(isQuerySheetHorizontalScrollbarPointer(769, 200, 800), false)
-  assert.equal(isQuerySheetHorizontalScrollbarPointer(801, 200, 800), true)
-  assert.equal(isQuerySheetHorizontalScrollbarPointer(802, 200, 800), false)
-})
-
-test('横向滚动保护同时锁定实际发生滚动的浏览器文档', () => {
+test('工作表点击和拖动同时锁定主内容区与浏览器文档位置', () => {
   const componentSource = readFileSync(
     new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
     'utf8',
@@ -107,6 +99,23 @@ test('横向滚动保护同时锁定实际发生滚动的浏览器文档', () =>
   assert.match(componentSource, /document\.scrollingElement/)
   assert.match(componentSource, /documentScroller\.scrollTop/)
   assert.match(componentSource, /window\.addEventListener\('scroll', restorePagePosition\)/)
+  assert.match(componentSource, /container\.addEventListener\('pointerdown', handlePointerDown, true\)/)
+  assert.doesNotMatch(componentSource, /isQuerySheetHorizontalScrollbarPointer/)
+  assert.match(componentSource, /}, 420\)/)
+})
+
+test('单元格保存只重绘受影响行且不重新查询整张工作表', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /changedRows\.forEach\(rowIndex => applyRowAppearance/)
+  assert.doesNotMatch(pageSource, /setRows\(current => \[\.\.\.current\]\)/)
+  assert.doesNotMatch(pageSource, /if \(keyword \|\| Object\.keys\(sheetFilterCriteria\)\.length > 0\) await fetchData\(\)/)
 })
 
 test('工作表自动列宽保留合理的最小值和最大值', () => {

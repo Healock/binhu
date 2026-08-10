@@ -323,15 +323,13 @@ export default function DataQuery() {
       if (newlyPendingSourceIds.size > 0) {
         setPendingCount(current => current + newlyPendingSourceIds.size)
       }
-      setRows(current => [...current])
-      if (keyword || Object.keys(sheetFilterCriteria).length > 0) await fetchData()
     } catch (requestError) {
       const prefix = completed > 0 ? `已有 ${completed} 项写入；` : ''
       messageApi.error(`${prefix}${errorText(requestError, '保存失败，已重新加载在线内容')}`)
       await fetchData()
       throw requestError
     }
-  }, [fetchData, keyword, messageApi, selectedType, sheetFilterCriteria])
+  }, [fetchData, messageApi, selectedType])
 
   const openAdd = () => {
     setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
