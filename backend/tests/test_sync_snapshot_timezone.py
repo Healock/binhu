@@ -163,6 +163,7 @@ class SyncSnapshotTimezoneTests(unittest.IsolatedAsyncioTestCase):
     async def test_snapshot_uses_business_date_without_building_report(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=None)
         cursor_context = MagicMock()
         cursor_context.__aenter__ = AsyncMock(return_value=cursor)
         cursor_context.__aexit__ = AsyncMock(return_value=None)
@@ -189,6 +190,7 @@ class SyncSnapshotTimezoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("2026-07-27_snapshot_fullChain" in sql for sql in executed_sql)
         )
+        self.assertFalse(any("DROP TABLE" in sql for sql in executed_sql))
         self.assertEqual(result, "2026-07-27")
         builder.build.assert_not_awaited()
 

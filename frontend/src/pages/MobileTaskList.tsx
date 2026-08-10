@@ -721,6 +721,24 @@ export default function MobileTaskList() {
                   )}
                   {(primaryPhone || task.summary.identity_number || primaryAddress) && (
                     <dl className="mobile-task-item-card__key-info">
+                      {task.summary.identity_number && (
+                        <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
+                          <dt>身份证号</dt>
+                          <dd className="mobile-task-item-card__identity">
+                            <button
+                              type="button"
+                              className="mobile-task-copy-value"
+                              title="点击复制身份证号"
+                              aria-label="复制身份证号"
+                              onClick={event => void copyCardValue(event, task.summary.identity_number, '身份证号')}
+                              onKeyDown={event => event.stopPropagation()}
+                            >
+                              <span className="mobile-task-copy-value__text">{task.summary.identity_number}</span>
+                              <CopyOutlined aria-hidden="true" />
+                            </button>
+                          </dd>
+                        </div>
+                      )}
                       {primaryPhone && (
                         <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--phone">
                           <dt>手机号</dt>
@@ -744,24 +762,6 @@ export default function MobileTaskList() {
                               }}
                               onSelect={phone => void copyValue(phone, '手机号')}
                             />
-                          </dd>
-                        </div>
-                      )}
-                      {task.summary.identity_number && (
-                        <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
-                          <dt>身份证号</dt>
-                          <dd className="mobile-task-item-card__identity">
-                            <button
-                              type="button"
-                              className="mobile-task-copy-value"
-                              title="点击复制身份证号"
-                              aria-label="复制身份证号"
-                              onClick={event => void copyCardValue(event, task.summary.identity_number, '身份证号')}
-                              onKeyDown={event => event.stopPropagation()}
-                            >
-                              <span className="mobile-task-copy-value__text">{task.summary.identity_number}</span>
-                              <CopyOutlined aria-hidden="true" />
-                            </button>
                           </dd>
                         </div>
                       )}

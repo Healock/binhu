@@ -18,6 +18,7 @@ from services.report_members import (
     merge_inspector_rows,
 )
 from services.report_attendance import load_community_person_days
+from services.report_table_utils import table_exists
 from services.report_workload import load_effective_workload_by_community
 
 SUMMARY_COLS = """
@@ -132,7 +133,8 @@ async def build_summary(
     generation_method: str = "sync",
 ) -> dict:
     """生成总汇总表（合并分表社区汇总 + 网格员人数）"""
-    t_summary = f"`{date_str}_daily_summary`"
+    summary_table = f"{date_str}_daily_summary"
+    t_summary = f"`{summary_table}`"
     pool = db_manager.get_pool("daily_report")
     conn = await pool.acquire()
     try:
@@ -164,10 +166,11 @@ async def build_summary(
                     "message": f"{date_str} 没有可用快照和分汇总表，不能生成总汇总表",
                 }
 
-            await cur.execute(
-                f"CREATE TABLE IF NOT EXISTS {t_summary} ({SUMMARY_COLS}) "
-                f"ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-            )
+            if not await table_exists(cur, "daily_report", summary_table):
+                await cur.execute(
+                    f"CREATE TABLE {t_summary} ({SUMMARY_COLS}) "
+                    f"ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+                )
             await cur.execute(f"TRUNCATE TABLE {t_summary}")
 
             union_parts = []
