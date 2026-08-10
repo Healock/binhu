@@ -536,7 +536,7 @@ export default function MobileTaskList() {
                 onClick={() => navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)}
                 onKeyDown={event => { if (event.key === 'Enter') navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`) }}
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="mobile-task-item-card__header">
                   <div className="flex min-w-0 items-start gap-2">
                     {isGroupLeader && (
                       <Checkbox
@@ -548,27 +548,41 @@ export default function MobileTaskList() {
                       />
                     )}
                     <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="truncate font-semibold text-[var(--app-text-strong)]">{task.summary.title}</h2>
-                      <Tag color={state.color}>{state.text}</Tag>
-                      {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
-                      {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
-                      {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
-                      {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
-                      {task.pending_sync && <Tag color="blue">待同步</Tag>}
-                      {task.watch_marks?.map(mark => (
-                        <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
-                      ))}
-                    </div>
-                    <p className="mt-1 text-xs text-[var(--app-text-secondary)]">{task.community || '社区未填写'} · {task.inspector || '待分配'}</p>
+                      <div className="mobile-task-item-card__title-row">
+                        <h2 title={task.summary.title}>{task.summary.title}</h2>
+                        <Tag color={state.color}>{state.text}</Tag>
+                      </div>
+                      <p className="mobile-task-item-card__assignment">
+                        <span>{task.community || '社区未填写'}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{task.inspector || '待分配'}</span>
+                      </p>
                     </div>
                   </div>
                   <RightOutlined className="mt-1 shrink-0 text-[var(--app-text-muted)]" />
                 </div>
+                {(task.needs_review
+                  || task.review_stage === 'waiting_analysis'
+                  || task.review_stage === 'analyzed'
+                  || task.conflict
+                  || task.source_count > 1
+                  || task.pending_sync
+                  || Boolean(task.watch_marks?.length)) && (
+                  <div className="mobile-task-item-card__flags">
+                    {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
+                    {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
+                    {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
+                    {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
+                    {task.pending_sync && <Tag color="blue">待同步</Tag>}
+                    {task.watch_marks?.map(mark => (
+                      <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
+                    ))}
+                  </div>
+                )}
                 {(task.summary.identity_number || phoneDisplay) && (
                   <dl className="mobile-task-item-card__details">
-                    {task.summary.identity_number && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>身份证号</dt><dd>{task.summary.identity_number}</dd></div>}
-                    {phoneDisplay && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>手机号</dt><dd>{phoneDisplay}</dd></div>}
+                    {task.summary.identity_number && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>身份证号</dt><dd className="mobile-task-item-card__identity">{task.summary.identity_number}</dd></div>}
+                    {phoneDisplay && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>手机号</dt><dd className="mobile-task-item-card__phone">{phoneDisplay}</dd></div>}
                   </dl>
                 )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
@@ -593,7 +607,7 @@ export default function MobileTaskList() {
                     buttonProps={{
                       type: 'primary',
                       ghost: true,
-                      className: 'min-h-11 shrink-0',
+                      className: 'mobile-task-item-card__dial shrink-0',
                       icon: <PhoneOutlined />,
                     }}
                     onSelect={phone => void dial(phone)}

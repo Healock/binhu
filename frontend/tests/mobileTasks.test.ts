@@ -198,6 +198,23 @@ test('任务详情直接展示身份证号、手机号、来源和地址', () =>
   }
 })
 
+test('任务卡片使用可读密度并保持身份证号为完整横向主体', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(pageSource, /mobile-task-item-card__identity/)
+  assert.match(pageSource, /mobile-task-item-card__flags/)
+  assert.match(pageSource, /mobile-task-item-card__source-tag/)
+  assert.match(styleSource, /repeat\(auto-fit, minmax\(236px, 1fr\)\)/)
+  assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
+  assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
+})
+
 test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更多筛选可用', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
