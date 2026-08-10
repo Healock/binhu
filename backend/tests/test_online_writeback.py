@@ -685,5 +685,32 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_business_fallback_options_are_also_used_for_select_writeback(self):
+        parser = get_parser("\u5168\u94fe\u6761")
+        result_field = "\u6838\u67e5\u7ed3\u679c"
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {result_field: {
+                "type": "select",
+                "options": [{"id": "", "text": ""}],
+            }},
+        )
+
+        self.assertEqual(
+            metadata[result_field]["write_options"],
+            metadata[result_field]["options"],
+        )
+        first_option = metadata[result_field]["options"][0]
+        request = TxDocsClient("client", "token", "user").build_update_cell_request(
+            "sheet", 8, 4, first_option["text"], metadata[result_field]
+        )
+        self.assertEqual(
+            request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+            ["cellValue"]["select"]["value"],
+            [first_option["id"]],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

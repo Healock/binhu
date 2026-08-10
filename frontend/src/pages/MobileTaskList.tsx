@@ -4,11 +4,12 @@ import {
   RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd'
+import { Alert, Button, Checkbox, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
+  bulkAssignMobileTasks,
   listMobileTasks,
   type MobileTaskFacets,
   type MobileTaskFilterOption,
@@ -148,6 +149,62 @@ export default function MobileTaskList() {
   const [moreOpen, setMoreOpen] = useState(false)
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState('')
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkInspector, setBulkInspector] = useState<string | undefined>()
+  const [bulkSaving, setBulkSaving] = useState(false)
+  const isGroupLeader = user?.member?.position === '组长'
+
+  const selectableRows = rows.filter(task => !task.inspector && task.state !== 'completed')
+  const selectedCount = selectedRows.size
+
+  useEffect(() => {
+    const visibleKeys = new Set(rows.map(task => task.row_key))
+    setSelectedRows(current => new Set([...current].filter(key => visibleKeys.has(key))))
+  }, [rows])
+
+  useEffect(() => {
+    setSelectedRows(new Set())
+    setBulkInspector(undefined)
+  }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
+
+  const toggleSelected = (rowKey: string, checked: boolean) => {
+    setSelectedRows(current => {
+      const next = new Set(current)
+      if (checked) next.add(rowKey)
+      else next.delete(rowKey)
+      return next
+    })
+  }
+
+  const selectAllLoaded = () => {
+    setSelectedRows(current => {
+      const next = new Set(current)
+      selectableRows.forEach(task => next.add(task.row_key))
+      return next
+    })
+  }
+
+  const submitBulkAssignment = async () => {
+    if (!bulkInspector || !selectedRows.size) return
+    setBulkSaving(true)
+    try {
+      const result = await bulkAssignMobileTasks(parserType, {
+        row_keys: [...selectedRows],
+        inspector: bulkInspector,
+      })
+      if (result.updated) message.success(`已分配 ${result.updated} 条任务给 ${result.inspector}`)
+      if (result.skipped) message.warning(`有 ${result.skipped} 条任务未处理，请查看原因后刷新`)
+      setSelectedRows(new Set())
+      setBulkOpen(false)
+      setBulkInspector(undefined)
+      await load(1)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '批量分配失败')
+    } finally {
+      setBulkSaving(false)
+    }
+  }
 
   const loadOptions = useCallback(async () => {
     setOptionsLoading(true)
@@ -189,6 +246,7 @@ export default function MobileTaskList() {
         sort,
         keyword: keyword || undefined,
         page: targetPage,
+        page_size: 50,
       })
       setRows(current => append ? [...current, ...result.data] : result.data)
       setTotal(result.total)
@@ -431,6 +489,31 @@ export default function MobileTaskList() {
         {keyword && <button type="button" className="text-[var(--app-primary)]" onClick={() => { setKeyword(''); setKeywordInput('') }}>清除搜索</button>}
       </div>
 
+      {isGroupLeader && (
+        <section className="app-card mobile-task-bulk-toolbar">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="small" onClick={selectAllLoaded} disabled={!selectableRows.length}>
+              全选当前列表未分配任务
+            </Button>
+            <Button size="small" onClick={() => setSelectedRows(new Set())} disabled={!selectedCount}>
+              清除选择
+            </Button>
+            <span className="text-xs text-[var(--app-text-secondary)]">已选 {selectedCount} 条</span>
+            <Button
+              type="primary"
+              size="small"
+              disabled={!selectedCount}
+              onClick={() => setBulkOpen(true)}
+            >
+              批量分配核查人
+            </Button>
+          </div>
+          <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
+            仅处理当前选择中尚未分配核查人的任务，不会覆盖已有分配；分配对象只能是本社区在岗组员。
+          </div>
+        </section>
+      )}
+
       {loading ? (
         <div className="mobile-task-list"><div className="app-card p-4"><Skeleton active paragraph={{ rows: 3 }} /></div><div className="app-card p-4"><Skeleton active paragraph={{ rows: 3 }} /></div></div>
       ) : rows.length === 0 ? (
@@ -443,6 +526,7 @@ export default function MobileTaskList() {
             const phoneDisplay = phoneOptions.length > 0
               ? phoneOptions.join('、')
               : task.summary.phone
+            const canSelect = isGroupLeader && !task.inspector && task.state !== 'completed'
             return (
               <article
                 key={task.row_key}
@@ -453,7 +537,17 @@ export default function MobileTaskList() {
                 onKeyDown={event => { if (event.key === 'Enter') navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`) }}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="flex min-w-0 items-start gap-2">
+                    {isGroupLeader && (
+                      <Checkbox
+                        className="mt-1"
+                        checked={selectedRows.has(task.row_key)}
+                        disabled={!canSelect}
+                        onClick={event => event.stopPropagation()}
+                        onChange={event => toggleSelected(task.row_key, event.target.checked)}
+                      />
+                    )}
+                    <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="truncate font-semibold text-[var(--app-text-strong)]">{task.summary.title}</h2>
                       <Tag color={state.color}>{state.text}</Tag>
@@ -467,17 +561,18 @@ export default function MobileTaskList() {
                       ))}
                     </div>
                     <p className="mt-1 text-xs text-[var(--app-text-secondary)]">{task.community || '社区未填写'} · {task.inspector || '待分配'}</p>
+                    </div>
                   </div>
                   <RightOutlined className="mt-1 shrink-0 text-[var(--app-text-muted)]" />
                 </div>
-                {(task.summary.identity_number || phoneDisplay || task.summary.source) && (
+                {(task.summary.identity_number || phoneDisplay) && (
                   <dl className="mobile-task-item-card__details">
-                    {task.summary.identity_number && <div className="mobile-task-item-card__detail-row"><dt>身份证号</dt><dd>{task.summary.identity_number}</dd></div>}
-                    {phoneDisplay && <div className="mobile-task-item-card__detail-row"><dt>手机号</dt><dd>{phoneDisplay}</dd></div>}
-                    {task.summary.source && <div className="mobile-task-item-card__detail-row"><dt>来源</dt><dd>{task.summary.source}</dd></div>}
+                    {task.summary.identity_number && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>身份证号</dt><dd>{task.summary.identity_number}</dd></div>}
+                    {phoneDisplay && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>手机号</dt><dd>{phoneDisplay}</dd></div>}
                   </dl>
                 )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
+                {task.summary.source && <Tag className="mobile-task-item-card__source-tag">来源：{task.summary.source}</Tag>}
                 {task.review_stage === 'analyzed' && task.summary.analysis && (
                   <div className="mobile-task-analysis">
                     <div className="mobile-task-analysis__label">研判结果</div>
@@ -512,6 +607,32 @@ export default function MobileTaskList() {
           )}
         </div>
       )}
+
+      <Modal
+        open={bulkOpen}
+        title="批量分配核查人"
+        okText="确认分配"
+        cancelText="取消"
+        confirmLoading={bulkSaving}
+        okButtonProps={{ disabled: !bulkInspector || !selectedCount }}
+        onOk={() => void submitBulkAssignment()}
+        onCancel={() => { if (!bulkSaving) setBulkOpen(false) }}
+      >
+        <div className="space-y-3 text-sm">
+          <p>将把当前选中的 {selectedCount} 条未分配任务手动分配给一名本社区在岗组员。</p>
+          <Select
+            className="w-full"
+            size="large"
+            showSearch
+            optionFilterProp="label"
+            placeholder="请选择核查人"
+            value={bulkInspector}
+            options={inspectorOptions.map(option => ({ value: option.value, label: option.label }))}
+            onChange={setBulkInspector}
+          />
+          <p className="text-xs text-[var(--app-text-secondary)]">已有核查人的任务、已完成任务、来源冲突任务会被跳过，不会被覆盖。</p>
+        </div>
+      </Modal>
     </div>
   )
 }

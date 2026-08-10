@@ -1082,6 +1082,24 @@ export async function updateMobileTask(
   return data
 }
 
+export async function bulkAssignMobileTasks(
+  parserType: string,
+  payload: { row_keys: string[]; inspector: string },
+): Promise<{
+  updated: number
+  skipped: number
+  failed: number
+  details: Array<{ row_key: string; reason: string }>
+  inspector: string
+}> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/bulk-assign`,
+    payload,
+    activeRequest,
+  )
+  return data
+}
+
 export interface QueryWritebackAudit {
   id: number
   username: string
