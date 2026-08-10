@@ -271,12 +271,20 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
     'utf8',
   )
   assert.match(pageSource, /mobile-task-item-card__identity/)
+  assert.match(pageSource, /mobile-task-item-card__key-info/)
   assert.match(pageSource, /mobile-task-item-card__flags/)
   assert.match(pageSource, /mobile-task-source-cloud/)
   assert.match(pageSource, /mobileTaskSourceTags/)
   assert.match(pageSource, /copyCardValue/)
   assert.match(pageSource, /身份证号已复制|`\$\{label\}已复制`/)
   assert.match(pageSource, /event\.target === event\.currentTarget/)
+  assert.equal(pageSource.includes('RightOutlined'), false)
+  assert.match(pageSource, /mobile-task-item-card__state/)
+  assert.match(pageSource, /mode="copy"/)
+  assert.match(pageSource, /extraPhoneCount/)
+  assert.match(pageSource, /mobile-task-item-card__phone-extra/)
+  assert.match(pageSource, /mobile-task-item-card__footer-meta/)
+  assert.match(pageSource, /核查人 \{task\.inspector \|\| '待分配'\}/)
   assert.ok(
     pageSource.indexOf('mobile-task-analysis') < pageSource.indexOf('mobile-task-source-cloud mobile-task-source-cloud--card'),
   )
@@ -284,6 +292,12 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /repeat\(auto-fit, minmax\(236px, 1fr\)\)/)
   assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
   assert.match(styleSource, /\.mobile-task-copy-value/)
+  assert.match(styleSource, /--mobile-task-footer-bg:\s*#eef3f8/)
+  assert.match(styleSource, /html\[data-theme='dark'\][\s\S]*--mobile-task-footer-bg:\s*#0b1320/)
+  assert.match(styleSource, /\.mobile-task-item-card__footer[\s\S]*background:\s*var\(--mobile-task-footer-bg\)/)
+  assert.match(styleSource, /\.mobile-task-copy-value \.anticon[\s\S]*color:\s*var\(--app-text-muted\)/)
+  const keyInfoStyle = styleSource.match(/\.mobile-task-item-card__key-info\s*\{([^}]*)\}/)?.[1] || ''
+  assert.doesNotMatch(keyInfoStyle, /background|border/)
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
 })
 
