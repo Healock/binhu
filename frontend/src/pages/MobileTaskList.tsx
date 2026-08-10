@@ -1,11 +1,12 @@
 import {
+  CopyOutlined,
   ExclamationCircleOutlined,
   PhoneOutlined,
   RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
 import { Alert, Button, Checkbox, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
@@ -402,6 +403,20 @@ export default function MobileTaskList() {
     window.location.href = `tel:${phone}`
   }
 
+  const copyCardValue = async (
+    event: SyntheticEvent,
+    value: string,
+    label: '身份证号' | '手机号',
+  ) => {
+    event.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(value)
+      message.success(`${label}已复制`)
+    } catch {
+      message.error(`${label}复制失败，请长按或选中文字复制`)
+    }
+  }
+
   return (
     <div className="mobile-task-page">
       <section className="app-card mobile-task-filter-card">
@@ -608,7 +623,11 @@ export default function MobileTaskList() {
                 tabIndex={0}
                 className="mobile-task-item-card"
                 onClick={() => navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)}
-                onKeyDown={event => { if (event.key === 'Enter') navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`) }}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && event.target === event.currentTarget) {
+                    navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+                  }
+                }}
               >
                 <div className="mobile-task-item-card__header">
                   <div className="flex min-w-0 items-start gap-2">
@@ -655,25 +674,58 @@ export default function MobileTaskList() {
                 )}
                 {(task.summary.identity_number || phoneDisplay) && (
                   <dl className="mobile-task-item-card__details">
-                    {task.summary.identity_number && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>身份证号</dt><dd className="mobile-task-item-card__identity">{task.summary.identity_number}</dd></div>}
-                    {phoneDisplay && <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary"><dt>手机号</dt><dd className="mobile-task-item-card__phone">{phoneDisplay}</dd></div>}
+                    {task.summary.identity_number && (
+                      <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary">
+                        <dt>身份证号</dt>
+                        <dd className="mobile-task-item-card__identity">
+                          <button
+                            type="button"
+                            className="mobile-task-copy-value"
+                            title="点击复制身份证号"
+                            aria-label="复制身份证号"
+                            onClick={event => void copyCardValue(event, task.summary.identity_number, '身份证号')}
+                            onKeyDown={event => event.stopPropagation()}
+                          >
+                            <span className="mobile-task-copy-value__text">{task.summary.identity_number}</span>
+                            <CopyOutlined aria-hidden="true" />
+                          </button>
+                        </dd>
+                      </div>
+                    )}
+                    {phoneDisplay && (
+                      <div className="mobile-task-item-card__detail-row mobile-task-item-card__detail-row--primary">
+                        <dt>手机号</dt>
+                        <dd className="mobile-task-item-card__phone">
+                          <button
+                            type="button"
+                            className="mobile-task-copy-value"
+                            title="点击复制手机号"
+                            aria-label="复制手机号"
+                            onClick={event => void copyCardValue(event, phoneDisplay, '手机号')}
+                            onKeyDown={event => event.stopPropagation()}
+                          >
+                            <span className="mobile-task-copy-value__text">{phoneDisplay}</span>
+                            <CopyOutlined aria-hidden="true" />
+                          </button>
+                        </dd>
+                      </div>
+                    )}
                   </dl>
                 )}
                 {task.summary.address && <p className="mobile-task-item-card__address line-clamp-2 text-sm text-[var(--app-text)]">{task.summary.address}</p>}
+                {task.review_stage === 'analyzed' && task.summary.analysis && (
+                  <div className="mobile-task-analysis">
+                    <div className="mobile-task-analysis__label">研判结果</div>
+                    <div className="mobile-task-analysis__value">{task.summary.analysis}</div>
+                  </div>
+                )}
                 {sourceTags.length > 0 && (
-                  <div className="mobile-task-source-cloud">
-                    <span>来源</span>
+                  <div className="mobile-task-source-cloud mobile-task-source-cloud--card">
                     <div>
                       {sourceTags.map(tag => (
                         <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
                       ))}
                     </div>
-                  </div>
-                )}
-                {task.review_stage === 'analyzed' && task.summary.analysis && (
-                  <div className="mobile-task-analysis">
-                    <div className="mobile-task-analysis__label">研判结果</div>
-                    <div className="mobile-task-analysis__value">{task.summary.analysis}</div>
                   </div>
                 )}
                 <div className="mobile-task-item-card__footer flex items-center justify-between gap-3 border-t border-[var(--app-border)]">

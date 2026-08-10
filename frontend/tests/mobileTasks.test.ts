@@ -181,6 +181,18 @@ test('来源行保存后立即按业务真实口径更新状态', () => {
     'completed',
   )
   assert.equal(
+    mobileTaskSourceState('疑似未注销模型三', '核查结果', { 核查结果: '离吴' }),
+    'completed',
+  )
+  assert.equal(
+    mobileTaskSourceState('疑似未注销模型三', '核查结果', { 核查结果: '近期返吴' }),
+    'completed',
+  )
+  assert.equal(
+    mobileTaskSourceState('疑似未注销模型三', '核查结果', { 核查结果: '近期反吴' }),
+    'completed',
+  )
+  assert.equal(
     mobileTaskSourceNeedsReview('核查结果', ['二次反馈'], { 核查结果: '无法核实' }),
     true,
   )
@@ -262,8 +274,16 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /mobile-task-item-card__flags/)
   assert.match(pageSource, /mobile-task-source-cloud/)
   assert.match(pageSource, /mobileTaskSourceTags/)
+  assert.match(pageSource, /copyCardValue/)
+  assert.match(pageSource, /身份证号已复制|`\$\{label\}已复制`/)
+  assert.match(pageSource, /event\.target === event\.currentTarget/)
+  assert.ok(
+    pageSource.indexOf('mobile-task-analysis') < pageSource.indexOf('mobile-task-source-cloud mobile-task-source-cloud--card'),
+  )
+  assert.equal(pageSource.includes('<span>来源</span>'), false)
   assert.match(styleSource, /repeat\(auto-fit, minmax\(236px, 1fr\)\)/)
   assert.match(styleSource, /\.mobile-task-item-card__identity[\s\S]*white-space: nowrap/)
+  assert.match(styleSource, /\.mobile-task-copy-value/)
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
 })
 

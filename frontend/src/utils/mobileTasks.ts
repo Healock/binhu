@@ -62,7 +62,7 @@ export function mobileTaskSourceState(
 ): 'unchecked' | 'checked' | 'completed' {
   const result = (values[resultField] || '').trim()
   if (parserType === '疑似未注销模型三') {
-    return ['近期反吴', '在吴', '离吴'].includes(result)
+    return ['近期返吴', '近期反吴', '在吴', '离吴'].includes(result)
       ? 'completed'
       : 'unchecked'
   }
