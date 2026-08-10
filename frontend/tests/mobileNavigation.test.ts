@@ -74,6 +74,22 @@ test('管理员权限组可以配置独立流口任务入口', () => {
   )
 })
 
+test('上级任务岗位在具备查看权限时显示流口任务入口', () => {
+  for (const position of ['片长', '基础管控', '中队长', '所队领导']) {
+    const config = defaultMobileDockConfig(
+      'member',
+      ['online.raw.view'],
+      [],
+      position,
+    )
+    assert.equal(
+      config.groups.some(group => group.items.includes('flow_tasks')),
+      true,
+      position,
+    )
+  }
+})
+
 test('新权限列表优先于旧角色决定 Dock 页面', () => {
   const config = defaultMobileDockConfig('member', [
     'online.summary.view',

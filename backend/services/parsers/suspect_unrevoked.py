@@ -9,6 +9,7 @@ class SuspectUnrevokedParser(BaseParser):
         "截止时间", "核查人", "姓名", "身份证号", "联系方式",
         "地址", "下发社区", "核查结果", "备注",
     ]
+    MOBILE_EDITABLE_FIELDS = ("备注",)
     COMMUNITY_COLUMN = "下发社区"
 
     def get_business_key(self) -> list[str]:

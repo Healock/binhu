@@ -16,6 +16,7 @@ class BaseParser:
     parser_type: str = "base"
     table_name: str = ""
     COLUMNS: list[str] = []
+    MOBILE_EDITABLE_FIELDS: tuple[str, ...] = ()
     SOURCE_COLUMN_LAYOUTS: tuple[tuple[str, ...], ...] = ()
     DATABASE_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {}
     COMMUNITY_COLUMN = "社区"

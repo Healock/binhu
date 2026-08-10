@@ -37,6 +37,7 @@ import {
   mobileTaskCanLaunchTelephone,
   mobileTaskEditorFields,
   mobileTaskPhoneOptions,
+  mobileTaskSourceTags,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
@@ -268,12 +269,10 @@ export default function MobileTaskDetail() {
     : data.task.summary.analysis
   const phoneOptions = mobileTaskPhoneOptions(phone)
   const phoneDisplay = phoneOptions.length > 0 ? phoneOptions.join('、') : phone
+  const sourceTags = mobileTaskSourceTags(source)
   const detailFacts = [
     { label: '身份证号', value: identityNumber || '未填写' },
     { label: '手机号', value: phoneDisplay || '未填写' },
-    ...(data.workflow.source_fields.length > 0 || source
-      ? [{ label: '来源', value: source || '未填写' }]
-      : []),
     ...(originalAddress
       ? [{ label: currentAddress ? '原地址' : '地址', value: originalAddress, wide: true }]
       : []),
@@ -330,6 +329,16 @@ export default function MobileTaskDetail() {
             </div>
           ))}
         </dl>
+        {sourceTags.length > 0 && (
+          <div className="mobile-task-source-cloud mobile-task-source-cloud--detail">
+            <span>来源</span>
+            <div>
+              {sourceTags.map(tag => (
+                <Tag key={tag} className="mobile-task-source-cloud__tag">{tag}</Tag>
+              ))}
+            </div>
+          </div>
+        )}
 
         {(phone || address) && (
           <div className="mt-4 grid grid-cols-2 gap-2">
@@ -445,10 +454,10 @@ export default function MobileTaskDetail() {
                 return (
                   <label key={field} className="block">
                     <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">
-                      {field === '核查人' && user?.member?.position === '组长' ? '任务分配' : field}
+                      {field === '核查人' ? '任务分配' : field}
                     </span>
-                    {field === '核查人' && user?.member?.position === '组长' && (
-                      <span className="mb-2 block text-xs text-[var(--app-text-secondary)]">选择本社区在岗组员，保存后即完成转派</span>
+                    {field === '核查人' && (
+                      <span className="mb-2 block text-xs text-[var(--app-text-secondary)]">选择任务所属社区的在岗组员，保存后即完成转派</span>
                     )}
                     {metadata.type === 'select' || field === '核查人' ? (
                       <Select
