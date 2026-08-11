@@ -25,7 +25,7 @@ import { confirmPendingNavigation } from '../utils/navigationGuard'
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
-  const { user, logout } = useAuth()
+  const { user, logout, serverVersion } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const permissionGroupCodes = useMemo(
@@ -166,7 +166,7 @@ export default function Layout() {
           </span>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900">滨湖智慧平台</div>
-            <div className="text-xs text-slate-500">数据管理中心 · v{__APP_VERSION__}</div>
+            <div className="text-xs text-slate-500">数据管理中心 · v{serverVersion}</div>
           </div>
           <button
             type="button"

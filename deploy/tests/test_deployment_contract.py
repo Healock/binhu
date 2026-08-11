@@ -22,6 +22,10 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("group: production-deploy", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("environment: production", workflow)
+        self.assertIn("release_scope:", workflow)
+        self.assertIn("deploy/resolve_release_scope.py", workflow)
+        self.assertIn('if: env.RELEASE_SCOPE == \'full\'', workflow)
+        self.assertIn('"binhu-deploy@$DEPLOY_HOST" status', workflow)
         self.assertIn(
             'git merge-base --is-ancestor "$release_commit" origin/main', workflow
         )
@@ -35,7 +39,7 @@ class DeploymentContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            '"deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $bundle_size"',
+            '"deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $RELEASE_SCOPE $bundle_size"',
             workflow,
         )
         self.assertNotIn("BINHU_PUBLIC_URL", workflow)
@@ -79,6 +83,12 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('[[ "$work_dir" == "$state_dir/work/"* ]]', script)
         self.assertIn('head -c "$expected_bundle_size"', script)
         self.assertIn('[[ "$bundle_size" == "$expected_bundle_size" ]]', script)
+        self.assertIn('release_scope="full"', script)
+        self.assertIn('RELEASE_SCOPE=%s', script)
+        self.assertIn('release received in', script)
+        self.assertIn('if [[ "$status" == "success" ]]', script)
+        self.assertIn('rm -rf -- "$project_dir/backend"', script)
+        self.assertIn('switched=1', script)
         self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
 
     @unittest.skipIf(os.name == "nt", "受限部署网关测试需要 Linux bash")
@@ -92,7 +102,11 @@ class DeploymentContractTests(unittest.TestCase):
             "deploy 0.15.0 " + "a" * 40 + " none",
             "deploy 0.15.0 " + "a" * 40 + " none 0",
             "deploy 0.15.0 " + "a" * 40 + " none 134217729",
-            "deploy 0.15.0 " + "a" * 40 + " none 1024 extra",
+            "deploy 0.15.0 " + "a" * 40 + " none invalid 1024",
+            "deploy 0.15.0 " + "a" * 40 + " none backend 0",
+            "deploy 0.15.0 " + "a" * 40 + " none backend 134217729",
+            "deploy 0.15.0 " + "a" * 40 + " none backend 1024 extra",
+            "status extra",
         ):
             with self.subTest(command=command):
                 environment = os.environ.copy()

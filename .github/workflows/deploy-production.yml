@@ -23,6 +23,15 @@ on:
           - online
           - daily
           - all
+      release_scope:
+        description: Application components to publish
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - backend
+          - full
 
 permissions:
   contents: read
@@ -41,6 +50,7 @@ jobs:
       MYSQL_PASSWORD: test-password
       EXPECTED_VERSION: ${{ inputs.expected_version }}
       BACKUP_SCOPE: ${{ inputs.backup_scope }}
+      REQUESTED_RELEASE_SCOPE: ${{ inputs.release_scope }}
     steps:
       - name: Check out selected source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +70,53 @@ jobs:
           [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$version" == "$EXPECTED_VERSION" ]]
           printf 'RELEASE_COMMIT=%s\n' "$release_commit" >> "$GITHUB_ENV"
+      - name: Prepare restricted SSH identity
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/deploy_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-ssh/deploy_key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/binhu-ssh/deploy_key" >/dev/null
+          [[ -s "$RUNNER_TEMP/binhu-ssh/known_hosts" ]]
+      - name: Read current production release
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          status_output="$(ssh -F /dev/null \
+            -i "$RUNNER_TEMP/binhu-ssh/deploy_key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
+            -o ConnectTimeout=15 \
+            -p "$DEPLOY_PORT" \
+            "binhu-deploy@$DEPLOY_HOST" status)"
+          deployed_commit="$(printf '%s\n' "$status_output" | awk -F= '$1 == "DEPLOY_COMMIT" {print $2}')"
+          deployed_version="$(printf '%s\n' "$status_output" | awk -F= '$1 == "DEPLOY_VERSION" {print $2}')"
+          [[ "$deployed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'DEPLOYED_COMMIT=%s\n' "$deployed_commit" >> "$GITHUB_ENV"
+          printf 'Current production version: %s\n' "$deployed_version"
+      - name: Resolve safe release scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release_scope="$(python deploy/resolve_release_scope.py \
+            --repository . \
+            --requested "$REQUESTED_RELEASE_SCOPE" \
+            --deployed-commit "$DEPLOYED_COMMIT" \
+            --release-commit "$RELEASE_COMMIT")"
+          [[ "$release_scope" == "backend" || "$release_scope" == "full" ]]
+          printf 'RELEASE_SCOPE=%s\n' "$release_scope" >> "$GITHUB_ENV"
+          printf 'Resolved release scope: %s\n' "$release_scope"
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -79,12 +136,14 @@ jobs:
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Set up Node.js
+        if: env.RELEASE_SCOPE == 'full'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install and test frontend
+        if: env.RELEASE_SCOPE == 'full'
         working-directory: frontend
         run: |
           npm ci
@@ -93,32 +152,24 @@ jobs:
       - name: Build commit-bound release bundle
         run: |
           mkdir -p release-output
-          python deploy/build_release_bundle.py \
-            --repository . \
-            --frontend-dist frontend/dist \
-            --commit "$RELEASE_COMMIT" \
-            --backup-scope "$BACKUP_SCOPE" \
+          bundle_args=(
+            --repository .
+            --commit "$RELEASE_COMMIT"
+            --backup-scope "$BACKUP_SCOPE"
+            --release-scope "$RELEASE_SCOPE"
             --output release-output/binhu-release.tar.gz
+          )
+          if [[ "$RELEASE_SCOPE" == "full" ]]; then
+            bundle_args+=(--frontend-dist frontend/dist)
+          fi
+          python deploy/build_release_bundle.py "${bundle_args[@]}"
       - name: Preserve release bundle for audit
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: binhu-${{ inputs.expected_version }}-${{ github.run_id }}
+          name: binhu-${{ inputs.expected_version }}-${{ env.RELEASE_SCOPE }}-${{ github.run_id }}
           path: release-output/binhu-release.tar.gz
           if-no-files-found: error
           retention-days: 30
-      - name: Prepare restricted SSH identity
-        shell: bash
-        env:
-          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -Eeuo pipefail
-          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
-          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/deploy_key"
-          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
-          chmod 600 "$RUNNER_TEMP/binhu-ssh/deploy_key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
-          ssh-keygen -y -f "$RUNNER_TEMP/binhu-ssh/deploy_key" >/dev/null
-          [[ -s "$RUNNER_TEMP/binhu-ssh/known_hosts" ]]
       - name: Deploy through the fixed server gateway
         shell: bash
         env:
@@ -136,7 +187,9 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
             -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
             -p "$DEPLOY_PORT" \
             "binhu-deploy@$DEPLOY_HOST" \
-            "deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $bundle_size" \
+            "deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $RELEASE_SCOPE $bundle_size" \
             < release-output/binhu-release.tar.gz
