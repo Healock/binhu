@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import io
 import json
 import hashlib
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, Field
 
 from config import settings
@@ -163,6 +167,70 @@ class TicketSearch(BaseModel):
     external_sync_status: str = Field(default="", max_length=30)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
+
+
+class PhotoRequestFilterPayload(BaseModel):
+    keyword: str = Field(default="", max_length=100)
+    community: str = Field(default="", max_length=200)
+    source_label: str = Field(default="", max_length=200)
+
+
+class PhotoRequestSearchPayload(PhotoRequestFilterPayload):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=100, ge=1, le=500)
+
+
+class PhotoRequestBatchClaimPayload(BaseModel):
+    ticket_ids: list[int] = Field(default_factory=list, max_length=2000)
+    claim_all: bool = False
+
+
+def _photo_pending_queue(user: dict) -> str | None:
+    if not _can_upload_photo_batch(user):
+        raise HTTPException(403, "只有基础管控或工单管理账号可以处理照片工单")
+    if _can_manage(user):
+        return None
+    return "基础管控"
+
+
+def _photo_pending_filter(
+    queue: str | None,
+    user_id: int | None = None,
+    include_claimed: bool = False,
+    keyword: str = "",
+    community: str = "",
+    source_label: str = "",
+) -> tuple[list[str], list[object]]:
+    where = [
+        "order_row.type_code='photo_request'",
+        "detail.result_status='pending'",
+    ]
+    params: list[object] = []
+    if include_claimed:
+        if queue and user_id:
+            where.append(
+                "((order_row.status='queued' AND order_row.current_assignee_user_id IS NULL AND order_row.current_queue=%s) "
+                "OR (order_row.status='in_progress' AND order_row.current_assignee_user_id=%s))"
+            )
+            params.extend([queue, user_id])
+        else:
+            where.append("order_row.status IN ('queued','in_progress')")
+    else:
+        where.extend(["order_row.status='queued'", "order_row.current_assignee_user_id IS NULL"])
+        if queue:
+            where.append("order_row.current_queue=%s")
+            params.append(queue)
+    if keyword.strip():
+        value = f"%{keyword.strip()}%"
+        where.append("(detail.subject_name LIKE %s OR detail.identity_number LIKE %s OR order_row.ticket_no LIKE %s)")
+        params.extend([value, value, value])
+    if community.strip():
+        where.append("detail.community_name=%s")
+        params.append(community.strip())
+    if source_label.strip():
+        where.append("detail.source_label=%s")
+        params.append(source_label.strip())
+    return where, params
 
 
 @router.get("/types/{type_id}/versions")
@@ -486,6 +554,242 @@ async def search_tickets(
          "updated_at": _iso(row[14]), "overdue": bool(row[9] and row[9] < now and row[7] not in {"approved", "completed", "rejected", "cancelled", "withdrawn"})}
         for row in rows
     ]}
+
+
+PHOTO_REQUEST_COLUMNS = (
+    "order_row.id, order_row.ticket_no, order_row.title, order_row.requester_user_id, "
+    "order_row.current_queue, order_row.status, order_row.priority, order_row.due_at, "
+    "order_row.version_no, order_row.updated_at, detail.subject_name, detail.identity_number, "
+    "detail.community_name, detail.source_label, detail.requester_name_snapshot, detail.requested_at"
+)
+
+
+def _photo_request_row(row: tuple, now: datetime) -> dict:
+    return {
+        "id": int(row[0]),
+        "ticket_no": row[1],
+        "title": row[2],
+        "requester_user_id": int(row[3]) if row[3] is not None else None,
+        "current_queue": row[4],
+        "status": row[5],
+        "priority": row[6],
+        "due_at": _iso(row[7]),
+        "version_no": int(row[8]),
+        "updated_at": _iso(row[9]),
+        "subject_name": row[10] or "",
+        "identity_number": row[11] or "",
+        "community_name": row[12] or "",
+        "source_label": row[13] or "",
+        "requester_name": row[14] or "",
+        "requested_at": _iso(row[15]),
+        "overdue": bool(row[7] and row[7] < now),
+    }
+
+
+@router.post("/photo-requests/pending/search")
+async def list_pending_photo_requests(
+    data: PhotoRequestSearchPayload,
+    user: dict = Depends(require_photo_batch_access),
+    conn=Depends(get_workflow_db),
+):
+    queue = _photo_pending_queue(user)
+    where, params = _photo_pending_filter(
+        queue,
+        int(user["id"]),
+        True,
+        data.keyword,
+        data.community,
+        data.source_label,
+    )
+    clause = " WHERE " + " AND ".join(where)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COUNT(*) FROM work_orders order_row "
+            "JOIN photo_request_details detail ON detail.work_order_id=order_row.id" + clause,
+            tuple(params),
+        )
+        total = int((await cur.fetchone())[0])
+        await cur.execute(
+            f"SELECT {PHOTO_REQUEST_COLUMNS} FROM work_orders order_row "
+            "JOIN photo_request_details detail ON detail.work_order_id=order_row.id"
+            + clause + " ORDER BY order_row.updated_at ASC, order_row.id ASC LIMIT %s OFFSET %s",
+            tuple(params) + (data.page_size, (data.page - 1) * data.page_size),
+        )
+        rows = await cur.fetchall()
+    now = datetime.utcnow()
+    return {
+        "total": total,
+        "page": data.page,
+        "page_size": data.page_size,
+        "data": [_photo_request_row(row, now) for row in rows],
+    }
+
+
+@router.post("/photo-requests/pending/export")
+async def export_pending_photo_requests(
+    data: PhotoRequestFilterPayload,
+    request: Request,
+    user: dict = Depends(require_photo_batch_access),
+    conn=Depends(get_workflow_db),
+):
+    queue = _photo_pending_queue(user)
+    where, params = _photo_pending_filter(
+        queue,
+        int(user["id"]),
+        True,
+        data.keyword,
+        data.community,
+        data.source_label,
+    )
+    clause = " WHERE " + " AND ".join(where)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"SELECT {PHOTO_REQUEST_COLUMNS} FROM work_orders order_row "
+            "JOIN photo_request_details detail ON detail.work_order_id=order_row.id"
+            + clause + " ORDER BY order_row.updated_at ASC, order_row.id ASC",
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "未调照片"
+    headers = ["工单编号", "姓名", "身份证号", "社区", "申请人员", "申请日期", "数据来源", "优先级"]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1677FF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for row in rows:
+        item = _photo_request_row(row, datetime.utcnow())
+        sheet.append([
+            item["ticket_no"], item["subject_name"], item["identity_number"], item["community_name"],
+            item["requester_name"], item["requested_at"] or "", item["source_label"], item["priority"],
+        ])
+    for column in ("A", "B", "C", "D", "E", "F", "G", "H"):
+        sheet.column_dimensions[column].width = {"A": 24, "B": 14, "C": 24, "D": 18, "E": 14, "F": 22, "G": 22, "H": 10}[column]
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if isinstance(cell.value, str):
+                cell.number_format = "@"
+                cell.data_type = "s"
+                cell.quotePrefix = True
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    output.seek(0)
+    filename = f"未调照片-{datetime.utcnow():%Y%m%d%H%M%S}.xlsx"
+    await record_admin_audit(
+        user,
+        "workflow.photo_requests.export",
+        target_type="work_order",
+        target_name="pending-photo-requests",
+        detail={"row_count": len(rows), "file_format": "XLSX"},
+        **request_audit_fields(request),
+    )
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.post("/photo-requests/batch-claim")
+async def batch_claim_photo_requests(
+    data: PhotoRequestBatchClaimPayload,
+    request: Request,
+    user: dict = Depends(require_photo_batch_access),
+    conn=Depends(get_workflow_db),
+):
+    queue = _photo_pending_queue(user)
+    requested_ids = sorted(set(int(ticket_id) for ticket_id in data.ticket_ids if int(ticket_id) > 0))
+    if not data.claim_all and not requested_ids:
+        raise HTTPException(422, "请选择要领取的照片工单")
+    claimed_ids: list[int] = []
+    skipped_ids: list[int] = []
+    requester_ids: list[tuple[int, int]] = []
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            if data.claim_all:
+                where, params = _photo_pending_filter(queue)
+                query = (
+                    "SELECT order_row.id, order_row.requester_user_id FROM work_orders order_row "
+                    "JOIN photo_request_details detail ON detail.work_order_id=order_row.id WHERE "
+                    + " AND ".join(where) + " ORDER BY order_row.id FOR UPDATE"
+                )
+                await cur.execute(query, tuple(params))
+            else:
+                placeholders = ",".join(["%s"] * len(requested_ids))
+                where, params = _photo_pending_filter(queue)
+                query = (
+                    "SELECT order_row.id, order_row.requester_user_id FROM work_orders order_row "
+                    "JOIN photo_request_details detail ON detail.work_order_id=order_row.id WHERE "
+                    + " AND ".join(where) + f" AND order_row.id IN ({placeholders}) FOR UPDATE"
+                )
+                await cur.execute(query, tuple(params) + tuple(requested_ids))
+            candidates = await cur.fetchall()
+            candidate_ids = {int(row[0]) for row in candidates}
+            if not data.claim_all:
+                skipped_ids.extend(ticket_id for ticket_id in requested_ids if ticket_id not in candidate_ids)
+            for ticket_id, requester_id in candidates:
+                await cur.execute(
+                    "SELECT id FROM work_order_steps WHERE work_order_id=%s AND status='queued' "
+                    "ORDER BY step_order LIMIT 1 FOR UPDATE",
+                    (ticket_id,),
+                )
+                step = await cur.fetchone()
+                if not step:
+                    skipped_ids.append(int(ticket_id))
+                    continue
+                await cur.execute(
+                    "UPDATE work_orders SET current_assignee_user_id=%s,status='in_progress',"
+                    "version_no=version_no+1 WHERE id=%s AND status='queued' AND current_assignee_user_id IS NULL",
+                    (user["id"], ticket_id),
+                )
+                if cur.rowcount != 1:
+                    skipped_ids.append(int(ticket_id))
+                    continue
+                await cur.execute(
+                    "UPDATE work_order_steps SET assignee_user_id=%s,status='in_progress',version_no=version_no+1 WHERE id=%s",
+                    (user["id"], step[0]),
+                )
+                await cur.execute(
+                    "INSERT INTO work_order_claims (work_order_id,step_id,user_id) VALUES (%s,%s,%s)",
+                    (ticket_id, step[0], user["id"]),
+                )
+                await cur.execute(
+                    "INSERT INTO work_order_events (work_order_id,step_id,event_type,actor_user_id,from_status,to_status,detail_json) "
+                    "VALUES (%s,%s,'claim',%s,'queued','in_progress',%s)",
+                    (ticket_id, step[0], user["id"], json.dumps({"batch": True}, ensure_ascii=False)),
+                )
+                claimed_ids.append(int(ticket_id))
+                if requester_id is not None:
+                    requester_ids.append((int(requester_id), int(ticket_id)))
+            for requester_id, ticket_id in requester_ids:
+                await workflow_notification(
+                    cur,
+                    user_ids=[requester_id],
+                    ticket_id=ticket_id,
+                    event_key=f"batch_claim_{ticket_id}",
+                    title="照片工单已领取",
+                    content=f"照片工单 #{ticket_id} 已由基础管控领取，正在集中调取。",
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "workflow.photo_requests.batch_claim",
+        target_type="work_order",
+        target_name="pending-photo-requests",
+        detail={"claim_all": data.claim_all, "claimed_count": len(claimed_ids), "skipped_count": len(skipped_ids)},
+        **request_audit_fields(request),
+    )
+    return {"claimed_ids": claimed_ids, "skipped_ids": sorted(set(skipped_ids)), "claimed_count": len(claimed_ids)}
 
 
 @router.post("/tickets/{ticket_id}/transfer")

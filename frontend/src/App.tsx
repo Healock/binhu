@@ -112,7 +112,7 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<VisitSummary />} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['visit.import', 'police.dispatch.manage']} />}>
+              <Route element={<ProtectedRoute requireAnyPermission={['visit.import', 'police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage']} />}>
                 <Route path="/data-upload" element={<DataUploadCenter />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>

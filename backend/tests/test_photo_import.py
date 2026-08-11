@@ -5,9 +5,16 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock, patch
 
 from routers.workflow_extended import (
+    PhotoRequestBatchClaimPayload,
+    PhotoRequestFilterPayload,
+    PhotoRequestSearchPayload,
     _can_upload_photo_batch,
     _photo_matches,
+    _photo_pending_filter,
+    _photo_pending_queue,
+    batch_claim_photo_requests,
     get_photo_import_detail,
+    router,
 )
 from routers.workflow_extended import preview_photo_import
 from services.photo_import import (
@@ -117,6 +124,43 @@ class PhotoImportPermissionTests(unittest.TestCase):
             "member": {"position": "组员"},
         }))
 
+    def test_photo_workbench_shows_claimable_and_current_users_claimed_tickets(self):
+        queue = _photo_pending_queue({
+            "id": 17,
+            "permissions": ["workflow.ticket.handle"],
+            "member": {"position": "基础管控"},
+        })
+        where, params = _photo_pending_filter(queue, 17, True)
+        clause = " ".join(where)
+
+        self.assertEqual(queue, "基础管控")
+        self.assertIn("order_row.status='queued'", clause)
+        self.assertIn("order_row.status='in_progress'", clause)
+        self.assertIn("order_row.current_assignee_user_id=%s", clause)
+        self.assertEqual(params, ["基础管控", 17])
+
+    def test_batch_claim_filter_only_includes_unassigned_queued_tickets(self):
+        where, params = _photo_pending_filter("基础管控")
+        clause = " ".join(where)
+
+        self.assertIn("order_row.status='queued'", clause)
+        self.assertIn("order_row.current_assignee_user_id IS NULL", clause)
+        self.assertNotIn("order_row.status='in_progress'", clause)
+        self.assertEqual(params, ["基础管控"])
+
+    def test_sensitive_photo_filters_are_post_body_only(self):
+        expected_models = {
+            "/api/workflow/photo-requests/pending/search": PhotoRequestSearchPayload,
+            "/api/workflow/photo-requests/pending/export": PhotoRequestFilterPayload,
+        }
+
+        for path, expected_model in expected_models.items():
+            route = next(item for item in router.routes if item.path == path)
+            self.assertEqual(route.methods, {"POST"})
+            self.assertEqual(route.dependant.query_params, [])
+            self.assertEqual(len(route.dependant.body_params), 1)
+            self.assertIs(route.dependant.body_params[0].type_, expected_model)
+
 
 class PhotoImportMatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_match_requires_in_progress_ticket_and_checks_each_attachment(self):
@@ -133,6 +177,61 @@ class PhotoImportMatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row[0] for row in rows], [11, 12])
         self.assertFalse(duplicate_all)
         self.assertEqual(cursor.fetchone.await_count, 2)
+
+
+class PhotoRequestBatchClaimTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_claim_moves_all_claimable_tickets_into_progress(self):
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+                self.rowcount = 1
+                self.steps = [(201,), (202,)]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=()):
+                self.statements.append((statement, params))
+
+            async def fetchall(self):
+                return [(11, 101), (12, 102)]
+
+            async def fetchone(self):
+                return self.steps.pop(0)
+
+        cursor = Cursor()
+        conn = type("Conn", (), {})()
+        conn.begin = AsyncMock()
+        conn.commit = AsyncMock()
+        conn.rollback = AsyncMock()
+        conn.cursor = MagicMock(return_value=cursor)
+        user = {
+            "id": 17,
+            "permissions": ["workflow.ticket.handle"],
+            "member": {"position": "基础管控"},
+        }
+
+        with patch("routers.workflow_extended.workflow_notification", new=AsyncMock()) as notify:
+            with patch("routers.workflow_extended.record_admin_audit", new=AsyncMock()):
+                result = await batch_claim_photo_requests(
+                    PhotoRequestBatchClaimPayload(claim_all=True),
+                    MagicMock(),
+                    user,
+                    conn,
+                )
+
+        self.assertEqual(result["claimed_ids"], [11, 12])
+        self.assertEqual(result["claimed_count"], 2)
+        self.assertEqual(result["skipped_ids"], [])
+        self.assertEqual(notify.await_count, 2)
+        conn.commit.assert_awaited_once()
+        conn.rollback.assert_not_awaited()
+        statements = [statement for statement, _ in cursor.statements]
+        self.assertEqual(sum("UPDATE work_orders SET current_assignee_user_id" in item for item in statements), 2)
+        self.assertEqual(sum("INSERT INTO work_order_events" in item for item in statements), 2)
 
 
 class _PreviewCursor:
