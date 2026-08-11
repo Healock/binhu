@@ -304,6 +304,63 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await http.aclose()
 
+    async def test_transport_business_timeout_is_retried(self):
+        responses = [
+            httpx.Response(
+                200,
+                json={
+                    "code": 400010,
+                    "message": "call GetWorkSheetInfos error: tcp client transport ReadFrame, i/o timeout",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "code": 400010,
+                    "message": "call GetWorkSheetInfos error: tcp client transport ReadFrame, i/o timeout",
+                },
+            ),
+            httpx.Response(200, json={"code": 0, "data": {"ok": True}}),
+        ]
+
+        async def handler(_request):
+            return responses.pop(0)
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient("client", "token", "user", http_client=http)
+        try:
+            result = await client.read_range("file", "sheet", "A1:A1")
+            self.assertEqual(result, {"code": 0, "data": {"ok": True}})
+            self.assertEqual(responses, [])
+        finally:
+            await http.aclose()
+
+    async def test_non_transport_400010_is_not_retried(self):
+        calls = 0
+
+        async def handler(_request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                json={"code": 400010, "message": "请求参数格式不支持"},
+            )
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient("client", "token", "user", http_client=http)
+        try:
+            with self.assertRaisesRegex(TxDocsAPIError, "400010.*请求参数格式不支持"):
+                await client.read_range("file", "sheet", "A1:A1")
+            self.assertEqual(calls, 1)
+        finally:
+            await http.aclose()
+
 
 if __name__ == "__main__":
     unittest.main()
