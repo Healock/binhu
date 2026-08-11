@@ -512,7 +512,7 @@ async def create_ticket(
                     "(work_order_id, subject_type, subject_id, subject_name, identity_number, identity_hmac, "
                     "identity_hmac_version, source_parser_type, source_row_key, community_name, source_label, "
                     "requester_name_snapshot, requested_at, external_origin, external_sync_status, request_reason, "
-                    "requested_from, requested_to) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "requested_from, requested_to) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (ticket_id, str(form_data.get("subject_type") or "")[:40],
                      str(form_data.get("subject_id") or "")[:190],
                      photo_values["subject_name"], photo_values["identity_number"],
