@@ -56,6 +56,7 @@ Priority = Literal[
     "completed",
 ]
 SortMode = Literal["priority", "updated_desc", "updated_asc"]
+AssignmentMode = Literal["single", "balanced"]
 EMPTY_FILTER_VALUE = "__empty__"
 PRIORITY_KEYS = (
     "analyzed",
@@ -88,7 +89,8 @@ class TaskBatchUpdate(BaseModel):
 
 class BulkAssignmentRequest(BaseModel):
     row_keys: list[str] = Field(min_length=1, max_length=100)
-    inspector: str = Field(min_length=1, max_length=100)
+    inspector: str = Field(default="", max_length=100)
+    mode: AssignmentMode = "single"
 
 
 class TaskSearch(BaseModel):
@@ -111,6 +113,33 @@ def _iso_utc(value) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat() + "Z"
     return str(value)
+
+
+def _balanced_assignment_plan(
+    row_keys: list[str],
+    inspectors: list[str],
+) -> tuple[dict[str, str], dict[str, int]]:
+    """把已筛出的任务按连续区段尽量平均分给在岗组员。
+
+    连续区段比轮流交错更适合任务列表的地址排序：相邻地址尽量仍由同一
+    名组员处理，同时每人的任务数最多相差一条。真正的候选人和任务资格
+    仍由批量接口在数据库事务前后重新校验。
+    """
+    keys = list(dict.fromkeys(str(key).strip() for key in row_keys if str(key).strip()))
+    members = list(dict.fromkeys(str(name).strip() for name in inspectors if str(name).strip()))
+    if not keys or not members:
+        return {}, {name: 0 for name in members}
+    base, remainder = divmod(len(keys), len(members))
+    plan: dict[str, str] = {}
+    counts = {name: 0 for name in members}
+    cursor = 0
+    for index, member in enumerate(members):
+        size = base + (1 if index < remainder else 0)
+        for key in keys[cursor:cursor + size]:
+            plan[key] = member
+        counts[member] = size
+        cursor += size
+    return plan, counts
 
 
 def require_flow_user(user: dict) -> tuple[str, str]:
@@ -1138,7 +1167,7 @@ async def bulk_assign_mobile_tasks(
     user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
     conn=Depends(get_db),
 ):
-    """Manually assign a selected set of unassigned tasks to one inspector.
+    """Manually assign selected unassigned tasks to one or all local members.
 
     Tencent writeback is inherently row/version based, so each physical source
     row is still revalidated and written through the existing safe path.  The
@@ -1152,9 +1181,11 @@ async def bulk_assign_mobile_tasks(
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
 
     row_keys = list(dict.fromkeys(str(value).strip() for value in data.row_keys if str(value).strip()))
-    inspector = str(data.inspector).strip()
-    if not row_keys or not inspector:
-        raise HTTPException(400, "请选择任务和在岗组员")
+    inspector = str(data.inspector or "").strip()
+    if not row_keys:
+        raise HTTPException(400, "请选择任务")
+    if data.mode == "single" and not inspector:
+        raise HTTPException(400, "请选择在岗组员")
 
     projection_by_key: dict[str, dict] = {}
     source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
@@ -1197,12 +1228,22 @@ async def bulk_assign_mobile_tasks(
         )
         community_aliases = assignment_context["community_aliases"]
         inspectors_by_community = assignment_context["inspectors_by_community"]
-        for community in sorted({item["community"] for item in projection_by_key.values()}):
-            formal = community_aliases.get(community, "")
-            if not formal:
-                raise HTTPException(403, "部分任务社区不在当前账号可分配范围内")
-            if inspector not in inspectors_by_community.get(formal, []):
-                raise HTTPException(400, "只能分配给任务所属社区的在岗组员")
+        formal_communities = {
+            community_aliases.get(item["community"], "")
+            for item in projection_by_key.values()
+        }
+        if not formal_communities or "" in formal_communities:
+            raise HTTPException(403, "部分任务社区不在当前账号可分配范围内")
+        if len(formal_communities) != 1:
+            raise HTTPException(400, "批量分配必须一次只选择同一社区的任务")
+        formal_community = next(iter(formal_communities))
+        available_inspectors = list(
+            inspectors_by_community.get(formal_community) or []
+        )
+        if not available_inspectors:
+            raise HTTPException(400, "该社区当前没有在岗组员可分配")
+        if data.mode == "single" and inspector not in available_inspectors:
+            raise HTTPException(400, "只能分配给任务所属社区的在岗组员")
 
         await cur.execute(
             f"""
@@ -1216,8 +1257,7 @@ async def bulk_assign_mobile_tasks(
         for source_id, row_key, revision in await cur.fetchall():
             source_rows_by_key.setdefault(str(row_key), []).append((int(source_id), int(revision)))
 
-    update_count = 0
-    failed_count = 0
+    eligible_keys: list[str] = []
     for row_key in row_keys:
         item = projection_by_key[row_key]
         if item["inspector"]:
@@ -1229,6 +1269,30 @@ async def bulk_assign_mobile_tasks(
         if item["conflict"]:
             skipped.append({"row_key": row_key, "reason": "来源存在冲突"})
             continue
+        if not source_rows_by_key.get(row_key):
+            skipped.append({"row_key": row_key, "reason": "找不到来源行"})
+            continue
+        eligible_keys.append(row_key)
+
+    if data.mode == "balanced":
+        assignment_plan, assignment_counts = _balanced_assignment_plan(
+            eligible_keys,
+            available_inspectors,
+        )
+    else:
+        assignment_plan = {row_key: inspector for row_key in eligible_keys}
+        assignment_counts = {
+            inspector: len(eligible_keys),
+        }
+
+    update_count = 0
+    failed_count = 0
+    successful_assignment_counts = {name: 0 for name in assignment_counts}
+    for row_key in eligible_keys:
+        assigned_inspector = assignment_plan.get(row_key, "")
+        if not assigned_inspector:
+            skipped.append({"row_key": row_key, "reason": "没有生成分配方案"})
+            continue
         sources = source_rows_by_key.get(row_key) or []
         if not sources:
             skipped.append({"row_key": row_key, "reason": "找不到来源行"})
@@ -1239,7 +1303,7 @@ async def bulk_assign_mobile_tasks(
                 await update_source_fields(
                     parser_type=parser_type,
                     source_id=source_id,
-                    changes={"核查人": inspector},
+                    changes={"核查人": assigned_inspector},
                     expected_revision=revision,
                     request=request,
                     user=user,
@@ -1259,6 +1323,9 @@ async def bulk_assign_mobile_tasks(
                 break
         if task_ok:
             update_count += 1
+            successful_assignment_counts[assigned_inspector] = (
+                successful_assignment_counts.get(assigned_inspector, 0) + 1
+            )
 
     await record_admin_audit(
         user,
@@ -1270,7 +1337,9 @@ async def bulk_assign_mobile_tasks(
             "updated_count": update_count,
             "skipped_count": len(skipped),
             "failed_count": failed_count,
-            "inspector": inspector,
+            "inspector": inspector if data.mode == "single" else "",
+            "allocation_mode": data.mode,
+            "assignment_counts": successful_assignment_counts,
         },
         **request_audit_fields(request),
     )
@@ -1279,5 +1348,7 @@ async def bulk_assign_mobile_tasks(
         "skipped": len(skipped),
         "failed": failed_count,
         "details": skipped,
-        "inspector": inspector,
+        "inspector": inspector if data.mode == "single" else "",
+        "mode": data.mode,
+        "assignment_counts": successful_assignment_counts,
     }

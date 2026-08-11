@@ -410,7 +410,8 @@
 }
 
 .mobile-phone-native-select--card .mobile-phone-native-select__control {
-  min-height: 100%;
+  min-height: 22px;
+  align-items: center;
 }
 
 .mobile-task-item-card__phone-copy.ant-btn {
@@ -482,7 +483,7 @@
 
 .mobile-task-item-card__key-info {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   margin: 8px 0 0;
   padding: 0;
   color: var(--app-text);
@@ -493,12 +494,16 @@
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr);
   gap: 8px;
-  align-items: baseline;
+  min-height: 24px;
+  align-items: center;
+  line-height: 22px;
 }
 
 .mobile-task-item-card__key-row dt {
   margin: 0;
   color: var(--app-text-secondary);
+  font-size: 13px;
+  line-height: 22px;
 }
 
 .mobile-task-item-card__key-row dd {
@@ -506,11 +511,9 @@
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--app-text-strong);
-}
-
-.mobile-task-item-card__key-row--identity dt,
-.mobile-task-item-card__key-row--identity dd {
-  line-height: 1.4;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 22px;
 }
 
 .mobile-task-item-card__key-row--phone {
@@ -519,10 +522,6 @@
 
 .mobile-task-item-card__key-row--phone dd {
   overflow: hidden;
-}
-
-.mobile-task-item-card__key-row--identity dt {
-  font-size: 13px;
 }
 
 .mobile-task-item-card__key-row--identity dd {
@@ -540,14 +539,15 @@
 }
 
 .mobile-task-item-card__key-row--address {
-  align-items: start;
+  align-items: center;
 }
 
 .mobile-task-item-card__key-row--address dd {
   display: -webkit-box;
   overflow: hidden;
   font-size: 14px;
-  line-height: 1.45;
+  font-weight: 650;
+  line-height: 22px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -679,6 +679,41 @@
 
 .mobile-task-bulk-toolbar {
   padding: 10px 12px;
+}
+
+.mobile-task-item-card__key-text {
+  min-height: 22px;
+}
+
+.mobile-task-bulk-toolbar.is-sticky {
+  position: sticky;
+  z-index: 30;
+  top: 8px;
+  border-color: var(--app-primary-border);
+  box-shadow: 0 10px 26px rgb(15 23 42 / 0.14);
+}
+
+.mobile-task-balanced-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.mobile-task-balanced-preview > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-muted);
+}
+
+.mobile-task-balanced-preview strong {
+  flex-shrink: 0;
+  color: var(--app-primary-text);
 }
 
 .mobile-task-detail-facts {
@@ -3177,6 +3212,12 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   .mobile-task-page .ant-select-single .ant-select-content,
   .police-dispatch-workbench .ant-select-single .ant-select-content {
     align-self: center;
+  }
+
+  .mobile-task-page .mobile-task-copy-value,
+  .mobile-task-page .mobile-task-item-card__phone-copy.ant-btn {
+    height: 22px;
+    min-height: 22px;
   }
 
   .app-shell .mobile-task-scope-switch.ant-segmented {

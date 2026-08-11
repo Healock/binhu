@@ -83,6 +83,7 @@ class TaskWorkflow:
             "address": current_address or original_address,
             "current_address": current_address,
             "original_address": original_address,
+            "deadline": self.first_value(values, self.date_fields[:1]),
             "date": self.first_value(values, self.date_fields),
             "result": str(values.get(self.result_field, "") or "").strip(),
             "analysis": self.first_value(values, self.analysis_fields),

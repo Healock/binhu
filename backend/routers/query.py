@@ -757,6 +757,7 @@ async def update_source_fields(
                     source_columns.index(column),
                     normalized_changes[column],
                     metadata,
+                    column,
                 ))
         except ValueError as exc:
             if audit_id:

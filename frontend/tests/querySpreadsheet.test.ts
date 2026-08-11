@@ -91,6 +91,27 @@ test('腾讯日期和长数字以普通字符串写入工作表且不显示前�
   })
 })
 
+test('查询工作表支持 Univer 内部复制内容回退粘贴', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /BeforeClipboardChange/)
+  assert.match(componentSource, /internalClipboard/)
+  assert.match(componentSource, /fromRange\?\.getValues/)
+  assert.match(componentSource, /const pasted = clipboardValues\(params\) \|\| internalClipboard/)
+})
+
+test('查询工作表编辑日期时保留原始文本和尾零', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /SheetEditChanging/)
+  assert.match(componentSource, /editingValues/)
+  assert.match(componentSource, /日期\|时间/)
+})
+
 test('工作表点击和拖动同时锁定主内容区与浏览器文档位置', () => {
   const componentSource = readFileSync(
     new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),

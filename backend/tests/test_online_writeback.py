@@ -670,6 +670,20 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
                 "sheet", 8, 4, "不存在的人", metadata["核查人"]
             )
 
+    def test_date_number_metadata_is_written_as_text_to_preserve_trailing_zero(self):
+        request = TxDocsClient("client", "token", "user").build_update_cell_request(
+            "sheet", 8, 4, "8.10", {"type": "number"}, column_name="下发日期"
+        )
+        cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+        self.assertEqual(cell["cellValue"], {"text": "8.10"})
+
+    def test_regular_number_metadata_still_uses_number(self):
+        request = TxDocsClient("client", "token", "user").build_update_cell_request(
+            "sheet", 8, 4, "8.10", {"type": "number"}, column_name="数量"
+        )
+        cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+        self.assertEqual(cell["cellValue"], {"number": 8.1})
+
     async def test_blank_result_options_reuse_cached_tencent_option_ids(self):
         parser = get_parser("全链条")
         cursor = ManagedMetadataCursor({

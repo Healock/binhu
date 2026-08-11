@@ -11,6 +11,7 @@ from routers.mobile_tasks import (
     EMPTY_FILTER_VALUE,
     TaskSearch,
     _address_order,
+    _balanced_assignment_plan,
     _multi_filter_condition,
     _priority_bucket,
     _scope_where,
@@ -56,6 +57,16 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(original_only["address"], "原地址")
         self.assertEqual(original_only["current_address"], "")
         self.assertEqual(original_only["original_address"], "原地址")
+
+    def test_task_summary_exposes_deadline_without_falling_back_to_dispatch_date(self):
+        workflow = TASK_WORKFLOWS["全链条"]
+        summary = workflow.summary({"截止日期": "8.10", "下发日期": "8.01"})
+        self.assertEqual(summary["deadline"], "8.10")
+        self.assertEqual(summary["date"], "8.10")
+
+        fallback = workflow.summary({"下发日期": "8.01"})
+        self.assertEqual(fallback["deadline"], "")
+        self.assertEqual(fallback["date"], "8.01")
 
     def test_standard_workflow_uses_three_internal_states(self):
         self.assertEqual(task_state("全链条", {}), "unchecked")
@@ -323,6 +334,14 @@ class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    def test_balanced_assignment_keeps_counts_within_one(self):
+        plan, counts = _balanced_assignment_plan(
+            ["a", "b", "c", "d", "e"],
+            ["组员甲", "组员乙", "组员丙"],
+        )
+        self.assertEqual(list(plan), ["a", "b", "c", "d", "e"])
+        self.assertEqual(counts, {"组员甲": 2, "组员乙": 2, "组员丙": 1})
+
     async def test_admin_assignment_uses_global_row_permission_validation(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
