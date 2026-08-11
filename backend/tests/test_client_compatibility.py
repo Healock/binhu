@@ -120,7 +120,7 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
         web = evaluate_client_compatibility(
             "web",
-            "0.19.0",
+            "0.19.1",
             minimum_versions={"windows": "2.0.0", "android": "3.0.0"},
             enforcement_enabled=True,
             identification_required=True,
@@ -182,7 +182,7 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 conn=FakeConnection(),
             )
 
-        self.assertEqual(payload["server_version"], "0.19.0")
+        self.assertEqual(payload["server_version"], "0.19.1")
         self.assertEqual(payload["business_date"], "2026-08-11")
         self.assertEqual(payload["timezone"], "Asia/Shanghai")
         self.assertTrue(payload["must_upgrade"])
