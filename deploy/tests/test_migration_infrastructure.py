@@ -88,6 +88,17 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
         self.assertIn("restore_previous", switcher)
         self.assertIn("systemctl reload nginx", switcher)
 
+    def test_long_photo_import_timeout_is_https_only(self) -> None:
+        config = (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8")
+        first_server = config.index("server {")
+        second_server = config.index("server {", first_server + 1)
+        http_block = config[first_server:second_server]
+        https_block = config[second_server:]
+        route = "location = /api/workflow/photo-sheet/import"
+        self.assertNotIn(route, http_block)
+        self.assertIn(route, https_block)
+        self.assertIn("proxy_read_timeout 1h", https_block)
+
     def test_templates_do_not_contain_real_public_hosts_or_secrets(self) -> None:
         paths = [
             ROOT / "deploy/install-offsite-backup.sh",

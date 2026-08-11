@@ -13,7 +13,9 @@ import {
   Popconfirm,
   Select,
   Space,
+  Switch,
   Table,
+  Tabs,
   Tag,
   message,
 } from 'antd'
@@ -25,7 +27,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import { PageHeader, Panel } from '../components/ui'
-import { workflowApi, type WorkflowType } from '../api/client'
+import { workflowApi, type PhotoSheetConfig, type PhotoSheetPreview, type WorkflowType } from '../api/client'
 
 function apiError(reason: any, fallback: string) {
   return reason?.response?.data?.detail || reason?.message || fallback
@@ -61,14 +63,29 @@ export default function WorkflowConfig() {
   const [editingVersionId, setEditingVersionId] = useState<number | null>(null)
   const [editingPublished, setEditingPublished] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [photoSheetConfig, setPhotoSheetConfig] = useState<PhotoSheetConfig | null>(null)
+  const [photoSheetPreview, setPhotoSheetPreview] = useState<PhotoSheetPreview | null>(null)
+  const [photoSheetLoading, setPhotoSheetLoading] = useState(false)
+  const [photoMonitorOpen, setPhotoMonitorOpen] = useState(false)
+  const [photoMonitorTab, setPhotoMonitorTab] = useState('runs')
+  const [photoMonitorRows, setPhotoMonitorRows] = useState<any[]>([])
+  const [photoMonitorTotal, setPhotoMonitorTotal] = useState(0)
+  const [photoMonitorLoading, setPhotoMonitorLoading] = useState(false)
   const [typeForm] = Form.useForm()
   const [versionForm] = Form.useForm()
+  const [photoSheetForm] = Form.useForm()
 
   const load = async () => {
     setLoading(true)
     setError('')
     try {
-      setTypes((await workflowApi.types()).data)
+      const [typeResult, photoConfig] = await Promise.all([
+        workflowApi.types(),
+        workflowApi.photoSheetConfig(),
+      ])
+      setTypes(typeResult.data)
+      setPhotoSheetConfig(photoConfig)
+      photoSheetForm.setFieldsValue(photoConfig)
     } catch (reason) {
       setError(apiError(reason, '流程读取失败'))
     } finally {
@@ -77,6 +94,102 @@ export default function WorkflowConfig() {
   }
 
   useEffect(() => { void load() }, [])
+
+  const savePhotoSheet = async () => {
+    try {
+      const values = await photoSheetForm.validateFields()
+      setPhotoSheetLoading(true)
+      const result = await workflowApi.savePhotoSheetConfig(values)
+      setPhotoSheetConfig(result)
+      photoSheetForm.setFieldsValue(result)
+      message.success('调照片名单配置已保存')
+    } catch (reason: any) {
+      if (!reason?.errorFields) message.error(apiError(reason, '配置保存失败'))
+    } finally {
+      setPhotoSheetLoading(false)
+    }
+  }
+
+  const previewPhotoSheet = async () => {
+    try {
+      setPhotoSheetLoading(true)
+      const result = await workflowApi.previewPhotoSheet()
+      setPhotoSheetPreview(result)
+      message.success('只读预览完成，未修改腾讯表格或工单')
+    } catch (reason) {
+      message.error(apiError(reason, '只读预览失败'))
+    } finally {
+      setPhotoSheetLoading(false)
+    }
+  }
+
+  const importPhotoSheet = () => {
+    if (!photoSheetPreview) return
+    Modal.confirm({
+      title: '确认正式导入历史名单？',
+      content: `将按当前预览创建 ${photoSheetPreview.requests} 个工单，其中 ${photoSheetPreview.pending_after_last_marker} 个进入待办。首次导入不会修改腾讯历史行。`,
+      okText: '确认导入',
+      cancelText: '取消',
+      async onOk() {
+        setPhotoSheetLoading(true)
+        try {
+          const result = await workflowApi.importPhotoSheet(photoSheetPreview.preview_token)
+          message.success(result.message || '历史名单已导入')
+          setPhotoSheetPreview(null)
+          await load()
+        } catch (reason) {
+          message.error(apiError(reason, '历史导入失败'))
+          throw reason
+        } finally {
+          setPhotoSheetLoading(false)
+        }
+      },
+    })
+  }
+
+  const syncPhotoSheet = async () => {
+    try {
+      setPhotoSheetLoading(true)
+      await workflowApi.syncPhotoSheet(true)
+      message.success('照片名单已完成一次完整同步')
+      await load()
+    } catch (reason) {
+      message.error(apiError(reason, '立即同步失败'))
+    } finally {
+      setPhotoSheetLoading(false)
+    }
+  }
+
+  const loadPhotoMonitor = async (tab = photoMonitorTab) => {
+    setPhotoMonitorLoading(true)
+    try {
+      const result = tab === 'runs'
+        ? await workflowApi.photoSheetRuns(1, 100)
+        : await workflowApi.photoSheetIssues(tab as 'data' | 'requester' | 'conflict' | 'outbox', 1, 100)
+      setPhotoMonitorRows(result.data || [])
+      setPhotoMonitorTotal(result.total || 0)
+    } catch (reason) {
+      message.error(apiError(reason, '同步记录读取失败'))
+    } finally {
+      setPhotoMonitorLoading(false)
+    }
+  }
+
+  const openPhotoMonitor = () => {
+    setPhotoMonitorOpen(true)
+    setPhotoMonitorTab('runs')
+    void loadPhotoMonitor('runs')
+  }
+
+  const retryPhotoConflict = async (conflictId: number) => {
+    try {
+      await workflowApi.retryPhotoSheetConflict(conflictId)
+      message.success('已重新加入安全定位队列')
+      await loadPhotoMonitor('conflict')
+    } catch (reason) {
+      message.error(apiError(reason, '冲突重试失败'))
+    }
+  }
 
   const createType = async () => {
     try {
@@ -216,6 +329,57 @@ export default function WorkflowConfig() {
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">调照片名单</h2>
+            <p className="mt-1 text-sm text-[var(--app-text-secondary)]">
+              先保存腾讯表格地址并执行只读预览。历史导入与读写开关相互独立，部署后默认关闭，不会自动触碰历史数据。
+            </p>
+          </div>
+          <Space wrap>
+            <Button loading={photoSheetLoading} onClick={() => void previewPhotoSheet()}>只读预览</Button>
+            <Button loading={photoSheetLoading} onClick={() => void syncPhotoSheet()} disabled={!photoSheetConfig?.read_enabled}>立即同步</Button>
+            <Button onClick={openPhotoMonitor}>同步记录与异常</Button>
+            <Button type="primary" loading={photoSheetLoading} onClick={() => void savePhotoSheet()}>保存配置</Button>
+          </Space>
+        </div>
+        <Form form={photoSheetForm} layout="vertical">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_140px_160px_160px]">
+            <Form.Item name="file_url" label="腾讯表格地址" rules={[{ required: true, message: '请填写腾讯表格地址' }]}>
+              <Input placeholder="https://docs.qq.com/sheet/...?...tab=..." />
+            </Form.Item>
+            <Form.Item name="header_row" label="表头行"><InputNumber min={1} max={100} className="w-full" /></Form.Item>
+            <Form.Item name="read_enabled" label="读取新申请" valuePropName="checked"><Switch checkedChildren="已开启" unCheckedChildren="已关闭" /></Form.Item>
+            <Form.Item name="write_enabled" label="写入及 G 列回写" valuePropName="checked"><Switch checkedChildren="已开启" unCheckedChildren="已关闭" /></Form.Item>
+          </div>
+        </Form>
+        <div className="grid gap-2 text-sm md:grid-cols-3">
+          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">历史导入：{photoSheetConfig?.import_applied_at ? '已完成' : '未执行'}</div>
+          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">最近同步：{photoSheetConfig?.last_sync_at || '尚未同步'}</div>
+          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">同步状态：{photoSheetConfig?.last_sync_status || 'disabled'}</div>
+        </div>
+        {photoSheetConfig?.last_error && <Alert className="mt-3" type="warning" showIcon message="最近同步失败" description={photoSheetConfig.last_error} />}
+        {photoSheetPreview && (
+          <Card className="mt-4" size="small" title="历史导入只读预览">
+            <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+              <div>申请行：<strong>{photoSheetPreview.requests}</strong></div>
+              <div>批次边界：<strong>{photoSheetPreview.markers}</strong></div>
+              <div>历史已完成：<strong>{photoSheetPreview.historical_completed}</strong></div>
+              <div>最后边界后待办：<strong>{photoSheetPreview.pending_after_last_marker}</strong></div>
+              <div>数据异常：<strong>{photoSheetPreview.issue_count}</strong></div>
+              <div>重复行组：<strong>{photoSheetPreview.duplicate_groups}</strong></div>
+              <div>读取行数：<strong>{photoSheetPreview.rows_read}</strong></div>
+              <div>最后边界行：<strong>{photoSheetPreview.last_marker_row || '无'}</strong></div>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <Button type="primary" danger disabled={Boolean(photoSheetConfig?.import_applied_at)} onClick={importPhotoSheet}>
+                {photoSheetConfig?.import_applied_at ? '历史名单已导入' : '确认正式导入'}
+              </Button>
+            </div>
+          </Card>
+        )}
+      </Panel>
+      <Panel>
         <Table
           rowKey="id"
           loading={loading}
@@ -241,6 +405,54 @@ export default function WorkflowConfig() {
           <Form.Item name="description" label="说明"><Input.TextArea maxLength={1000} /></Form.Item>
           <Form.Item name="default_due_hours" label="默认处理时限（小时）"><InputNumber min={1} max={8760} className="w-full" /></Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        open={photoMonitorOpen}
+        width="min(96vw, 980px)"
+        title={`调照片名单运行记录（${photoMonitorTotal}）`}
+        footer={<Button onClick={() => setPhotoMonitorOpen(false)}>关闭</Button>}
+        onCancel={() => setPhotoMonitorOpen(false)}
+      >
+        <Tabs
+          activeKey={photoMonitorTab}
+          onChange={tab => { setPhotoMonitorTab(tab); void loadPhotoMonitor(tab) }}
+          items={[
+            { key: 'runs', label: '同步记录' },
+            { key: 'data', label: '数据异常' },
+            { key: 'requester', label: '申请人映射' },
+            { key: 'conflict', label: '写回冲突' },
+            { key: 'outbox', label: '待写回队列' },
+          ]}
+        />
+        <Table
+          size="small"
+          rowKey={row => String(row.id || `${row.work_order_id}-${row.physical_row}`)}
+          loading={photoMonitorLoading}
+          dataSource={photoMonitorRows}
+          pagination={{ pageSize: 20 }}
+          scroll={{ x: 760 }}
+          columns={photoMonitorTab === 'runs' ? [
+            { title: '时间', dataIndex: 'started_at', width: 190 },
+            { title: '类型', dataIndex: 'run_type', width: 100 },
+            { title: '状态', dataIndex: 'status', width: 100 },
+            { title: '读取', dataIndex: 'rows_read', width: 80 },
+            { title: '新工单', dataIndex: 'created_tickets', width: 90 },
+            { title: '自动完成', dataIndex: 'completed_tickets', width: 90 },
+            { title: '异常', dataIndex: 'issue_count', width: 80 },
+            { title: '安全错误摘要', dataIndex: 'error_message', ellipsis: true },
+          ] : [
+            { title: '工单', dataIndex: 'work_order_id', width: 100 },
+            { title: '腾讯行', dataIndex: 'physical_row', width: 90 },
+            { title: '类型/动作', render: (_, row) => row.type || row.action || row.status || '—', width: 130 },
+            { title: '安全摘要', dataIndex: 'safe_detail', ellipsis: true },
+            { title: '更新时间', render: (_, row) => row.updated_at || row.created_at || '—', width: 190 },
+            ...(photoMonitorTab === 'conflict' ? [{
+              title: '操作', width: 90,
+              render: (_: unknown, row: any) => <Button size="small" onClick={() => void retryPhotoConflict(row.id)}>重试定位</Button>,
+            }] : []),
+          ]}
+        />
       </Modal>
 
       <Drawer

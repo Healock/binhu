@@ -167,7 +167,17 @@ async def workflow_notification(
     category = f"workflow_{event_key}"[:30]
     safe_title = title[:100]
     safe_content = content[:1000]
-    for user_id in sorted({int(value) for value in user_ids if int(value) > 0}):
+    normalized_ids: set[int] = set()
+    for value in user_ids:
+        if value in (None, ""):
+            continue
+        try:
+            user_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0:
+            normalized_ids.add(user_id)
+    for user_id in sorted(normalized_ids):
         await cur.execute(
             f"INSERT IGNORE INTO `{schema}`._notifications "
             "(user_id, category, severity, title, content, related_task_id, created_at) "
