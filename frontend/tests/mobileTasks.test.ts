@@ -270,6 +270,16 @@ test('任务详情直接展示身份证号、手机号、来源和地址', () =>
   }
 })
 
+test('任务详情文本编辑器已从 Ant Design 引入 Input', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const antdImport = detailSource.match(/import\s*\{([^}]*)\}\s*from 'antd'/s)?.[1] || ''
+  assert.match(antdImport, /\bInput\b/)
+  assert.match(detailSource, /<Input\.TextArea/)
+})
+
 test('任务卡片使用可读密度、完整身份证主体和来源标签云', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),

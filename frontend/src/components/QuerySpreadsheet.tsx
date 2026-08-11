@@ -36,9 +36,9 @@ import {
   applyQuerySheetValues,
   buildQuerySheetRows,
   canEditQuerySheetCell,
+  createQuerySheetClipboardSnapshot,
   isQuerySheetAutomaticTextConversion,
   isQuerySheetRangeEditable,
-  parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
@@ -47,10 +47,12 @@ import {
   querySheetTextCell,
   querySheetCellKey,
   resolveQuerySheetColumnWidth,
+  resolveQuerySheetPasteValues,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
+  type QuerySheetClipboardSnapshot,
   type QuerySheetFilterCriteria,
   type QuerySheetRow,
 } from '../utils/querySpreadsheet'
@@ -425,7 +427,7 @@ export function QuerySpreadsheet({
     const pendingEditedCells = new Set<string>()
     const explicitEditedValues = new Map<string, string>()
     const editingValues = new Map<string, string>()
-    let internalClipboard: string[][] | null = null
+    let internalClipboard: QuerySheetClipboardSnapshot | null = null
     let pendingPaste: { range: IRange; values: string[][] } | null = null
 
     const markEditedRange = (range: IRange, values?: string[][]) => {
@@ -450,18 +452,6 @@ export function QuerySpreadsheet({
       }
       if (typeof value === 'string') return value
       return undefined
-    }
-
-    const clipboardValues = (params: {
-      text?: string
-      fromRange?: { getValues?: () => unknown[][] }
-    }): string[][] | null => {
-      if (typeof params.text === 'string') return parseQuerySheetClipboard(params.text)
-      const values = params.fromRange?.getValues?.()
-      if (!Array.isArray(values)) return null
-      return values.map(row => row.map(value => (
-        value === null || value === undefined ? '' : String(value)
-      )))
     }
 
     const restoreChanges = (changes: QuerySheetCellChange[]) => {
@@ -652,11 +642,14 @@ export function QuerySpreadsheet({
         editingValues.delete(querySheetCellKey(params.row, params.column))
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeClipboardChange, params => {
-        internalClipboard = clipboardValues(params)
+        internalClipboard = createQuerySheetClipboardSnapshot(
+          params.text,
+          params.fromRange?.getValues?.(),
+        )
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeClipboardPaste, params => {
         const active = worksheet.getActiveRange()?.getRange()
-        const pasted = clipboardValues(params) || internalClipboard
+        const pasted = resolveQuerySheetPasteValues(params.text, internalClipboard)
         if (!pasted) {
           params.cancel = true
           callbacksRef.current.onBlocked('无法识别剪贴板内容，本次粘贴已取消')

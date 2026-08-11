@@ -391,6 +391,44 @@ export function parseQuerySheetClipboard(text: string): string[][] {
   return lines.map(line => line.split('\t'))
 }
 
+export interface QuerySheetClipboardSnapshot {
+  text: string
+  values: string[][]
+}
+
+function normalizeQuerySheetClipboardText(text: string): string {
+  return text.replace(/\r\n?/g, '\n')
+}
+
+export function createQuerySheetClipboardSnapshot(
+  text: string,
+  values: unknown[][] | undefined,
+): QuerySheetClipboardSnapshot | null {
+  if (!Array.isArray(values)) return null
+  return {
+    text: normalizeQuerySheetClipboardText(text),
+    values: values.map(row => row.map(value => (
+      value === null || value === undefined ? '' : String(value)
+    ))),
+  }
+}
+
+export function resolveQuerySheetPasteValues(
+  text: string | undefined,
+  internalClipboard: QuerySheetClipboardSnapshot | null,
+): string[][] | null {
+  if (
+    internalClipboard
+    && (
+      typeof text !== 'string'
+      || normalizeQuerySheetClipboardText(text) === internalClipboard.text
+    )
+  ) {
+    return internalClipboard.values
+  }
+  return typeof text === 'string' ? parseQuerySheetClipboard(text) : null
+}
+
 export function isQuerySheetRangeEditable(
   source: 'online' | 'archive',
   sheetRows: QuerySheetRow[],
