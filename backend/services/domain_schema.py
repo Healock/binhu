@@ -17,6 +17,13 @@ async def _ensure_index(cur, table: str, index_name: str, definition: str) -> No
         await cur.execute(f"ALTER TABLE `{table}` ADD {definition}")
 
 
+async def _ensure_nullable_column(cur, table: str, column: str, definition: str) -> None:
+    await cur.execute(f"SHOW COLUMNS FROM `{table}` LIKE %s", (column,))
+    row = await cur.fetchone()
+    if row and str(row[2]).upper() == "NO":
+        await cur.execute(f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` {definition}")
+
+
 async def ensure_registry_schema(cur) -> None:
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_properties (
@@ -502,7 +509,7 @@ async def ensure_workflow_schema(cur) -> None:
             workflow_version_id BIGINT NOT NULL,
             title VARCHAR(200) NOT NULL,
             description TEXT NOT NULL,
-            requester_user_id BIGINT NOT NULL,
+            requester_user_id BIGINT DEFAULT NULL,
             current_assignee_user_id BIGINT DEFAULT NULL,
             current_queue VARCHAR(100) NOT NULL DEFAULT '',
             status VARCHAR(30) NOT NULL DEFAULT 'draft',
@@ -523,6 +530,7 @@ async def ensure_workflow_schema(cur) -> None:
             INDEX idx_work_order_type_status (type_code, status, updated_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_nullable_column(cur, "work_orders", "requester_user_id", "BIGINT DEFAULT NULL")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS work_order_links (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -684,7 +692,149 @@ async def ensure_workflow_schema(cur) -> None:
     await _ensure_column(cur, "photo_request_details", "identity_hmac_version", "SMALLINT UNSIGNED DEFAULT NULL AFTER identity_hmac")
     await _ensure_column(cur, "photo_request_details", "source_parser_type", "VARCHAR(100) NOT NULL DEFAULT '' AFTER identity_hmac_version")
     await _ensure_column(cur, "photo_request_details", "source_row_key", "VARCHAR(190) NOT NULL DEFAULT '' AFTER source_parser_type")
+    await _ensure_column(cur, "photo_request_details", "community_name", "VARCHAR(200) NOT NULL DEFAULT '' AFTER source_row_key")
+    await _ensure_column(cur, "photo_request_details", "source_label", "VARCHAR(200) NOT NULL DEFAULT '' AFTER community_name")
+    await _ensure_column(cur, "photo_request_details", "requester_name_snapshot", "VARCHAR(100) NOT NULL DEFAULT '' AFTER source_label")
+    await _ensure_column(cur, "photo_request_details", "requested_at", "DATETIME DEFAULT NULL AFTER requester_name_snapshot")
+    await _ensure_column(cur, "photo_request_details", "external_origin", "VARCHAR(30) NOT NULL DEFAULT 'platform' AFTER requested_at")
+    await _ensure_column(cur, "photo_request_details", "external_sync_status", "VARCHAR(30) NOT NULL DEFAULT 'not_linked' AFTER external_origin")
+    await _ensure_column(cur, "photo_request_details", "legacy_result_note", "VARCHAR(2000) NOT NULL DEFAULT '' AFTER external_sync_status")
+    await _ensure_column(cur, "photo_request_details", "data_issue", "VARCHAR(500) NOT NULL DEFAULT '' AFTER legacy_result_note")
     await _ensure_index(cur, "photo_request_details", "idx_photo_identity", "INDEX idx_photo_identity (identity_hmac, result_status)")
+    await _ensure_index(cur, "photo_request_details", "idx_photo_external_status", "INDEX idx_photo_external_status (external_sync_status, created_at)")
+    await _ensure_index(cur, "photo_request_details", "idx_photo_source_label", "INDEX idx_photo_source_label (source_label, external_sync_status, created_at)")
+
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_sheet_sources (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            source_code VARCHAR(60) NOT NULL UNIQUE,
+            file_url VARCHAR(1000) NOT NULL DEFAULT '',
+            file_id VARCHAR(100) NOT NULL DEFAULT '',
+            sheet_id VARCHAR(100) NOT NULL DEFAULT '',
+            header_row INT UNSIGNED NOT NULL DEFAULT 1,
+            read_enabled TINYINT(1) NOT NULL DEFAULT 0,
+            write_enabled TINYINT(1) NOT NULL DEFAULT 0,
+            import_applied_at DATETIME DEFAULT NULL,
+            legacy_cutoff_row INT UNSIGNED DEFAULT NULL,
+            last_cursor_row INT UNSIGNED NOT NULL DEFAULT 1,
+            last_full_sync_date DATE DEFAULT NULL,
+            last_sync_at DATETIME DEFAULT NULL,
+            last_sync_status VARCHAR(30) NOT NULL DEFAULT 'disabled',
+            last_error VARCHAR(500) NOT NULL DEFAULT '',
+            created_by BIGINT DEFAULT NULL,
+            updated_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_photo_sheet_enabled (read_enabled, write_enabled),
+            INDEX idx_photo_sheet_sync (last_sync_status, last_sync_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        INSERT IGNORE INTO photo_sheet_sources (
+            source_code, read_enabled, write_enabled, last_sync_status
+        ) VALUES ('photo_request_roster', 0, 0, 'disabled')
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_sheet_batches (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            source_id BIGINT NOT NULL,
+            physical_row INT UNSIGNED DEFAULT NULL,
+            marker_text VARCHAR(100) NOT NULL,
+            marker_hash CHAR(64) NOT NULL,
+            completed_at DATETIME DEFAULT NULL,
+            time_inferred TINYINT(1) NOT NULL DEFAULT 0,
+            is_legacy TINYINT(1) NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_photo_sheet_batch_row (source_id, physical_row),
+            INDEX idx_photo_sheet_batch_hash (source_id, marker_hash),
+            INDEX idx_photo_sheet_batch_time (source_id, completed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_nullable_column(cur, "photo_sheet_batches", "physical_row", "INT UNSIGNED DEFAULT NULL")
+    await _ensure_index(cur, "photo_sheet_batches", "idx_photo_sheet_batch_hash", "INDEX idx_photo_sheet_batch_hash (source_id, marker_hash)")
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_sheet_rows (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            source_id BIGINT NOT NULL,
+            work_order_id BIGINT NOT NULL UNIQUE,
+            physical_row INT UNSIGNED DEFAULT NULL,
+            row_hash CHAR(64) NOT NULL DEFAULT '',
+            row_fingerprint CHAR(64) NOT NULL DEFAULT '',
+            origin VARCHAR(30) NOT NULL DEFAULT 'tencent',
+            is_legacy TINYINT(1) NOT NULL DEFAULT 0,
+            batch_id BIGINT DEFAULT NULL,
+            sync_status VARCHAR(30) NOT NULL DEFAULT 'linked',
+            g_value VARCHAR(2000) NOT NULL DEFAULT '',
+            last_error VARCHAR(500) NOT NULL DEFAULT '',
+            last_seen_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_photo_sheet_physical_row (source_id, physical_row),
+            INDEX idx_photo_sheet_fingerprint (source_id, row_fingerprint),
+            INDEX idx_photo_sheet_row_status (source_id, sync_status, updated_at),
+            INDEX idx_photo_sheet_row_batch (batch_id, physical_row)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_sheet_outbox (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            source_id BIGINT NOT NULL,
+            work_order_id BIGINT NOT NULL,
+            action VARCHAR(30) NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'pending',
+            attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+            next_attempt_at DATETIME DEFAULT NULL,
+            error_code VARCHAR(100) NOT NULL DEFAULT '',
+            last_error VARCHAR(500) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_photo_sheet_outbox_action (work_order_id, action),
+            INDEX idx_photo_sheet_outbox_due (status, next_attempt_at, updated_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_sheet_sync_runs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            source_id BIGINT NOT NULL,
+            run_type VARCHAR(30) NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'running',
+            rows_read INT UNSIGNED NOT NULL DEFAULT 0,
+            requests_found INT UNSIGNED NOT NULL DEFAULT 0,
+            markers_found INT UNSIGNED NOT NULL DEFAULT 0,
+            created_tickets INT UNSIGNED NOT NULL DEFAULT 0,
+            completed_tickets INT UNSIGNED NOT NULL DEFAULT 0,
+            issue_count INT UNSIGNED NOT NULL DEFAULT 0,
+            summary_json JSON NOT NULL,
+            error_message VARCHAR(500) NOT NULL DEFAULT '',
+            started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME DEFAULT NULL,
+            INDEX idx_photo_sheet_run_source (source_id, started_at),
+            INDEX idx_photo_sheet_run_status (status, started_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS photo_sheet_conflicts (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            source_id BIGINT NOT NULL,
+            work_order_id BIGINT DEFAULT NULL,
+            physical_row INT UNSIGNED DEFAULT NULL,
+            conflict_type VARCHAR(50) NOT NULL,
+            safe_detail VARCHAR(500) NOT NULL DEFAULT '',
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            resolved_by BIGINT DEFAULT NULL,
+            resolved_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_photo_sheet_conflict_status (status, created_at),
+            INDEX idx_photo_sheet_conflict_ticket (work_order_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS photo_request_import_batches (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,

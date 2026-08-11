@@ -11,7 +11,6 @@ import {
   Collapse,
   Descriptions,
   Empty,
-  Input,
   Modal,
   Select,
   Skeleton,
@@ -75,7 +74,6 @@ export default function MobileTaskDetail() {
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
-  const [photoReason, setPhotoReason] = useState('')
   const [photoSubmitting, setPhotoSubmitting] = useState(false)
 
   const selectedSource = useMemo(
@@ -211,27 +209,28 @@ export default function MobileTaskDetail() {
   }
 
   const submitPhotoRequest = async () => {
-    if (!identityNumber || !title.trim() || !photoReason.trim()) return
+    if (!identityNumber || !title.trim()) return
     setPhotoSubmitting(true)
     try {
       await workflowApi.createTicket({
         type_code: 'photo_request',
         title: `${title.trim()}照片调取`,
-        description: photoReason.trim(),
+        description: '',
         priority: 'normal',
         form_data: {
           subject_type: 'task',
           subject_id: rowKey,
           subject_name: title.trim(),
           identity_number: identityNumber,
-          request_reason: photoReason.trim(),
+          request_reason: '',
           source_parser_type: parserType,
           source_row_key: rowKey,
+          community_name: selectedSource?.values.社区 || data?.task.community || '',
+          source_label: data?.workflow.label || parserType,
         },
         links: [{ object_type: 'mobile_task', object_id: `${parserType}:${rowKey}` }],
       })
       message.success('照片调取工单已提交')
-      setPhotoReason('')
       setPhotoRequestOpen(false)
     } catch (reason: any) {
       message.error(detailError(reason, '照片调取工单提交失败'))
@@ -528,17 +527,12 @@ export default function MobileTaskDetail() {
         onOk={() => void submitPhotoRequest()}
         onCancel={() => { if (!photoSubmitting) setPhotoRequestOpen(false) }}
       >
-        <p className="mb-3 text-sm text-[var(--app-text-secondary)]">
-          对象：{title || '未填写姓名'} · 身份证号：{identityNumber}
-        </p>
-        <Input.TextArea
-          rows={4}
-          maxLength={1000}
-          showCount
-          value={photoReason}
-          onChange={event => setPhotoReason(event.target.value)}
-          placeholder="请说明需要调取照片的原因"
-        />
+        <div className="space-y-2 text-sm text-[var(--app-text-secondary)]">
+          <div><span className="font-medium text-[var(--app-text)]">对象：</span>{title || '未填写姓名'}</div>
+          <div><span className="font-medium text-[var(--app-text)]">身份证号：</span>{identityNumber}</div>
+          <div><span className="font-medium text-[var(--app-text)]">社区：</span>{selectedSource?.values.社区 || data.task.community || '未填写'}</div>
+          <div><span className="font-medium text-[var(--app-text)]">来源：</span>{data.workflow.label || parserType}</div>
+        </div>
       </Modal>
     </div>
   )

@@ -1116,6 +1116,7 @@ async def get_mobile_task_detail(
             watch_by_row.get(row_key),
         ),
         "workflow": {
+            "label": workflow.label,
             "result_field": workflow.result_field,
             "phone_fields": list(workflow.phone_fields),
             "title_fields": list(workflow.title_fields),

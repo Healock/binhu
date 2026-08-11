@@ -55,6 +55,11 @@ const PHOTO_DETAIL_LABELS: Record<string, string> = {
   identity_number: '身份证号', source_parser_type: '任务类型', source_row_key: '任务行号',
   requested_from: '开始时间', requested_to: '结束时间', request_reason: '申请理由',
   result_status: '调取结果', result_note: '处理说明',
+  community_name: '任务社区', source_label: '数据来源', requester_name_snapshot: '原申请人',
+  requested_at: '腾讯申请日期', external_origin: '来源渠道', external_sync_status: '腾讯同步状态',
+  legacy_result_note: '历史备注', data_issue: '数据异常',
+  batch_completed_at: '腾讯批次完成时间', tencent_physical_row: '腾讯物理行',
+  photo_sheet_batch_id: '腾讯批次编号', row_sync_status: '来源行状态',
 }
 
 const TERMINAL = new Set(['approved', 'completed', 'rejected', 'cancelled', 'withdrawn'])
@@ -89,6 +94,9 @@ export default function WorkflowTickets() {
   const [pageSize, setPageSize] = useState(20)
   const [keyword, setKeyword] = useState('')
   const [typeCode, setTypeCode] = useState('')
+  const [photoSource, setPhotoSource] = useState('')
+  const [attachmentStatus, setAttachmentStatus] = useState('')
+  const [externalSyncStatus, setExternalSyncStatus] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [detail, setDetail] = useState<WorkOrderDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -110,7 +118,11 @@ export default function WorkflowTickets() {
     setError('')
     try {
       const [result, typeResult] = await Promise.all([
-        workflowApi.search({ view, keyword, type_code: typeCode, page: nextPage, page_size: nextPageSize }),
+        workflowApi.search({
+          view, keyword, type_code: typeCode, source_label: photoSource,
+          attachment_status: attachmentStatus, external_sync_status: externalSyncStatus,
+          page: nextPage, page_size: nextPageSize,
+        }),
         types.length ? Promise.resolve({ data: types }) : workflowApi.types(),
       ])
       setRows(result.data)
@@ -346,6 +358,33 @@ export default function WorkflowTickets() {
             value={keyword}
             onChange={event => setKeyword(event.target.value)}
             onSearch={() => void load(1)}
+          />
+          <Input
+            allowClear
+            className="max-w-48"
+            placeholder="照片数据来源"
+            value={photoSource}
+            onChange={event => setPhotoSource(event.target.value)}
+          />
+          <Select
+            allowClear
+            className="min-w-36"
+            placeholder="附件状态"
+            value={attachmentStatus || undefined}
+            onChange={value => setAttachmentStatus(value || '')}
+            options={[{ value: 'with', label: '有平台附件' }, { value: 'without', label: '无平台附件' }]}
+          />
+          <Select
+            allowClear
+            className="min-w-40"
+            placeholder="腾讯同步状态"
+            value={externalSyncStatus || undefined}
+            onChange={value => setExternalSyncStatus(value || '')}
+            options={[
+              { value: 'pending', label: '待同步' }, { value: 'retry', label: '重试中' },
+              { value: 'synced', label: '已同步' }, { value: 'linked', label: '腾讯来源已关联' },
+              { value: 'not_linked', label: '不关联腾讯' },
+            ]}
           />
           <Button onClick={() => void load(1)}>查询</Button>
         </div>

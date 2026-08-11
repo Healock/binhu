@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from database import db_manager
 from services.online_source import json_value
 from services.workflow_support import queue_user_ids, remove_attachment, workflow_notification
+from services.photo_sheet_sync import run_photo_sheet_maintenance_once
 from config import settings
 
 
@@ -102,4 +103,6 @@ async def run_workflow_scheduler() -> None:
     while True:
         with suppress(Exception):
             await run_workflow_maintenance_once()
+        with suppress(Exception):
+            await run_photo_sheet_maintenance_once()
         await asyncio.sleep(300)

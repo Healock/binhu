@@ -103,9 +103,16 @@ ACTION_LABELS: dict[str, str] = {
     "workflow.attachment.delete": "删除工单附件",
     "workflow.photo_import.preview": "预览照片调取批次",
     "workflow.photo_import.confirm": "确认照片调取批次",
+    "workflow.photo_sheet.config": "修改调照片名单配置",
+    "workflow.photo_sheet.preview": "预览调照片历史名单",
+    "workflow.photo_sheet.import": "导入调照片历史名单",
+    "workflow.photo_sheet.sync": "同步调照片名单",
+    "workflow.photo_sheet.conflict_retry": "重试调照片名单冲突",
 }
 
 TARGET_TYPE_LABELS: dict[str, str] = {
+    "photo_sheet": "调照片名单",
+    "photo_sheet_conflict": "调照片名单冲突",
     "work_log_daily_detail": "工作每日明细",
     "container": "系统日志",
     "backup": "数据库备份",

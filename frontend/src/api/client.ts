@@ -953,6 +953,7 @@ export interface MobileTaskSource {
 export interface MobileTaskDetailData {
   task: MobileTaskItem
   workflow: {
+    label: string
     result_field: string
     phone_fields: string[]
     title_fields: string[]
@@ -2299,7 +2300,7 @@ export interface WorkOrderSummary {
   ticket_no: string
   type_code: string
   title: string
-  requester_user_id: number
+  requester_user_id: number | null
   current_assignee_user_id: number | null
   current_queue: string
   status: string
@@ -2339,7 +2340,7 @@ export interface WorkOrderAttachment {
 
 export interface WorkOrderDetail extends WorkOrderSummary {
   description: string
-  requester_user_id: number
+  requester_user_id: number | null
   form_data: Record<string, unknown>
   type_detail?: Record<string, unknown>
   steps: WorkOrderStep[]
@@ -2376,6 +2377,36 @@ export interface PhotoImportBatch {
   created_at: string | null
   updated_at: string | null
   items?: PhotoImportItem[]
+}
+
+export interface PhotoSheetConfig {
+  source_code: string
+  file_url: string
+  configured: boolean
+  header_row: number
+  read_enabled: boolean
+  write_enabled: boolean
+  import_applied_at: string | null
+  legacy_cutoff_row: number | null
+  last_cursor_row: number
+  last_full_sync_date: string | null
+  last_sync_at: string | null
+  last_sync_status: string
+  last_error: string
+}
+
+export interface PhotoSheetPreview {
+  rows_read: number
+  requests: number
+  markers: number
+  historical_completed: number
+  pending_after_last_marker: number
+  issue_count: number
+  duplicate_groups: number
+  last_marker_row: number | null
+  preview_token: string
+  created_tickets?: number
+  message?: string
 }
 
 export const workflowApi = {
@@ -2465,5 +2496,38 @@ export const workflowApi = {
   },
   async photoImport(batchId: number) {
     return (await api.get(`/workflow/photo-imports/${batchId}`, activeRequest)).data as PhotoImportBatch
+  },
+  async photoSheetConfig() {
+    return (await api.get('/workflow/photo-sheet/config', activeRequest)).data as PhotoSheetConfig
+  },
+  async savePhotoSheetConfig(payload: Pick<PhotoSheetConfig, 'file_url' | 'header_row' | 'read_enabled' | 'write_enabled'>) {
+    return (await api.put('/workflow/photo-sheet/config', payload)).data as PhotoSheetConfig
+  },
+  async previewPhotoSheet() {
+    return (await api.post('/workflow/photo-sheet/preview', {}, activeRequest)).data as PhotoSheetPreview
+  },
+  async importPhotoSheet(previewToken: string) {
+    return (await api.post('/workflow/photo-sheet/import', { preview_token: previewToken }, {
+      ...activeRequest,
+      timeout: 60 * 60 * 1000,
+    })).data as PhotoSheetPreview
+  },
+  async syncPhotoSheet(full = false) {
+    return (await api.post('/workflow/photo-sheet/sync', {}, { ...activeRequest, params: { full } })).data
+  },
+  async photoSheetRuns(page = 1, pageSize = 20) {
+    return (await api.get('/workflow/photo-sheet/runs', {
+      ...activeRequest,
+      params: { page, page_size: pageSize },
+    })).data
+  },
+  async photoSheetIssues(kind: 'data' | 'requester' | 'conflict' | 'outbox', page = 1, pageSize = 50) {
+    return (await api.get('/workflow/photo-sheet/issues', {
+      ...activeRequest,
+      params: { kind, page, page_size: pageSize },
+    })).data
+  },
+  async retryPhotoSheetConflict(conflictId: number) {
+    return (await api.post(`/workflow/photo-sheet/conflicts/${conflictId}/retry`, {})).data
   },
 }

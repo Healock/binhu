@@ -383,6 +383,22 @@ test('模型三备注会进入手机任务编辑字段', () => {
   )
 })
 
+test('任务快捷调照片不再要求填写原因并带入腾讯名单字段', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.equal(detailSource.includes('photoReason'), false)
+  assert.equal(detailSource.includes('请说明需要调取照片的原因'), false)
+  assert.match(detailSource, /request_reason:\s*''/)
+  assert.match(detailSource, /community_name:/)
+  assert.match(detailSource, /source_label:\s*data\?\.workflow\.label/)
+  assert.match(detailSource, /对象：/)
+  assert.match(detailSource, /身份证号：/)
+  assert.match(detailSource, /社区：/)
+  assert.match(detailSource, /来源：/)
+})
+
 test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更多筛选可用', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),

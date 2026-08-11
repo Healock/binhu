@@ -27,6 +27,7 @@ from services.workflow_support import (
     workflow_notification,
 )
 from services.registry_security import hmac_digest, normalize_identity
+from services.photo_sheet_sync import enqueue_outbox
 
 
 router = APIRouter(prefix="/api/workflow", tags=["工单"])
@@ -80,6 +81,8 @@ def _photo_form_values(form_data: dict) -> dict[str, str]:
         "identity_hmac_version": str(hmac_version),
         "source_parser_type": str(form_data.get("source_parser_type") or "")[:100],
         "source_row_key": str(form_data.get("source_row_key") or "")[:190],
+        "community_name": str(form_data.get("community_name") or "")[:200],
+        "source_label": str(form_data.get("source_label") or "")[:200],
     }
 
 
@@ -151,6 +154,22 @@ def _validate_form_data(schema_value, form_data: dict) -> dict:
 
 def _can_manage(user: dict) -> bool:
     return WORKFLOW_TICKET_MANAGE in set(user.get("permissions") or [])
+
+
+async def _formal_community(cur, value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    schema = platform_schema().replace("`", "")
+    await cur.execute(
+        f"SELECT community.name FROM `{schema}`._communities community WHERE community.name=%s "
+        f"UNION SELECT community.name FROM `{schema}`._community_aliases alias "
+        f"JOIN `{schema}`._communities community ON community.id=alias.community_id "
+        "WHERE alias.alias=%s LIMIT 1",
+        (normalized, normalized),
+    )
+    row = await cur.fetchone()
+    return str(row[0]).strip() if row else ""
 
 
 async def _can_view_ticket(cur, ticket_id: int, user: dict) -> tuple:
@@ -260,7 +279,7 @@ def _ticket_payload(row):
         "workflow_version_id": int(row[3]),
         "title": row[4],
         "description": row[5],
-        "requester_user_id": int(row[6]),
+        "requester_user_id": int(row[6]) if row[6] is not None else None,
         "current_assignee_user_id": row[7],
         "current_queue": row[8],
         "status": row[9],
@@ -426,7 +445,17 @@ async def create_ticket(
             version = await cur.fetchone()
             if not version:
                 raise HTTPException(400, "工单类型尚未发布流程")
-            form_data = _validate_form_data(version[1], data.form_data)
+            submitted_form_data = dict(data.form_data)
+            is_task_photo_request = bool(
+                data.type_code.strip() == "photo_request"
+                and str(submitted_form_data.get("source_parser_type") or "").strip()
+                and str(submitted_form_data.get("source_row_key") or "").strip()
+            )
+            if is_task_photo_request and not str(submitted_form_data.get("request_reason") or "").strip():
+                # 已有已发布流程仍可能把申请理由标为必填。快捷入口不再让
+                # 网格员重复填写，用内部占位通过旧流程校验，详情中仍保存为空。
+                submitted_form_data["request_reason"] = "在线任务快捷申请"
+            form_data = _validate_form_data(version[1], submitted_form_data)
             steps = await _published_steps(cur, int(version[0]))
             if not steps:
                 raise HTTPException(409, "工单流程没有可执行节点")
@@ -473,20 +502,33 @@ async def create_ticket(
             )
             if data.type_code == "photo_request":
                 photo_values = _photo_form_values(data.form_data)
+                if is_task_photo_request:
+                    formal_community = await _formal_community(cur, photo_values["community_name"])
+                    if not formal_community:
+                        raise HTTPException(422, "当前任务社区无法归一，暂时不能写入调照片名单")
+                    photo_values["community_name"] = formal_community
                 await cur.execute(
                     "INSERT INTO photo_request_details "
                     "(work_order_id, subject_type, subject_id, subject_name, identity_number, identity_hmac, "
-                    "identity_hmac_version, source_parser_type, source_row_key, request_reason, requested_from, requested_to) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "identity_hmac_version, source_parser_type, source_row_key, community_name, source_label, "
+                    "requester_name_snapshot, requested_at, external_origin, external_sync_status, request_reason, "
+                    "requested_from, requested_to) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (ticket_id, str(form_data.get("subject_type") or "")[:40],
                      str(form_data.get("subject_id") or "")[:190],
                      photo_values["subject_name"], photo_values["identity_number"],
                      photo_values["identity_hmac"], int(photo_values["identity_hmac_version"]),
                      photo_values["source_parser_type"], photo_values["source_row_key"],
-                     str(form_data.get("request_reason") or "")[:1000],
+                     photo_values["community_name"], photo_values["source_label"],
+                     str((user.get("member") or {}).get("name") or user.get("display_name") or user.get("username") or "")[:100],
+                     datetime.utcnow(),
+                     "platform_task" if photo_values["source_parser_type"] and photo_values["source_row_key"] else "platform",
+                     "pending" if photo_values["source_parser_type"] and photo_values["source_row_key"] else "not_linked",
+                     "" if is_task_photo_request else str(form_data.get("request_reason") or "")[:1000],
                      form_data.get("requested_from") or None,
                      form_data.get("requested_to") or None),
                 )
+                if photo_values["source_parser_type"] and photo_values["source_row_key"]:
+                    await enqueue_outbox(cur, ticket_id, "append_request")
             elif data.type_code == "leave_request":
                 member_id = (user.get("member") or {}).get("id")
                 if not member_id:
@@ -568,8 +610,13 @@ async def get_ticket(
         elif row[2] == "photo_request":
             await cur.execute(
                 "SELECT subject_type, subject_id, subject_name, identity_number, source_parser_type, source_row_key, "
-                "requested_from, requested_to, request_reason, result_status, result_note "
-                "FROM photo_request_details WHERE work_order_id=%s",
+                "requested_from, requested_to, request_reason, result_status, result_note, community_name, "
+                "source_label, requester_name_snapshot, requested_at, external_origin, external_sync_status, "
+                "legacy_result_note, data_issue, batch.completed_at, mapping.physical_row, mapping.batch_id, "
+                "mapping.sync_status FROM photo_request_details detail "
+                "LEFT JOIN photo_sheet_rows mapping ON mapping.work_order_id=detail.work_order_id "
+                "LEFT JOIN photo_sheet_batches batch ON batch.id=mapping.batch_id "
+                "WHERE detail.work_order_id=%s",
                 (ticket_id,),
             )
             detail_row = await cur.fetchone()
@@ -614,6 +661,12 @@ async def get_ticket(
             "requested_from": _iso(detail_row[6]), "requested_to": _iso(detail_row[7]),
             "request_reason": detail_row[8], "result_status": detail_row[9],
             "result_note": detail_row[10],
+            "community_name": detail_row[11], "source_label": detail_row[12],
+            "requester_name_snapshot": detail_row[13], "requested_at": _iso(detail_row[14]),
+            "external_origin": detail_row[15], "external_sync_status": detail_row[16],
+            "legacy_result_note": detail_row[17], "data_issue": detail_row[18],
+            "batch_completed_at": _iso(detail_row[19]), "tencent_physical_row": detail_row[20],
+            "photo_sheet_batch_id": detail_row[21], "row_sync_status": detail_row[22],
         }
     return payload
 
@@ -800,6 +853,13 @@ async def decide_ticket(
                 await _apply_leave_attendance(cur, ticket_id, user["id"])
             elif row[4] == "leave_request" and next_status == "cancelled":
                 await _deactivate_leave_attendance(cur, ticket_id)
+            elif row[4] == "photo_request" and next_status in {"approved", "completed"} and data.result_status == "found":
+                await cur.execute(
+                    "SELECT external_origin FROM photo_request_details WHERE work_order_id=%s", (ticket_id,),
+                )
+                origin = await cur.fetchone()
+                if origin and origin[0] in {"platform_task", "tencent"}:
+                    await enqueue_outbox(cur, ticket_id, "mark_completed")
             if next_status in {"approved", "completed", "rejected", "cancelled"}:
                 await cur.execute(
                     "UPDATE work_order_attachments SET retention_until=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 DAY) "
@@ -812,7 +872,7 @@ async def decide_ticket(
                 (ticket_id, step[0], data.action, user["id"], row[0], next_status,
                  json.dumps({"note_length": len(data.note)}, ensure_ascii=False)),
             )
-            recipients = [int(row[3])]
+            recipients = [int(row[3])] if row[3] is not None else []
             if next_status == "queued":
                 recipients.extend(await queue_user_ids(cur, next_queue))
             await workflow_notification(

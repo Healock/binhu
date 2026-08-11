@@ -47,6 +47,7 @@ from services.photo_import import (
     save_photo_import_zip,
 )
 from services.registry_security import hmac_digest
+from services.photo_sheet_sync import enqueue_outbox
 
 
 router = APIRouter(prefix="/api/workflow", tags=["工单"])
@@ -156,6 +157,10 @@ class TicketSearch(BaseModel):
     status: list[str] = Field(default_factory=list, max_length=20)
     type_code: str = Field(default="", max_length=60)
     keyword: str = Field(default="", max_length=100)
+    source_label: str = Field(default="", max_length=200)
+    batch_id: int | None = Field(default=None, gt=0)
+    attachment_status: str = Field(default="", pattern="^(|with|without)$")
+    external_sync_status: str = Field(default="", max_length=30)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
 
@@ -382,6 +387,10 @@ async def search_tickets(
     if data.view == "created":
         where.append("requester_user_id=%s")
         params.append(user["id"])
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM photo_sheet_rows legacy_map "
+            "WHERE legacy_map.work_order_id=work_orders.id AND legacy_map.is_legacy=1)"
+        )
     elif data.view == "claimable":
         if not position and not _can_manage(user):
             where.append("1=0")
@@ -397,7 +406,14 @@ async def search_tickets(
         where.append("requester_user_id=%s AND status='pending_requester'")
         params.append(user["id"])
     elif data.view == "processed":
-        where.append("EXISTS (SELECT 1 FROM work_order_events event WHERE event.work_order_id=work_orders.id AND event.actor_user_id=%s AND event.event_type IN ('claim','approve','reject','return','complete','transfer'))")
+        processed = "EXISTS (SELECT 1 FROM work_order_events event WHERE event.work_order_id=work_orders.id AND event.actor_user_id=%s AND event.event_type IN ('claim','approve','reject','return','complete','transfer'))"
+        if workflow_can_view_all(user):
+            processed = (
+                f"({processed} OR (work_orders.status IN ('approved','completed','rejected','cancelled','withdrawn') "
+                "AND EXISTS (SELECT 1 FROM photo_sheet_rows legacy_map WHERE legacy_map.work_order_id=work_orders.id "
+                "AND legacy_map.is_legacy=1)))"
+            )
+        where.append(processed)
         params.append(user["id"])
     elif data.view == "all":
         if not workflow_can_view_all(user):
@@ -424,6 +440,30 @@ async def search_tickets(
     if data.keyword.strip():
         where.append("(ticket_no LIKE %s OR title LIKE %s)")
         params.extend([f"%{data.keyword.strip()}%", f"%{data.keyword.strip()}%"])
+    if data.source_label.strip():
+        where.append(
+            "EXISTS (SELECT 1 FROM photo_request_details photo_filter "
+            "WHERE photo_filter.work_order_id=work_orders.id AND photo_filter.source_label=%s)"
+        )
+        params.append(data.source_label.strip())
+    if data.batch_id:
+        where.append(
+            "EXISTS (SELECT 1 FROM photo_sheet_rows photo_map "
+            "WHERE photo_map.work_order_id=work_orders.id AND photo_map.batch_id=%s)"
+        )
+        params.append(data.batch_id)
+    if data.attachment_status:
+        exists_sql = (
+            "EXISTS (SELECT 1 FROM work_order_attachments attachment_filter "
+            "WHERE attachment_filter.work_order_id=work_orders.id AND attachment_filter.deleted_at IS NULL)"
+        )
+        where.append(exists_sql if data.attachment_status == "with" else f"NOT {exists_sql}")
+    if data.external_sync_status.strip():
+        where.append(
+            "EXISTS (SELECT 1 FROM photo_request_details sync_filter "
+            "WHERE sync_filter.work_order_id=work_orders.id AND sync_filter.external_sync_status=%s)"
+        )
+        params.append(data.external_sync_status.strip())
     clause = " WHERE " + " AND ".join(where) if where else ""
     columns = (
         "id, ticket_no, type_code, title, requester_user_id, current_assignee_user_id, current_queue, "
@@ -440,7 +480,7 @@ async def search_tickets(
     now = datetime.utcnow()
     return {"total": total, "page": data.page, "page_size": data.page_size, "data": [
         {"id": int(row[0]), "ticket_no": row[1], "type_code": row[2], "title": row[3],
-         "requester_user_id": int(row[4]), "current_assignee_user_id": row[5], "current_queue": row[6],
+         "requester_user_id": int(row[4]) if row[4] is not None else None, "current_assignee_user_id": row[5], "current_queue": row[6],
          "status": row[7], "priority": row[8], "due_at": _iso(row[9]), "version_no": int(row[10]),
          "submitted_at": _iso(row[11]), "completed_at": _iso(row[12]), "created_at": _iso(row[13]),
          "updated_at": _iso(row[14]), "overdue": bool(row[9] and row[9] < now and row[7] not in {"approved", "completed", "rejected", "cancelled", "withdrawn"})}
@@ -1242,8 +1282,15 @@ async def confirm_photo_import(
                     "WHERE work_order_id=%s AND deleted_at IS NULL",
                     (ticket_id,),
                 )
+                await cur.execute(
+                    "SELECT external_origin FROM photo_request_details WHERE work_order_id=%s",
+                    (ticket_id,),
+                )
+                external_origin = await cur.fetchone()
+                if external_origin and external_origin[0] in {"platform_task", "tencent"}:
+                    await enqueue_outbox(cur, ticket_id, "mark_completed")
                 await workflow_notification(
-                    cur, user_ids=[int(ticket[0])], ticket_id=ticket_id,
+                    cur, user_ids=[ticket[0]] if ticket[0] is not None else [], ticket_id=ticket_id,
                     event_key=f"photo_done_{batch_id}", title="照片调取完成",
                     content=f"工单 #{ticket_id} 的照片已调取完成，可以打开工单查看。",
                 )
