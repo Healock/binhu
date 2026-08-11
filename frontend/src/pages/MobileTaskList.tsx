@@ -24,6 +24,7 @@ import {
 import { useAuth } from '../context/AuthContext'
 import { isFlowTaskElevated, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
 import {
+  formatMobileTaskDeadline,
   mobileTaskCanLaunchTelephone,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
@@ -162,6 +163,7 @@ export default function MobileTaskList() {
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkMode, setBulkMode] = useState<'single' | 'balanced'>('single')
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
   const [bulkSaving, setBulkSaving] = useState(false)
   const optionsRequestId = useRef(0)
@@ -187,6 +189,7 @@ export default function MobileTaskList() {
     return canBulkAssign
       && !task.inspector
       && task.state !== 'completed'
+      && !task.conflict
       && Boolean(community)
       && Boolean(assignment.inspectors_by_community[community]?.length)
   })
@@ -201,6 +204,7 @@ export default function MobileTaskList() {
     setSelectionMode(false)
     setSelectedRows(new Set())
     setBulkInspector(undefined)
+    setBulkMode('single')
   }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
 
   const toggleSelected = (rowKey: string, checked: boolean) => {
@@ -238,22 +242,35 @@ export default function MobileTaskList() {
     setSelectionMode(false)
     setSelectedRows(new Set())
     setBulkInspector(undefined)
+    setBulkMode('single')
   }
 
   const submitBulkAssignment = async () => {
-    if (!bulkInspector || !selectedRows.size) return
+    if (!selectedRows.size || (bulkMode === 'single' && !bulkInspector)) return
     setBulkSaving(true)
     try {
       const result = await bulkAssignMobileTasks(parserType, {
-        row_keys: [...selectedRows],
-        inspector: bulkInspector,
+        row_keys: selectedTasks.map(task => task.row_key),
+        inspector: bulkMode === 'single' ? bulkInspector : undefined,
+        mode: bulkMode,
       })
-      if (result.updated) message.success(`已分配 ${result.updated} 条任务给 ${result.inspector}`)
+      if (result.updated) {
+        if (result.mode === 'balanced') {
+          const summary = Object.entries(result.assignment_counts)
+            .filter(([, count]) => count > 0)
+            .map(([name, count]) => `${name} ${count}条`)
+            .join('、')
+          message.success(`已平均分配 ${result.updated} 条任务${summary ? `：${summary}` : ''}`)
+        } else {
+          message.success(`已分配 ${result.updated} 条任务给 ${result.inspector}`)
+        }
+      }
       if (result.skipped) message.warning(`有 ${result.skipped} 条任务未处理，请查看原因后刷新`)
       setSelectionMode(false)
       setSelectedRows(new Set())
       setBulkOpen(false)
       setBulkInspector(undefined)
+      setBulkMode('single')
       await load(1)
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '批量分配失败')
@@ -588,7 +605,7 @@ export default function MobileTaskList() {
       </div>
 
       {canBulkAssign && (
-        <section className="app-card mobile-task-bulk-toolbar">
+        <section className={`app-card mobile-task-bulk-toolbar${selectionMode ? ' is-sticky' : ''}`}>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type={selectionMode ? 'primary' : 'default'}
@@ -612,9 +629,16 @@ export default function MobileTaskList() {
                   type="primary"
                   size="small"
                   disabled={!selectedCount}
-                  onClick={() => setBulkOpen(true)}
+                  onClick={() => { setBulkMode('single'); setBulkOpen(true) }}
                 >
-                  批量分配核查人
+                  指定分配
+                </Button>
+                <Button
+                  size="small"
+                  disabled={!selectedCount || !selectedCommunity || bulkInspectorOptions.length < 2}
+                  onClick={() => { setBulkMode('balanced'); setBulkOpen(true) }}
+                >
+                  平均分配
                 </Button>
               </>
             )}
@@ -645,6 +669,7 @@ export default function MobileTaskList() {
             const isAssignable = canBulkAssign
               && !task.inspector
               && task.state !== 'completed'
+              && !task.conflict
               && Boolean(taskCommunity)
               && Boolean(assignment.inspectors_by_community[taskCommunity]?.length)
             const canSelect = isAssignable
@@ -659,6 +684,7 @@ export default function MobileTaskList() {
               && originalAddress
               && currentAddress !== originalAddress,
             )
+            const deadline = formatMobileTaskDeadline(task.summary.deadline)
             const openOrSelectTask = () => {
               if (selectionMode) {
                 if (!isAssignable) {
@@ -768,7 +794,7 @@ export default function MobileTaskList() {
                       {primaryAddress && (
                         <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--address">
                           <dt>{currentAddress ? '现住址' : '地址'}</dt>
-                          <dd title={primaryAddress}>{primaryAddress}</dd>
+                          <dd className="mobile-task-item-card__key-text" title={primaryAddress}>{primaryAddress}</dd>
                         </div>
                       )}
                       {showOriginalAddress && (
@@ -803,9 +829,9 @@ export default function MobileTaskList() {
                       <span title={task.inspector || '待分配'}>{task.inspector || '待分配'}</span>
                     </div>
                     <div className="mobile-task-item-card__date">
-                      {task.first_dispatch_at
-                        ? `首次下发 ${task.first_dispatch_at}`
-                        : task.summary.date || (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
+                      {deadline
+                        ? `截止 ${deadline}`
+                        : (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
                     </div>
                   </div>
                   <MobilePhonePicker
@@ -833,30 +859,51 @@ export default function MobileTaskList() {
 
       <Modal
         open={bulkOpen}
-        title="批量分配核查人"
-        okText="确认分配"
+        title={bulkMode === 'balanced' ? '平均分配核查人' : '指定分配核查人'}
+        okText={bulkMode === 'balanced' ? '确认平均分配' : '确认分配'}
         cancelText="取消"
         confirmLoading={bulkSaving}
-        okButtonProps={{ disabled: !bulkInspector || !selectedCount || !selectedCommunity }}
+        okButtonProps={{
+          disabled: !selectedCount
+            || !selectedCommunity
+            || (bulkMode === 'single' && !bulkInspector),
+        }}
         onOk={() => void submitBulkAssignment()}
         onCancel={() => { if (!bulkSaving) setBulkOpen(false) }}
       >
         <div className="space-y-3 text-sm">
           {selectedCommunity ? (
-            <p>将把当前选中的 {selectedCount} 条{selectedCommunity}任务分配给该社区的一名在岗组员。</p>
+            <p>
+              {bulkMode === 'balanced'
+                ? `将把当前选中的 ${selectedCount} 条${selectedCommunity}任务，尽量平均分给该社区的 ${bulkInspectorOptions.length} 名在岗组员。`
+                : `将把当前选中的 ${selectedCount} 条${selectedCommunity}任务分配给该社区的一名在岗组员。`}
+            </p>
           ) : (
             <Alert type="warning" showIcon message="批量分配必须一次只选择同一社区的任务" />
           )}
-          <Select
-            className="w-full"
-            size="large"
-            showSearch
-            optionFilterProp="label"
-            placeholder="请选择核查人"
-            value={bulkInspector}
-            options={bulkInspectorOptions.map(value => ({ value, label: value }))}
-            onChange={setBulkInspector}
-          />
+          {bulkMode === 'single' ? (
+            <Select
+              className="w-full"
+              size="large"
+              showSearch
+              optionFilterProp="label"
+              placeholder="请选择核查人"
+              value={bulkInspector}
+              options={bulkInspectorOptions.map(value => ({ value, label: value }))}
+              onChange={setBulkInspector}
+            />
+          ) : (
+            <div className="mobile-task-balanced-preview">
+              {bulkInspectorOptions.map((name, index) => {
+                const base = Math.floor(selectedCount / bulkInspectorOptions.length)
+                const remainder = selectedCount % bulkInspectorOptions.length
+                const count = base + (index < remainder ? 1 : 0)
+                return (
+                  <span key={name}>{name}<strong>{count} 条</strong></span>
+                )
+              })}
+            </div>
+          )}
           <p className="text-xs text-[var(--app-text-secondary)]">已有核查人的任务、已完成任务、来源冲突任务会被跳过，不会被覆盖。</p>
         </div>
       </Modal>

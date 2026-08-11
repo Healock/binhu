@@ -891,6 +891,7 @@ export interface MobileTaskSummaryFields {
   address: string
   current_address: string
   original_address: string
+  deadline: string
   date: string
   result: string
   analysis: string
@@ -1096,13 +1097,19 @@ export async function updateMobileTask(
 
 export async function bulkAssignMobileTasks(
   parserType: string,
-  payload: { row_keys: string[]; inspector: string },
+  payload: {
+    row_keys: string[]
+    inspector?: string
+    mode?: 'single' | 'balanced'
+  },
 ): Promise<{
   updated: number
   skipped: number
   failed: number
   details: Array<{ row_key: string; reason: string }>
   inspector: string
+  mode: 'single' | 'balanced'
+  assignment_counts: Record<string, number>
 }> {
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/bulk-assign`,

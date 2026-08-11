@@ -10,6 +10,7 @@ import {
   mobileTaskPhoneOptions,
   mobileTaskPhoneValue,
   mobileTaskSourceTags,
+  formatMobileTaskDeadline,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
@@ -37,6 +38,14 @@ test('组员和组长手机端自动分流，岗位判断也允许桌面任务�
   assert.equal(shouldUseMobileTaskWorkbench('组员', true), true)
   assert.equal(shouldUseMobileTaskWorkbench('组员', false), false)
   assert.equal(shouldUseMobileTaskWorkbench('基础管控', true), false)
+})
+
+test('任务截止日期统一显示为 MM-dd', () => {
+  assert.equal(formatMobileTaskDeadline('2026-08-10'), '08-10')
+  assert.equal(formatMobileTaskDeadline('8.10'), '08-10')
+  assert.equal(formatMobileTaskDeadline('8.1'), '08-01')
+  assert.equal(formatMobileTaskDeadline('8月10日'), '08-10')
+  assert.equal(formatMobileTaskDeadline('待补充'), '待补充')
 })
 
 test('管理员和超级管理员可以进入流口岗任务工作台', () => {
@@ -295,6 +304,10 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /const \[selectionMode, setSelectionMode\] = useState\(false\)/)
   assert.match(pageSource, /\{selectionMode \? '退出选择' : '选择'\}/)
   assert.match(pageSource, /onClick=\{openOrSelectTask\}/)
+  assert.match(pageSource, /bulkMode/)
+  assert.match(pageSource, /平均分配/)
+  assert.match(pageSource, /assignment_counts/)
+  assert.match(pageSource, /formatMobileTaskDeadline/)
   assert.match(pageSource, /aria-pressed=\{selectionMode \? isSelected : undefined\}/)
   assert.match(pageSource, /isSelected \? 'is-selected'/)
   assert.ok(
@@ -315,6 +328,8 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /\.mobile-task-item-card__body\s*\{[\s\S]*flex:\s*1[\s\S]*flex-direction:\s*column/)
   assert.match(styleSource, /\.mobile-task-source-cloud--card\s*\{[\s\S]*margin-top:\s*auto/)
   assert.match(styleSource, /\.mobile-task-item-card\.is-selected[\s\S]*box-shadow:/)
+  assert.match(styleSource, /\.mobile-task-bulk-toolbar\.is-sticky[\s\S]*position:\s*sticky/)
+  assert.match(styleSource, /\.mobile-task-balanced-preview/)
   assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*min-width:\s*0/)
   assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*font-size:\s*20px/)
   assert.match(pageSource, /mobile-task-item-card__key-row--phone/)
@@ -332,9 +347,12 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /\.mobile-task-item-card__key-row--old-address dt,[\s\S]*color:\s*var\(--app-text-muted\)[\s\S]*font-size:\s*12px/)
   const keyInfoStyle = styleSource.match(/\.mobile-task-item-card__key-info\s*\{([^}]*)\}/)?.[1] || ''
   assert.doesNotMatch(keyInfoStyle, /background|border/)
-  assert.match(keyInfoStyle, /gap:\s*3px/)
+  assert.match(keyInfoStyle, /gap:\s*2px/)
   assert.match(styleSource, /\.mobile-task-copy-value\s*\{[\s\S]*height:\s*22px/)
   assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn\s*\{[\s\S]*height:\s*22px/)
+  assert.match(styleSource, /\.mobile-task-item-card__key-row\s*\{[\s\S]*min-height:\s*24px[\s\S]*align-items:\s*center/)
+  assert.match(styleSource, /\.mobile-task-item-card__key-row dd\s*\{[\s\S]*font-weight:\s*650[\s\S]*line-height:\s*22px/)
+  assert.match(styleSource, /\.mobile-task-item-card__key-row--address dd\s*\{[\s\S]*font-weight:\s*650[\s\S]*line-height:\s*22px/)
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
 })
 

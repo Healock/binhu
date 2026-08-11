@@ -424,6 +424,8 @@ export function QuerySpreadsheet({
     let selectedWorksheetRow = -1
     const pendingEditedCells = new Set<string>()
     const explicitEditedValues = new Map<string, string>()
+    const editingValues = new Map<string, string>()
+    let internalClipboard: string[][] | null = null
     let pendingPaste: { range: IRange; values: string[][] } | null = null
 
     const markEditedRange = (range: IRange, values?: string[][]) => {
@@ -448,6 +450,18 @@ export function QuerySpreadsheet({
       }
       if (typeof value === 'string') return value
       return undefined
+    }
+
+    const clipboardValues = (params: {
+      text?: string
+      fromRange?: { getValues?: () => unknown[][] }
+    }): string[][] | null => {
+      if (typeof params.text === 'string') return parseQuerySheetClipboard(params.text)
+      const values = params.fromRange?.getValues?.()
+      if (!Array.isArray(values)) return null
+      return values.map(row => row.map(value => (
+        value === null || value === undefined ? '' : String(value)
+      )))
     }
 
     const restoreChanges = (changes: QuerySheetCellChange[]) => {
@@ -499,13 +513,13 @@ export function QuerySpreadsheet({
       })
       const automaticConversions: QuerySheetCellChange[] = []
       for (const key of editedCells) {
-        if (editedValues.has(key)) continue
         const [rowText, columnText] = key.split(':')
         const rowOffset = Number(rowText) - 1
         const columnIndex = Number(columnText)
         const descriptor = sheetRows[rowOffset]
         const column = columns[columnIndex]
         if (!descriptor || !column) continue
+        if (editedValues.has(key) && !/(日期|时间)/u.test(column)) continue
         const before = String(descriptor.data[column] ?? '')
         const after = String(values[rowOffset]?.[columnIndex] ?? '')
         if (!isQuerySheetAutomaticTextConversion(column, before, after)) continue
@@ -635,15 +649,19 @@ export function QuerySpreadsheet({
         } else if (column === dependentOptions?.inspector_column) {
           applyInspectorValidation(params.row - 1)
         }
+        editingValues.delete(querySheetCellKey(params.row, params.column))
+      }),
+      univerAPI.addEvent(univerAPI.Event.BeforeClipboardChange, params => {
+        internalClipboard = clipboardValues(params)
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeClipboardPaste, params => {
         const active = worksheet.getActiveRange()?.getRange()
-        if (typeof params.text !== 'string') {
+        const pasted = clipboardValues(params) || internalClipboard
+        if (!pasted) {
           params.cancel = true
           callbacksRef.current.onBlocked('无法识别剪贴板内容，本次粘贴已取消')
           return
         }
-        const pasted = parseQuerySheetClipboard(params.text || '')
         const rowCount = pasted.length
         const columnCount = Math.max(0, ...pasted.map(row => row.length))
         if (
@@ -715,9 +733,16 @@ export function QuerySpreadsheet({
           scheduleReconcile()
         }
       }),
+      univerAPI.addEvent(univerAPI.Event.SheetEditChanging, params => {
+        const editValue = richTextToPlainText(params.value)
+        if (editValue !== undefined && params.row >= 1 && params.column >= 0) {
+          editingValues.set(querySheetCellKey(params.row, params.column), editValue)
+        }
+      }),
       univerAPI.addEvent(univerAPI.Event.BeforeSheetEditEnd, params => {
         if (params.isConfirm && params.row >= 1 && params.column >= 0) {
-          const editValue = richTextToPlainText(params.value)
+          const key = querySheetCellKey(params.row, params.column)
+          const editValue = editingValues.get(key) ?? richTextToPlainText(params.value)
           markEditedRange(
             {
               startRow: params.row,
@@ -730,6 +755,7 @@ export function QuerySpreadsheet({
         }
       }),
       univerAPI.addEvent(univerAPI.Event.SheetEditEnded, params => {
+        editingValues.delete(querySheetCellKey(params.row, params.column))
         if (!params.isConfirm) return
         if (params.row >= 1 && params.column >= 0) {
           markEditedRange({

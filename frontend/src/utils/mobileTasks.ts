@@ -45,6 +45,25 @@ export function mobileTaskSourceTags(value: string): string[] {
   return tags
 }
 
+/**
+ * 任务卡片只展示截止日期的月日。兼容腾讯常见的点、横线、斜线和中文
+ * 月日格式；无法可靠识别时保留原值，避免凭空猜测业务日期。
+ */
+export function formatMobileTaskDeadline(value: string): string {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const normalized = text
+    .replace(/[年月/.]/g, match => (match === '年' ? '-' : match === '月' ? '-' : '-'))
+    .replace(/日/g, '')
+  const parts = normalized.match(/^(?:(\d{4})-)?(\d{1,2})-(\d{1,2})(?:\D.*)?$/)
+  if (!parts) return text
+  const month = Number(parts[2])
+  const day = Number(parts[3])
+  if (!Number.isInteger(month) || month < 1 || month > 12) return text
+  if (!Number.isInteger(day) || day < 1 || day > 31) return text
+  return `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
 export function mobileTaskCanLaunchTelephone(
   userAgent: string,
   userAgentMobile = false,

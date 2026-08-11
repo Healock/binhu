@@ -539,12 +539,14 @@ class TxDocsClient:
         column_index: int,
         value: str,
         metadata: dict | None = None,
+        column_name: str = "",
     ) -> dict:
         """按原单元格类型构建单格更新，物理行号为一基。"""
         metadata = metadata or {"type": "text"}
         cell_type = metadata.get("write_type") or metadata.get("type")
         cell_value: dict
-        if cell_type == "number" and str(value).strip():
+        preserve_as_text = any(label in str(column_name) for label in ("日期", "时间"))
+        if cell_type == "number" and str(value).strip() and not preserve_as_text:
             try:
                 number = float(str(value).strip())
             except ValueError as exc:
