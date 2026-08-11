@@ -135,7 +135,11 @@ async def _load_effective_groups(
     ]
 
 
-async def get_current_user(request: Request) -> dict:
+async def _load_current_user(
+    request: Request,
+    *,
+    check_maintenance: bool,
+) -> dict:
     """验证唯一会话、空闲时间并返回实时权限上下文。"""
     session_id = request.cookies.get(settings.SESSION_COOKIE_NAME)
     if not session_id:
@@ -301,7 +305,7 @@ async def get_current_user(request: Request) -> dict:
                 "permission_group": {"code": groups[0]["code"]} if groups else None,
                 "permission_groups": groups,
             }
-            if not is_super_admin_user(maintenance_user):
+            if check_maintenance and not is_super_admin_user(maintenance_user):
                 enforce_maintenance(config, maintenance_user, now=server_time)
 
             primary_group = groups[0]
@@ -382,6 +386,17 @@ async def get_current_user(request: Request) -> dict:
             }
     finally:
         pool.release(conn)
+
+
+async def get_current_user(request: Request) -> dict:
+    return await _load_current_user(request, check_maintenance=True)
+
+
+async def get_bootstrap_user(request: Request) -> dict | None:
+    """bootstrap 允许匿名访问，并在维护期间保留当前账号能力信息。"""
+    if not request.cookies.get(settings.SESSION_COOKIE_NAME):
+        return None
+    return await _load_current_user(request, check_maintenance=False)
 
 
 def require_permission(permission: str) -> Callable:

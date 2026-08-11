@@ -1119,3 +1119,10 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - 客户端对明确的传输型 `400010` 最多重试 3 次，并使用递增等待；参数、权限和其他业务错误不重试。
 - 预览失败时保持已有预览结果，不执行历史导入；只有预览统计稳定且经人工核对后才允许正式导入。
 - 发布后先保持调照片名单读取、写回开关关闭，重新执行只读预览，比较行数、批次边界和异常数量后再决定下一步。
+
+### 0.19.0 Windows、Android 客户端兼容协议
+
+- 原生客户端通过 `X-Binhu-Client-Platform` 和 `X-Binhu-Client-Version` 报告平台与 SemVer，启动时调用 `/api/app/bootstrap` 取得服务端版本、最低版本、维护状态、业务时间、账号权限和平台功能开关。
+- 部署变量为 `BINHU_WINDOWS_MIN_SUPPORTED_VERSION`、`BINHU_ANDROID_MIN_SUPPORTED_VERSION`、`BINHU_CLIENT_WRITE_VERSION_ENFORCEMENT_ENABLED` 和 `BINHU_CLIENT_WRITE_IDENTIFICATION_REQUIRED`。首次上线两端最低版本保持 `0.0.0`、身份必填保持关闭，确认网页和正式原生客户端都已经发送请求头后再提高最低版本并开启身份必填。
+- 提高最低版本后，已声明 Windows 或 Android、但版本缺失、非法或过旧的客户端写请求返回 `426 client_upgrade_required`。这项检查只处理接口兼容性，不能替代登录、权限、数据范围和业务版本冲突校验。
+- 本版不修改数据库结构和业务数据，正式发布使用 `backup_scope=none`；上线后检查健康版本、匿名及登录 bootstrap、维护状态、网页端正常写入和一组模拟旧客户端 `426`。回退时恢复上一版程序即可；紧急情况下可以先关闭写版本检查，但不得借此绕过业务权限。

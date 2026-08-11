@@ -9,7 +9,12 @@ from starlette.requests import Request
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from deps import get_current_user, require_admin, require_super_admin
+from deps import (
+    get_bootstrap_user,
+    get_current_user,
+    require_admin,
+    require_super_admin,
+)
 from services.data_scope import filter_report_payload
 from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
@@ -253,6 +258,41 @@ class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(user["permission_scopes"][ONLINE_SUMMARY_VIEW], "all")
         self.assertEqual(user["permission_scopes"][SYNC_TRIGGER], "own_department")
+
+    async def test_bootstrap_keeps_account_context_during_maintenance(self):
+        cursor = FakeCursor(
+            user_row(),
+            config=[
+                ("session_idle_minutes", "30"),
+                ("permission_enforcement_enabled", "1"),
+                ("maintenance_enabled", "1"),
+                ("maintenance_start_at", ""),
+                ("maintenance_end_at", ""),
+                ("maintenance_message", "升级中"),
+                ("timezone", "Asia/Shanghai"),
+            ],
+        )
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            user = await get_bootstrap_user(request())
+        self.assertIsNotNone(user)
+        self.assertEqual(user["display_name"], "显示姓名")
+
+        cursor = FakeCursor(
+            user_row(),
+            config=[
+                ("session_idle_minutes", "30"),
+                ("permission_enforcement_enabled", "1"),
+                ("maintenance_enabled", "1"),
+                ("maintenance_start_at", ""),
+                ("maintenance_end_at", ""),
+                ("maintenance_message", "升级中"),
+                ("timezone", "Asia/Shanghai"),
+            ],
+        )
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            with self.assertRaises(HTTPException) as raised:
+                await get_current_user(request())
+        self.assertEqual(raised.exception.status_code, 503)
 
 
 if __name__ == "__main__":

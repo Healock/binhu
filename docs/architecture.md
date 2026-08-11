@@ -1,6 +1,22 @@
 # 系统是怎么工作的
 
-> 当前基线（v0.17.0）：平台仍使用同一个 MySQL 实例和八个业务域数据库；新增应用级预约维护模式，数据库迁移、容器重建等底层维护仍由 Nginx 维护页承接。旧表和迁移备份暂不删除。
+> 当前基线（v0.19.0）：平台仍使用同一个 MySQL 实例和八个业务域数据库；增加 Windows、Android 客户端启动兼容协议和旧客户端写请求保护。数据库迁移、容器重建等底层维护仍由 Nginx 维护页承接，旧表和迁移备份暂不删除。
+
+## v0.19.0 客户端兼容性接口
+
+Windows 和 Android 客户端启动时调用 `GET /api/app/bootstrap`，并分别通过
+`X-Binhu-Client-Platform`、`X-Binhu-Client-Version` 声明平台和 SemVer 版本。接口返回服务端版本、
+两端最低支持版本、当前客户端是否必须升级、维护状态、服务器业务日期和时区、当前账号有效权限，
+以及辖区档案、工单、在线回写和客户端写版本检查等平台功能开关。未登录时仍可读取非敏感启动信息，
+`available_features` 返回空数组；已有有效会话在预约维护期间仍能通过该接口取得维护和升级状态。
+
+最低版本由 `WINDOWS_MIN_SUPPORTED_VERSION`、`ANDROID_MIN_SUPPORTED_VERSION` 配置，默认 `0.0.0`，
+用于首次接入时保持兼容。声明为 Windows 或 Android 的客户端在 `POST`、`PUT`、`PATCH`、`DELETE`
+请求中缺少有效版本或低于对应最低版本时，后端统一返回 `426 client_upgrade_required`；关闭
+`CLIENT_WRITE_VERSION_ENFORCEMENT_ENABLED` 可以临时只提示升级而不拦截。新版网页端统一声明 `web` 和
+当前平台版本；确认各端都已接入后，可以开启 `CLIENT_WRITE_IDENTIFICATION_REQUIRED`，把完全不发送版本头
+的旧客户端也挡在写接口之外。客户端版本是兼容性信号，不是身份凭据，业务接口仍必须独立完成登录、
+功能权限、数据范围和来源版本校验。
 
 ## v0.18.0 调照片名单工单化
 

@@ -13,6 +13,9 @@ const api = axios.create({
   timeout: 30000,
   withCredentials: true,
 })
+const webClientVersion = typeof __APP_VERSION__ === 'string'
+  ? __APP_VERSION__
+  : '0.0.0'
 const activeRequest = { headers: { 'X-User-Activity': '1' } }
 let unauthorizedRedirectStarted = false
 
@@ -78,6 +81,12 @@ export async function fetchWithAuth(
   options: AuthFetchOptions = {},
 ): Promise<Response> {
   const headers = new Headers(init.headers)
+  if (!headers.has('X-Binhu-Client-Platform')) {
+    headers.set('X-Binhu-Client-Platform', 'web')
+  }
+  if (!headers.has('X-Binhu-Client-Version')) {
+    headers.set('X-Binhu-Client-Version', webClientVersion)
+  }
   const method = (init.method || 'GET').toUpperCase()
   if (
     options.markActivity !== false
@@ -108,6 +117,8 @@ export async function fetchWithAuth(
 }
 
 api.interceptors.request.use((config) => {
+  config.headers.set('X-Binhu-Client-Platform', 'web')
+  config.headers.set('X-Binhu-Client-Version', webClientVersion)
   const method = (config.method || 'get').toLowerCase()
   if (
     ['post', 'put', 'patch', 'delete'].includes(method)

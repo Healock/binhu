@@ -12,6 +12,10 @@ _SEMVER_PATTERN = re.compile(
 )
 
 
+def is_semver(value: str) -> bool:
+    return bool(_SEMVER_PATTERN.fullmatch(str(value or "").strip()))
+
+
 def read_app_version() -> str:
     """从环境变量或仓库根目录 VERSION 文件读取 SemVer 版本号。"""
     configured = os.environ.get("APP_VERSION", "").strip()
@@ -27,7 +31,7 @@ def read_app_version() -> str:
         ),
     ]
     for value in candidates:
-        if value and _SEMVER_PATTERN.fullmatch(value):
+        if value and is_semver(value):
             return value
     return "0.0.0"
 
