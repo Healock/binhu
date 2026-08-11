@@ -11,19 +11,20 @@ from pathlib import Path
 
 
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-REQUESTED_SCOPES = {"auto", "backend", "full"}
-BACKEND_ONLY_FILES = {
+REQUESTED_SCOPES = {"auto", "backend", "frontend", "full"}
+NEUTRAL_FILES = {
     ".gitattributes",
     ".gitignore",
     "AGENTS.md",
     "README.md",
     "VERSION",
 }
-BACKEND_ONLY_PREFIXES = (
+NEUTRAL_PREFIXES = (
     ".github/",
-    "backend/",
     "docs/",
 )
+BACKEND_PREFIX = "backend/"
+FRONTEND_PREFIX = "frontend/"
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -34,9 +35,15 @@ def _git(repository: Path, *args: str) -> str:
     ).strip()
 
 
-def is_backend_only_path(path: str) -> bool:
+def classify_release_path(path: str) -> str:
     normalized = path.replace("\\", "/").strip("/")
-    return normalized in BACKEND_ONLY_FILES or normalized.startswith(BACKEND_ONLY_PREFIXES)
+    if normalized in NEUTRAL_FILES or normalized.startswith(NEUTRAL_PREFIXES):
+        return "neutral"
+    if normalized.startswith(BACKEND_PREFIX):
+        return "backend"
+    if normalized.startswith(FRONTEND_PREFIX):
+        return "frontend"
+    return "full"
 
 
 def changed_paths(repository: Path, deployed_commit: str, release_commit: str) -> list[str]:
@@ -76,15 +83,42 @@ def resolve_release_scope(
             # backend-only archive is complete. Fall back to a full archive.
             return "full", ["production commit could not be verified"]
         raise
-    unsafe_paths = [path for path in paths if not is_backend_only_path(path)]
-    if unsafe_paths:
-        if requested_scope == "backend":
+    classifications = {path: classify_release_path(path) for path in paths}
+    runtime_scopes = {
+        classification
+        for classification in classifications.values()
+        if classification != "neutral"
+    }
+
+    if requested_scope in {"backend", "frontend"}:
+        unsafe_paths = [
+            path
+            for path, classification in classifications.items()
+            if classification not in {"neutral", requested_scope}
+        ]
+        if unsafe_paths:
             raise ValueError(
-                "backend release contains files that require a full release: "
+                f"{requested_scope} release contains files that require another release scope: "
                 + ", ".join(unsafe_paths[:20])
             )
-        return "full", unsafe_paths
-    return "backend", []
+        return requested_scope, []
+
+    if not runtime_scopes:
+        # Version, documentation and workflow-only releases still need the
+        # backend container recreated so the mounted VERSION becomes active.
+        return "backend", []
+    if runtime_scopes == {"backend"}:
+        return "backend", []
+    if runtime_scopes == {"frontend"}:
+        return "frontend", []
+    full_paths = [
+        path
+        for path, classification in classifications.items()
+        if classification == "full"
+    ]
+    if full_paths:
+        return "full", full_paths
+    return "full", paths
 
 
 def main() -> None:

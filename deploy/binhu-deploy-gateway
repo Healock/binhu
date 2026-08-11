@@ -33,7 +33,7 @@ case "$backup_scope" in
     ;;
 esac
 case "$release_scope" in
-  backend|full) ;;
+  backend|frontend|full) ;;
   *)
     echo "Invalid release scope." >&2
     exit 64
