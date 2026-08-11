@@ -4,7 +4,10 @@ import asyncio
 from datetime import datetime
 
 from database import db_manager
-from services.notifications import create_sync_failure_notifications
+from services.notifications import (
+    create_sync_failure_notifications,
+    create_sync_status_notifications,
+)
 from services.report_builders import BUILDERS
 from services.sync_engine import SyncEngine
 
@@ -184,9 +187,9 @@ async def run_sync_task(task_id: int) -> None:
 
     await reset_next_run_from_now()
     status, trigger_source, error_message = task_status
-    if trigger_source == "scheduled" and status in {"partial", "failed"}:
+    if trigger_source == "scheduled":
         try:
-            await create_sync_failure_notifications(
+            await create_sync_status_notifications(
                 task_id,
                 status,
                 error_message,

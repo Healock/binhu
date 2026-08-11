@@ -122,6 +122,40 @@ class CollisionKeyTests(unittest.TestCase):
         self.assertEqual(merged["房屋地址"], "地址二")
         self.assertEqual(merged["核查结果"], "已完成")
 
+    def test_fullchain_conflicting_sources_keep_first_physical_row(self):
+        parser = FullChainParser()
+        first = make_row(
+            parser,
+            下发日期="2026-08-10",
+            身份证号="identity-a",
+            电话号码="phone-a",
+            地址="地址一",
+            社区="冬梅社区",
+        )
+        second = {
+            **first,
+            "地址": "地址二",
+            "社区": "夏荷社区",
+            "登记情况": "已登记",
+        }
+
+        result = deduplicate_rows(
+            parser,
+            [first, second],
+            physical_rows=[218, 752],
+        )
+        online, duplicate_count = result
+
+        self.assertEqual(len(online), 1)
+        self.assertEqual(duplicate_count, 1)
+        self.assertEqual(next(iter(online.values()))["地址"], "地址一")
+        self.assertEqual(len(result.conflicts), 1)
+        self.assertEqual(result.conflicts[0].physical_rows, (218, 752))
+        self.assertEqual(
+            set(result.conflicts[0].differing_columns),
+            {"地址", "社区", "登记情况"},
+        )
+
     def test_rental_blank_identity_collision_still_stops_sync(self):
         parser = RentalCheckParser()
         first = make_row(
