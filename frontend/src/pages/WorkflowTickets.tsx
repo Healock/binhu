@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -25,13 +26,17 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
+  FileExcelOutlined,
   InboxOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SelectOutlined,
+  UploadOutlined,
 } from '@ant-design/icons'
 import { PageHeader, Panel } from '../components/ui'
 import {
   workflowApi,
+  type PendingPhotoRequest,
   type WorkOrderDetail,
   type WorkOrderSummary,
   type WorkflowType,
@@ -74,8 +79,18 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function WorkflowTickets() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const permissions = new Set(user?.permissions || [])
   const canCreate = permissions.has('workflow.ticket.create')
   const canHandle = permissions.has('workflow.ticket.handle') || permissions.has('workflow.ticket.manage')
@@ -83,9 +98,12 @@ export default function WorkflowTickets() {
   const canAttach = permissions.has('workflow.attachment.view')
   const position = user?.member?.position || ''
   const canViewAll = canManage || ['基础管控', '中队长', '所队领导'].includes(position)
+  const canUsePhotoWorkbench = canManage || (canHandle && position === '基础管控')
 
   const [view, setView] = useState('created')
   const [rows, setRows] = useState<WorkOrderSummary[]>([])
+  const [photoRows, setPhotoRows] = useState<PendingPhotoRequest[]>([])
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Array<string | number>>([])
   const [types, setTypes] = useState<WorkflowType[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -95,6 +113,7 @@ export default function WorkflowTickets() {
   const [keyword, setKeyword] = useState('')
   const [typeCode, setTypeCode] = useState('')
   const [photoSource, setPhotoSource] = useState('')
+  const [photoCommunity, setPhotoCommunity] = useState('')
   const [attachmentStatus, setAttachmentStatus] = useState('')
   const [externalSyncStatus, setExternalSyncStatus] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
@@ -103,6 +122,8 @@ export default function WorkflowTickets() {
   const [action, setAction] = useState('')
   const [actionOpen, setActionOpen] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
+  const [photoClaiming, setPhotoClaiming] = useState(false)
+  const [photoExporting, setPhotoExporting] = useState(false)
   const [createForm] = Form.useForm()
   const [actionForm] = Form.useForm()
   const selectedCreateTypeCode = Form.useWatch('type_code', createForm)
@@ -117,6 +138,21 @@ export default function WorkflowTickets() {
     setLoading(true)
     setError('')
     try {
+      if (view === 'photo_pending') {
+        const result = await workflowApi.pendingPhotoRequests({
+          keyword,
+          community: photoCommunity,
+          source_label: photoSource,
+          page: nextPage,
+          page_size: nextPageSize,
+        })
+        setPhotoRows(result.data)
+        setSelectedPhotoIds([])
+        setTotal(result.total)
+        setPage(nextPage)
+        setPageSize(nextPageSize)
+        return
+      }
       const [result, typeResult] = await Promise.all([
         workflowApi.search({
           view, keyword, type_code: typeCode, source_label: photoSource,
@@ -209,6 +245,47 @@ export default function WorkflowTickets() {
       if (detail?.id === row.id) await refreshDetail(row.id)
     } catch (reason) {
       message.error(apiError(reason, '领取失败'))
+    }
+  }
+
+  const claimPhotoRequests = async (claimAll: boolean) => {
+    const ticketIds = selectedPhotoIds.map(Number).filter(Number.isInteger)
+    if (!claimAll && ticketIds.length === 0) return
+    setPhotoClaiming(true)
+    try {
+      const result = await workflowApi.batchClaimPhotoRequests({
+        claim_all: claimAll,
+        ticket_ids: claimAll ? [] : ticketIds,
+      })
+      const skipped = result.skipped_ids.length
+      message.success(
+        skipped
+          ? `已领取 ${result.claimed_count} 张工单，${skipped} 张已被他人处理或状态已变化`
+          : `已领取 ${result.claimed_count} 张照片工单`,
+      )
+      await load(1)
+    } catch (reason) {
+      message.error(apiError(reason, '批量领取失败'))
+    } finally {
+      setPhotoClaiming(false)
+    }
+  }
+
+  const exportPhotoRequests = async () => {
+    setPhotoExporting(true)
+    try {
+      const blob = await workflowApi.exportPendingPhotoRequests({
+        keyword,
+        community: photoCommunity,
+        source_label: photoSource,
+      })
+      const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+      saveBlob(blob, `未调照片-${stamp}.xlsx`)
+      message.success('未调照片清单已导出')
+    } catch (reason) {
+      message.error(apiError(reason, '导出失败'))
+    } finally {
+      setPhotoExporting(false)
     }
   }
 
@@ -313,6 +390,30 @@ export default function WorkflowTickets() {
     },
   ]
 
+  const photoColumns: TableColumnsType<PendingPhotoRequest> = [
+    { title: '姓名', dataIndex: 'subject_name', width: 120, fixed: 'left' },
+    {
+      title: '身份证号', dataIndex: 'identity_number', width: 200,
+      render: value => <span className="font-mono">{value || '—'}</span>,
+    },
+    { title: '社区', dataIndex: 'community_name', width: 140, render: value => value || '—' },
+    { title: '申请人员', dataIndex: 'requester_name', width: 120, render: value => value || '—' },
+    {
+      title: '申请时间', dataIndex: 'requested_at', width: 170,
+      render: value => value ? String(value).replace('T', ' ').slice(0, 16) : '—',
+    },
+    { title: '数据来源', dataIndex: 'source_label', width: 180, ellipsis: true, render: value => value || '—' },
+    { title: '工单编号', dataIndex: 'ticket_no', width: 210 },
+    {
+      title: '状态', dataIndex: 'status', width: 110,
+      render: value => <Tag color={value === 'in_progress' ? 'processing' : 'default'}>{STATUS_LABELS[value] || value}</Tag>,
+    },
+    {
+      title: '截止时间', dataIndex: 'due_at', width: 170,
+      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value ? String(value).replace('T', ' ').slice(0, 16) : '未设置'}</span>,
+    },
+  ]
+
   const requesterOwnsDetail = Boolean(detail && user?.id === detail.requester_user_id)
   const canProcessDetail = Boolean(detail && canHandle && ['queued', 'in_progress'].includes(detail.status))
 
@@ -335,6 +436,7 @@ export default function WorkflowTickets() {
           onChange={value => { setView(value); setPage(1) }}
           items={[
             { key: 'created', label: '我的发起' },
+            ...(canUsePhotoWorkbench ? [{ key: 'photo_pending', label: '未调照片' }] : []),
             { key: 'claimable', label: '待领取' },
             { key: 'handling', label: '处理中' },
             { key: 'supplement', label: '待补充' },
@@ -342,6 +444,99 @@ export default function WorkflowTickets() {
             ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
           ]}
         />
+        {view === 'photo_pending' ? (
+          <>
+            <Alert
+              className="mb-4"
+              type="info"
+              showIcon
+              message="三步完成：领取全部待领取工单，导出清单集中调照片，再到数据上传中心上传照片 ZIP。"
+            />
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <Input.Search
+                allowClear
+                className="max-w-sm"
+                placeholder="搜索姓名、身份证号或工单编号"
+                value={keyword}
+                onChange={event => setKeyword(event.target.value)}
+                onSearch={() => void load(1)}
+              />
+              <Input
+                allowClear
+                className="max-w-44"
+                placeholder="社区"
+                value={photoCommunity}
+                onChange={event => setPhotoCommunity(event.target.value)}
+              />
+              <Input
+                allowClear
+                className="max-w-48"
+                placeholder="数据来源"
+                value={photoSource}
+                onChange={event => setPhotoSource(event.target.value)}
+              />
+              <Button onClick={() => void load(1)}>查询</Button>
+              <span className="text-sm text-[var(--app-text-secondary)]">
+                已选择 {selectedPhotoIds.length} 张
+              </span>
+              <Space wrap className="md:ml-auto">
+                <Popconfirm
+                  title="领取全部待领取的照片工单？"
+                  description="已被其他人领取的工单会自动跳过。领取后仍会保留在当前表格中。"
+                  okText="全部领取"
+                  cancelText="取消"
+                  onConfirm={() => claimPhotoRequests(true)}
+                >
+                  <Button type="primary" icon={<SelectOutlined />} loading={photoClaiming}>
+                    领取全部待领取
+                  </Button>
+                </Popconfirm>
+                <Button
+                  icon={<SelectOutlined />}
+                  disabled={selectedPhotoIds.length === 0}
+                  loading={photoClaiming}
+                  onClick={() => void claimPhotoRequests(false)}
+                >
+                  领取所选
+                </Button>
+                <Button
+                  icon={<FileExcelOutlined />}
+                  loading={photoExporting}
+                  onClick={() => void exportPhotoRequests()}
+                >
+                  导出 XLSX
+                </Button>
+                <Button
+                  icon={<UploadOutlined />}
+                  onClick={() => navigate('/data-upload')}
+                >
+                  前往数据上传中心
+                </Button>
+              </Space>
+            </div>
+            <Table
+              rowKey="id"
+              loading={loading}
+              columns={photoColumns}
+              dataSource={photoRows}
+              rowSelection={{
+                selectedRowKeys: selectedPhotoIds,
+                onChange: keys => setSelectedPhotoIds(keys),
+                getCheckboxProps: row => ({ disabled: row.status !== 'queued' }),
+              }}
+              pagination={{
+                current: page,
+                pageSize,
+                total,
+                showSizeChanger: true,
+                pageSizeOptions: [20, 50, 100, 200],
+                onChange: (next, size) => void load(next, size),
+              }}
+              scroll={{ x: 1420 }}
+            />
+          </>
+        ) : (
+          <>
         <div className="mb-4 flex flex-wrap gap-3">
           <Select
             allowClear
@@ -402,6 +597,8 @@ export default function WorkflowTickets() {
           }}
           scroll={{ x: 1100 }}
         />
+          </>
+        )}
       </Panel>
 
       <Drawer

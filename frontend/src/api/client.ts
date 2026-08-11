@@ -2406,6 +2406,26 @@ export interface PhotoImportBatch {
   items?: PhotoImportItem[]
 }
 
+export interface PendingPhotoRequest {
+  id: number
+  ticket_no: string
+  title: string
+  requester_user_id: number | null
+  current_queue: string
+  status: string
+  priority: string
+  due_at: string | null
+  version_no: number
+  updated_at: string | null
+  subject_name: string
+  identity_number: string
+  community_name: string
+  source_label: string
+  requester_name: string
+  requested_at: string | null
+  overdue: boolean
+}
+
 export interface PhotoSheetConfig {
   source_code: string
   file_url: string
@@ -2516,6 +2536,32 @@ export const workflowApi = {
   },
   attachmentUrl(id: number, fileId: string, inline = false) {
     return `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`
+  },
+  async pendingPhotoRequests(params: {
+    keyword?: string
+    community?: string
+    source_label?: string
+    page?: number
+    page_size?: number
+  } = {}) {
+    return (await api.get('/workflow/photo-requests/pending', { ...activeRequest, params })).data as {
+      data: PendingPhotoRequest[]; total: number; page: number; page_size: number
+    }
+  },
+  async batchClaimPhotoRequests(payload: { ticket_ids?: number[]; claim_all?: boolean }) {
+    return (await api.post('/workflow/photo-requests/batch-claim', payload)).data as {
+      claimed_ids: number[]; skipped_ids: number[]; claimed_count: number
+    }
+  },
+  async exportPendingPhotoRequests(params: {
+    keyword?: string
+    community?: string
+    source_label?: string
+  } = {}) {
+    return (await api.get('/workflow/photo-requests/pending/export', {
+      params,
+      responseType: 'blob',
+    })).data as Blob
   },
   async previewPhotoImport(file: File) {
     const form = new FormData()
