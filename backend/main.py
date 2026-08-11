@@ -38,12 +38,14 @@ from routers.workflow import router as workflow_router
 from routers.workflow_extended import router as workflow_extended_router
 from routers.workflow_photo_sheet import router as workflow_photo_sheet_router
 from routers.maintenance import router as maintenance_router
+from routers.app_bootstrap import router as app_bootstrap_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.sync_scheduler import run_sync_scheduler
 from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 from services.visit_import import recover_interrupted_visit_imports
 from services.workflow_scheduler import run_workflow_scheduler
+from services.client_compatibility import ClientCompatibilityMiddleware
 
 
 @asynccontextmanager
@@ -92,18 +94,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(ClientCompatibilityMiddleware)
+
 # 生产环境由 Nginx 同源代理，不需要 CORS。确有外部调用时必须显式列出来源。
 if settings.cors_allowed_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=[
             "Accept",
             "Authorization",
             "Content-Type",
             "X-User-Activity",
+            "X-Binhu-Client-Platform",
+            "X-Binhu-Client-Version",
         ],
     )
 
@@ -119,6 +125,7 @@ async def health_check():
 # auth 路由（login 端点无需鉴权，logout/me 需要鉴权在路由内处理）
 app.include_router(auth_router)
 app.include_router(maintenance_router)
+app.include_router(app_bootstrap_router)
 
 # 业务路由（全部需要登录）
 auth_dep = [Depends(get_current_user)]

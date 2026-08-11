@@ -1,6 +1,9 @@
 """应用配置 - 通过环境变量读取（docker-compose 或 .env 注入）"""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+from app_version import is_semver
 
 
 class Settings(BaseSettings):
@@ -28,6 +31,24 @@ class Settings(BaseSettings):
     REGISTRY_ADDRESS_DOMAIN_ACTIVE: bool = False
     REGISTRY_FEATURE_ENABLED: bool = False
     WORKFLOW_FEATURE_ENABLED: bool = False
+
+    # Native client compatibility. Keep 0.0.0 until the first supported
+    # Windows/Android releases adopt the version headers.
+    WINDOWS_MIN_SUPPORTED_VERSION: str = "0.0.0"
+    ANDROID_MIN_SUPPORTED_VERSION: str = "0.0.0"
+    CLIENT_WRITE_VERSION_ENFORCEMENT_ENABLED: bool = True
+    CLIENT_WRITE_IDENTIFICATION_REQUIRED: bool = False
+
+    @field_validator(
+        "WINDOWS_MIN_SUPPORTED_VERSION",
+        "ANDROID_MIN_SUPPORTED_VERSION",
+    )
+    @classmethod
+    def validate_minimum_supported_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if not is_semver(normalized):
+            raise ValueError("客户端最低支持版本必须使用 SemVer")
+        return normalized
 
     # Encryption
     ENCRYPTION_KEY: str
