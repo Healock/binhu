@@ -18,7 +18,7 @@ from pathlib import Path
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BACKUP_SCOPES = {"none", "online", "daily", "all"}
-RELEASE_SCOPES = {"backend", "full"}
+RELEASE_SCOPES = {"backend", "frontend", "full"}
 BUNDLE_SCHEMA = 2
 
 
@@ -73,9 +73,9 @@ def build_bundle(
     version = _run_git(repository, "show", f"{commit}:VERSION").decode().strip()
     if not VERSION_PATTERN.fullmatch(version):
         raise ValueError(f"invalid VERSION at {commit}: {version!r}")
-    if release_scope == "full":
+    if release_scope in {"frontend", "full"}:
         if frontend_dist is None:
-            raise ValueError("full release requires frontend dist")
+            raise ValueError(f"{release_scope} release requires frontend dist")
         frontend_dist = frontend_dist.resolve()
         _validate_dist(frontend_dist)
 
@@ -95,6 +95,8 @@ def build_bundle(
         ]
         if release_scope == "backend":
             source_command.extend(["VERSION", "backend"])
+        elif release_scope == "frontend":
+            source_command.append("VERSION")
         subprocess.run(source_command, check=True)
 
         files = {
@@ -104,7 +106,7 @@ def build_bundle(
             },
         }
         frontend_archive = work / "frontend-dist.tar.gz"
-        if release_scope == "full":
+        if release_scope in {"frontend", "full"}:
             with tarfile.open(frontend_archive, "w:gz", format=tarfile.PAX_FORMAT) as archive:
                 archive.add(frontend_dist, arcname="dist", recursive=True)
             files[frontend_archive.name] = {
@@ -133,7 +135,7 @@ def build_bundle(
 
         with tarfile.open(output, "w:gz", format=tarfile.PAX_FORMAT) as bundle:
             bundle.add(source_archive, arcname=source_archive.name, recursive=False)
-            if release_scope == "full":
+            if release_scope in {"frontend", "full"}:
                 bundle.add(frontend_archive, arcname=frontend_archive.name, recursive=False)
             _add_bytes(bundle, "manifest.json", manifest_bytes)
             _add_bytes(bundle, "SHA256SUMS", checksums)

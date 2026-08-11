@@ -55,24 +55,71 @@ class ResolveReleaseScopeTests(unittest.TestCase):
         self.assertEqual(scope, "backend")
         self.assertEqual(unsafe, [])
 
-    def test_auto_falls_back_to_full_for_frontend_change(self):
+    def test_auto_selects_frontend_for_frontend_docs_and_version(self):
         (self.repository / "frontend" / "app.ts").write_text("export const value = 1\n", encoding="utf-8")
+        (self.repository / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+        (self.repository / "docs").mkdir()
+        (self.repository / "docs" / "operations.md").write_text("updated\n", encoding="utf-8")
         self._commit("frontend")
 
         scope, unsafe = resolve_release_scope(
             self.repository, "auto", self.deployed_commit, self._head()
         )
 
+        self.assertEqual(scope, "frontend")
+        self.assertEqual(unsafe, [])
+
+    def test_auto_selects_full_for_backend_and_frontend_changes(self):
+        (self.repository / "backend" / "main.py").write_text("print('two')\n", encoding="utf-8")
+        (self.repository / "frontend" / "app.ts").write_text("export const value = 1\n", encoding="utf-8")
+        self._commit("both")
+
+        scope, unsafe = resolve_release_scope(
+            self.repository, "auto", self.deployed_commit, self._head()
+        )
+
         self.assertEqual(scope, "full")
-        self.assertEqual(unsafe, ["frontend/app.ts"])
+        self.assertCountEqual(unsafe, ["backend/main.py", "frontend/app.ts"])
+
+    def test_auto_selects_full_for_infrastructure_change(self):
+        (self.repository / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        self._commit("compose")
+
+        scope, unsafe = resolve_release_scope(
+            self.repository, "auto", self.deployed_commit, self._head()
+        )
+
+        self.assertEqual(scope, "full")
+        self.assertEqual(unsafe, ["docker-compose.yml"])
 
     def test_manual_backend_rejects_unsafe_change(self):
         (self.repository / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         self._commit("compose")
 
-        with self.assertRaisesRegex(ValueError, "require a full release"):
+        with self.assertRaisesRegex(ValueError, "another release scope"):
             resolve_release_scope(
                 self.repository, "backend", self.deployed_commit, self._head()
+            )
+
+    def test_manual_frontend_accepts_frontend_and_neutral_changes(self):
+        (self.repository / "frontend" / "app.ts").write_text("export const value = 1\n", encoding="utf-8")
+        (self.repository / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+        self._commit("frontend")
+
+        scope, unsafe = resolve_release_scope(
+            self.repository, "frontend", self.deployed_commit, self._head()
+        )
+
+        self.assertEqual(scope, "frontend")
+        self.assertEqual(unsafe, [])
+
+    def test_manual_frontend_rejects_backend_change(self):
+        (self.repository / "backend" / "main.py").write_text("print('two')\n", encoding="utf-8")
+        self._commit("backend")
+
+        with self.assertRaisesRegex(ValueError, "another release scope"):
+            resolve_release_scope(
+                self.repository, "frontend", self.deployed_commit, self._head()
             )
 
     def test_manual_full_does_not_require_deployed_commit(self):
@@ -93,6 +140,12 @@ class ResolveReleaseScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deployed commit is unavailable"):
             resolve_release_scope(
                 self.repository, "backend", "unknown", self._head()
+            )
+
+    def test_manual_frontend_fails_when_production_commit_is_unknown(self):
+        with self.assertRaisesRegex(ValueError, "deployed commit is unavailable"):
+            resolve_release_scope(
+                self.repository, "frontend", "unknown", self._head()
             )
 
 

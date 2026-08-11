@@ -140,6 +140,42 @@ class ReleaseBundleTests(unittest.TestCase):
                 self.root / "release.tar.gz",
             )
 
+    def test_frontend_bundle_contains_only_version_and_dist(self):
+        output = self.root / "frontend-release.tar.gz"
+        manifest = build_bundle(
+            self.repository,
+            self.dist,
+            self.commit,
+            "none",
+            "frontend",
+            output,
+        )
+
+        self.assertEqual(manifest["release_scope"], "frontend")
+        self.assertEqual(
+            set(manifest["files"]),
+            {"source.tar.gz", "frontend-dist.tar.gz"},
+        )
+        extracted = self.root / "frontend-extracted"
+        extracted.mkdir()
+        with tarfile.open(output, "r:gz") as archive:
+            archive.extractall(extracted, filter="data")
+        with tarfile.open(extracted / "source.tar.gz", "r:gz") as source:
+            self.assertEqual(source.getnames(), ["VERSION"])
+        with tarfile.open(extracted / "frontend-dist.tar.gz", "r:gz") as frontend:
+            self.assertIn("dist/index.html", frontend.getnames())
+
+    def test_frontend_release_requires_frontend_dist(self):
+        with self.assertRaisesRegex(ValueError, "frontend release requires frontend dist"):
+            build_bundle(
+                self.repository,
+                None,
+                self.commit,
+                "none",
+                "frontend",
+                self.root / "release.tar.gz",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

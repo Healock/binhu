@@ -24,7 +24,9 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("environment: production", workflow)
         self.assertIn("release_scope:", workflow)
         self.assertIn("deploy/resolve_release_scope.py", workflow)
-        self.assertIn('if: env.RELEASE_SCOPE == \'full\'', workflow)
+        self.assertIn("- frontend", workflow)
+        self.assertIn("env.RELEASE_SCOPE == 'frontend' || env.RELEASE_SCOPE == 'full'", workflow)
+        self.assertIn("if: env.RELEASE_SCOPE != 'frontend'", workflow)
         self.assertIn('"binhu-deploy@$DEPLOY_HOST" status', workflow)
         self.assertIn(
             'git merge-base --is-ancestor "$release_commit" origin/main', workflow
@@ -88,6 +90,9 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('release received in', script)
         self.assertIn('if [[ "$status" == "success" ]]', script)
         self.assertIn('rm -rf -- "$project_dir/backend"', script)
+        self.assertIn('release_scope" == "frontend"', script)
+        self.assertIn('reusing current backend image for frontend release', script)
+        self.assertIn('tar -czf "$program_backup" -C "$project_dir" VERSION frontend/dist', script)
         self.assertIn('switched=1', script)
         self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
 
@@ -106,6 +111,8 @@ class DeploymentContractTests(unittest.TestCase):
             "deploy 0.15.0 " + "a" * 40 + " none backend 0",
             "deploy 0.15.0 " + "a" * 40 + " none backend 134217729",
             "deploy 0.15.0 " + "a" * 40 + " none backend 1024 extra",
+            "deploy 0.15.0 " + "a" * 40 + " none frontend 0",
+            "deploy 0.15.0 " + "a" * 40 + " none frontend 134217129 extra",
             "status extra",
         ):
             with self.subTest(command=command):

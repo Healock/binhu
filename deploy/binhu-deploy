@@ -67,7 +67,7 @@ case "$backup_scope" in
   *) fail "invalid backup scope" ;;
 esac
 case "$release_scope" in
-  backend|full) ;;
+  backend|frontend|full) ;;
   *) fail "invalid release scope" ;;
 esac
 [[ "$expected_bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] \
@@ -103,6 +103,7 @@ readonly release_dir="$state_dir/releases/$release_id"
 switched=0
 program_backup=""
 rollback_tag=""
+candidate_tag=""
 previous_version=""
 
 cleanup() {
@@ -152,13 +153,17 @@ rollback_after_error() {
   trap - ERR
   set +e
   log "deployment failed at line ${line_number}; starting application rollback"
-  if [[ "$switched" -eq 1 && -n "$program_backup" && -n "$rollback_tag" ]]; then
-    rm -rf -- "$project_dir/backend"
-    if [[ "$release_scope" == "full" ]]; then
+  if [[ "$switched" -eq 1 && -n "$program_backup" ]]; then
+    if [[ "$release_scope" != "frontend" ]]; then
+      rm -rf -- "$project_dir/backend"
+    fi
+    if [[ "$release_scope" != "backend" ]]; then
       rm -rf -- "$project_dir/frontend/dist"
     fi
     tar -xzf "$program_backup" -C "$project_dir"
-    docker tag "$rollback_tag" binhu-backend:latest
+    if [[ -n "$rollback_tag" ]]; then
+      docker tag "$rollback_tag" binhu-backend:latest
+    fi
     (
       cd "$project_dir"
       docker compose up -d --no-deps --force-recreate ops-agent backend
@@ -229,7 +234,7 @@ if manifest_scope != sys.argv[6]:
     raise SystemExit("manifest release scope mismatch")
 checksum_lines = checksums_path.read_text(encoding="ascii").splitlines()
 expected_files = {"source.tar.gz"}
-if manifest_scope == "full":
+if manifest_scope in {"frontend", "full"}:
     expected_files.add("frontend-dist.tar.gz")
 checksum_pattern = re.compile(r"^([0-9a-f]{64})  ([a-z-]+\.tar\.gz)$")
 checksums = {}
@@ -278,26 +283,29 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
         if sys.argv[2] == "source" and sys.argv[3] == "backend":
             if not path.parts or path.parts[0] not in {"VERSION", "backend"}:
                 raise SystemExit("backend release contains an unrelated source path")
+        if sys.argv[2] == "source" and sys.argv[3] == "frontend":
+            if path.parts != ("VERSION",):
+                raise SystemExit("frontend release contains an unrelated source path")
         if sys.argv[2] == "frontend" and path.parts and path.parts[0] != "dist":
             raise SystemExit("frontend archive must be rooted at dist")
 PY
 }
 validate_inner_archive "$work_dir/source.tar.gz" source "$release_scope"
-if [[ "$release_scope" == "full" ]]; then
+if [[ "$release_scope" != "backend" ]]; then
   validate_inner_archive "$work_dir/frontend-dist.tar.gz" frontend "$release_scope"
 fi
 
 [[ ! -e "$release_dir" ]] || fail "release directory already exists"
 install -d -o root -g root -m 0750 "$release_dir/source"
 tar -xzf "$work_dir/source.tar.gz" -C "$release_dir/source"
-if [[ "$release_scope" == "full" ]]; then
+if [[ "$release_scope" != "backend" ]]; then
   install -d -o root -g root -m 0750 "$release_dir/source/frontend"
   tar -xzf "$work_dir/frontend-dist.tar.gz" -C "$release_dir/source/frontend"
 fi
 cp "$work_dir/manifest.json" "$release_dir/manifest.json"
 [[ "$(tr -d '\r\n' < "$release_dir/source/VERSION")" == "$release_version" ]] \
   || fail "source VERSION mismatch"
-if [[ "$release_scope" == "full" ]]; then
+if [[ "$release_scope" != "backend" ]]; then
   [[ -f "$release_dir/source/frontend/dist/index.html" ]] || fail "frontend index is missing"
 else
   [[ -f "$project_dir/frontend/dist/index.html" ]] || fail "current frontend index is missing"
@@ -319,26 +327,39 @@ active_jobs="$(docker exec binhu-mysql sh -c \
 
 previous_version="$(tr -d '\r\n' < "$project_dir/VERSION")"
 [[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "current VERSION is invalid"
-readonly candidate_tag="binhu-backend:auto-candidate-${release_version}-${timestamp}"
-rollback_tag="binhu-backend:auto-rollback-${previous_version}-${timestamp}"
-build_started="$(date +%s)"
-log "building candidate image"
-docker build --pull=false -t "$candidate_tag" \
-  -f "$release_dir/source/backend/Dockerfile" "$release_dir/source/backend"
-log "candidate image built in $(( $(date +%s) - build_started ))s"
+if [[ "$release_scope" == "frontend" ]]; then
+  docker image inspect binhu-backend:latest >/dev/null
+  log "reusing current backend image for frontend release"
+else
+  candidate_tag="binhu-backend:auto-candidate-${release_version}-${timestamp}"
+  rollback_tag="binhu-backend:auto-rollback-${previous_version}-${timestamp}"
+  build_started="$(date +%s)"
+  log "building candidate image"
+  docker build --pull=false -t "$candidate_tag" \
+    -f "$release_dir/source/backend/Dockerfile" "$release_dir/source/backend"
+  log "candidate image built in $(( $(date +%s) - build_started ))s"
+fi
 
 readonly backup_dir="$project_dir/deploy-backups/automated/$release_id"
 install -d -o root -g root -m 0700 "$backup_dir"
 program_backup="$backup_dir/program.tar.gz"
 program_backup_started="$(date +%s)"
-if [[ "$release_scope" == "backend" ]]; then
-  tar -czf "$program_backup" -C "$project_dir" VERSION backend
-else
-  tar -czf "$program_backup" -C "$project_dir" \
-    VERSION docker-compose.yml backend frontend/dist nginx
-fi
+case "$release_scope" in
+  backend)
+    tar -czf "$program_backup" -C "$project_dir" VERSION backend
+    ;;
+  frontend)
+    tar -czf "$program_backup" -C "$project_dir" VERSION frontend/dist
+    ;;
+  full)
+    tar -czf "$program_backup" -C "$project_dir" \
+      VERSION docker-compose.yml backend frontend/dist nginx
+    ;;
+esac
 gzip -t "$program_backup"
-docker tag binhu-backend:latest "$rollback_tag"
+if [[ -n "$rollback_tag" ]]; then
+  docker tag binhu-backend:latest "$rollback_tag"
+fi
 log "rollback program archive prepared in $(( $(date +%s) - program_backup_started ))s"
 
 backup_database() {
@@ -405,14 +426,18 @@ log "switching from ${previous_version} to ${release_version}"
 readonly dist_target="$(readlink -m "$project_dir/frontend/dist")"
 [[ "$dist_target" == "$project_dir/frontend/dist" ]] || fail "unexpected frontend target"
 switched=1
-rm -rf -- "$project_dir/backend"
-install -d -o root -g root -m 0755 "$project_dir/backend"
-if [[ "$release_scope" == "full" ]]; then
+if [[ "$release_scope" != "frontend" ]]; then
+  rm -rf -- "$project_dir/backend"
+  install -d -o root -g root -m 0755 "$project_dir/backend"
+fi
+if [[ "$release_scope" != "backend" ]]; then
   rm -rf -- "$dist_target"
   install -d -o root -g root -m 0755 "$dist_target"
 fi
 tar -C "$release_dir/source" -cf - . | tar -C "$project_dir" -xf -
-docker tag "$candidate_tag" binhu-backend:latest
+if [[ -n "$candidate_tag" ]]; then
+  docker tag "$candidate_tag" binhu-backend:latest
+fi
 (
   cd "$project_dir"
   docker compose config --quiet

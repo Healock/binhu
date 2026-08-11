@@ -31,6 +31,7 @@ on:
         options:
           - auto
           - backend
+          - frontend
           - full
 
 permissions:
@@ -114,7 +115,7 @@ jobs:
             --requested "$REQUESTED_RELEASE_SCOPE" \
             --deployed-commit "$DEPLOYED_COMMIT" \
             --release-commit "$RELEASE_COMMIT")"
-          [[ "$release_scope" == "backend" || "$release_scope" == "full" ]]
+          [[ "$release_scope" == "backend" || "$release_scope" == "frontend" || "$release_scope" == "full" ]]
           printf 'RELEASE_SCOPE=%s\n' "$release_scope" >> "$GITHUB_ENV"
           printf 'Resolved release scope: %s\n' "$release_scope"
       - name: Set up Python
@@ -126,24 +127,27 @@ jobs:
             backend/requirements.txt
             backend/requirements-test.txt
       - name: Install backend dependencies
+        if: env.RELEASE_SCOPE != 'frontend'
         run: python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
       - name: Run backend tests and compile Python
+        if: env.RELEASE_SCOPE != 'frontend'
         working-directory: backend
         run: |
           python -m unittest discover -s tests
           python -m compileall -q .
-          python -m compileall -q ../deploy
-      - name: Run deployment tests
-        run: python -m unittest discover -s deploy/tests
+      - name: Run deployment tests and compile tools
+        run: |
+          python -m unittest discover -s deploy/tests
+          python -m compileall -q deploy
       - name: Set up Node.js
-        if: env.RELEASE_SCOPE == 'full'
+        if: env.RELEASE_SCOPE == 'frontend' || env.RELEASE_SCOPE == 'full'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install and test frontend
-        if: env.RELEASE_SCOPE == 'full'
+        if: env.RELEASE_SCOPE == 'frontend' || env.RELEASE_SCOPE == 'full'
         working-directory: frontend
         run: |
           npm ci
@@ -159,7 +163,7 @@ jobs:
             --release-scope "$RELEASE_SCOPE"
             --output release-output/binhu-release.tar.gz
           )
-          if [[ "$RELEASE_SCOPE" == "full" ]]; then
+          if [[ "$RELEASE_SCOPE" == "frontend" || "$RELEASE_SCOPE" == "full" ]]; then
             bundle_args+=(--frontend-dist frontend/dist)
           fi
           python deploy/build_release_bundle.py "${bundle_args[@]}"
