@@ -109,6 +109,15 @@ class TxDocsClient:
                     raise self._api_error(payload, http_status=resp.status_code)
                 business_error = self._business_error(payload)
                 if business_error is not None:
+                    # 腾讯偶尔会把上游 TCP 读超时包装成 HTTP 200 + 400010。
+                    # 这类错误通常是瞬时传输问题，和参数/权限错误不同，可以安全重试；
+                    # 只有明确包含传输超时特征时才重试，避免掩盖真实业务错误。
+                    if (
+                        attempt < max_retries - 1
+                        and self._is_retryable_transport_error(business_error)
+                    ):
+                        await asyncio.sleep(2 ** attempt)
+                        continue
                     raise business_error
                 # 请求间延迟，避免限频
                 await asyncio.sleep(settings.API_RATE_LIMIT_DELAY_MS / 1000)
@@ -119,6 +128,25 @@ class TxDocsClient:
                     continue
                 raise
         raise Exception(f"请求失败，已重试 {max_retries} 次: {url}")
+
+    @staticmethod
+    def _is_retryable_transport_error(error: TxDocsAPIError) -> bool:
+        """判断腾讯业务错误是否属于可有限重试的传输层故障。"""
+        try:
+            code = str(error.code).strip()
+        except Exception:
+            code = ""
+        if code != "400010":
+            return False
+        message = str(error).lower()
+        transport_markers = (
+            "readframe",
+            "i/o timeout",
+            "timeout",
+            "tcp client transport",
+            "transport",
+        )
+        return any(marker in message for marker in transport_markers)
 
     @staticmethod
     def _api_error(payload: object, *, http_status: int | None = None) -> TxDocsAPIError:
