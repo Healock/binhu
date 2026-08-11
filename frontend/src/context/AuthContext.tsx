@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import {
   changeOwnPassword,
+  getAppBootstrap,
   getCurrentUser,
   fetchWithAuth,
   recordSessionActivity,
@@ -11,6 +12,7 @@ import { clearRoleDashboardCaches } from '../utils/dashboardCache'
 
 interface AuthContextValue {
   user: User | null
+  serverVersion: string
   loading: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
@@ -22,6 +24,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
+  serverVersion: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
   loading: true,
   login: async () => {},
   logout: async () => {},
@@ -33,9 +36,17 @@ const AuthContext = createContext<AuthContextValue>({
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
+  const [serverVersion, setServerVersion] = useState(
+    typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
+  )
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    getAppBootstrap()
+      .then(payload => {
+        if (payload.server_version) setServerVersion(payload.server_version)
+      })
+      .catch(() => {})
     getCurrentUser()
       .then(setUser)
       .catch(() => {})
@@ -92,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
       user,
+      serverVersion,
       loading,
       login,
       logout,

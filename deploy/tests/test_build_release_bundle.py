@@ -51,11 +51,13 @@ class ReleaseBundleTests(unittest.TestCase):
             self.dist,
             self.commit,
             "online",
+            "full",
             output,
         )
         self.assertEqual(manifest["version"], "1.2.3")
         self.assertEqual(manifest["commit"], self.commit)
         self.assertEqual(manifest["backup_scope"], "online")
+        self.assertEqual(manifest["release_scope"], "full")
 
         extracted = self.root / "extracted"
         extracted.mkdir()
@@ -84,6 +86,57 @@ class ReleaseBundleTests(unittest.TestCase):
                 self.dist,
                 self.commit,
                 "everything",
+                "full",
+                self.root / "release.tar.gz",
+            )
+
+    def test_backend_bundle_omits_frontend_and_unrelated_source(self):
+        (self.repository / "backend").mkdir()
+        (self.repository / "backend" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+        (self.repository / "frontend").mkdir()
+        (self.repository / "frontend" / "source.ts").write_text("export {}\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repository), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repository), "commit", "-qm", "backend"], check=True)
+        commit = subprocess.check_output(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+
+        output = self.root / "backend-release.tar.gz"
+        manifest = build_bundle(
+            self.repository,
+            None,
+            commit,
+            "none",
+            "backend",
+            output,
+        )
+
+        self.assertEqual(manifest["release_scope"], "backend")
+        self.assertEqual(set(manifest["files"]), {"source.tar.gz"})
+        extracted = self.root / "backend-extracted"
+        extracted.mkdir()
+        with tarfile.open(output, "r:gz") as archive:
+            self.assertEqual(
+                sorted(archive.getnames()),
+                ["SHA256SUMS", "manifest.json", "source.tar.gz"],
+            )
+            archive.extractall(extracted, filter="data")
+        with tarfile.open(extracted / "source.tar.gz", "r:gz") as source:
+            names = source.getnames()
+            self.assertIn("VERSION", names)
+            self.assertIn("backend/main.py", names)
+            self.assertNotIn("frontend/source.ts", names)
+            self.assertNotIn("tracked.txt", names)
+
+    def test_full_release_requires_frontend_dist(self):
+        with self.assertRaisesRegex(ValueError, "full release requires frontend dist"):
+            build_bundle(
+                self.repository,
+                None,
+                self.commit,
+                "none",
+                "full",
                 self.root / "release.tar.gz",
             )
 

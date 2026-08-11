@@ -30,6 +30,10 @@ export interface MaintenanceStatus {
   timezone: string
 }
 
+export interface AppBootstrapSummary {
+  server_version: string
+}
+
 export function resetUnauthorizedRedirectForTests(): void {
   unauthorizedRedirectStarted = false
 }
@@ -145,6 +149,18 @@ api.interceptors.response.use(
 export async function getCurrentUser(): Promise<User> {
   const { data } = await api.get('/auth/me')
   return data.user
+}
+
+export async function getAppBootstrap(): Promise<AppBootstrapSummary> {
+  const response = await fetchWithAuth(
+    '/api/app/bootstrap',
+    { method: 'GET' },
+    { handleUnauthorized: false, markActivity: false },
+  )
+  if (!response.ok) {
+    throw new Error('无法读取平台版本')
+  }
+  return response.json()
 }
 
 export async function recordSessionActivity(): Promise<User> {
