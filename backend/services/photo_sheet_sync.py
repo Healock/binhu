@@ -37,8 +37,12 @@ class ParsedRow:
     identity_number: str = ""
     identity_hmac: str = ""
     identity_hmac_version: int | None = None
+    blocking_issue: str = ""
+    warning_issue: str = ""
     data_issue: str = ""
     requested_at: datetime | None = None
+    excel_date_converted: bool = False
+    request_date_issue: str = ""
     marker_at: datetime | None = None
     time_inferred: bool = False
 
@@ -74,22 +78,29 @@ def normalize_import_identity(value: object) -> tuple[str, str]:
     return normalized, ""
 
 
-def _parse_request_date(value: str) -> datetime | None:
+def _parse_request_date(value: str, metadata: dict | None = None) -> tuple[datetime | None, str, bool]:
     value = _text(value)
     if not value:
-        return None
+        return None, "missing", False
     for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%Y.%m.%d", "%Y年%m月%d日"):
         try:
-            return datetime.strptime(value, fmt)
+            return datetime.strptime(value, fmt), "", False
         except ValueError:
             pass
     match = DATE_RE.search(value)
     if match and match.group(1):
         try:
-            return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3))), "", False
         except ValueError:
-            return None
-    return None
+            return None, "invalid", False
+    if str((metadata or {}).get("type") or "").lower() == "number":
+        try:
+            serial = float(value)
+        except (TypeError, ValueError):
+            serial = -1.0
+        if serial.is_integer() and 30000 <= serial <= 60000:
+            return datetime(1899, 12, 30) + timedelta(days=int(serial)), "", True
+    return None, "invalid", False
 
 
 def _parse_marker(value: str, nearby: datetime | None) -> tuple[datetime | None, bool]:
@@ -135,6 +146,7 @@ def parse_rows(rows: list[dict]) -> list[ParsedRow]:
     nearby_date: datetime | None = None
     for raw in rows:
         values = {column: _text((raw.get("values") or {}).get(column)) for column in COLUMNS}
+        cell_meta = raw.get("cell_meta") if isinstance(raw.get("cell_meta"), dict) else {}
         physical_row = int(raw.get("physical_row") or 0)
         if not physical_row or not any(values.values()):
             continue
@@ -149,24 +161,33 @@ def parse_rows(rows: list[dict]) -> list[ParsedRow]:
                 physical_row=physical_row, kind="marker", values=values,
                 row_hash=row_hash, fingerprint=marker_fingerprint,
                 marker_at=marker_at, time_inferred=inferred,
+                warning_issue="" if marker_at else "批次时间无法识别",
                 data_issue="" if marker_at else "批次时间无法识别",
             ))
             continue
-        requested_at = _parse_request_date(values["申请日期"])
+        requested_at, request_date_issue, excel_date_converted = _parse_request_date(
+            values["申请日期"], cell_meta.get("申请日期") if isinstance(cell_meta, dict) else None,
+        )
         if requested_at:
             nearby_date = requested_at
-        identity_number, data_issue = normalize_import_identity(values["身份证号"])
+        identity_number, blocking_issue = normalize_import_identity(values["身份证号"])
         identity_hmac = ""
         hmac_version = None
-        if not data_issue:
+        if not blocking_issue:
             identity_hmac, hmac_version = hmac_digest(identity_number, kind="identity")
-        issues = [item for item in (data_issue, "申请日期为空或格式异常" if not requested_at else "") if item]
+        warning_issue = {
+            "missing": "申请日期为空",
+            "invalid": "申请日期格式异常",
+        }.get(request_date_issue, "")
+        issues = [item for item in (blocking_issue, warning_issue) if item]
         parsed.append(ParsedRow(
             physical_row=physical_row, kind="request", values=values,
             row_hash=row_hash, fingerprint=fingerprint,
             identity_number=identity_number, identity_hmac=identity_hmac or "",
-            identity_hmac_version=hmac_version, data_issue="；".join(issues),
-            requested_at=requested_at,
+            identity_hmac_version=hmac_version, blocking_issue=blocking_issue,
+            warning_issue=warning_issue, data_issue="；".join(issues),
+            requested_at=requested_at, excel_date_converted=excel_date_converted,
+            request_date_issue=request_date_issue,
         ))
     return parsed
 
@@ -178,6 +199,7 @@ def preview_summary(parsed: list[ParsedRow]) -> dict:
     completed = sum(1 for row in requests if row.physical_row < last_marker_row)
     pending = len(requests) - completed
     issues = sum(1 for row in parsed if row.data_issue)
+    pending_rows = [row for row in requests if row.physical_row > last_marker_row]
     duplicate_groups: dict[str, int] = {}
     for row in requests:
         duplicate_groups[row.fingerprint] = duplicate_groups.get(row.fingerprint, 0) + 1
@@ -187,8 +209,37 @@ def preview_summary(parsed: list[ParsedRow]) -> dict:
         "rows_read": len(parsed), "requests": len(requests), "markers": len(markers),
         "historical_completed": completed, "pending_after_last_marker": pending,
         "issue_count": issues, "duplicate_groups": duplicates,
+        "blocking_issue_count": sum(1 for row in requests if row.blocking_issue),
+        "warning_count": sum(1 for row in parsed if row.warning_issue),
+        "identity_empty_count": sum(1 for row in requests if row.blocking_issue == "身份证号为空"),
+        "identity_invalid_count": sum(1 for row in requests if row.blocking_issue == "身份证号格式异常"),
+        "excel_date_converted_count": sum(1 for row in requests if row.excel_date_converted),
+        "request_date_missing_count": sum(1 for row in requests if row.request_date_issue == "missing"),
+        "request_date_invalid_count": sum(1 for row in requests if row.request_date_issue == "invalid"),
+        "marker_time_invalid_count": sum(1 for row in markers if row.warning_issue),
+        "pending_blocking_count": sum(1 for row in pending_rows if row.blocking_issue),
+        "pending_warning_count": sum(1 for row in pending_rows if row.warning_issue),
         "last_marker_row": last_marker_row or None, "preview_token": digest,
     }
+
+
+def _ticket_import_state(
+    row: ParsedRow,
+    *,
+    completed: bool,
+    observed_at: datetime | None = None,
+) -> tuple[str, datetime | None, str]:
+    """决定外部照片申请的状态、有效申请时间和安全问题摘要。"""
+    status = "completed" if completed else ("pending_requester" if row.blocking_issue else "queued")
+    requested_at = row.requested_at
+    warning_issue = row.warning_issue
+    if not completed and not row.blocking_issue and requested_at is None:
+        requested_at = observed_at or datetime.utcnow()
+        warning_issue = "；".join(
+            item for item in (warning_issue, "申请日期由平台首次发现时间代替") if item
+        )
+    issue = "；".join(item for item in (row.blocking_issue, warning_issue) if item)
+    return status, requested_at, issue
 
 
 def historical_result(g_value: str) -> tuple[str, str]:
@@ -353,11 +404,11 @@ async def _create_external_ticket(
         requester_id, requester_issue = None, "申请人为空"
     else:
         requester_id, requester_issue = requester_matches.get(requester_name, (None, "申请人未匹配"))
-    issue = "；".join(item for item in (row.data_issue, requester_issue) if item)
+    status, effective_requested_at, source_issue = _ticket_import_state(row, completed=completed)
+    issue = "；".join(item for item in (source_issue, requester_issue) if item)
     version_id, steps = workflow_context or await _photo_workflow(cur)
     first_config = _step_config(steps[0][4])
     queue = str(first_config.get("queue") or steps[0][2] or "基础管控")
-    status = "completed" if completed else ("pending_requester" if row.data_issue else "queued")
     result_status = "pending"
     result_note = ""
     if completed:
@@ -397,7 +448,7 @@ async def _create_external_ticket(
         "VALUES (%s,'external_photo_sheet',%s,%s,%s,%s,%s,%s,%s,%s,%s,'tencent',%s,%s,%s,'',%s,%s)",
         (ticket_id, f"row:{row.physical_row}", row.values["对象姓名"][:100], row.identity_number or None,
          row.identity_hmac or None, row.identity_hmac_version, row.values["任务社区"][:200],
-         row.values["数据来源"][:200], row.values["申请人员"][:100], row.requested_at,
+         row.values["数据来源"][:200], row.values["申请人员"][:100], effective_requested_at,
          "linked", row.values["处理状态"][:2000], issue[:500], result_status, result_note),
     )
     await cur.execute(

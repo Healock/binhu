@@ -127,7 +127,7 @@ export default function WorkflowConfig() {
     if (!photoSheetPreview) return
     Modal.confirm({
       title: '确认正式导入历史名单？',
-      content: `将按当前预览创建 ${photoSheetPreview.requests} 个工单，其中 ${photoSheetPreview.pending_after_last_marker} 个进入待办。首次导入不会修改腾讯历史行。`,
+      content: `将按当前预览创建 ${photoSheetPreview.requests} 个工单，其中 ${photoSheetPreview.pending_after_last_marker} 个进入待办、${photoSheetPreview.pending_blocking_count} 个需补充身份证信息。首次导入不会修改腾讯历史行。`,
       okText: '确认导入',
       cancelText: '取消',
       async onOk() {
@@ -366,10 +366,19 @@ export default function WorkflowConfig() {
               <div>批次边界：<strong>{photoSheetPreview.markers}</strong></div>
               <div>历史已完成：<strong>{photoSheetPreview.historical_completed}</strong></div>
               <div>最后边界后待办：<strong>{photoSheetPreview.pending_after_last_marker}</strong></div>
-              <div>数据异常：<strong>{photoSheetPreview.issue_count}</strong></div>
+              <div>需补充：<strong>{photoSheetPreview.blocking_issue_count}</strong></div>
+              <div>历史格式警告：<strong>{photoSheetPreview.warning_count}</strong></div>
+              <div>已识别 Excel 日期：<strong>{photoSheetPreview.excel_date_converted_count}</strong></div>
+              <div>待办需补充：<strong>{photoSheetPreview.pending_blocking_count}</strong></div>
               <div>重复行组：<strong>{photoSheetPreview.duplicate_groups}</strong></div>
               <div>读取行数：<strong>{photoSheetPreview.rows_read}</strong></div>
               <div>最后边界行：<strong>{photoSheetPreview.last_marker_row || '无'}</strong></div>
+            </div>
+            <div className="mt-3 rounded-lg bg-[var(--app-surface-muted)] p-3 text-xs leading-6 text-[var(--app-text-secondary)]">
+              身份证为空 {photoSheetPreview.identity_empty_count} 条，格式异常 {photoSheetPreview.identity_invalid_count} 条；
+              申请日期为空 {photoSheetPreview.request_date_missing_count} 条，其他格式异常 {photoSheetPreview.request_date_invalid_count} 条；
+              批次时间无法识别 {photoSheetPreview.marker_time_invalid_count} 条，待办格式警告 {photoSheetPreview.pending_warning_count} 条。
+              身份证有效但申请日期异常的待办会正常进入队列，并以平台首次发现时间作为申请时间。
             </div>
             <div className="mt-4 flex justify-end">
               <Button type="primary" danger disabled={Boolean(photoSheetConfig?.import_applied_at)} onClick={importPhotoSheet}>
@@ -419,7 +428,7 @@ export default function WorkflowConfig() {
           onChange={tab => { setPhotoMonitorTab(tab); void loadPhotoMonitor(tab) }}
           items={[
             { key: 'runs', label: '同步记录' },
-            { key: 'data', label: '数据异常' },
+            { key: 'data', label: '资料问题' },
             { key: 'requester', label: '申请人映射' },
             { key: 'conflict', label: '写回冲突' },
             { key: 'outbox', label: '待写回队列' },

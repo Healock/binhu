@@ -8,6 +8,7 @@ from services.photo_sheet_sync import (
     historical_result,
     _locate_mapping,
     _process_append,
+    _ticket_import_state,
     parse_rows,
     parse_source_url,
     preview_summary,
@@ -54,11 +55,14 @@ class AppendCursor:
         return self._many
 
 
-def source_row(number: int, values: list[str]) -> dict:
-    return {
+def source_row(number: int, values: list[str], *, cell_meta: dict | None = None) -> dict:
+    result = {
         "physical_row": number,
         "values": dict(zip(COLUMNS, values)),
     }
+    if cell_meta is not None:
+        result["cell_meta"] = cell_meta
+    return result
 
 
 class PhotoSheetParserTests(unittest.TestCase):
@@ -114,6 +118,132 @@ class PhotoSheetParserTests(unittest.TestCase):
         self.assertEqual(summary["duplicate_groups"], 1)
         self.assertNotEqual(rows[0].row_hash, rows[1].row_hash)
         self.assertEqual(rows[0].fingerprint, rows[1].fingerprint)
+
+    def test_numeric_excel_serial_date_is_converted_only_for_number_cells(self):
+        numeric = parse_rows([source_row(
+            2,
+            ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "46244", ""],
+            cell_meta={"申请日期": {"type": "number"}},
+        )])[0]
+        text_value = parse_rows([source_row(
+            3,
+            ["冬梅社区", "来源", "乙", "320500200001010028", "申请人", "46244", ""],
+            cell_meta={"申请日期": {"type": "text"}},
+        )])[0]
+
+        self.assertEqual(numeric.requested_at, datetime(2026, 8, 10))
+        self.assertTrue(numeric.excel_date_converted)
+        self.assertEqual(numeric.request_date_issue, "")
+        self.assertIsNone(text_value.requested_at)
+        self.assertFalse(text_value.excel_date_converted)
+        self.assertEqual(text_value.request_date_issue, "invalid")
+
+    def test_decimal_and_out_of_range_numbers_are_not_guessed_as_dates(self):
+        rows = parse_rows([
+            source_row(
+                2,
+                ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "8.1", ""],
+                cell_meta={"申请日期": {"type": "number"}},
+            ),
+            source_row(
+                3,
+                ["冬梅社区", "来源", "乙", "320500200001010028", "申请人", "20260810", ""],
+                cell_meta={"申请日期": {"type": "number"}},
+            ),
+        ])
+
+        self.assertTrue(all(row.requested_at is None for row in rows))
+        self.assertTrue(all(row.request_date_issue == "invalid" for row in rows))
+
+    def test_text_date_with_time_keeps_calendar_date(self):
+        row = parse_rows([source_row(
+            2,
+            ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "2026-08-10 16:30", ""],
+            cell_meta={"申请日期": {"type": "text"}},
+        )])[0]
+
+        self.assertEqual(row.requested_at, datetime(2026, 8, 10))
+        self.assertEqual(row.request_date_issue, "")
+
+    def test_preview_token_depends_on_source_values_not_cell_type(self):
+        values = ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "46244", ""]
+        numeric_summary = preview_summary(parse_rows([
+            source_row(2, values, cell_meta={"申请日期": {"type": "number"}}),
+        ]))
+        text_summary = preview_summary(parse_rows([
+            source_row(2, values, cell_meta={"申请日期": {"type": "text"}}),
+        ]))
+
+        self.assertEqual(numeric_summary["preview_token"], text_summary["preview_token"])
+        self.assertEqual(numeric_summary["excel_date_converted_count"], 1)
+        self.assertEqual(text_summary["request_date_invalid_count"], 1)
+
+    def test_preview_separates_blocking_warnings_and_converted_dates(self):
+        rows = parse_rows([
+            source_row(
+                2,
+                ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "46244", ""],
+                cell_meta={"申请日期": {"type": "number"}},
+            ),
+            source_row(3, ["冬梅社区", "来源", "乙", "", "申请人", "", ""]),
+            source_row(4, ["无法识别-批次", "", "", "", "", "", ""]),
+            source_row(5, ["蠡湖社区", "来源", "丙", "320500200001010036", "申请人", "", ""]),
+        ])
+
+        summary = preview_summary(rows)
+
+        self.assertEqual(summary["blocking_issue_count"], 1)
+        self.assertEqual(summary["warning_count"], 3)
+        self.assertEqual(summary["identity_empty_count"], 1)
+        self.assertEqual(summary["identity_invalid_count"], 0)
+        self.assertEqual(summary["excel_date_converted_count"], 1)
+        self.assertEqual(summary["request_date_missing_count"], 2)
+        self.assertEqual(summary["request_date_invalid_count"], 0)
+        self.assertEqual(summary["marker_time_invalid_count"], 1)
+        self.assertEqual(summary["pending_blocking_count"], 0)
+        self.assertEqual(summary["pending_warning_count"], 1)
+
+    def test_pending_valid_identity_uses_observed_time_for_invalid_date(self):
+        row = parse_rows([source_row(
+            2, ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "", ""],
+        )])[0]
+        observed_at = datetime(2026, 8, 11, 10, 30)
+
+        status, requested_at, issue = _ticket_import_state(
+            row, completed=False, observed_at=observed_at,
+        )
+
+        self.assertEqual(status, "queued")
+        self.assertEqual(requested_at, observed_at)
+        self.assertIn("申请日期为空", issue)
+        self.assertIn("申请日期由平台首次发现时间代替", issue)
+
+    def test_pending_invalid_identity_still_waits_for_requester(self):
+        row = parse_rows([source_row(
+            2, ["冬梅社区", "来源", "甲", "", "申请人", "", ""],
+        )])[0]
+
+        status, requested_at, issue = _ticket_import_state(
+            row, completed=False, observed_at=datetime(2026, 8, 11, 10, 30),
+        )
+
+        self.assertEqual(status, "pending_requester")
+        self.assertIsNone(requested_at)
+        self.assertIn("身份证号为空", issue)
+        self.assertNotIn("首次发现时间代替", issue)
+
+    def test_completed_history_does_not_invent_missing_request_date(self):
+        row = parse_rows([source_row(
+            2, ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "", ""],
+        )])[0]
+
+        status, requested_at, issue = _ticket_import_state(
+            row, completed=True, observed_at=datetime(2026, 8, 11, 10, 30),
+        )
+
+        self.assertEqual(status, "completed")
+        self.assertIsNone(requested_at)
+        self.assertEqual(issue, "申请日期为空")
 
     def test_historical_g_failure_note_only_changes_result_classification(self):
         self.assertEqual(historical_result("身份证错误"), ("not_found", "腾讯历史批次完成、无平台附件"))

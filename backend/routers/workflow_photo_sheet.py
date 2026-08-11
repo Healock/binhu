@@ -127,6 +127,8 @@ async def preview_photo_sheet(
         detail={key: result[key] for key in (
             "rows_read", "requests", "markers", "historical_completed",
             "pending_after_last_marker", "issue_count", "duplicate_groups",
+            "blocking_issue_count", "warning_count", "excel_date_converted_count",
+            "pending_blocking_count", "pending_warning_count",
         )}, **request_audit_fields(request),
     )
     return result
@@ -154,7 +156,8 @@ async def apply_photo_sheet_import(
         user, "workflow.photo_sheet.import", target_type="photo_sheet", target_name=SOURCE_CODE,
         detail={key: result.get(key) for key in (
             "requests", "markers", "historical_completed", "pending_after_last_marker",
-            "issue_count", "created_tickets",
+            "issue_count", "blocking_issue_count", "warning_count",
+            "excel_date_converted_count", "created_tickets",
         )}, **request_audit_fields(request),
     )
     return result

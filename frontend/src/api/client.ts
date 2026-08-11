@@ -2413,6 +2413,16 @@ export interface PhotoSheetPreview {
   historical_completed: number
   pending_after_last_marker: number
   issue_count: number
+  blocking_issue_count: number
+  warning_count: number
+  identity_empty_count: number
+  identity_invalid_count: number
+  excel_date_converted_count: number
+  request_date_missing_count: number
+  request_date_invalid_count: number
+  marker_time_invalid_count: number
+  pending_blocking_count: number
+  pending_warning_count: number
   duplicate_groups: number
   last_marker_row: number | null
   preview_token: string
