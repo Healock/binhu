@@ -7,6 +7,7 @@ import {
   buildQuerySheetRequestFilters,
   buildQuerySheetRows,
   canEditQuerySheetCell,
+  createQuerySheetClipboardSnapshot,
   fitQuerySheetColumnWidth,
   isQuerySheetFullscreen,
   isQuerySheetAutomaticTextConversion,
@@ -18,6 +19,7 @@ import {
   querySheetTextCell,
   querySheetCellKey,
   resolveQuerySheetColumnWidth,
+  resolveQuerySheetPasteValues,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   toggleQuerySheetFullscreen,
@@ -91,7 +93,7 @@ test('腾讯日期和长数字以普通字符串写入工作表且不显示前�
   })
 })
 
-test('查询工作表支持 Univer 内部复制内容回退粘贴', () => {
+test('查询工作表使用 Univer 内部复制的精确单元格范围', () => {
   const componentSource = readFileSync(
     new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
     'utf8',
@@ -99,7 +101,22 @@ test('查询工作表支持 Univer 内部复制内容回退粘贴', () => {
   assert.match(componentSource, /BeforeClipboardChange/)
   assert.match(componentSource, /internalClipboard/)
   assert.match(componentSource, /fromRange\?\.getValues/)
-  assert.match(componentSource, /const pasted = clipboardValues\(params\) \|\| internalClipboard/)
+  assert.match(componentSource, /resolveQuerySheetPasteValues\(params\.text, internalClipboard\)/)
+
+  const internalClipboard = createQuerySheetClipboardSnapshot('吕强\t\r\n', [['吕强']])
+  assert.deepEqual(
+    resolveQuerySheetPasteValues('吕强\t\n', internalClipboard),
+    [['吕强']],
+  )
+})
+
+test('外部剪贴板文本不会被旧的 Univer 内部复制内容覆盖', () => {
+  const internalClipboard = createQuerySheetClipboardSnapshot('吕强\t\n', [['吕强']])
+  assert.deepEqual(
+    resolveQuerySheetPasteValues('冬梅\t李四\r\n', internalClipboard),
+    [['冬梅', '李四']],
+  )
+  assert.deepEqual(resolveQuerySheetPasteValues('外部内容', null), [['外部内容']])
 })
 
 test('查询工作表编辑日期时保留原始文本和尾零', () => {
