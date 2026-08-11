@@ -2537,14 +2537,14 @@ export const workflowApi = {
   attachmentUrl(id: number, fileId: string, inline = false) {
     return `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`
   },
-  async pendingPhotoRequests(params: {
+  async pendingPhotoRequests(payload: {
     keyword?: string
     community?: string
     source_label?: string
     page?: number
     page_size?: number
   } = {}) {
-    return (await api.get('/workflow/photo-requests/pending', { ...activeRequest, params })).data as {
+    return (await api.post('/workflow/photo-requests/pending/search', payload, activeRequest)).data as {
       data: PendingPhotoRequest[]; total: number; page: number; page_size: number
     }
   },
@@ -2553,13 +2553,13 @@ export const workflowApi = {
       claimed_ids: number[]; skipped_ids: number[]; claimed_count: number
     }
   },
-  async exportPendingPhotoRequests(params: {
+  async exportPendingPhotoRequests(payload: {
     keyword?: string
     community?: string
     source_label?: string
   } = {}) {
-    return (await api.get('/workflow/photo-requests/pending/export', {
-      params,
+    return (await api.post('/workflow/photo-requests/pending/export', payload, {
+      ...activeRequest,
       responseType: 'blob',
     })).data as Blob
   },

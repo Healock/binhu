@@ -6,12 +6,15 @@ from unittest.mock import MagicMock, patch
 
 from routers.workflow_extended import (
     PhotoRequestBatchClaimPayload,
+    PhotoRequestFilterPayload,
+    PhotoRequestSearchPayload,
     _can_upload_photo_batch,
     _photo_matches,
     _photo_pending_filter,
     _photo_pending_queue,
     batch_claim_photo_requests,
     get_photo_import_detail,
+    router,
 )
 from routers.workflow_extended import preview_photo_import
 from services.photo_import import (
@@ -144,6 +147,19 @@ class PhotoImportPermissionTests(unittest.TestCase):
         self.assertIn("order_row.current_assignee_user_id IS NULL", clause)
         self.assertNotIn("order_row.status='in_progress'", clause)
         self.assertEqual(params, ["基础管控"])
+
+    def test_sensitive_photo_filters_are_post_body_only(self):
+        expected_models = {
+            "/api/workflow/photo-requests/pending/search": PhotoRequestSearchPayload,
+            "/api/workflow/photo-requests/pending/export": PhotoRequestFilterPayload,
+        }
+
+        for path, expected_model in expected_models.items():
+            route = next(item for item in router.routes if item.path == path)
+            self.assertEqual(route.methods, {"POST"})
+            self.assertEqual(route.dependant.query_params, [])
+            self.assertEqual(len(route.dependant.body_params), 1)
+            self.assertIs(route.dependant.body_params[0].type_, expected_model)
 
 
 class PhotoImportMatchTests(unittest.IsolatedAsyncioTestCase):

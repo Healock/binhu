@@ -169,6 +169,17 @@ class TicketSearch(BaseModel):
     page_size: int = Field(default=20, ge=1, le=100)
 
 
+class PhotoRequestFilterPayload(BaseModel):
+    keyword: str = Field(default="", max_length=100)
+    community: str = Field(default="", max_length=200)
+    source_label: str = Field(default="", max_length=200)
+
+
+class PhotoRequestSearchPayload(PhotoRequestFilterPayload):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=100, ge=1, le=500)
+
+
 class PhotoRequestBatchClaimPayload(BaseModel):
     ticket_ids: list[int] = Field(default_factory=list, max_length=2000)
     claim_all: bool = False
@@ -575,13 +586,9 @@ def _photo_request_row(row: tuple, now: datetime) -> dict:
     }
 
 
-@router.get("/photo-requests/pending")
+@router.post("/photo-requests/pending/search")
 async def list_pending_photo_requests(
-    keyword: str = Query(default="", max_length=100),
-    community: str = Query(default="", max_length=200),
-    source_label: str = Query(default="", max_length=200),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=100, ge=1, le=500),
+    data: PhotoRequestSearchPayload,
     user: dict = Depends(require_photo_batch_access),
     conn=Depends(get_workflow_db),
 ):
@@ -590,9 +597,9 @@ async def list_pending_photo_requests(
         queue,
         int(user["id"]),
         True,
-        keyword,
-        community,
-        source_label,
+        data.keyword,
+        data.community,
+        data.source_label,
     )
     clause = " WHERE " + " AND ".join(where)
     async with conn.cursor() as cur:
@@ -606,24 +613,22 @@ async def list_pending_photo_requests(
             f"SELECT {PHOTO_REQUEST_COLUMNS} FROM work_orders order_row "
             "JOIN photo_request_details detail ON detail.work_order_id=order_row.id"
             + clause + " ORDER BY order_row.updated_at ASC, order_row.id ASC LIMIT %s OFFSET %s",
-            tuple(params) + (page_size, (page - 1) * page_size),
+            tuple(params) + (data.page_size, (data.page - 1) * data.page_size),
         )
         rows = await cur.fetchall()
     now = datetime.utcnow()
     return {
         "total": total,
-        "page": page,
-        "page_size": page_size,
+        "page": data.page,
+        "page_size": data.page_size,
         "data": [_photo_request_row(row, now) for row in rows],
     }
 
 
-@router.get("/photo-requests/pending/export")
+@router.post("/photo-requests/pending/export")
 async def export_pending_photo_requests(
+    data: PhotoRequestFilterPayload,
     request: Request,
-    keyword: str = Query(default="", max_length=100),
-    community: str = Query(default="", max_length=200),
-    source_label: str = Query(default="", max_length=200),
     user: dict = Depends(require_photo_batch_access),
     conn=Depends(get_workflow_db),
 ):
@@ -632,9 +637,9 @@ async def export_pending_photo_requests(
         queue,
         int(user["id"]),
         True,
-        keyword,
-        community,
-        source_label,
+        data.keyword,
+        data.community,
+        data.source_label,
     )
     clause = " WHERE " + " AND ".join(where)
     async with conn.cursor() as cur:
