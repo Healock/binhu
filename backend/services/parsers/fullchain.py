@@ -20,6 +20,9 @@ class FullChainParser(BaseParser):
             "现住址", "核查结果", "研判", "二次反馈",
         ),
     )
+    # 全链条允许同一业务对象保留多条腾讯物理来源。旧业务表使用物理行号
+    # 最小的一条作为稳定代表，完整来源仍由来源缓存和任务投影保存并标记冲突。
+    ALLOW_SOURCE_CONFLICTS = True
 
     def get_business_key(self) -> list[str]:
         return ["身份证号", "电话号码", "下发日期"]

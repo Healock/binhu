@@ -3,6 +3,11 @@
 流程：从腾讯文档读取 → 解析器解析 → 和数据库现有数据比对 → 新增/更新/归档移除的
 """
 
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+
 from services.txdocs_client import TxDocsClient
 from services.parsers import get_parser
 from services.business_time import get_business_date
@@ -16,17 +21,67 @@ from services.online_source import (
     release_sheet_lock,
     replace_source_cache,
     resolve_source_columns,
+    source_row_hash,
 )
 from services.police_dispatch import reconcile_police_dispatch_publications
 
 
-def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int]:
+@dataclass(frozen=True)
+class SourceConflict:
+    row_key: str
+    physical_rows: tuple[int, ...]
+    differing_columns: tuple[str, ...]
+
+
+@dataclass
+class DeduplicationResult:
+    rows: dict[str, dict]
+    duplicate_count: int
+    conflicts: list[SourceConflict]
+
+    def __iter__(self):
+        """保留旧调用方的二元解包兼容。"""
+        yield self.rows
+        yield self.duplicate_count
+
+
+def source_read_requires_confirmation(previous_count: int, current_count: int) -> bool:
+    """来源突然清空或大幅骤降时要求第二次完整读取。"""
+    if previous_count <= 0:
+        return False
+    if current_count == 0:
+        return True
+    return previous_count >= 20 and current_count * 2 < previous_count
+
+
+def source_rows_digest(parser, source_rows: list[dict]) -> str:
+    """生成不包含业务正文的完整读取摘要。"""
+    digest = hashlib.sha256()
+    for source in sorted(
+        source_rows,
+        key=lambda item: int(item.get("physical_row") or 0),
+    ):
+        values = parser.normalize_source_row(source.get("values", {}))
+        digest.update(str(int(source.get("physical_row") or 0)).encode("ascii"))
+        digest.update(b":")
+        digest.update(source_row_hash(values).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def deduplicate_rows(
+    parser,
+    raw_rows: list[dict],
+    *,
+    physical_rows: list[int] | None = None,
+) -> DeduplicationResult:
     """按业务主键去重；只有解析器明确允许时才合并不同内容。"""
     online: dict[str, dict] = {}
     duplicate_count = 0
-    conflicts: list[set[str]] = []
+    conflict_details: dict[str, dict[str, set]] = {}
+    representative_rows: dict[str, int] = {}
 
-    for raw in raw_rows:
+    for index, raw in enumerate(raw_rows):
         parsed = {
             key: "" if value is None else str(value).strip()
             for key, value in raw.items()
@@ -34,6 +89,11 @@ def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int
         key = parser.make_row_key(parsed)
         if key not in online:
             online[key] = parsed
+            representative_rows[key] = (
+                int(physical_rows[index])
+                if physical_rows is not None
+                else index + 1
+            )
             continue
 
         previous = online[key]
@@ -47,23 +107,47 @@ def deduplicate_rows(parser, raw_rows: list[dict]) -> tuple[dict[str, dict], int
             duplicate_count += 1
             continue
 
-        conflicts.append(
+        conflict = conflict_details.setdefault(
+            key,
             {
-                column
-                for column in parser.COLUMNS
-                if previous.get(column, "") != parsed.get(column, "")
-            }
+                "physical_rows": {representative_rows[key]},
+                "differing_columns": set(),
+            },
         )
+        conflict["physical_rows"].add(
+            int(physical_rows[index])
+            if physical_rows is not None
+            else index + 1
+        )
+        conflict["differing_columns"].update(
+            column
+            for column in parser.COLUMNS
+            if previous.get(column, "") != parsed.get(column, "")
+        )
+        if parser.ALLOW_SOURCE_CONFLICTS:
+            duplicate_count += 1
 
-    if conflicts:
-        differing_columns = sorted(set().union(*conflicts))
+    conflicts = [
+        SourceConflict(
+            row_key=row_key,
+            physical_rows=tuple(sorted(detail["physical_rows"])),
+            differing_columns=tuple(sorted(detail["differing_columns"])),
+        )
+        for row_key, detail in conflict_details.items()
+    ]
+    if conflicts and not parser.ALLOW_SOURCE_CONFLICTS:
+        differing_columns = sorted({
+            column
+            for conflict in conflicts
+            for column in conflict.differing_columns
+        })
         raise ValueError(
-            f"检测到 {len(conflicts)} 行主键相同但内容不同，"
+            f"检测到 {sum(len(item.physical_rows) - 1 for item in conflicts)} 行主键相同但内容不同，"
             f"涉及字段: {', '.join(differing_columns)}；"
             "已停止该表同步，未覆盖任何冲突行"
         )
 
-    return online, duplicate_count
+    return DeduplicationResult(online, duplicate_count, conflicts)
 
 
 class SyncEngine:
@@ -271,18 +355,43 @@ class SyncEngine:
         cols = parser.COLUMNS
         source_columns = await resolve_source_columns(client, sp, parser)
 
-        # 1. 从腾讯文档读取
-        source_rows = await client.read_all_source_rows(
-            sp["file_id"], sp["data_sheet_id"], sp["header_row"], source_columns
+        # 1. 从腾讯文档读取。来源突然清空或大幅骤降时，必须由第二次
+        # 完整读取确认；确认前不能替换缓存、生成快照或归档旧数据。
+        source_rows = await self._read_source_rows_safely(
+            conn,
+            client,
+            sp,
+            source_columns,
+            parser,
         )
-        await replace_source_cache(conn, sp, source_rows)
+        source_rows = sorted(
+            source_rows,
+            key=lambda item: int(item.get("physical_row") or 0),
+        )
         raw_rows = [parser.normalize_source_row(source["values"]) for source in source_rows]
 
         # 2. 解析 + 生成业务主键。业务明确允许时可合并同一对象的重复行。
-        online, duplicate_count = deduplicate_rows(parser, raw_rows)
+        deduplicated = deduplicate_rows(
+            parser,
+            raw_rows,
+            physical_rows=[int(source["physical_row"]) for source in source_rows],
+        )
+        online, duplicate_count = deduplicated
+        for conflict in deduplicated.conflicts:
+            print(
+                f"[SYNC] {sp['name']}: 保留多来源冲突 "
+                f"row_key={conflict.row_key[:12]} "
+                f"physical_rows={','.join(map(str, conflict.physical_rows))} "
+                f"fields={','.join(conflict.differing_columns)}"
+            )
+
+        # 读取数量和业务主键校验都通过后，才原子替换来源缓存。全链条
+        # 冲突的全部物理行会在这里保留，并由投影继续标记来源异常。
+        await replace_source_cache(conn, sp, source_rows)
         print(
             f"[SYNC] {sp['name']}: API返回{len(raw_rows)}行, "
-            f"有效{len(online)}行, 去重{duplicate_count}行"
+            f"有效{len(online)}行, 去重或多来源{duplicate_count}行, "
+            f"冲突对象{len(deduplicated.conflicts)}个"
         )
 
         # 3. 读取数据库现有数据
@@ -367,6 +476,62 @@ class SyncEngine:
             await rebuild_projection(cur, sp["parser_type"])
 
         return len(online), report_date
+
+    async def _read_source_rows_safely(
+        self,
+        conn,
+        client,
+        sp: dict,
+        source_columns: list[str],
+        parser,
+    ) -> list[dict]:
+        previous_count = await self._load_cached_source_count(conn, int(sp["id"]))
+        first = await client.read_all_source_rows(
+            sp["file_id"],
+            sp["data_sheet_id"],
+            sp["header_row"],
+            source_columns,
+        )
+        if not source_read_requires_confirmation(previous_count, len(first)):
+            return first
+
+        second = await client.read_all_source_rows(
+            sp["file_id"],
+            sp["data_sheet_id"],
+            sp["header_row"],
+            source_columns,
+        )
+        if (
+            len(first) != len(second)
+            or source_rows_digest(parser, first) != source_rows_digest(parser, second)
+        ):
+            raise RuntimeError(
+                "腾讯来源读取结果异常波动，已停止本表同步且未修改缓存或归档："
+                f"原有{previous_count}行，首次{len(first)}行，复核{len(second)}行"
+            )
+
+        print(
+            f"[SYNC] {sp['name']}: 来源数量显著变化已通过二次完整读取确认 "
+            f"previous={previous_count} current={len(second)}"
+        )
+        return second
+
+    async def _load_cached_source_count(self, conn, spreadsheet_id: int) -> int:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT row_count FROM _online_source_cache_state "
+                "WHERE spreadsheet_id=%s",
+                (spreadsheet_id,),
+            )
+            row = await cur.fetchone()
+            if row is not None:
+                return int(row[0] or 0)
+            await cur.execute(
+                "SELECT COUNT(*) FROM _online_source_rows WHERE spreadsheet_id=%s",
+                (spreadsheet_id,),
+            )
+            row = await cur.fetchone()
+            return int(row[0] or 0) if row else 0
 
     async def _load_existing(
         self, conn, table: str, parser, column_map: dict[str, str]

@@ -20,6 +20,7 @@ class BaseParser:
     SOURCE_COLUMN_LAYOUTS: tuple[tuple[str, ...], ...] = ()
     DATABASE_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {}
     COMMUNITY_COLUMN = "社区"
+    ALLOW_SOURCE_CONFLICTS = False
 
     def get_schema(self) -> list[ColumnDef]:
         """返回列定义列表"""

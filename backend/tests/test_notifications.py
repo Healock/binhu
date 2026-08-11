@@ -14,15 +14,20 @@ from routers.notifications import (
     mark_read,
     router,
 )
-from services.notifications import create_sync_failure_notifications
+from services.notifications import (
+    create_sync_failure_notifications,
+    create_sync_status_notifications,
+    normalize_sync_error,
+)
 
 
 class NotificationCursor:
-    def __init__(self):
+    def __init__(self, previous_sync_state=None):
         self.executed = []
         self.last_sql = ""
         self.rowcount = 1
         self.lastrowid = 14
+        self.previous_sync_state = previous_sync_state
 
     async def __aenter__(self):
         return self
@@ -36,6 +41,8 @@ class NotificationCursor:
         self.rowcount = 1
 
     async def fetchone(self):
+        if self.last_sql.startswith("SELECT status, error_message FROM _sync_log"):
+            return self.previous_sync_state
         if self.last_sql.startswith("SELECT COUNT(*) FROM _notifications"):
             return (1,)
         if self.last_sql.startswith("SELECT COUNT(*) FROM _announcements"):
@@ -103,7 +110,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
                 "network unavailable",
             )
 
-        sql, params = cursor.executed[0]
+        sql, params = cursor.executed[1]
         self.assertIn("INSERT IGNORE INTO _notifications", sql)
         self.assertIn("FROM _users", sql)
         self.assertIn("WHERE role = 'super_admin'", sql)
@@ -127,7 +134,87 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
                 "one sheet failed",
             )
 
-        self.assertEqual(cursor.executed[0][1][0], "warning")
+        self.assertEqual(cursor.executed[1][1][0], "warning")
+
+    async def test_repeated_same_sync_failure_is_suppressed(self):
+        cursor = NotificationCursor(previous_sync_state=("failed", "b error\na error"))
+        connection = make_connection(cursor)
+        pool = MagicMock()
+        pool.acquire = AsyncMock(return_value=connection)
+        pool.release = MagicMock()
+
+        with patch(
+            "services.notifications.db_manager.get_pool",
+            return_value=pool,
+        ):
+            created = await create_sync_status_notifications(
+                14,
+                "partial",
+                "a   error\nb error",
+            )
+
+        self.assertFalse(created)
+        self.assertEqual(len(cursor.executed), 1)
+
+    async def test_changed_sync_failure_creates_new_notice(self):
+        cursor = NotificationCursor(previous_sync_state=("failed", "network error"))
+        connection = make_connection(cursor)
+        pool = MagicMock()
+        pool.acquire = AsyncMock(return_value=connection)
+        pool.release = MagicMock()
+
+        with patch(
+            "services.notifications.db_manager.get_pool",
+            return_value=pool,
+        ):
+            created = await create_sync_status_notifications(
+                15,
+                "partial",
+                "source conflict",
+            )
+
+        self.assertTrue(created)
+        self.assertEqual(cursor.executed[1][1][0], "warning")
+
+    async def test_first_success_after_failure_creates_recovery_notice(self):
+        cursor = NotificationCursor(previous_sync_state=("partial", "source conflict"))
+        connection = make_connection(cursor)
+        pool = MagicMock()
+        pool.acquire = AsyncMock(return_value=connection)
+        pool.release = MagicMock()
+
+        with patch(
+            "services.notifications.db_manager.get_pool",
+            return_value=pool,
+        ):
+            created = await create_sync_status_notifications(16, "success", None)
+
+        self.assertTrue(created)
+        _, params = cursor.executed[1]
+        self.assertEqual(params[0], "success")
+        self.assertEqual(params[1], "自动同步已恢复")
+
+    async def test_success_after_success_does_not_create_notice(self):
+        cursor = NotificationCursor(previous_sync_state=("success", None))
+        connection = make_connection(cursor)
+        pool = MagicMock()
+        pool.acquire = AsyncMock(return_value=connection)
+        pool.release = MagicMock()
+
+        with patch(
+            "services.notifications.db_manager.get_pool",
+            return_value=pool,
+        ):
+            created = await create_sync_status_notifications(17, "success", None)
+
+        self.assertFalse(created)
+        self.assertEqual(len(cursor.executed), 1)
+
+    def test_sync_error_signature_ignores_line_order_and_whitespace(self):
+        self.assertEqual(
+            normalize_sync_error("b error\na   error"),
+            normalize_sync_error(" a error \n b error "),
+        )
 
     async def test_regular_user_receives_announcements_and_personal_messages(self):
         cursor = NotificationCursor()

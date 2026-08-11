@@ -202,7 +202,7 @@ class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
         cases = [
             ("scheduled", "failed", 1),
             ("scheduled", "partial", 1),
-            ("scheduled", "success", 0),
+            ("scheduled", "success", 1),
             ("manual", "failed", 0),
         ]
         for trigger_source, status, notice_count in cases:
@@ -231,7 +231,7 @@ class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
                     new=reset,
                 ), patch.object(
                     sync_tasks,
-                    "create_sync_failure_notifications",
+                    "create_sync_status_notifications",
                     new=notify,
                 ):
                     await sync_tasks.run_sync_task(88)

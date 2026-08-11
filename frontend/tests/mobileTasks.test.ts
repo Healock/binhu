@@ -332,6 +332,9 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /\.mobile-task-item-card__key-row--old-address dt,[\s\S]*color:\s*var\(--app-text-muted\)[\s\S]*font-size:\s*12px/)
   const keyInfoStyle = styleSource.match(/\.mobile-task-item-card__key-info\s*\{([^}]*)\}/)?.[1] || ''
   assert.doesNotMatch(keyInfoStyle, /background|border/)
+  assert.match(keyInfoStyle, /gap:\s*3px/)
+  assert.match(styleSource, /\.mobile-task-copy-value\s*\{[\s\S]*height:\s*22px/)
+  assert.match(styleSource, /\.mobile-task-item-card__phone-copy\.ant-btn\s*\{[\s\S]*height:\s*22px/)
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
 })
 
