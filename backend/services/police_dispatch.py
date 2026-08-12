@@ -283,8 +283,10 @@ def parse_dispatch_workbook(
     return sheet_name, result
 
 
-CLEAN_DISPATCH_STATUSES = {"流口未登记", "地址待变更", "未登记", "待登记"}
-CLEAN_NO_REGISTRATION_STATUSES = {"流口已注销", "已注销", "注销"}
+CLEAN_DISPATCH_STATUSES = {
+    "流口未登记", "地址待变更", "未登记", "待登记",
+    "流口已注销", "已注销", "注销",
+}
 
 
 def apply_clean_import_actions(
@@ -327,13 +329,6 @@ def apply_clean_import_actions(
             continue
 
         registration = normalize_lookup(row.get("registration_status", ""))
-        if registration in CLEAN_NO_REGISTRATION_STATUSES:
-            row.update({
-                "suggested_action": "no_registration",
-                "suggestion_reason": "已处理文件中的登记情况标记为流口已注销",
-                "auto_final_action": "no_registration",
-            })
-            continue
         if registration not in CLEAN_DISPATCH_STATUSES:
             row["suggestion_reason"] = "登记情况不是可直接导入的已处理状态"
             row["allocation_mode"] = "conflict"
@@ -347,7 +342,11 @@ def apply_clean_import_actions(
         row.update({
             "suggested_action": "dispatch",
             "suggested_community_id": int(community["id"]),
-            "suggestion_reason": "已处理文件按登记情况和社区直接生成下发任务",
+            "suggestion_reason": (
+                "此前已注销，需下发社区重新核查并按实际情况登记"
+                if registration in {"流口已注销", "已注销", "注销"}
+                else "已处理文件按登记情况和社区直接生成下发任务"
+            ),
             "auto_final_action": "dispatch",
             "auto_final_community_id": int(community["id"]),
         })

@@ -86,7 +86,7 @@ def test_clean_preview_summary_masks_sensitive_values_and_counts_actions():
     ])
 
     assert summary["counts"] == {
-        "total": 2, "dispatch": 1, "no_registration": 0,
+        "total": 2, "dispatch": 1,
         "manual_review": 1, "invalid": 1, "duplicate": 1,
     }
     assert summary["community_distribution"] == [
@@ -343,7 +343,9 @@ def test_clean_import_requires_clean_columns_and_maps_registration_status():
     apply_clean_import_actions(rows, [{"id": 1, "name": "长板", "aliases": [], "enabled": True}])
     assert rows[0]["auto_final_action"] == "dispatch"
     assert rows[0]["auto_final_community_id"] == 1
-    assert rows[1]["auto_final_action"] == "no_registration"
+    assert rows[1]["auto_final_action"] == "dispatch"
+    assert rows[1]["auto_final_community_id"] == 1
+    assert "此前已注销" in rows[1]["suggestion_reason"]
 
 
 def test_clean_import_keeps_invalid_identity_for_manual_review():
@@ -520,12 +522,14 @@ def test_publish_values_freeze_text_dates_and_leave_analysis_blank():
         "phone": "18800000001",
         "original_address": "原地址",
         "transfer_note": "完整原文",
+        "registration_status": "流口已注销",
         "created_time": "2026-08-03 09:00:00",
     }, "长板", date(2026, 12, 30))
 
     assert values["下发日期"] == "12-30"
     assert values["截止日期"] == "01-02"
     assert values["地址"] == "原地址；移交反馈：完整原文"
+    assert values["登记情况"] == "流口已注销"
     assert values["研判"] == ""
     assert values["身份证号"] == "32050020000101001X"
     assert values["电话号码"] == "18800000001"

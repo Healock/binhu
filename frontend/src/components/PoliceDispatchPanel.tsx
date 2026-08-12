@@ -166,9 +166,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       title: '导入结果', dataIndex: 'result', width: 130,
       render: value => value === 'dispatch'
         ? <Tag color="blue">直接下发</Tag>
-        : value === 'no_registration'
-          ? <Tag color="green">已注销</Tag>
-          : <Tag color="orange">人工复核</Tag>,
+        : <Tag color="orange">人工复核</Tag>,
     },
     { title: '原因', dataIndex: 'reason', ellipsis: true, width: 280 },
   ]
@@ -189,7 +187,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             type="info"
             showIcon
             message="已处理数据预览"
-            description={`共 ${cleanPreview.row_count} 行：直接下发 ${cleanPreview.counts.dispatch} 行，已注销 ${cleanPreview.counts.no_registration} 行，需人工复核 ${cleanPreview.counts.manual_review} 行。确认文件未变化后，再点击下方按钮正式导入。`}
+            description={`共 ${cleanPreview.row_count} 行：直接下发 ${cleanPreview.counts.dispatch} 行，需人工复核 ${cleanPreview.counts.manual_review} 行。登记情况会随任务下发，供网格员核查和重新登记时参考。`}
           />
         )}
         <div className="police-dispatch-upload-mode flex flex-wrap items-center gap-3">
