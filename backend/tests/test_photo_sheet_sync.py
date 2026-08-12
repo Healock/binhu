@@ -6,6 +6,8 @@ import services.photo_sheet_sync as photo_sheet_sync
 
 from services.photo_sheet_sync import (
     COLUMNS,
+    ExistingPhotoSheetRow,
+    _pair_relocated_rows,
     normalize_import_identity,
     historical_result,
     _locate_mapping,
@@ -253,6 +255,62 @@ class PhotoSheetParserTests(unittest.TestCase):
 
 
 class PhotoSheetRelocationTests(unittest.IsolatedAsyncioTestCase):
+    def test_swapped_physical_rows_are_paired_before_unique_rows_are_restored(self):
+        first = parse_rows([source_row(
+            20, ["冬梅社区", "来源甲", "甲", "32050020000101001X", "申请人", "2026/8/11", ""],
+        )])[0]
+        second = parse_rows([source_row(
+            10, ["蠡湖社区", "来源乙", "乙", "320500200001010028", "申请人", "2026/8/11", ""],
+        )])[0]
+        existing = [
+            ExistingPhotoSheetRow(1, 101, 10, first.fingerprint),
+            ExistingPhotoSheetRow(2, 102, 20, second.fingerprint),
+        ]
+
+        matches, unmatched = _pair_relocated_rows(existing, [first, second])
+
+        self.assertEqual(matches[20].work_order_id, 101)
+        self.assertEqual(matches[10].work_order_id, 102)
+        self.assertEqual(unmatched, [])
+
+    def test_duplicate_fingerprints_preserve_one_row_one_ticket_in_row_order(self):
+        values = ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]
+        incoming = parse_rows([source_row(30, values), source_row(31, values)])
+        existing = [
+            ExistingPhotoSheetRow(8, 108, 18, incoming[0].fingerprint),
+            ExistingPhotoSheetRow(7, 107, 17, incoming[0].fingerprint),
+        ]
+
+        matches, unmatched = _pair_relocated_rows(existing, incoming)
+
+        self.assertEqual(matches[30].work_order_id, 107)
+        self.assertEqual(matches[31].work_order_id, 108)
+        self.assertEqual(unmatched, [])
+
+    def test_extra_incoming_duplicate_is_left_for_new_ticket_creation(self):
+        values = ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]
+        incoming = parse_rows([source_row(30, values), source_row(31, values)])
+        existing = [ExistingPhotoSheetRow(7, 107, 17, incoming[0].fingerprint)]
+
+        matches, unmatched = _pair_relocated_rows(existing, incoming)
+
+        self.assertEqual(set(matches), {30})
+        self.assertNotIn(31, matches)
+        self.assertEqual(unmatched, [])
+
+    def test_missing_duplicate_keeps_unmatched_mapping_for_missing_status(self):
+        values = ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]
+        incoming = parse_rows([source_row(30, values)])
+        existing = [
+            ExistingPhotoSheetRow(7, 107, 17, incoming[0].fingerprint),
+            ExistingPhotoSheetRow(8, 108, 18, incoming[0].fingerprint),
+        ]
+
+        matches, unmatched = _pair_relocated_rows(existing, incoming)
+
+        self.assertEqual(matches[30].work_order_id, 107)
+        self.assertEqual([item.work_order_id for item in unmatched], [108])
+
     async def test_unique_fingerprint_relocates_moved_row(self):
         values = ["冬梅社区", "来源", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]
         parsed = parse_rows([source_row(23, values)])[0]

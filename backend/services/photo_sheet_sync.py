@@ -56,6 +56,54 @@ class ParsedRow:
     time_inferred: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class ExistingPhotoSheetRow:
+    mapping_id: int
+    work_order_id: int
+    physical_row: int | None
+    fingerprint: str
+
+
+def _pair_relocated_rows(
+    existing_rows: list[ExistingPhotoSheetRow],
+    incoming_rows: list[ParsedRow],
+) -> tuple[dict[int, ExistingPhotoSheetRow], list[ExistingPhotoSheetRow]]:
+    """按摘要和稳定行序配对完整核对前后的申请行。
+
+    腾讯名单允许完全相同的 A-F 申请重复出现，因此不能只重定位摘要唯一的行。
+    同摘要内按旧物理行、映射 ID 和新物理行依次配对，保留一行一工单语义。
+    """
+    existing_groups: dict[str, list[ExistingPhotoSheetRow]] = {}
+    for mapping in existing_rows:
+        if mapping.fingerprint:
+            existing_groups.setdefault(mapping.fingerprint, []).append(mapping)
+    incoming_groups: dict[str, list[ParsedRow]] = {}
+    for row in incoming_rows:
+        if row.kind == "request":
+            incoming_groups.setdefault(row.fingerprint, []).append(row)
+
+    matches: dict[int, ExistingPhotoSheetRow] = {}
+    matched_ids: set[int] = set()
+    for fingerprint in sorted(set(existing_groups) & set(incoming_groups)):
+        old_group = sorted(
+            existing_groups[fingerprint],
+            key=lambda item: (
+                item.physical_row is None,
+                item.physical_row if item.physical_row is not None else 0,
+                item.mapping_id,
+            ),
+        )
+        new_group = sorted(incoming_groups[fingerprint], key=lambda item: item.physical_row)
+        for old, new in zip(old_group, new_group):
+            matches[new.physical_row] = old
+            matched_ids.add(old.mapping_id)
+
+    unmatched = [
+        mapping for mapping in existing_rows if mapping.mapping_id not in matched_ids
+    ]
+    return matches, unmatched
+
+
 def parse_source_url(value: str) -> tuple[str, str]:
     parsed = urlparse(str(value or "").strip())
     match = re.search(r"/sheet/([A-Za-z0-9_-]+)", parsed.path)
@@ -948,42 +996,40 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                         "UPDATE photo_sheet_sync_runs SET run_type='full' WHERE id=%s",
                         (run_id,),
                     )
-                unique_existing: dict[str, tuple[int, int | None]] = {}
-                unique_incoming: dict[str, ParsedRow] = {}
+                relocated_rows: dict[int, ExistingPhotoSheetRow] = {}
+                unmatched_existing: list[ExistingPhotoSheetRow] = []
+                old_rows_by_physical: dict[int, ExistingPhotoSheetRow] = {}
                 if full:
                     await cur.execute(
                         "UPDATE photo_sheet_batches SET physical_row=NULL WHERE source_id=%s",
                         (source["id"],),
                     )
                     await cur.execute(
-                        "SELECT id,work_order_id,row_fingerprint FROM photo_sheet_rows WHERE source_id=%s",
+                        "SELECT id,work_order_id,physical_row,row_fingerprint FROM photo_sheet_rows "
+                        "WHERE source_id=%s FOR UPDATE",
                         (source["id"],),
                     )
-                    existing_groups: dict[str, list[tuple[int, int]]] = {}
-                    for map_id, work_order_id, fingerprint in await cur.fetchall():
-                        existing_groups.setdefault(str(fingerprint), []).append((int(map_id), int(work_order_id)))
-                    incoming_groups: dict[str, list[ParsedRow]] = {}
-                    for item in parsed:
-                        if item.kind == "request":
-                            incoming_groups.setdefault(item.fingerprint, []).append(item)
-                    unique_existing = {
-                        fingerprint: (items[0][0], items[0][1])
-                        for fingerprint, items in existing_groups.items() if len(items) == 1
-                    }
-                    unique_incoming = {
-                        fingerprint: items[0]
-                        for fingerprint, items in incoming_groups.items() if len(items) == 1
-                    }
-                    relocating_ids = [
-                        mapping[0] for fingerprint, mapping in unique_existing.items()
-                        if fingerprint in unique_incoming
-                    ]
-                    if relocating_ids:
-                        placeholders = ",".join(["%s"] * len(relocating_ids))
-                        await cur.execute(
-                            f"UPDATE photo_sheet_rows SET physical_row=NULL WHERE id IN ({placeholders})",
-                            tuple(relocating_ids),
+                    existing_rows = [
+                        ExistingPhotoSheetRow(
+                            mapping_id=int(map_id),
+                            work_order_id=int(work_order_id),
+                            physical_row=int(physical_row) if physical_row is not None else None,
+                            fingerprint=str(fingerprint or ""),
                         )
+                        for map_id, work_order_id, physical_row, fingerprint in await cur.fetchall()
+                    ]
+                    old_rows_by_physical = {
+                        mapping.physical_row: mapping
+                        for mapping in existing_rows
+                        if mapping.physical_row is not None
+                    }
+                    relocated_rows, unmatched_existing = _pair_relocated_rows(existing_rows, parsed)
+                    await cur.execute(
+                        "UPDATE photo_sheet_rows SET physical_row=NULL,sync_status='relocating',last_error='' "
+                        "WHERE source_id=%s",
+                        (source["id"],),
+                    )
+                unmatched_ids = {mapping.mapping_id for mapping in unmatched_existing}
                 for row in parsed:
                     if row.kind == "marker":
                         batch_id, inserted = await _upsert_marker(cur, source["id"], row, False)
@@ -992,8 +1038,12 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                         continue
                     existing = None
                     physical_conflict = False
-                    if full and row.fingerprint in unique_existing and row.fingerprint in unique_incoming:
-                        existing = (unique_existing[row.fingerprint][1], "")
+                    relocated = relocated_rows.get(row.physical_row) if full else None
+                    if relocated:
+                        existing = (relocated.work_order_id, "")
+                    elif full:
+                        previous = old_rows_by_physical.get(row.physical_row)
+                        physical_conflict = bool(previous and previous.mapping_id in unmatched_ids)
                     else:
                         await cur.execute(
                             "SELECT work_order_id,row_hash,row_fingerprint FROM photo_sheet_rows "
@@ -1011,6 +1061,13 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                             "last_seen_at=UTC_TIMESTAMP(),sync_status='linked',last_error='' WHERE work_order_id=%s",
                             (row.physical_row, row.row_hash, row.fingerprint, row.values["处理状态"][:2000], existing[0]),
                         )
+                        if full:
+                            await cur.execute(
+                                "UPDATE photo_sheet_conflicts SET status='resolved',resolved_by=%s,"
+                                "resolved_at=UTC_TIMESTAMP() WHERE source_id=%s AND physical_row=%s "
+                                "AND conflict_type='row_changed' AND status='pending'",
+                                (actor_user_id, source["id"], row.physical_row),
+                            )
                         continue
                     if physical_conflict:
                         await cur.execute(
@@ -1024,6 +1081,14 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                     await _create_external_ticket(cur, source_id=source["id"], row=row, batch_id=None,
                                                   completed=False, legacy=False, notify_queue=True)
                     created += 1
+                if full and unmatched_ids:
+                    placeholders = ",".join(["%s"] * len(unmatched_ids))
+                    await cur.execute(
+                        f"UPDATE photo_sheet_rows SET sync_status='missing',"
+                        "last_error='完整核对未找到对应腾讯行' WHERE id IN ("
+                        f"{placeholders}) AND physical_row IS NULL",
+                        tuple(sorted(unmatched_ids)),
+                    )
                 parsed_cursor = max((row.physical_row for row in parsed), default=source["header_row"])
                 cursor = parsed_cursor if full else max(
                     int(source["last_cursor_row"] or source["header_row"]), parsed_cursor,
