@@ -28,6 +28,48 @@ def make_response(row_count: int, column_count: int) -> dict:
 
 
 class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_last_nonempty_row_ignores_reserved_blank_capacity(self):
+        client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=12462)
+
+        def response_for_range(_file_id, _sheet_id, range_str):
+            if range_str == "A11963:G12462":
+                rows = [{"values": []} for _ in range(500)]
+                rows[284] = {"values": [{"cellValue": {"text": "last data"}}]}
+                return {"gridData": {"rows": rows}}
+            raise AssertionError(range_str)
+
+        client.read_range = AsyncMock(side_effect=response_for_range)
+
+        last_row = await client.find_last_nonempty_row(
+            "file", "sheet", 1,
+            ["A", "B", "C", "D", "E", "F", "G"],
+        )
+
+        self.assertEqual(last_row, 12247)
+        client.read_range.assert_awaited_once_with(
+            "file", "sheet", "A11963:G12462",
+        )
+
+    async def test_last_nonempty_row_scans_previous_tail_block_when_needed(self):
+        client = TxDocsClient("client", "token", "user")
+        client.get_sheet_row_total = AsyncMock(return_value=1200)
+        empty = {"gridData": {"rows": [{"values": []} for _ in range(500)]}}
+        previous = [{"values": []} for _ in range(500)]
+        previous[398] = {"values": [{"cellValue": {"text": "last data"}}]}
+        client.read_range = AsyncMock(side_effect=[
+            empty,
+            {"gridData": {"rows": previous}},
+        ])
+
+        last_row = await client.find_last_nonempty_row(
+            "file", "sheet", 1,
+            ["A", "B", "C", "D", "E", "F", "G"],
+        )
+
+        self.assertEqual(last_row, 599)
+        self.assertEqual(client.read_range.await_count, 2)
+
     async def test_fullchain_layout_uses_registration_column_from_header(self):
         parser = get_parser("全链条")
         client = TxDocsClient("client", "token", "user")

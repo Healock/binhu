@@ -2611,7 +2611,11 @@ export const workflowApi = {
     })).data as PhotoSheetPreview
   },
   async syncPhotoSheet(full = false) {
-    return (await api.post('/workflow/photo-sheet/sync', {}, { ...activeRequest, params: { full } })).data
+    return (await api.post('/workflow/photo-sheet/sync', {}, {
+      ...activeRequest,
+      params: { full },
+      timeout: 300000,
+    })).data
   },
   async photoSheetRuns(page = 1, pageSize = 20) {
     return (await api.get('/workflow/photo-sheet/runs', {

@@ -170,8 +170,8 @@ async def run_photo_sheet_sync(
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
 ):
     try:
-        sync_result = await sync_online_once(full=full, actor_user_id=int(user["id"]))
         outbox_result = await process_outbox_once()
+        sync_result = await sync_online_once(full=full, actor_user_id=int(user["id"]))
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc
     await record_admin_audit(
