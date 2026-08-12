@@ -331,20 +331,20 @@ export default function SystemSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="system-settings-page settings-stack">
       <Panel
         className="maintenance-settings-panel"
         title="平台维护模式"
         description="仅超级管理员可以配置；维护期间普通用户不能登录或访问业务接口。"
       >
-        <div className="maintenance-settings-panel__content flex flex-col gap-3">
+        <div className="maintenance-settings-panel__content settings-stack">
           <Alert
             type="warning"
             showIcon
             message="底层维护仍使用服务器维护页"
             description="数据库迁移、容器重建等操作继续先切换 Nginx 维护页；这里的维护模式适合预约业务停用，不会修改服务器系统时钟。"
           />
-          <div className="maintenance-settings-panel__state rounded-lg border border-[var(--app-border)] px-4 py-3">
+          <div className="maintenance-settings-panel__state settings-field rounded-lg border border-[var(--app-border)] px-4 py-3">
             <div className="mb-1.5 text-sm font-medium text-[var(--app-text-strong)]">维护状态</div>
             <Radio.Group
               className="maintenance-mode-options"
@@ -366,7 +366,7 @@ export default function SystemSettings() {
                 { label: '预约维护', value: 'scheduled' },
               ]}
             />
-            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+            <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
               {maintenanceMode === 'off'
                 ? '平台正常开放。'
                 : maintenanceMode === 'immediate'
@@ -375,9 +375,9 @@ export default function SystemSettings() {
             </p>
           </div>
           {maintenanceMode === 'scheduled' && (
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="block text-sm text-[var(--app-text-strong)]">
-                <span className="mb-1 block font-medium">开始时间（{timezone}）</span>
+            <div className="settings-field-grid">
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">开始时间（{timezone}）</span>
                 <Input
                   type="datetime-local"
                   value={maintenanceStartAt}
@@ -385,8 +385,8 @@ export default function SystemSettings() {
                   disabled={loading || savingMaintenance}
                 />
               </label>
-              <label className="block text-sm text-[var(--app-text-strong)]">
-                <span className="mb-1 block font-medium">结束时间（{timezone}，可选）</span>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">结束时间（{timezone}，可选）</span>
                 <Input
                   type="datetime-local"
                   value={maintenanceEndAt}
@@ -396,8 +396,8 @@ export default function SystemSettings() {
               </label>
             </div>
           )}
-          <label className="block text-sm text-[var(--app-text-strong)]">
-            <span className="mb-1 block font-medium">维护说明</span>
+          <label className="settings-field settings-field--counted text-sm text-[var(--app-text-strong)]">
+            <span className="settings-field__label font-medium">维护说明</span>
             <Input.TextArea
               value={maintenanceMessage}
               onChange={event => setMaintenanceMessage(event.target.value)}
@@ -408,7 +408,7 @@ export default function SystemSettings() {
               disabled={loading}
             />
           </label>
-          <div className="flex justify-end">
+          <div className="settings-actions">
             <Button
               type="primary"
               loading={savingMaintenance}
@@ -452,8 +452,8 @@ export default function SystemSettings() {
               </div>
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+            <div className="settings-field">
+              <label className="settings-field__label text-sm font-medium text-slate-700">
                 同步间隔
               </label>
               <div className="flex flex-wrap gap-3">
@@ -475,7 +475,7 @@ export default function SystemSettings() {
                   />
                 )}
               </div>
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="settings-field__hint text-xs text-slate-500">
                 自定义范围为 5 分钟至 7 天。
               </p>
             </div>
@@ -574,8 +574,8 @@ export default function SystemSettings() {
         description="连续一段时间没有页面跳转、查询或保存操作后，需要重新登录"
       >
         <div className="flex flex-col gap-4">
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">
+          <div className="settings-field">
+            <label className="settings-field__label text-sm font-medium text-slate-700">
               空闲退出时间
             </label>
             <InputNumber
@@ -586,7 +586,7 @@ export default function SystemSettings() {
               addonAfter="分钟"
               className="w-56"
             />
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="settings-field__hint text-xs text-slate-500">
               可设置 5 分钟至 24 小时；到期前 2 分钟会弹出提醒。
             </p>
           </div>

@@ -418,7 +418,7 @@ export default function WorkflowTickets() {
   const canProcessDetail = Boolean(detail && canHandle && ['queued', 'in_progress'].includes(detail.status))
 
   return (
-    <div className="space-y-4">
+    <div className="workflow-tickets-page app-page">
       <PageHeader
         title="工单中心"
         description="请假、照片调取等流程统一在这里发起、领取和处理。版本冲突会要求刷新，不会静默覆盖他人的操作。"
@@ -430,175 +430,178 @@ export default function WorkflowTickets() {
         )}
       />
       {error && <Alert type="error" showIcon message={error} />}
-      <Panel>
-        <Tabs
-          activeKey={view}
-          onChange={value => { setView(value); setPage(1) }}
-          items={[
-            { key: 'created', label: '我的发起' },
-            ...(canUsePhotoWorkbench ? [{ key: 'photo_pending', label: '未调照片' }] : []),
-            { key: 'claimable', label: '待领取' },
-            { key: 'handling', label: '处理中' },
-            { key: 'supplement', label: '待补充' },
-            { key: 'processed', label: '已处理' },
-            ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
-          ]}
-        />
-        {view === 'photo_pending' ? (
-          <>
-            <Alert
-              className="mb-4"
-              type="info"
-              showIcon
-              message="三步完成：领取全部待领取工单，导出清单集中调照片，再到数据上传中心上传照片 ZIP。"
-            />
-            <div className="mb-4 flex flex-wrap items-center gap-3">
-              <Input.Search
-                allowClear
-                className="max-w-sm"
-                placeholder="搜索姓名、身份证号或工单编号"
-                value={keyword}
-                onChange={event => setKeyword(event.target.value)}
-                onSearch={() => void load(1)}
-              />
-              <Input
-                allowClear
-                className="max-w-44"
-                placeholder="社区"
-                value={photoCommunity}
-                onChange={event => setPhotoCommunity(event.target.value)}
-              />
-              <Input
-                allowClear
-                className="max-w-48"
-                placeholder="数据来源"
-                value={photoSource}
-                onChange={event => setPhotoSource(event.target.value)}
-              />
-              <Button onClick={() => void load(1)}>查询</Button>
-              <span className="text-sm text-[var(--app-text-secondary)]">
-                已选择 {selectedPhotoIds.length} 张
-              </span>
-              <Space wrap className="md:ml-auto">
-                <Popconfirm
-                  title="领取全部待领取的照片工单？"
-                  description="已被其他人领取的工单会自动跳过。领取后仍会保留在当前表格中。"
-                  okText="全部领取"
-                  cancelText="取消"
-                  onConfirm={() => claimPhotoRequests(true)}
-                >
-                  <Button type="primary" icon={<SelectOutlined />} loading={photoClaiming}>
-                    领取全部待领取
-                  </Button>
-                </Popconfirm>
-                <Button
-                  icon={<SelectOutlined />}
-                  disabled={selectedPhotoIds.length === 0}
-                  loading={photoClaiming}
-                  onClick={() => void claimPhotoRequests(false)}
-                >
-                  领取所选
-                </Button>
-                <Button
-                  icon={<FileExcelOutlined />}
-                  loading={photoExporting}
-                  onClick={() => void exportPhotoRequests()}
-                >
-                  导出 XLSX
-                </Button>
-                <Button
-                  icon={<UploadOutlined />}
-                  onClick={() => navigate('/data-upload')}
-                >
-                  前往数据上传中心
-                </Button>
-              </Space>
-            </div>
-            <Table
-              rowKey="id"
-              loading={loading}
-              columns={photoColumns}
-              dataSource={photoRows}
-              rowSelection={{
-                selectedRowKeys: selectedPhotoIds,
-                onChange: keys => setSelectedPhotoIds(keys),
-                getCheckboxProps: row => ({ disabled: row.status !== 'queued' }),
-              }}
-              pagination={{
-                current: page,
-                pageSize,
-                total,
-                showSizeChanger: true,
-                pageSizeOptions: [20, 50, 100, 200],
-                onChange: (next, size) => void load(next, size),
-              }}
-              scroll={{ x: 1420 }}
-            />
-          </>
-        ) : (
-          <>
-        <div className="mb-4 flex flex-wrap gap-3">
-          <Select
-            allowClear
-            className="min-w-44"
-            placeholder="全部工单类型"
-            value={typeCode || undefined}
-            onChange={value => setTypeCode(value || '')}
-            options={types.map(item => ({ value: item.code, label: item.name }))}
-          />
-          <Input.Search
-            allowClear
-            className="max-w-sm"
-            placeholder="搜索工单编号或标题"
-            value={keyword}
-            onChange={event => setKeyword(event.target.value)}
-            onSearch={() => void load(1)}
-          />
-          <Input
-            allowClear
-            className="max-w-48"
-            placeholder="照片数据来源"
-            value={photoSource}
-            onChange={event => setPhotoSource(event.target.value)}
-          />
-          <Select
-            allowClear
-            className="min-w-36"
-            placeholder="附件状态"
-            value={attachmentStatus || undefined}
-            onChange={value => setAttachmentStatus(value || '')}
-            options={[{ value: 'with', label: '有平台附件' }, { value: 'without', label: '无平台附件' }]}
-          />
-          <Select
-            allowClear
-            className="min-w-40"
-            placeholder="腾讯同步状态"
-            value={externalSyncStatus || undefined}
-            onChange={value => setExternalSyncStatus(value || '')}
-            options={[
-              { value: 'pending', label: '待同步' }, { value: 'retry', label: '重试中' },
-              { value: 'synced', label: '已同步' }, { value: 'linked', label: '腾讯来源已关联' },
-              { value: 'not_linked', label: '不关联腾讯' },
+      <Panel className="workflow-tickets-panel">
+        <div className="workflow-tickets-panel__content">
+          <Tabs
+            activeKey={view}
+            onChange={value => { setView(value); setPage(1) }}
+            items={[
+              { key: 'created', label: '我的发起' },
+              ...(canUsePhotoWorkbench ? [{ key: 'photo_pending', label: '未调照片' }] : []),
+              { key: 'claimable', label: '待领取' },
+              { key: 'handling', label: '处理中' },
+              { key: 'supplement', label: '待补充' },
+              { key: 'processed', label: '已处理' },
+              ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
             ]}
           />
-          <Button onClick={() => void load(1)}>查询</Button>
+          {view === 'photo_pending' ? (
+            <div className="workflow-photo-workbench">
+              <Alert
+                type="info"
+                showIcon
+                message="三步完成：领取全部待领取工单，导出清单集中调照片，再到数据上传中心上传照片 ZIP。"
+              />
+              <div className="workflow-photo-toolbar">
+                <div className="workflow-photo-toolbar__filters">
+                  <Input.Search
+                    allowClear
+                    className="workflow-photo-toolbar__search"
+                    placeholder="搜索姓名、身份证号或工单编号"
+                    value={keyword}
+                    onChange={event => setKeyword(event.target.value)}
+                    onSearch={() => void load(1)}
+                  />
+                  <Input
+                    allowClear
+                    className="workflow-photo-toolbar__field"
+                    placeholder="社区"
+                    value={photoCommunity}
+                    onChange={event => setPhotoCommunity(event.target.value)}
+                  />
+                  <Input
+                    allowClear
+                    className="workflow-photo-toolbar__field"
+                    placeholder="数据来源"
+                    value={photoSource}
+                    onChange={event => setPhotoSource(event.target.value)}
+                  />
+                  <Button onClick={() => void load(1)}>查询</Button>
+                </div>
+                <div className="workflow-photo-toolbar__actions">
+                  <span className="workflow-photo-toolbar__selection">
+                    已选择 {selectedPhotoIds.length} 张
+                  </span>
+                  <Popconfirm
+                    title="领取全部待领取的照片工单？"
+                    description="已被其他人领取的工单会自动跳过。领取后仍会保留在当前表格中。"
+                    okText="全部领取"
+                    cancelText="取消"
+                    onConfirm={() => claimPhotoRequests(true)}
+                  >
+                    <Button type="primary" icon={<SelectOutlined />} loading={photoClaiming}>
+                      领取全部待领取
+                    </Button>
+                  </Popconfirm>
+                  <Button
+                    icon={<SelectOutlined />}
+                    disabled={selectedPhotoIds.length === 0}
+                    loading={photoClaiming}
+                    onClick={() => void claimPhotoRequests(false)}
+                  >
+                    领取所选
+                  </Button>
+                  <Button
+                    icon={<FileExcelOutlined />}
+                    loading={photoExporting}
+                    onClick={() => void exportPhotoRequests()}
+                  >
+                    导出 XLSX
+                  </Button>
+                  <Button
+                    icon={<UploadOutlined />}
+                    onClick={() => navigate('/data-upload')}
+                  >
+                    前往数据上传中心
+                  </Button>
+                </div>
+              </div>
+              <Table
+                rowKey="id"
+                loading={loading}
+                columns={photoColumns}
+                dataSource={photoRows}
+                rowSelection={{
+                  selectedRowKeys: selectedPhotoIds,
+                  onChange: keys => setSelectedPhotoIds(keys),
+                  getCheckboxProps: row => ({ disabled: row.status !== 'queued' }),
+                }}
+                pagination={{
+                  current: page,
+                  pageSize,
+                  total,
+                  showSizeChanger: true,
+                  pageSizeOptions: [20, 50, 100, 200],
+                  onChange: (next, size) => void load(next, size),
+                }}
+                scroll={{ x: 1420 }}
+              />
+            </div>
+          ) : (
+            <div className="workflow-ticket-list">
+              <div className="workflow-ticket-filters">
+                <Select
+                  allowClear
+                  className="min-w-44"
+                  placeholder="全部工单类型"
+                  value={typeCode || undefined}
+                  onChange={value => setTypeCode(value || '')}
+                  options={types.map(item => ({ value: item.code, label: item.name }))}
+                />
+                <Input.Search
+                  allowClear
+                  className="max-w-sm"
+                  placeholder="搜索工单编号或标题"
+                  value={keyword}
+                  onChange={event => setKeyword(event.target.value)}
+                  onSearch={() => void load(1)}
+                />
+                <Input
+                  allowClear
+                  className="max-w-48"
+                  placeholder="照片数据来源"
+                  value={photoSource}
+                  onChange={event => setPhotoSource(event.target.value)}
+                />
+                <Select
+                  allowClear
+                  className="min-w-36"
+                  placeholder="附件状态"
+                  value={attachmentStatus || undefined}
+                  onChange={value => setAttachmentStatus(value || '')}
+                  options={[{ value: 'with', label: '有平台附件' }, { value: 'without', label: '无平台附件' }]}
+                />
+                <Select
+                  allowClear
+                  className="min-w-40"
+                  placeholder="腾讯同步状态"
+                  value={externalSyncStatus || undefined}
+                  onChange={value => setExternalSyncStatus(value || '')}
+                  options={[
+                    { value: 'pending', label: '待同步' }, { value: 'retry', label: '重试中' },
+                    { value: 'synced', label: '已同步' }, { value: 'linked', label: '腾讯来源已关联' },
+                    { value: 'not_linked', label: '不关联腾讯' },
+                  ]}
+                />
+                <Button onClick={() => void load(1)}>查询</Button>
+              </div>
+              <Table
+                rowKey="id"
+                loading={loading}
+                columns={columns}
+                dataSource={rows}
+                pagination={{
+                  current: page,
+                  pageSize,
+                  total,
+                  showSizeChanger: true,
+                  onChange: (next, size) => void load(next, size),
+                }}
+                scroll={{ x: 1100 }}
+              />
+            </div>
+          )}
         </div>
-        <Table
-          rowKey="id"
-          loading={loading}
-          columns={columns}
-          dataSource={rows}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            onChange: (next, size) => void load(next, size),
-          }}
-          scroll={{ x: 1100 }}
-        />
-          </>
-        )}
       </Panel>
 
       <Drawer
@@ -609,7 +612,7 @@ export default function WorkflowTickets() {
         extra={<Button icon={<ReloadOutlined />} onClick={() => void refreshDetail()}>刷新</Button>}
       >
         {detail && (
-          <div className="space-y-5">
+          <div className="workflow-ticket-detail">
             <Descriptions
               bordered
               size="small"
@@ -625,20 +628,24 @@ export default function WorkflowTickets() {
             />
 
             {detail.type_detail && (
-              <Descriptions
-                title={detail.type_code === 'leave_request' ? '请假信息' : '照片调取信息'}
-                bordered
-                size="small"
-                column={1}
-                items={Object.entries(detail.type_detail).map(([key, value]) => ({
-                  key,
-                  label: detail.type_code === 'photo_request' ? (PHOTO_DETAIL_LABELS[key] || key) : key,
-                  children: value === null || value === '' ? '—' : String(value),
-                }))}
-              />
+              <section className="workflow-ticket-detail__section">
+                <h3 className="workflow-ticket-detail__heading">
+                  {detail.type_code === 'leave_request' ? '请假信息' : '照片调取信息'}
+                </h3>
+                <Descriptions
+                  bordered
+                  size="small"
+                  column={1}
+                  items={Object.entries(detail.type_detail).map(([key, value]) => ({
+                    key,
+                    label: detail.type_code === 'photo_request' ? (PHOTO_DETAIL_LABELS[key] || key) : key,
+                    children: value === null || value === '' ? '—' : String(value),
+                  }))}
+                />
+              </section>
             )}
 
-            <Space wrap>
+            <Space wrap className="workflow-ticket-detail__actions">
               {detail.status === 'queued' && canHandle && <Button type="primary" onClick={() => void claim(detail)}>领取</Button>}
               {canProcessDetail && <Button onClick={() => openAction('approve')}>通过</Button>}
               {canProcessDetail && <Button onClick={() => openAction('complete')}>完成</Button>}
@@ -650,76 +657,84 @@ export default function WorkflowTickets() {
               <Button onClick={() => openAction('comment')}>添加评论</Button>
             </Space>
 
-            <Divider orientation="left">流程节点</Divider>
-            <Timeline
-              items={(detail.steps || []).map(step => ({
-                color: ['approved', 'completed'].includes(step.status) ? 'green' : step.status === 'rejected' ? 'red' : step.status === 'in_progress' ? 'blue' : 'gray',
-                children: (
-                  <div>
-                    <div className="font-medium">{step.step_order}. {step.name}</div>
-                    <div className="text-sm text-[var(--app-text-secondary)]">
-                      {STATUS_LABELS[step.status] || step.status} · {step.queue || '未配置队列'}
-                      {step.decision_note ? ` · ${step.decision_note}` : ''}
+            <section className="workflow-ticket-detail__section">
+              <Divider className="workflow-ticket-detail__divider" orientation="left">流程节点</Divider>
+              <Timeline
+                items={(detail.steps || []).map(step => ({
+                  color: ['approved', 'completed'].includes(step.status) ? 'green' : step.status === 'rejected' ? 'red' : step.status === 'in_progress' ? 'blue' : 'gray',
+                  children: (
+                    <div>
+                      <div className="font-medium">{step.step_order}. {step.name}</div>
+                      <div className="text-sm text-[var(--app-text-secondary)]">
+                        {STATUS_LABELS[step.status] || step.status} · {step.queue || '未配置队列'}
+                        {step.decision_note ? ` · ${step.decision_note}` : ''}
+                      </div>
                     </div>
-                  </div>
-                ),
-              }))}
-            />
+                  ),
+                }))}
+              />
+            </section>
 
-            <Divider orientation="left">附件</Divider>
-            {canAttach && (
-              <Upload beforeUpload={upload} showUploadList={false} accept=".jpg,.jpeg,.png,.webp,.heic,.pdf">
-                <Button icon={<InboxOutlined />}>上传附件</Button>
-              </Upload>
-            )}
-            <List
-              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无附件" /> }}
-              dataSource={(detail.attachments || []).filter(item => !item.deleted_at)}
-              renderItem={item => (
-                <List.Item
-                  actions={[
-                    ...(item.mime_type.startsWith('image/') ? [
-                      <a
-                        key="preview"
-                        href={workflowApi.attachmentUrl(detail.id, item.file_id, true)}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <EyeOutlined /> 预览
-                      </a>,
-                    ] : []),
-                    <a key="download" href={workflowApi.attachmentUrl(detail.id, item.file_id)}>
-                      <DownloadOutlined /> 下载
-                    </a>,
-                    <Popconfirm key="delete" title="删除这个附件？" onConfirm={() => void deleteAttachment(item.file_id)}>
-                      <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
-                    </Popconfirm>,
-                  ]}
-                >
-                  <List.Item.Meta title={item.original_name} description={`${formatBytes(item.size_bytes)} · ${item.mime_type}`} />
-                </List.Item>
+            <section className="workflow-ticket-detail__section">
+              <Divider className="workflow-ticket-detail__divider" orientation="left">附件</Divider>
+              {canAttach && (
+                <Upload beforeUpload={upload} showUploadList={false} accept=".jpg,.jpeg,.png,.webp,.heic,.pdf">
+                  <Button icon={<InboxOutlined />}>上传附件</Button>
+                </Upload>
               )}
-            />
+              <List
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无附件" /> }}
+                dataSource={(detail.attachments || []).filter(item => !item.deleted_at)}
+                renderItem={item => (
+                  <List.Item
+                    actions={[
+                      ...(item.mime_type.startsWith('image/') ? [
+                        <a
+                          key="preview"
+                          href={workflowApi.attachmentUrl(detail.id, item.file_id, true)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <EyeOutlined /> 预览
+                        </a>,
+                      ] : []),
+                      <a key="download" href={workflowApi.attachmentUrl(detail.id, item.file_id)}>
+                        <DownloadOutlined /> 下载
+                      </a>,
+                      <Popconfirm key="delete" title="删除这个附件？" onConfirm={() => void deleteAttachment(item.file_id)}>
+                        <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
+                      </Popconfirm>,
+                    ]}
+                  >
+                    <List.Item.Meta title={item.original_name} description={`${formatBytes(item.size_bytes)} · ${item.mime_type}`} />
+                  </List.Item>
+                )}
+              />
+            </section>
 
-            <Divider orientation="left">评论</Divider>
-            <List
-              locale={{ emptyText: '暂无评论' }}
-              dataSource={detail.comments || []}
-              renderItem={item => <List.Item><List.Item.Meta title={`账号 #${item.user_id}`} description={<><div>{item.content}</div><div>{item.created_at}</div></>} /></List.Item>}
-            />
+            <section className="workflow-ticket-detail__section">
+              <Divider className="workflow-ticket-detail__divider" orientation="left">评论</Divider>
+              <List
+                locale={{ emptyText: '暂无评论' }}
+                dataSource={detail.comments || []}
+                renderItem={item => <List.Item><List.Item.Meta title={`账号 #${item.user_id}`} description={<><div>{item.content}</div><div>{item.created_at}</div></>} /></List.Item>}
+              />
+            </section>
 
-            <Divider orientation="left">事件记录</Divider>
-            <Table
-              size="small"
-              pagination={false}
-              dataSource={detail.events || []}
-              rowKey={(row: any, index) => `${row.event_type}-${row.created_at}-${index}`}
-              columns={[
-                { title: '事件', dataIndex: 'event_type', render: value => EVENT_LABELS[value] || value },
-                { title: '状态', render: (_: any, row: any) => `${STATUS_LABELS[row.from_status] || row.from_status || '—'} → ${STATUS_LABELS[row.to_status] || row.to_status || '—'}` },
-                { title: '时间', dataIndex: 'created_at', width: 190 },
-              ]}
-            />
+            <section className="workflow-ticket-detail__section">
+              <Divider className="workflow-ticket-detail__divider" orientation="left">事件记录</Divider>
+              <Table
+                size="small"
+                pagination={false}
+                dataSource={detail.events || []}
+                rowKey={(row: any, index) => `${row.event_type}-${row.created_at}-${index}`}
+                columns={[
+                  { title: '事件', dataIndex: 'event_type', render: value => EVENT_LABELS[value] || value },
+                  { title: '状态', render: (_: any, row: any) => `${STATUS_LABELS[row.from_status] || row.from_status || '—'} → ${STATUS_LABELS[row.to_status] || row.to_status || '—'}` },
+                  { title: '时间', dataIndex: 'created_at', width: 190 },
+                ]}
+              />
+            </section>
           </div>
         )}
       </Drawer>
