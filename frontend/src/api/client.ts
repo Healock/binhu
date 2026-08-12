@@ -2508,6 +2508,9 @@ export const workflowApi = {
   async supplement(id: number, payload: Record<string, unknown>) {
     return (await api.post(`/workflow/tickets/${id}/supplement`, payload)).data
   },
+  async restoreQueued(id: number, payload: { expected_version: number; reason: string }) {
+    return (await api.post(`/workflow/tickets/${id}/restore-queued`, payload)).data
+  },
   async withdraw(id: number, payload: Record<string, unknown>) {
     return (await api.post(`/workflow/tickets/${id}/withdraw`, payload)).data
   },

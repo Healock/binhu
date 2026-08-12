@@ -52,6 +52,7 @@ const STATUS_LABELS: Record<string, string> = {
 const EVENT_LABELS: Record<string, string> = {
   submit: '提交工单', claim: '领取工单', approve: '通过', reject: '驳回', return: '退回补充',
   complete: '完成', cancel: '取消', withdraw: '撤回', transfer: '转派', supplement: '补充材料',
+  restore_queued: '恢复待领取',
   comment: '添加评论', attachment_upload: '上传附件', attachment_delete: '删除附件',
 }
 
@@ -95,6 +96,7 @@ export default function WorkflowTickets() {
   const canCreate = permissions.has('workflow.ticket.create')
   const canHandle = permissions.has('workflow.ticket.handle') || permissions.has('workflow.ticket.manage')
   const canManage = permissions.has('workflow.ticket.manage')
+  const canRestoreQueued = canManage || ['admin', 'super_admin'].includes(user?.role || '')
   const canAttach = permissions.has('workflow.attachment.view')
   const position = user?.member?.position || ''
   const canViewAll = canManage || ['基础管控', '中队长', '所队领导'].includes(position)
@@ -316,6 +318,11 @@ export default function WorkflowTickets() {
           expected_version: detail.version_no,
           note: values.note || '',
           form_data: { supplement_note: values.note || '' },
+        })
+      } else if (action === 'restore_queued') {
+        await workflowApi.restoreQueued(detail.id, {
+          expected_version: detail.version_no,
+          reason: values.note,
         })
       } else if (action === 'withdraw') {
         await workflowApi.withdraw(detail.id, {
@@ -653,6 +660,9 @@ export default function WorkflowTickets() {
               {canProcessDetail && <Button danger onClick={() => openAction('reject')}>驳回</Button>}
               {canProcessDetail && <Button onClick={() => openAction('transfer')}>转派</Button>}
               {requesterOwnsDetail && detail.status === 'pending_requester' && <Button type="primary" onClick={() => openAction('supplement')}>补充材料</Button>}
+              {canRestoreQueued && detail.status === 'pending_requester' && (
+                <Button type="primary" onClick={() => openAction('restore_queued')}>恢复待领取</Button>
+              )}
               {requesterOwnsDetail && !TERMINAL.has(detail.status) && <Button danger onClick={() => openAction('withdraw')}>撤回</Button>}
               <Button onClick={() => openAction('comment')}>添加评论</Button>
             </Space>
@@ -796,13 +806,22 @@ export default function WorkflowTickets() {
 
       <Modal
         open={actionOpen}
-        title={{ transfer: '转派工单', supplement: '补充材料', withdraw: '撤回工单', comment: '添加评论', approve: '通过工单', complete: '完成工单', return: '退回补充', reject: '驳回工单' }[action] || '处理工单'}
+        title={{ transfer: '转派工单', supplement: '补充材料', restore_queued: '恢复待领取', withdraw: '撤回工单', comment: '添加评论', approve: '通过工单', complete: '完成工单', return: '退回补充', reject: '驳回工单' }[action] || '处理工单'}
         okText="确认"
         cancelText="取消"
         confirmLoading={actionLoading}
         onOk={() => void submitAction()}
         onCancel={() => setActionOpen(false)}
       >
+        {action === 'restore_queued' && (
+          <Alert
+            className="mb-4"
+            type="warning"
+            showIcon
+            message="确认恢复为待领取"
+            description="系统将清空当前处理人并重新放回原岗位队列，原退回记录和本次恢复记录都会保留。"
+          />
+        )}
         <Form form={actionForm} layout="vertical">
           {action === 'transfer' && (
             <Form.Item name="target_queue" label="目标岗位队列" rules={[{ required: true }]}>
@@ -816,10 +835,10 @@ export default function WorkflowTickets() {
           )}
           <Form.Item
             name="note"
-            label={action === 'comment' ? '评论内容' : action === 'supplement' ? '补充说明' : '处理说明'}
-            rules={[{ required: ['transfer', 'return', 'reject', 'comment', 'supplement'].includes(action), message: '请填写说明' }]}
+            label={action === 'comment' ? '评论内容' : action === 'supplement' ? '补充说明' : action === 'restore_queued' ? '恢复原因' : '处理说明'}
+            rules={[{ required: ['transfer', 'return', 'reject', 'comment', 'supplement', 'restore_queued'].includes(action), message: '请填写说明' }]}
           >
-            <Input.TextArea rows={4} maxLength={2000} />
+            <Input.TextArea rows={4} maxLength={action === 'restore_queued' ? 500 : 2000} />
           </Form.Item>
         </Form>
       </Modal>

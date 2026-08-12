@@ -24,3 +24,20 @@ test('基础管控照片工作台支持只读表格、批量领取和 XLSX 导�
   assert.match(apiSource, /api\.post\('\/workflow\/photo-requests\/pending\/export', payload/)
   assert.doesNotMatch(apiSource, /api\.get\('\/workflow\/photo-requests/)
 })
+
+test('管理员和超级管理员可以把待补充工单恢复为待领取', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /\['admin', 'super_admin'\]/)
+  assert.match(pageSource, /detail\.status === 'pending_requester'/)
+  assert.match(pageSource, /恢复待领取/)
+  assert.match(pageSource, /restoreQueued\(detail\.id/)
+  assert.match(apiSource, /api\.post\(`\/workflow\/tickets\/\$\{id\}\/restore-queued`, payload\)/)
+})
