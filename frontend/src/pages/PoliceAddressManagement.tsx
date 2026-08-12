@@ -179,7 +179,7 @@ export default function PoliceAddressManagement() {
       <PageHeader
         title="小区管理"
         description="维护居民小区、公寓、别名和正式社区；公寓只参与社区匹配，不会自动判定为无需登记"
-        extra={(
+        actions={(
           <Space wrap>
             <Button icon={<DownloadOutlined />} loading={exporting} onClick={exportRows}>导出 XLSX</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增小区</Button>

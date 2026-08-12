@@ -91,6 +91,7 @@ test('小区管理支持本社区锁定、真实删除和范围导出', () => {
   assert.match(addresses, /disabled=\{communityLocked\}/)
   assert.match(addresses, /deletePoliceAddress/)
   assert.match(addresses, /导出 XLSX/)
+  assert.match(addresses, /<PageHeader[\s\S]*?actions=\{/)
   assert.match(client, /post\('\/police-dispatch\/addresses\/export'/)
   assert.match(client, /responseType: 'blob'/)
 })
