@@ -471,7 +471,11 @@ class SyncEngine:
 
         async with conn.cursor() as cur:
             if sp["parser_type"] == "全链条":
-                await reconcile_police_dispatch_publications(cur, sp["id"])
+                await reconcile_police_dispatch_publications(
+                    cur,
+                    sp["id"],
+                    source_columns,
+                )
             await mark_writebacks_synced(cur, sp["id"])
             await rebuild_projection(cur, sp["parser_type"])
 

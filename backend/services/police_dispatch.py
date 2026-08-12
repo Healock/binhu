@@ -553,12 +553,26 @@ def publish_business_key(identity_number: str, phone: str, dispatch_date: str) -
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
-async def reconcile_police_dispatch_publications(cur, spreadsheet_id: int) -> dict[str, int]:
+def publish_values_match(requested: dict[str, Any], actual: dict[str, Any]) -> bool:
+    """对账时只比较当次腾讯物理布局实际写入并保存的列。"""
+    return all(
+        str(actual.get(column, "") or "").strip()
+        == str(expected or "").strip()
+        for column, expected in requested.items()
+    )
+
+
+async def reconcile_police_dispatch_publications(
+    cur,
+    spreadsheet_id: int,
+    source_columns: list[str] | None = None,
+) -> dict[str, int]:
     """仅在一次正常同步完整成功后，对结果不确定的发布任务做只读对账。"""
     from services.online_source import json_value, source_row_hash
     from services.parsers import get_parser
 
     parser = get_parser("全链条")
+    comparison_columns = set(source_columns or parser.COLUMNS)
     await cur.execute("""
         SELECT source.id, source.physical_row, source.row_hash, source.values_json
         FROM _online_source_rows AS source
@@ -598,11 +612,15 @@ async def reconcile_police_dispatch_publications(cur, spreadsheet_id: int) -> di
     affected_batches: set[int] = set()
     for task_id, business_key, raw_requested, batch_id in pending:
         requested = {
-            column: str(json_value(raw_requested, {}).get(column, "") or "").strip()
-            for column in parser.COLUMNS
+            str(column): str(value or "").strip()
+            for column, value in json_value(raw_requested, {}).items()
+            if column in comparison_columns
         }
         candidates = sources_by_key.get(str(business_key or ""), [])
-        exact = next((item for item in candidates if item["values"] == requested), None)
+        exact = next((
+            item for item in candidates
+            if publish_values_match(requested, item["values"])
+        ), None)
         affected_batches.add(int(batch_id))
         if exact:
             counts["success"] += 1

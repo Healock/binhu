@@ -20,6 +20,7 @@ from services.permissions import (
     POLICE_ADDRESS_MANAGE,
     POLICE_DISPATCH_MANAGE,
 )
+from services.parsers import get_parser
 from services.police_dispatch import (
     apply_clean_import_actions,
     apply_preprocessing_suggestions,
@@ -27,6 +28,7 @@ from services.police_dispatch import (
     build_publish_address,
     parse_dispatch_workbook,
     publish_business_key,
+    publish_values_match,
     reconcile_police_dispatch_publications,
     stable_json,
 )
@@ -40,6 +42,8 @@ from routers.police_dispatch import (
     _clean_preview_summary,
     _clean_preview_token,
     _mark_overwrite_uncertain,
+    _publish_comparison_columns,
+    _publish_request_values,
     _publish_values,
     _review_one,
     _search_tasks,
@@ -535,6 +539,35 @@ def test_publish_values_freeze_text_dates_and_leave_analysis_blank():
     assert values["电话号码"] == "18800000001"
 
 
+def test_publish_comparison_columns_follow_current_tencent_layout():
+    parser = get_parser("全链条")
+    new_layout, old_layout = parser.source_column_layouts()
+
+    assert "登记情况" in _publish_comparison_columns(parser, list(new_layout))
+    assert "登记情况" not in _publish_comparison_columns(parser, list(old_layout))
+
+
+def test_publish_request_values_omit_columns_missing_from_old_layout():
+    parser = get_parser("全链条")
+    _, old_layout = parser.source_column_layouts()
+    values = {column: f"值-{column}" for column in parser.COLUMNS}
+
+    requested = _publish_request_values(
+        values,
+        _publish_comparison_columns(parser, list(old_layout)),
+    )
+
+    assert requested["地址"] == "值-地址"
+    assert "登记情况" not in requested
+
+
+def test_publish_values_match_uses_only_saved_physical_columns():
+    actual = {"姓名": "甲", "登记情况": ""}
+
+    assert publish_values_match({"姓名": "甲"}, actual)
+    assert not publish_values_match({"姓名": "甲", "登记情况": "流口已注销"}, actual)
+
+
 def test_task_counts_keeps_review_and_publish_states_separate():
     counts = _task_counts([(10, 3, 7, 2, 1, 6, 4, 2, 1, 5, 1)])
 
@@ -953,3 +986,31 @@ def test_normal_sync_reconciliation_classifies_exact_conflict_and_absent_rows():
     assert "publish_status='conflict'" in sql
     assert "publish_status='retryable'" in sql
     assert "完整同步确认目标不存在" in sql
+
+
+def test_normal_sync_reconciliation_ignores_registration_status_for_old_layout():
+    parser = get_parser("全链条")
+    _, old_layout = parser.source_column_layouts()
+    requested = {
+        "下发日期": "08-05",
+        "身份证号": "A1",
+        "电话号码": "1",
+        "姓名": "甲",
+        "社区": "长板",
+        "登记情况": "流口已注销",
+    }
+    source = {**requested, "登记情况": ""}
+    key = publish_business_key("A1", "1", "08-05")
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(side_effect=[
+        [(11, 20, "a" * 64, stable_json(source))],
+        [(101, key, stable_json(requested), 7)],
+    ])
+    cursor.fetchone = AsyncMock(return_value=(1, 0, 1, 0))
+
+    result = asyncio.run(
+        reconcile_police_dispatch_publications(cursor, 5, list(old_layout))
+    )
+
+    assert result == {"success": 1, "conflict": 0, "retryable": 0}

@@ -1739,6 +1739,7 @@ async def resolve_publish_conflict(
             async with conn.cursor() as cur:
                 client = await _oauth_client(cur)
             source_columns = await resolve_source_columns(client, spreadsheet, parser)
+            comparison_columns = _publish_comparison_columns(parser, source_columns)
             live = await client.read_source_row(
                 spreadsheet["file_id"], spreadsheet["data_sheet_id"],
                 int(row[8]), source_columns,
@@ -1746,10 +1747,7 @@ async def resolve_publish_conflict(
             live_values = parser.normalize_source_row(live["values"])
             if source_row_hash(live_values) != data.expected_row_hash:
                 raise HTTPException(409, "腾讯行在确认后再次变化，请刷新冲突详情")
-            requested = {
-                column: str(platform_values.get(column, "") or "").strip()
-                for column in parser.COLUMNS
-            }
+            requested = _publish_request_values(platform_values, comparison_columns)
             request_sent = True
             await client.batch_update(
                 spreadsheet["file_id"],
@@ -1767,7 +1765,7 @@ async def resolve_publish_conflict(
             verified["values"] = parser.normalize_source_row(verified["values"])
             if not _row_values_match(
                 requested, verified["values"], verified.get("cell_meta") or {},
-                parser.COLUMNS,
+                comparison_columns,
             ):
                 raise HTTPException(502, "腾讯覆盖后回读不一致")
             verified_values = {
@@ -1947,6 +1945,23 @@ def _publish_values(task: dict[str, Any], community: str, publish_date) -> dict[
         "登记情况": task.get("registration_status", ""),
         "创建时间": task["created_time"],
         "现住址": "", "核查结果": "", "研判": "", "二次反馈": "",
+    }
+
+
+def _publish_comparison_columns(parser, source_columns: list[str]) -> list[str]:
+    """只校验腾讯物理表实际存在的发布列。"""
+    source_column_set = set(source_columns)
+    return [column for column in parser.COLUMNS if column in source_column_set]
+
+
+def _publish_request_values(
+    values: dict[str, Any],
+    comparison_columns: list[str],
+) -> dict[str, str]:
+    """冻结本次物理布局真正写入的值，供失败后的只读对账使用。"""
+    return {
+        column: str(values.get(column, "") or "").strip()
+        for column in comparison_columns
     }
 
 
@@ -2166,6 +2181,7 @@ async def publish_batch(
         async with conn.cursor() as cur:
             client = await _oauth_client(cur)
         source_columns = await resolve_source_columns(client, spreadsheet, parser)
+        comparison_columns = _publish_comparison_columns(parser, source_columns)
         all_rows = await client.read_all_source_rows(
             spreadsheet["file_id"], spreadsheet["data_sheet_id"],
             spreadsheet["header_row"], source_columns,
@@ -2181,10 +2197,11 @@ async def publish_batch(
             )
             existing_by_key.setdefault(key, []).append(source)
         next_row = max([spreadsheet["header_row"], *[row["physical_row"] for row in all_rows]]) + 1
-        ready: list[tuple[dict, dict, str]] = []
+        ready: list[tuple[dict, dict, dict, str]] = []
         async with conn.cursor() as cur:
             for task in pending:
                 values = _publish_values(task, task["community"], publish_date)
+                request_values = _publish_request_values(values, comparison_columns)
                 key = publish_business_key(task["identity_number"], task["phone"], values["下发日期"])
                 candidates = existing_by_key.get(key, [])
                 if candidates:
@@ -2192,7 +2209,7 @@ async def publish_batch(
                         item for item in candidates
                         if _row_values_match(
                             values, item["values"], item.get("cell_meta") or {},
-                            parser.COLUMNS,
+                            comparison_columns,
                         )
                     ), None)
                     candidate = exact or candidates[0]
@@ -2209,7 +2226,7 @@ async def publish_batch(
                         )
                         await _save_publish_result(
                             cur, task_id=task["id"], spreadsheet=spreadsheet,
-                            business_key=key, request_values=values, status="success",
+                            business_key=key, request_values=request_values, status="success",
                             physical_row=int(candidate["physical_row"]),
                             verified_values=candidate["values"], row_hash=row_hash,
                             cache_pending=True,
@@ -2226,7 +2243,7 @@ async def publish_batch(
                         )
                         await _save_publish_result(
                             cur, task_id=task["id"], spreadsheet=spreadsheet,
-                            business_key=key, request_values=values, status="conflict",
+                            business_key=key, request_values=request_values, status="conflict",
                             physical_row=int(candidate["physical_row"]),
                             verified_values=candidate["values"], row_hash=row_hash,
                             error_code="content_conflict",
@@ -2234,14 +2251,14 @@ async def publish_batch(
                         )
                     continue
                 existing_by_key[key] = []
-                ready.append((task, values, key))
+                ready.append((task, values, request_values, key))
 
         for offset in range(0, len(ready), 50):
             chunk = ready[offset:offset + 50]
             start_row = next_row
             rows = [
                 parser.source_row_values(values, source_columns)
-                for _, values, _ in chunk
+                for _, values, _, _ in chunk
             ]
             try:
                 await client.batch_update(
@@ -2250,7 +2267,7 @@ async def publish_batch(
                         spreadsheet["data_sheet_id"], start_row - 1, 0, rows
                     )],
                 )
-                for index, (task, values, key) in enumerate(chunk):
+                for index, (task, values, request_values, key) in enumerate(chunk):
                     physical_row = start_row + index
                     try:
                         verified = await client.read_source_row(
@@ -2262,7 +2279,7 @@ async def publish_batch(
                         )
                         matched = _row_values_match(
                             values, verified["values"], verified.get("cell_meta") or {},
-                            parser.COLUMNS,
+                            comparison_columns,
                         )
                     except Exception:
                         verified = None
@@ -2281,7 +2298,7 @@ async def publish_batch(
                             )
                             await _save_publish_result(
                                 cur, task_id=task["id"], spreadsheet=spreadsheet,
-                                business_key=key, request_values=values,
+                                business_key=key, request_values=request_values,
                                 status="success", physical_row=physical_row,
                                 verified_values=verified_values,
                                 row_hash=verified_hash, cache_pending=True,
@@ -2297,7 +2314,7 @@ async def publish_batch(
                             )
                             await _save_publish_result(
                                 cur, task_id=task["id"], spreadsheet=spreadsheet,
-                                business_key=key, request_values=values,
+                                business_key=key, request_values=request_values,
                                 status="needs_reconciliation",
                                 physical_row=physical_row,
                                 verified_values=(verified or {}).get("values"),
@@ -2314,7 +2331,7 @@ async def publish_batch(
                 elif isinstance(exc, TxDocsAPIError):
                     safe_error = str(exc)[:500]
                 async with conn.cursor() as cur:
-                    for task, values, key in chunk:
+                    for task, values, request_values, key in chunk:
                         await _set_task_publish_state(
                             cur, task_id=task["id"],
                             status="needs_reconciliation",
@@ -2322,7 +2339,7 @@ async def publish_batch(
                         )
                         await _save_publish_result(
                             cur, task_id=task["id"], spreadsheet=spreadsheet,
-                            business_key=key, request_values=values,
+                            business_key=key, request_values=request_values,
                             status="needs_reconciliation",
                             error_code="request_uncertain",
                             error_message=safe_error,
