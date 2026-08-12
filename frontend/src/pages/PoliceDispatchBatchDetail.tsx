@@ -141,7 +141,7 @@ export default function PoliceDispatchBatchDetail() {
     <div className="app-page min-w-0">
       <PageHeader
         title={batch ? `下发批次 #${batch.id}` : '下发批次'}
-        description={batch?.file_name || '查看审核进度、社区分配和腾讯发布结果'}
+        description={batch ? `${batch.file_name} · ${batch.import_mode === 'clean' ? '已处理直发' : '原始审核'}` : '查看审核进度、社区分配和腾讯发布结果'}
         extra={batch && (
           <Space wrap>
             <Button icon={<MobileOutlined />} onClick={() => navigate(`/police-tasks?batch=${id}`)}>

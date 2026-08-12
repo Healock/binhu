@@ -1709,6 +1709,7 @@ export interface PoliceDispatchBatch {
   id: number
   file_name: string
   sheet_name: string
+  import_mode: 'raw' | 'clean'
   status: 'reviewing' | 'ready_to_publish' | 'publishing' | 'reconciling' | 'completed'
   total_count: number
   counts: PoliceDispatchCounts
@@ -1783,13 +1784,17 @@ export async function disablePoliceAddress(id: number): Promise<void> {
   await api.delete(`/police-dispatch/addresses/${id}`)
 }
 
-export async function uploadPoliceDispatchBatch(file: File): Promise<{
+export async function uploadPoliceDispatchBatch(
+  file: File,
+  importMode: 'raw' | 'clean' = 'raw',
+): Promise<{
   status: 'success' | 'duplicate'
   message: string
   batch: PoliceDispatchBatch
 }> {
   const form = new FormData()
   form.append('file', file)
+  form.append('import_mode', importMode)
   const { data } = await api.post('/police-dispatch/batches', form, { timeout: 300000 })
   return data
 }

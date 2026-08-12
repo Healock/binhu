@@ -21,6 +21,7 @@ from services.permissions import (
     POLICE_DISPATCH_MANAGE,
 )
 from services.police_dispatch import (
+    apply_clean_import_actions,
     apply_preprocessing_suggestions,
     build_feedback_workbook,
     build_publish_address,
@@ -113,6 +114,26 @@ def test_parse_dispatch_xlsx_finds_title_row_and_preserves_text_identifiers():
     assert rows[0].identity_number == "32050020000101001X"
     assert rows[0].phone == "18800000001"
     assert rows[1].transfer_note == "完整移交原文"
+
+
+def test_clean_import_requires_clean_columns_and_maps_registration_status():
+    content = _xlsx([
+        ["社区", "来源", "姓名", "身份证号", "手机号", "地址", "登记情况", "创建时间", "移交备注"],
+        ["长板", "平安码", "甲", "32050020000101001X", "18800000001", "长板花园", "流口未登记", "2026-08-11 09:00:00", ""],
+        ["长板", "平安码", "乙", "320500200001010028", "18800000002", "长板花园", "流口已注销", "2026-08-11 09:00:01", ""],
+    ])
+    _, parsed = parse_dispatch_workbook(content, "clean.xlsx", require_clean_fields=True)
+    rows = [{
+        "source_row": item.source_row, "source_name": item.source_name,
+        "community_name": item.community_name, "person_name": item.person_name,
+        "identity_number": item.identity_number, "phone": item.phone,
+        "original_address": item.original_address,
+        "registration_status": item.registration_status,
+    } for item in parsed]
+    apply_clean_import_actions(rows, [{"id": 1, "name": "长板", "aliases": [], "enabled": True}])
+    assert rows[0]["auto_final_action"] == "dispatch"
+    assert rows[0]["auto_final_community_id"] == 1
+    assert rows[1]["auto_final_action"] == "no_registration"
 
 
 def test_parse_xls_uses_same_header_logic(monkeypatch):

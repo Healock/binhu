@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Input, Progress, Select, Space, Statistic, Tag, Upload, message } from 'antd'
+import { Alert, Button, Input, Progress, Select, Segmented, Space, Statistic, Tag, Upload, message } from 'antd'
 import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
 import { ExportOutlined, InboxOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -34,6 +34,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const [status, setStatus] = useState('all')
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [importMode, setImportMode] = useState<'raw' | 'clean'>('raw')
   const [error, setError] = useState('')
 
   const load = async (targetPage = page) => {
@@ -81,7 +82,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     if (!file) return
     setUploading(true)
     try {
-      const result = await uploadPoliceDispatchBatch(file)
+      const result = await uploadPoliceDispatchBatch(file, importMode)
       message.success(result.message)
       setFile(null)
       setFileList([])
@@ -98,6 +99,10 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const columns: TableColumnsType<PoliceDispatchBatch> = [
     { title: '批次', dataIndex: 'id', width: 80, render: value => `#${value}` },
     { title: '原文件', dataIndex: 'file_name', ellipsis: true, width: 260 },
+    {
+      title: '导入类型', dataIndex: 'import_mode', width: 150,
+      render: value => value === 'clean' ? <Tag color="green">已处理直发</Tag> : <Tag>原始审核</Tag>,
+    },
     {
       title: '审核进度', width: 190,
       render: (_, item) => (
@@ -134,7 +139,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   return (
     <Panel
       title="数据下发"
-      description="导入全链条系统导出文件；平台只提供预处理建议，所有记录仍须基础管控或中队长人工审核"
+      description="原始数据按平台建议进入审核；基础管控已处理的数据可按登记情况直接生成待发布任务"
       padded={false}
     >
       <div className="space-y-5 p-5">
@@ -142,6 +147,22 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
           <Alert type="info" showIcon message="当前账号没有数据下发权限" />
         )}
         {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
+        <div className="police-dispatch-upload-mode flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-[var(--app-text-secondary)]">导入类型</span>
+          <Segmented
+            value={importMode}
+            onChange={value => setImportMode(value as 'raw' | 'clean')}
+            options={[
+              { value: 'raw', label: '原始数据审核' },
+              { value: 'clean', label: '已处理数据直接下发' },
+            ]}
+          />
+          <span className="text-xs text-[var(--app-text-secondary)]">
+            {importMode === 'clean'
+              ? '需要社区、登记情况、姓名、身份证号、手机号和地址；异常行仍需人工处理'
+              : '适用于全链条系统导出的待处理原始文件'}
+          </span>
+        </div>
         <div className="police-dispatch-upload-row grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
           <Dragger
             accept=".xls,.xlsx"
@@ -152,7 +173,9 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             disabled={!enabled || uploading}
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-            <p className="ant-upload-text">拖入全链条系统导出文件，或点击选择</p>
+            <p className="ant-upload-text">
+              {importMode === 'clean' ? '拖入基础管控已处理文件，或点击选择' : '拖入全链条系统导出文件，或点击选择'}
+            </p>
             <p className="ant-upload-hint">支持 .xls/.xlsx；身份证号、手机号和日期始终按文本保存</p>
           </Dragger>
           <Button
@@ -163,7 +186,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             loading={uploading}
             onClick={upload}
           >
-            导入并生成审核任务
+            {importMode === 'clean' ? '导入并生成待发布任务' : '导入并生成审核任务'}
           </Button>
         </div>
 
