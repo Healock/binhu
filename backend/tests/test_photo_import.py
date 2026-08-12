@@ -8,12 +8,14 @@ from routers.workflow_extended import (
     PhotoRequestBatchClaimPayload,
     PhotoRequestFilterPayload,
     PhotoRequestSearchPayload,
+    RestoreQueuedPayload,
     _can_upload_photo_batch,
     _photo_matches,
     _photo_pending_filter,
     _photo_pending_queue,
     batch_claim_photo_requests,
     get_photo_import_detail,
+    restore_ticket_to_queue,
     router,
 )
 from routers.workflow_extended import preview_photo_import
@@ -232,6 +234,78 @@ class PhotoRequestBatchClaimTests(unittest.IsolatedAsyncioTestCase):
         statements = [statement for statement, _ in cursor.statements]
         self.assertEqual(sum("UPDATE work_orders SET current_assignee_user_id" in item for item in statements), 2)
         self.assertEqual(sum("INSERT INTO work_order_events" in item for item in statements), 2)
+
+
+class RestoreQueuedTicketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_can_restore_pending_requester_ticket_to_queue(self):
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+                self.rowcount = 1
+                self.results = [
+                    ("pending_requester", "基础管控", 4, 14),
+                    (201, "基础管控", 24),
+                ]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=()):
+                self.statements.append((statement, params))
+
+            async def fetchone(self):
+                return self.results.pop(0)
+
+            async def fetchall(self):
+                return [(31,), (32,)]
+
+        cursor = Cursor()
+        conn = type("Conn", (), {})()
+        conn.begin = AsyncMock()
+        conn.commit = AsyncMock()
+        conn.rollback = AsyncMock()
+        conn.cursor = MagicMock(return_value=cursor)
+        user = {"id": 3, "role": "admin", "permissions": []}
+
+        with patch("routers.workflow_extended.workflow_notification", new=AsyncMock()) as notify, \
+             patch("routers.workflow_extended.queue_user_ids", new=AsyncMock(return_value=[31, 32])), \
+             patch("routers.workflow_extended.record_admin_audit", new=AsyncMock()) as audit, \
+             patch("routers.workflow_extended.request_audit_fields", return_value={}):
+            result = await restore_ticket_to_queue(
+                11880,
+                RestoreQueuedPayload(expected_version=4, reason="误操作恢复"),
+                MagicMock(),
+                user,
+                conn,
+            )
+
+        self.assertEqual(result["status"], "queued")
+        conn.commit.assert_awaited_once()
+        conn.rollback.assert_not_awaited()
+        statements = [statement for statement, _ in cursor.statements]
+        self.assertTrue(any("FROM work_orders WHERE id=%s FOR UPDATE" in item for item in statements))
+        self.assertTrue(any("SET status='queued', current_assignee_user_id=NULL" in item for item in statements))
+        self.assertFalse(any("decision_note=''" in item for item in statements))
+        self.assertTrue(any("event_type,actor_user_id" in item and "restore_queued" in item for item in statements))
+        notify.assert_awaited_once()
+        audit.assert_awaited_once()
+
+    async def test_non_admin_cannot_restore_pending_requester_ticket(self):
+        conn = MagicMock()
+
+        with self.assertRaisesRegex(Exception, "只有管理员或超级管理员"):
+            await restore_ticket_to_queue(
+                11880,
+                RestoreQueuedPayload(expected_version=4, reason="误操作恢复"),
+                MagicMock(),
+                {"id": 17, "role": "member", "permissions": ["workflow.ticket.handle"]},
+                conn,
+            )
+
+        conn.begin.assert_not_called()
 
 
 class _PreviewCursor:

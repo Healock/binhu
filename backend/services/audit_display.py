@@ -98,6 +98,7 @@ ACTION_LABELS: dict[str, str] = {
     "workflow.version.update": "修改工单流程草稿",
     "workflow.version.publish": "发布工单流程版本",
     "workflow.ticket.transfer": "转派工单",
+    "workflow.ticket.restore_queued": "恢复工单为待领取",
     "workflow.ticket.withdraw": "撤回或取消工单",
     "workflow.attachment.upload": "上传工单附件",
     "workflow.attachment.delete": "删除工单附件",

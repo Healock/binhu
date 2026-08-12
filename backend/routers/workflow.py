@@ -802,6 +802,11 @@ async def decide_ticket(
                     "decided_by=%s, decided_at=UTC_TIMESTAMP(), version_no=version_no+1 WHERE id=%s",
                     (data.note.strip(), user["id"], step[0]),
                 )
+                await cur.execute(
+                    "UPDATE work_order_claims SET released_at=UTC_TIMESTAMP(), release_reason=%s "
+                    "WHERE step_id=%s AND released_at IS NULL",
+                    (data.note.strip(), step[0]),
+                )
             elif terminal:
                 next_status = "rejected" if data.action == "reject" else "cancelled"
                 await cur.execute(

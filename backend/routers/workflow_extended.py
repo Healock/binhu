@@ -79,6 +79,10 @@ def _can_manage(user: dict) -> bool:
     return WORKFLOW_TICKET_MANAGE in set(user.get("permissions") or [])
 
 
+def _can_restore_queued(user: dict) -> bool:
+    return _can_manage(user) or str(user.get("role") or "") in {"admin", "super_admin"}
+
+
 def _can_upload_photo_batch(user: dict) -> bool:
     if _can_manage(user) or user.get("role") == "super_admin":
         return True
@@ -149,6 +153,11 @@ class SupplementPayload(BaseModel):
     expected_version: int = Field(gt=0)
     note: str = Field(default="", max_length=2000)
     form_data: dict = Field(default_factory=dict)
+
+
+class RestoreQueuedPayload(BaseModel):
+    expected_version: int = Field(gt=0)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class WithdrawPayload(BaseModel):
@@ -954,6 +963,109 @@ async def supplement_ticket(
         await conn.rollback()
         raise
     return {"message": "补充材料已提交"}
+
+
+@router.post("/tickets/{ticket_id}/restore-queued")
+async def restore_ticket_to_queue(
+    ticket_id: int,
+    data: RestoreQueuedPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_workflow_db),
+):
+    if not _can_restore_queued(user):
+        raise HTTPException(403, "只有管理员或超级管理员可以恢复待领取工单")
+    reason = data.reason.strip()
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT status, current_queue, version_no, requester_user_id "
+                "FROM work_orders WHERE id=%s FOR UPDATE",
+                (ticket_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(404, "工单不存在")
+            if int(row[2]) != data.expected_version:
+                raise HTTPException(409, "工单已被其他人修改，请刷新后重试")
+            if row[0] != "pending_requester":
+                raise HTTPException(409, "只有待补充工单可以恢复为待领取")
+            await cur.execute(
+                "SELECT step.id, step.queue, definition.default_due_hours "
+                "FROM work_order_steps step "
+                "JOIN workflow_steps definition ON definition.id=step.workflow_step_id "
+                "WHERE step.work_order_id=%s AND step.status='pending_requester' "
+                "ORDER BY step.step_order LIMIT 1 FOR UPDATE",
+                (ticket_id,),
+            )
+            step = await cur.fetchone()
+            if not step:
+                raise HTTPException(409, "待补充流程节点不存在")
+            queue = str(row[1] or step[1] or "").strip()
+            if not queue:
+                raise HTTPException(409, "当前流程节点没有配置处理队列")
+            due_at = (
+                datetime.utcnow() + timedelta(hours=int(step[2]))
+                if step[2]
+                else None
+            )
+            await cur.execute(
+                "UPDATE work_orders SET status='queued', current_assignee_user_id=NULL, "
+                "current_queue=%s, due_at=%s, version_no=version_no+1 "
+                "WHERE id=%s AND version_no=%s",
+                (queue, due_at, ticket_id, data.expected_version),
+            )
+            if cur.rowcount != 1:
+                raise HTTPException(409, "工单已被其他人修改，请刷新后重试")
+            await cur.execute(
+                "UPDATE work_order_steps SET status='queued', assignee_user_id=NULL, queue=%s, "
+                "due_at=%s, version_no=version_no+1 "
+                "WHERE id=%s AND status='pending_requester'",
+                (queue, due_at, step[0]),
+            )
+            if cur.rowcount != 1:
+                raise HTTPException(409, "流程节点状态已变化，请刷新后重试")
+            await cur.execute(
+                "UPDATE work_order_claims SET released_at=UTC_TIMESTAMP(), release_reason=%s "
+                "WHERE step_id=%s AND released_at IS NULL",
+                (reason, step[0]),
+            )
+            await cur.execute(
+                "INSERT INTO work_order_events "
+                "(work_order_id,step_id,event_type,actor_user_id,from_status,to_status,detail_json) "
+                "VALUES (%s,%s,'restore_queued',%s,'pending_requester','queued',%s)",
+                (
+                    ticket_id,
+                    step[0],
+                    user["id"],
+                    json.dumps({"reason_length": len(reason)}, ensure_ascii=False),
+                ),
+            )
+            recipients = await queue_user_ids(cur, queue)
+            if row[3] is not None:
+                recipients.append(int(row[3]))
+            await workflow_notification(
+                cur,
+                user_ids=recipients,
+                ticket_id=ticket_id,
+                event_key=f"restore_queued_{data.expected_version}",
+                title="工单已恢复待领取",
+                content=f"工单 #{ticket_id} 已由管理员恢复到待领取队列。",
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "workflow.ticket.restore_queued",
+        target_type="work_order",
+        target_name=str(ticket_id),
+        detail={"reason_length": len(reason), "target_status": "queued"},
+        **request_audit_fields(request),
+    )
+    return {"message": "工单已恢复为待领取", "status": "queued"}
 
 
 @router.post("/tickets/{ticket_id}/withdraw")
