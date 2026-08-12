@@ -1657,7 +1657,7 @@ html[data-theme='dark'] ::selection {
 }
 
 .maintenance-settings-panel__content {
-  gap: 12px !important;
+  gap: 16px !important;
 }
 
 .maintenance-settings-panel__content > .ant-alert {
@@ -1680,6 +1680,49 @@ html[data-theme='dark'] ::selection {
 
 html[data-theme='dark'] .maintenance-settings-panel__state {
   background: rgb(15 23 42 / 0.28);
+}
+
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.settings-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.settings-field__label,
+.settings-field__hint {
+  display: block;
+  margin: 0;
+}
+
+.settings-field__hint {
+  line-height: 1.55;
+}
+
+.settings-field--counted {
+  padding-bottom: 22px;
+}
+
+.settings-field--counted .ant-input-textarea-show-count::after {
+  bottom: -22px;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
 }
 
 .login-form .ant-alert-error {
@@ -1857,6 +1900,103 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.workflow-tickets-panel__content,
+.workflow-photo-workbench,
+.workflow-ticket-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.workflow-tickets-panel__content {
+  gap: 16px;
+}
+
+.workflow-tickets-panel__content > .ant-tabs {
+  margin-bottom: 0;
+}
+
+.workflow-photo-workbench,
+.workflow-ticket-list {
+  gap: 16px;
+}
+
+.workflow-photo-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.workflow-photo-toolbar__filters,
+.workflow-photo-toolbar__actions,
+.workflow-ticket-filters {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.workflow-photo-toolbar__filters {
+  flex: 1 1 560px;
+}
+
+.workflow-photo-toolbar__actions {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+}
+
+.workflow-photo-toolbar__search {
+  width: min(100%, 360px);
+  min-width: 280px;
+  flex: 1 1 280px;
+}
+
+.workflow-photo-toolbar__field {
+  width: 176px;
+  flex: 0 1 176px;
+}
+
+.workflow-photo-toolbar__selection {
+  margin-right: 4px;
+  color: var(--app-text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.workflow-ticket-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.workflow-ticket-detail__section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workflow-ticket-detail__heading {
+  margin: 0;
+  color: var(--app-text-strong);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.workflow-ticket-detail__actions {
+  display: flex;
+  gap: 8px !important;
+}
+
+.workflow-ticket-detail__divider {
+  margin: 0 !important;
 }
 
 .page-header {
@@ -3015,6 +3155,33 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
 }
 
 @media (max-width: 767px) {
+  .settings-field-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow-photo-toolbar {
+    flex-direction: column;
+  }
+
+  .workflow-photo-toolbar__filters,
+  .workflow-photo-toolbar__actions {
+    width: 100%;
+    flex-basis: auto;
+    justify-content: flex-start;
+  }
+
+  .workflow-photo-toolbar__search,
+  .workflow-photo-toolbar__field {
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+
+  .workflow-photo-toolbar__selection {
+    width: 100%;
+    margin-right: 0;
+  }
+
   .mobile-task-filter-grid,
   .mobile-task-more-grid {
     grid-template-columns: minmax(0, 1fr);
