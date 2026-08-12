@@ -1826,7 +1826,7 @@ export async function uploadPoliceDispatchBatch(
       phone: string
       community_name: string
       registration_status: string
-      result: 'dispatch' | 'no_registration' | 'manual'
+      result: 'dispatch' | 'manual'
       reason: string
     }>
     rows_truncated: boolean

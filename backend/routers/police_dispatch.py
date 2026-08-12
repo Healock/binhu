@@ -157,7 +157,7 @@ def _mask_preview_identity(value: Any) -> str:
 
 def _clean_preview_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {
-        "total": len(tasks), "dispatch": 0, "no_registration": 0,
+        "total": len(tasks), "dispatch": 0,
         "manual_review": 0, "invalid": 0, "duplicate": 0,
     }
     distribution: dict[int, dict[str, Any]] = {}
@@ -174,8 +174,6 @@ def _clean_preview_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
                     "count": 0,
                 })
                 current["count"] += 1
-        elif action == "no_registration":
-            counts["no_registration"] += 1
         else:
             counts["manual_review"] += 1
         if item.get("duplicate_group_key"):
@@ -874,7 +872,6 @@ async def upload_dispatch_batch(
                 "row_count": len(tasks),
                 "import_mode": "clean",
                 "dispatch_count": summary["counts"]["dispatch"],
-                "no_registration_count": summary["counts"]["no_registration"],
                 "manual_review_count": summary["counts"]["manual_review"],
             },
             **request_audit_fields(request),
@@ -1947,6 +1944,7 @@ def _publish_values(task: dict[str, Any], community: str, publish_date) -> dict[
         "身份证号": task["identity_number"],
         "电话号码": task["phone"],
         "地址": build_publish_address(task["original_address"], task["transfer_note"]),
+        "登记情况": task.get("registration_status", ""),
         "创建时间": task["created_time"],
         "现住址": "", "核查结果": "", "研判": "", "二次反馈": "",
     }
@@ -2101,7 +2099,8 @@ async def publish_batch(
         await cur.execute("""
             SELECT task.id, task.source_row, task.source_name, task.person_name,
                    task.identity_number, task.phone, task.original_address,
-                   task.source_created_time, task.transfer_note, community.name
+                   task.source_created_time, task.transfer_note,
+                   task.raw_values_json, community.name
             FROM _police_dispatch_tasks AS task
             JOIN _communities AS community ON community.id=task.final_community_id
             WHERE task.batch_id=%s AND task.final_action='dispatch'
@@ -2114,7 +2113,10 @@ async def publish_batch(
                 "person_name": str(row[3] or ""), "identity_number": str(row[4] or ""),
                 "phone": str(row[5] or ""), "original_address": str(row[6] or ""),
                 "created_time": str(row[7] or ""), "transfer_note": str(row[8] or ""),
-                "community": str(row[9]),
+                "registration_status": dispatch_values_from_raw(
+                    json_value(row[9], {})
+                ).get("registration_status", ""),
+                "community": str(row[10]),
             }
             for row in await cur.fetchall()
         ]
