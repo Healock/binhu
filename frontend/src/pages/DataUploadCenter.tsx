@@ -15,6 +15,7 @@ import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
+  formatUTCTime,
   getVisitImportIssues,
   type PhotoImportBatch,
   workflowApi,
@@ -161,7 +162,7 @@ const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
 ]
 
 export default function DataUploadCenter() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const canUpload = Boolean(user?.permissions.includes('visit.import'))
   const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
   const canManagePhotoImport = Boolean(
@@ -545,7 +546,7 @@ export default function DataUploadCenter() {
                   { title: '照片', dataIndex: 'total_files', width: 80 },
                   { title: '可匹配', dataIndex: 'matched_files', width: 90 },
                   { title: '未匹配', dataIndex: 'unmatched_files', width: 90 },
-                  { title: '时间', dataIndex: 'created_at', width: 190 },
+                  { title: '时间', dataIndex: 'created_at', width: 190, render: value => formatUTCTime(value, systemTimezone) },
                   {
                     title: '操作', width: 90, fixed: 'right',
                     render: (_: unknown, row: PhotoImportBatch) => (

@@ -1950,10 +1950,20 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   justify-content: flex-end;
 }
 
-.workflow-photo-toolbar__search {
-  width: min(100%, 360px);
+.workflow-photo-search {
+  width: min(100%, 460px);
   min-width: 280px;
-  flex: 1 1 280px;
+  flex: 1 1 360px;
+}
+
+.workflow-photo-search__icon {
+  color: var(--app-text-muted);
+}
+
+.workflow-photo-toolbar__query {
+  min-width: 80px;
+  height: 40px;
+  flex: 0 0 auto;
 }
 
 .workflow-photo-toolbar__field {
@@ -3170,7 +3180,7 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
     justify-content: flex-start;
   }
 
-  .workflow-photo-toolbar__search,
+  .workflow-photo-search,
   .workflow-photo-toolbar__field {
     width: 100%;
     min-width: 0;
@@ -3180,6 +3190,10 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   .workflow-photo-toolbar__selection {
     width: 100%;
     margin-right: 0;
+  }
+
+  .workflow-photo-toolbar__query {
+    width: 100%;
   }
 
   .mobile-task-filter-grid,

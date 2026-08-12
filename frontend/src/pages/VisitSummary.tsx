@@ -183,7 +183,7 @@ function SummaryCard({
 }
 
 export default function VisitSummary() {
-  const { recordActivity } = useAuth()
+  const { recordActivity, systemTimezone } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const initialQuery = useRef({
     start: searchParams.get('start') || '',
@@ -403,8 +403,8 @@ export default function VisitSummary() {
           ]}
         />
         <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-500">
-          <span>最近走访导入：{formatUTCTime(coverage?.last_detail_import_at)}</span>
-          <span>最近星级导入：{formatUTCTime(coverage?.last_rating_import_at)}</span>
+          <span>最近走访导入：{formatUTCTime(coverage?.last_detail_import_at, systemTimezone)}</span>
+          <span>最近星级导入：{formatUTCTime(coverage?.last_rating_import_at, systemTimezone)}</span>
         </div>
         {(coverage?.missing_date_count || 0) > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-500">

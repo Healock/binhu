@@ -42,7 +42,7 @@ interface AnnouncementFormValues {
 }
 
 export default function NotificationCenter() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [notifications, setNotifications] = useState<AppNotification[]>([])
@@ -265,7 +265,7 @@ export default function NotificationCenter() {
                 {item.content}
               </Typography.Paragraph>
               <span className="notification-list__time text-xs">
-                {formatUTCTime(item.created_at)}
+                {formatUTCTime(item.created_at, systemTimezone)}
               </span>
             </div>
             {canPublishAnnouncements && item.source === 'announcement' && (

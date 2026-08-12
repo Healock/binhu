@@ -30,7 +30,6 @@ import {
   getReport,
   getReportRange,
   getReportTypes,
-  getSystemConfig,
   recordXlsxExport,
   type OnlineDataOverview,
   type OnlineOverviewCategory,
@@ -133,11 +132,11 @@ const reportTableSummary = (
 }
 
 export default function Dashboard() {
-  const { user, recordActivity } = useAuth()
+  const { user, recordActivity, systemTimezone } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const reportColumnMode = user?.report_column_mode || 'three'
-  const today = formatDateInTimezone()
-  const requestedStart = searchParams.get('start') || today
+  const browserToday = formatDateInTimezone()
+  const requestedStart = searchParams.get('start') || browserToday
   const requestedEnd = searchParams.get('end') || requestedStart
   const [dateRange, setDateRange] = useState<[string, string]>([requestedStart, requestedEnd])
   const [reportType, setReportType] = useState(searchParams.get('type') || '全链条')
@@ -150,7 +149,6 @@ export default function Dashboard() {
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [overviewError, setOverviewError] = useState('')
   const [msg, setMsg] = useState('')
-  const [timezone, setTimezone] = useState('Asia/Shanghai')
   const [mobileReportSection, setMobileReportSection] = useState<'inspector' | 'community'>('inspector')
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
@@ -219,16 +217,13 @@ export default function Dashboard() {
   const canConfigureReport = Boolean(user?.permissions.includes('report.config.manage'))
 
   useEffect(() => {
-    getSystemConfig().then(c => {
-      const configuredTimezone = c.timezone || 'Asia/Shanghai'
-      setTimezone(configuredTimezone)
-      setDateRange(current => {
-        if (current[0] !== today || current[1] !== today) return current
-        const configuredToday = formatDateInTimezone(new Date(), configuredTimezone)
-        return [configuredToday, configuredToday]
-      })
-    }).catch(() => {})
-  }, [])
+    const configuredToday = formatDateInTimezone(new Date(), systemTimezone)
+    setDateRange(current => (
+      current[0] === browserToday && current[1] === browserToday
+        ? [configuredToday, configuredToday]
+        : current
+    ))
+  }, [browserToday, systemTimezone])
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
   useEffect(() => { fetchReport() }, [fetchReport])
   useEffect(() => {
@@ -449,7 +444,7 @@ export default function Dashboard() {
         actionError={syncActionError}
         onSync={handleSync}
         canManualSync={canManualSync}
-        timezone={timezone}
+        timezone={systemTimezone}
       />
 
       {isImplemented && (

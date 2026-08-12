@@ -18,6 +18,7 @@ import {
 } from '../api/client'
 import type { SyncSchedule } from '../types'
 import { Panel } from '../components/ui'
+import { useAuth } from '../context/AuthContext'
 import {
   formatCountdown,
   getRemainingTime,
@@ -102,6 +103,7 @@ function parseDateTimeInput(value: string, timezone: string): string {
 }
 
 export default function SystemSettings() {
+  const { setSystemTimezone } = useAuth()
   const [timezone, setTimezone] = useState('Asia/Shanghai')
   const [schedule, setSchedule] = useState<SyncSchedule>({
     enabled: true,
@@ -207,7 +209,8 @@ export default function SystemSettings() {
     setTimezoneMsg('')
     try {
       await updateSystemConfig({ timezone })
-      setTimezoneMsg('保存成功，刷新页面后生效')
+      setSystemTimezone(timezone)
+      setTimezoneMsg('保存成功，平台时间显示已更新')
     } catch {
       setTimezoneMsg('保存失败')
     } finally {

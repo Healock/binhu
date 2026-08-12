@@ -55,6 +55,7 @@ import type {
   OpsOverview,
 } from '../types'
 import { Panel } from '../components/ui'
+import useSystemTime from '../hooks/useSystemTime'
 
 
 const STATUS_COLORS: Record<string, string> = {
@@ -104,12 +105,6 @@ function formatBytes(value?: number | null) {
   return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[index]}`
 }
 
-function formatTime(value?: string | null) {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
-}
-
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -145,6 +140,7 @@ function OverviewTab({
   loading: boolean
   refresh: () => void
 }) {
+  const formatTime = useSystemTime()
   if (!data && !loading) return <Empty description="运行状态暂时不可用" />
   const diskUsedPercent = data?.disk.total_bytes
     ? Math.round((data.disk.used_bytes / data.disk.total_bytes) * 100)
@@ -400,6 +396,7 @@ function LogsTab() {
 }
 
 function DatabasesTab() {
+  const formatTime = useSystemTime()
   const [databases, setDatabases] = useState<OpsDatabase[]>([])
   const [selected, setSelected] = useState('OnlineData')
   const [tables, setTables] = useState<any[]>([])
@@ -537,6 +534,7 @@ function DatabasesTab() {
 }
 
 function BackupsTab() {
+  const formatTime = useSystemTime()
   const [jobs, setJobs] = useState<BackupJob[]>([])
   const [legacy, setLegacy] = useState<Array<{ filename: string; size_bytes: number; modified_at: string }>>([])
   const [schedule, setSchedule] = useState<BackupSchedule | null>(null)
@@ -755,6 +753,7 @@ function BackupsTab() {
 }
 
 function AuditTab() {
+  const formatTime = useSystemTime()
   const [data, setData] = useState<AuditEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)

@@ -32,6 +32,7 @@ export interface MaintenanceStatus {
 
 export interface AppBootstrapSummary {
   server_version: string
+  timezone: string
 }
 
 export function resetUnauthorizedRedirectForTests(): void {
@@ -1925,16 +1926,27 @@ export async function updateSystemConfig(config: Record<string, string>): Promis
   await api.put('/system/config', config)
 }
 
-// 时间格式化工具（UTC → 指定时区）
+function utcDate(value: string): Date {
+  const trimmed = value.trim()
+  const databaseUtc = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/
+  const normalized = databaseUtc.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}Z`
+    : trimmed
+  return new Date(normalized)
+}
+
+// 数据库时间按 UTC 保存；无时区标记的 ISO 字符串也必须按 UTC 解释。
 export function formatUTCTime(utcStr: string | null | undefined, timezone: string = 'Asia/Shanghai'): string {
   if (!utcStr) return '-'
   try {
-    const date = new Date(utcStr)
+    const date = utcDate(utcStr)
+    if (Number.isNaN(date.getTime())) return utcStr
     return new Intl.DateTimeFormat('zh-CN', {
       timeZone: timezone,
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       hour12: false,
+      hourCycle: 'h23',
     }).format(date).replace(/\//g, '-')
   } catch { return utcStr }
 }

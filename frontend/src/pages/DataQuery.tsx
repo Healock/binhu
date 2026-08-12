@@ -28,6 +28,7 @@ import {
 import {
   createQuerySourceRow,
   deleteQuerySourceRow,
+  formatUTCTime,
   getQuerySourceRows,
   getQueryTypes,
   getQueryWritebackAudit,
@@ -75,7 +76,7 @@ function errorStatus(error: any): number {
 }
 
 export default function DataQuery() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const [types, setTypes] = useState<string[]>([])
   const [selectedType, setSelectedType] = useState('全链条')
   const [source, setSource] = useState<'online' | 'archive'>('online')
@@ -875,7 +876,7 @@ export default function DataQuery() {
                       </Tag>
                     </div>
                     <div className="mt-1 text-xs text-[var(--app-text-tertiary)]">
-                      {new Date(item.created_at).toLocaleString('zh-CN')} · {changes.length} 个字段发生变化
+                      {formatUTCTime(item.created_at, systemTimezone)} · {changes.length} 个字段发生变化
                     </div>
                     <div className="mt-3 overflow-hidden rounded-lg border border-[var(--app-border)]">
                       {changes.length ? changes.map(change => (

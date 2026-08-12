@@ -280,7 +280,7 @@ function ManagementOverview({ data }: { data: RoleDashboardData }) {
 }
 
 export default function RoleDashboard() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const [data, setData] = useState<RoleDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -315,8 +315,8 @@ export default function RoleDashboard() {
 
   const syncLabel = useMemo(() => {
     if (!data?.last_success_at) return '尚无成功同步记录'
-    return `最后成功同步 ${formatUTCTime(data.last_success_at)}`
-  }, [data?.last_success_at])
+    return `最后成功同步 ${formatUTCTime(data.last_success_at, systemTimezone)}`
+  }, [data?.last_success_at, systemTimezone])
 
   if (!data && loading) {
     return <div className="app-page"><div className="app-card p-6"><Skeleton active paragraph={{ rows: 10 }} /></div></div>
