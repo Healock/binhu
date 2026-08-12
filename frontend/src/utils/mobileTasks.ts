@@ -165,10 +165,15 @@ export function mobileTaskSourceDifferences(
 }
 
 export function mobileTaskEditorFields(
-  detail: Pick<MobileTaskDetailData, 'workflow'>,
+  detail: Pick<MobileTaskDetailData, 'workflow' | 'analysis_mode'>,
   editableFields: string[],
   formValues: Record<string, string>,
 ): string[] {
+  if (detail.analysis_mode) {
+    return detail.workflow.analysis_fields.filter((field, index, fields) => (
+      fields.indexOf(field) === index && editableFields.includes(field)
+    ))
+  }
   const result = formValues[detail.workflow.result_field] || ''
   const candidates = [
     '核查人',

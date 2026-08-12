@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Alert,
@@ -34,7 +34,7 @@ import {
   SelectOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
-import { PageHeader, Panel } from '../components/ui'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import {
   workflowApi,
   formatUTCTime,
@@ -44,6 +44,7 @@ import {
   type WorkflowType,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 
 const STATUS_LABELS: Record<string, string> = {
   draft: '草稿', queued: '待领取', in_progress: '处理中', pending_requester: '待补充',
@@ -116,6 +117,8 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [keyword, setKeyword] = useState('')
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const debouncedKeyword = useDebouncedValue(keyword.trim(), 350, keywordFlush)
   const [typeCode, setTypeCode] = useState('')
   const [photoSource, setPhotoSource] = useState('')
   const [photoCommunity, setPhotoCommunity] = useState('')
@@ -131,6 +134,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const [photoExporting, setPhotoExporting] = useState(false)
   const [createForm] = Form.useForm()
   const [actionForm] = Form.useForm()
+  const listRequestId = useRef(0)
   const selectedCreateTypeCode = Form.useWatch('type_code', createForm)
   const selectedCreateType = types.find(item => item.code === selectedCreateTypeCode)
 
@@ -139,18 +143,20 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     [types],
   )
 
-  const load = async (nextPage = page, nextPageSize = pageSize) => {
+  const load = useCallback(async (nextPage = page, nextPageSize = pageSize) => {
+    const requestId = ++listRequestId.current
     setLoading(true)
     setError('')
     try {
       if (view === 'photo_pending') {
         const result = await workflowApi.pendingPhotoRequests({
-          keyword,
+          keyword: debouncedKeyword,
           community: photoCommunity,
           source_label: photoSource,
           page: nextPage,
           page_size: nextPageSize,
         })
+        if (requestId !== listRequestId.current) return
         setPhotoRows(result.data)
         setSelectedPhotoIds([])
         setTotal(result.total)
@@ -160,29 +166,30 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
       }
       const [result, typeResult] = await Promise.all([
         workflowApi.search({
-          view, keyword, type_code: typeCode, source_label: photoSource,
+          view, keyword: debouncedKeyword, type_code: typeCode, source_label: photoSource,
           attachment_status: attachmentStatus, external_sync_status: externalSyncStatus,
           page: nextPage, page_size: nextPageSize,
         }),
         types.length ? Promise.resolve({ data: types }) : workflowApi.types(),
       ])
+      if (requestId !== listRequestId.current) return
       setRows(result.data)
       setTotal(result.total)
       setPage(nextPage)
       setPageSize(nextPageSize)
       setTypes(typeResult.data)
     } catch (reason) {
-      setError(apiError(reason, '工单读取失败'))
+      if (requestId === listRequestId.current) setError(apiError(reason, '工单读取失败'))
     } finally {
-      setLoading(false)
+      if (requestId === listRequestId.current) setLoading(false)
     }
-  }
+  }, [attachmentStatus, debouncedKeyword, externalSyncStatus, page, pageSize, photoCommunity, photoSource, typeCode, types, view])
 
   useEffect(() => {
     setView(photoOnly ? 'photo_pending' : 'created')
   }, [photoOnly])
 
-  useEffect(() => { void load(1) }, [view])
+  useEffect(() => { void load(1) }, [view, debouncedKeyword, typeCode, photoSource, photoCommunity, attachmentStatus, externalSyncStatus])
 
   const refreshDetail = async (ticketId = detail?.id) => {
     if (!ticketId) return
@@ -438,12 +445,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
         description={photoOnly
           ? '基础管控在这里集中领取、导出和处理照片调取任务，照片 ZIP 仍从数据上传中心导入。'
           : '请假、照片调取等通用流程统一在这里发起和查看。版本冲突会要求刷新，不会静默覆盖他人的操作。'}
-        actions={(
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-            {!photoOnly && canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工单</Button>}
-          </Space>
-        )}
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel className="workflow-tickets-panel">
@@ -464,13 +465,9 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
           )}
           {view === 'photo_pending' ? (
             <div className="workflow-photo-workbench">
-              <Alert
-                type="info"
-                showIcon
-                message="三步完成：领取全部待领取工单，导出清单集中调照片，再到数据上传中心上传照片 ZIP。"
-              />
-              <div className="workflow-photo-toolbar">
-                <div className="workflow-photo-toolbar__filters">
+              <ListToolbar
+                notice={<Alert type="info" showIcon message="三步完成：领取全部待领取工单，导出清单集中调照片，再到数据上传中心上传照片 ZIP。" />}
+                filters={<>
                   <Input
                     allowClear
                     className="workflow-photo-search"
@@ -479,7 +476,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                     placeholder="搜索姓名、身份证号或工单编号"
                     value={keyword}
                     onChange={event => setKeyword(event.target.value)}
-                    onPressEnter={() => void load(1)}
+                    onPressEnter={() => setKeywordFlush(current => current + 1)}
                   />
                   <Input
                     allowClear
@@ -497,20 +494,9 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                     value={photoSource}
                     onChange={event => setPhotoSource(event.target.value)}
                   />
-                  <Button
-                    className="workflow-photo-toolbar__query"
-                    type="primary"
-                    size="large"
-                    icon={<SearchOutlined />}
-                    onClick={() => void load(1)}
-                  >
-                    查询
-                  </Button>
-                </div>
-                <div className="workflow-photo-toolbar__actions">
-                  <span className="workflow-photo-toolbar__selection">
-                    已选择 {selectedPhotoIds.length} 张
-                  </span>
+                </>}
+                meta={<><span>当前筛选 {total} 张</span><span>已选择 {selectedPhotoIds.length} 张</span></>}
+                actions={<>
                   <Popconfirm
                     title="领取全部待领取的照片工单？"
                     description="已被其他人领取的工单会自动跳过。领取后仍会保留在当前表格中。"
@@ -543,8 +529,9 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   >
                     前往数据上传中心
                   </Button>
-                </div>
-              </div>
+                  <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+                </>}
+              />
               <Table
                 rowKey="id"
                 loading={loading}
@@ -568,7 +555,17 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
             </div>
           ) : (
             <div className="workflow-ticket-list">
-              <div className="workflow-ticket-filters">
+              <ListToolbar
+                filters={<>
+                <Input
+                  allowClear
+                  className="min-w-64"
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索工单编号或标题"
+                  value={keyword}
+                  onChange={event => setKeyword(event.target.value)}
+                  onPressEnter={() => setKeywordFlush(current => current + 1)}
+                />
                 <Select
                   allowClear
                   className="min-w-44"
@@ -576,14 +573,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   value={typeCode || undefined}
                   onChange={value => setTypeCode(value || '')}
                   options={types.map(item => ({ value: item.code, label: item.name }))}
-                />
-                <Input.Search
-                  allowClear
-                  className="max-w-sm"
-                  placeholder="搜索工单编号或标题"
-                  value={keyword}
-                  onChange={event => setKeyword(event.target.value)}
-                  onSearch={() => void load(1)}
                 />
                 <Input
                   allowClear
@@ -612,8 +601,13 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                     { value: 'not_linked', label: '不关联腾讯' },
                   ]}
                 />
-                <Button onClick={() => void load(1)}>查询</Button>
-              </div>
+                </>}
+                meta={<span>当前筛选 {total} 张工单</span>}
+                actions={<>
+                  <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+                  {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工单</Button>}
+                </>}
+              />
               <Table
                 rowKey="id"
                 loading={loading}

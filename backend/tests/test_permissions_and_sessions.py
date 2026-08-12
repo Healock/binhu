@@ -19,6 +19,7 @@ from services.data_scope import filter_report_payload
 from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_SUMMARY_VIEW,
+    ONLINE_TASK_MANAGE,
     SYNC_TRIGGER,
     WORKFLOW_ATTACHMENT_VIEW,
     WORKFLOW_TICKET_CREATE,
@@ -145,10 +146,13 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(ONLINE_SUMMARY_VIEW, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
         self.assertIn(WORKFLOW_ATTACHMENT_VIEW, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
         self.assertNotIn(WORKFLOW_TICKET_HANDLE, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
+        self.assertNotIn(ONLINE_TASK_MANAGE, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
+        self.assertIn(ONLINE_TASK_MANAGE, DEFAULT_PERMISSION_GROUPS["global_viewer"]["permissions"])
         self.assertNotIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["global_viewer"]["permissions"])
         self.assertIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
         self.assertIn(WORKFLOW_TICKET_CREATE, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
         self.assertIn(WORKFLOW_TICKET_VIEW, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
+        self.assertIn(ONLINE_TASK_MANAGE, DEFAULT_PERMISSION_GROUPS["community_registry_viewer"]["permissions"])
 
     def test_own_department_requires_community_department(self):
         self.assertEqual(permitted_community({

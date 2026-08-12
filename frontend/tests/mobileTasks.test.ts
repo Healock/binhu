@@ -52,13 +52,14 @@ test('管理员和超级管理员可以进入流口岗任务工作台', () => {
   assert.equal(isFlowTaskAdmin('admin'), true)
   assert.equal(isFlowTaskAdmin('member', ['admin']), true)
   assert.equal(canAccessFlowTaskWorkbench('', 'super_admin'), true)
-  assert.equal(canAccessFlowTaskWorkbench('社区民警', 'member', []), false)
+  assert.equal(canAccessFlowTaskWorkbench('社区民警', 'member', []), true)
+  assert.equal(canAccessFlowTaskWorkbench('', 'member', [], ['online.task.manage']), true)
 })
 
 test('组长及上级任务岗位可以批量分配，组员不可以', () => {
   assert.equal(canBulkAssignMobileTasks('组长', 'member'), true)
   assert.equal(canBulkAssignMobileTasks('组员', 'member'), false)
-  for (const position of ['片长', '基础管控', '中队长', '所队领导']) {
+  for (const position of ['片长', '基础管控', '中队长', '社区民警', '所队领导']) {
     assert.equal(isFlowTaskElevated(position, 'member'), true, position)
     assert.equal(canAccessFlowTaskWorkbench(position, 'member'), true, position)
     assert.equal(canBulkAssignMobileTasks(position, 'member'), true, position)
@@ -425,7 +426,8 @@ test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更�
   assert.match(clientSource, /inspectors: params\.inspectors \|\| \[\]/)
   assert.match(pageSource, /mode="multiple"/)
   assert.match(pageSource, /getMobileTaskFilterOptions/)
-  assert.match(pageSource, /getMobileTaskFilterOptions\(parserType, scope, communities\)/)
+  assert.match(pageSource, /getMobileTaskFilterOptions\([\s\S]*parserType,[\s\S]*scope,[\s\S]*communities,[\s\S]*analysisOnly \? reviewStage : 'all'/)
+  assert.match(pageSource, /const listRequestId = useRef\(0\)/)
   assert.match(pageSource, /priority_counts/)
   assert.match(pageSource, /更多筛选/)
   assert.match(pageSource, /setSearchParams\(next, \{ replace: true \}\)/)

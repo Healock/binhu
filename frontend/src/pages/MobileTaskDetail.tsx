@@ -1,7 +1,6 @@
 import {
   ArrowLeftOutlined,
   CameraOutlined,
-  CopyOutlined,
   PhoneOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
@@ -22,7 +21,9 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getMobileTaskDetail,
+  getMobileTaskAnalysisDetail,
   updateMobileTask,
+  updateMobileTaskAnalysis,
   workflowApi,
   type MobileTaskDetailData,
   type MobileTaskSource,
@@ -63,7 +64,7 @@ function detailError(reason: any, fallback: string) {
   return typeof detail === 'object' ? detail?.message || fallback : detail || reason?.message || fallback
 }
 
-export default function MobileTaskDetail() {
+export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
   const navigate = useNavigate()
   const { recordActivity, user } = useAuth()
   const { parserType = '', rowKey = '' } = useParams()
@@ -109,7 +110,9 @@ export default function MobileTaskDetail() {
     setLoading(true)
     setError('')
     try {
-      const result = await getMobileTaskDetail(parserType, rowKey)
+      const result = mode === 'analysis'
+        ? await getMobileTaskAnalysisDetail(parserType, rowKey)
+        : await getMobileTaskDetail(parserType, rowKey)
       setData(result)
       const source = result.sources.find(item => item.id === preferredSourceId) || result.sources[0]
       if (source) selectSource(source)
@@ -118,7 +121,7 @@ export default function MobileTaskDetail() {
     } finally {
       setLoading(false)
     }
-  }, [parserType, rowKey, selectSource])
+  }, [mode, parserType, rowKey, selectSource])
 
   useEffect(() => { void load() }, [load])
 
@@ -149,7 +152,8 @@ export default function MobileTaskDetail() {
     setError('')
     setSavedMessage('')
     try {
-      const result = await updateMobileTask(parserType, selectedSource.id, {
+      const updater = mode === 'analysis' ? updateMobileTaskAnalysis : updateMobileTask
+      const result = await updater(parserType, selectedSource.id, {
         changes,
         expected_revision: selectedSource.revision,
       })
@@ -161,7 +165,17 @@ export default function MobileTaskDetail() {
       )
       setData(current => current ? {
         ...current,
-        task: { ...current.task, pending_sync: true },
+        task: {
+          ...current.task,
+          pending_sync: true,
+          review_stage: mode === 'analysis'
+            ? (firstValue(savedValues, current.workflow.analysis_fields) ? 'analyzed' : 'waiting_analysis')
+            : current.task.review_stage,
+          summary: mode === 'analysis' ? {
+            ...current.task.summary,
+            analysis: firstValue(savedValues, current.workflow.analysis_fields),
+          } : current.task.summary,
+        },
         sources: current.sources.map(source => source.id === selectedSource.id ? {
           ...source,
           values: savedValues,
@@ -176,6 +190,9 @@ export default function MobileTaskDetail() {
             current.workflow.secondary_fields,
             savedValues,
           ),
+          review_stage: mode === 'analysis'
+            ? (firstValue(savedValues, current.workflow.analysis_fields) ? 'analyzed' : 'waiting_analysis')
+            : source.review_stage,
         } : source),
       } : current)
       setFormValues(savedValues)
@@ -190,8 +207,12 @@ export default function MobileTaskDetail() {
   }
 
   const copy = async (value: string, label: string) => {
-    await navigator.clipboard.writeText(value)
-    message.success(`${label}已复制`)
+    try {
+      await navigator.clipboard.writeText(value)
+      message.success(`${label}已复制`)
+    } catch {
+      message.error(`${label}复制失败，请长按或选中文字复制`)
+    }
   }
 
   const dial = async (phone: string) => {
@@ -257,7 +278,6 @@ export default function MobileTaskDetail() {
     ? firstValue(selectedSource.values, data.workflow.date_fields)
     : data.task.summary.date
   const phone = selectedSource ? firstValue(selectedSource.values, data.workflow.phone_fields) : data.task.summary.phone
-  const address = selectedSource ? firstValue(selectedSource.values, data.workflow.address_fields) : data.task.summary.address
   const identityNumber = selectedSource
     ? firstValue(selectedSource.values, data.workflow.identity_fields)
     : data.task.summary.identity_number
@@ -278,13 +298,13 @@ export default function MobileTaskDetail() {
   const phoneDisplay = phoneOptions.length > 0 ? phoneOptions.join('、') : phone
   const sourceTags = mobileTaskSourceTags(source)
   const detailFacts = [
-    { label: '身份证号', value: identityNumber || '未填写' },
-    { label: '手机号', value: phoneDisplay || '未填写' },
+    { label: '身份证号', value: identityNumber || '未填写', copyValue: identityNumber, copyLabel: '身份证号' },
+    { label: '手机号', value: phoneDisplay || '未填写', phones: phoneOptions },
     ...(originalAddress
-      ? [{ label: currentAddress ? '原地址' : '地址', value: originalAddress, wide: true }]
+      ? [{ label: currentAddress ? '原地址' : '地址', value: originalAddress, wide: true, copyValue: originalAddress, copyLabel: currentAddress ? '原地址' : '地址' }]
       : []),
     ...(currentAddress
-      ? [{ label: '现住址', value: currentAddress, wide: true }]
+      ? [{ label: '现住址', value: currentAddress, wide: true, copyValue: currentAddress, copyLabel: '现住址' }]
       : []),
     ...(!originalAddress && !currentAddress
       ? [{ label: '地址', value: '未填写', wide: true }]
@@ -332,7 +352,23 @@ export default function MobileTaskDetail() {
               className={`mobile-task-detail-facts__item${fact.wide ? ' is-wide' : ''}`}
             >
               <dt>{fact.label}</dt>
-              <dd>{fact.value}</dd>
+              <dd>
+                {'phones' in fact && fact.phones?.length ? (
+                  <MobilePhonePicker
+                    phones={fact.phones}
+                    mode="copy"
+                    label={<span>{fact.value}</span>}
+                    buttonProps={{ type: 'text', className: 'mobile-task-detail-copy-value' }}
+                    onSelect={value => void copy(value, '手机号')}
+                  />
+                ) : 'copyValue' in fact && fact.copyValue ? (
+                  <button
+                    type="button"
+                    className="mobile-task-detail-copy-value"
+                    onClick={() => void copy(fact.copyValue || '', fact.copyLabel || fact.label)}
+                  >{fact.value}</button>
+                ) : fact.value}
+              </dd>
             </div>
           ))}
         </dl>
@@ -347,33 +383,26 @@ export default function MobileTaskDetail() {
           </div>
         )}
 
-        {(phone || address) && (
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <MobilePhonePicker
-              phones={phoneOptions}
-              mode="dial"
-              label={phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}
-              buttonProps={{ className: 'min-h-11', type: 'primary', icon: <PhoneOutlined /> }}
-              onSelect={value => void dial(value)}
-            />
-            <MobilePhonePicker
-              phones={phoneOptions}
-              mode="copy"
-              label={phoneOptions.length > 1 ? '选择复制' : '复制电话'}
-              buttonProps={{ className: 'min-h-11', icon: <CopyOutlined /> }}
-              onSelect={value => void copy(value, '电话号码')}
-            />
-            {address && <Button className="col-span-2 min-h-11" icon={<CopyOutlined />} onClick={() => void copy(address, '地址')}>复制地址</Button>}
-          </div>
-        )}
-        {user?.permissions.includes('workflow.ticket.create') && (
-          <Button
-            className="mt-2 w-full min-h-11"
-            icon={<CameraOutlined />}
-            disabled={!identityNumber}
-            onClick={() => setPhotoRequestOpen(true)}
-          >{identityNumber ? '调取照片' : '缺少身份证号，无法调取照片'}</Button>
-        )}
+        <div className="mobile-task-detail-primary-actions">
+          <MobilePhonePicker
+            phones={phoneOptions}
+            mode="dial"
+            label={phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}
+            buttonProps={{ className: 'mobile-task-detail-pill', type: 'primary', icon: <PhoneOutlined /> }}
+            onSelect={value => void dial(value)}
+          />
+          {phoneOptions.length === 0 && (
+            <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>缺少电话号码</Button>
+          )}
+          {user?.permissions.includes('workflow.ticket.create') && (
+            <Button
+              className="mobile-task-detail-pill"
+              icon={<CameraOutlined />}
+              disabled={!identityNumber}
+              onClick={() => setPhotoRequestOpen(true)}
+            >{identityNumber ? '调取照片' : '缺少身份证号'}</Button>
+          )}
+        </div>
         {analysis && (
           <div className="mobile-task-analysis mt-4">
             <div className="mobile-task-analysis__label">研判结果</div>
@@ -442,8 +471,10 @@ export default function MobileTaskDetail() {
         <section className="app-card p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="font-semibold text-[var(--app-text-strong)]">核查处理</h2>
-              <p className="mt-0.5 text-xs text-[var(--app-text-secondary)]">确认所有修改后统一保存</p>
+              <h2 className="font-semibold text-[var(--app-text-strong)]">{mode === 'analysis' ? '研判处理' : '核查处理'}</h2>
+              <p className="mt-0.5 text-xs text-[var(--app-text-secondary)]">
+                {mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : '确认所有修改后统一保存'}
+              </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">腾讯第 {selectedSource.physical_row} 行</span>
           </div>

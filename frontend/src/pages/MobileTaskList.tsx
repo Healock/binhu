@@ -30,6 +30,8 @@ import {
   mobileTaskSourceTags,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
+import { ListToolbar } from '../components/ui'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 
 const STATUS_OPTIONS = [
   { label: '待处理（未完成）', value: 'pending' },
@@ -123,6 +125,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     user?.member?.position,
     user?.role,
     user?.permission_groups?.map(group => group.code),
+    user?.permissions,
   )
   const analysisOnly = mode === 'analysis'
   const scope: MobileTaskScope = analysisOnly || adminMode
@@ -150,7 +153,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
   const [keywordInput, setKeywordInput] = useState('')
-  const [keyword, setKeyword] = useState('')
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
   const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
@@ -172,6 +176,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
   const [bulkSaving, setBulkSaving] = useState(false)
   const optionsRequestId = useRef(0)
+  const listRequestId = useRef(0)
   const canBulkAssign = assignment.enabled
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
@@ -288,7 +293,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     const requestId = ++optionsRequestId.current
     setOptionsLoading(true)
     try {
-      const result = await getMobileTaskFilterOptions(parserType, scope, communities)
+      const result = await getMobileTaskFilterOptions(
+        parserType,
+        scope,
+        communities,
+        analysisOnly ? reviewStage : 'all',
+      )
       if (requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
       setInspectorOptions(result.inspectors)
@@ -315,7 +325,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     } finally {
       if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
-  }, [communities, parserType, scope])
+  }, [analysisOnly, communities, parserType, reviewStage, scope])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
 
@@ -326,6 +336,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   }, [bulkInspector, bulkInspectorOptions])
 
   const load = useCallback(async (targetPage = 1, append = false) => {
+    const requestId = ++listRequestId.current
     append ? setLoadingMore(true) : setLoading(true)
     setError('')
     try {
@@ -333,7 +344,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         parser_type: parserType,
         scope: analysisOnly ? 'all' : scope,
         status: analysisOnly ? 'all' : status,
-        review_stage: analysisOnly ? 'waiting_analysis' : reviewStage,
+        review_stage: reviewStage,
         communities,
         inspectors,
         watch_categories: watchCategories,
@@ -343,17 +354,21 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         page: targetPage,
         page_size: 50,
       })
+      if (requestId !== listRequestId.current) return
       setRows(current => append ? [...current, ...result.data] : result.data)
       setTotal(result.total)
       setPage(targetPage)
       setFacets(result.facets || EMPTY_FACETS)
       setSourceMessage(result.message || '')
     } catch (reason: any) {
+      if (requestId !== listRequestId.current) return
       setError(reason?.response?.data?.detail || reason?.message || '任务列表读取失败')
       if (!append) setRows([])
     } finally {
-      setLoading(false)
-      setLoadingMore(false)
+      if (requestId === listRequestId.current) {
+        setLoading(false)
+        setLoadingMore(false)
+      }
     }
   }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
 
@@ -364,7 +379,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     next.set('type', parserType)
     next.set('scope', analysisOnly ? 'all' : scope)
     next.set('status', analysisOnly ? 'all' : status)
-    if (analysisOnly) next.set('review_stage', 'waiting_analysis')
+    if (analysisOnly) next.set('review_stage', reviewStage)
     else if (reviewStage !== 'all') next.set('review_stage', reviewStage)
     communities.forEach(value => next.append('community', value))
     inspectors.forEach(value => next.append('inspector', value))
@@ -397,7 +412,6 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     setSort('priority')
     setStatus(analysisOnly ? 'all' : 'pending')
     setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
-    setKeyword('')
     setKeywordInput('')
   }
 
@@ -418,7 +432,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     || (!analysisOnly && status !== 'pending')
     || (!analysisOnly && reviewStage !== 'all')
     || sort !== 'priority'
-    || Boolean(keyword)
+    || Boolean(keywordInput.trim())
 
   const dial = async (phone: string) => {
     await recordActivity().catch(() => {})
@@ -458,8 +472,9 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
 
   return (
     <div className="mobile-task-page">
-      <section className="app-card mobile-task-filter-card">
-        <div className="mobile-task-filter-grid">
+      <ListToolbar
+        className="mobile-task-filter-card"
+        filters={<div className="mobile-task-filter-grid">
           <Select
             size="large"
             value={parserType}
@@ -467,7 +482,15 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
           />
           {analysisOnly ? (
-            <Tag color="purple" className="mobile-task-scope-tag">等待研判</Tag>
+            <Segmented
+              className="mobile-task-scope-switch"
+              value={reviewStage}
+              options={[
+                { label: '待研判', value: 'waiting_analysis' },
+                { label: '已研判', value: 'analyzed' },
+              ]}
+              onChange={value => setReviewStage(value as MobileTaskReviewStage)}
+            />
           ) : adminMode ? (
             <Tag color="blue" className="mobile-task-scope-tag">全所</Tag>
           ) : (
@@ -521,13 +544,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               prefix={<SearchOutlined />}
               placeholder="搜索姓名、电话或地址"
               onChange={event => setKeywordInput(event.target.value)}
-              onPressEnter={() => setKeyword(keywordInput.trim())}
+              onPressEnter={() => setKeywordFlush(current => current + 1)}
             />
-            <Button type="primary" className="min-h-11" onClick={() => setKeyword(keywordInput.trim())}>查询</Button>
           </div>
-        </div>
-
-        {!analysisOnly && <div className="mobile-task-priority-grid" aria-label="任务快捷筛选">
+        </div>}
+        extra={<>
+          {!analysisOnly && <div className="mobile-task-priority-grid" aria-label="任务快捷筛选">
           {PRIORITY_CARDS.map(card => {
             const count = card.key === 'all'
               ? facets.total
@@ -547,7 +569,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               </button>
             )
           })}
-        </div>}
+          </div>}
 
         <div className="mobile-task-more-toggle">
           <Button type="link" onClick={() => setMoreOpen(value => !value)}>
@@ -601,16 +623,14 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               placeholder="人员标记分类"
             />
           </div>
-        )}
-      </section>
+          )}
+        </>}
+        meta={<><span>当前筛选共 {total} 条</span>{keywordInput && <button type="button" className="text-[var(--app-primary)]" onClick={() => setKeywordInput('')}>清除搜索</button>}</>}
+        actions={<Button onClick={() => void load()} loading={loading}>刷新</Button>}
+      />
 
       {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       {sourceMessage && <Alert type="warning" showIcon message={sourceMessage} />}
-
-      <div className="flex items-center justify-between px-1 text-sm text-[var(--app-text-secondary)]">
-        <span>当前筛选共 {total} 条</span>
-        {keyword && <button type="button" className="text-[var(--app-primary)]" onClick={() => { setKeyword(''); setKeywordInput('') }}>清除搜索</button>}
-      </div>
 
       {!analysisOnly && canBulkAssign && (
         <section className={`app-card mobile-task-bulk-toolbar${selectionMode ? ' is-sticky' : ''}`}>
@@ -702,7 +722,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 toggleSelected(task.row_key, !isSelected)
                 return
               }
-              navigate(`/tasks/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+              navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
             }
             return (
               <article

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Input, Popconfirm, Progress, Select, Space, Statistic, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { ExportOutlined, MobileOutlined, SendOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
-import { PageHeader, Panel } from '../components/ui'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   getPoliceDispatchBatch,
   listPoliceDispatchTasks,
@@ -45,13 +46,16 @@ export default function PoliceDispatchBatchDetail() {
   const [status, setStatus] = useState('all')
   const [category, setCategory] = useState('all')
   const [keywordInput, setKeywordInput] = useState('')
-  const [keyword, setKeyword] = useState('')
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [loading, setLoading] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState('')
+  const listRequestId = useRef(0)
 
   const load = async (targetPage = page, targetPageSize = pageSize) => {
     if (!id) return
+    const requestId = ++listRequestId.current
     setLoading(true)
     try {
       const [batchResult, taskResult] = await Promise.all([
@@ -65,6 +69,7 @@ export default function PoliceDispatchBatchDetail() {
           page_size: targetPageSize,
         }),
       ])
+      if (requestId !== listRequestId.current) return
       setBatch(batchResult.batch)
       setTasks(taskResult.data)
       setTotal(taskResult.total)
@@ -72,9 +77,9 @@ export default function PoliceDispatchBatchDetail() {
       setPageSize(targetPageSize)
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '批次读取失败')
+      if (requestId === listRequestId.current) setError(reason?.response?.data?.detail || '批次读取失败')
     } finally {
-      setLoading(false)
+      if (requestId === listRequestId.current) setLoading(false)
     }
   }
 
@@ -203,13 +208,16 @@ export default function PoliceDispatchBatchDetail() {
         </>
       )}
       <Panel title={`任务明细（${total}）`} description="逐条展示发布错误、待对账和内容冲突；敏感关键词通过请求体提交" padded={false}>
-        <div className="grid gap-2 border-b border-slate-200 p-4 md:grid-cols-[minmax(0,1fr)_170px_170px_auto]">
-          <Input.Search
+        <ListToolbar
+          className="m-4"
+          filters={<>
+          <Input
             allowClear
+            prefix={<SearchOutlined />}
             value={keywordInput}
             placeholder="姓名、身份证号、手机号或地址"
             onChange={event => setKeywordInput(event.target.value)}
-            onSearch={() => setKeyword(keywordInput.trim())}
+            onPressEnter={() => setKeywordFlush(current => current + 1)}
           />
           <Select
             value={status}
@@ -237,8 +245,9 @@ export default function PoliceDispatchBatchDetail() {
               { value: 'manual', label: '待研判' },
             ]}
           />
-          <Button onClick={() => setKeyword(keywordInput.trim())}>查询</Button>
-        </div>
+          </>}
+          meta={<span>当前筛选 {total} 条</span>}
+        />
         <AppTable<PoliceDispatchTask>
           rowKey="id"
           columns={columns}

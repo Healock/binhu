@@ -69,6 +69,7 @@ function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
     user?.member?.position,
     user?.role,
     user?.permission_groups?.map(group => group.code),
+    user?.permissions,
   )) {
     return <Navigate to="/query" replace />
   }
@@ -81,6 +82,7 @@ function MobileTaskHomeEntry() {
     user?.member?.position,
     user?.role,
     user?.permission_groups?.map(group => group.code),
+    user?.permissions,
   )
     ? <MobileTaskHome />
     : <Navigate to="/query" replace />
@@ -121,6 +123,9 @@ function App() {
                 <Route path="/tasks" element={<MobileTaskEntry />} />
                 <Route path="/tasks/:parserType/:rowKey" element={<MobileTaskEntry detail />} />
               </Route>
+              <Route element={<ProtectedRoute requirePermission="online.task.manage" />}>
+                <Route path="/police-analysis/:parserType/:rowKey" element={<MobileTaskDetail mode="analysis" />} />
+              </Route>
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<VisitSummary />} />
               </Route>
@@ -129,8 +134,10 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>
                 <Route path="/police-tasks" element={<PoliceDispatchWorkbench />} />
-                <Route path="/police-analysis" element={<AnalysisWorkbench />} />
                 <Route path="/police-dispatch/batches/:batchId" element={<PoliceDispatchBatchDetail />} />
+              </Route>
+              <Route element={<ProtectedRoute requireAnyPermission={['online.task.manage', 'police.dispatch.manage']} />}>
+                <Route path="/police-analysis" element={<AnalysisWorkbench />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="worklog.manage" />}>
                 <Route path="/work-log" element={<WorkLog />} />

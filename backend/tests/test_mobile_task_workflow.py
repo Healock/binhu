@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ from routers.mobile_tasks import (
     _multi_filter_condition,
     _priority_bucket,
     _review_stage_condition,
+    _flow_context,
     _scope_where,
     _source_in_community,
     _task_filter_options,
@@ -234,7 +236,7 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(params, [])
 
     def test_elevated_positions_can_open_managed_task_scope(self):
-        for position in ("片长", "基础管控", "中队长", "所队领导"):
+        for position in ("片长", "基础管控", "中队长", "社区民警", "所队领导"):
             with self.subTest(position=position):
                 self.assertTrue(is_flow_task_elevated({
                     "role": "member",
@@ -246,6 +248,16 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             "member": {"position": "组员"},
             "permission_groups": [],
         }))
+
+    def test_task_manage_permission_uses_full_station_scope_only_in_task_workbench(self):
+        context = asyncio.run(_flow_context(None, {
+            "permissions": ["online.task.manage"],
+            "member": {"name": "民警甲", "position": "社区民警"},
+            "community_names": ["冬梅"],
+            "data_scope": "own_department",
+        }))
+        self.assertTrue(context["admin_mode"])
+        self.assertIsNone(context["community_values"])
 
     def test_flow_position_cannot_expand_to_all_scope(self):
         with self.assertRaises(HTTPException) as raised:

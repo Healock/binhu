@@ -29,6 +29,7 @@ export default function MobileTaskHome() {
     user?.member?.position,
     user?.role,
     user?.permission_groups?.map(group => group.code),
+    user?.permissions,
   )
   const [scope, setScope] = useState<MobileTaskScope>(adminMode ? 'all' : 'mine')
   const [data, setData] = useState<MobileTaskHomeData | null>(null)

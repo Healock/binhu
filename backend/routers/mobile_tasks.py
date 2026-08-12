@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import require_permission
+from deps import get_current_user, require_permission
 from routers.query import (
     _enabled_spreadsheets,
     _managed_column_metadata,
@@ -27,7 +27,12 @@ from services.online_edit_permissions import (
 )
 from services.online_source import json_value
 from services.parsers import get_parser
-from services.permissions import ONLINE_RAW_EDIT, ONLINE_RAW_VIEW, has_permission
+from services.permissions import (
+    ONLINE_RAW_EDIT,
+    ONLINE_RAW_VIEW,
+    ONLINE_TASK_MANAGE,
+    has_permission,
+)
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 from services.audit import record_admin_audit, request_audit_fields
@@ -78,6 +83,7 @@ FLOW_TASK_ELEVATED_POSITIONS = {
     "片长",
     "基础管控",
     "中队长",
+    "社区民警",
     "所队领导",
 }
 
@@ -176,7 +182,43 @@ def is_flow_task_admin(user: dict) -> bool:
 
 def is_flow_task_elevated(user: dict) -> bool:
     position = str((user.get("member") or {}).get("position") or "").strip()
-    return is_flow_task_admin(user) or position in FLOW_TASK_ELEVATED_POSITIONS
+    return (
+        is_flow_task_admin(user)
+        or has_permission(user, ONLINE_TASK_MANAGE)
+        or position in FLOW_TASK_ELEVATED_POSITIONS
+    )
+
+
+def _require_task_edit_user(user: dict) -> dict:
+    if not (
+        has_permission(user, ONLINE_RAW_EDIT)
+        or has_permission(user, ONLINE_TASK_MANAGE)
+    ):
+        raise HTTPException(403, "当前权限组不能修改流口任务")
+    if has_permission(user, ONLINE_RAW_EDIT):
+        return user
+    # online.task.manage 只在流口任务路由内借用现有逐行回写校验。
+    # 不修改登录态中的权限，因此不会开放 Univer 或腾讯原始行管理。
+    scoped_user = dict(user)
+    scoped_user["permissions"] = list(dict.fromkeys([
+        *(user.get("permissions") or []),
+        ONLINE_RAW_EDIT,
+    ]))
+    return scoped_user
+
+
+def _task_capability_user(user: dict) -> dict:
+    if has_permission(user, ONLINE_TASK_MANAGE) and not has_permission(
+        user, ONLINE_RAW_EDIT
+    ):
+        return _require_task_edit_user(user)
+    return user
+
+
+def _require_analysis_user(user: dict) -> dict:
+    if not has_permission(user, ONLINE_TASK_MANAGE):
+        raise HTTPException(403, "当前权限组不能处理网格核查研判")
+    return _require_task_edit_user(user)
 
 
 def _can_assign_tasks(context: dict) -> bool:
@@ -364,7 +406,13 @@ def _task_where(
 
 async def _flow_context(conn, user: dict) -> dict:
     if is_flow_task_elevated(user):
-        view_communities = effective_view_communities(user)
+        # online.task.manage 是流口任务工作台内的全所管理能力。
+        # 它不会改变用户在 Univer、辖区档案等其他模块的数据范围。
+        view_communities = (
+            None
+            if has_permission(user, ONLINE_TASK_MANAGE)
+            else effective_view_communities(user)
+        )
         community_values = (
             None
             if view_communities is None
@@ -681,10 +729,14 @@ async def _task_filter_options(
     scope: FlowScope,
     user: dict,
     communities: list[str] | None = None,
+    review_stage: ReviewStage = "all",
 ) -> dict:
+    capability_user = _task_capability_user(user)
     scope_where, scope_params = _scope_where(context, scope)
     where_sql = f"projection.parser_type=%s AND {scope_where}"
     params = [parser_type, *scope_params]
+    if review_stage != "all":
+        where_sql = f"{where_sql} AND {_review_stage_condition(parser_type, review_stage)}"
     inspector_where = where_sql
     inspector_params = list(params)
     community_condition, community_params = _multi_filter_condition(
@@ -745,10 +797,13 @@ async def _task_filter_options(
         ]
     assignment_enabled = (
         _can_assign_tasks(context)
-        and has_permission(user, ONLINE_RAW_EDIT)
+        and (
+            has_permission(user, ONLINE_RAW_EDIT)
+            or has_permission(user, ONLINE_TASK_MANAGE)
+        )
     )
     assignment_context = (
-        await inspector_option_context(cur, user, assignment_only=True)
+        await inspector_option_context(cur, capability_user, assignment_only=True)
         if assignment_enabled
         else {
             "community_aliases": {},
@@ -891,6 +946,7 @@ async def get_mobile_task_filter_options(
     parser_type: str,
     scope: FlowScope = Query("mine"),
     community: list[str] = Query(default=[]),
+    review_stage: ReviewStage = Query("all"),
     user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
     conn=Depends(get_db),
 ):
@@ -918,6 +974,7 @@ async def get_mobile_task_filter_options(
             scope,
             user,
             communities=community,
+            review_stage=review_stage,
         )
     return {"source_ready": True, **options}
 
@@ -969,13 +1026,17 @@ async def list_mobile_tasks(
     )
 
 
-@router.get("/{parser_type}/{row_key}")
-async def get_mobile_task_detail(
+async def _mobile_task_detail_data(
     parser_type: str,
     row_key: str,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
-    conn=Depends(get_db),
-):
+    user: dict,
+    conn,
+    *,
+    analysis_mode: bool = False,
+) -> dict:
+    if analysis_mode:
+        user = _require_analysis_user(user)
+    capability_user = _task_capability_user(user)
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
@@ -997,6 +1058,11 @@ async def get_mobile_task_detail(
         parent_row = await cur.fetchone()
         if not parent_row:
             raise HTTPException(404, "任务不存在或不属于当前社区")
+        parent_values = json_value(parent_row[0], {})
+        if analysis_mode and TASK_WORKFLOWS[parser_type].review_stage(
+            parent_values
+        ) not in {"waiting_analysis", "analyzed"}:
+            raise HTTPException(404, "该任务当前不属于网格核查研判范围")
         await cur.execute(
             """
             SELECT id, physical_row, values_json, cell_meta_json,
@@ -1010,8 +1076,11 @@ async def get_mobile_task_detail(
         raw_sources = await cur.fetchall()
         enabled = await _writeback_enabled(cur)
         assignment_context = (
-            await inspector_option_context(cur, user, assignment_only=True)
-            if _can_assign_tasks(context) and has_permission(user, ONLINE_RAW_EDIT)
+            await inspector_option_context(cur, capability_user, assignment_only=True)
+            if _can_assign_tasks(context) and (
+                has_permission(user, ONLINE_RAW_EDIT)
+                or has_permission(user, ONLINE_TASK_MANAGE)
+            )
             else None
         )
         watch_by_row = await task_watch_payload(cur, parser_type, [row_key]) \
@@ -1035,7 +1104,9 @@ async def get_mobile_task_detail(
                 parser, values, context["community_values"]
             ):
                 continue
-            capabilities = await row_edit_capabilities(cur, user, parser, values)
+            capabilities = await row_edit_capabilities(
+                cur, capability_user, parser, values
+            )
             metadata = await _managed_column_metadata(
                 cur,
                 parser,
@@ -1085,6 +1156,19 @@ async def get_mobile_task_detail(
                     field for field in TASK_WORKFLOWS[parser_type].secondary_fields
                     if field in parser.COLUMNS
                 )
+            analysis_fields = set(TASK_WORKFLOWS[parser_type].analysis_fields)
+            if analysis_mode:
+                editable_fields = [
+                    field for field in analysis_fields
+                    if field in parser.COLUMNS
+                ] if source_task["review_stage"] in {
+                    "waiting_analysis", "analyzed"
+                } else []
+            else:
+                editable_fields = [
+                    field for field in editable_fields
+                    if field not in analysis_fields
+                ]
             sources.append({
                 "id": int(source_id),
                 "physical_row": int(physical_row),
@@ -1104,7 +1188,6 @@ async def get_mobile_task_detail(
         if not sources:
             raise HTTPException(404, "任务不存在或不属于当前社区")
 
-    parent_values = json_value(parent_row[0], {})
     workflow = TASK_WORKFLOWS[parser_type]
     return {
         "task": _task_record(
@@ -1132,8 +1215,87 @@ async def get_mobile_task_detail(
             "columns": parser.COLUMNS,
         },
         "writeback_enabled": enabled,
+        "analysis_mode": analysis_mode,
         "sources": sources,
     }
+
+
+@router.get("/analysis/{parser_type}/{row_key}")
+async def get_mobile_task_analysis_detail(
+    parser_type: str,
+    row_key: str,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    return await _mobile_task_detail_data(
+        parser_type, row_key, user, conn, analysis_mode=True
+    )
+
+
+@router.patch("/analysis/{parser_type}/source-rows/{source_id}")
+async def update_mobile_task_analysis(
+    parser_type: str,
+    source_id: int,
+    data: TaskBatchUpdate,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    scoped_user = _require_analysis_user(user)
+    parser = get_parser(parser_type)
+    analysis_fields = {
+        field for field in TASK_WORKFLOWS[parser_type].analysis_fields
+        if field in parser.COLUMNS
+    }
+    if not analysis_fields:
+        raise HTTPException(400, "该业务没有可填写的研判字段")
+    if not data.changes or any(field not in analysis_fields for field in data.changes):
+        raise HTTPException(400, "研判入口只能修改研判字段")
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT values_json FROM _online_source_rows "
+            "WHERE id=%s AND parser_type=%s",
+            (source_id, parser_type),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "腾讯来源行不存在")
+        values = json_value(row[0], {})
+        if TASK_WORKFLOWS[parser_type].review_stage(values) not in {
+            "waiting_analysis", "analyzed"
+        }:
+            raise HTTPException(409, "该任务当前不属于网格核查研判范围")
+    def validate_analysis_source(current: dict) -> None:
+        if TASK_WORKFLOWS[parser_type].review_stage(current) not in {
+            "waiting_analysis", "analyzed"
+        }:
+            raise HTTPException(409, "该任务当前不属于网格核查研判范围")
+
+    return await update_source_fields(
+        parser_type=parser_type,
+        source_id=source_id,
+        changes=data.changes,
+        expected_revision=data.expected_revision,
+        request=request,
+        user=scoped_user,
+        conn=conn,
+        explicit_text_edit=True,
+        allowed_columns=analysis_fields,
+        current_values_validator=validate_analysis_source,
+        redact_audit_values=True,
+    )
+
+
+@router.get("/{parser_type}/{row_key}")
+async def get_mobile_task_detail(
+    parser_type: str,
+    row_key: str,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    return await _mobile_task_detail_data(parser_type, row_key, user, conn)
 
 
 @router.patch("/{parser_type}/source-rows/{source_id}")
@@ -1142,11 +1304,15 @@ async def update_mobile_task(
     source_id: int,
     data: TaskBatchUpdate,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
+    user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    user = _require_task_edit_user(user)
+    analysis_fields = set(TASK_WORKFLOWS[parser_type].analysis_fields)
+    if any(field in analysis_fields for field in data.changes):
+        raise HTTPException(403, "请从研判页面修改研判内容")
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
         await _validate_assignment(cur, context, data.changes)
@@ -1167,7 +1333,7 @@ async def bulk_assign_mobile_tasks(
     parser_type: str,
     data: BulkAssignmentRequest,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
+    user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
     """Manually assign selected unassigned tasks to one or all local members.
@@ -1179,6 +1345,7 @@ async def bulk_assign_mobile_tasks(
     """
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
     context = await _flow_context(conn, user)
     if not _can_assign_tasks(context):
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")

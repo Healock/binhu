@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -55,8 +55,9 @@ import {
   PERSONNEL_POSITIONS,
   type PersonnelPosition,
 } from '../constants/personnel'
-import { PageHeader, Panel } from '../components/ui'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 
 export default function GridMembers() {
   const { user } = useAuth()
@@ -93,8 +94,10 @@ export default function GridMembers() {
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
   const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
+  const [searchFlush, setSearchFlush] = useState(0)
   const [communityFilter, setCommunityFilter] = useState('')
   const [positionFilter, setPositionFilter] = useState('')
+  const debouncedSearchInput = useDebouncedValue(searchInput, 350, searchFlush)
   const [editing, setEditing] = useState<GridMember | null>(null)
   const [leaveEditing, setLeaveEditing] = useState<GridMember | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -110,6 +113,7 @@ export default function GridMembers() {
   const [scheduleStatus, setScheduleStatus] = useState<AttendanceScheduleStatus | null>(null)
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState('')
+  const listRequestId = useRef(0)
   const pageSize = 20
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
   const canManageAttendance = Boolean(user?.permissions.includes('attendance.manage'))
@@ -120,6 +124,7 @@ export default function GridMembers() {
   )
 
   const fetch = useCallback(async () => {
+    const requestId = ++listRequestId.current
     setCategoryStates(previous => Object.fromEntries(
       Object.entries(previous).map(([key, value]) => [
         key,
@@ -136,6 +141,7 @@ export default function GridMembers() {
           page: categoryStates[key].page,
           page_size: pageSize,
         })
+        if (requestId !== listRequestId.current) return
         setCategoryStates(previous => ({
           ...previous,
           [key]: {
@@ -147,6 +153,7 @@ export default function GridMembers() {
           },
         }))
       } catch {
+        if (requestId !== listRequestId.current) return
         setCategoryStates(previous => ({
           ...previous,
           [key]: {
@@ -242,6 +249,17 @@ export default function GridMembers() {
     (sum, category) => sum + categoryStates[category.key].total,
     0,
   )
+  const resetCategoryPages = () => setCategoryStates(previous => ({
+    ...previous,
+    flow_work: { ...previous.flow_work, page: 1 },
+    internal_business: { ...previous.internal_business, page: 1 },
+    police_leadership: { ...previous.police_leadership, page: 1 },
+  }))
+
+  useEffect(() => {
+    setKeyword(debouncedSearchInput.trim())
+    resetCategoryPages()
+  }, [debouncedSearchInput])
   const memberColumns: TableColumnsType<GridMember> = [
     {
       title: '姓名',
@@ -447,8 +465,8 @@ export default function GridMembers() {
         </div>
       </Panel>}
 
-      <section className="app-card">
-        <div className="app-toolbar">
+      <ListToolbar
+        filters={<>
           <Input
             allowClear
             prefix={<SearchOutlined className="text-slate-400" />}
@@ -456,26 +474,15 @@ export default function GridMembers() {
             value={searchInput}
             onChange={event => setSearchInput(event.target.value)}
             onPressEnter={() => {
-              setKeyword(searchInput)
-              setCategoryStates(previous => ({
-                ...previous,
-                flow_work: { ...previous.flow_work, page: 1 },
-                internal_business: { ...previous.internal_business, page: 1 },
-                police_leadership: { ...previous.police_leadership, page: 1 },
-              }))
+              setSearchFlush(current => current + 1)
             }}
-            className="w-full md:min-w-56 md:flex-1"
+            className="w-full md:w-72"
           />
           <Select
             value={communityFilter}
             onChange={value => {
               setCommunityFilter(value)
-              setCategoryStates(previous => ({
-                ...previous,
-                flow_work: { ...previous.flow_work, page: 1 },
-                internal_business: { ...previous.internal_business, page: 1 },
-                police_leadership: { ...previous.police_leadership, page: 1 },
-              }))
+              resetCategoryPages()
             }}
             className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
@@ -490,12 +497,7 @@ export default function GridMembers() {
             value={positionFilter}
             onChange={value => {
               setPositionFilter(value)
-              setCategoryStates(previous => ({
-                ...previous,
-                flow_work: { ...previous.flow_work, page: 1 },
-                internal_business: { ...previous.internal_business, page: 1 },
-                police_leadership: { ...previous.police_leadership, page: 1 },
-              }))
+              resetCategoryPages()
             }}
             className="w-[calc(50%-6px)] md:w-auto md:min-w-36"
             options={[
@@ -506,26 +508,11 @@ export default function GridMembers() {
               })),
             ]}
           />
-          <Button
-            type="primary"
-            icon={<SearchOutlined />}
-            className="w-full md:w-auto"
-            onClick={() => {
-              setKeyword(searchInput)
-              setCategoryStates(previous => ({
-                ...previous,
-                flow_work: { ...previous.flow_work, page: 1 },
-                internal_business: { ...previous.internal_business, page: 1 },
-                police_leadership: { ...previous.police_leadership, page: 1 },
-              }))
-            }}
-          >
-            搜索
-          </Button>
-          <div className="flex w-full flex-wrap gap-2 md:ml-auto md:w-auto">
-            <Tag color="blue">共 {total} 人</Tag>
-          </div>
-        </div>
+        </>}
+        meta={<Tag color="blue">共 {total} 人</Tag>}
+        actions={<Button onClick={refresh}>刷新</Button>}
+      />
+      <section className="app-card">
         {msg && (
           <Alert
             type={msg.includes('失败') ? 'error' : 'success'}

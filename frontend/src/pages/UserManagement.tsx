@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Input, Modal, Select, Switch, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import AppTable from '../components/AppTable'
-import { EmptyState, LoadingState, PageHeader } from '../components/ui'
+import { EmptyState, ListToolbar, LoadingState, PageHeader } from '../components/ui'
 import {
   fetchWithAuth,
   getPermissionGroups,
@@ -60,6 +60,7 @@ export default function UserManagement() {
   const [groupIds, setGroupIds] = useState<number[]>([])
   const [temporary, setTemporary] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [keyword, setKeyword] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -241,16 +242,31 @@ export default function UserManagement() {
       ),
     },
   ]
+  const normalizedKeyword = keyword.trim().toLocaleLowerCase()
+  const visibleUsers = normalizedKeyword
+    ? users.filter(user => [
+      user.display_name,
+      user.username,
+      user.member?.name,
+      user.member?.department_name,
+      user.member?.position,
+      ...(user.permission_groups || []).map(group => group.name),
+    ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalizedKeyword))
+    : users
 
   return (
     <div className="app-page">
       <PageHeader
         title="用户管理"
         description="人员账号在人员管理中建立并保持一对一；这里仍可维护系统账号和自定义权限"
-        actions={<Button type="primary" icon={<PlusOutlined />} onClick={beginCreate}>添加账号</Button>}
       />
-      {loading ? <LoadingState /> : users.length === 0 ? <EmptyState label="暂无用户" /> : (
-        <AppTable columns={columns} dataSource={users} rowKey="id" scroll={{ x: 900 }} />
+      <ListToolbar
+        filters={<Input allowClear prefix={<SearchOutlined />} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="搜索姓名、账号、部门或权限组" className="w-full md:w-80" />}
+        meta={<span>当前 {visibleUsers.length} 个账号</span>}
+        actions={<><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button><Button type="primary" icon={<PlusOutlined />} onClick={beginCreate}>添加账号</Button></>}
+      />
+      {loading ? <LoadingState /> : visibleUsers.length === 0 ? <EmptyState label={users.length ? '没有符合条件的账号' : '暂无用户'} /> : (
+        <AppTable columns={columns} dataSource={visibleUsers} rowKey="id" scroll={{ x: 900 }} />
       )}
 
       <Modal
