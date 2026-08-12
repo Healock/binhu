@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import io
 import json
 from datetime import datetime, timedelta
@@ -65,6 +66,7 @@ from services.work_activity import (
     POLICE_DISPATCH_REVIEW,
     record_work_activity,
 )
+from config import settings
 
 
 router = APIRouter(prefix="/api/police-dispatch", tags=["全链条下发"])
@@ -123,6 +125,80 @@ class ConflictResolution(BaseModel):
     strategy: Literal["adopt_tencent", "overwrite_tencent"]
     expected_row_hash: str = Field(min_length=64, max_length=64)
     confirmation: str = Field(default="", max_length=50)
+
+
+def _clean_preview_token(file_sha256: str, filename: str, sheet_name: str, row_count: int) -> str:
+    payload = f"clean:{file_sha256}:{filename}:{sheet_name}:{row_count}"
+    return hmac.new(
+        settings.registry_hmac_key.encode("utf-8"), payload.encode("utf-8"), sha256
+    ).hexdigest()
+
+
+def _verify_clean_preview_token(token: str, file_sha256: str, filename: str, sheet_name: str, row_count: int) -> bool:
+    return hmac.compare_digest(
+        token,
+        _clean_preview_token(file_sha256, filename, sheet_name, row_count),
+    )
+
+
+def _mask_preview_phone(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 7:
+        return f"{text[:3]}{'*' * (len(text) - 7)}{text[-4:]}"
+    return "*" * len(text)
+
+
+def _mask_preview_identity(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 10:
+        return f"{text[:6]}{'*' * (len(text) - 10)}{text[-4:]}"
+    return "*" * len(text)
+
+
+def _clean_preview_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {
+        "total": len(tasks), "dispatch": 0, "no_registration": 0,
+        "manual_review": 0, "invalid": 0, "duplicate": 0,
+    }
+    distribution: dict[int, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
+    for item in tasks:
+        action = str(item.get("auto_final_action") or "")
+        if action == "dispatch":
+            counts["dispatch"] += 1
+            community_id = item.get("auto_final_community_id")
+            if community_id:
+                current = distribution.setdefault(int(community_id), {
+                    "community_id": int(community_id),
+                    "community_name": str(item.get("community_name") or ""),
+                    "count": 0,
+                })
+                current["count"] += 1
+        elif action == "no_registration":
+            counts["no_registration"] += 1
+        else:
+            counts["manual_review"] += 1
+        if item.get("duplicate_group_key"):
+            counts["duplicate"] += 1
+        if str(item.get("allocation_mode") or "") == "conflict":
+            counts["invalid"] += 1
+        if len(rows) < 100:
+            rows.append({
+                "source_row": int(item.get("source_row") or 0),
+                "person_name": str(item.get("person_name") or ""),
+                "identity_number": _mask_preview_identity(item.get("identity_number")),
+                "phone": _mask_preview_phone(item.get("phone")),
+                "community_name": str(item.get("community_name") or ""),
+                "registration_status": str(item.get("registration_status") or ""),
+                "result": action or "manual",
+                "reason": str(item.get("suggestion_reason") or ""),
+            })
+    return {
+        "counts": counts,
+        "community_distribution": list(distribution.values()),
+        "rows": rows,
+        "rows_truncated": len(tasks) > len(rows),
+    }
 
 
 ALLOWED_POLICE_POSITIONS = {"基础管控", "中队长"}
@@ -741,6 +817,8 @@ async def upload_dispatch_batch(
     request: Request,
     file: UploadFile = File(...),
     import_mode: Literal["raw", "clean"] = Form("raw"),
+    confirm: bool = Form(False),
+    preview_token: str = Form(""),
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
@@ -785,6 +863,38 @@ async def upload_dispatch_batch(
         apply_clean_import_actions(tasks, communities)
     else:
         apply_preprocessing_suggestions(tasks, communities, addresses)
+    if import_mode == "clean" and not confirm:
+        summary = _clean_preview_summary(tasks)
+        await record_admin_audit(
+            user,
+            "police_dispatch.preview",
+            target_type="police_dispatch_preview",
+            target_name=filename,
+            detail={
+                "row_count": len(tasks),
+                "import_mode": "clean",
+                "dispatch_count": summary["counts"]["dispatch"],
+                "no_registration_count": summary["counts"]["no_registration"],
+                "manual_review_count": summary["counts"]["manual_review"],
+            },
+            **request_audit_fields(request),
+        )
+        return {
+            "status": "preview",
+            "message": "已生成预览，请确认后再导入",
+            "preview_token": _clean_preview_token(digest, filename, sheet_name, len(tasks)),
+            "preview": {
+                "file_name": filename,
+                "sheet_name": sheet_name,
+                "row_count": len(tasks),
+                **summary,
+            },
+        }
+    if import_mode == "clean":
+        if not preview_token or not _verify_clean_preview_token(
+            preview_token, digest, filename, sheet_name, len(tasks)
+        ):
+            raise HTTPException(409, "预览已失效或文件内容已变化，请重新预览")
     await conn.begin()
     try:
         async with conn.cursor() as cur:

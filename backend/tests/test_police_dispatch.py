@@ -37,11 +37,14 @@ from routers.police_dispatch import (
     TaskSearch,
     router,
     _batch_payloads,
+    _clean_preview_summary,
+    _clean_preview_token,
     _mark_overwrite_uncertain,
     _publish_values,
     _review_one,
     _search_tasks,
     _task_counts,
+    _verify_clean_preview_token,
     delete_batch,
     delete_address,
     export_addresses,
@@ -54,6 +57,45 @@ from routers.police_dispatch import (
     require_police_address_access,
     update_address,
 )
+
+
+def test_clean_preview_token_binds_file_and_metadata():
+    token = _clean_preview_token("a" * 64, "clean.xlsx", "数据", 2)
+
+    assert _verify_clean_preview_token(token, "a" * 64, "clean.xlsx", "数据", 2)
+    assert not _verify_clean_preview_token(token, "b" * 64, "clean.xlsx", "数据", 2)
+    assert not _verify_clean_preview_token(token, "a" * 64, "changed.xlsx", "数据", 2)
+
+
+def test_clean_preview_summary_masks_sensitive_values_and_counts_actions():
+    summary = _clean_preview_summary([
+        {
+            "source_row": 2, "person_name": "张三",
+            "identity_number": "32050020000101001X", "phone": "18800000001",
+            "community_name": "长板", "registration_status": "流口未登记",
+            "auto_final_action": "dispatch", "auto_final_community_id": 1,
+            "suggestion_reason": "可直接下发", "allocation_mode": "clean_import",
+        },
+        {
+            "source_row": 3, "person_name": "李四",
+            "identity_number": "320500200001010028", "phone": "18800000002",
+            "community_name": "长板", "registration_status": "未知状态",
+            "auto_final_action": "", "suggestion_reason": "需要人工确认",
+            "allocation_mode": "conflict", "duplicate_group_key": "duplicate",
+        },
+    ])
+
+    assert summary["counts"] == {
+        "total": 2, "dispatch": 1, "no_registration": 0,
+        "manual_review": 1, "invalid": 1, "duplicate": 1,
+    }
+    assert summary["community_distribution"] == [
+        {"community_id": 1, "community_name": "长板", "count": 1},
+    ]
+    assert summary["rows"][0]["identity_number"] == "320500********001X"
+    assert summary["rows"][0]["phone"] == "188****0001"
+    assert "32050020000101001X" not in str(summary)
+    assert "18800000001" not in str(summary)
 
 
 def _xlsx(rows: list[list[object]], title: str = "数据") -> bytes:
