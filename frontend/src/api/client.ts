@@ -1787,14 +1787,40 @@ export async function disablePoliceAddress(id: number): Promise<void> {
 export async function uploadPoliceDispatchBatch(
   file: File,
   importMode: 'raw' | 'clean' = 'raw',
+  options?: { confirm?: boolean; previewToken?: string },
 ): Promise<{
-  status: 'success' | 'duplicate'
+  status: 'success' | 'duplicate' | 'preview'
   message: string
-  batch: PoliceDispatchBatch
+  batch?: PoliceDispatchBatch
+  preview_token?: string
+  preview?: {
+    file_name: string
+    sheet_name: string
+    row_count: number
+    counts: Record<string, number>
+    community_distribution: Array<{
+      community_id: number
+      community_name: string
+      count: number
+    }>
+    rows: Array<{
+      source_row: number
+      person_name: string
+      identity_number: string
+      phone: string
+      community_name: string
+      registration_status: string
+      result: 'dispatch' | 'no_registration' | 'manual'
+      reason: string
+    }>
+    rows_truncated: boolean
+  }
 }> {
   const form = new FormData()
   form.append('file', file)
   form.append('import_mode', importMode)
+  if (options?.confirm) form.append('confirm', 'true')
+  if (options?.previewToken) form.append('preview_token', options.previewToken)
   const { data } = await api.post('/police-dispatch/batches', form, { timeout: 300000 })
   return data
 }

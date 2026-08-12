@@ -35,6 +35,8 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [importMode, setImportMode] = useState<'raw' | 'clean'>('raw')
+  const [cleanPreview, setCleanPreview] = useState<NonNullable<Awaited<ReturnType<typeof uploadPoliceDispatchBatch>>['preview']> | null>(null)
+  const [cleanPreviewToken, setCleanPreviewToken] = useState('')
   const [error, setError] = useState('')
 
   const load = async (targetPage = page) => {
@@ -61,6 +63,11 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
 
   useEffect(() => { void load(1) }, [enabled, status])
 
+  useEffect(() => {
+    setCleanPreview(null)
+    setCleanPreviewToken('')
+  }, [importMode])
+
   const beforeUpload: UploadProps['beforeUpload'] = selected => {
     const lower = selected.name.toLowerCase()
     if (!lower.endsWith('.xls') && !lower.endsWith('.xlsx')) {
@@ -68,6 +75,8 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       return Upload.LIST_IGNORE
     }
     setFile(selected)
+    setCleanPreview(null)
+    setCleanPreviewToken('')
     setFileList([{
       uid: selected.uid,
       name: selected.name,
@@ -82,12 +91,23 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     if (!file) return
     setUploading(true)
     try {
-      const result = await uploadPoliceDispatchBatch(file, importMode)
+      const result = await uploadPoliceDispatchBatch(file, importMode, {
+        confirm: importMode === 'clean' && Boolean(cleanPreviewToken),
+        previewToken: cleanPreviewToken || undefined,
+      })
+      if (result.status === 'preview') {
+        setCleanPreview(result.preview || null)
+        setCleanPreviewToken(result.preview_token || '')
+        message.success('预览已生成，请核对摘要后再次点击确认导入')
+        return
+      }
       message.success(result.message)
       setFile(null)
       setFileList([])
+      setCleanPreview(null)
+      setCleanPreviewToken('')
       await load(1)
-      navigate(`/police-dispatch/batches/${result.batch.id}`)
+      if (result.batch) navigate(`/police-dispatch/batches/${result.batch.id}`)
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '数据导入失败')
     } finally {
@@ -135,6 +155,23 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       ),
     },
   ]
+  const previewColumns: TableColumnsType<NonNullable<typeof cleanPreview>['rows'][number]> = [
+    { title: 'Excel 行', dataIndex: 'source_row', width: 90 },
+    { title: '姓名', dataIndex: 'person_name', width: 110 },
+    { title: '身份证号', dataIndex: 'identity_number', width: 190 },
+    { title: '手机号', dataIndex: 'phone', width: 150 },
+    { title: '社区', dataIndex: 'community_name', width: 130 },
+    { title: '登记情况', dataIndex: 'registration_status', width: 150 },
+    {
+      title: '导入结果', dataIndex: 'result', width: 130,
+      render: value => value === 'dispatch'
+        ? <Tag color="blue">直接下发</Tag>
+        : value === 'no_registration'
+          ? <Tag color="green">已注销</Tag>
+          : <Tag color="orange">人工复核</Tag>,
+    },
+    { title: '原因', dataIndex: 'reason', ellipsis: true, width: 280 },
+  ]
 
   return (
     <Panel
@@ -147,6 +184,14 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
           <Alert type="info" showIcon message="当前账号没有数据下发权限" />
         )}
         {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
+        {cleanPreview && (
+          <Alert
+            type="info"
+            showIcon
+            message="已处理数据预览"
+            description={`共 ${cleanPreview.row_count} 行：直接下发 ${cleanPreview.counts.dispatch} 行，已注销 ${cleanPreview.counts.no_registration} 行，需人工复核 ${cleanPreview.counts.manual_review} 行。确认文件未变化后，再点击下方按钮正式导入。`}
+          />
+        )}
         <div className="police-dispatch-upload-mode flex flex-wrap items-center gap-3">
           <span className="text-sm font-medium text-[var(--app-text-secondary)]">导入类型</span>
           <Segmented
@@ -169,7 +214,12 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             maxCount={1}
             fileList={fileList}
             beforeUpload={beforeUpload}
-            onRemove={() => { setFile(null); setFileList([]) }}
+            onRemove={() => {
+              setFile(null)
+              setFileList([])
+              setCleanPreview(null)
+              setCleanPreviewToken('')
+            }}
             disabled={!enabled || uploading}
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
@@ -186,9 +236,32 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             loading={uploading}
             onClick={upload}
           >
-            {importMode === 'clean' ? '导入并生成待发布任务' : '导入并生成审核任务'}
+            {importMode === 'clean'
+              ? (cleanPreviewToken ? '确认导入并生成待发布任务' : '先预览已处理数据')
+              : '导入并生成审核任务'}
           </Button>
         </div>
+
+        {cleanPreview && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {cleanPreview.community_distribution.map(item => (
+                <Tag key={item.community_id} color="blue">{item.community_name} {item.count} 条</Tag>
+              ))}
+            </div>
+            <AppTable
+              rowKey="source_row"
+              columns={previewColumns}
+              dataSource={cleanPreview.rows}
+              pagination={false}
+              scroll={{ x: 1200, y: 420 }}
+              size="small"
+            />
+            {cleanPreview.rows_truncated && (
+              <div className="text-xs text-[var(--app-text-secondary)]">明细仅展示前 100 行，顶部统计覆盖完整文件。</div>
+            )}
+          </div>
+        )}
 
         {latest && (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
