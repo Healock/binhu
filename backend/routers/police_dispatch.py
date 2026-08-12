@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,7 @@ from services.police_dispatch import (
     FINAL_ACTIONS,
     MAX_POLICE_FILE_BYTES,
     PoliceWorkbookError,
+    apply_clean_import_actions,
     apply_preprocessing_suggestions,
     build_feedback_workbook,
     build_publish_address,
@@ -463,7 +464,7 @@ async def _batch_payloads(cur, batch_ids: list[int]) -> list[dict[str, Any]]:
         SELECT batch.id, batch.file_name, batch.sheet_name, batch.status,
                batch.total_count, batch.counts_json, batch.first_publish_date,
                batch.last_error, batch.created_at, batch.updated_at,
-               user.display_name, user.username
+               user.display_name, user.username, batch.import_mode
         FROM _police_dispatch_batches AS batch
         LEFT JOIN _users AS user ON user.id=batch.imported_by
         WHERE batch.id IN ({placeholders})
@@ -519,6 +520,7 @@ async def _batch_payloads(cur, batch_ids: list[int]) -> list[dict[str, Any]]:
         result.append({
             "id": int(row[0]), "file_name": str(row[1]), "sheet_name": str(row[2]),
             "status": str(row[3]), "total_count": int(row[4]), "counts": counts,
+            "import_mode": str(row[12] or "raw") if len(row) > 12 else "raw",
             "first_publish_date": row[6].isoformat() if row[6] else None,
             "last_error": str(row[7] or ""),
             "created_at": row[8].isoformat() + "Z", "updated_at": row[9].isoformat() + "Z",
@@ -533,6 +535,7 @@ async def _batch_payloads(cur, batch_ids: list[int]) -> list[dict[str, Any]]:
 async def upload_dispatch_batch(
     request: Request,
     file: UploadFile = File(...),
+    import_mode: Literal["raw", "clean"] = Form("raw"),
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
@@ -545,7 +548,12 @@ async def upload_dispatch_batch(
             payload = await _batch_payload(cur, int(duplicate[0]))
             return {"status": "duplicate", "message": "同一文件已经导入", "batch": payload}
     try:
-        sheet_name, parsed = await asyncio.to_thread(parse_dispatch_workbook, content, filename)
+        sheet_name, parsed = await asyncio.to_thread(
+            parse_dispatch_workbook,
+            content,
+            filename,
+            import_mode == "clean",
+        )
     except MemoryError as exc:
         raise HTTPException(
             413,
@@ -559,23 +567,28 @@ async def upload_dispatch_batch(
     tasks = [
         {
             "source_row": item.source_row, "source_name": item.source_name,
+            "community_name": item.community_name,
             "person_name": item.person_name, "identity_number": item.identity_number,
             "phone": item.phone, "original_address": item.original_address,
+            "registration_status": item.registration_status,
             "created_time": item.created_time, "transfer_note": item.transfer_note,
             "raw_values": item.raw_values,
         }
         for item in parsed
     ]
-    apply_preprocessing_suggestions(tasks, communities, addresses)
+    if import_mode == "clean":
+        apply_clean_import_actions(tasks, communities)
+    else:
+        apply_preprocessing_suggestions(tasks, communities, addresses)
     await conn.begin()
     try:
         async with conn.cursor() as cur:
             await cur.execute("""
                 INSERT INTO _police_dispatch_batches (
-                    file_name, file_sha256, sheet_name, status,
+                    file_name, file_sha256, sheet_name, import_mode, status,
                     total_count, counts_json, imported_by
-                ) VALUES (%s, %s, %s, 'reviewing', %s, JSON_OBJECT(), %s)
-            """, (filename, digest, sheet_name, len(tasks), user["id"]))
+                ) VALUES (%s, %s, %s, %s, 'reviewing', %s, JSON_OBJECT(), %s)
+            """, (filename, digest, sheet_name, import_mode, len(tasks), user["id"]))
             batch_id = int(cur.lastrowid)
             for item in tasks:
                 await cur.execute("""
@@ -598,6 +611,30 @@ async def upload_dispatch_batch(
                     item.get("suggested_community_id"), item["suggestion_reason"],
                     item["allocation_mode"],
                 ))
+                if import_mode == "clean" and item.get("auto_final_action"):
+                    reviewer_name = str(
+                        user.get("display_name")
+                        or (user.get("member") or {}).get("name")
+                        or user.get("username")
+                        or ""
+                    )[:100]
+                    final_action = str(item["auto_final_action"])
+                    await cur.execute("""
+                        UPDATE _police_dispatch_tasks SET
+                            final_action=%s, final_community_id=%s,
+                            review_note=%s, reviewed_by=%s, reviewer_name=%s,
+                            reviewed_at=UTC_TIMESTAMP(), task_status=%s,
+                            publish_status=%s, version=version+1
+                        WHERE batch_id=%s AND source_row=%s
+                    """, (
+                        final_action,
+                        item.get("auto_final_community_id"),
+                        "已处理数据导入：按登记情况自动生成",
+                        user["id"], reviewer_name,
+                        "pending_publish" if final_action == "dispatch" else "completed",
+                        "pending" if final_action == "dispatch" else "not_required",
+                        batch_id, item["source_row"],
+                    ))
             await _refresh_batch_status(cur, batch_id)
         await conn.commit()
     except Exception:
@@ -607,10 +644,15 @@ async def upload_dispatch_batch(
         payload = await _batch_payload(cur, batch_id)
     await record_admin_audit(
         user, "police_dispatch.import", target_type="police_dispatch_batch",
-        target_name=str(batch_id), detail={"row_count": len(tasks)},
+        target_name=str(batch_id), detail={"row_count": len(tasks), "import_mode": import_mode},
         **request_audit_fields(request),
     )
-    return {"status": "success", "message": "文件已导入，所有建议等待人工审核", "batch": payload}
+    message = (
+        "已处理数据导入完成，可直接发布；异常记录仍需人工审核"
+        if import_mode == "clean"
+        else "文件已导入，所有建议等待人工审核"
+    )
+    return {"status": "success", "message": message, "batch": payload}
 
 
 @router.get("/batches")
@@ -992,6 +1034,12 @@ async def _review_one(cur, task_id: int, data: TaskReview, user: dict) -> int:
 
 async def _recalculate_batch_tasks(cur, batch_id: int, edited_task_id: int) -> set[int]:
     """重新计算整批建议、平均分配和重复关系，并清除受影响审核。"""
+    await cur.execute(
+        "SELECT import_mode FROM _police_dispatch_batches WHERE id=%s",
+        (batch_id,),
+    )
+    batch_mode_row = await cur.fetchone()
+    import_mode = str(batch_mode_row[0] or "raw") if batch_mode_row else "raw"
     await cur.execute("""
         SELECT id, source_row, source_name, person_name, identity_number,
                phone, original_address, source_created_time, transfer_note,
@@ -1020,6 +1068,9 @@ async def _recalculate_batch_tasks(cur, batch_id: int, edited_task_id: int) -> s
             "duplicate_group_key": "",
             "duplicate_kind": "",
         }
+        extracted = dispatch_values_from_raw(row["raw_values"])
+        row["community_name"] = extracted.get("community_name", "")
+        row["registration_status"] = extracted.get("registration_status", "")
         rows.append(row)
         originals[task_id] = (
             str(item[10] or ""), str(item[11] or ""), str(item[12] or ""),
@@ -1028,7 +1079,10 @@ async def _recalculate_batch_tasks(cur, batch_id: int, edited_task_id: int) -> s
         )
     communities = await _communities(cur)
     addresses = await _address_entries(cur, enabled_only=True)
-    apply_preprocessing_suggestions(rows, communities, addresses)
+    if import_mode == "clean":
+        apply_clean_import_actions(rows, communities)
+    else:
+        apply_preprocessing_suggestions(rows, communities, addresses)
     affected: set[int] = {edited_task_id}
     for row in rows:
         task_id = int(row["id"])

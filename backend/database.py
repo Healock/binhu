@@ -776,6 +776,7 @@ async def ensure_police_dispatch_schema(cur) -> None:
             file_name VARCHAR(255) NOT NULL DEFAULT '',
             file_sha256 CHAR(64) NOT NULL UNIQUE,
             sheet_name VARCHAR(255) NOT NULL DEFAULT '',
+            import_mode VARCHAR(20) NOT NULL DEFAULT 'raw',
             status VARCHAR(30) NOT NULL DEFAULT 'reviewing',
             total_count INT NOT NULL DEFAULT 0,
             counts_json JSON NOT NULL,
@@ -879,6 +880,9 @@ async def ensure_police_dispatch_schema(cur) -> None:
             "linked_row_hash": "CHAR(64) NOT NULL DEFAULT ''",
             "conflict_values_json": "JSON DEFAULT NULL",
             "cache_pending": "TINYINT(1) NOT NULL DEFAULT 0",
+        },
+        "_police_dispatch_batches": {
+            "import_mode": "VARCHAR(20) NOT NULL DEFAULT 'raw'",
         },
         "_police_dispatch_publish_results": {
             "source_row_id": "BIGINT DEFAULT NULL",

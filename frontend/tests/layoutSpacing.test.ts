@@ -41,3 +41,18 @@ test('在线查询桌面端把数据范围控件放在工作表状态提示左�
   assert.match(styles, /\.query-spreadsheet-toolbar\s*\{[^}]*flex-wrap:\s*wrap/s)
   assert.match(styles, /\.query-spreadsheet-toolbar__type\s*\{[^}]*width:\s*176px/s)
 })
+
+test('下发导入工作台提供原始与已处理数据模式', () => {
+  const panelSource = readFileSync(
+    new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(panelSource, /已处理数据直接下发/)
+  assert.match(panelSource, /导入并生成待发布任务/)
+  assert.match(clientSource, /form\.append\('import_mode', importMode\)/)
+})

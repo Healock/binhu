@@ -29,10 +29,12 @@ class PoliceWorkbookError(ValueError):
 class DispatchImportRow:
     source_row: int
     source_name: str
+    community_name: str
     person_name: str
     identity_number: str
     phone: str
     original_address: str
+    registration_status: str
     created_time: str
     transfer_note: str
     raw_values: dict[str, str]
@@ -92,10 +94,12 @@ def dispatch_values_from_raw(raw_values: dict[str, Any]) -> dict[str, str]:
 
     return {
         "source_name": value("source"),
+        "community_name": value("community"),
         "person_name": value("name"),
         "identity_number": normalize_identity(value("identity")),
         "phone": normalize_space(value("phone")),
         "original_address": value("address"),
+        "registration_status": value("registration"),
         "created_time": value("created"),
         "transfer_note": value("transfer_note"),
         "raw_values": values,
@@ -197,10 +201,12 @@ def _header_index(row: list[str], aliases: dict[str, tuple[str, ...]]) -> dict[s
 
 DISPATCH_HEADER_ALIASES = {
     "source": ("来源", "数据来源"),
+    "community": ("社区", "所属社区", "社区名称"),
     "name": ("姓名", "人员姓名"),
     "identity": ("身份证号", "身份证号码", "身份证"),
     "phone": ("手机号", "手机号码", "电话号码", "联系电话"),
     "address": ("地址", "原地址", "居住地址"),
+    "registration": ("登记情况", "登记状态", "处理结果"),
     "created": ("创建时间", "下发时间"),
     "transfer_note": ("移交备注", "移交反馈", "退回备注"),
 }
@@ -226,11 +232,15 @@ def _locate_header(
 def parse_dispatch_workbook(
     content: bytes,
     filename: str,
+    require_clean_fields: bool = False,
 ) -> tuple[str, list[DispatchImportRow]]:
+    required = {"name", "identity", "address"}
+    if require_clean_fields:
+        required.update({"community", "registration", "phone"})
     sheet_name, rows, header_row, columns = _locate_header(
         read_workbook_rows(content, filename),
         DISPATCH_HEADER_ALIASES,
-        {"name", "identity", "address"},
+        required,
     )
     header_values = rows[header_row]
     result: list[DispatchImportRow] = []
@@ -257,10 +267,12 @@ def parse_dispatch_workbook(
         result.append(DispatchImportRow(
             source_row=row_number,
             source_name=value("source"),
+            community_name=value("community"),
             person_name=value("name"),
             identity_number=identity,
             phone=normalize_space(value("phone")),
             original_address=value("address"),
+            registration_status=value("registration"),
             created_time=value("created"),
             transfer_note=value("transfer_note"),
             raw_values=raw_values,
@@ -268,6 +280,72 @@ def parse_dispatch_workbook(
     if not result:
         raise PoliceWorkbookError("全链条文件中没有可导入的数据")
     return sheet_name, result
+
+
+CLEAN_DISPATCH_STATUSES = {"流口未登记", "地址待变更", "未登记", "待登记"}
+CLEAN_NO_REGISTRATION_STATUSES = {"流口已注销", "已注销", "注销"}
+
+
+def apply_clean_import_actions(
+    rows: list[dict[str, Any]],
+    communities: list[dict[str, Any]],
+) -> None:
+    """将基础管控已处理的字段转换为最终动作，异常记录仍留待人工审核。"""
+    resolver = community_resolver(
+        item for item in communities if item.get("enabled", True)
+    )
+    mark_duplicate_groups(rows)
+    for row in rows:
+        row.update({
+            "suggested_action": "manual",
+            "suggested_community_id": None,
+            "suggestion_reason": "",
+            "allocation_mode": "clean_import",
+            "auto_final_action": "",
+            "auto_final_community_id": None,
+        })
+        missing = [
+            label for field, label in (
+                ("person_name", "姓名"),
+                ("identity_number", "身份证号"),
+                ("phone", "手机号"),
+                ("original_address", "地址"),
+            ) if not normalize_space(row.get(field, ""))
+        ]
+        if missing:
+            row["suggestion_reason"] = f"缺少必要字段：{'、'.join(missing)}"
+            row["allocation_mode"] = "conflict"
+            continue
+        if row.get("duplicate_group_key"):
+            row["suggestion_reason"] = "同批身份证号重复，需要人工确认保留记录"
+            row["allocation_mode"] = "conflict"
+            continue
+
+        registration = normalize_lookup(row.get("registration_status", ""))
+        if registration in CLEAN_NO_REGISTRATION_STATUSES:
+            row.update({
+                "suggested_action": "no_registration",
+                "suggestion_reason": "已处理文件中的登记情况标记为流口已注销",
+                "auto_final_action": "no_registration",
+            })
+            continue
+        if registration not in CLEAN_DISPATCH_STATUSES:
+            row["suggestion_reason"] = "登记情况不是可直接导入的已处理状态"
+            row["allocation_mode"] = "conflict"
+            continue
+
+        community = resolve_community(row.get("community_name", ""), resolver)
+        if not community:
+            row["suggestion_reason"] = "文件中的社区无法匹配启用社区"
+            row["allocation_mode"] = "conflict"
+            continue
+        row.update({
+            "suggested_action": "dispatch",
+            "suggested_community_id": int(community["id"]),
+            "suggestion_reason": "已处理文件按登记情况和社区直接生成下发任务",
+            "auto_final_action": "dispatch",
+            "auto_final_community_id": int(community["id"]),
+        })
 
 
 def community_resolver(communities: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
