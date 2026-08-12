@@ -79,6 +79,21 @@ def _can_manage(user: dict) -> bool:
     return WORKFLOW_TICKET_MANAGE in set(user.get("permissions") or [])
 
 
+async def require_attachment_manage_access(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    permissions = set(user.get("permissions") or [])
+    if not permissions.intersection({
+        WORKFLOW_ATTACHMENT_VIEW,
+        WORKFLOW_TICKET_HANDLE,
+        WORKFLOW_TICKET_MANAGE,
+    }):
+        raise HTTPException(403, "当前账号没有工单附件权限")
+    if not permissions.intersection({WORKFLOW_TICKET_HANDLE, WORKFLOW_TICKET_MANAGE}):
+        raise HTTPException(403, "当前账号只能查看工单附件，不能上传或删除附件")
+    return user
+
+
 def _can_restore_queued(user: dict) -> bool:
     return _can_manage(user) or str(user.get("role") or "") in {"admin", "super_admin"}
 
@@ -1251,7 +1266,7 @@ async def upload_attachment(
     request: Request,
     expected_version: int = Form(..., gt=0),
     file: UploadFile = File(...),
-    user: dict = Depends(require_permission(WORKFLOW_ATTACHMENT_VIEW)),
+    user: dict = Depends(require_attachment_manage_access),
     conn=Depends(get_workflow_db),
 ):
     async with conn.cursor() as cur:
@@ -1352,7 +1367,7 @@ async def delete_attachment(
     file_id: str,
     request: Request,
     expected_version: int = Query(..., gt=0),
-    user: dict = Depends(require_permission(WORKFLOW_ATTACHMENT_VIEW)),
+    user: dict = Depends(require_attachment_manage_access),
     conn=Depends(get_workflow_db),
 ):
     if not SAFE_FILE_ID.fullmatch(file_id):

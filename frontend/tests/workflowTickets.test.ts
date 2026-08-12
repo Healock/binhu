@@ -41,3 +41,16 @@ test('管理员和超级管理员可以把待补充工单恢复为待领取', ()
   assert.match(pageSource, /restoreQueued\(detail\.id/)
   assert.match(apiSource, /api\.post\(`\/workflow\/tickets\/\$\{id\}\/restore-queued`, payload\)/)
 })
+
+test('工单附件查看与管理权限分离', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /const canViewAttachments = permissions\.has\('workflow\.attachment\.view'\)/)
+  assert.match(pageSource, /const canManageAttachments = canHandle/)
+  assert.match(pageSource, /\{canManageAttachments && \(/)
+  assert.match(pageSource, /\{canViewAttachments \? \(/)
+  assert.match(pageSource, /\.\.\.\(canManageAttachments \? \[/)
+})

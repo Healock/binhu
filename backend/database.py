@@ -11,6 +11,9 @@ from services.permissions import (
     POLICE_ADDRESS_MANAGE,
     POLICE_DISPATCH_MANAGE,
     POSITION_DEFAULT_GROUP,
+    WORKFLOW_ATTACHMENT_VIEW,
+    WORKFLOW_TICKET_CREATE,
+    WORKFLOW_TICKET_VIEW,
     parse_permissions,
     serialize_permissions,
 )
@@ -123,8 +126,18 @@ async def ensure_permission_schema(cur) -> None:
         )
     # 新权限只追加到相应预设组，不覆盖超级管理员已经调整过的其他权限。
     permission_additions = {
-        "flow_post": {ONLINE_RAW_EDIT, "workflow.ticket.create", "workflow.ticket.view"},
-        "global_viewer": {ONLINE_RAW_EDIT, "workflow.ticket.create", "workflow.ticket.view"},
+        "flow_post": {
+            ONLINE_RAW_EDIT,
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
+            WORKFLOW_ATTACHMENT_VIEW,
+        },
+        "global_viewer": {
+            ONLINE_RAW_EDIT,
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
+            WORKFLOW_ATTACHMENT_VIEW,
+        },
         "internal_business": {
             ONLINE_RAW_EDIT,
             ONLINE_RAW_ROW_MANAGE,
@@ -135,8 +148,10 @@ async def ensure_permission_schema(cur) -> None:
             "registry.watch.view",
             "registry.watch.manage",
             "registry.import.manage",
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
             "workflow.ticket.handle",
-            "workflow.attachment.view",
+            WORKFLOW_ATTACHMENT_VIEW,
         },
         "admin": {
             ONLINE_RAW_EDIT,
@@ -151,6 +166,11 @@ async def ensure_permission_schema(cur) -> None:
             "workflow.ticket.handle",
             "workflow.attachment.view",
             "workflow.ticket.manage",
+        },
+        "community_registry_viewer": {
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
+            WORKFLOW_ATTACHMENT_VIEW,
         },
     }
     for code, additions in permission_additions.items():
