@@ -30,12 +30,14 @@ import {
   InboxOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SearchOutlined,
   SelectOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
 import { PageHeader, Panel } from '../components/ui'
 import {
   workflowApi,
+  formatUTCTime,
   type PendingPhotoRequest,
   type WorkOrderDetail,
   type WorkOrderSummary,
@@ -90,7 +92,7 @@ function saveBlob(blob: Blob, filename: string) {
 }
 
 export default function WorkflowTickets() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const navigate = useNavigate()
   const permissions = new Set(user?.permissions || [])
   const canCreate = permissions.has('workflow.ticket.create')
@@ -384,7 +386,7 @@ export default function WorkflowTickets() {
     { title: '队列', dataIndex: 'current_queue', width: 120, render: value => value || '—' },
     {
       title: '截止时间', dataIndex: 'due_at', width: 180,
-      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value || '未设置'}</span>,
+      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value ? formatUTCTime(value, systemTimezone) : '未设置'}</span>,
     },
     {
       title: '操作', width: 150,
@@ -407,7 +409,7 @@ export default function WorkflowTickets() {
     { title: '申请人员', dataIndex: 'requester_name', width: 120, render: value => value || '—' },
     {
       title: '申请时间', dataIndex: 'requested_at', width: 170,
-      render: value => value ? String(value).replace('T', ' ').slice(0, 16) : '—',
+      render: value => value ? formatUTCTime(value, systemTimezone) : '—',
     },
     { title: '数据来源', dataIndex: 'source_label', width: 180, ellipsis: true, render: value => value || '—' },
     { title: '工单编号', dataIndex: 'ticket_no', width: 210 },
@@ -417,7 +419,7 @@ export default function WorkflowTickets() {
     },
     {
       title: '截止时间', dataIndex: 'due_at', width: 170,
-      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value ? String(value).replace('T', ' ').slice(0, 16) : '未设置'}</span>,
+      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value ? formatUTCTime(value, systemTimezone) : '未设置'}</span>,
     },
   ]
 
@@ -461,17 +463,20 @@ export default function WorkflowTickets() {
               />
               <div className="workflow-photo-toolbar">
                 <div className="workflow-photo-toolbar__filters">
-                  <Input.Search
+                  <Input
                     allowClear
-                    className="workflow-photo-toolbar__search"
+                    className="workflow-photo-search"
+                    size="large"
+                    prefix={<SearchOutlined className="workflow-photo-search__icon" />}
                     placeholder="搜索姓名、身份证号或工单编号"
                     value={keyword}
                     onChange={event => setKeyword(event.target.value)}
-                    onSearch={() => void load(1)}
+                    onPressEnter={() => void load(1)}
                   />
                   <Input
                     allowClear
                     className="workflow-photo-toolbar__field"
+                    size="large"
                     placeholder="社区"
                     value={photoCommunity}
                     onChange={event => setPhotoCommunity(event.target.value)}
@@ -479,11 +484,20 @@ export default function WorkflowTickets() {
                   <Input
                     allowClear
                     className="workflow-photo-toolbar__field"
+                    size="large"
                     placeholder="数据来源"
                     value={photoSource}
                     onChange={event => setPhotoSource(event.target.value)}
                   />
-                  <Button onClick={() => void load(1)}>查询</Button>
+                  <Button
+                    className="workflow-photo-toolbar__query"
+                    type="primary"
+                    size="large"
+                    icon={<SearchOutlined />}
+                    onClick={() => void load(1)}
+                  >
+                    查询
+                  </Button>
                 </div>
                 <div className="workflow-photo-toolbar__actions">
                   <span className="workflow-photo-toolbar__selection">
@@ -629,7 +643,7 @@ export default function WorkflowTickets() {
                 { key: 'type', label: '类型', children: typeName[detail.type_code] || detail.type_code },
                 { key: 'status', label: '状态', children: STATUS_LABELS[detail.status] || detail.status },
                 { key: 'queue', label: '当前队列', children: detail.current_queue || '—' },
-                { key: 'due', label: '截止时间', children: detail.due_at || '未设置' },
+                { key: 'due', label: '截止时间', children: detail.due_at ? formatUTCTime(detail.due_at, systemTimezone) : '未设置' },
                 { key: 'description', label: '说明', children: detail.description || '无' },
               ]}
             />
@@ -646,7 +660,11 @@ export default function WorkflowTickets() {
                   items={Object.entries(detail.type_detail).map(([key, value]) => ({
                     key,
                     label: detail.type_code === 'photo_request' ? (PHOTO_DETAIL_LABELS[key] || key) : key,
-                    children: value === null || value === '' ? '—' : String(value),
+                    children: value === null || value === ''
+                      ? '—'
+                      : ['requested_at', 'batch_completed_at'].includes(key)
+                        ? formatUTCTime(String(value), systemTimezone)
+                        : String(value),
                   }))}
                 />
               </section>
@@ -727,7 +745,7 @@ export default function WorkflowTickets() {
               <List
                 locale={{ emptyText: '暂无评论' }}
                 dataSource={detail.comments || []}
-                renderItem={item => <List.Item><List.Item.Meta title={`账号 #${item.user_id}`} description={<><div>{item.content}</div><div>{item.created_at}</div></>} /></List.Item>}
+                renderItem={item => <List.Item><List.Item.Meta title={`账号 #${item.user_id}`} description={<><div>{item.content}</div><div>{formatUTCTime(item.created_at, systemTimezone)}</div></>} /></List.Item>}
               />
             </section>
 
@@ -741,7 +759,7 @@ export default function WorkflowTickets() {
                 columns={[
                   { title: '事件', dataIndex: 'event_type', render: value => EVENT_LABELS[value] || value },
                   { title: '状态', render: (_: any, row: any) => `${STATUS_LABELS[row.from_status] || row.from_status || '—'} → ${STATUS_LABELS[row.to_status] || row.to_status || '—'}` },
-                  { title: '时间', dataIndex: 'created_at', width: 190 },
+                  { title: '时间', dataIndex: 'created_at', width: 190, render: value => formatUTCTime(value, systemTimezone) },
                 ]}
               />
             </section>

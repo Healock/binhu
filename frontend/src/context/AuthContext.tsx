@@ -13,6 +13,7 @@ import { clearRoleDashboardCaches } from '../utils/dashboardCache'
 interface AuthContextValue {
   user: User | null
   serverVersion: string
+  systemTimezone: string
   loading: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
@@ -20,11 +21,13 @@ interface AuthContextValue {
   refreshUser: () => Promise<void>
   recordActivity: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
+  setSystemTimezone: (timezone: string) => void
 }
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
   serverVersion: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
+  systemTimezone: 'Asia/Shanghai',
   loading: true,
   login: async () => {},
   logout: async () => {},
@@ -32,6 +35,7 @@ const AuthContext = createContext<AuthContextValue>({
   refreshUser: async () => {},
   recordActivity: async () => {},
   changePassword: async () => {},
+  setSystemTimezone: () => {},
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -39,12 +43,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [serverVersion, setServerVersion] = useState(
     typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
   )
+  const [systemTimezone, setSystemTimezone] = useState('Asia/Shanghai')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     getAppBootstrap()
       .then(payload => {
         if (payload.server_version) setServerVersion(payload.server_version)
+        if (payload.timezone) setSystemTimezone(payload.timezone)
       })
       .catch(() => {})
     getCurrentUser()
@@ -104,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider value={{
       user,
       serverVersion,
+      systemTimezone,
       loading,
       login,
       logout,
@@ -111,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshUser,
       recordActivity,
       changePassword,
+      setSystemTimezone,
     }}>
       {children}
     </AuthContext.Provider>

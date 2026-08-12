@@ -8,6 +8,7 @@ import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { PageHeader, Panel } from '../components/ui'
 import {
+  formatUTCTime,
   getGridCommunities,
   registryApi,
   type RegistryOrganization,
@@ -20,7 +21,7 @@ type TabKey = 'properties' | 'people' | 'organizations' | 'merges' | 'candidates
 type ModalKind = 'property' | 'person' | 'organization' | 'phone' | 'alias' | 'personRelation' | 'organizationRelation' | 'merge'
 
 export default function RegistryManagement() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const [tab, setTab] = useState<TabKey>('properties')
   const [properties, setProperties] = useState<RegistryProperty[]>([])
   const [people, setPeople] = useState<RegistryPerson[]>([])
@@ -247,7 +248,7 @@ export default function RegistryManagement() {
           { title: '源档案', render: (_: unknown, row: any) => `${row.source_name}（${row.source_person_id}）` },
           { title: '目标档案', render: (_: unknown, row: any) => `${row.target_name}（${row.target_person_id}）` },
           { title: '原因', dataIndex: 'reason', ellipsis: true },
-          { title: '时间', dataIndex: 'created_at', width: 180 },
+          { title: '时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) },
           { title: '状态', dataIndex: 'undone', width: 90, render: (value: boolean) => value ? <Tag>已撤销</Tag> : <Tag color="orange">已合并</Tag> },
           { title: '操作', width: 110, render: (_: unknown, row: any) => !row.undone && <Popconfirm title="确认撤销这次合并？" onConfirm={async () => { await registryApi.undoMerge(row.id); message.success('合并已撤销'); await load() }}><Button size="small">撤销</Button></Popconfirm> },
         ]} />}
@@ -255,14 +256,14 @@ export default function RegistryManagement() {
           { title: '对象', dataIndex: 'entity_type', width: 120 },
           { title: '变更', dataIndex: 'change_type', width: 120 },
           { title: '原因', dataIndex: 'reason', ellipsis: true },
-          { title: '创建时间', dataIndex: 'created_at', width: 180 },
+          { title: '创建时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) },
           { title: '操作', width: 170, render: (_: unknown, row: any) => <Space><Button size="small" type="primary" onClick={() => void reviewCandidate(row.id, 'accept')}>采用</Button><Button size="small" danger onClick={() => void reviewCandidate(row.id, 'reject')}>拒绝</Button></Space> },
         ]} />}
         {tab === 'conflicts' && <AppTable rowKey="id" loading={loading} dataSource={conflicts} pagination={false} columns={[
           { title: '对象', dataIndex: 'entity_type', width: 120 },
           { title: '冲突类型', dataIndex: 'conflict_type', width: 160 },
           { title: '对象键', dataIndex: 'entity_key', ellipsis: true },
-          { title: '创建时间', dataIndex: 'created_at', width: 180 },
+          { title: '创建时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) },
           { title: '操作', width: 170, render: (_: unknown, row: any) => <Space><Button size="small" type="primary" onClick={() => void reviewConflict(row.id, 'accept')}>解决</Button><Button size="small" onClick={() => void reviewConflict(row.id, 'reject')}>忽略</Button></Space> },
         ]} />}
       </Panel>
@@ -330,7 +331,7 @@ export default function RegistryManagement() {
           {detail.organizations && <Panel title="房屋机构关系"><AppTable rowKey="relation_id" pagination={false} dataSource={detail.organizations} columns={[{ title: '机构', dataIndex: 'organization_name' }, { title: '角色', dataIndex: 'role_name' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }, { title: '操作', render: (_: unknown, row: any) => canManage && !row.valid_to && <Popconfirm title="结束该关系？" onConfirm={() => void endRelation('organization', row)}><Button type="link" size="small">结束</Button></Popconfirm> }]} /></Panel>}
           {detail.members && <Panel title="机构经办人"><AppTable rowKey="membership_id" pagination={false} dataSource={detail.members} columns={[{ title: '姓名', dataIndex: 'person_name' }, { title: '职位', dataIndex: 'title' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }, { title: '操作', render: (_: unknown, row: any) => canManage && !row.valid_to && <Popconfirm title="结束该任职关系？" onConfirm={() => void endRelation('membership', row)}><Button type="link" size="small">结束</Button></Popconfirm> }]} /></Panel>}
           {detail.properties && <Panel title="机构关联房屋"><AppTable rowKey="relation_id" pagination={false} dataSource={detail.properties} columns={[{ title: '地址', dataIndex: 'normalized_address' }, { title: '角色', dataIndex: 'role_name' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }]} /></Panel>}
-          {detail.versions && <Panel title="地址版本历史"><AppTable rowKey="version" pagination={false} dataSource={detail.versions} columns={[{ title: '版本', dataIndex: 'version', width: 80 }, { title: '标准化地址', dataIndex: 'normalized_address' }, { title: '变更原因', dataIndex: 'reason' }, { title: '时间', dataIndex: 'created_at', width: 180 }]} /></Panel>}
+          {detail.versions && <Panel title="地址版本历史"><AppTable rowKey="version" pagination={false} dataSource={detail.versions} columns={[{ title: '版本', dataIndex: 'version', width: 80 }, { title: '标准化地址', dataIndex: 'normalized_address' }, { title: '变更原因', dataIndex: 'reason' }, { title: '时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) }]} /></Panel>}
         </div>}
       </Drawer>
     </div>

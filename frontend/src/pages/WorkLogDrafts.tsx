@@ -24,12 +24,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   deleteWorkLogDraft,
-  formatUTCTime,
   listWorkLogDrafts,
 } from '../api/client'
 import AppTable from '../components/AppTable'
 import { PageHeader, Panel } from '../components/ui'
 import type { WorkLogDraftSummary } from '../types'
+import useSystemTime from '../hooks/useSystemTime'
 
 const PAGE_SIZE = 20
 
@@ -54,6 +54,7 @@ function errorMessage(error: unknown, fallback: string) {
 
 export default function WorkLogDrafts() {
   const navigate = useNavigate()
+  const formatTime = useSystemTime()
   const [modal, contextHolder] = Modal.useModal()
   const [formFilters, setFormFilters] = useState<DraftFilters>(EMPTY_FILTERS)
   const [queryFilters, setQueryFilters] = useState<DraftFilters>(EMPTY_FILTERS)
@@ -151,13 +152,13 @@ export default function WorkLogDrafts() {
       title: '最后更新',
       dataIndex: 'updated_at',
       width: 190,
-      render: value => formatUTCTime(value),
+      render: formatTime,
     },
     {
       title: '最近导出',
       dataIndex: 'last_export_at',
       width: 190,
-      render: value => formatUTCTime(value),
+      render: formatTime,
     },
     {
       title: '操作',
@@ -342,8 +343,8 @@ export default function WorkLogDrafts() {
                       <div className="mt-2 space-y-1 text-sm text-slate-500">
                         <div>创建人：{draft.creator.display_name || draft.creator.username}</div>
                         <div>当前编辑人：{draft.owner.display_name || draft.owner.username}</div>
-                        <div>最后更新：{formatUTCTime(draft.updated_at)}</div>
-                        <div>最近导出：{formatUTCTime(draft.last_export_at)}</div>
+                        <div>最后更新：{formatTime(draft.updated_at)}</div>
+                        <div>最近导出：{formatTime(draft.last_export_at)}</div>
                       </div>
                     </div>
                   </div>

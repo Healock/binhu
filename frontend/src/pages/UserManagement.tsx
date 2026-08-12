@@ -10,6 +10,7 @@ import {
   getPermissionGroups,
   type PermissionGroupItem,
 } from '../api/client'
+import useSystemTime from '../hooks/useSystemTime'
 
 interface UserItem {
   id: number
@@ -44,6 +45,7 @@ function detailMessage(value: any, fallback: string) {
 }
 
 export default function UserManagement() {
+  const formatTime = useSystemTime()
   const [users, setUsers] = useState<UserItem[]>([])
   const [members, setMembers] = useState<MemberOption[]>([])
   const [groups, setGroups] = useState<PermissionGroupItem[]>([])
@@ -219,7 +221,7 @@ export default function UserManagement() {
         </div>
       ),
     },
-    { title: '创建时间', dataIndex: 'created_at', width: 180, render: value => value || '-' },
+    { title: '创建时间', dataIndex: 'created_at', width: 180, render: formatTime },
     {
       title: '操作', width: 130,
       render: (_, user) => (

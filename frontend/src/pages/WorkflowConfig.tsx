@@ -28,6 +28,7 @@ import {
 } from '@ant-design/icons'
 import { PageHeader, Panel } from '../components/ui'
 import { workflowApi, type PhotoSheetConfig, type PhotoSheetPreview, type WorkflowType } from '../api/client'
+import useSystemTime from '../hooks/useSystemTime'
 
 function apiError(reason: any, fallback: string) {
   return reason?.response?.data?.detail || reason?.message || fallback
@@ -53,6 +54,7 @@ interface WorkflowVersionSummary {
 }
 
 export default function WorkflowConfig() {
+  const formatTime = useSystemTime()
   const [types, setTypes] = useState<WorkflowType[]>([])
   const [versions, setVersions] = useState<WorkflowVersionSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -355,7 +357,7 @@ export default function WorkflowConfig() {
         </Form>
         <div className="grid gap-2 text-sm md:grid-cols-3">
           <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">历史导入：{photoSheetConfig?.import_applied_at ? '已完成' : '未执行'}</div>
-          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">最近同步：{photoSheetConfig?.last_sync_at || '尚未同步'}</div>
+          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">最近同步：{photoSheetConfig?.last_sync_at ? formatTime(photoSheetConfig.last_sync_at) : '尚未同步'}</div>
           <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">同步状态：{photoSheetConfig?.last_sync_status || 'disabled'}</div>
         </div>
         {photoSheetConfig?.last_error && <Alert className="mt-3" type="warning" showIcon message="最近同步失败" description={photoSheetConfig.last_error} />}
@@ -442,7 +444,7 @@ export default function WorkflowConfig() {
           pagination={{ pageSize: 20 }}
           scroll={{ x: 760 }}
           columns={photoMonitorTab === 'runs' ? [
-            { title: '时间', dataIndex: 'started_at', width: 190 },
+            { title: '时间', dataIndex: 'started_at', width: 190, render: formatTime },
             { title: '类型', dataIndex: 'run_type', width: 100 },
             { title: '状态', dataIndex: 'status', width: 100 },
             { title: '读取', dataIndex: 'rows_read', width: 80 },
@@ -455,7 +457,7 @@ export default function WorkflowConfig() {
             { title: '腾讯行', dataIndex: 'physical_row', width: 90 },
             { title: '类型/动作', render: (_, row) => row.type || row.action || row.status || '—', width: 130 },
             { title: '安全摘要', dataIndex: 'safe_detail', ellipsis: true },
-            { title: '更新时间', render: (_, row) => row.updated_at || row.created_at || '—', width: 190 },
+            { title: '更新时间', render: (_, row) => formatTime(row.updated_at || row.created_at), width: 190 },
             ...(photoMonitorTab === 'conflict' ? [{
               title: '操作', width: 90,
               render: (_: unknown, row: any) => <Button size="small" onClick={() => void retryPhotoConflict(row.id)}>重试定位</Button>,

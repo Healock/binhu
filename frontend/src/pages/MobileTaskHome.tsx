@@ -3,6 +3,7 @@ import { Alert, Button, Segmented, Skeleton } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  formatUTCTime,
   getMobileTaskHome,
   type MobileTaskHomeData,
   type MobileTaskScope,
@@ -16,21 +17,14 @@ function metricValue(value: number | null, snapshotAvailable: boolean) {
   return String(value)
 }
 
-function formatSyncTime(value: string | null) {
+function formatSyncTime(value: string | null, timezone: string) {
   if (!value) return '尚无成功同步'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date)
+  return formatUTCTime(value, timezone)
 }
 
 export default function MobileTaskHome() {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const adminMode = isFlowTaskElevated(
     user?.member?.position,
     user?.role,
@@ -94,7 +88,7 @@ export default function MobileTaskHome() {
 
             <div className="mobile-task-hero__footer">
               <span>{data.admin_mode ? '全所' : '本社区'}待核查 {data.community.pending} 条</span>
-              <span>最近同步 {formatSyncTime(data.last_success_at)}</span>
+              <span>最近同步 {formatSyncTime(data.last_success_at, systemTimezone)}</span>
             </div>
           </section>
 
