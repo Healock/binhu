@@ -27,7 +27,7 @@ from services.workflow_support import (
     workflow_notification,
 )
 from services.registry_security import hmac_digest, normalize_identity
-from services.photo_sheet_sync import enqueue_outbox
+from services.photo_sheet_sync import enqueue_outbox, launch_outbox_processing
 
 
 router = APIRouter(prefix="/api/workflow", tags=["工单"])
@@ -427,6 +427,7 @@ async def create_ticket(
     user: dict = Depends(require_permission(WORKFLOW_TICKET_CREATE)),
     conn=Depends(get_workflow_db),
 ):
+    photo_outbox_ticket_id: int | None = None
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -528,7 +529,8 @@ async def create_ticket(
                      form_data.get("requested_to") or None),
                 )
                 if photo_values["source_parser_type"] and photo_values["source_row_key"]:
-                    await enqueue_outbox(cur, ticket_id, "append_request")
+                    if await enqueue_outbox(cur, ticket_id, "append_request"):
+                        photo_outbox_ticket_id = ticket_id
             elif data.type_code == "leave_request":
                 member_id = (user.get("member") or {}).get("id")
                 if not member_id:
@@ -555,6 +557,8 @@ async def create_ticket(
     except Exception:
         await conn.rollback()
         raise
+    if photo_outbox_ticket_id is not None:
+        launch_outbox_processing(photo_outbox_ticket_id)
     return {"id": ticket_id, "ticket_no": ticket_no, "message": "工单已提交"}
 
 

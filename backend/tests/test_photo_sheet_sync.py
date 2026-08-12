@@ -1,6 +1,8 @@
 import unittest
-from datetime import datetime
-from unittest.mock import AsyncMock, Mock
+from datetime import date, datetime
+from unittest.mock import AsyncMock, Mock, call, patch
+
+import services.photo_sheet_sync as photo_sheet_sync
 
 from services.photo_sheet_sync import (
     COLUMNS,
@@ -285,6 +287,29 @@ class PhotoSheetRelocationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PhotoSheetAppendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_attempt_appends_after_current_tail_without_full_scan(self):
+        detail = ("冬梅社区", "平安码", "甲", "32050020000101001X", "申请人", datetime(2026, 8, 11), "platform")
+        cursor = AppendCursor({101: detail})
+        client = type("Client", (), {})()
+        client.get_sheet_row_total = AsyncMock(return_value=25)
+        client.read_all_source_rows = AsyncMock()
+        client.build_update_range_request = Mock(return_value={"fake": "request"})
+        client.batch_update = AsyncMock()
+        client.read_source_row = AsyncMock(return_value=source_row(
+            26, ["冬梅社区", "平安码", "甲", "32050020000101001X", "申请人", "2026/8/11", ""],
+        ))
+        source = {"id": 7, "file_id": "fake", "sheet_id": "fake-tab", "header_row": 1}
+
+        await _process_append(client, source, cursor, 101, first_attempt=True)
+
+        self.assertEqual(cursor.mappings[0]["physical_row"], 26)
+        client.get_sheet_row_total.assert_awaited_once_with("fake", "fake-tab")
+        client.read_all_source_rows.assert_not_awaited()
+        client.build_update_range_request.assert_called_once_with(
+            "fake-tab", 25, 0,
+            [["冬梅社区", "平安码", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]],
+        )
+
     async def test_identical_platform_requests_use_distinct_physical_rows(self):
         detail = ("冬梅社区", "平安码", "甲", "32050020000101001X", "申请人", datetime(2026, 8, 11), "platform")
         cursor = AppendCursor({101: detail, 102: detail})
@@ -320,6 +345,110 @@ class PhotoSheetAppendTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cursor.mappings[0]["physical_row"], 25)
         client.batch_update.assert_not_awaited()
+
+
+class _Context:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _SourceCursor:
+    def __init__(self, last_full_sync_date: date):
+        self.last_full_sync_date = last_full_sync_date
+        self._query = ""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, query, params=()):
+        self._query = query
+
+    async def fetchone(self):
+        if "FROM photo_sheet_sources" in self._query:
+            return (1, "", "file", "sheet", 1, 1, 1, None, None, 10,
+                    self.last_full_sync_date, None, "success", "")
+        return None
+
+
+class _SourceConnection:
+    def __init__(self, business_date: date):
+        self.source_cursor = _SourceCursor(business_date)
+
+    def cursor(self):
+        return self.source_cursor
+
+
+class _SourcePool:
+    def __init__(self, business_date: date):
+        self.connection = _SourceConnection(business_date)
+
+    def acquire(self):
+        return _Context(self.connection)
+
+
+class PhotoSheetMaintenanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_incremental_runs_before_scheduled_outbox_and_no_daily_full_when_current(self):
+        business_date = date(2026, 8, 12)
+        order: list[str] = []
+
+        async def sync_once(*, full=False, actor_user_id=None):
+            order.append("full" if full else "incremental")
+            return {"disabled": False}
+
+        async def outbox_once(*args, **kwargs):
+            order.append("outbox")
+            return {"disabled": False}
+
+        with patch.object(photo_sheet_sync, "sync_online_once", new=sync_once), \
+             patch.object(photo_sheet_sync, "process_outbox_once", new=outbox_once), \
+             patch.object(photo_sheet_sync, "get_business_date_from_db", new=AsyncMock(return_value=business_date)), \
+             patch.object(photo_sheet_sync.db_manager, "get_pool", return_value=_SourcePool(business_date)):
+            result = await photo_sheet_sync.run_photo_sheet_maintenance_once()
+
+        self.assertEqual(order, ["incremental", "outbox"])
+        self.assertEqual(result["sync"], {"disabled": False})
+        self.assertFalse(result["full_sync_scheduled"])
+
+    async def test_incremental_failure_does_not_prevent_outbox(self):
+        business_date = date(2026, 8, 12)
+        outbox = AsyncMock(return_value={"processed": 1})
+
+        async def failing_sync(*, full=False, actor_user_id=None):
+            raise RuntimeError("safe synthetic failure")
+
+        with patch.object(photo_sheet_sync, "sync_online_once", new=failing_sync), \
+             patch.object(photo_sheet_sync, "process_outbox_once", new=outbox), \
+             patch.object(photo_sheet_sync, "get_business_date_from_db", new=AsyncMock(return_value=business_date)), \
+             patch.object(photo_sheet_sync.db_manager, "get_pool", return_value=_SourcePool(business_date)):
+            result = await photo_sheet_sync.run_photo_sheet_maintenance_once()
+
+        outbox.assert_awaited_once()
+        self.assertIsNone(result["sync"])
+        self.assertEqual(result["outbox"], {"processed": 1})
+
+    async def test_due_daily_full_sync_is_launched_without_waiting(self):
+        business_date = date(2026, 8, 12)
+        old_date = date(2026, 8, 11)
+        launch = Mock(return_value=True)
+
+        with patch.object(photo_sheet_sync, "sync_online_once", new=AsyncMock(return_value={})), \
+             patch.object(photo_sheet_sync, "process_outbox_once", new=AsyncMock(return_value={})), \
+             patch.object(photo_sheet_sync, "get_business_date_from_db", new=AsyncMock(return_value=business_date)), \
+             patch.object(photo_sheet_sync.db_manager, "get_pool", return_value=_SourcePool(old_date)), \
+             patch.object(photo_sheet_sync, "launch_daily_full_sync", new=launch):
+            result = await photo_sheet_sync.run_photo_sheet_maintenance_once()
+
+        launch.assert_called_once_with()
+        self.assertTrue(result["full_sync_scheduled"])
 
 
 if __name__ == "__main__":

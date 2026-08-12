@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 from datetime import date, datetime, timedelta
 
 from database import db_manager
@@ -101,8 +100,16 @@ async def run_workflow_maintenance_once() -> dict:
 
 async def run_workflow_scheduler() -> None:
     while True:
-        with suppress(Exception):
+        try:
             await run_workflow_maintenance_once()
-        with suppress(Exception):
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[WORKFLOW] maintenance failed: {type(exc).__name__}")
+        try:
             await run_photo_sheet_maintenance_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[PHOTO_SHEET] maintenance failed: {type(exc).__name__}")
         await asyncio.sleep(300)

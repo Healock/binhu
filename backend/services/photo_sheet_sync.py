@@ -7,10 +7,12 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from database import db_manager
+from config import settings
+from services.business_time import get_business_date_from_db
 from services.registry_security import hmac_digest
 from services.txdocs_client import TxDocsClient
 from services.workflow_support import platform_schema, queue_user_ids, workflow_notification
@@ -25,6 +27,13 @@ MARKER_HINT = re.compile(r"(?:截止|截至|[.．。:/：\-－])", re.I)
 DATE_RE = re.compile(r"(?:(20\d{2})\D*)?(\d{1,2})[.．/\-－](\d{1,2})")
 TIME_RE = re.compile(r"(?:^|\D)(\d{1,2})[.．:：](\d{1,2})(?:\D|$)")
 PHOTO_SHEET_OPERATION_LOCK = asyncio.Lock()
+PHOTO_INCREMENTAL_SYNC_TIMEOUT_SECONDS = 90
+PHOTO_OUTBOX_TIMEOUT_SECONDS = 90
+PHOTO_FULL_SYNC_TIMEOUT_SECONDS = 180
+PHOTO_FULL_SYNC_RETRY_SECONDS = 6 * 60 * 60
+_photo_sheet_background_tasks: set[asyncio.Task] = set()
+_next_full_sync_attempt_at: datetime | None = None
+_daily_full_sync_task: asyncio.Task | None = None
 
 
 @dataclass(slots=True)
@@ -261,7 +270,8 @@ async def _oauth_client() -> TxDocsClient:
 
 
 async def _global_writeback_enabled() -> bool:
-    pool = db_manager.get_pool("online_data")
+    pool_name = "platform" if settings.PLATFORM_DOMAIN_ACTIVE else "online_data"
+    pool = db_manager.get_pool(pool_name)
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute("SELECT config_value FROM _system_config WHERE config_key='online_writeback_enabled'")
@@ -572,11 +582,11 @@ async def import_online(cur, *, expected_token: str, actor_user_id: int) -> dict
     return {**summary, "created_tickets": created, "message": "历史名单已导入"}
 
 
-async def enqueue_outbox(cur, ticket_id: int, action: str) -> None:
+async def enqueue_outbox(cur, ticket_id: int, action: str) -> bool:
     await cur.execute("SELECT id FROM photo_sheet_sources WHERE source_code=%s", (SOURCE_CODE,))
     source = await cur.fetchone()
     if not source:
-        return
+        return False
     await cur.execute(
         "INSERT INTO photo_sheet_outbox (source_id, work_order_id, action) VALUES (%s,%s,%s) "
         "ON DUPLICATE KEY UPDATE status=IF(status='done','done','pending'), next_attempt_at=NULL",
@@ -586,6 +596,7 @@ async def enqueue_outbox(cur, ticket_id: int, action: str) -> None:
         "UPDATE photo_request_details SET external_sync_status='pending' WHERE work_order_id=%s",
         (ticket_id,),
     )
+    return True
 
 
 async def _ticket_values(cur, ticket_id: int) -> dict:
@@ -635,35 +646,44 @@ async def _process_append(
     cur,
     ticket_id: int,
     known_rows: list[dict] | None = None,
+    first_attempt: bool = False,
 ) -> None:
     await cur.execute("SELECT physical_row FROM photo_sheet_rows WHERE work_order_id=%s", (ticket_id,))
     if await cur.fetchone():
         return
     values = await _ticket_values(cur, ticket_id)
     fingerprint = _digest([values[column] for column in COLUMNS[:6]])
-    await cur.execute(
-        "SELECT physical_row FROM photo_sheet_rows WHERE source_id=%s AND physical_row IS NOT NULL",
-        (source["id"],),
-    )
-    occupied_rows = {int(item[0]) for item in await cur.fetchall()}
-    rows = known_rows if known_rows is not None else await client.read_all_source_rows(
-        source["file_id"], source["sheet_id"], source["header_row"], COLUMNS,
-    )
-    candidates = []
-    for raw in rows:
-        existing = {column: _text(raw["values"].get(column)) for column in COLUMNS}
-        if (
-            int(raw["physical_row"]) not in occupied_rows
-            and _digest([existing[column] for column in COLUMNS[:6]]) == fingerprint
-        ):
-            candidates.append(raw)
-    if len(candidates) > 1:
-        raise RuntimeError("发现多个相同候选行，无法安全确认写入结果")
-    if candidates:
-        physical_row = int(candidates[0]["physical_row"])
-        verified = candidates[0]
+    candidates: list[dict] = []
+    rows: list[dict] = []
+    if first_attempt and known_rows is None:
+        row_total = await client.get_sheet_row_total(source["file_id"], source["sheet_id"])
+        if row_total is None:
+            raise RuntimeError("无法读取腾讯名单当前尾行")
+        physical_row = max(int(source["header_row"]) + 1, int(row_total) + 1)
     else:
-        physical_row = max([source["header_row"], *[int(row["physical_row"]) for row in rows]]) + 1
+        await cur.execute(
+            "SELECT physical_row FROM photo_sheet_rows WHERE source_id=%s AND physical_row IS NOT NULL",
+            (source["id"],),
+        )
+        occupied_rows = {int(item[0]) for item in await cur.fetchall()}
+        rows = known_rows if known_rows is not None else await client.read_all_source_rows(
+            source["file_id"], source["sheet_id"], source["header_row"], COLUMNS,
+        )
+        for raw in rows:
+            existing = {column: _text(raw["values"].get(column)) for column in COLUMNS}
+            if (
+                int(raw["physical_row"]) not in occupied_rows
+                and _digest([existing[column] for column in COLUMNS[:6]]) == fingerprint
+            ):
+                candidates.append(raw)
+        if len(candidates) > 1:
+            raise RuntimeError("发现多个相同候选行，无法安全确认写入结果")
+        if candidates:
+            physical_row = int(candidates[0]["physical_row"])
+            verified = candidates[0]
+        else:
+            physical_row = max([source["header_row"], *[int(row["physical_row"]) for row in rows]]) + 1
+    if not candidates:
         request = client.build_update_range_request(
             source["sheet_id"], physical_row - 1, 0, [[values[column] for column in COLUMNS]],
         )
@@ -702,7 +722,7 @@ async def _process_completed(client: TxDocsClient, source: dict, cur, ticket_id:
     )
 
 
-async def _process_outbox_once(limit: int = 20) -> dict:
+async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
     pool = db_manager.get_pool("workflow")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -714,13 +734,17 @@ async def _process_outbox_once(limit: int = 20) -> dict:
     try:
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
+                ticket_clause = " AND work_order_id=%s" if ticket_id is not None else ""
+                params = (ticket_id, limit) if ticket_id is not None else (limit,)
                 await cur.execute(
-                    "SELECT id,work_order_id,action FROM photo_sheet_outbox WHERE status IN ('pending','retry') "
-                    "AND (next_attempt_at IS NULL OR next_attempt_at<=UTC_TIMESTAMP()) ORDER BY id LIMIT %s", (limit,),
+                    "SELECT id,work_order_id,action,attempt_count FROM photo_sheet_outbox "
+                    "WHERE status IN ('pending','retry') "
+                    "AND (next_attempt_at IS NULL OR next_attempt_at<=UTC_TIMESTAMP())"
+                    f"{ticket_clause} ORDER BY id LIMIT %s", params,
                 )
                 jobs = await cur.fetchall()
             append_rows_cache: list[dict] | None = None
-            for outbox_id, ticket_id, action in jobs:
+            for outbox_id, job_ticket_id, action, attempt_count in jobs:
                 await conn.begin()
                 try:
                     async with conn.cursor() as cur:
@@ -730,21 +754,42 @@ async def _process_outbox_once(limit: int = 20) -> dict:
                             await conn.rollback()
                             continue
                         if action == "append_request":
-                            if append_rows_cache is None:
+                            first_attempt = int(attempt_count or 0) == 0
+                            if not first_attempt and append_rows_cache is None:
                                 append_rows_cache = await client.read_all_source_rows(
                                     source["file_id"], source["sheet_id"], source["header_row"], COLUMNS,
                                 )
                             await _process_append(
-                                client, source, cur, int(ticket_id), known_rows=append_rows_cache,
+                                client, source, cur, int(job_ticket_id),
+                                known_rows=None if first_attempt else append_rows_cache,
+                                first_attempt=first_attempt,
                             )
                         elif action == "mark_completed":
-                            await _process_completed(client, source, cur, int(ticket_id))
+                            await _process_completed(client, source, cur, int(job_ticket_id))
                         else:
                             raise RuntimeError("未知照片名单写回动作")
                         await cur.execute("UPDATE photo_sheet_outbox SET status='done',last_error='',error_code='' WHERE id=%s", (outbox_id,))
-                        await cur.execute("UPDATE photo_request_details SET external_sync_status='synced' WHERE work_order_id=%s", (ticket_id,))
+                        await cur.execute("UPDATE photo_request_details SET external_sync_status='synced' WHERE work_order_id=%s", (job_ticket_id,))
                     await conn.commit()
                     processed += 1
+                except asyncio.CancelledError:
+                    append_rows_cache = None
+                    await conn.rollback()
+                    await conn.begin()
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE photo_sheet_outbox SET status='retry',attempt_count=attempt_count+1,"
+                            "next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE),"
+                            "last_error='腾讯写回超时或任务被取消',error_code='write_uncertain' WHERE id=%s",
+                            (outbox_id,),
+                        )
+                        await cur.execute(
+                            "UPDATE photo_request_details SET external_sync_status='retry' "
+                            "WHERE work_order_id=%s",
+                            (job_ticket_id,),
+                        )
+                    await conn.commit()
+                    raise
                 except Exception as exc:
                     append_rows_cache = None
                     await conn.rollback()
@@ -754,13 +799,13 @@ async def _process_outbox_once(limit: int = 20) -> dict:
                             "UPDATE photo_sheet_outbox SET status='retry',attempt_count=attempt_count+1,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE),last_error=%s,error_code='write_failed' WHERE id=%s",
                             (str(exc)[:500], outbox_id),
                         )
-                        await cur.execute("UPDATE photo_request_details SET external_sync_status='retry' WHERE work_order_id=%s", (ticket_id,))
+                        await cur.execute("UPDATE photo_request_details SET external_sync_status='retry' WHERE work_order_id=%s", (job_ticket_id,))
                         if "唯一定位" in str(exc) or "多个相同" in str(exc):
                             await cur.execute(
                                 "INSERT INTO photo_sheet_conflicts (source_id,work_order_id,conflict_type,safe_detail) "
                                 "SELECT %s,%s,'row_location','无法唯一定位腾讯来源行' FROM DUAL WHERE NOT EXISTS "
                                 "(SELECT 1 FROM photo_sheet_conflicts WHERE work_order_id=%s AND conflict_type='row_location' AND status='pending')",
-                                (source["id"], ticket_id, ticket_id),
+                                (source["id"], job_ticket_id, job_ticket_id),
                             )
                     await conn.commit()
                     failed += 1
@@ -769,18 +814,92 @@ async def _process_outbox_once(limit: int = 20) -> dict:
     return {"processed": processed, "failed": failed, "disabled": False}
 
 
-async def process_outbox_once(limit: int = 20) -> dict:
+async def process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
     async with PHOTO_SHEET_OPERATION_LOCK:
-        return await _process_outbox_once(limit)
+        return await _process_outbox_once(limit, ticket_id=ticket_id)
+
+
+async def _process_outbox_ticket(ticket_id: int) -> None:
+    try:
+        await asyncio.wait_for(
+            process_outbox_once(limit=1, ticket_id=ticket_id),
+            timeout=PHOTO_OUTBOX_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(
+            "[PHOTO_SHEET] immediate outbox failed: "
+            f"ticket={ticket_id} error={type(exc).__name__}"
+        )
+
+
+def launch_outbox_processing(ticket_id: int) -> None:
+    task = asyncio.create_task(_process_outbox_ticket(ticket_id))
+    _photo_sheet_background_tasks.add(task)
+    task.add_done_callback(_photo_sheet_background_tasks.discard)
+
+
+async def stop_photo_sheet_tasks() -> None:
+    tasks = list(_photo_sheet_background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _run_daily_full_sync() -> None:
+    global _next_full_sync_attempt_at
+    try:
+        await asyncio.wait_for(
+            sync_online_once(full=True),
+            timeout=PHOTO_FULL_SYNC_TIMEOUT_SECONDS,
+        )
+        _next_full_sync_attempt_at = None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _next_full_sync_attempt_at = datetime.utcnow() + timedelta(
+            seconds=PHOTO_FULL_SYNC_RETRY_SECONDS
+        )
+        print(
+            "[PHOTO_SHEET] daily full sync deferred: "
+            f"error={type(exc).__name__}"
+        )
+
+
+def _clear_daily_full_sync_task(task: asyncio.Task) -> None:
+    global _daily_full_sync_task
+    _photo_sheet_background_tasks.discard(task)
+    if _daily_full_sync_task is task:
+        _daily_full_sync_task = None
+
+
+def launch_daily_full_sync() -> bool:
+    global _daily_full_sync_task
+    if _daily_full_sync_task is not None and not _daily_full_sync_task.done():
+        return False
+    task = asyncio.create_task(_run_daily_full_sync())
+    _daily_full_sync_task = task
+    _photo_sheet_background_tasks.add(task)
+    task.add_done_callback(_clear_daily_full_sync_task)
+    return True
 
 
 async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = None) -> dict:
+    requested_full = full
     pool = db_manager.get_pool("workflow")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             source = await load_source(cur)
             if not source["read_enabled"]:
                 return {"created_tickets": 0, "completed_tickets": 0, "disabled": True}
+            await cur.execute(
+                "INSERT INTO photo_sheet_sync_runs "
+                "(source_id,run_type,status,summary_json) VALUES (%s,%s,'running',%s)",
+                (source["id"], "full" if full else "incremental", json.dumps({}, ensure_ascii=False)),
+            )
+            run_id = int(cur.lastrowid)
         overlap_start = None
         if not full:
             overlap_start = max(source["header_row"] + 1, int(source["last_cursor_row"] or 1) - 200)
@@ -791,13 +910,27 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                 # “腾讯名单已清空”，立即改做一次完整只读重定位。
                 full = True
                 parsed = parse_rows(await read_online_rows(source))
+        except asyncio.CancelledError as exc:
+            safe_error = "CancelledError: 腾讯名单读取超时或任务被取消"
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE photo_sheet_sync_runs SET status='failed',error_message=%s,"
+                    "finished_at=UTC_TIMESTAMP() WHERE id=%s",
+                    (safe_error, run_id),
+                )
+                await cur.execute(
+                    "UPDATE photo_sheet_sources SET last_sync_at=UTC_TIMESTAMP(),"
+                    "last_sync_status='failed',last_error=%s WHERE id=%s",
+                    (safe_error, source["id"]),
+                )
+            raise exc
         except Exception as exc:
             safe_error = f"{type(exc).__name__}: {str(exc)}"[:500]
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO photo_sheet_sync_runs (source_id,run_type,status,summary_json,error_message,finished_at) "
-                    "VALUES (%s,%s,'failed',%s,%s,UTC_TIMESTAMP())",
-                    (source["id"], "full" if full else "incremental", json.dumps({}, ensure_ascii=False), safe_error),
+                    "UPDATE photo_sheet_sync_runs SET status='failed',error_message=%s,"
+                    "finished_at=UTC_TIMESTAMP() WHERE id=%s",
+                    (safe_error, run_id),
                 )
                 await cur.execute(
                     "UPDATE photo_sheet_sources SET last_sync_at=UTC_TIMESTAMP(),last_sync_status='failed',last_error=%s "
@@ -805,15 +938,16 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                 )
             raise
         summary = preview_summary(parsed)
+        full_sync_date = await get_business_date_from_db() if full else None
         await conn.begin()
         created = completed = 0
         try:
             async with conn.cursor() as cur:
-                await cur.execute(
-                    "INSERT INTO photo_sheet_sync_runs (source_id,run_type,status,summary_json) VALUES (%s,%s,'running',%s)",
-                    (source["id"], "full" if full else "incremental", json.dumps({}, ensure_ascii=False)),
-                )
-                run_id = int(cur.lastrowid)
+                if full and not requested_full:
+                    await cur.execute(
+                        "UPDATE photo_sheet_sync_runs SET run_type='full' WHERE id=%s",
+                        (run_id,),
+                    )
                 unique_existing: dict[str, tuple[int, int | None]] = {}
                 unique_incoming: dict[str, ParsedRow] = {}
                 if full:
@@ -895,8 +1029,10 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                     int(source["last_cursor_row"] or source["header_row"]), parsed_cursor,
                 )
                 await cur.execute(
-                    "UPDATE photo_sheet_sources SET last_cursor_row=%s,last_sync_at=UTC_TIMESTAMP(),last_sync_status='success',last_error='',updated_by=COALESCE(%s,updated_by),last_full_sync_date=IF(%s,CURDATE(),last_full_sync_date) WHERE id=%s",
-                    (cursor, actor_user_id, int(full), source["id"]),
+                    "UPDATE photo_sheet_sources SET last_cursor_row=%s,last_sync_at=UTC_TIMESTAMP(),"
+                    "last_sync_status='success',last_error='',updated_by=COALESCE(%s,updated_by),"
+                    "last_full_sync_date=IF(%s,%s,last_full_sync_date) WHERE id=%s",
+                    (cursor, actor_user_id, int(full), full_sync_date, source["id"]),
                 )
                 await cur.execute(
                     "UPDATE photo_sheet_sync_runs SET status='success',rows_read=%s,requests_found=%s,markers_found=%s,created_tickets=%s,completed_tickets=%s,issue_count=%s,summary_json=%s,finished_at=UTC_TIMESTAMP() WHERE id=%s",
@@ -904,8 +1040,35 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                      summary["issue_count"], json.dumps(summary, ensure_ascii=False), run_id),
                 )
             await conn.commit()
-        except Exception:
+        except asyncio.CancelledError:
             await conn.rollback()
+            safe_error = "CancelledError: 腾讯名单处理超时或任务被取消"
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE photo_sheet_sync_runs SET status='failed',error_message=%s,"
+                    "finished_at=UTC_TIMESTAMP() WHERE id=%s",
+                    (safe_error, run_id),
+                )
+                await cur.execute(
+                    "UPDATE photo_sheet_sources SET last_sync_at=UTC_TIMESTAMP(),"
+                    "last_sync_status='failed',last_error=%s WHERE id=%s",
+                    (safe_error, source["id"]),
+                )
+            raise
+        except Exception as exc:
+            await conn.rollback()
+            safe_error = f"{type(exc).__name__}: {str(exc)}"[:500]
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE photo_sheet_sync_runs SET status='failed',error_message=%s,"
+                    "finished_at=UTC_TIMESTAMP() WHERE id=%s",
+                    (safe_error, run_id),
+                )
+                await cur.execute(
+                    "UPDATE photo_sheet_sources SET last_sync_at=UTC_TIMESTAMP(),"
+                    "last_sync_status='failed',last_error=%s WHERE id=%s",
+                    (safe_error, source["id"]),
+                )
             raise
     return {**summary, "created_tickets": created, "completed_tickets": completed, "disabled": False}
 
@@ -916,11 +1079,49 @@ async def sync_online_once(*, full: bool = False, actor_user_id: int | None = No
 
 
 async def run_photo_sheet_maintenance_once() -> dict:
-    outbox = await process_outbox_once()
+    global _next_full_sync_attempt_at
+    incremental = None
+    try:
+        incremental = await asyncio.wait_for(
+            sync_online_once(full=False),
+            timeout=PHOTO_INCREMENTAL_SYNC_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(
+            "[PHOTO_SHEET] incremental sync failed: "
+            f"error={type(exc).__name__}"
+        )
+
+    outbox = None
+    try:
+        outbox = await asyncio.wait_for(
+            process_outbox_once(),
+            timeout=PHOTO_OUTBOX_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(
+            "[PHOTO_SHEET] scheduled outbox failed: "
+            f"error={type(exc).__name__}"
+        )
+
+    business_date = await get_business_date_from_db()
     pool = db_manager.get_pool("workflow")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             source = await load_source(cur)
-            do_full = source["last_full_sync_date"] != date.today()
-    sync = await sync_online_once(full=do_full)
-    return {"outbox": outbox, "sync": sync}
+            do_full = source["last_full_sync_date"] != business_date
+    full_scheduled = False
+    now = datetime.utcnow()
+    if do_full and (
+        _next_full_sync_attempt_at is None or now >= _next_full_sync_attempt_at
+    ):
+        full_scheduled = launch_daily_full_sync()
+    return {
+        "outbox": outbox,
+        "sync": incremental,
+        "full_sync_scheduled": full_scheduled,
+    }
