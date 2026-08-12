@@ -11,6 +11,8 @@ from routers.workflow_extended import (
     RestoreQueuedPayload,
     _can_upload_photo_batch,
     _photo_matches,
+    _photo_duplicate_all,
+    _refresh_photo_import_preview,
     _photo_pending_filter,
     _photo_pending_queue,
     batch_claim_photo_requests,
@@ -179,6 +181,49 @@ class PhotoImportMatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row[0] for row in rows], [11, 12])
         self.assertFalse(duplicate_all)
         self.assertEqual(cursor.fetchone.await_count, 2)
+
+    async def test_match_accepts_recent_external_batch_completed_ticket_without_attachment(self):
+        cursor = type("Cursor", (), {})()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(return_value=[
+            (887, "PHOTO-887", 12, "吕强", "completed"),
+        ])
+        cursor.fetchone = AsyncMock(return_value=None)
+
+        rows, duplicate_all = await _photo_matches(cursor, "hmac", "sha")
+
+        self.assertEqual([row[0] for row in rows], [887])
+        self.assertFalse(duplicate_all)
+        self.assertIn("external_batch_complete", cursor.execute.call_args_list[0].args[0])
+        self.assertIn("INTERVAL 7 DAY", cursor.execute.call_args_list[0].args[0])
+
+    async def test_cached_completed_ticket_can_check_multiple_photo_hashes(self):
+        cursor = type("Cursor", (), {})()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(side_effect=[None, None])
+        rows = [(887, "PHOTO-887", 12, "张三", "completed")]
+
+        first_duplicate = await _photo_duplicate_all(cursor, rows, "sha-1")
+        second_duplicate = await _photo_duplicate_all(cursor, rows, "sha-2")
+
+        self.assertFalse(first_duplicate)
+        self.assertFalse(second_duplicate)
+        self.assertEqual(cursor.execute.await_count, 2)
+
+    async def test_refresh_existing_partial_batch_recomputes_ticket_matches(self):
+        item = inspect_photo_zip(make_zip({"张三_32050020000101001X.jpg": JPEG}))[0]
+        cursor = type("Cursor", (), {})()
+        cursor.execute = AsyncMock()
+        with patch(
+            "routers.workflow_extended._photo_matches",
+            new=AsyncMock(return_value=([(887, "PHOTO-887", 12, "张三", "completed")], False)),
+        ), patch("routers.workflow_extended.hmac_digest", return_value=("hmac", 1)):
+            counts = await _refresh_photo_import_preview(cursor, 3, [item])
+
+        self.assertEqual(counts["matched"], 1)
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("UPDATE photo_request_import_items" in item for item in statements))
+        self.assertTrue(any("UPDATE photo_request_import_batches" in item for item in statements))
 
 
 class PhotoRequestBatchClaimTests(unittest.IsolatedAsyncioTestCase):
@@ -409,7 +454,7 @@ class PhotoImportPreviewRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(connection.commit.await_count)
         statements = [call.args[0] for call in connection.cursor_obj.execute.call_args_list]
         self.assertTrue(any("photo_request_import_items" in statement for statement in statements))
-        self.assertFalse(any("work_order_attachments" in statement for statement in statements))
+        self.assertFalse(any("INSERT INTO work_order_attachments" in statement for statement in statements))
 
     async def test_reupload_restores_missing_existing_preview_zip(self):
         content = make_zip({"张三_32050020000101001X.jpg": JPEG})
@@ -473,6 +518,36 @@ class PhotoImportPreviewRouteTests(unittest.IsolatedAsyncioTestCase):
         connection.rollback.assert_awaited_once()
         connection.commit.assert_not_awaited()
         audit.assert_not_awaited()
+
+    async def test_reupload_partial_batch_refreshes_matches_and_returns_to_preview(self):
+        content = make_zip({"张三_32050020000101001X.jpg": JPEG})
+        connection = _PreviewConnection()
+        connection.cursor_obj.fetchone = AsyncMock(return_value=(
+            9,
+            "PHOTO-OLD",
+            "partial",
+            "existing-token.zip",
+        ))
+        request = MagicMock()
+        user = {
+            "id": 7,
+            "role": "admin",
+            "permissions": ["workflow.ticket.handle"],
+            "member": {"position": "基础管控"},
+        }
+        with patch("routers.workflow_extended.record_admin_audit", new=AsyncMock()), \
+             patch("routers.workflow_extended.request_audit_fields", return_value={}), \
+             patch("routers.workflow_extended.save_photo_import_zip", return_value="existing-token.zip") as save_zip, \
+             patch("routers.workflow_extended._refresh_photo_import_preview", new=AsyncMock(return_value={"matched": 1})) as refresh, \
+             patch("routers.workflow_extended.get_photo_import_detail", new=AsyncMock(return_value={"id": 9})):
+            result = await preview_photo_import(request, _Upload(content), user, connection)
+
+        self.assertEqual(result["id"], 9)
+        save_zip.assert_called_once_with("existing-token", content)
+        refresh.assert_awaited_once()
+        connection.commit.assert_awaited_once()
+        statements = [call.args[0] for call in connection.cursor_obj.execute.call_args_list]
+        self.assertTrue(any("status='preview'" in item for item in statements))
 
 
 if __name__ == "__main__":
