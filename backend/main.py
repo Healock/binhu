@@ -45,6 +45,7 @@ from services.sync_scheduler import run_sync_scheduler
 from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 from services.visit_import import recover_interrupted_visit_imports
 from services.workflow_scheduler import run_workflow_scheduler
+from services.photo_sheet_sync import stop_photo_sheet_tasks
 from services.client_compatibility import ClientCompatibilityMiddleware
 
 
@@ -84,6 +85,7 @@ async def lifespan(app: FastAPI):
             await workflow_scheduler_task
         await stop_sync_tasks()
         await stop_backup_tasks()
+        await stop_photo_sheet_tasks()
         await close_db()
 
 

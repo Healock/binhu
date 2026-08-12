@@ -88,10 +88,18 @@ class WorkflowTicketCreationTests(unittest.IsolatedAsyncioTestCase):
             "member": {"name": "测试申请人"},
         }
 
+        enqueue = AsyncMock(return_value=True)
+        launch = patch("routers.workflow.launch_outbox_processing")
         with patch("routers.workflow.hmac_digest", return_value=("synthetic-hmac", 1)), \
              patch("routers.workflow.queue_user_ids", new=AsyncMock(return_value=[])), \
              patch("routers.workflow.workflow_notification", new=AsyncMock()), \
-             patch("routers.workflow.enqueue_outbox", new=AsyncMock()):
+             patch("routers.workflow.enqueue_outbox", new=enqueue), \
+             launch as launch_mock:
+            async def commit_then_check():
+                self.assertFalse(launch_mock.called)
+                conn.committed = True
+
+            conn.commit = commit_then_check
             result = await create_ticket(ticket, user=user, conn=conn)
 
         self.assertEqual(result["id"], 42)
@@ -104,6 +112,40 @@ class WorkflowTicketCreationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(detail_insert[0].count("%s"), 18)
         self.assertEqual(len(detail_insert[1]), 18)
+        enqueue.assert_awaited_once_with(conn.cursor_instance, 42, "append_request")
+        launch_mock.assert_called_once_with(42)
+
+    async def test_ticket_does_not_launch_immediate_write_when_source_is_unconfigured(self):
+        conn = _FakeConnection()
+        ticket = TicketCreate(
+            type_code="photo_request",
+            title="调取照片",
+            form_data={
+                "subject_name": "测试人员",
+                "identity_number": "00000020000101000X",
+                "source_parser_type": "全链条",
+                "source_row_key": "synthetic-row-key",
+                "community_name": "冬梅社区",
+                "source_label": "全链条",
+            },
+        )
+        user = {
+            "id": 7,
+            "username": "synthetic-user",
+            "display_name": "测试申请人",
+            "member": {"name": "测试申请人"},
+        }
+
+        with patch("routers.workflow.hmac_digest", return_value=("synthetic-hmac", 1)), \
+             patch("routers.workflow.queue_user_ids", new=AsyncMock(return_value=[])), \
+             patch("routers.workflow.workflow_notification", new=AsyncMock()), \
+             patch("routers.workflow.enqueue_outbox", new=AsyncMock(return_value=False)), \
+             patch("routers.workflow.launch_outbox_processing") as launch_mock:
+            result = await create_ticket(ticket, user=user, conn=conn)
+
+        self.assertEqual(result["id"], 42)
+        self.assertTrue(conn.committed)
+        launch_mock.assert_not_called()
 
 
 if __name__ == "__main__":
