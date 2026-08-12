@@ -107,7 +107,13 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       setCleanPreview(null)
       setCleanPreviewToken('')
       await load(1)
-      if (result.batch) navigate(`/police-dispatch/batches/${result.batch.id}`)
+      if (result.batch) {
+        navigate(
+          result.batch.counts.pending_review > 0
+            ? `/police-tasks?batch=${result.batch.id}&status=pending_review&category=all`
+            : `/police-dispatch/batches/${result.batch.id}`,
+        )
+      }
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '数据导入失败')
     } finally {
@@ -235,7 +241,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             onClick={upload}
           >
             {importMode === 'clean'
-              ? (cleanPreviewToken ? '确认导入并生成待发布任务' : '先预览已处理数据')
+              ? (cleanPreviewToken ? '确认导入并进入任务处理' : '先预览已处理数据')
               : '导入并生成审核任务'}
           </Button>
         </div>

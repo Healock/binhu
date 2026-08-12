@@ -25,6 +25,20 @@ test('基础管控照片工作台支持只读表格、批量领取和 XLSX 导�
   assert.doesNotMatch(apiSource, /api\.get\('\/workflow\/photo-requests/)
 })
 
+test('调照片使用独立任务页面，通用工单中心不再混入照片待办标签', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
+    'utf8',
+  )
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+
+  assert.match(pageSource, /mode = 'tickets'/)
+  assert.match(pageSource, /photoOnly \? '调照片' : '工单中心'/)
+  assert.doesNotMatch(pageSource, /key: 'photo_pending', label: '未调照片'/)
+  assert.match(appSource, /path="\/photo-tasks"/)
+  assert.match(appSource, /<WorkflowTickets mode="photo" \/>/)
+})
+
 test('管理员和超级管理员可以把待补充工单恢复为待领取', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),

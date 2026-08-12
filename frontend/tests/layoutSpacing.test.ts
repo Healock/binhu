@@ -53,6 +53,7 @@ test('下发导入工作台提供原始与已处理数据模式', () => {
   )
 
   assert.match(panelSource, /已处理数据直接下发/)
-  assert.match(panelSource, /导入并生成待发布任务/)
+  assert.match(panelSource, /确认导入并进入任务处理/)
+  assert.match(panelSource, /\/police-tasks\?batch=/)
   assert.match(clientSource, /form\.append\('import_mode', importMode\)/)
 })

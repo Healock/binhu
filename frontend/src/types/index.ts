@@ -277,6 +277,8 @@ export type MobileNavigationItemId =
   | 'data_upload'
   | 'work_log'
   | 'police_tasks'
+  | 'police_analysis'
+  | 'photo_tasks'
   | 'workflow_tickets'
   | 'registry'
   | 'watch_people'

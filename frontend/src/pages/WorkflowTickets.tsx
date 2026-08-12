@@ -91,7 +91,7 @@ function saveBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-export default function WorkflowTickets() {
+export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets' | 'photo' }) {
   const { user, systemTimezone } = useAuth()
   const navigate = useNavigate()
   const permissions = new Set(user?.permissions || [])
@@ -103,9 +103,9 @@ export default function WorkflowTickets() {
   const canManageAttachments = canHandle
   const position = user?.member?.position || ''
   const canViewAll = canManage || ['基础管控', '中队长', '所队领导'].includes(position)
-  const canUsePhotoWorkbench = canManage || (canHandle && position === '基础管控')
+  const photoOnly = mode === 'photo'
 
-  const [view, setView] = useState('created')
+  const [view, setView] = useState(photoOnly ? 'photo_pending' : 'created')
   const [rows, setRows] = useState<WorkOrderSummary[]>([])
   const [photoRows, setPhotoRows] = useState<PendingPhotoRequest[]>([])
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<Array<string | number>>([])
@@ -177,6 +177,10 @@ export default function WorkflowTickets() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    setView(photoOnly ? 'photo_pending' : 'created')
+  }, [photoOnly])
 
   useEffect(() => { void load(1) }, [view])
 
@@ -430,31 +434,34 @@ export default function WorkflowTickets() {
   return (
     <div className="workflow-tickets-page app-page">
       <PageHeader
-        title="工单中心"
-        description="请假、照片调取等流程统一在这里发起、领取和处理。版本冲突会要求刷新，不会静默覆盖他人的操作。"
+        title={photoOnly ? '调照片' : '工单中心'}
+        description={photoOnly
+          ? '基础管控在这里集中领取、导出和处理照片调取任务，照片 ZIP 仍从数据上传中心导入。'
+          : '请假、照片调取等通用流程统一在这里发起和查看。版本冲突会要求刷新，不会静默覆盖他人的操作。'}
         actions={(
           <Space>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-            {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工单</Button>}
+            {!photoOnly && canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工单</Button>}
           </Space>
         )}
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel className="workflow-tickets-panel">
         <div className="workflow-tickets-panel__content">
-          <Tabs
-            activeKey={view}
-            onChange={value => { setView(value); setPage(1) }}
-            items={[
-              { key: 'created', label: '我的发起' },
-              ...(canUsePhotoWorkbench ? [{ key: 'photo_pending', label: '未调照片' }] : []),
-              { key: 'claimable', label: '待领取' },
-              { key: 'handling', label: '处理中' },
-              { key: 'supplement', label: '待补充' },
-              { key: 'processed', label: '已处理' },
-              ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
-            ]}
-          />
+          {!photoOnly && (
+            <Tabs
+              activeKey={view}
+              onChange={value => { setView(value); setPage(1) }}
+              items={[
+                { key: 'created', label: '我的发起' },
+                { key: 'claimable', label: '待领取' },
+                { key: 'handling', label: '处理中' },
+                { key: 'supplement', label: '待补充' },
+                { key: 'processed', label: '已处理' },
+                ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
+              ]}
+            />
+          )}
           {view === 'photo_pending' ? (
             <div className="workflow-photo-workbench">
               <Alert

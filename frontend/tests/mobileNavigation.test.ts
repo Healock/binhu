@@ -185,6 +185,67 @@ test('文件生成保留原工作日志导航 ID', () => {
   assert.match(source, /shortLabel: '文件生成'/)
 })
 
+test('工单中心移入工作台，研判和调照片归入任务处理', () => {
+  const groups = accessibleNavigationGroups(
+    'member',
+    [
+      'workflow.ticket.view',
+      'workflow.ticket.handle',
+      'police.dispatch.manage',
+    ],
+    [],
+    '基础管控',
+  )
+  const workspace = groups.find(group => group.id === 'workspace')
+  const tasks = groups.find(group => group.id === 'tasks')
+
+  assert.equal(workspace?.items.some(item => item.id === 'workflow_tickets'), true)
+  assert.equal(tasks?.items.some(item => item.id === 'workflow_tickets'), false)
+  assert.equal(tasks?.items.some(item => item.id === 'police_analysis'), true)
+  assert.equal(tasks?.items.some(item => item.id === 'photo_tasks'), true)
+})
+
+test('调照片独立入口受处理权限和岗位共同限制', () => {
+  const regular = accessibleNavigationGroups(
+    'member',
+    ['workflow.ticket.view', 'workflow.ticket.handle'],
+    [],
+    '组员',
+  )
+  const photoHandler = accessibleNavigationGroups(
+    'member',
+    ['workflow.ticket.view', 'workflow.ticket.handle'],
+    [],
+    '基础管控',
+  )
+
+  assert.equal(regular.some(group => group.items.some(item => item.id === 'photo_tasks')), false)
+  assert.equal(photoHandler.some(group => group.items.some(item => item.id === 'photo_tasks')), true)
+})
+
+test('旧 Dock 中的工单和下发入口迁移到新的独立页面', () => {
+  const config = normalizeMobileDockConfig({
+    version: 2,
+    groups: [
+      { id: 'workspace', items: ['dashboard'] },
+      { id: 'tasks', items: ['police_tasks', 'workflow_tickets'] },
+    ],
+  }, 'member', [
+    'police.dispatch.manage',
+    'workflow.ticket.view',
+    'workflow.ticket.handle',
+  ], [], '基础管控')
+
+  assert.deepEqual(
+    config.groups.find(group => group.id === 'workspace')?.items,
+    ['dashboard', 'workflow_tickets'],
+  )
+  assert.deepEqual(
+    config.groups.find(group => group.id === 'tasks')?.items,
+    ['police_tasks', 'police_analysis', 'photo_tasks'],
+  )
+})
+
 test('读取配置时去重、过滤未知项和无权限页面并保留顺序', () => {
   const config = normalizeMobileDockConfig({
     groups: [

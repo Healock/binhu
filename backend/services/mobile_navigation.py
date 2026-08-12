@@ -16,11 +16,13 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
         "online_query",
         "data_upload",
         "work_log",
+        "workflow_tickets",
     ),
     "tasks": (
         "flow_tasks",
         "police_tasks",
-        "workflow_tickets",
+        "police_analysis",
+        "photo_tasks",
     ),
     "summaries": (
         "online_summary",
@@ -50,6 +52,8 @@ ITEM_PERMISSIONS: dict[str, str] = {
     "online_query": "online.raw.view",
     "flow_tasks": "online.raw.view",
     "police_tasks": "police.dispatch.manage",
+    "police_analysis": "police.dispatch.manage",
+    "photo_tasks": "workflow.ticket.handle",
     "workflow_tickets": "workflow.ticket.view",
     "visit_summary": "visit.summary.view",
     "data_upload": "visit.import",
@@ -67,6 +71,7 @@ ITEM_PERMISSIONS: dict[str, str] = {
 
 ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "data_upload": ("visit.import", "police.dispatch.manage"),
+    "photo_tasks": ("workflow.ticket.handle", "workflow.ticket.manage"),
 }
 
 
@@ -98,8 +103,12 @@ def _item_is_accessible(
     admin_access = _admin_code_access(role, permission_group_codes)
     if item_id == "flow_tasks" and position not in {"组长", "组员"} and not admin_access:
         return False
-    if item_id == "police_tasks":
+    if item_id in {"police_tasks", "police_analysis"}:
         if position not in {"基础管控", "中队长"} and not (not position and admin_access):
+            return False
+    if item_id == "photo_tasks":
+        has_manage_permission = permissions is not None and "workflow.ticket.manage" in permissions
+        if position != "基础管控" and not has_manage_permission and not admin_access:
             return False
     if permissions is not None:
         alternatives = ITEM_PERMISSION_ALTERNATIVES.get(item_id)
@@ -173,6 +182,14 @@ def normalize_mobile_dock_config(
             role, permissions, permission_group_codes, position
         )
 
+    raw_task_items = {
+        str(item or "")
+        for group in raw_groups
+        if isinstance(group, dict)
+        and str(group.get("id") or "") == "tasks"
+        and isinstance(group.get("items"), list)
+        for item in group["items"]
+    }
     groups: list[dict[str, Any]] = []
     seen_groups: set[str] = set()
     for raw_group in raw_groups[:MAX_DOCK_GROUPS]:
@@ -217,13 +234,36 @@ def normalize_mobile_dock_config(
         }
     workspace = next((group for group in groups if group["id"] == "workspace"), None)
     if workspace is None:
-        groups.insert(0, {"id": "workspace", "items": ["dashboard"]})
+        workspace = {"id": "workspace", "items": ["dashboard"]}
+        groups.insert(0, workspace)
     else:
         workspace["items"] = [
             "dashboard",
             *[item for item in workspace["items"] if item != "dashboard"],
         ]
         groups = [workspace, *[group for group in groups if group is not workspace]]
+    accessible_by_group = {
+        group["id"]: set(group["items"])
+        for group in accessible_defaults
+    }
+    if (
+        "workflow_tickets" in raw_task_items
+        and "workflow_tickets" in accessible_by_group.get("workspace", set())
+        and "workflow_tickets" not in workspace["items"]
+    ):
+        workspace["items"].append("workflow_tickets")
+    tasks = next((group for group in groups if group["id"] == "tasks"), None)
+    if tasks is not None:
+        for previous_id, next_id in (
+            ("police_tasks", "police_analysis"),
+            ("workflow_tickets", "photo_tasks"),
+        ):
+            if (
+                previous_id in raw_task_items
+                and next_id in accessible_by_group.get("tasks", set())
+                and next_id not in tasks["items"]
+            ):
+                tasks["items"].append(next_id)
     present = {group["id"] for group in groups}
     for candidate in accessible_defaults:
         if len(groups) >= MAX_DOCK_GROUPS:

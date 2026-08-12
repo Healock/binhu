@@ -83,6 +83,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         permission: 'worklog.manage',
         roles: ['super_admin', 'admin'],
       },
+      {
+        id: 'workflow_tickets',
+        path: '/workflow',
+        label: '工单中心',
+        shortLabel: '工单',
+        icon: 'worklog',
+        permission: 'workflow.ticket.view',
+      },
     ],
   },
   {
@@ -108,12 +116,20 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         permission: 'police.dispatch.manage',
       },
       {
-        id: 'workflow_tickets',
-        path: '/workflow',
-        label: '工单中心',
-        shortLabel: '工单',
+        id: 'police_analysis',
+        path: '/police-analysis',
+        label: '研判',
+        shortLabel: '研判',
         icon: 'worklog',
-        permission: 'workflow.ticket.view',
+        permission: 'police.dispatch.manage',
+      },
+      {
+        id: 'photo_tasks',
+        path: '/photo-tasks',
+        label: '调照片',
+        shortLabel: '调照片',
+        icon: 'worklog',
+        anyPermissions: ['workflow.ticket.handle', 'workflow.ticket.manage'],
       },
     ],
   },
@@ -259,7 +275,7 @@ export function isNavigationItemAccessible(
     && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   ) return false
   if (
-    item.id === 'police_tasks'
+    ['police_tasks', 'police_analysis'].includes(item.id)
     && !['基础管控', '中队长'].includes(position || '')
     && !(
       !position
@@ -268,6 +284,13 @@ export function isNavigationItemAccessible(
         || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
       )
     )
+  ) return false
+  if (
+    item.id === 'photo_tasks'
+    && position !== '基础管控'
+    && !permissions?.includes('workflow.ticket.manage')
+    && !['admin', 'super_admin'].includes(role)
+    && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   ) return false
   if (item.permission) {
     // Permission data is authoritative.  If it is unavailable, fail closed
@@ -327,6 +350,11 @@ export function normalizeMobileDockConfig(
   const definitions = new Map(
     accessibleNavigationGroups(role, permissions, permissionGroupCodes, position).map(group => [group.id, group]),
   )
+  const rawTaskItems = new Set(
+    value.groups
+      .filter(group => group.id === 'tasks' && Array.isArray(group.items))
+      .flatMap(group => group.items),
+  )
   const seenGroups = new Set<MobileNavigationGroupId>()
   const groups = value.groups.slice(0, MAX_DOCK_GROUPS).flatMap((rawGroup) => {
     const definition = definitions.get(rawGroup.id)
@@ -348,14 +376,36 @@ export function normalizeMobileDockConfig(
     ? groups
     : defaultMobileDockConfig(role, permissions, permissionGroupCodes, position).groups
   const workspaceDefinition = definitions.get('workspace')
-  const workspace = normalized.find(group => group.id === 'workspace')
+  let workspace = normalized.find(group => group.id === 'workspace')
   if (workspaceDefinition) {
     const dashboardId: MobileNavigationItemId = 'dashboard'
     if (workspace) {
       workspace.items = [dashboardId, ...workspace.items.filter(item => item !== dashboardId)]
     } else {
-      normalized.unshift({ id: 'workspace', items: [dashboardId] })
+      workspace = { id: 'workspace', items: [dashboardId] }
+      normalized.unshift(workspace)
     }
+    if (
+      rawTaskItems.has('workflow_tickets')
+      && workspaceDefinition.items.some(item => item.id === 'workflow_tickets')
+      && !workspace.items.includes('workflow_tickets')
+    ) workspace.items.push('workflow_tickets')
+  }
+  const tasks = normalized.find(group => group.id === 'tasks')
+  const taskDefinition = definitions.get('tasks')
+  if (tasks && taskDefinition) {
+    const appendMovedTask = (
+      previousId: MobileNavigationItemId,
+      nextId: MobileNavigationItemId,
+    ) => {
+      if (
+        rawTaskItems.has(previousId)
+        && taskDefinition.items.some(item => item.id === nextId)
+        && !tasks.items.includes(nextId)
+      ) tasks.items.push(nextId)
+    }
+    appendMovedTask('police_tasks', 'police_analysis')
+    appendMovedTask('workflow_tickets', 'photo_tasks')
   }
   const presentGroups = new Set(normalized.map(group => group.id))
   for (const definition of accessibleNavigationGroups(

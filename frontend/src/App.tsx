@@ -85,6 +85,17 @@ function MobileTaskHomeEntry() {
     : <Navigate to="/query" replace />
 }
 
+function PhotoTaskEntry() {
+  const { user } = useAuth()
+  const permissions = new Set(user?.permissions || [])
+  const allowed = Boolean(
+    user?.member?.position === '基础管控'
+    || permissions.has('workflow.ticket.manage')
+    || ['admin', 'super_admin'].includes(user?.role || ''),
+  )
+  return allowed ? <WorkflowTickets mode="photo" /> : <Navigate to="/workflow" replace />
+}
+
 function App() {
   return (
     <AuthProvider>
@@ -117,6 +128,7 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>
                 <Route path="/police-tasks" element={<PoliceDispatchWorkbench />} />
+                <Route path="/police-analysis" element={<PoliceDispatchWorkbench mode="analysis" />} />
                 <Route path="/police-dispatch/batches/:batchId" element={<PoliceDispatchBatchDetail />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="worklog.manage" />}>
@@ -143,6 +155,9 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="workflow.ticket.view" />}>
                 <Route path="/workflow" element={<WorkflowTickets />} />
+              </Route>
+              <Route element={<ProtectedRoute requireAnyPermission={['workflow.ticket.handle', 'workflow.ticket.manage']} />}>
+                <Route path="/photo-tasks" element={<PhotoTaskEntry />} />
               </Route>
 
               {/* 用户管理仅超管 */}
