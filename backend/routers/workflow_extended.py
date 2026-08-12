@@ -104,8 +104,19 @@ async def _photo_matches(cur, identity_hmac: str, sha256: str) -> tuple[list[tup
         "detail.subject_name, order_row.status "
         "FROM work_orders order_row "
         "JOIN photo_request_details detail ON detail.work_order_id=order_row.id "
-        "WHERE order_row.type_code='photo_request' AND order_row.status='in_progress' "
-        "AND detail.identity_hmac=%s FOR UPDATE",
+        "WHERE order_row.type_code='photo_request' AND detail.identity_hmac=%s AND ("
+        "order_row.status='in_progress' OR (order_row.status='completed' "
+        "AND order_row.completed_at>=DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) "
+        "AND EXISTS (SELECT 1 FROM work_order_events batch_event "
+        "WHERE batch_event.work_order_id=order_row.id AND batch_event.event_type='external_batch_complete') "
+        "AND EXISTS (SELECT 1 FROM photo_sheet_rows batch_map "
+        "JOIN photo_sheet_batches batch_row ON batch_row.id=batch_map.batch_id "
+        "WHERE batch_map.work_order_id=order_row.id AND batch_row.physical_row=("
+        "SELECT MAX(latest_batch.physical_row) FROM photo_sheet_batches latest_batch "
+        "WHERE latest_batch.source_id=batch_row.source_id)) "
+        "AND NOT EXISTS (SELECT 1 FROM work_order_attachments existing_attachment "
+        "WHERE existing_attachment.work_order_id=order_row.id AND existing_attachment.deleted_at IS NULL))) "
+        "FOR UPDATE",
         (identity_hmac,),
     )
     rows = await cur.fetchall()
@@ -120,6 +131,58 @@ async def _photo_matches(cur, identity_hmac: str, sha256: str) -> tuple[list[tup
             duplicate_all = False
             break
     return rows, duplicate_all
+
+
+async def _photo_duplicate_all(cur, rows: list[tuple], sha256: str) -> bool:
+    if not rows:
+        return False
+    for row in rows:
+        await cur.execute(
+            "SELECT 1 FROM work_order_attachments "
+            "WHERE work_order_id=%s AND sha256=%s AND deleted_at IS NULL LIMIT 1",
+            (row[0], sha256),
+        )
+        if not await cur.fetchone():
+            return False
+    return True
+
+
+async def _refresh_photo_import_preview(cur, batch_id: int, parsed: list) -> dict[str, int]:
+    counts = {"matched": 0, "unmatched": 0, "duplicate": 0, "conflict": 0, "failed": 0}
+    for item in parsed:
+        identity_hmac, hmac_version = (
+            hmac_digest(item.identity_number, kind="identity")
+            if item.identity_number else (None, None)
+        )
+        matches, duplicate_all = (
+            await _photo_matches(cur, identity_hmac or "", item.sha256)
+            if identity_hmac else ([], False)
+        )
+        ticket_ids = [int(row[0]) for row in matches]
+        if item.parse_error:
+            status, reason = "unmatched", item.parse_error
+        elif not matches:
+            status, reason = "unmatched", "没有可补挂照片的工单"
+        else:
+            status = "duplicate" if duplicate_all else "matched"
+            reason = "照片已经挂载到对应工单" if duplicate_all else ""
+            if any(str(row[3] or "").strip() != item.person_name for row in matches):
+                reason = "姓名与工单记录不一致，请人工核对"
+        counts[status] += 1
+        await cur.execute(
+            "UPDATE photo_request_import_items SET identity_hmac=%s,identity_hmac_version=%s,"
+            "match_status=%s,match_reason=%s,matched_ticket_ids=%s,notification_sent=0 "
+            "WHERE batch_id=%s AND safe_name IN (%s,%s) AND file_sha256=%s",
+            (identity_hmac, hmac_version, status, reason, json.dumps(ticket_ids), batch_id,
+             item.safe_name, item.legacy_safe_name, item.sha256),
+        )
+    await cur.execute(
+        "UPDATE photo_request_import_batches SET total_files=%s,matched_files=%s,unmatched_files=%s,"
+        "conflict_files=%s,duplicate_files=%s,failed_files=%s WHERE id=%s",
+        (len(parsed), counts["matched"], counts["unmatched"], counts["conflict"],
+         counts["duplicate"], counts["failed"], batch_id),
+    )
+    return counts
 
 
 async def _can_view_ticket(cur, ticket_id: int, user: dict) -> tuple:
@@ -483,15 +546,37 @@ async def search_tickets(
         where.append("requester_user_id=%s AND status='pending_requester'")
         params.append(user["id"])
     elif data.view == "processed":
-        processed = "EXISTS (SELECT 1 FROM work_order_events event WHERE event.work_order_id=work_orders.id AND event.actor_user_id=%s AND event.event_type IN ('claim','approve','reject','return','complete','transfer'))"
+        processed = (
+            "EXISTS (SELECT 1 FROM work_order_events event WHERE event.work_order_id=work_orders.id "
+            "AND event.actor_user_id=%s AND event.event_type IN "
+            "('claim','approve','reject','return','complete','transfer','photo_import_complete'))"
+        )
+        processed_params: list[object] = [user["id"], user["id"]]
+        processed = (
+            f"({processed} OR (work_orders.requester_user_id=%s AND EXISTS "
+            "(SELECT 1 FROM work_order_events requester_event WHERE "
+            "requester_event.work_order_id=work_orders.id AND requester_event.event_type IN "
+            "('external_batch_complete','photo_import_complete'))))"
+        )
+        if position:
+            processed = (
+                f"({processed} OR (work_orders.current_queue=%s AND EXISTS "
+                "(SELECT 1 FROM work_order_events queue_event WHERE "
+                "queue_event.work_order_id=work_orders.id AND queue_event.event_type IN "
+                "('external_batch_complete','photo_import_complete'))))"
+            )
+            processed_params.append(position)
         if workflow_can_view_all(user):
             processed = (
                 f"({processed} OR (work_orders.status IN ('approved','completed','rejected','cancelled','withdrawn') "
-                "AND EXISTS (SELECT 1 FROM photo_sheet_rows legacy_map WHERE legacy_map.work_order_id=work_orders.id "
-                "AND legacy_map.is_legacy=1)))"
+                "AND (EXISTS (SELECT 1 FROM photo_sheet_rows legacy_map "
+                "WHERE legacy_map.work_order_id=work_orders.id AND legacy_map.is_legacy=1) "
+                "OR EXISTS (SELECT 1 FROM work_order_events terminal_event "
+                "WHERE terminal_event.work_order_id=work_orders.id AND terminal_event.event_type IN "
+                "('external_batch_complete','photo_import_complete')))))"
             )
         where.append(processed)
-        params.append(user["id"])
+        params.extend(processed_params)
     elif data.view == "all":
         if not workflow_can_view_all(user):
             raise HTTPException(403, "无权查看全部工单")
@@ -1352,7 +1437,8 @@ async def preview_photo_import(
                 existing_batch_id = int(existing[0])
                 batch_no = str(existing[1])
                 existing_storage_key = str(existing[3])
-                if str(existing[2]) == "preview":
+                existing_status = str(existing[2])
+                if existing_status == "preview":
                     try:
                         resolve_photo_import_zip(existing_storage_key)
                     except FileNotFoundError:
@@ -1369,6 +1455,21 @@ async def preview_photo_import(
                         await conn.commit()
                     else:
                         await conn.rollback()
+                elif existing_status == "partial":
+                    storage_key = save_photo_import_zip(
+                        Path(existing_storage_key).stem,
+                        content,
+                    )
+                    counts = await _refresh_photo_import_preview(
+                        cur, existing_batch_id, parsed,
+                    )
+                    await cur.execute(
+                        "UPDATE photo_request_import_batches SET storage_key=%s,status='preview',"
+                        "error_message='',confirmed_at=NULL WHERE id=%s",
+                        (storage_key, existing_batch_id),
+                    )
+                    await conn.commit()
+                    restored_existing = True
                 else:
                     await conn.rollback()
             else:
@@ -1594,15 +1695,20 @@ async def confirm_photo_import(
             ticket_counts: dict[int, int] = {}
             counts = {"matched": 0, "unmatched": 0, "duplicate": 0, "conflict": 0, "failed": 0}
             item_success_tickets: dict[tuple[str, str, str], set[int]] = {}
+            match_cache: dict[str, list[tuple]] = {}
             for item in parsed:
                 identity_hmac, hmac_version = (
                     hmac_digest(item.identity_number, kind="identity")
                     if item.identity_number else (None, None)
                 )
-                matches, duplicate_all = (
-                    await _photo_matches(cur, identity_hmac or "", item.sha256)
-                    if identity_hmac else ([], False)
-                )
+                if identity_hmac and identity_hmac in match_cache:
+                    matches = match_cache[identity_hmac]
+                    duplicate_all = await _photo_duplicate_all(cur, matches, item.sha256)
+                elif identity_hmac:
+                    matches, duplicate_all = await _photo_matches(cur, identity_hmac, item.sha256)
+                    match_cache[identity_hmac] = matches
+                else:
+                    matches, duplicate_all = [], False
                 ticket_ids = [int(row[0]) for row in matches]
                 reason = ""
                 item_key = (item.safe_name, item.legacy_safe_name, item.sha256)
@@ -1612,7 +1718,7 @@ async def confirm_photo_import(
                     reason = item.parse_error
                 elif not matches:
                     status = "unmatched"
-                    reason = "没有处理中照片工单"
+                    reason = "没有可补挂照片的工单"
                 else:
                     status = "duplicate" if duplicate_all else "matched"
                     if duplicate_all:
@@ -1669,29 +1775,31 @@ async def confirm_photo_import(
                     (ticket_id,),
                 )
                 ticket = await cur.fetchone()
-                if not ticket or ticket[2] != "in_progress":
+                if not ticket or ticket[2] not in {"in_progress", "completed"}:
                     continue
                 note = f"照片批次 {locked[1]} 已导入 {photo_count} 张照片"
                 await cur.execute(
                     "UPDATE photo_request_details SET result_status='found', result_note=%s WHERE work_order_id=%s",
                     (note, ticket_id),
                 )
-                await cur.execute(
-                    "UPDATE work_orders SET status='completed', completed_at=UTC_TIMESTAMP(), "
-                    "current_assignee_user_id=NULL, current_queue='', due_at=NULL, "
-                    "version_no=version_no+1 WHERE id=%s AND status='in_progress'",
-                    (ticket_id,),
-                )
-                await cur.execute(
-                    "UPDATE work_order_steps SET status='completed', decision='complete', decision_note=%s, "
-                    "decided_by=%s, decided_at=UTC_TIMESTAMP(), version_no=version_no+1 "
-                    "WHERE work_order_id=%s AND status='in_progress'",
-                    (note, user["id"], ticket_id),
-                )
+                if ticket[2] == "in_progress":
+                    await cur.execute(
+                        "UPDATE work_orders SET status='completed', completed_at=UTC_TIMESTAMP(), "
+                        "current_assignee_user_id=NULL, current_queue='', due_at=NULL, "
+                        "version_no=version_no+1 WHERE id=%s AND status='in_progress'",
+                        (ticket_id,),
+                    )
+                    await cur.execute(
+                        "UPDATE work_order_steps SET status='completed', decision='complete', decision_note=%s, "
+                        "decided_by=%s, decided_at=UTC_TIMESTAMP(), version_no=version_no+1 "
+                        "WHERE work_order_id=%s AND status='in_progress'",
+                        (note, user["id"], ticket_id),
+                    )
                 await cur.execute(
                     "INSERT INTO work_order_events (work_order_id, event_type, actor_user_id, "
-                    "from_status, to_status, detail_json) VALUES (%s,'photo_import_complete',%s,'in_progress','completed',%s)",
-                    (ticket_id, user["id"], json.dumps({"batch_id": batch_id, "photo_count": photo_count})),
+                    "from_status, to_status, detail_json) VALUES (%s,'photo_import_complete',%s,%s,'completed',%s)",
+                    (ticket_id, user["id"], ticket[2],
+                     json.dumps({"batch_id": batch_id, "photo_count": photo_count})),
                 )
                 await cur.execute(
                     "UPDATE work_order_attachments SET retention_until=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 DAY) "
