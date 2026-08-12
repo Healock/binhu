@@ -2052,12 +2052,36 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
 .query-spreadsheet-toolbar {
   min-height: 48px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--app-border);
   background: var(--app-surface);
+}
+
+.query-spreadsheet-toolbar__scope,
+.query-spreadsheet-toolbar__status,
+.query-spreadsheet-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.query-spreadsheet-toolbar__scope,
+.query-spreadsheet-toolbar__actions {
+  flex: 0 0 auto;
+}
+
+.query-spreadsheet-toolbar__status {
+  min-width: 0;
+  flex: 1 1 280px;
+  flex-wrap: wrap;
+}
+
+.query-spreadsheet-toolbar__type {
+  width: 176px;
 }
 
 .query-spreadsheet {

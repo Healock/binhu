@@ -445,6 +445,17 @@ export default function DataQuery() {
     setSelectedSheetRow(null)
   }
 
+  const changeBusinessType = (value: string) => {
+    setSelectedType(value)
+    setMobilePage(1)
+    setSheetFilterCriteria({})
+    setRows([])
+    setCanAdd(false)
+    setRequiredFields([])
+    setDraftRows([])
+    setSelectedSheetRow(null)
+  }
+
   return (
     <div className="app-page">
       {messageContext}
@@ -461,29 +472,22 @@ export default function DataQuery() {
 
       <section className="app-card query-filter-panel">
         <div className="app-toolbar query-filter-toolbar">
-          <Select
-            value={selectedType}
-            onChange={value => {
-              setSelectedType(value)
-              setMobilePage(1)
-              setSheetFilterCriteria({})
-              setRows([])
-              setCanAdd(false)
-              setRequiredFields([])
-              setDraftRows([])
-              setSelectedSheetRow(null)
-            }}
-            className="min-w-44"
-            options={types.map(type => ({ value: type, label: type }))}
-          />
-          <Segmented
-            value={source}
-            onChange={value => changeSourceType(value as 'online' | 'archive')}
-            options={[
-              { value: 'online', label: '当前数据' },
-              { value: 'archive', label: '归档数据' },
-            ]}
-          />
+          <div className="contents md:hidden">
+            <Select
+              value={selectedType}
+              onChange={changeBusinessType}
+              className="min-w-44"
+              options={types.map(type => ({ value: type, label: type }))}
+            />
+            <Segmented
+              value={source}
+              onChange={value => changeSourceType(value as 'online' | 'archive')}
+              options={[
+                { value: 'online', label: '当前数据' },
+                { value: 'archive', label: '归档数据' },
+              ]}
+            />
+          </div>
           <Input
             allowClear
             prefix={<SearchOutlined className="text-slate-400" />}
@@ -536,7 +540,23 @@ export default function DataQuery() {
         className={`app-card query-spreadsheet-card hidden overflow-hidden md:block${sheetFullscreen ? ' query-spreadsheet-card--fullscreen' : ''}`}
       >
         <div className="query-spreadsheet-toolbar">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="query-spreadsheet-toolbar__scope">
+            <Select
+              value={selectedType}
+              onChange={changeBusinessType}
+              className="query-spreadsheet-toolbar__type"
+              options={types.map(type => ({ value: type, label: type }))}
+            />
+            <Segmented
+              value={source}
+              onChange={value => changeSourceType(value as 'online' | 'archive')}
+              options={[
+                { value: 'online', label: '当前数据' },
+                { value: 'archive', label: '归档数据' },
+              ]}
+            />
+          </div>
+          <div className="query-spreadsheet-toolbar__status">
             {Object.keys(sheetFilterCriteria).length > 0 && (
               <>
                 <Tag color="blue">{Object.keys(sheetFilterCriteria).length} 列筛选中</Tag>
@@ -597,7 +617,7 @@ export default function DataQuery() {
               </>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="query-spreadsheet-toolbar__actions">
             {sheetSaving && <Tag color="processing">正在写回腾讯表格</Tag>}
             <Button
               size="small"
