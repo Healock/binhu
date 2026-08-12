@@ -203,8 +203,10 @@ def _review_condition(parser_type: str) -> str:
 
 def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
     workflow = TASK_WORKFLOWS[parser_type]
-    if stage == "all" or workflow.valid_results:
+    if stage == "all":
         return "1=1"
+    if workflow.valid_results:
+        return "1=0"
     analysis = " OR ".join(
         f"{_json_field(field)}<>''" for field in workflow.analysis_fields
     ) or "0"

@@ -110,7 +110,7 @@ function readSort(value: string | null): MobileTaskSort {
     : 'priority'
 }
 
-export default function MobileTaskList() {
+export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
   const navigate = useNavigate()
   const { recordActivity, user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -124,18 +124,23 @@ export default function MobileTaskList() {
     user?.role,
     user?.permission_groups?.map(group => group.code),
   )
-  const scope: MobileTaskScope = adminMode
+  const analysisOnly = mode === 'analysis'
+  const scope: MobileTaskScope = analysisOnly || adminMode
     ? 'all'
     : requestedScope === 'community' ? 'community' : 'mine'
   const requestedStatus = searchParams.get('status')
   const requestedReviewStage = searchParams.get('review_stage')
   const [status, setStatus] = useState<MobileTaskStatus>(
-    ['pending', 'unchecked', 'checked', 'review', 'completed', 'all'].includes(requestedStatus || '')
+    analysisOnly
+      ? 'all'
+      : ['pending', 'unchecked', 'checked', 'review', 'completed', 'all'].includes(requestedStatus || '')
       ? requestedStatus as MobileTaskStatus
       : 'pending',
   )
   const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>(
-    ['waiting_analysis', 'analyzed'].includes(requestedReviewStage || '')
+    analysisOnly
+      ? 'waiting_analysis'
+      : ['waiting_analysis', 'analyzed'].includes(requestedReviewStage || '')
       ? requestedReviewStage as MobileTaskReviewStage
       : 'all',
   )
@@ -326,13 +331,13 @@ export default function MobileTaskList() {
     try {
       const result = await listMobileTasks({
         parser_type: parserType,
-        scope,
-        status,
-        review_stage: reviewStage,
+        scope: analysisOnly ? 'all' : scope,
+        status: analysisOnly ? 'all' : status,
+        review_stage: analysisOnly ? 'waiting_analysis' : reviewStage,
         communities,
         inspectors,
         watch_categories: watchCategories,
-        priority,
+        priority: analysisOnly ? 'all' : priority,
         sort,
         keyword: keyword || undefined,
         page: targetPage,
@@ -350,23 +355,24 @@ export default function MobileTaskList() {
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
+  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
 
   useEffect(() => { void load() }, [load])
 
   useEffect(() => {
     const next = new URLSearchParams()
     next.set('type', parserType)
-    next.set('scope', scope)
-    next.set('status', status)
-    if (reviewStage !== 'all') next.set('review_stage', reviewStage)
+    next.set('scope', analysisOnly ? 'all' : scope)
+    next.set('status', analysisOnly ? 'all' : status)
+    if (analysisOnly) next.set('review_stage', 'waiting_analysis')
+    else if (reviewStage !== 'all') next.set('review_stage', reviewStage)
     communities.forEach(value => next.append('community', value))
     inspectors.forEach(value => next.append('inspector', value))
     watchCategories.forEach(value => next.append('watch_category', String(value)))
-    if (priority !== 'all') next.set('priority', priority)
+    if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [communities, inspectors, parserType, priority, reviewStage, scope, setSearchParams, sort, status, watchCategories])
+  }, [analysisOnly, communities, inspectors, parserType, priority, reviewStage, scope, setSearchParams, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -378,8 +384,8 @@ export default function MobileTaskList() {
     setWatchCategories([])
     setPriority('all')
     setSort('priority')
-    setStatus('pending')
-    setReviewStage('all')
+    setStatus(analysisOnly ? 'all' : 'pending')
+    setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
     setSearchParams(next)
   }
 
@@ -389,8 +395,8 @@ export default function MobileTaskList() {
     setWatchCategories([])
     setPriority('all')
     setSort('priority')
-    setStatus('pending')
-    setReviewStage('all')
+    setStatus(analysisOnly ? 'all' : 'pending')
+    setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
     setKeyword('')
     setKeywordInput('')
   }
@@ -408,9 +414,9 @@ export default function MobileTaskList() {
   const filtersActive = communities.length > 0
     || inspectors.length > 0
     || watchCategories.length > 0
-    || priority !== 'all'
-    || status !== 'pending'
-    || reviewStage !== 'all'
+    || (!analysisOnly && priority !== 'all')
+    || (!analysisOnly && status !== 'pending')
+    || (!analysisOnly && reviewStage !== 'all')
     || sort !== 'priority'
     || Boolean(keyword)
 
@@ -460,7 +466,9 @@ export default function MobileTaskList() {
             onChange={value => updateQuery(value, scope)}
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
           />
-          {adminMode ? (
+          {analysisOnly ? (
+            <Tag color="purple" className="mobile-task-scope-tag">等待研判</Tag>
+          ) : adminMode ? (
             <Tag color="blue" className="mobile-task-scope-tag">全所</Tag>
           ) : (
             <Segmented
@@ -519,7 +527,7 @@ export default function MobileTaskList() {
           </div>
         </div>
 
-        <div className="mobile-task-priority-grid" aria-label="任务快捷筛选">
+        {!analysisOnly && <div className="mobile-task-priority-grid" aria-label="任务快捷筛选">
           {PRIORITY_CARDS.map(card => {
             const count = card.key === 'all'
               ? facets.total
@@ -539,7 +547,7 @@ export default function MobileTaskList() {
               </button>
             )
           })}
-        </div>
+        </div>}
 
         <div className="mobile-task-more-toggle">
           <Button type="link" onClick={() => setMoreOpen(value => !value)}>
@@ -551,13 +559,13 @@ export default function MobileTaskList() {
         </div>
         {moreOpen && (
           <div className="mobile-task-more-grid">
-            <Select
+            {!analysisOnly && <Select
               value={status}
               options={STATUS_OPTIONS}
               onChange={value => setStatus(value as MobileTaskStatus)}
               placeholder="精确任务状态"
-            />
-            <Select
+            />}
+            {!analysisOnly && <Select
               value={reviewStage}
               options={[
                 { label: '全部复核', value: 'all' },
@@ -566,13 +574,13 @@ export default function MobileTaskList() {
               ]}
               onChange={value => setReviewStage(value as MobileTaskReviewStage)}
               placeholder="复核阶段"
-            />
-            <Select
+            />}
+            {!analysisOnly && <Select
               value={priority}
               options={PRIORITY_OPTIONS}
               onChange={value => setPriority(value as MobileTaskPriority)}
               placeholder="优先级"
-            />
+            />}
             <Select
               value={sort}
               options={SORT_OPTIONS}
@@ -604,7 +612,7 @@ export default function MobileTaskList() {
         {keyword && <button type="button" className="text-[var(--app-primary)]" onClick={() => { setKeyword(''); setKeywordInput('') }}>清除搜索</button>}
       </div>
 
-      {canBulkAssign && (
+      {!analysisOnly && canBulkAssign && (
         <section className={`app-card mobile-task-bulk-toolbar${selectionMode ? ' is-sticky' : ''}`}>
           <div className="flex flex-wrap items-center gap-2">
             <Button

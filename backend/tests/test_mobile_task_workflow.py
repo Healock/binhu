@@ -14,6 +14,7 @@ from routers.mobile_tasks import (
     _balanced_assignment_plan,
     _multi_filter_condition,
     _priority_bucket,
+    _review_stage_condition,
     _scope_where,
     _source_in_community,
     _task_filter_options,
@@ -129,6 +130,20 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(
             workflow.review_stage({"核查结果": "无法核实", "研判": "已研判"}),
             "analyzed",
+        )
+
+    def test_analysis_filter_excludes_workflows_without_unverifiable_result(self):
+        self.assertEqual(
+            _review_stage_condition("疑似未注销模型三", "waiting_analysis"),
+            "1=0",
+        )
+        self.assertEqual(
+            _review_stage_condition("疑似未注销模型三", "analyzed"),
+            "1=0",
+        )
+        self.assertEqual(
+            _review_stage_condition("疑似未注销模型三", "all"),
+            "1=1",
         )
 
     def test_unverifiable_is_checked_but_not_completed(self):

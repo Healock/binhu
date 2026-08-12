@@ -33,6 +33,7 @@ import RoleDashboard from './pages/RoleDashboard'
 import RegistryManagement from './pages/RegistryManagement'
 import WatchPeopleManagement from './pages/WatchPeopleManagement'
 import WorkflowTickets from './pages/WorkflowTickets'
+import AnalysisWorkbench from './pages/AnalysisWorkbench'
 import WorkflowConfig from './pages/WorkflowConfig'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
@@ -128,7 +129,7 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>
                 <Route path="/police-tasks" element={<PoliceDispatchWorkbench />} />
-                <Route path="/police-analysis" element={<PoliceDispatchWorkbench mode="analysis" />} />
+                <Route path="/police-analysis" element={<AnalysisWorkbench />} />
                 <Route path="/police-dispatch/batches/:batchId" element={<PoliceDispatchBatchDetail />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="worklog.manage" />}>
