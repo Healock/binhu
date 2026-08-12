@@ -11,6 +11,9 @@ from services.permissions import (
     POLICE_ADDRESS_MANAGE,
     POLICE_DISPATCH_MANAGE,
     POSITION_DEFAULT_GROUP,
+    WORKFLOW_ATTACHMENT_VIEW,
+    WORKFLOW_TICKET_CREATE,
+    WORKFLOW_TICKET_VIEW,
     parse_permissions,
     serialize_permissions,
 )
@@ -123,8 +126,18 @@ async def ensure_permission_schema(cur) -> None:
         )
     # 新权限只追加到相应预设组，不覆盖超级管理员已经调整过的其他权限。
     permission_additions = {
-        "flow_post": {ONLINE_RAW_EDIT, "workflow.ticket.create", "workflow.ticket.view"},
-        "global_viewer": {ONLINE_RAW_EDIT, "workflow.ticket.create", "workflow.ticket.view"},
+        "flow_post": {
+            ONLINE_RAW_EDIT,
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
+            WORKFLOW_ATTACHMENT_VIEW,
+        },
+        "global_viewer": {
+            ONLINE_RAW_EDIT,
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
+            WORKFLOW_ATTACHMENT_VIEW,
+        },
         "internal_business": {
             ONLINE_RAW_EDIT,
             ONLINE_RAW_ROW_MANAGE,
@@ -135,8 +148,10 @@ async def ensure_permission_schema(cur) -> None:
             "registry.watch.view",
             "registry.watch.manage",
             "registry.import.manage",
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
             "workflow.ticket.handle",
-            "workflow.attachment.view",
+            WORKFLOW_ATTACHMENT_VIEW,
         },
         "admin": {
             ONLINE_RAW_EDIT,
@@ -151,6 +166,11 @@ async def ensure_permission_schema(cur) -> None:
             "workflow.ticket.handle",
             "workflow.attachment.view",
             "workflow.ticket.manage",
+        },
+        "community_registry_viewer": {
+            WORKFLOW_TICKET_CREATE,
+            WORKFLOW_TICKET_VIEW,
+            WORKFLOW_ATTACHMENT_VIEW,
         },
     }
     for code, additions in permission_additions.items():
@@ -756,6 +776,7 @@ async def ensure_police_dispatch_schema(cur) -> None:
             file_name VARCHAR(255) NOT NULL DEFAULT '',
             file_sha256 CHAR(64) NOT NULL UNIQUE,
             sheet_name VARCHAR(255) NOT NULL DEFAULT '',
+            import_mode VARCHAR(20) NOT NULL DEFAULT 'raw',
             status VARCHAR(30) NOT NULL DEFAULT 'reviewing',
             total_count INT NOT NULL DEFAULT 0,
             counts_json JSON NOT NULL,
@@ -859,6 +880,9 @@ async def ensure_police_dispatch_schema(cur) -> None:
             "linked_row_hash": "CHAR(64) NOT NULL DEFAULT ''",
             "conflict_values_json": "JSON DEFAULT NULL",
             "cache_pending": "TINYINT(1) NOT NULL DEFAULT 0",
+        },
+        "_police_dispatch_batches": {
+            "import_mode": "VARCHAR(20) NOT NULL DEFAULT 'raw'",
         },
         "_police_dispatch_publish_results": {
             "source_row_id": "BIGINT DEFAULT NULL",

@@ -704,10 +704,16 @@ async def _process_append(
     candidates: list[dict] = []
     rows: list[dict] = []
     if first_attempt and known_rows is None:
-        row_total = await client.get_sheet_row_total(source["file_id"], source["sheet_id"])
-        if row_total is None:
-            raise RuntimeError("无法读取腾讯名单当前尾行")
-        physical_row = max(int(source["header_row"]) + 1, int(row_total) + 1)
+        last_nonempty_row = await client.find_last_nonempty_row(
+            source["file_id"],
+            source["sheet_id"],
+            int(source["header_row"]),
+            COLUMNS,
+        )
+        physical_row = max(
+            int(source["header_row"]) + 1,
+            int(last_nonempty_row) + 1,
+        )
     else:
         await cur.execute(
             "SELECT physical_row FROM photo_sheet_rows WHERE source_id=%s AND physical_row IS NOT NULL",

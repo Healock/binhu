@@ -349,7 +349,7 @@ class PhotoSheetAppendTests(unittest.IsolatedAsyncioTestCase):
         detail = ("冬梅社区", "平安码", "甲", "32050020000101001X", "申请人", datetime(2026, 8, 11), "platform")
         cursor = AppendCursor({101: detail})
         client = type("Client", (), {})()
-        client.get_sheet_row_total = AsyncMock(return_value=25)
+        client.find_last_nonempty_row = AsyncMock(return_value=25)
         client.read_all_source_rows = AsyncMock()
         client.build_update_range_request = Mock(return_value={"fake": "request"})
         client.batch_update = AsyncMock()
@@ -361,11 +361,39 @@ class PhotoSheetAppendTests(unittest.IsolatedAsyncioTestCase):
         await _process_append(client, source, cursor, 101, first_attempt=True)
 
         self.assertEqual(cursor.mappings[0]["physical_row"], 26)
-        client.get_sheet_row_total.assert_awaited_once_with("fake", "fake-tab")
+        client.find_last_nonempty_row.assert_awaited_once_with(
+            "fake", "fake-tab", 1, COLUMNS,
+        )
         client.read_all_source_rows.assert_not_awaited()
         client.build_update_range_request.assert_called_once_with(
             "fake-tab", 25, 0,
             [["冬梅社区", "平安码", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]],
+        )
+
+    async def test_first_attempt_ignores_reserved_blank_tail_rows(self):
+        values = [
+            "Synthetic Community",
+            "Synthetic Source",
+            "Synthetic Person",
+            "32050020000101001X",
+            "Synthetic Requester",
+            "2026/8/11",
+            "",
+        ]
+        detail = (*values[:5], datetime(2026, 8, 11), "platform")
+        cursor = AppendCursor({101: detail})
+        client = type("Client", (), {})()
+        client.find_last_nonempty_row = AsyncMock(return_value=12247)
+        client.build_update_range_request = Mock(return_value={"fake": "request"})
+        client.batch_update = AsyncMock()
+        client.read_source_row = AsyncMock(return_value=source_row(12248, values))
+        source = {"id": 7, "file_id": "fake", "sheet_id": "fake-tab", "header_row": 1}
+
+        await _process_append(client, source, cursor, 101, first_attempt=True)
+
+        self.assertEqual(cursor.mappings[0]["physical_row"], 12248)
+        client.build_update_range_request.assert_called_once_with(
+            "fake-tab", 12247, 0, [values],
         )
 
     async def test_identical_platform_requests_use_distinct_physical_rows(self):

@@ -20,6 +20,10 @@ from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_SUMMARY_VIEW,
     SYNC_TRIGGER,
+    WORKFLOW_ATTACHMENT_VIEW,
+    WORKFLOW_TICKET_CREATE,
+    WORKFLOW_TICKET_HANDLE,
+    WORKFLOW_TICKET_VIEW,
     permitted_communities,
     permitted_community,
 )
@@ -139,8 +143,12 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
 
     def test_position_default_groups_have_requested_boundaries(self):
         self.assertIn(ONLINE_SUMMARY_VIEW, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
+        self.assertIn(WORKFLOW_ATTACHMENT_VIEW, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
+        self.assertNotIn(WORKFLOW_TICKET_HANDLE, DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"])
         self.assertNotIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["global_viewer"]["permissions"])
         self.assertIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
+        self.assertIn(WORKFLOW_TICKET_CREATE, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
+        self.assertIn(WORKFLOW_TICKET_VIEW, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
 
     def test_own_department_requires_community_department(self):
         self.assertEqual(permitted_community({

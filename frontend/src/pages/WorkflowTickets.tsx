@@ -99,7 +99,8 @@ export default function WorkflowTickets() {
   const canHandle = permissions.has('workflow.ticket.handle') || permissions.has('workflow.ticket.manage')
   const canManage = permissions.has('workflow.ticket.manage')
   const canRestoreQueued = canManage || ['admin', 'super_admin'].includes(user?.role || '')
-  const canAttach = permissions.has('workflow.attachment.view')
+  const canViewAttachments = permissions.has('workflow.attachment.view')
+  const canManageAttachments = canHandle
   const position = user?.member?.position || ''
   const canViewAll = canManage || ['基础管控', '中队长', '所队领导'].includes(position)
   const canUsePhotoWorkbench = canManage || (canHandle && position === '基础管控')
@@ -705,39 +706,45 @@ export default function WorkflowTickets() {
 
             <section className="workflow-ticket-detail__section">
               <Divider className="workflow-ticket-detail__divider" orientation="left">附件</Divider>
-              {canAttach && (
+              {canManageAttachments && (
                 <Upload beforeUpload={upload} showUploadList={false} accept=".jpg,.jpeg,.png,.webp,.heic,.pdf">
                   <Button icon={<InboxOutlined />}>上传附件</Button>
                 </Upload>
               )}
-              <List
-                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无附件" /> }}
-                dataSource={(detail.attachments || []).filter(item => !item.deleted_at)}
-                renderItem={item => (
-                  <List.Item
-                    actions={[
-                      ...(item.mime_type.startsWith('image/') ? [
-                        <a
-                          key="preview"
-                          href={workflowApi.attachmentUrl(detail.id, item.file_id, true)}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <EyeOutlined /> 预览
+              {canViewAttachments ? (
+                <List
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无附件" /> }}
+                  dataSource={(detail.attachments || []).filter(item => !item.deleted_at)}
+                  renderItem={item => (
+                    <List.Item
+                      actions={[
+                        ...(item.mime_type.startsWith('image/') ? [
+                          <a
+                            key="preview"
+                            href={workflowApi.attachmentUrl(detail.id, item.file_id, true)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <EyeOutlined /> 预览
+                          </a>,
+                        ] : []),
+                        <a key="download" href={workflowApi.attachmentUrl(detail.id, item.file_id)}>
+                          <DownloadOutlined /> 下载
                         </a>,
-                      ] : []),
-                      <a key="download" href={workflowApi.attachmentUrl(detail.id, item.file_id)}>
-                        <DownloadOutlined /> 下载
-                      </a>,
-                      <Popconfirm key="delete" title="删除这个附件？" onConfirm={() => void deleteAttachment(item.file_id)}>
-                        <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
-                      </Popconfirm>,
-                    ]}
-                  >
-                    <List.Item.Meta title={item.original_name} description={`${formatBytes(item.size_bytes)} · ${item.mime_type}`} />
-                  </List.Item>
-                )}
-              />
+                        ...(canManageAttachments ? [
+                          <Popconfirm key="delete" title="删除这个附件？" onConfirm={() => void deleteAttachment(item.file_id)}>
+                            <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
+                          </Popconfirm>,
+                        ] : []),
+                      ]}
+                    >
+                      <List.Item.Meta title={item.original_name} description={`${formatBytes(item.size_bytes)} · ${item.mime_type}`} />
+                    </List.Item>
+                  )}
+                />
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前账号无附件查看权限" />
+              )}
             </section>
 
             <section className="workflow-ticket-detail__section">

@@ -30,3 +30,10 @@ test('photo sheet preview API exposes safe aggregate counters only', () => {
     assert.match(apiClient, new RegExp(`${field}: number`))
   }
 })
+
+test('photo sheet manual sync allows a full Tencent read to finish', () => {
+  assert.match(
+    apiClient,
+    /api\.post\('\/workflow\/photo-sheet\/sync',[\s\S]*timeout:\s*300000/,
+  )
+})

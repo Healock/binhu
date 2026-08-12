@@ -331,6 +331,53 @@ class TxDocsClient:
 
         return result_rows
 
+    async def find_last_nonempty_row(
+        self,
+        file_id: str,
+        sheet_id: str,
+        header_row: int,
+        column_names: list[str],
+        *,
+        rows_per_page: int = 500,
+    ) -> int:
+        """从表尾向上查找指定业务列中最后一个实际非空行。
+
+        腾讯的 ``rowTotal`` 表示工作表容量，可能包含仅有格式或预留的空白行，
+        不能直接当作业务数据尾行。倒序分块读取可以在不扫描整张大表的前提下
+        找到安全的追加位置。
+        """
+        row_total = await self.get_sheet_row_total(file_id, sheet_id)
+        if row_total is None:
+            rows = await self.read_all_source_rows(
+                file_id,
+                sheet_id,
+                header_row,
+                column_names,
+                include_detected_headers=True,
+            )
+            return max(
+                (int(row["physical_row"]) for row in rows),
+                default=int(header_row),
+            )
+
+        col_end = column_letter(len(column_names) - 1)
+        end_row = max(int(header_row), int(row_total))
+        page_size = max(1, min(int(rows_per_page), MAX_ROWS_PER_PAGE))
+        while end_row > int(header_row):
+            start_row = max(int(header_row) + 1, end_row - page_size + 1)
+            response = await self.read_range(
+                file_id,
+                sheet_id,
+                f"A{start_row}:{col_end}{end_row}",
+            )
+            raw_rows = self._raw_rows(response)
+            for offset in range(len(raw_rows) - 1, -1, -1):
+                values, _ = self._decode_row(raw_rows[offset], column_names)
+                if any(values.values()):
+                    return start_row + offset
+            end_row = start_row - 1
+        return int(header_row)
+
     @staticmethod
     def _raw_rows(response: dict) -> list:
         raw_rows = (response.get("gridData") or {}).get("rows", [])
