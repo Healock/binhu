@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm,
   Select, Space, Tabs, Tag, message,
@@ -6,7 +6,8 @@ import {
 import type { TableColumnsType } from 'antd'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
-import { PageHeader, Panel } from '../components/ui'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   formatUTCTime,
   getGridCommunities,
@@ -33,6 +34,8 @@ export default function RegistryManagement() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const debouncedKeyword = useDebouncedValue(keyword.trim(), 350, keywordFlush)
   const [modal, setModal] = useState<ModalKind | null>(null)
   const [selected, setSelected] = useState<any>(null)
   const [detailKind, setDetailKind] = useState<'property' | 'person' | 'organization' | null>(null)
@@ -40,29 +43,32 @@ export default function RegistryManagement() {
   const [detail, setDetail] = useState<any>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const listRequestId = useRef(0)
   const [form] = Form.useForm()
   const canManage = user?.permissions?.includes('registry.property.manage')
   const canReview = user?.permissions?.includes('registry.import.manage')
 
   const load = async () => {
+    const requestId = ++listRequestId.current
     setLoading(true)
     try {
       if (tab === 'properties') setProperties((await registryApi.properties()).data)
       if (tab === 'people') {
-        const response = keyword.trim()
-          ? await registryApi.searchPeople({ name: keyword.trim(), page: 1, page_size: 100 })
+        const response = debouncedKeyword
+          ? await registryApi.searchPeople({ name: debouncedKeyword, page: 1, page_size: 100 })
           : await registryApi.people({ page_size: 100 })
         setPeople(response.data)
       }
-      if (tab === 'organizations') setOrganizations((await registryApi.organizations({ keyword, page_size: 100 })).data)
+      if (tab === 'organizations') setOrganizations((await registryApi.organizations({ keyword: debouncedKeyword, page_size: 100 })).data)
       if (tab === 'merges') setMerges((await registryApi.mergeHistory({ page_size: 100 })).data || [])
       if (tab === 'candidates') setCandidates((await registryApi.candidates()).data || [])
       if (tab === 'conflicts') setConflicts((await registryApi.conflicts()).data || [])
+      if (requestId !== listRequestId.current) return
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '辖区档案读取失败')
+      if (requestId === listRequestId.current) setError(reason?.response?.data?.detail || '辖区档案读取失败')
     } finally {
-      setLoading(false)
+      if (requestId === listRequestId.current) setLoading(false)
     }
   }
 
@@ -70,7 +76,14 @@ export default function RegistryManagement() {
     void getGridCommunities().then(items => setCommunities(items.filter(item => item.is_active))).catch(() => undefined)
     void registryApi.roleTypes().then(response => setRoleTypes(response.data.filter(item => item.is_active))).catch(() => undefined)
   }, [])
-  useEffect(() => { void load() }, [tab])
+  useEffect(() => { void load() }, [tab, debouncedKeyword])
+
+  const currentCount = tab === 'properties' ? properties.length
+    : tab === 'people' ? people.length
+      : tab === 'organizations' ? organizations.length
+        : tab === 'merges' ? merges.length
+          : tab === 'candidates' ? candidates.length
+            : conflicts.length
 
   const communityOptions = useMemo(() => communities.map(item => ({ value: item.id, label: item.name })), [communities])
 
@@ -229,18 +242,25 @@ export default function RegistryManagement() {
             ...(canReview ? [{ key: 'candidates', label: '待审核变更' }, { key: 'conflicts', label: '冲突处理' }] : []),
           ]}
         />
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <Space.Compact className="w-full max-w-md">
-            <Input value={keyword} onChange={event => setKeyword(event.target.value)} onPressEnter={() => void load()} placeholder="搜索姓名或机构名称" />
-            <Button icon={<SearchOutlined />} onClick={() => void load()}>搜索</Button>
-          </Space.Compact>
-          <Space>
+        <ListToolbar
+          filters={<Input
+            allowClear
+            prefix={<SearchOutlined />}
+            value={keyword}
+            onChange={event => setKeyword(event.target.value)}
+            onPressEnter={() => setKeywordFlush(current => current + 1)}
+            placeholder="搜索姓名或机构名称"
+            disabled={!['people', 'organizations'].includes(tab)}
+            className="w-full md:w-80"
+          />}
+          meta={<span>当前 {currentCount} 条</span>}
+          actions={<>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
             {canManage && tab === 'properties' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('property')}>新增房屋</Button>}
             {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
             {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
-          </Space>
-        </div>
+          </>}
+        />
         {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={false} scroll={{ x: 950 }} />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}

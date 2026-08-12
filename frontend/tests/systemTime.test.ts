@@ -29,15 +29,15 @@ test('全局时区来自启动接口并可在系统设置保存后更新', () =>
   assert.match(settingsSource, /setSystemTimezone\(timezone\)/)
 })
 
-test('照片工单搜索使用完整输入框和独立查询按钮并按系统时区显示时间', () => {
+test('照片工单搜索使用即时筛选并按系统时区显示时间', () => {
   const workflowSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
     'utf8',
   )
 
   assert.match(workflowSource, /className="workflow-photo-search"/)
-  assert.match(workflowSource, /workflow-photo-toolbar__query/)
-  assert.match(workflowSource, />\s*查询\s*<\/Button>/)
-  assert.doesNotMatch(workflowSource, /className="workflow-photo-toolbar__search"/)
+  assert.match(workflowSource, /useDebouncedValue\(keyword\.trim\(\), 350, keywordFlush\)/)
+  assert.match(workflowSource, /setKeywordFlush\(current => current \+ 1\)/)
+  assert.doesNotMatch(workflowSource, />\s*查询\s*<\/Button>/)
   assert.match(workflowSource, /formatUTCTime\(value, systemTimezone\)/)
 })

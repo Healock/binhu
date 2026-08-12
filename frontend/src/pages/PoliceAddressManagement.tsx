@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -15,7 +15,8 @@ import {
 import type { TableColumnsType } from 'antd'
 import { DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
-import { PageHeader, Panel } from '../components/ui'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   createPoliceAddress,
   deletePoliceAddress,
@@ -43,29 +44,34 @@ export default function PoliceAddressManagement() {
   const [communities, setCommunities] = useState<PoliceCommunityOption[]>([])
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const debouncedKeyword = useDebouncedValue(keyword.trim(), 350, keywordFlush)
   const [editing, setEditing] = useState<PoliceAddressEntry | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [communityLocked, setCommunityLocked] = useState(false)
   const [error, setError] = useState('')
+  const listRequestId = useRef(0)
 
   const load = async () => {
+    const requestId = ++listRequestId.current
     setLoading(true)
     try {
-      const response = await listPoliceAddresses({ keyword })
+      const response = await listPoliceAddresses({ keyword: debouncedKeyword })
+      if (requestId !== listRequestId.current) return
       setData(response.data)
       setCommunities(response.communities)
       setCommunityLocked(response.community_locked)
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '小区列表读取失败')
+      if (requestId === listRequestId.current) setError(reason?.response?.data?.detail || '小区列表读取失败')
     } finally {
-      setLoading(false)
+      if (requestId === listRequestId.current) setLoading(false)
     }
   }
 
-  useEffect(() => { void load() }, [])
+  useEffect(() => { void load() }, [debouncedKeyword])
 
   const communityOptions = useMemo(() => communities.filter(item => item.enabled).map(item => ({
     value: item.id,
@@ -179,29 +185,23 @@ export default function PoliceAddressManagement() {
       <PageHeader
         title="小区管理"
         description="维护居民小区、公寓、别名和正式社区；公寓只参与社区匹配，不会自动判定为无需登记"
-        actions={(
-          <Space wrap>
-            <Button icon={<DownloadOutlined />} loading={exporting} onClick={exportRows}>导出 XLSX</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增小区</Button>
-          </Space>
-        )}
       />
       {error && <Alert type="error" showIcon message={error} />}
 
-      <Panel
-        title={`地址记录（${data.length}）`}
-        extra={(
-          <Input.Search
+      <Panel title="地址记录" padded={false}>
+          <ListToolbar
+            filters={<Input
             allowClear
+            prefix={<SearchOutlined />}
             placeholder="搜索名称、地址、社区或别名"
             value={keyword}
             onChange={event => setKeyword(event.target.value)}
-            onSearch={() => load()}
+            onPressEnter={() => setKeywordFlush(current => current + 1)}
             className="w-[320px] max-w-full"
+          />}
+            meta={<span>当前筛选 {data.length} 条</span>}
+            actions={<><Button icon={<DownloadOutlined />} loading={exporting} onClick={exportRows}>导出 XLSX</Button><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增小区</Button></>}
           />
-        )}
-        padded={false}
-      >
         <AppTable<PoliceAddressEntry>
           rowKey="id"
           columns={columns}

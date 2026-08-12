@@ -3,6 +3,7 @@ export const FLOW_TASK_ELEVATED_POSITIONS = new Set([
   '片长',
   '基础管控',
   '中队长',
+  '社区民警',
   '所队领导',
 ])
 export const POLICE_DISPATCH_TASK_POSITIONS = new Set(['基础管控', '中队长'])
@@ -31,8 +32,10 @@ export function isFlowTaskElevated(
   position?: string | null,
   role?: string | null,
   permissionGroupCodes: string[] = [],
+  permissions: string[] = [],
 ): boolean {
   return FLOW_TASK_ELEVATED_POSITIONS.has(String(position || '').trim())
+    || permissions.includes('online.task.manage')
     || isFlowTaskAdmin(role, permissionGroupCodes)
 }
 
@@ -40,18 +43,20 @@ export function canBulkAssignMobileTasks(
   position?: string | null,
   role?: string | null,
   permissionGroupCodes: string[] = [],
+  permissions: string[] = [],
 ): boolean {
   return String(position || '').trim() === '组长'
-    || isFlowTaskElevated(position, role, permissionGroupCodes)
+    || isFlowTaskElevated(position, role, permissionGroupCodes, permissions)
 }
 
 export function canAccessFlowTaskWorkbench(
   position?: string | null,
   role?: string | null,
   permissionGroupCodes: string[] = [],
+  permissions: string[] = [],
 ): boolean {
   return isFlowTaskPosition(position)
-    || isFlowTaskElevated(position, role, permissionGroupCodes)
+    || isFlowTaskElevated(position, role, permissionGroupCodes, permissions)
 }
 
 export function shouldUseMobileTaskWorkbench(

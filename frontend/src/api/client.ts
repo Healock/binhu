@@ -995,6 +995,7 @@ export interface MobileTaskDetailData {
     columns: string[]
   }
   writeback_enabled: boolean
+  analysis_mode?: boolean
   sources: MobileTaskSource[]
 }
 
@@ -1066,6 +1067,7 @@ export async function getMobileTaskFilterOptions(
   parserType: string,
   scope: MobileTaskScope,
   communities: string[] = [],
+  reviewStage: MobileTaskReviewStage = 'all',
 ): Promise<{
   source_ready: boolean
   communities: MobileTaskFilterOption[]
@@ -1085,10 +1087,22 @@ export async function getMobileTaskFilterOptions(
 }> {
   const params = new URLSearchParams()
   params.set('scope', scope)
+  params.set('review_stage', reviewStage)
   communities.forEach(value => params.append('community', value))
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
     { ...activeRequest, params },
+  )
+  return data
+}
+
+export async function getMobileTaskAnalysisDetail(
+  parserType: string,
+  rowKey: string,
+): Promise<MobileTaskDetailData> {
+  const { data } = await api.get(
+    `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}`,
+    activeRequest,
   )
   return data
 }
@@ -1119,6 +1133,24 @@ export async function updateMobileTask(
 }> {
   const { data } = await api.patch(
     `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
+    payload,
+  )
+  return data
+}
+
+export async function updateMobileTaskAnalysis(
+  parserType: string,
+  sourceId: number,
+  payload: { changes: Record<string, string>; expected_revision: number },
+): Promise<{
+  values: Record<string, string>
+  row_key: string
+  revision: number
+  pending_sync: boolean
+  message: string
+}> {
+  const { data } = await api.patch(
+    `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
     payload,
   )
   return data

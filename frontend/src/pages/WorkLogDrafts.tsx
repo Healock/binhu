@@ -16,20 +16,20 @@ import {
   DeleteOutlined,
   EditOutlined,
   FileAddOutlined,
-  SearchOutlined,
 } from '@ant-design/icons'
 import axios from 'axios'
 import dayjs from 'dayjs'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   deleteWorkLogDraft,
   listWorkLogDrafts,
 } from '../api/client'
 import AppTable from '../components/AppTable'
-import { PageHeader, Panel } from '../components/ui'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import type { WorkLogDraftSummary } from '../types'
 import useSystemTime from '../hooks/useSystemTime'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 
 const PAGE_SIZE = 20
 
@@ -58,13 +58,17 @@ export default function WorkLogDrafts() {
   const [modal, contextHolder] = Modal.useModal()
   const [formFilters, setFormFilters] = useState<DraftFilters>(EMPTY_FILTERS)
   const [queryFilters, setQueryFilters] = useState<DraftFilters>(EMPTY_FILTERS)
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const debouncedKeyword = useDebouncedValue(formFilters.keyword.trim(), 350, keywordFlush)
   const [drafts, setDrafts] = useState<WorkLogDraftSummary[]>([])
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const listRequestId = useRef(0)
 
   const loadDrafts = useCallback(async () => {
+    const requestId = ++listRequestId.current
     setLoading(true)
     try {
       const result = await listWorkLogDrafts({
@@ -74,18 +78,24 @@ export default function WorkLogDrafts() {
         end_date: queryFilters.endDate || undefined,
         keyword: queryFilters.keyword.trim() || undefined,
       })
+      if (requestId !== listRequestId.current) return
       setDrafts(result.data)
       setTotal(result.total)
     } catch (error) {
-      message.error(errorMessage(error, '读取工作日志草稿失败'))
+      if (requestId === listRequestId.current) message.error(errorMessage(error, '读取工作日志草稿失败'))
     } finally {
-      setLoading(false)
+      if (requestId === listRequestId.current) setLoading(false)
     }
   }, [page, queryFilters])
 
   useEffect(() => {
     void loadDrafts()
   }, [loadDrafts])
+
+  useEffect(() => {
+    setPage(1)
+    setQueryFilters(current => ({ ...current, keyword: debouncedKeyword }))
+  }, [debouncedKeyword])
 
   const openDraft = (draft: WorkLogDraftSummary) => {
     navigate(`/work-log?date=${draft.business_date}`)
@@ -190,14 +200,6 @@ export default function WorkLogDrafts() {
     },
   ], [deletingId, drafts.length, loadDrafts, page])
 
-  const search = () => {
-    setPage(1)
-    setQueryFilters({
-      ...formFilters,
-      keyword: formFilters.keyword.trim(),
-    })
-  }
-
   const reset = () => {
     setFormFilters(EMPTY_FILTERS)
     setPage(1)
@@ -225,8 +227,9 @@ export default function WorkLogDrafts() {
         title="全部草稿"
         description="可以按业务日期、创建人或当前编辑人查找"
       >
-        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center">
-          <div className="flex min-w-0 items-center gap-2 md:hidden">
+        <ListToolbar
+          filters={<>
+            <div className="flex min-w-0 items-center gap-2 md:hidden">
             <input
               type="date"
               aria-label="开始日期"
@@ -239,6 +242,12 @@ export default function WorkLogDrafts() {
                   endDate: current.endDate && current.endDate < startDate
                     ? startDate
                     : current.endDate,
+                }))
+                setPage(1)
+                setQueryFilters(current => ({
+                  ...current,
+                  startDate,
+                  endDate: current.endDate && current.endDate < startDate ? startDate : current.endDate,
                 }))
               }}
               className="min-h-11 min-w-0 flex-1 rounded-md border border-slate-300 bg-transparent px-3 text-sm dark:border-slate-600"
@@ -255,6 +264,12 @@ export default function WorkLogDrafts() {
                   startDate: current.startDate && current.startDate > endDate
                     ? endDate
                     : current.startDate,
+                  endDate,
+                }))
+                setPage(1)
+                setQueryFilters(current => ({
+                  ...current,
+                  startDate: current.startDate && current.startDate > endDate ? endDate : current.startDate,
                   endDate,
                 }))
               }}
@@ -275,6 +290,12 @@ export default function WorkLogDrafts() {
                 startDate: dateStrings[0],
                 endDate: dateStrings[1],
               }))
+              setPage(1)
+              setQueryFilters(current => ({
+                ...current,
+                startDate: dateStrings[0],
+                endDate: dateStrings[1],
+              }))
             }}
           />
           <Input
@@ -286,15 +307,14 @@ export default function WorkLogDrafts() {
               ...current,
               keyword: event.target.value,
             }))}
-            onPressEnter={search}
+            onPressEnter={() => {
+              setKeywordFlush(current => current + 1)
+            }}
           />
-          <Space>
-            <Button type="primary" icon={<SearchOutlined />} onClick={search}>
-              查询
-            </Button>
-            <Button onClick={reset}>重置</Button>
-          </Space>
-        </div>
+          </>}
+          meta={<span>共 {total} 份草稿</span>}
+          actions={<><Button onClick={() => void loadDrafts()}>刷新</Button><Button onClick={reset}>重置</Button></>}
+        />
 
         <div className="hidden md:block">
           <AppTable

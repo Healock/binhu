@@ -592,6 +592,9 @@ async def update_source_fields(
     user: dict,
     conn,
     explicit_text_edit: bool = False,
+    allowed_columns: set[str] | None = None,
+    current_values_validator=None,
+    redact_audit_values: bool = False,
 ) -> dict:
     """在一把工作表锁内批量校验、写入并回读同一腾讯来源行。"""
     if parser_type not in QUERY_TYPES:
@@ -610,6 +613,10 @@ async def update_source_fields(
     unknown = [column for column in normalized_changes if column not in parser.COLUMNS]
     if unknown:
         raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
+    if allowed_columns is not None and any(
+        column not in allowed_columns for column in normalized_changes
+    ):
+        raise HTTPException(400, "提交包含当前入口不允许修改的字段")
     ordered_columns = [
         column for column in parser.COLUMNS if column in normalized_changes
     ]
@@ -648,6 +655,8 @@ async def update_source_fields(
             },
         }
         current_values = current["values"]
+        if current_values_validator is not None:
+            current_values_validator(current_values)
         if source_row_hash(current_values) != source["row_hash"]:
             await _refresh_spreadsheet(conn, client, source["spreadsheet"])
             raise HTTPException(409, "腾讯表格已被其他人修改，已刷新来源行")
@@ -742,8 +751,8 @@ async def update_source_fields(
                 column_name="、".join(ordered_columns),
                 row_key_before=source["row_key"],
                 row_key_after=new_key,
-                before_values=current_values,
-                after_values=after,
+                before_values=None if redact_audit_values else current_values,
+                after_values=None if redact_audit_values else after,
                 sync_status="writing",
             )
 
@@ -812,13 +821,16 @@ async def update_source_fields(
         verified_values = verified["values"]
         new_key = parser.make_row_key(verified_values)
         async with conn.cursor() as cur:
-            await _update_writeback_audit(
-                cur,
-                audit_id,
-                "pending",
-                row_key_after=new_key,
-                after_values=verified_values,
-            )
+            if redact_audit_values:
+                await _update_writeback_audit(cur, audit_id, "pending")
+            else:
+                await _update_writeback_audit(
+                    cur,
+                    audit_id,
+                    "pending",
+                    row_key_after=new_key,
+                    after_values=verified_values,
+                )
         _, revision = await update_cached_source_row(
             conn,
             source_id,

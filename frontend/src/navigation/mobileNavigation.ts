@@ -121,7 +121,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '研判',
         shortLabel: '研判',
         icon: 'worklog',
-        permission: 'police.dispatch.manage',
+        anyPermissions: ['online.task.manage', 'police.dispatch.manage'],
       },
       {
         id: 'photo_tasks',
@@ -270,12 +270,13 @@ export function isNavigationItemAccessible(
 ): boolean {
   if (
     item.id === 'flow_tasks'
-    && !['组长', '组员', '片长', '基础管控', '中队长', '所队领导'].includes(position || '')
+    && !['组长', '组员', '片长', '基础管控', '中队长', '社区民警', '所队领导'].includes(position || '')
+    && !permissions?.includes('online.task.manage')
     && !['admin', 'super_admin'].includes(role)
     && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   ) return false
   if (
-    ['police_tasks', 'police_analysis'].includes(item.id)
+    item.id === 'police_tasks'
     && !['基础管控', '中队长'].includes(position || '')
     && !(
       !position
@@ -284,6 +285,14 @@ export function isNavigationItemAccessible(
         || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
       )
     )
+  ) return false
+  if (
+    item.id === 'police_analysis'
+    && !permissions?.some(permission => (
+      permission === 'online.task.manage' || permission === 'police.dispatch.manage'
+    ))
+    && !['admin', 'super_admin'].includes(role)
+    && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   ) return false
   if (
     item.id === 'photo_tasks'

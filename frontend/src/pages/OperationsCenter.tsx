@@ -54,7 +54,7 @@ import type {
   OpsDatabase,
   OpsOverview,
 } from '../types'
-import { Panel } from '../components/ui'
+import { ListToolbar, Panel } from '../components/ui'
 import useSystemTime from '../hooks/useSystemTime'
 
 
@@ -761,6 +761,7 @@ function AuditTab() {
   const [total, setTotal] = useState(0)
   const [action, setAction] = useState('')
   const [actionOptions, setActionOptions] = useState<AuditActionOption[]>([])
+  const [refreshToken, setRefreshToken] = useState(0)
 
   useEffect(() => {
     setLoading(true)
@@ -772,31 +773,31 @@ function AuditTab() {
       })
       .catch(() => message.error('操作记录加载失败'))
       .finally(() => setLoading(false))
-  }, [action, page, pageSize])
+  }, [action, page, pageSize, refreshToken])
 
   return (
     <div className="flex flex-col gap-4">
-      <Alert
-        type="info"
-        showIcon
-        message="默认显示姓名和中文摘要；展开记录可查看原始审计字段。操作记录不保存密码、令牌、Cookie 或请求正文。"
-      />
-      <Select
-        allowClear
-        showSearch
-        value={action || undefined}
-        placeholder="按操作类型筛选"
-        className="w-full max-w-md"
-        options={actionOptions}
-        filterOption={(input, option) => (
-          `${option?.label || ''} ${option?.value || ''}`
-            .toLocaleLowerCase()
-            .includes(input.toLocaleLowerCase())
-        )}
-        onChange={value => {
-          setPage(1)
-          setAction(value || '')
-        }}
+      <ListToolbar
+        notice={<Alert type="info" showIcon message="默认显示姓名和中文摘要；展开记录可查看原始审计字段。操作记录不保存密码、令牌、Cookie 或请求正文。" />}
+        filters={<Select
+          allowClear
+          showSearch
+          value={action || undefined}
+          placeholder="按操作类型筛选"
+          className="w-full md:w-96"
+          options={actionOptions}
+          filterOption={(input, option) => (
+            `${option?.label || ''} ${option?.value || ''}`
+              .toLocaleLowerCase()
+              .includes(input.toLocaleLowerCase())
+          )}
+          onChange={value => {
+            setPage(1)
+            setAction(value || '')
+          }}
+        />}
+        meta={<span>共 {total} 条操作记录</span>}
+        actions={<Button icon={<ReloadOutlined />} onClick={() => setRefreshToken(value => value + 1)}>刷新</Button>}
       />
       <Table
         rowKey="id"

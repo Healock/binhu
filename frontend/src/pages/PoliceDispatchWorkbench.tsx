@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -39,6 +39,8 @@ import {
   type PoliceDispatchTask,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import useDebouncedValue from '../hooks/useDebouncedValue'
+import { ListToolbar } from '../components/ui'
 import useMobileViewport from '../hooks/useMobileViewport'
 
 const actionLabels: Record<string, string> = {
@@ -189,7 +191,8 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     categoryOptions.some(option => option.value === requestedCategory) ? requestedCategory : 'all',
   )
   const [keyword, setKeyword] = useState('')
-  const [appliedKeyword, setAppliedKeyword] = useState('')
+  const [keywordFlush, setKeywordFlush] = useState(0)
+  const appliedKeyword = useDebouncedValue(keyword.trim(), 350, keywordFlush)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [selected, setSelected] = useState<PoliceDispatchTask | null>(null)
@@ -207,6 +210,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   const [fieldSaving, setFieldSaving] = useState(false)
   const [deletingBatch, setDeletingBatch] = useState(false)
   const [error, setError] = useState('')
+  const taskRequestId = useRef(0)
 
   const isSuperAdmin = Boolean(
     user?.permission_groups?.some(group => group.code === 'super_admin')
@@ -250,6 +254,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
       setLoading(false)
       return
     }
+    const requestId = ++taskRequestId.current
     setLoading(true)
     try {
       const result = await listPoliceDispatchTasks({
@@ -260,14 +265,15 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         page: targetPage,
         page_size: 20,
       })
+      if (requestId !== taskRequestId.current) return
       setTasks(result.data)
       setTotal(result.total)
       setPage(targetPage)
       setError('')
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '任务列表读取失败')
+      if (requestId === taskRequestId.current) setError(reason?.response?.data?.detail || '任务列表读取失败')
     } finally {
-      setLoading(false)
+      if (requestId === taskRequestId.current) setLoading(false)
     }
   }
 
@@ -581,17 +587,21 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
             message="这里处理下发文件中无法直接确定去向的数据；复核结果仍保存在原下发批次。"
           />
         )}
-        <div className={`mt-3 grid gap-2 ${analysisOnly ? 'lg:grid-cols-[minmax(280px,1fr)_auto]' : 'lg:grid-cols-[minmax(280px,1fr)_148px_auto]'} lg:items-center`}>
-          <Input.Search
+        <ListToolbar
+          className="mt-3"
+          filters={<>
+          <Input
             allowClear
+            prefix={<SearchOutlined />}
             placeholder="姓名、身份证号、手机号、地址"
             value={keyword}
             onChange={event => setKeyword(event.target.value)}
-            onSearch={() => setAppliedKeyword(keyword.trim())}
+            onPressEnter={() => setKeywordFlush(current => current + 1)}
           />
           {!analysisOnly && <Select value={category} options={categoryOptions} onChange={setCategory} />}
-          <div className="flex min-w-0 items-center justify-between gap-3 lg:justify-end">
-            <span className="shrink-0 text-xs text-slate-500">当前筛选 {total} 条</span>
+          </>}
+          meta={<span>当前筛选 {total} 条</span>}
+          actions={<>
             {!analysisOnly && (
               <Popconfirm
                 title="确认当前筛选结果的全部建议？"
@@ -607,8 +617,8 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
                 </Button>
               </Popconfirm>
             )}
-          </div>
-        </div>
+          </>}
+        />
       </section>
 
       <Spin spinning={loading}>

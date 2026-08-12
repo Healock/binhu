@@ -246,6 +246,7 @@ export type Role = 'super_admin' | 'admin' | 'leader' | 'member'
 export type PermissionCode =
   | 'online.summary.view' | 'online.raw.view' | 'online.raw.edit'
   | 'online.raw.row_manage' | 'visit.summary.view'
+  | 'online.task.manage'
   | 'personnel.basic.view' | 'personnel.sensitive.view' | 'community.view'
   | 'notification.view' | 'preferences.manage' | 'sync.trigger'
   | 'report.config.manage' | 'visit.import'

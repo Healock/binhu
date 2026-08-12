@@ -8,6 +8,7 @@ from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_RAW_EDIT,
     ONLINE_RAW_ROW_MANAGE,
+    ONLINE_TASK_MANAGE,
     POLICE_ADDRESS_MANAGE,
     POLICE_DISPATCH_MANAGE,
     POSITION_DEFAULT_GROUP,
@@ -134,6 +135,7 @@ async def ensure_permission_schema(cur) -> None:
         },
         "global_viewer": {
             ONLINE_RAW_EDIT,
+            ONLINE_TASK_MANAGE,
             WORKFLOW_TICKET_CREATE,
             WORKFLOW_TICKET_VIEW,
             WORKFLOW_ATTACHMENT_VIEW,
@@ -141,6 +143,7 @@ async def ensure_permission_schema(cur) -> None:
         "internal_business": {
             ONLINE_RAW_EDIT,
             ONLINE_RAW_ROW_MANAGE,
+            ONLINE_TASK_MANAGE,
             POLICE_ADDRESS_MANAGE,
             POLICE_DISPATCH_MANAGE,
             "registry.property.view",
@@ -156,6 +159,7 @@ async def ensure_permission_schema(cur) -> None:
         "admin": {
             ONLINE_RAW_EDIT,
             ONLINE_RAW_ROW_MANAGE,
+            ONLINE_TASK_MANAGE,
             POLICE_ADDRESS_MANAGE,
             POLICE_DISPATCH_MANAGE,
             "registry.property.view",
@@ -168,6 +172,7 @@ async def ensure_permission_schema(cur) -> None:
             "workflow.ticket.manage",
         },
         "community_registry_viewer": {
+            ONLINE_TASK_MANAGE,
             WORKFLOW_TICKET_CREATE,
             WORKFLOW_TICKET_VIEW,
             WORKFLOW_ATTACHMENT_VIEW,

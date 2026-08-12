@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Descriptions, Drawer, Form, Input, Modal, Select, Space, Table, Tabs, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
-import { PageHeader, Panel } from '../components/ui'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import { registryApi, type WatchCategory, type WatchPerson } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -25,6 +25,7 @@ export default function WatchPeopleManagement() {
   const [selectedAssignment, setSelectedAssignment] = useState<any>(null)
   const [selectedCategory, setSelectedCategory] = useState<WatchCategory | null>(null)
   const [form] = Form.useForm()
+  const [keyword, setKeyword] = useState('')
 
   const load = async () => {
     setLoading(true)
@@ -128,13 +129,19 @@ export default function WatchPeopleManagement() {
   ]
 
   const categoryOptions = useMemo(() => categories.filter(item => item.is_active).map(item => ({ value: item.id, label: item.name })), [categories])
+  const normalizedKeyword = keyword.trim().toLocaleLowerCase()
+  const visiblePeople = useMemo(() => normalizedKeyword
+    ? people.filter(item => `${item.name} ${item.verification_status} ${item.status}`.toLocaleLowerCase().includes(normalizedKeyword))
+    : people, [normalizedKeyword, people])
+  const visibleCategories = useMemo(() => normalizedKeyword
+    ? categories.filter(item => `${item.name} ${item.code} ${item.description || ''}`.toLocaleLowerCase().includes(normalizedKeyword))
+    : categories, [categories, normalizedKeyword])
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="人员标记"
         description="维护重点人员、五失人员、通勤人员等分类；任务只按身份证精确命中，标记不会改变任务完成口径。"
-        actions={<Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
@@ -143,10 +150,12 @@ export default function WatchPeopleManagement() {
           onChange={value => setTab(value as typeof tab)}
           items={[{ key: 'people', label: '人员标记档案' }, { key: 'categories', label: '标记分类' }]}
         />
-        <div className="mb-4 flex justify-end">
-          {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(tab === 'people' ? 'person' : 'category')}>{tab === 'people' ? '新增人员' : '新增分类'}</Button>}
-        </div>
-        {tab === 'people' ? <Table rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} /> : <Table rowKey="id" loading={loading} columns={categoryColumns} dataSource={categories} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} />}
+        <ListToolbar
+          filters={<Input allowClear prefix={<SearchOutlined />} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={tab === 'people' ? '搜索姓名或状态' : '搜索分类、代码或说明'} className="w-full md:w-80" />}
+          meta={<span>当前 {tab === 'people' ? visiblePeople.length : visibleCategories.length} 条</span>}
+          actions={<><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(tab === 'people' ? 'person' : 'category')}>{tab === 'people' ? '新增人员' : '新增分类'}</Button>}</>}
+        />
+        {tab === 'people' ? <Table rowKey="id" loading={loading} columns={personColumns} dataSource={visiblePeople} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} /> : <Table rowKey="id" loading={loading} columns={categoryColumns} dataSource={visibleCategories} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} />}
       </Panel>
 
       <Drawer open={detailOpen} width="min(94vw, 620px)" title={selectedPerson ? `${selectedPerson.name}的人员标记` : '人员标记'} onClose={() => setDetailOpen(false)}>

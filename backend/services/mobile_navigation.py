@@ -52,7 +52,7 @@ ITEM_PERMISSIONS: dict[str, str] = {
     "online_query": "online.raw.view",
     "flow_tasks": "online.raw.view",
     "police_tasks": "police.dispatch.manage",
-    "police_analysis": "police.dispatch.manage",
+    "police_analysis": "online.task.manage",
     "photo_tasks": "workflow.ticket.handle",
     "workflow_tickets": "workflow.ticket.view",
     "visit_summary": "visit.summary.view",
@@ -71,6 +71,7 @@ ITEM_PERMISSIONS: dict[str, str] = {
 
 ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "data_upload": ("visit.import", "police.dispatch.manage"),
+    "police_analysis": ("online.task.manage", "police.dispatch.manage"),
     "photo_tasks": ("workflow.ticket.handle", "workflow.ticket.manage"),
 }
 
@@ -101,10 +102,19 @@ def _item_is_accessible(
     position: str | None = None,
 ) -> bool:
     admin_access = _admin_code_access(role, permission_group_codes)
-    if item_id == "flow_tasks" and position not in {"组长", "组员"} and not admin_access:
-        return False
-    if item_id in {"police_tasks", "police_analysis"}:
+    if item_id == "flow_tasks":
+        has_task_manage = permissions is not None and "online.task.manage" in permissions
+        if position not in {"组长", "组员"} and not has_task_manage and not admin_access:
+            return False
+    if item_id == "police_tasks":
         if position not in {"基础管控", "中队长"} and not (not position and admin_access):
+            return False
+    if item_id == "police_analysis":
+        has_analysis_permission = permissions is not None and any(
+            permission in permissions
+            for permission in ITEM_PERMISSION_ALTERNATIVES["police_analysis"]
+        )
+        if not has_analysis_permission and not admin_access:
             return False
     if item_id == "photo_tasks":
         has_manage_permission = permissions is not None and "workflow.ticket.manage" in permissions

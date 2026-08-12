@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Alert, Button, Input, Modal, Select, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons'
 import {
   createCommunityArea,
   deleteCommunityArea,
@@ -18,7 +18,7 @@ import {
   type GridCommunity,
 } from '../api/client'
 import AppTable from '../components/AppTable'
-import { EmptyState, LoadingState, PageHeader } from '../components/ui'
+import { EmptyState, ListToolbar, LoadingState, PageHeader } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 
 export default function Communities() {
@@ -43,6 +43,7 @@ export default function Communities() {
   const [areaNameDraft, setAreaNameDraft] = useState('')
   const [areaLeaderDraft, setAreaLeaderDraft] = useState<number[]>([])
   const [savingArea, setSavingArea] = useState(false)
+  const [keyword, setKeyword] = useState('')
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -276,13 +277,21 @@ export default function Communities() {
       ),
     }] : []),
   ]
+  const normalizedKeyword = keyword.trim().toLocaleLowerCase()
+  const visibleCommunities = normalizedKeyword
+    ? communities.filter(community => [
+      community.name,
+      community.area_name,
+      ...(community.aliases || []),
+      ...(community.police_officers || []),
+    ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalizedKeyword))
+    : communities
 
   return (
     <div className="app-page">
       <PageHeader
         title="社区管理"
         description="维护片区、社区名单、别名和社区民警；片长的在线编辑范围以片区配置为准"
-        actions={<Tag color="blue">共 {communities.length} 个社区</Tag>}
       />
 
       <section className="app-card app-card--padded">
@@ -332,6 +341,12 @@ export default function Communities() {
         {msg && <Alert type={msg.includes('失败') ? 'error' : 'success'} showIcon message={msg} />}
       </section>}
 
+      <ListToolbar
+        filters={<Input allowClear prefix={<SearchOutlined />} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="搜索社区、片区、别名或社区民警" className="w-full md:w-80" />}
+        meta={<Tag color="blue">当前 {visibleCommunities.length} 个社区</Tag>}
+        actions={<Button icon={<ReloadOutlined />} onClick={() => void fetch()}>刷新</Button>}
+      />
+
       {loading ? (
         <div className="app-table-wrap">
           <LoadingState />
@@ -340,15 +355,15 @@ export default function Communities() {
         <div className="app-table-wrap">
           <EmptyState label={loadError} />
         </div>
-      ) : communities.length === 0 ? (
+      ) : visibleCommunities.length === 0 ? (
         <div className="app-table-wrap">
-          <EmptyState label="暂无社区，可在上方输入社区名称后添加" />
+          <EmptyState label={communities.length ? '没有符合条件的社区' : '暂无社区，可在上方输入社区名称后添加'} />
         </div>
       ) : (
         <>
           <div className="app-table-wrap md:hidden">
             <div className="grid grid-cols-1 gap-3 p-4">
-              {communities.map((c) => (
+              {visibleCommunities.map((c) => (
                 <div key={c.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
                   <div>
                     <div className="font-medium text-gray-800">{c.name}</div>
@@ -377,7 +392,7 @@ export default function Communities() {
           <div className="hidden md:block">
             <AppTable<GridCommunity>
               columns={communityColumns}
-              dataSource={communities}
+              dataSource={visibleCommunities}
               rowKey="id"
               scroll={{ x: 900 }}
             />

@@ -69,6 +69,31 @@ interface FeedbackProps {
   className?: string
 }
 
+interface ListToolbarProps {
+  filters: ReactNode
+  meta?: ReactNode
+  actions?: ReactNode
+  notice?: ReactNode
+  extra?: ReactNode
+  className?: string
+}
+
+export function ListToolbar({ filters, meta, actions, notice, extra, className = '' }: ListToolbarProps) {
+  return (
+    <section className={`app-card list-toolbar ${className}`.trim()}>
+      {notice && <div className="list-toolbar__notice">{notice}</div>}
+      <div className="list-toolbar__filters">{filters}</div>
+      {extra && <div className="list-toolbar__extra">{extra}</div>}
+      {(meta || actions) && (
+        <div className="list-toolbar__status-row">
+          <div className="list-toolbar__meta">{meta}</div>
+          <div className="list-toolbar__actions">{actions}</div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function Feedback({ message, success = false, className = '' }: FeedbackProps) {
   if (!message) return null
   return (
