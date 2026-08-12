@@ -171,7 +171,6 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '小区管理',
         icon: 'communities',
         permission: 'police.address.manage',
-        roles: ['super_admin', 'admin'],
       },
       {
         id: 'registry',

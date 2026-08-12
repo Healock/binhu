@@ -33,6 +33,8 @@ ACTION_LABELS: dict[str, str] = {
     "police_address.create": "新增小区地址",
     "police_address.update": "修改小区地址",
     "police_address.disable": "停用小区地址",
+    "police_address.delete": "删除小区地址",
+    "police_address.export": "导出小区地址",
     "police_address.import": "导入小区地址映射（历史功能）",
     "police_dispatch.import": "导入下发数据",
     "police_dispatch.delete": "删除下发批次",

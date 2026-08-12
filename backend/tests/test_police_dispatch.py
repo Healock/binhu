@@ -31,6 +31,7 @@ from services.police_dispatch import (
     stable_json,
 )
 from routers.police_dispatch import (
+    AddressCreate,
     TaskBusinessFieldsUpdate,
     TaskReview,
     TaskSearch,
@@ -42,9 +43,16 @@ from routers.police_dispatch import (
     _search_tasks,
     _task_counts,
     delete_batch,
+    delete_address,
+    export_addresses,
     list_tasks,
     require_police_access,
     update_task_business_fields,
+    _address_scope_community_ids,
+    _assert_address_scope,
+    _filter_address_rows,
+    require_police_address_access,
+    update_address,
 )
 
 
@@ -60,10 +68,170 @@ def _xlsx(rows: list[list[object]], title: str = "数据") -> bytes:
     return output.getvalue()
 
 
+async def _streaming_body(response) -> bytes:
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def test_internal_business_group_gets_police_permissions():
     permissions = DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"]
     assert POLICE_DISPATCH_MANAGE in permissions
     assert POLICE_ADDRESS_MANAGE in permissions
+
+
+def test_address_manager_group_is_scoped_to_member_communities():
+    dependency = require_police_address_access()
+    user = {
+        "permissions": [POLICE_ADDRESS_MANAGE],
+        "permission_scopes": {POLICE_ADDRESS_MANAGE: "own_department"},
+        "data_scope": "own_department",
+        "member": {"position": "组长"},
+        "departments": [{"type": "community", "community_name": "冬梅"}],
+    }
+    assert asyncio.run(dependency(user=user)) == user
+
+
+def test_address_scope_maps_formal_community_names_and_admin_sees_all():
+    communities = [
+        {"id": 6, "name": "冬梅", "enabled": True},
+        {"id": 10, "name": "顾家荡", "enabled": True},
+    ]
+    member = {
+        "member": {"position": "组员"},
+        "permission_scopes": {POLICE_ADDRESS_MANAGE: "own_department"},
+        "departments": [{"type": "community", "community_name": "冬梅社区"}],
+    }
+    assert _address_scope_community_ids(member, communities) == [6]
+    assert _address_scope_community_ids({"member": {"position": "基础管控"}}, communities) is None
+    with pytest.raises(HTTPException):
+        _assert_address_scope(10, [6])
+
+
+def test_address_filter_applies_keyword_and_enabled_without_broadening_scope():
+    rows = [
+        {"name": "甲小区", "detail_address": "一号路", "community_name": "冬梅", "aliases": ["甲"], "enabled": True},
+        {"name": "乙小区", "detail_address": "二号路", "community_name": "顾家荡", "aliases": ["乙"], "enabled": False},
+    ]
+    assert [row["name"] for row in _filter_address_rows(rows, keyword="甲")] == ["甲小区"]
+    assert [row["name"] for row in _filter_address_rows(rows, enabled=False)] == ["乙小区"]
+
+
+def test_address_export_contains_expected_columns_and_scoped_rows(monkeypatch):
+    rows = [{
+        "id": 1,
+        "name": "示例小区",
+        "community_name": "冬梅",
+        "address_type": "community",
+        "detail_address": "示例路1号",
+        "pattern": "示例模式",
+        "aliases": ["示例别名一", "示例别名二"],
+        "enabled": True,
+    }]
+    page_data = AsyncMock(return_value=(rows, [{"id": 6, "name": "冬梅"}], [6]))
+    audit = AsyncMock()
+    monkeypatch.setattr("routers.police_dispatch._address_page_data", page_data)
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(MagicMock()))
+    request = Request({
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    response = asyncio.run(export_addresses(
+        data=__import__("routers.police_dispatch", fromlist=["AddressSearch"]).AddressSearch(),
+        request=request,
+        user={"id": 5},
+        conn=conn,
+    ))
+    body = asyncio.run(_streaming_body(response))
+    workbook = load_workbook(io.BytesIO(body), read_only=True, data_only=True)
+    sheet = workbook["小区管理"]
+    assert list(next(sheet.iter_rows(values_only=True))) == [
+        "名称", "正式社区", "类型", "详细地址", "模式", "别名", "状态",
+    ]
+    assert list(next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))) == [
+        "示例小区", "冬梅", "居民小区", "示例路1号", "示例模式",
+        "示例别名一，示例别名二", "启用",
+    ]
+    workbook.close()
+    assert audit.await_args.kwargs["detail"] == {"row_count": 1, "file_format": "XLSX"}
+    assert audit.await_args.kwargs["target_name"] == "community-scope"
+
+
+def test_address_delete_removes_sources_then_entry_and_commits(monkeypatch):
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchone = AsyncMock(return_value=(6,))
+    type(cursor).rowcount = __import__("unittest.mock", fromlist=["PropertyMock"]).PropertyMock(
+        side_effect=[2, 1],
+    )
+    conn = MagicMock()
+    conn.begin = AsyncMock()
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        "routers.police_dispatch._communities",
+        AsyncMock(return_value=[{"id": 6, "name": "冬梅", "enabled": True}]),
+    )
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    request = Request({
+        "type": "http", "method": "DELETE", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+    user = {
+        "id": 5,
+        "member": {"position": "组长"},
+        "permission_scopes": {POLICE_ADDRESS_MANAGE: "own_department"},
+        "departments": [{"type": "community", "community_name": "冬梅"}],
+    }
+
+    result = asyncio.run(delete_address(1, request, user=user, conn=conn))
+
+    assert result == {"message": "地址记录已删除"}
+    statements = [call.args[0] for call in cursor.execute.await_args_list]
+    assert "FOR UPDATE" in statements[0]
+    assert "DELETE FROM _police_address_sources" in statements[1]
+    assert "DELETE FROM _police_address_entries" in statements[2]
+    conn.commit.assert_awaited_once()
+    conn.rollback.assert_not_awaited()
+    assert audit.await_args.kwargs["detail"] == {"source_links_removed": 2}
+
+
+def test_address_update_and_delete_reject_cross_community(monkeypatch):
+    communities = [
+        {"id": 6, "name": "冬梅", "enabled": True},
+        {"id": 10, "name": "顾家荡", "enabled": True},
+    ]
+    monkeypatch.setattr("routers.police_dispatch._communities", AsyncMock(return_value=communities))
+    monkeypatch.setattr("routers.police_dispatch._assert_community", AsyncMock())
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", AsyncMock())
+    user = {
+        "id": 5,
+        "member": {"position": "组员"},
+        "permission_scopes": {POLICE_ADDRESS_MANAGE: "own_department"},
+        "departments": [{"type": "community", "community_name": "冬梅"}],
+    }
+    request = Request({
+        "type": "http", "method": "PUT", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+    conn, _ = _delete_batch_conn((10,))
+    payload = AddressCreate(name="越权小区", community_id=10)
+
+    with pytest.raises(HTTPException) as update_error:
+        asyncio.run(update_address(9, payload, request, user=user, conn=conn))
+    assert update_error.value.status_code == 403
+
+    delete_conn, _ = _delete_batch_conn((10,))
+    with pytest.raises(HTTPException) as delete_error:
+        asyncio.run(delete_address(9, request, user=user, conn=delete_conn))
+    assert delete_error.value.status_code == 403
+    delete_conn.rollback.assert_awaited_once()
 
 
 def test_police_access_requires_all_scope_and_hard_position_limit():

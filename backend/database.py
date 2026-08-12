@@ -253,6 +253,17 @@ async def ensure_permission_schema(cur) -> None:
         SELECT position, permission_group_id, updated_by
         FROM _position_permission_groups
     """)
+    await cur.execute("""
+        INSERT IGNORE INTO _position_permission_group_links
+            (position, permission_group_id)
+        SELECT position_name.position, permission_group.id
+        FROM (
+            SELECT '组长' AS position
+            UNION ALL SELECT '组员'
+        ) AS position_name
+        JOIN _permission_groups AS permission_group
+          ON permission_group.code='community_address_manager'
+    """)
     # 0.16.0 起社区民警不再继承 admin 的全所维护权限；保留其他人工叠加组，
     # 只移除旧默认 admin 链接并换成按关联社区只读的系统组。
     await cur.execute("""

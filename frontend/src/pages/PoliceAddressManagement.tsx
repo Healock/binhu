@@ -13,12 +13,13 @@ import {
   message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { EditOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons'
+import { DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { PageHeader, Panel } from '../components/ui'
 import {
   createPoliceAddress,
-  disablePoliceAddress,
+  deletePoliceAddress,
+  exportPoliceAddresses,
   listPoliceAddresses,
   updatePoliceAddress,
   type PoliceAddressEntry,
@@ -45,6 +46,8 @@ export default function PoliceAddressManagement() {
   const [editing, setEditing] = useState<PoliceAddressEntry | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [communityLocked, setCommunityLocked] = useState(false)
   const [error, setError] = useState('')
 
   const load = async () => {
@@ -53,6 +56,7 @@ export default function PoliceAddressManagement() {
       const response = await listPoliceAddresses({ keyword })
       setData(response.data)
       setCommunities(response.communities)
+      setCommunityLocked(response.community_locked)
       setError('')
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '小区列表读取失败')
@@ -70,7 +74,10 @@ export default function PoliceAddressManagement() {
 
   const openCreate = () => {
     setEditing(null)
-    form.setFieldsValue(emptyPayload)
+    form.setFieldsValue({
+      ...emptyPayload,
+      community_id: communities.length === 1 ? communities[0].id : 0,
+    })
     setModalOpen(true)
   }
 
@@ -86,6 +93,24 @@ export default function PoliceAddressManagement() {
       enabled: item.enabled,
     })
     setModalOpen(true)
+  }
+
+  const exportRows = async () => {
+    setExporting(true)
+    try {
+      const blob = await exportPoliceAddresses({ keyword })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `小区管理-${new Date().toISOString().slice(0, 10)}.xlsx`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      message.success(`已导出 ${data.length} 条当前可见记录`)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '导出失败')
+    } finally {
+      setExporting(false)
+    }
   }
 
   const save = async () => {
@@ -126,19 +151,24 @@ export default function PoliceAddressManagement() {
       render: (_, item) => (
         <Space>
           <Button type="link" icon={<EditOutlined />} onClick={() => openEdit(item)}>编辑</Button>
-          {item.enabled && (
-            <Popconfirm
-              title="停用这条地址记录？"
-              description="停用后不会参与新批次匹配，历史批次不受影响。"
-              onConfirm={async () => {
-                await disablePoliceAddress(item.id)
-                message.success('已停用')
+          <Popconfirm
+            title="删除这条小区记录？"
+            description="删除后将不再参与地址匹配，操作记录仍会保留。"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={async () => {
+              try {
+                await deletePoliceAddress(item.id)
+                message.success('小区记录已删除')
                 await load()
-              }}
-            >
-              <Button type="link" danger icon={<StopOutlined />}>停用</Button>
-            </Popconfirm>
-          )}
+              } catch (reason: any) {
+                message.error(reason?.response?.data?.detail || '删除失败')
+              }
+            }}
+          >
+            <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -149,7 +179,12 @@ export default function PoliceAddressManagement() {
       <PageHeader
         title="小区管理"
         description="维护居民小区、公寓、别名和正式社区；公寓只参与社区匹配，不会自动判定为无需登记"
-        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增地址</Button>}
+        extra={(
+          <Space wrap>
+            <Button icon={<DownloadOutlined />} loading={exporting} onClick={exportRows}>导出 XLSX</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增小区</Button>
+          </Space>
+        )}
       />
       {error && <Alert type="error" showIcon message={error} />}
 
@@ -192,7 +227,12 @@ export default function PoliceAddressManagement() {
             <Input maxLength={300} />
           </Form.Item>
           <Form.Item name="community_id" label="正式社区" rules={[{ required: true, message: '请选择社区' }]}>
-            <Select showSearch optionFilterProp="label" options={communityOptions} />
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={communityOptions}
+              disabled={communityLocked}
+            />
           </Form.Item>
           <div className="grid grid-cols-2 gap-3">
             <Form.Item name="address_type" label="类型">

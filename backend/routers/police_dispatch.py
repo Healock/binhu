@@ -13,6 +13,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, Field
 
 from database import get_db
@@ -35,7 +37,11 @@ from services.online_source import (
 )
 from services.online_source import source_row_hash
 from services.parsers import get_parser
-from services.permissions import POLICE_ADDRESS_MANAGE, POLICE_DISPATCH_MANAGE
+from services.permissions import (
+    POLICE_ADDRESS_MANAGE,
+    POLICE_DISPATCH_MANAGE,
+    permitted_communities,
+)
 from services.police_dispatch import (
     FINAL_ACTIONS,
     MAX_POLICE_FILE_BYTES,
@@ -72,6 +78,11 @@ class AddressCreate(BaseModel):
     community_id: int
     aliases: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = True
+
+
+class AddressSearch(BaseModel):
+    keyword: str = Field(default="", max_length=100)
+    enabled: bool | None = None
 
 
 class TaskReview(BaseModel):
@@ -159,7 +170,36 @@ def require_police_access(permission: str) -> Callable:
 
 
 require_police_dispatch = require_police_access(POLICE_DISPATCH_MANAGE)
-require_police_address = require_police_access(POLICE_ADDRESS_MANAGE)
+
+
+def require_police_address_access() -> Callable:
+    base_dependency = require_permission(POLICE_ADDRESS_MANAGE)
+
+    async def dependency(user: dict = Depends(base_dependency)) -> dict:
+        member = user.get("member") or {}
+        position = str(member.get("position") or "")
+        if position in {"组长", "组员"}:
+            return user
+        if position in ALLOWED_POLICE_POSITIONS:
+            permission_scope = (user.get("permission_scopes") or {}).get(
+                POLICE_ADDRESS_MANAGE,
+                user.get("data_scope"),
+            )
+            if permission_scope == "all":
+                return user
+            raise HTTPException(403, "小区管理岗位需要全所数据范围")
+        group_codes = _permission_group_codes(user)
+        if group_codes.intersection({"admin", "super_admin"}) or (
+            not member and user.get("role") in {"admin", "super_admin"}
+        ):
+            return user
+        raise HTTPException(403, "当前人员岗位不能进入小区管理")
+
+    dependency.__name__ = "require_police_address_manage"
+    return dependency
+
+
+require_police_address = require_police_address_access()
 
 
 def _safe_filename(filename: str | None, fallback: str) -> str:
@@ -211,8 +251,60 @@ async def _communities(cur) -> list[dict[str, Any]]:
     return result
 
 
-async def _address_entries(cur, *, enabled_only: bool = False) -> list[dict[str, Any]]:
-    where = "WHERE entry.enabled=1" if enabled_only else ""
+def _address_scope_community_ids(
+    user: dict,
+    communities: list[dict[str, Any]],
+) -> list[int] | None:
+    position = str((user.get("member") or {}).get("position") or "")
+    if position not in {"组长", "组员"}:
+        return None
+    names = permitted_communities(user, POLICE_ADDRESS_MANAGE) or []
+    normalized_names = {
+        normalize_lookup(name.removesuffix("社区"))
+        for name in names
+        if str(name).strip()
+    }
+    return [
+        int(community["id"])
+        for community in communities
+        if normalize_lookup(str(community["name"]).removesuffix("社区"))
+        in normalized_names
+    ]
+
+
+def _filter_address_rows(
+    data: list[dict[str, Any]],
+    *,
+    keyword: str = "",
+    enabled: bool | None = None,
+) -> list[dict[str, Any]]:
+    term = normalize_lookup(keyword)
+    if term:
+        data = [item for item in data if term in normalize_lookup(
+            " ".join((item["name"], item["detail_address"], item["community_name"], *item["aliases"]))
+        )]
+    if enabled is not None:
+        data = [item for item in data if item["enabled"] is enabled]
+    return data
+
+
+async def _address_entries(
+    cur,
+    *,
+    enabled_only: bool = False,
+    community_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    if enabled_only:
+        where.append("entry.enabled=1")
+    if community_ids is not None:
+        if not community_ids:
+            where.append("1=0")
+        else:
+            where.append("entry.community_id IN (" + ",".join(["%s"] * len(community_ids)) + ")")
+            params.extend(community_ids)
+    clause = "WHERE " + " AND ".join(where) if where else ""
     await cur.execute(f"""
         SELECT entry.id, entry.name, entry.detail_address,
                entry.address_type, entry.pattern, entry.community_id,
@@ -220,9 +312,9 @@ async def _address_entries(cur, *, enabled_only: bool = False) -> list[dict[str,
                entry.enabled, entry.created_at, entry.updated_at
         FROM _police_address_entries AS entry
         LEFT JOIN _communities AS community ON community.id=entry.community_id
-        {where}
+        {clause}
         ORDER BY entry.enabled DESC, community.id, entry.name, entry.id
-    """)
+    """, tuple(params))
     return [
         {
             "id": int(row[0]),
@@ -274,6 +366,29 @@ async def _assert_community(cur, community_id: int, *, require_enabled: bool = F
         raise HTTPException(400, "所选社区不存在或已停用")
 
 
+def _assert_address_scope(community_id: int, allowed_ids: list[int] | None) -> None:
+    if allowed_ids is not None and community_id not in allowed_ids:
+        raise HTTPException(403, "只能管理本人所属社区的小区")
+
+
+async def _address_page_data(
+    cur,
+    user: dict,
+    *,
+    keyword: str = "",
+    enabled: bool | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[int] | None]:
+    communities = await _communities(cur)
+    allowed_ids = _address_scope_community_ids(user, communities)
+    visible_communities = (
+        communities
+        if allowed_ids is None
+        else [item for item in communities if int(item["id"]) in allowed_ids]
+    )
+    data = await _address_entries(cur, community_ids=allowed_ids)
+    return _filter_address_rows(data, keyword=keyword, enabled=enabled), visible_communities, allowed_ids
+
+
 @router.get("/addresses")
 async def list_addresses(
     keyword: str = Query("", max_length=100),
@@ -281,18 +396,75 @@ async def list_addresses(
     user: dict = Depends(require_police_address),
     conn=Depends(get_db),
 ):
-    del user
     async with conn.cursor() as cur:
-        data = await _address_entries(cur)
-        communities = await _communities(cur)
-    term = normalize_lookup(keyword)
-    if term:
-        data = [item for item in data if term in normalize_lookup(
-            " ".join((item["name"], item["detail_address"], item["community_name"], *item["aliases"]))
-        )]
-    if enabled is not None:
-        data = [item for item in data if item["enabled"] is enabled]
-    return {"data": data, "total": len(data), "communities": communities}
+        data, communities, allowed_ids = await _address_page_data(
+            cur, user, keyword=keyword, enabled=enabled,
+        )
+    return {
+        "data": data,
+        "total": len(data),
+        "communities": communities,
+        "community_locked": allowed_ids is not None,
+    }
+
+
+@router.post("/addresses/export")
+async def export_addresses(
+    data: AddressSearch,
+    request: Request,
+    user: dict = Depends(require_police_address),
+    conn=Depends(get_db),
+):
+    async with conn.cursor() as cur:
+        rows, _, allowed_ids = await _address_page_data(
+            cur, user, keyword=data.keyword, enabled=data.enabled,
+        )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "小区管理"
+    headers = ["名称", "正式社区", "类型", "详细地址", "模式", "别名", "状态"]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1677FF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    type_labels = {"community": "居民小区", "apartment": "公寓", "other": "其他"}
+    for item in rows:
+        sheet.append([
+            item["name"], item["community_name"],
+            type_labels.get(item["address_type"], item["address_type"]),
+            item["detail_address"], item["pattern"], "，".join(item["aliases"]),
+            "启用" if item["enabled"] else "停用",
+        ])
+    widths = {"A": 28, "B": 16, "C": 12, "D": 48, "E": 24, "F": 42, "G": 10}
+    for column, width in widths.items():
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if isinstance(cell.value, str):
+                cell.number_format = "@"
+                cell.data_type = "s"
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    output.seek(0)
+    await record_admin_audit(
+        user,
+        "police_address.export",
+        target_type="police_address",
+        target_name="community-scope" if allowed_ids is not None else "all",
+        detail={"row_count": len(rows), "file_format": "XLSX"},
+        **request_audit_fields(request),
+    )
+    filename = f"小区管理-{datetime.now():%Y%m%d%H%M%S}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.post("/addresses")
@@ -303,6 +475,9 @@ async def create_address(
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
+        communities = await _communities(cur)
+        allowed_ids = _address_scope_community_ids(user, communities)
+        _assert_address_scope(data.community_id, allowed_ids)
         await _assert_community(cur, data.community_id, require_enabled=True)
         try:
             await cur.execute("""
@@ -334,10 +509,18 @@ async def update_address(
     conn=Depends(get_db),
 ):
     async with conn.cursor() as cur:
+        communities = await _communities(cur)
+        allowed_ids = _address_scope_community_ids(user, communities)
+        _assert_address_scope(data.community_id, allowed_ids)
         await _assert_community(cur, data.community_id, require_enabled=True)
-        await cur.execute("SELECT id FROM _police_address_entries WHERE id=%s", (entry_id,))
-        if not await cur.fetchone():
+        await cur.execute(
+            "SELECT id, community_id FROM _police_address_entries WHERE id=%s",
+            (entry_id,),
+        )
+        current = await cur.fetchone()
+        if not current:
             raise HTTPException(404, "地址记录不存在")
+        _assert_address_scope(int(current[1]), allowed_ids)
         try:
             await cur.execute("""
                 UPDATE _police_address_entries SET
@@ -359,24 +542,46 @@ async def update_address(
 
 
 @router.delete("/addresses/{entry_id}")
-async def disable_address(
+async def delete_address(
     entry_id: int,
     request: Request,
     user: dict = Depends(require_police_address),
     conn=Depends(get_db),
 ):
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "UPDATE _police_address_entries SET enabled=0, updated_by=%s WHERE id=%s",
-            (user["id"], entry_id),
-        )
-        if not cur.rowcount:
-            raise HTTPException(404, "地址记录不存在")
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            communities = await _communities(cur)
+            allowed_ids = _address_scope_community_ids(user, communities)
+            await cur.execute(
+                "SELECT community_id FROM _police_address_entries WHERE id=%s FOR UPDATE",
+                (entry_id,),
+            )
+            current = await cur.fetchone()
+            if not current:
+                raise HTTPException(404, "地址记录不存在")
+            _assert_address_scope(int(current[0]), allowed_ids)
+            await cur.execute(
+                "DELETE FROM _police_address_sources WHERE entry_id=%s",
+                (entry_id,),
+            )
+            source_count = int(cur.rowcount)
+            await cur.execute(
+                "DELETE FROM _police_address_entries WHERE id=%s",
+                (entry_id,),
+            )
+            if cur.rowcount != 1:
+                raise HTTPException(409, "地址记录已发生变化，请刷新后重试")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     await record_admin_audit(
-        user, "police_address.disable", target_type="police_address",
-        target_name=str(entry_id), **request_audit_fields(request),
+        user, "police_address.delete", target_type="police_address",
+        target_name=str(entry_id), detail={"source_links_removed": source_count},
+        **request_audit_fields(request),
     )
-    return {"message": "地址记录已停用"}
+    return {"message": "地址记录已删除"}
 
 
 def _task_counts(rows: list[tuple]) -> dict[str, int]:

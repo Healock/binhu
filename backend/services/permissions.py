@@ -134,6 +134,13 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "permissions": FLOW_POST_PERMISSIONS,
         "sort_order": 10,
     },
+    "community_address_manager": {
+        "name": "本社区小区管理组",
+        "description": "组长、组员维护和导出本人所属社区的小区资料",
+        "data_scope": "own_department",
+        "permissions": {POLICE_ADDRESS_MANAGE},
+        "sort_order": 15,
+    },
     "global_viewer": {
         "name": "全局查看组",
         "description": "片长默认权限，可查看全所业务数据",

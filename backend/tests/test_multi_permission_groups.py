@@ -9,7 +9,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from routers.permission_groups import _normalize_mapping_values
 from routers.users import _replace_custom_group_links, _resolve_groups
 from routers.grid_members import _resolve_department
-from services.permissions import POSITION_DEFAULT_GROUP
+from services.permissions import DEFAULT_PERMISSION_GROUPS, POLICE_ADDRESS_MANAGE, POSITION_DEFAULT_GROUP
 from services.personnel_positions import POSITION_CATEGORIES
 
 
@@ -41,6 +41,11 @@ class MultiPermissionGroupTests(unittest.IsolatedAsyncioTestCase):
             "community_registry_viewer",
         )
         self.assertEqual(POSITION_DEFAULT_GROUP["所队领导"], "admin")
+
+    def test_community_address_group_only_grants_scoped_address_management(self):
+        group = DEFAULT_PERMISSION_GROUPS["community_address_manager"]
+        self.assertEqual(group["data_scope"], "own_department")
+        self.assertEqual(group["permissions"], {POLICE_ADDRESS_MANAGE})
 
     async def test_community_police_requires_department_and_leader_uses_internal(self):
         with self.assertRaises(HTTPException):

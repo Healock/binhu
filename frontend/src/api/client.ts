@@ -1767,7 +1767,12 @@ export interface PoliceDispatchTask {
 export async function listPoliceAddresses(params?: {
   keyword?: string
   enabled?: boolean
-}): Promise<{ data: PoliceAddressEntry[]; total: number; communities: PoliceCommunityOption[] }> {
+}): Promise<{
+  data: PoliceAddressEntry[]
+  total: number
+  communities: PoliceCommunityOption[]
+  community_locked: boolean
+}> {
   const { data } = await api.get('/police-dispatch/addresses', { params })
   return data
 }
@@ -1780,8 +1785,19 @@ export async function updatePoliceAddress(id: number, payload: PoliceAddressPayl
   await api.put(`/police-dispatch/addresses/${id}`, payload)
 }
 
-export async function disablePoliceAddress(id: number): Promise<void> {
+export async function deletePoliceAddress(id: number): Promise<void> {
   await api.delete(`/police-dispatch/addresses/${id}`)
+}
+
+export async function exportPoliceAddresses(payload: {
+  keyword?: string
+  enabled?: boolean
+}): Promise<Blob> {
+  const { data } = await api.post('/police-dispatch/addresses/export', payload, {
+    responseType: 'blob',
+    timeout: 120000,
+  })
+  return data
 }
 
 export async function uploadPoliceDispatchBatch(

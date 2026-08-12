@@ -127,6 +127,21 @@ test('下发权限可以单独进入数据上传中心和小区管理', () => {
   )
 })
 
+test('组长和组员具备小区权限时可以进入小区管理', () => {
+  for (const position of ['组长', '组员']) {
+    const config = defaultMobileDockConfig(
+      'member',
+      ['police.address.manage'],
+      ['flow_post', 'community_address_manager'],
+      position,
+    )
+    assert.equal(
+      config.groups.some(group => group.items.includes('police_addresses')),
+      true,
+    )
+  }
+})
+
 test('数据上传中心只出现在管理员和超级管理员导航中', () => {
   const member = defaultMobileDockConfig('member')
   const admin = defaultMobileDockConfig('admin')
