@@ -999,6 +999,7 @@ async def transfer_ticket(
 async def supplement_ticket(
     ticket_id: int,
     data: SupplementPayload,
+    request: Request,
     user: dict = Depends(require_permission(WORKFLOW_TICKET_VIEW)),
     conn=Depends(get_workflow_db),
 ):
@@ -1062,6 +1063,19 @@ async def supplement_ticket(
     except Exception:
         await conn.rollback()
         raise
+    await record_admin_audit(
+        user,
+        "workflow.ticket.supplement",
+        target_type="work_order",
+        target_name=str(ticket_id),
+        detail={
+            "from_status": "pending_requester",
+            "to_status": "queued",
+            "field_count": len(data.form_data),
+            "note_length": len(data.note),
+        },
+        **request_audit_fields(request),
+    )
     return {"message": "补充材料已提交"}
 
 

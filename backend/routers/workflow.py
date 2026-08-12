@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import db_manager
@@ -28,6 +28,7 @@ from services.workflow_support import (
 )
 from services.registry_security import hmac_digest, normalize_identity
 from services.photo_sheet_sync import enqueue_outbox, launch_outbox_processing
+from services.audit import record_admin_audit, request_audit_fields
 
 
 router = APIRouter(prefix="/api/workflow", tags=["工单"])
@@ -679,6 +680,7 @@ async def get_ticket(
 async def claim_ticket(
     ticket_id: int,
     data: ClaimPayload,
+    request: Request,
     user: dict = Depends(require_permission(WORKFLOW_TICKET_HANDLE)),
     conn=Depends(get_workflow_db),
 ):
@@ -741,6 +743,14 @@ async def claim_ticket(
     except Exception:
         await conn.rollback()
         raise
+    await record_admin_audit(
+        user,
+        "workflow.ticket.claim",
+        target_type="work_order",
+        target_name=str(ticket_id),
+        detail={"from_status": "queued", "to_status": "in_progress"},
+        **request_audit_fields(request),
+    )
     return {"message": "工单已领取"}
 
 
@@ -748,6 +758,7 @@ async def claim_ticket(
 async def decide_ticket(
     ticket_id: int,
     data: Decision,
+    request: Request,
     user: dict = Depends(require_permission(WORKFLOW_TICKET_HANDLE)),
     conn=Depends(get_workflow_db),
 ):
@@ -894,6 +905,20 @@ async def decide_ticket(
     except Exception:
         await conn.rollback()
         raise
+    await record_admin_audit(
+        user,
+        "workflow.ticket.decision",
+        target_type="work_order",
+        target_name=str(ticket_id),
+        detail={
+            "action": data.action,
+            "from_status": row[0],
+            "to_status": next_status,
+            "result_status": data.result_status or None,
+            "note_length": len(data.note),
+        },
+        **request_audit_fields(request),
+    )
     return {"message": "工单状态已更新", "status": next_status}
 
 
