@@ -19,6 +19,7 @@ from openpyxl.utils import get_column_letter
 MAX_POLICE_FILE_BYTES = 30 * 1024 * 1024
 FINAL_ACTIONS = {"dispatch", "no_registration", "transfer", "duplicate_exclude"}
 MISSING_PHONE_ANALYSIS_REASON = "缺少手机号，需基础管控先研判；补齐手机号后才能下发"
+IDENTITY_PATTERN = re.compile(r"^(?:\d{15}|\d{17}[0-9X])$")
 
 
 class PoliceWorkbookError(ValueError):
@@ -314,6 +315,10 @@ def apply_clean_import_actions(
         ]
         if missing:
             row["suggestion_reason"] = f"缺少必要字段：{'、'.join(missing)}"
+            row["allocation_mode"] = "conflict"
+            continue
+        if not IDENTITY_PATTERN.fullmatch(normalize_identity(row.get("identity_number", ""))):
+            row["suggestion_reason"] = "身份证号格式异常，需要人工确认"
             row["allocation_mode"] = "conflict"
             continue
         if row.get("duplicate_group_key"):

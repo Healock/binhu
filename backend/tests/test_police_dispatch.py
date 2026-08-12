@@ -136,6 +136,28 @@ def test_clean_import_requires_clean_columns_and_maps_registration_status():
     assert rows[1]["auto_final_action"] == "no_registration"
 
 
+def test_clean_import_keeps_invalid_identity_for_manual_review():
+    rows = [{
+        "source_row": 2,
+        "source_name": "平安码",
+        "community_name": "长板",
+        "person_name": "甲",
+        "identity_number": "32050020000101",
+        "phone": "18800000001",
+        "original_address": "长板花园",
+        "registration_status": "流口未登记",
+    }]
+
+    apply_clean_import_actions(
+        rows,
+        [{"id": 1, "name": "长板", "aliases": [], "enabled": True}],
+    )
+
+    assert rows[0]["auto_final_action"] == ""
+    assert rows[0]["allocation_mode"] == "conflict"
+    assert rows[0]["suggestion_reason"] == "身份证号格式异常，需要人工确认"
+
+
 def test_parse_xls_uses_same_header_logic(monkeypatch):
     monkeypatch.setattr(
         "services.police_dispatch._read_xls",
