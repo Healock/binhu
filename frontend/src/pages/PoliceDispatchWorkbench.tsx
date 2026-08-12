@@ -169,7 +169,7 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
   )
 }
 
-export default function PoliceDispatchWorkbench() {
+export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all' | 'analysis' }) {
   const { user } = useAuth()
   const mobile = useMobileViewport()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -179,8 +179,9 @@ export default function PoliceDispatchWorkbench() {
   const [tasks, setTasks] = useState<PoliceDispatchTask[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const requestedStatus = searchParams.get('status') || 'pending_review'
-  const requestedCategory = searchParams.get('category') || 'all'
+  const analysisOnly = mode === 'analysis'
+  const requestedStatus = analysisOnly ? 'pending_review' : (searchParams.get('status') || 'pending_review')
+  const requestedCategory = analysisOnly ? 'manual' : (searchParams.get('category') || 'all')
   const [status, setStatus] = useState(
     statusOptions.some(option => option.value === requestedStatus) ? requestedStatus : 'pending_review',
   )
@@ -231,8 +232,8 @@ export default function PoliceDispatchWorkbench() {
       if (nextId) {
         const next = new URLSearchParams(searchParams)
         next.set('batch', String(nextId))
-        next.set('status', status)
-        next.set('category', category)
+        next.set('status', analysisOnly ? 'pending_review' : status)
+        next.set('category', analysisOnly ? 'manual' : category)
         setSearchParams(next, { replace: true })
       }
       setError('')
@@ -253,8 +254,8 @@ export default function PoliceDispatchWorkbench() {
     try {
       const result = await listPoliceDispatchTasks({
         batch_id: batchId,
-        status,
-        category,
+        status: analysisOnly ? 'pending_review' : status,
+        category: analysisOnly ? 'manual' : category,
         keyword: appliedKeyword,
         page: targetPage,
         page_size: 20,
@@ -277,17 +278,17 @@ export default function PoliceDispatchWorkbench() {
     if (!batchId) return
     const next = new URLSearchParams(searchParams)
     next.set('batch', String(batchId))
-    next.set('status', status)
-    next.set('category', category)
+    next.set('status', analysisOnly ? 'pending_review' : status)
+    next.set('category', analysisOnly ? 'manual' : category)
     setSearchParams(next, { replace: true })
-  }, [batchId, category, setSearchParams, status])
+  }, [analysisOnly, batchId, category, setSearchParams, status])
 
   const changeBatch = (value: number) => {
     setBatchId(value)
     const next = new URLSearchParams(searchParams)
     next.set('batch', String(value))
-    next.set('status', status)
-    next.set('category', category)
+    next.set('status', analysisOnly ? 'pending_review' : status)
+    next.set('category', analysisOnly ? 'manual' : category)
     setSearchParams(next, { replace: true })
     setPage(1)
   }
@@ -506,7 +507,7 @@ export default function PoliceDispatchWorkbench() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-xs font-medium text-blue-100">内勤业务 · 共享队列</div>
-            <h1 className="mt-1 text-xl font-semibold">全链条任务处理</h1>
+            <h1 className="mt-1 text-xl font-semibold">{analysisOnly ? '研判' : '下发任务处理'}</h1>
           </div>
           <Button ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
         </div>
@@ -562,16 +563,25 @@ export default function PoliceDispatchWorkbench() {
       {error && <Alert type="error" showIcon message={error} />}
 
       <section className="app-card p-3 sm:p-4">
-        <div className="overflow-x-auto pb-1">
-          <Segmented
-            block
-            className="min-w-[680px] md:min-w-0"
-            value={status}
-            options={statusOptions}
-            onChange={value => setStatus(String(value))}
+        {!analysisOnly && (
+          <div className="overflow-x-auto pb-1">
+            <Segmented
+              block
+              className="min-w-[680px] md:min-w-0"
+              value={status}
+              options={statusOptions}
+              onChange={value => setStatus(String(value))}
+            />
+          </div>
+        )}
+        {analysisOnly && (
+          <Alert
+            type="info"
+            showIcon
+            message="这里集中处理导入后无法直接下发的数据；完成研判后，结果仍回到原下发批次。"
           />
-        </div>
-        <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(280px,1fr)_148px_auto] lg:items-center">
+        )}
+        <div className={`mt-3 grid gap-2 ${analysisOnly ? 'lg:grid-cols-[minmax(280px,1fr)_auto]' : 'lg:grid-cols-[minmax(280px,1fr)_148px_auto]'} lg:items-center`}>
           <Input.Search
             allowClear
             placeholder="姓名、身份证号、手机号、地址"
@@ -579,22 +589,24 @@ export default function PoliceDispatchWorkbench() {
             onChange={event => setKeyword(event.target.value)}
             onSearch={() => setAppliedKeyword(keyword.trim())}
           />
-          <Select value={category} options={categoryOptions} onChange={setCategory} />
+          {!analysisOnly && <Select value={category} options={categoryOptions} onChange={setCategory} />}
           <div className="flex min-w-0 items-center justify-between gap-3 lg:justify-end">
             <span className="shrink-0 text-xs text-slate-500">当前筛选 {total} 条</span>
-            <Popconfirm
-              title="确认当前筛选结果的全部建议？"
-              description="最多处理 2000 条；含人工判断的任务会阻止整批操作，请先逐条处理。"
-              onConfirm={acceptCurrentFilter}
-            >
-              <Button
-                icon={<CheckOutlined />}
-                disabled={total === 0 || status === 'pending_publish' || status === 'completed'}
-                loading={saving}
+            {!analysisOnly && (
+              <Popconfirm
+                title="确认当前筛选结果的全部建议？"
+                description="最多处理 2000 条；含人工判断的任务会阻止整批操作，请先逐条处理。"
+                onConfirm={acceptCurrentFilter}
               >
-                批量确认
-              </Button>
-            </Popconfirm>
+                <Button
+                  icon={<CheckOutlined />}
+                  disabled={total === 0 || status === 'pending_publish' || status === 'completed'}
+                  loading={saving}
+                >
+                  批量确认
+                </Button>
+              </Popconfirm>
+            )}
           </div>
         </div>
       </section>

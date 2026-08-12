@@ -110,12 +110,12 @@ class MobileNavigationConfigTests(unittest.TestCase):
                         "items": ["grid_members"],
                     },
                     {
-                        "id": "tasks",
-                        "items": ["workflow_tickets"],
-                    },
-                    {
                         "id": "summaries",
                         "items": ["online_summary", "visit_summary"],
+                    },
+                    {
+                        "id": "system",
+                        "items": ["settings", "workflow_config"],
                     },
                 ],
             },
@@ -178,6 +178,36 @@ class MobileNavigationConfigTests(unittest.TestCase):
         }
         self.assertIn("data_upload", items)
         self.assertIn("police_addresses", items)
+
+    def test_old_task_items_move_to_new_navigation_pages(self):
+        config = normalize_mobile_dock_config(
+            {
+                "version": 2,
+                "groups": [
+                    {"id": "workspace", "items": ["dashboard"]},
+                    {
+                        "id": "tasks",
+                        "items": ["police_tasks", "workflow_tickets"],
+                    },
+                ],
+            },
+            "member",
+            [
+                "police.dispatch.manage",
+                "workflow.ticket.view",
+                "workflow.ticket.handle",
+            ],
+            position="基础管控",
+        )
+        groups = {group["id"]: group["items"] for group in config["groups"]}
+        self.assertEqual(
+            groups["workspace"],
+            ["dashboard", "workflow_tickets"],
+        )
+        self.assertEqual(
+            groups["tasks"],
+            ["police_tasks", "police_analysis", "photo_tasks"],
+        )
 
     def test_strict_validation_rejects_duplicates_and_forbidden_items(self):
         with self.assertRaisesRegex(ValueError, "分类不能重复"):
@@ -282,9 +312,6 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
                 "id": "summaries",
                 "items": ["visit_summary", "online_summary"],
             }, {
-                "id": "tasks",
-                "items": ["workflow_tickets"],
-            }, {
                 "id": "resources",
                 "items": [
                     "grid_members",
@@ -292,6 +319,9 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
                     "registry",
                     "watch_people",
                 ],
+            }, {
+                "id": "system",
+                "items": ["settings", "workflow_config"],
             }],
         }
         self.assertEqual(json.loads(params[1]), expected_dock_config)
