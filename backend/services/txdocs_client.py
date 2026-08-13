@@ -620,7 +620,13 @@ class TxDocsClient:
         metadata = metadata or {"type": "text"}
         cell_type = metadata.get("write_type") or metadata.get("type")
         cell_value: dict
-        preserve_as_text = any(label in str(column_name) for label in ("日期", "时间"))
+        preserve_as_text = any(
+            label in str(column_name)
+            for label in (
+                "日期", "时间", "身份证", "证件", "手机号", "手机",
+                "电话", "联系号码", "联系方式",
+            )
+        )
         if cell_type == "number" and str(value).strip() and not preserve_as_text:
             try:
                 number = float(str(value).strip())

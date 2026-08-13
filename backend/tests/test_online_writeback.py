@@ -677,6 +677,22 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
         self.assertEqual(cell["cellValue"], {"text": "8.10"})
 
+    def test_identity_and_phone_number_metadata_are_always_written_as_text(self):
+        client = TxDocsClient("client", "token", "user")
+        cases = [
+            ("身份证号", "320525199110160258"),
+            ("参考身份证号码", "320525199110160251"),
+            ("手机号码", "13800138000"),
+            ("联系方式", "13800138000"),
+        ]
+        for column_name, value in cases:
+            with self.subTest(column_name=column_name):
+                request = client.build_update_cell_request(
+                    "sheet", 8, 4, value, {"type": "number"}, column_name=column_name
+                )
+                cell = request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+                self.assertEqual(cell["cellValue"], {"text": value})
+
     def test_regular_number_metadata_still_uses_number(self):
         request = TxDocsClient("client", "token", "user").build_update_cell_request(
             "sheet", 8, 4, "8.10", {"type": "number"}, column_name="数量"
