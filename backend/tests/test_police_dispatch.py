@@ -56,6 +56,7 @@ from routers.police_dispatch import (
     require_police_access,
     update_task_business_fields,
     _address_scope_community_ids,
+    _allows_clean_partial_publish,
     _assert_address_scope,
     _filter_address_rows,
     require_police_address_access,
@@ -569,7 +570,7 @@ def test_publish_values_match_uses_only_saved_physical_columns():
 
 
 def test_task_counts_keeps_review_and_publish_states_separate():
-    counts = _task_counts([(10, 3, 7, 2, 1, 6, 4, 2, 1, 5, 1)])
+    counts = _task_counts([(10, 3, 7, 2, 1, 6, 4, 2, 1, 5, 1, 2, 1, 1, 1, 3, 2)])
 
     assert counts == {
         "total": 10,
@@ -583,11 +584,28 @@ def test_task_counts_keeps_review_and_publish_states_separate():
         "abnormal": 1,
         "pending_publish": 5,
         "published": 1,
-        "retryable": 0,
-        "needs_reconciliation": 0,
-        "conflict": 0,
-        "cache_pending": 0,
+        "retryable": 2,
+        "needs_reconciliation": 1,
+        "conflict": 1,
+        "cache_pending": 1,
+        "publishable": 3,
+        "partial_publishable": 2,
     }
+
+
+def test_only_clean_batches_can_publish_reviewed_rows_before_all_reviews_finish():
+    counts = {"pending_review": 2, "partial_publishable": 5}
+
+    assert _allows_clean_partial_publish({"import_mode": "clean", "counts": counts})
+    assert not _allows_clean_partial_publish({"import_mode": "raw", "counts": counts})
+    assert not _allows_clean_partial_publish({
+        "import_mode": "clean",
+        "counts": {"pending_review": 2, "partial_publishable": 0},
+    })
+    assert not _allows_clean_partial_publish({
+        "import_mode": "clean",
+        "counts": {"pending_review": 0, "partial_publishable": 5},
+    })
 
 
 def test_batch_payloads_expands_mysql_placeholders_before_execution():

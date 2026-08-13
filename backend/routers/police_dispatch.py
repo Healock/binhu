@@ -664,7 +664,7 @@ def _task_counts(rows: list[tuple]) -> dict[str, int]:
         "transfer": 0, "dispatch": 0, "balanced": 0, "duplicate": 0,
         "abnormal": 0, "pending_publish": 0, "published": 0,
         "retryable": 0, "needs_reconciliation": 0, "conflict": 0,
-        "cache_pending": 0,
+        "cache_pending": 0, "publishable": 0, "partial_publishable": 0,
     }
     for row in rows:
         result["total"] += int(row[0] or 0)
@@ -683,6 +683,10 @@ def _task_counts(rows: list[tuple]) -> dict[str, int]:
             result["needs_reconciliation"] += int(row[12] or 0)
             result["conflict"] += int(row[13] or 0)
             result["cache_pending"] += int(row[14] or 0)
+        if len(row) > 15:
+            result["publishable"] += int(row[15] or 0)
+        if len(row) > 16:
+            result["partial_publishable"] += int(row[16] or 0)
     return result
 
 
@@ -703,7 +707,9 @@ async def _batch_counts(cur, batch_id: int) -> dict[str, int]:
                SUM(publish_status='retryable'),
                SUM(publish_status='needs_reconciliation'),
                SUM(publish_status='conflict'),
-               SUM(cache_pending=1)
+               SUM(cache_pending=1),
+               SUM(publish_status IN ('pending', 'retryable')),
+               SUM(publish_status IN ('pending', 'retryable') AND duplicate_group_key='')
         FROM _police_dispatch_tasks WHERE batch_id=%s
     """, (batch_id,))
     return _task_counts([await cur.fetchone()])
@@ -765,7 +771,9 @@ async def _batch_payloads(cur, batch_ids: list[int]) -> list[dict[str, Any]]:
                SUM(publish_status='retryable'),
                SUM(publish_status='needs_reconciliation'),
                SUM(publish_status='conflict'),
-               SUM(cache_pending=1)
+               SUM(cache_pending=1),
+               SUM(publish_status IN ('pending', 'retryable')),
+               SUM(publish_status IN ('pending', 'retryable') AND duplicate_group_key='')
         FROM _police_dispatch_tasks
         WHERE batch_id IN ({placeholders}) GROUP BY batch_id
     """, batch_ids)
@@ -2082,6 +2090,15 @@ async def _mark_overwrite_uncertain(
     return True
 
 
+def _allows_clean_partial_publish(batch: dict[str, Any]) -> bool:
+    counts = batch.get("counts") or {}
+    return (
+        batch.get("import_mode") == "clean"
+        and int(counts.get("pending_review") or 0) > 0
+        and int(counts.get("partial_publishable") or 0) > 0
+    )
+
+
 @router.post("/batches/{batch_id}/publish")
 async def publish_batch(
     batch_id: int,
@@ -2092,26 +2109,33 @@ async def publish_batch(
     parser = get_parser("全链条")
     async with conn.cursor() as cur:
         batch = await _batch_payload(cur, batch_id)
-        if batch["counts"]["pending_review"]:
+        allow_clean_partial_publish = _allows_clean_partial_publish(batch)
+        if batch["counts"]["pending_review"] and not allow_clean_partial_publish:
             raise HTTPException(409, "必须先完成全批审核")
-        await cur.execute("""
-            SELECT duplicate_group_key,
-                   SUM(final_action<>'duplicate_exclude') AS kept
-            FROM _police_dispatch_tasks
-            WHERE batch_id=%s AND duplicate_group_key<>''
-            GROUP BY duplicate_group_key
-            HAVING kept<>1
-            LIMIT 1
-        """, (batch_id,))
-        if await cur.fetchone():
-            raise HTTPException(409, "每个重复人员组必须且只能确认保留一条")
+        if not allow_clean_partial_publish:
+            await cur.execute("""
+                SELECT duplicate_group_key,
+                       SUM(final_action<>'duplicate_exclude') AS kept
+                FROM _police_dispatch_tasks
+                WHERE batch_id=%s AND duplicate_group_key<>''
+                GROUP BY duplicate_group_key
+                HAVING kept<>1
+                LIMIT 1
+            """, (batch_id,))
+            if await cur.fetchone():
+                raise HTTPException(409, "每个重复人员组必须且只能确认保留一条")
         if not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         spreadsheets = await _enabled_spreadsheets(cur, "全链条")
         if len(spreadsheets) != 1:
             raise HTTPException(409, "全链条业务没有唯一启用的腾讯来源表")
         spreadsheet = spreadsheets[0]
-        await cur.execute("""
+        duplicate_filter = (
+            "AND task.duplicate_group_key=''"
+            if allow_clean_partial_publish
+            else ""
+        )
+        await cur.execute(f"""
             SELECT task.id, task.source_row, task.source_name, task.person_name,
                    task.identity_number, task.phone, task.original_address,
                    task.source_created_time, task.transfer_note,
@@ -2120,6 +2144,7 @@ async def publish_batch(
             JOIN _communities AS community ON community.id=task.final_community_id
             WHERE task.batch_id=%s AND task.final_action='dispatch'
               AND task.publish_status IN ('pending', 'retryable')
+              {duplicate_filter}
             ORDER BY task.source_row, task.id
         """, (batch_id,))
         pending = [
@@ -2135,6 +2160,8 @@ async def publish_batch(
             }
             for row in await cur.fetchall()
         ]
+        if not pending:
+            raise HTTPException(409, "当前批次没有可整批发布的已审核任务")
         missing_phone_count = sum(not item["phone"].strip() for item in pending)
         if missing_phone_count:
             raise HTTPException(

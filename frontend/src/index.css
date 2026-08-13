@@ -155,6 +155,10 @@
   align-items: stretch;
 }
 
+.mobile-task-list__empty {
+  grid-column: 1 / -1;
+}
+
 .mobile-task-filter-card {
   padding: 14px;
 }
@@ -552,6 +556,28 @@
   -webkit-line-clamp: 2;
 }
 
+.police-dispatch-task-card .mobile-task-item-card__key-row--address dd {
+  display: block;
+}
+
+.police-dispatch-task-card .mobile-task-item-card__key-row--address .mobile-task-copy-value {
+  height: auto;
+  min-height: 22px;
+  align-items: flex-start;
+  white-space: normal;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.police-dispatch-task-card .mobile-task-item-card__key-row--address .mobile-task-copy-value__text {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .mobile-task-item-card__key-row--old-address {
   margin-top: -1px;
   align-items: start;
@@ -943,6 +969,45 @@
 .mobile-task-item-card .mobile-task-analysis {
   margin-top: 7px;
   padding: 8px 10px;
+}
+
+.police-dispatch-task-card__suggestion {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.police-dispatch-task-card__suggestion .mobile-task-analysis__label {
+  color: var(--app-text-secondary);
+}
+
+.police-dispatch-task-card__suggestion .mobile-task-analysis__value {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+  -webkit-line-clamp: 2;
+}
+
+.police-dispatch-task-card__suggestion-reason {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.police-dispatch-task-card__error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--app-danger) 30%, var(--app-border));
+  border-radius: 10px;
+  color: var(--app-danger);
+  background: color-mix(in srgb, var(--app-danger) 8%, var(--app-surface));
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .mobile-task-analysis__label {
