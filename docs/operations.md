@@ -790,7 +790,7 @@ BINHU_BACKUP_DIR=<服务器上的专用备份目录>
 Pull Request 和 `CI` 工作流没有生产 Secret，也不能连接服务器。代码必须先通过 PR 合并到 `main`，然后由
 发布人手动填写：
 
-- `ref`：已经合并到 `main` 的提交、分支或标签；通常使用 `main`。
+- `ref`：必须是已经合并到 `main` 的完整 40 位小写 Git 提交号。禁止使用 7/8 位短提交号、分支名或标签；短提交号可能无法被 GitHub Actions 的检出步骤解析，导致发布在构建前失败。
 - `expected_version`：必须与该提交根目录 `VERSION` 完全一致。
 - `backup_scope`：`none`、`online`、`daily` 或 `all`，按本手册“部署服务器前”的风险范围选择。
 - `release_scope`：默认 `auto`。生产提交可验证时，纯后端变化发送后端精简包，纯前端变化发送前端精简包；
@@ -801,12 +801,18 @@ Pull Request 和 `CI` 工作流没有生产 Secret，也不能连接服务器。
 
 ```powershell
 $version = (Get-Content VERSION -Raw).Trim()
+$releaseCommit = (git rev-parse origin/main).Trim()
+if ($releaseCommit -notmatch '^[0-9a-f]{40}$') { throw '发布提交号必须是完整 40 位小写 Git SHA' }
+git merge-base --is-ancestor $releaseCommit origin/main
+if ($LASTEXITCODE -ne 0) { throw '发布提交尚未进入 main' }
 gh workflow run deploy-production.yml --ref main `
-  -f ref=main `
+  -f ref=$releaseCommit `
   -f expected_version=$version `
   -f backup_scope=none `
   -f release_scope=auto
 ```
+
+其中命令行参数 `--ref main` 表示从 `main` 读取工作流定义；表单参数 `-f ref=$releaseCommit` 才是实际发布的代码提交，两者不能混用。触发后应在工作流标题中确认显示的是完整 40 位提交号。
 
 `backup_scope=none` 只适用于纯前端，或不修改数据库结构和数据写入逻辑的普通后端更新。涉及在线同步、导入、日报计算、数据库结构或迁移时，必须按“部署服务器前”的风险表改为 `online`、`daily` 或 `all`，不能因为自动工作流方便就一律填 `none`。
 
