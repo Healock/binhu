@@ -27,6 +27,13 @@ test('profile upload and light theme contrast', () => {
   assert.match(styles, /police-dispatch-workbench__hero[\s\S]*var\(--app-surface\)/)
 })
 
+test('账号区域优先显示已上传头像并保留默认图标兜底', () => {
+  const layout = readFileSync(new URL('../src/components/Layout.tsx', import.meta.url), 'utf8')
+  assert.match(layout, /<Avatar[\s\S]*src=\{user\.avatar_url \|\| undefined\}/)
+  assert.match(layout, /icon=\{<UserOutlined \/>\}/)
+  assert.match(layout, /getUserDisplayName\(user\)\.slice\(0, 1\)/)
+})
+
 test('热力图只接收所选年度日期并保留年度边界', () => {
   assert.deepEqual(contributionDaysForYear([
     { date: '2025-12-31', count: 8 },

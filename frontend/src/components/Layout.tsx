@@ -7,7 +7,7 @@ import {
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Popover } from 'antd'
+import { Alert, Avatar, Button, Popover } from 'antd'
 import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, ROLE_LABELS } from '../types'
 import {
@@ -138,8 +138,11 @@ export default function Layout() {
             <button
               type="button"
               aria-label="打开账号菜单"
-              className="ml-auto mr-11 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+              className="ml-auto mr-11 flex items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
             >
+              <Avatar size={24} src={user.avatar_url || undefined} icon={<UserOutlined />}>
+                {getUserDisplayName(user).slice(0, 1)}
+              </Avatar>
               {getUserDisplayName(user)}
             </button>
           </Popover>
@@ -218,9 +221,14 @@ export default function Layout() {
         {user && (
           <div className="shrink-0 border-t border-slate-200 p-3">
             <div className="flex items-center gap-2.5 px-1 py-1">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-                <UserOutlined />
-              </span>
+              <Avatar
+                size={36}
+                src={user.avatar_url || undefined}
+                icon={<UserOutlined />}
+                className="shrink-0 bg-slate-100 text-slate-600"
+              >
+                {getUserDisplayName(user).slice(0, 1)}
+              </Avatar>
               <button
                 type="button"
                 onClick={() => {
