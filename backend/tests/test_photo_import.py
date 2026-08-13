@@ -10,6 +10,7 @@ from routers.workflow_extended import (
     PhotoRequestSearchPayload,
     RestoreQueuedPayload,
     _can_upload_photo_batch,
+    _attachment_display_name,
     _photo_matches,
     _photo_duplicate_all,
     _refresh_photo_import_preview,
@@ -22,7 +23,9 @@ from routers.workflow_extended import (
 )
 from routers.workflow_extended import preview_photo_import
 from services.photo_import import (
+    canonical_photo_filename,
     inspect_photo_zip,
+    is_generated_photo_filename,
     parse_photo_filename,
     read_photo_zip_members,
     repair_legacy_zip_text,
@@ -52,6 +55,23 @@ def make_legacy_gbk_zip(name: str, content: bytes) -> bytes:
 
 
 class PhotoImportParserTests(unittest.TestCase):
+    def test_canonical_photo_filename_uses_jpg_for_jpeg(self):
+        self.assertEqual(
+            canonical_photo_filename("张三", "32050020000101001x", ".jpeg"),
+            "张三_32050020000101001X.jpg",
+        )
+        self.assertTrue(is_generated_photo_filename("照片-42-deadbeef.jpg"))
+        self.assertTrue(is_generated_photo_filename("photo-42-deadbeef"))
+        self.assertFalse(is_generated_photo_filename("张三_32050020000101001X.jpg"))
+        self.assertEqual(
+            _attachment_display_name("photo-42-deadbeef", "image/jpeg", ("张三", "32050020000101001x")),
+            "张三_32050020000101001X.jpg",
+        )
+        self.assertEqual(
+            _attachment_display_name("原始附件.jpg", "image/jpeg", ("张三", "32050020000101001x")),
+            "原始附件.jpg",
+        )
+
     def test_filename_uses_last_underscore_and_normalizes_x(self):
         safe_name, person_name, identity = parse_photo_filename(
             "张_三_32050020000101001x.jpg"
