@@ -24,6 +24,7 @@ import {
   HistoryOutlined,
   PlusOutlined,
   SearchOutlined,
+  SortAscendingOutlined,
 } from '@ant-design/icons'
 import {
   createQuerySourceRow,
@@ -82,6 +83,8 @@ export default function DataQuery() {
   const [source, setSource] = useState<'online' | 'archive'>('online')
   const [searchInput, setSearchInput] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [sortBy, setSortBy] = useState<string>()
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [rows, setRows] = useState<QueryDataRow[]>([])
   const [columns, setColumns] = useState<string[]>([])
   const [columnMeta, setColumnMeta] = useState<QueryColumnMeta[]>([])
@@ -182,6 +185,8 @@ export default function DataQuery() {
         keyword: keyword || undefined,
         filters: sheetRequestFilters.filters,
         grid_filters: sheetRequestFilters.gridFilters,
+        sort_by: sortBy,
+        sort_order: sortBy ? sortOrder : undefined,
       }))
       if (sequence !== fetchSequence.current) return
       setRows(result.data)
@@ -220,7 +225,7 @@ export default function DataQuery() {
     } finally {
       if (sequence === fetchSequence.current) setLoading(false)
     }
-  }, [selectedType, source, keyword, sheetRequestFilters])
+  }, [selectedType, source, keyword, sheetRequestFilters, sortBy, sortOrder])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -438,6 +443,8 @@ export default function DataQuery() {
     setSource(value)
     setMobilePage(1)
     setSheetFilterCriteria({})
+    setSortBy(undefined)
+    setSortOrder('asc')
     setRows([])
     setCanAdd(false)
     setRequiredFields([])
@@ -449,6 +456,8 @@ export default function DataQuery() {
     setSelectedType(value)
     setMobilePage(1)
     setSheetFilterCriteria({})
+    setSortBy(undefined)
+    setSortOrder('asc')
     setRows([])
     setCanAdd(false)
     setRequiredFields([])
@@ -555,8 +564,54 @@ export default function DataQuery() {
                 { value: 'archive', label: '归档数据' },
               ]}
             />
+            <Select
+              allowClear
+              showSearch
+              value={sortBy}
+              placeholder="选择排序字段"
+              optionFilterProp="label"
+              className="query-spreadsheet-toolbar__sort-field"
+              suffixIcon={<SortAscendingOutlined />}
+              options={columns.map(column => ({ value: column, label: column }))}
+              onChange={value => {
+                setSortBy(value)
+                setMobilePage(1)
+                setSelectedSheetRow(null)
+              }}
+            />
+            {sortBy && (
+              <Segmented
+                value={sortOrder}
+                aria-label="排序方向"
+                options={[
+                  { value: 'asc', label: '升序' },
+                  { value: 'desc', label: '降序' },
+                ]}
+                onChange={value => {
+                  setSortOrder(value as 'asc' | 'desc')
+                  setMobilePage(1)
+                  setSelectedSheetRow(null)
+                }}
+              />
+            )}
           </div>
           <div className="query-spreadsheet-toolbar__status">
+            {sortBy && (
+              <>
+                <Tag color="cyan">按 {sortBy} {sortOrder === 'asc' ? '升序' : '降序'}</Tag>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setSortBy(undefined)
+                    setSortOrder('asc')
+                    setMobilePage(1)
+                    setSelectedSheetRow(null)
+                  }}
+                >
+                  清除排序
+                </Button>
+              </>
+            )}
             {Object.keys(sheetFilterCriteria).length > 0 && (
               <>
                 <Tag color="blue">{Object.keys(sheetFilterCriteria).length} 列筛选中</Tag>
@@ -662,7 +717,7 @@ export default function DataQuery() {
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。工具栏中的筛选条件会重新查询全部记录，格式调整仅影响当前查看，不回写腾讯表格。
+          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不回写腾讯表格。
         </div>
       </div>
 

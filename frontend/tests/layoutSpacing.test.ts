@@ -44,6 +44,30 @@ test('在线查询桌面端把数据范围控件放在工作表状态提示左�
   assert.match(styles, /\.query-spreadsheet-toolbar__type\s*\{[^}]*width:\s*176px/s)
 })
 
+test('在线查询工作表提供后台全量排序并在切换数据范围时清除', () => {
+  const querySource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(querySource, /placeholder="选择排序字段"/)
+  assert.match(querySource, /sort_by:\s*sortBy/)
+  assert.match(querySource, /sort_order:\s*sortBy \? sortOrder : undefined/)
+  assert.match(querySource, /按 \{sortBy\} \{sortOrder === 'asc' \? '升序' : '降序'\}/)
+  assert.match(querySource, /清除排序/)
+
+  const sourceReset = querySource.slice(
+    querySource.indexOf('const changeSourceType'),
+    querySource.indexOf('const changeBusinessType'),
+  )
+  const typeReset = querySource.slice(
+    querySource.indexOf('const changeBusinessType'),
+    querySource.indexOf('return (', querySource.indexOf('const changeBusinessType')),
+  )
+  assert.match(sourceReset, /setSortBy\(undefined\)/)
+  assert.match(typeReset, /setSortBy\(undefined\)/)
+})
+
 test('下发导入工作台提供原始与已处理数据模式', () => {
   const panelSource = readFileSync(
     new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
