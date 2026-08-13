@@ -182,7 +182,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   return (
     <Panel
       title="数据下发"
-      description="这里只负责上传、预览和导入文件；审核与整批发布请前往“下发任务处理”"
+      description="这里只负责上传、预览和导入文件；审核与选择发布请前往“下发任务处理”"
       padded={false}
     >
       <div className="space-y-5 p-5">

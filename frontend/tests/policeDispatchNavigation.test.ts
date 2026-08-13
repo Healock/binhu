@@ -57,7 +57,7 @@ test('使用搜索图标的下发和小区页面显式导入图标', () => {
   }
 })
 
-test('已处理数据可从待发布工作台整批发布且卡片沿用流口任务规范', () => {
+test('已处理数据在任务工作台多选发布且卡片沿用流口任务规范', () => {
   const workbenchSource = readFileSync(
     new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
     'utf8',
@@ -71,10 +71,16 @@ test('已处理数据可从待发布工作台整批发布且卡片沿用流口�
     'utf8',
   )
 
-  assert.match(workbenchSource, /整批发布（\{publishableCount\}）/)
-  assert.match(workbenchSource, /其余.*pending_review.*待复核记录不会发布/s)
+  assert.match(workbenchSource, /选择发布/)
+  assert.match(workbenchSource, /全选当前筛选/)
+  assert.match(workbenchSource, /已选 \{selectedCount\} 条/)
+  assert.match(workbenchSource, /发布所选/)
+  assert.match(workbenchSource, /getPoliceDispatchPublishableSelection/)
+  assert.match(workbenchSource, /publishSelectedPoliceDispatchTasks/)
+  assert.match(workbenchSource, /selectionMode \? 'is-selection-mode'/)
+  assert.match(workbenchSource, /selected \? 'is-selected'/)
   assert.match(workbenchSource, /该条已经审核，无需逐条保存/)
-  assert.match(workbenchSource, /className="mobile-task-item-card police-dispatch-task-card"/)
+  assert.match(workbenchSource, /'mobile-task-item-card police-dispatch-task-card'/)
   assert.match(workbenchSource, /mobile-task-item-card__key-row--identity/)
   assert.match(workbenchSource, /mobile-task-item-card__key-row--phone/)
   assert.match(workbenchSource, /mobile-task-item-card__key-row--address/)
@@ -86,10 +92,11 @@ test('已处理数据可从待发布工作台整批发布且卡片沿用流口�
   assert.match(workbenchSource, /<CopyIconButton value=\{value\} label=\{label\} \/>/)
   assert.match(panelSource, /status=pending_publish&category=all/)
   assert.match(panelSource, /确认导入并进入待发布/)
-  assert.doesNotMatch(panelSource, /整批发布（\{publishableCount\(item\)\}）/)
+  assert.doesNotMatch(panelSource, /整批发布/)
   assert.match(panelSource, /查看处理进度/)
   assert.match(panelSource, /这里只负责上传、预览和导入文件/)
   assert.match(workbenchSource, /批次详情/)
   assert.match(workbenchSource, /\/police-dispatch\/batches\/\$\{activeBatch\.id\}/)
-  assert.match(batchSource, /整批发布到腾讯（\{publishableCount\}）/)
+  assert.doesNotMatch(batchSource, /整批发布/)
+  assert.doesNotMatch(batchSource, /publishSelectedPoliceDispatchTasks/)
 })

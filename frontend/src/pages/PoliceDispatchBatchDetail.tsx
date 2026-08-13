@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Input, Popconfirm, Progress, Select, Space, Statistic, Tag, message } from 'antd'
+import { Alert, Button, Input, Progress, Select, Space, Statistic, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { ExportOutlined, MobileOutlined, SearchOutlined, SendOutlined } from '@ant-design/icons'
+import { ExportOutlined, MobileOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
@@ -10,7 +10,6 @@ import {
   getPoliceDispatchBatch,
   listPoliceDispatchTasks,
   policeDispatchFeedbackUrl,
-  publishPoliceDispatchBatch,
   type PoliceDispatchBatch,
   type PoliceDispatchTask,
 } from '../api/client'
@@ -49,14 +48,8 @@ export default function PoliceDispatchBatchDetail() {
   const [keywordFlush, setKeywordFlush] = useState(0)
   const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [loading, setLoading] = useState(false)
-  const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState('')
   const listRequestId = useRef(0)
-  const publishableCount = batch
-    ? batch.import_mode === 'clean' && batch.counts.pending_review > 0
-      ? batch.counts.partial_publishable || 0
-      : batch.counts.publishable || 0
-    : 0
 
   const load = async (targetPage = page, targetPageSize = pageSize) => {
     if (!id) return
@@ -89,19 +82,6 @@ export default function PoliceDispatchBatchDetail() {
   }
 
   useEffect(() => { void load(1, 20) }, [id, status, category, keyword])
-
-  const publish = async () => {
-    setPublishing(true)
-    try {
-      const result = await publishPoliceDispatchBatch(id)
-      message[result.failed_count ? 'warning' : 'success'](result.message)
-      await load(page, pageSize)
-    } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '发布失败')
-    } finally {
-      setPublishing(false)
-    }
-  }
 
   const columns: TableColumnsType<PoliceDispatchTask> = [
     { title: 'Excel 行', dataIndex: 'source_row', width: 90 },
@@ -162,24 +142,6 @@ export default function PoliceDispatchBatchDetail() {
             <Button icon={<ExportOutlined />} href={policeDispatchFeedbackUrl(id)}>
               导出反馈 XLSX
             </Button>
-            <Popconfirm
-              title={`整批发布 ${publishableCount} 条已审核任务？`}
-              description={batch.import_mode === 'clean' && batch.counts.pending_review > 0
-                ? `其余 ${batch.counts.pending_review} 条待复核记录不会发布，仍保留在当前批次中。`
-                : '成功后写入腾讯全链条表，不自动同步汇总。'}
-              okText="确认发布"
-              cancelText="取消"
-              onConfirm={publish}
-            >
-              <Button
-                type="primary"
-                icon={<SendOutlined />}
-                loading={publishing}
-                disabled={!batch || (batch.import_mode !== 'clean' && batch.counts.pending_review > 0) || publishableCount <= 0}
-              >
-                整批发布到腾讯（{publishableCount}）
-              </Button>
-            </Popconfirm>
           </Space>
         )}
       />
