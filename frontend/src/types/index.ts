@@ -99,6 +99,7 @@ export interface AppNotification {
   title: string
   content: string
   related_task_id: number | null
+  action_path: string | null
   is_read: boolean
   created_at: string
   read_at: string | null

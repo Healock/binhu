@@ -34,6 +34,7 @@ import {
   markNotificationRead,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { useNavigate } from 'react-router-dom'
 
 interface AnnouncementFormValues {
   title: string
@@ -42,6 +43,7 @@ interface AnnouncementFormValues {
 }
 
 export default function NotificationCenter() {
+  const navigate = useNavigate()
   const { user, systemTimezone } = useAuth()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -114,22 +116,27 @@ export default function NotificationCenter() {
   }, [load])
 
   const handleRead = async (notification: AppNotification) => {
-    if (notification.is_read) return
-    try {
-      await markNotificationRead(notification)
-      setNotifications(current => current.map(item => (
-        item.id === notification.id && item.source === notification.source
-          ? { ...item, is_read: true }
-          : item
-      )))
-      setUnreadCount(current => Math.max(0, current - 1))
-      if (notification.source === 'announcement') {
-        setAnnouncementUnread(current => Math.max(0, current - 1))
-      } else {
-        setPersonalUnread(current => Math.max(0, current - 1))
+    if (!notification.is_read) {
+      try {
+        await markNotificationRead(notification)
+        setNotifications(current => current.map(item => (
+          item.id === notification.id && item.source === notification.source
+            ? { ...item, is_read: true }
+            : item
+        )))
+        setUnreadCount(current => Math.max(0, current - 1))
+        if (notification.source === 'announcement') {
+          setAnnouncementUnread(current => Math.max(0, current - 1))
+        } else {
+          setPersonalUnread(current => Math.max(0, current - 1))
+        }
+      } catch {
+        message.error('消息状态更新失败，请稍后重试')
       }
-    } catch {
-      message.error('消息状态更新失败，请稍后重试')
+    }
+    if (notification.action_path && /^\/(?!\/)[^\r\n\\]*$/.test(notification.action_path)) {
+      setOpen(false)
+      navigate(notification.action_path)
     }
   }
 
@@ -227,7 +234,7 @@ export default function NotificationCenter() {
             !item.is_read ? 'notification-list__item--unread' : '',
           ].filter(Boolean).join(' ')}
           onClick={() => void handleRead(item)}
-          style={{ cursor: item.is_read ? 'default' : 'pointer' }}
+          style={{ cursor: !item.is_read || item.action_path ? 'pointer' : 'default' }}
         >
           <div className="flex w-full min-w-0 items-start gap-3">
             <div className="min-w-0 flex-1">

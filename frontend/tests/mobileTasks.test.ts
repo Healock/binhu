@@ -271,6 +271,34 @@ test('任务详情直接展示身份证号、手机号、来源和地址', () =>
   }
 })
 
+test('已完成快捷调照片结果在任务详情可预览和下载', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(detailSource, /已调取照片/)
+  assert.match(detailSource, /workflowApi\.attachmentUrl\(request\.ticket_id, attachment\.file_id, true\)/)
+  assert.match(detailSource, /<DownloadOutlined/)
+  assert.match(clientSource, /photo_requests: Array/)
+})
+
+test('照片完成通知允许已读后继续跳回原任务且拒绝外部路径', () => {
+  const notificationSource = readFileSync(
+    new URL('../src/components/NotificationCenter.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(notificationSource, /notification\.action_path/)
+  assert.match(notificationSource, /\^\\\/\(\?!\\\/\)/)
+  assert.match(notificationSource, /navigate\(notification\.action_path\)/)
+  assert.doesNotMatch(notificationSource, /if \(notification\.is_read\) return/)
+})
+
 test('任务详情文本编辑器已从 Ant Design 引入 Input', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),

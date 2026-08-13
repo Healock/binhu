@@ -54,6 +54,8 @@ class NotificationCursor:
         return None
 
     async def fetchall(self):
+        if self.last_sql.startswith("SELECT detail.work_order_id"):
+            return [(12, "全链条", "row/key")]
         if self.last_sql.startswith("SELECT id, category, severity"):
             return [
                 (
@@ -233,6 +235,40 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         )
         for _, params in cursor.executed:
             self.assertIn(5, params)
+
+    async def test_completed_quick_photo_notice_links_back_to_task_detail(self):
+        cursor = NotificationCursor()
+        original_fetchall = cursor.fetchall
+
+        async def fetchall():
+            if cursor.last_sql.startswith("SELECT id, category, severity"):
+                return [(
+                    9, "workflow_photo_done_7", "info", "照片调取完成",
+                    "照片已完成", 12, 0, datetime(2026, 8, 13, 8, 0, 0), None,
+                )]
+            return await original_fetchall()
+
+        cursor.fetchall = fetchall
+        with patch("routers.notifications.settings.WORKFLOW_FEATURE_ENABLED", True):
+            result = await list_notifications(
+                limit=20,
+                user={"id": 5, "role": "member"},
+                conn=make_connection(cursor),
+            )
+
+        personal = next(item for item in result["data"] if item["source"] == "personal")
+        self.assertEqual(personal["action_path"], "/tasks/%E5%85%A8%E9%93%BE%E6%9D%A1/row%2Fkey")
+
+    async def test_unrelated_notice_has_no_task_action_path(self):
+        cursor = NotificationCursor()
+        with patch("routers.notifications.settings.WORKFLOW_FEATURE_ENABLED", True):
+            result = await list_notifications(
+                limit=20,
+                user={"id": 5, "role": "member"},
+                conn=make_connection(cursor),
+            )
+        personal = next(item for item in result["data"] if item["source"] == "personal")
+        self.assertIsNone(personal["action_path"])
 
     async def test_unread_count_combines_both_message_types(self):
         cursor = NotificationCursor()

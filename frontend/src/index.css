@@ -790,6 +790,56 @@
   width: 100%;
 }
 
+.mobile-task-photo-results {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.mobile-task-photo-results__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.mobile-task-photo-result {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  background: var(--app-surface-muted);
+}
+
+.mobile-task-photo-result .ant-image {
+  display: block;
+  width: 100%;
+}
+
+.mobile-task-photo-result__image {
+  display: block;
+  width: 100%;
+  height: 176px;
+  object-fit: cover;
+}
+
+.mobile-task-photo-result__meta {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+}
+
+.mobile-task-photo-result__meta > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mobile-task-detail-pill.ant-btn {
   min-height: 44px;
   border-radius: 999px;
