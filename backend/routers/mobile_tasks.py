@@ -125,6 +125,60 @@ async def _task_photo_results(user: dict, parser_type: str, row_key: str) -> lis
                         "attachments": attachments,
                     })
     return results
+
+
+async def _task_photo_fetched_rows(
+    user: dict,
+    parser_type: str,
+    row_keys: list[str],
+) -> set[str]:
+    """Return task row keys with an accessible, completed photo result.
+
+    The list view asks for several rows at once so photo status does not cause
+    one workflow-database query per task card.  Ticket visibility still goes
+    through the same access check used by the detail endpoint.
+    """
+    if (
+        not row_keys
+        or not settings.WORKFLOW_FEATURE_ENABLED
+        or not has_permission(user, WORKFLOW_ATTACHMENT_VIEW)
+    ):
+        return set()
+    try:
+        pool = db_manager.get_pool("workflow")
+    except ValueError:
+        return set()
+    placeholders = ",".join(["%s"] * len(row_keys))
+    fetched: set[str] = set()
+    async with pool.acquire() as workflow_conn:
+        async with workflow_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT DISTINCT detail.source_row_key, order_row.id "
+                "FROM photo_request_details detail "
+                "JOIN work_orders order_row ON order_row.id=detail.work_order_id "
+                "JOIN work_order_attachments attachment "
+                "ON attachment.work_order_id=order_row.id "
+                "AND attachment.deleted_at IS NULL "
+                "AND attachment.mime_type LIKE 'image/%%' "
+                "WHERE detail.external_origin='platform_task' "
+                "AND detail.source_parser_type=%s "
+                f"AND detail.source_row_key IN ({placeholders}) "
+                "AND detail.result_status='found' "
+                "AND order_row.type_code='photo_request' "
+                "AND order_row.status IN ('approved','completed')",
+                [parser_type, *row_keys],
+            )
+            candidates = await cur.fetchall()
+            for source_row_key, ticket_id in candidates:
+                normalized_ticket_id = int(ticket_id)
+                try:
+                    await workflow_ticket_access(cur, normalized_ticket_id, user)
+                except HTTPException as exc:
+                    if exc.status_code in {403, 404}:
+                        continue
+                    raise
+                fetched.add(str(source_row_key))
+    return fetched
 PRIORITY_KEYS = (
     "analyzed",
     "source_exception",
@@ -632,6 +686,7 @@ def _task_record(
     pending: bool,
     task_state_value: str,
     watch: dict | None = None,
+    photo_fetched: bool = False,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
@@ -652,6 +707,7 @@ def _task_record(
         "source_count": int(source_count or 0),
         "conflict": bool(conflict),
         "pending_sync": bool(pending),
+        "photo_fetched": bool(photo_fetched),
         "priority": _priority_bucket(
             parser_type,
             normalized,
@@ -968,6 +1024,11 @@ async def _list_mobile_tasks_data(
             parser_type,
             [str(row[0]) for row in rows],
         ) if settings.REGISTRY_FEATURE_ENABLED else {}
+    photo_fetched_rows = await _task_photo_fetched_rows(
+        user,
+        parser_type,
+        [str(row[0]) for row in rows],
+    )
     return {
         "data": [
             _task_record(
@@ -979,6 +1040,7 @@ async def _list_mobile_tasks_data(
                 str(row[4] or "") == "pending",
                 str(row[5] or ""),
                 watch_by_row.get(str(row[0])),
+                str(row[0]) in photo_fetched_rows,
             )
             for row in rows
         ],
