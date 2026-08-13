@@ -20,6 +20,7 @@ PREFERENCES_MANAGE = "preferences.manage"
 SYNC_TRIGGER = "sync.trigger"
 REPORT_CONFIG_MANAGE = "report.config.manage"
 VISIT_IMPORT = "visit.import"
+VISIT_SOURCE_MANAGE = "visit.source.manage"
 WORK_LOG_MANAGE = "worklog.manage"
 ATTENDANCE_MANAGE = "attendance.manage"
 PERSONNEL_MANAGE = "personnel.manage"
@@ -58,6 +59,7 @@ PERMISSION_CATALOG = [
     (SYNC_TRIGGER, "业务操作", "手动同步在线数据"),
     (REPORT_CONFIG_MANAGE, "业务操作", "修改总汇总表配置"),
     (VISIT_IMPORT, "业务操作", "上传走访和星级评定"),
+    (VISIT_SOURCE_MANAGE, "业务操作", "获取和确认走访、星级来源数据"),
     (WORK_LOG_MANAGE, "业务操作", "管理和导出工作日志"),
     (ATTENDANCE_MANAGE, "人员操作", "管理请假和双休日备勤"),
     (PERSONNEL_MANAGE, "人员操作", "添加、编辑和删除人员"),
@@ -112,6 +114,7 @@ INTERNAL_BUSINESS_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
     SYNC_TRIGGER,
     REPORT_CONFIG_MANAGE,
     VISIT_IMPORT,
+    VISIT_SOURCE_MANAGE,
     WORK_LOG_MANAGE,
     ATTENDANCE_MANAGE,
     POLICE_DISPATCH_MANAGE,

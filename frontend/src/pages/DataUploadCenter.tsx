@@ -16,6 +16,9 @@ import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
   formatUTCTime,
+  previewVisitSource,
+  confirmVisitSource,
+  getVisitSourceStatus,
   getVisitImportIssues,
   type PhotoImportBatch,
   workflowApi,
@@ -24,6 +27,8 @@ import {
   type VisitImportIssue,
   type VisitImportResult,
 } from '../api/client'
+import type { VisitSourceRun } from '../types'
+import dayjs from 'dayjs'
 
 const { Dragger } = Upload
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -164,6 +169,7 @@ const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
 export default function DataUploadCenter() {
   const { user, systemTimezone } = useAuth()
   const canUpload = Boolean(user?.permissions.includes('visit.import'))
+  const canManageVisitSource = Boolean(user?.permissions.includes('visit.source.manage'))
   const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
   const canManagePhotoImport = Boolean(
     (user?.permissions.includes('workflow.ticket.handle')
@@ -171,7 +177,7 @@ export default function DataUploadCenter() {
       || user?.role === 'super_admin'
       || user?.permissions.includes('workflow.ticket.manage'),
   )
-  const canUseUploadCenter = canUpload || canManagePoliceDispatch || canManagePhotoImport
+  const canUseUploadCenter = canUpload || canManageVisitSource || canManagePoliceDispatch || canManagePhotoImport
   const [detailFileList, setDetailFileList] = useState<UploadFile[]>([])
   const [detailFile, setDetailFile] = useState<File | null>(null)
   const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])
@@ -190,6 +196,16 @@ export default function DataUploadCenter() {
   const [photoError, setPhotoError] = useState('')
   const [photoLoading, setPhotoLoading] = useState(false)
   const [photoHistory, setPhotoHistory] = useState<PhotoImportBatch[]>([])
+  const [sourceDates, setSourceDates] = useState<[string, string]>(() => {
+    const today = dayjs().format('YYYY-MM-DD')
+    return [today, today]
+  })
+  const [sourcePreview, setSourcePreview] = useState<VisitSourceRun[]>([])
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceError, setSourceError] = useState('')
+  const [sourceStatus, setSourceStatus] = useState<Record<string, VisitSourceRun>>({})
+  const [sourceCurrent, setSourceCurrent] = useState<Record<string, { source_type: string; finished_at: string | null }>>({})
+  const [sourceBusinessDate, setSourceBusinessDate] = useState('')
 
   const loadPhotoHistory = async () => {
     if (!canManagePhotoImport) return
@@ -201,6 +217,46 @@ export default function DataUploadCenter() {
   }
 
   useEffect(() => { void loadPhotoHistory() }, [canManagePhotoImport])
+  useEffect(() => {
+    if (canManageVisitSource) void getVisitSourceStatus().then(value => {
+      setSourceStatus(value.latest_attempts)
+      setSourceCurrent(value.current_sources)
+      setSourceBusinessDate(value.business_date)
+      setSourceDates([value.business_date, value.business_date])
+    }).catch(() => {})
+  }, [canManageVisitSource])
+
+  const handleSourcePreview = async () => {
+    setSourceLoading(true)
+    setSourceError('')
+    try {
+      const value = await previewVisitSource({ source: 'both', start_date: sourceDates[0], end_date: sourceDates[1] })
+      setSourcePreview(value.data)
+    } catch (error: any) {
+      setSourceError(error?.response?.data?.detail || '自动获取预览失败，请检查来源配置')
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
+  const handleSourceConfirm = async (strategy: 'replace' | 'keep') => {
+    const runIds = sourcePreview.filter(item => item.status === 'pending_confirmation').map(item => item.id)
+    if (!runIds.length) return
+    setSourceLoading(true)
+    setSourceError('')
+    try {
+      await confirmVisitSource({ run_ids: runIds, strategy })
+      const value = await getVisitSourceStatus()
+      setSourceStatus(value.latest_attempts)
+      setSourceCurrent(value.current_sources)
+      setSourceBusinessDate(value.business_date)
+      setSourcePreview([])
+    } catch (error: any) {
+      setSourceError(error?.response?.data?.detail || '自动获取确认失败，当前数据未替换')
+    } finally {
+      setSourceLoading(false)
+    }
+  }
 
   const resetResult = () => {
     setResult(null)
@@ -369,6 +425,81 @@ export default function DataUploadCenter() {
           message="当前账号没有上传权限"
           description="当前账号没有可用的数据上传权限。"
         />
+      )}
+
+      {canManageVisitSource && (
+        <Panel
+          className="mb-4"
+          title="自动获取走访与星级数据"
+          description="先只读获取并预览，确认后才替换当前业务日期数据；自动获取失败不会覆盖最近成功快照。"
+        >
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1 text-sm">
+              <span>开始日期</span>
+              <input
+                type="date"
+                value={sourceDates[0]}
+                onChange={event => setSourceDates([event.target.value, sourceDates[1]])}
+                className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span>结束日期</span>
+              <input
+                type="date"
+                value={sourceDates[1]}
+                onChange={event => setSourceDates([sourceDates[0], event.target.value])}
+                className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
+              />
+            </label>
+            <Button type="primary" loading={sourceLoading} onClick={() => void handleSourcePreview()}>
+              立即获取并预览
+            </Button>
+          </div>
+          {sourceError && <Alert className="mt-3" type="error" showIcon message={sourceError} />}
+          {Object.keys(sourceStatus).length > 0 && (
+            <div className="mt-3 space-y-1 text-sm text-slate-600">
+              <div>服务器业务日期：{sourceBusinessDate || '-'} · 时区：{systemTimezone}</div>
+              <div>
+                当前生效来源：{(['detail', 'rating'] as const).map(kind => {
+                  const item = sourceCurrent[kind]
+                  const label = kind === 'detail' ? '走访明细' : '星级评分'
+                  const source = item?.source_type === 'manual' ? '手动上传' : item ? '自动获取' : '暂无'
+                  return `${label}·${source}`
+                }).join('，')}
+              </div>
+              <div>最近尝试：{Object.values(sourceStatus).map(item => `${item.source_page}·${item.status}`).join('，')}</div>
+            </div>
+          )}
+          {sourcePreview.length > 0 && (
+            <div className="mt-4 space-y-3">
+              <Table
+                size="small"
+                rowKey="id"
+                pagination={false}
+                dataSource={sourcePreview}
+                columns={[
+                  { title: '来源', dataIndex: 'source_page' },
+                  { title: '状态', dataIndex: 'status', render: value => <Tag color={value === 'pending_confirmation' ? 'warning' : 'error'}>{value}</Tag> },
+                  { title: '记录数', dataIndex: 'record_count' },
+                  { title: '有效数', dataIndex: 'valid_count' },
+                  { title: '问题数', dataIndex: 'issue_count' },
+                  { title: '新增', render: (_, item) => item.diff?.inserted ?? '-' },
+                  { title: '变更', render: (_, item) => item.diff?.updated ?? '-' },
+                  { title: '删除', render: (_, item) => item.diff?.deleted ?? '-' },
+                  { title: '未匹配/歧义', render: (_, item) => item.diff ? `${item.diff.unmatched}/${item.diff.ambiguous}` : '-' },
+                  { title: '原因', dataIndex: 'error_message', ellipsis: true },
+                ]}
+              />
+              {sourcePreview.some(item => item.status === 'pending_confirmation') && (
+                <div className="flex justify-end gap-2">
+                  <Button loading={sourceLoading} onClick={() => void handleSourceConfirm('keep')}>保留旧快照</Button>
+                  <Button type="primary" loading={sourceLoading} onClick={() => void handleSourceConfirm('replace')}>确认替换当前数据</Button>
+                </div>
+              )}
+            </div>
+          )}
+        </Panel>
       )}
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-2">
