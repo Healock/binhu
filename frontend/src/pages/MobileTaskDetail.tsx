@@ -1,6 +1,7 @@
 import {
   ArrowLeftOutlined,
   CameraOutlined,
+  DownloadOutlined,
   PhoneOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
@@ -10,6 +11,7 @@ import {
   Collapse,
   Descriptions,
   Empty,
+  Image,
   Input,
   Modal,
   Select,
@@ -410,6 +412,41 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           </div>
         )}
       </section>
+
+      {data.photo_requests?.some(request => request.attachments.length > 0) && (
+        <section className="app-card mobile-task-photo-results">
+          <div>
+            <h2 className="font-semibold text-[var(--app-text-strong)]">已调取照片</h2>
+            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+              照片来自已完成的快捷调照片工单，可直接预览或下载原文件。
+            </p>
+          </div>
+          <div className="mobile-task-photo-results__grid">
+            {data.photo_requests.flatMap(request => request.attachments.map(attachment => {
+              const inlineUrl = workflowApi.attachmentUrl(request.ticket_id, attachment.file_id, true)
+              const downloadUrl = workflowApi.attachmentUrl(request.ticket_id, attachment.file_id)
+              return (
+                <article key={`${request.ticket_id}-${attachment.file_id}`} className="mobile-task-photo-result">
+                  <Image
+                    className="mobile-task-photo-result__image"
+                    src={inlineUrl}
+                    alt={attachment.original_name}
+                    preview={{ src: inlineUrl }}
+                  />
+                  <div className="mobile-task-photo-result__meta">
+                    <span title={attachment.original_name}>{attachment.original_name}</span>
+                    <Button
+                      type="link"
+                      icon={<DownloadOutlined />}
+                      href={downloadUrl}
+                    >下载</Button>
+                  </div>
+                </article>
+              )
+            }))}
+          </div>
+        </section>
+      )}
 
       {(data.task.source_count > 1 || data.task.conflict) && (
         <Alert

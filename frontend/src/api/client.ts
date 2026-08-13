@@ -996,6 +996,16 @@ export interface MobileTaskDetailData {
   }
   writeback_enabled: boolean
   analysis_mode?: boolean
+  photo_requests: Array<{
+    ticket_id: number
+    ticket_no: string
+    attachments: Array<{
+      file_id: string
+      original_name: string
+      mime_type: string
+      size_bytes: number
+    }>
+  }>
   sources: MobileTaskSource[]
 }
 

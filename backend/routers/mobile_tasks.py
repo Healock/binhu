@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from database import get_db
+from database import db_manager, get_db
 from deps import get_current_user, require_permission
 from routers.query import (
     _enabled_spreadsheets,
@@ -18,6 +18,7 @@ from routers.query import (
     _writeback_enabled,
     update_source_fields,
 )
+from routers.workflow import _can_view_ticket as workflow_ticket_access
 from services.business_time import get_business_date
 from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
@@ -31,6 +32,7 @@ from services.permissions import (
     ONLINE_RAW_EDIT,
     ONLINE_RAW_VIEW,
     ONLINE_TASK_MANAGE,
+    WORKFLOW_ATTACHMENT_VIEW,
     has_permission,
 )
 from services.report_overview import SUMMARY_TYPE, get_online_overview
@@ -63,6 +65,66 @@ Priority = Literal[
 SortMode = Literal["priority", "updated_desc", "updated_asc"]
 AssignmentMode = Literal["single", "balanced"]
 EMPTY_FILTER_VALUE = "__empty__"
+
+
+async def _task_photo_results(user: dict, parser_type: str, row_key: str) -> list[dict]:
+    """返回与当前任务精确关联的已完成照片工单附件摘要。"""
+    if (
+        not settings.WORKFLOW_FEATURE_ENABLED
+        or not has_permission(user, WORKFLOW_ATTACHMENT_VIEW)
+    ):
+        return []
+    try:
+        pool = db_manager.get_pool("workflow")
+    except ValueError:
+        return []
+    results: list[dict] = []
+    async with pool.acquire() as workflow_conn:
+        async with workflow_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT order_row.id, order_row.ticket_no "
+                "FROM photo_request_details detail "
+                "JOIN work_orders order_row ON order_row.id=detail.work_order_id "
+                "WHERE detail.external_origin='platform_task' "
+                "AND detail.source_parser_type=%s AND detail.source_row_key=%s "
+                "AND detail.result_status='found' "
+                "AND order_row.type_code='photo_request' "
+                "AND order_row.status IN ('approved','completed') "
+                "ORDER BY order_row.completed_at DESC, order_row.id DESC",
+                (parser_type, row_key),
+            )
+            tickets = await cur.fetchall()
+            for ticket_id, ticket_no in tickets:
+                normalized_ticket_id = int(ticket_id)
+                try:
+                    await workflow_ticket_access(cur, normalized_ticket_id, user)
+                except HTTPException as exc:
+                    if exc.status_code in {403, 404}:
+                        continue
+                    raise
+                await cur.execute(
+                    "SELECT file_id, original_name, mime_type, size_bytes "
+                    "FROM work_order_attachments "
+                    "WHERE work_order_id=%s AND deleted_at IS NULL "
+                    "AND mime_type LIKE 'image/%%' ORDER BY id DESC",
+                    (normalized_ticket_id,),
+                )
+                attachments = [
+                    {
+                        "file_id": str(file_id),
+                        "original_name": str(original_name or "照片"),
+                        "mime_type": str(mime_type or "application/octet-stream"),
+                        "size_bytes": int(size_bytes or 0),
+                    }
+                    for file_id, original_name, mime_type, size_bytes in await cur.fetchall()
+                ]
+                if attachments:
+                    results.append({
+                        "ticket_id": normalized_ticket_id,
+                        "ticket_no": str(ticket_no or ""),
+                        "attachments": attachments,
+                    })
+    return results
 PRIORITY_KEYS = (
     "analyzed",
     "source_exception",
@@ -1189,6 +1251,7 @@ async def _mobile_task_detail_data(
             raise HTTPException(404, "任务不存在或不属于当前社区")
 
     workflow = TASK_WORKFLOWS[parser_type]
+    photo_requests = await _task_photo_results(user, parser_type, row_key)
     return {
         "task": _task_record(
             parser_type,
@@ -1216,6 +1279,7 @@ async def _mobile_task_detail_data(
         },
         "writeback_enabled": enabled,
         "analysis_mode": analysis_mode,
+        "photo_requests": photo_requests,
         "sources": sources,
     }
 
