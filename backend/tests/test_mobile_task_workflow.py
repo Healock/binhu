@@ -83,6 +83,13 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             task_state("全链条", {"核查结果": "已登记"}),
             "completed",
         )
+        self.assertEqual(
+            task_state("全链条", {"核查结果": "待登记"}),
+            "completed",
+        )
+
+    def test_fullchain_result_choices_include_pending_registration(self):
+        self.assertIn("待登记", TASK_WORKFLOWS["全链条"].result_options)
 
     def test_suspect_return_uses_feedback_as_result(self):
         self.assertEqual(

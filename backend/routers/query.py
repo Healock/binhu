@@ -300,6 +300,16 @@ async def _managed_column_metadata(
                 {"id": text, "text": text}
                 for text in workflow.result_options
             ]
+        else:
+            known_texts = {
+                str(option.get("text") or "").strip()
+                for option in options
+            }
+            options.extend(
+                {"id": text, "text": text}
+                for text in workflow.result_options
+                if text not in known_texts
+            )
         metadata[result_field] = _editor_select_metadata(
             metadata[result_field], options
         )

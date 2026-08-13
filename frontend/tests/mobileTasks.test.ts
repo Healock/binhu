@@ -260,6 +260,13 @@ test('已研判任务在列表和详情直接显示研判结果', () => {
   assert.match(detailSource, /研判结果/)
 })
 
+test('全链条新增待登记结果保留为正式任务选项', () => {
+  assert.equal(
+    mobileTaskSourceState('全链条', '核查结果', { 核查结果: '待登记' }),
+    'completed',
+  )
+})
+
 test('任务详情直接展示身份证号、手机号、来源和地址', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
