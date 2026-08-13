@@ -29,6 +29,7 @@ from services.workflow_support import (
 from services.registry_security import hmac_digest, normalize_identity
 from services.photo_sheet_sync import enqueue_outbox, launch_outbox_processing
 from services.audit import record_admin_audit, request_audit_fields
+from services.photo_import import canonical_photo_filename, is_generated_photo_filename
 
 
 router = APIRouter(prefix="/api/workflow", tags=["工单"])
@@ -644,7 +645,16 @@ async def get_ticket(
     ]
     payload["attachments"] = [
         {
-            "file_id": item[0], "original_name": item[1], "mime_type": item[2],
+            "file_id": item[0],
+            "original_name": (
+                canonical_photo_filename(
+                    str(detail_row[2] or ""), str(detail_row[3] or ""),
+                    ".jpg" if item[2] == "image/jpeg" else ".png" if item[2] == "image/png" else ".webp" if item[2] == "image/webp" else ".heic",
+                )
+                if row[2] == "photo_request" and detail_row and is_generated_photo_filename(item[1])
+                else item[1]
+            ),
+            "mime_type": item[2],
             "size_bytes": int(item[3]), "sha256": item[4],
             "retention_until": _iso(item[5]), "deleted_at": _iso(item[6]),
             "created_at": _iso(item[7]),
