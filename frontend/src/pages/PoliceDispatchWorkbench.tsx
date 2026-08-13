@@ -100,6 +100,27 @@ function CardCopyValue({ value, label }: { value: string; label: string }) {
   )
 }
 
+function CopyIconButton({ value, label }: { value: string; label: string }) {
+  return (
+    <Button
+      type="text"
+      size="small"
+      icon={<CopyOutlined />}
+      title={`复制${label}`}
+      aria-label={`复制${label}`}
+      onClick={async event => {
+        event.stopPropagation()
+        try {
+          await navigator.clipboard.writeText(value)
+          message.success(`${label}已复制`)
+        } catch {
+          message.error(`${label}复制失败，请长按或选中文字复制`)
+        }
+      }}
+    />
+  )
+}
+
 function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => void }) {
   const taskStatus = item.publish_status === 'needs_reconciliation'
     ? { color: 'warning', text: '等待同步对账' }
@@ -765,7 +786,9 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
                     <div className="text-xs text-slate-400">{label}</div>
                     <div className="mt-1 flex items-start gap-1 break-all text-sm text-slate-800">
                       <span className="flex-1">{value}</span>
-                      {(label === '身份证号' || label === '手机号' || label === '原地址') && <CopyButton value={value} />}
+                      {(label === '身份证号' || label === '手机号' || label === '原地址') && (
+                        <CopyIconButton value={value} label={label} />
+                      )}
                     </div>
                   </div>
                 ) : null)}
