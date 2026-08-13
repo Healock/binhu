@@ -30,12 +30,23 @@ from services.workflow_support import detect_attachment_mime
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 
+
 def _resolve_avatar(storage_key: str) -> Path:
     root = Path(settings.USER_AVATAR_DIR).resolve()
     target = (root / storage_key).resolve()
     if root not in target.parents or not target.is_file() or target.is_symlink():
         raise FileNotFoundError("avatar not found")
     return target
+
+
+def _remove_avatar(storage_key: str | None) -> None:
+    if not storage_key:
+        return
+    try:
+        _resolve_avatar(storage_key).unlink(missing_ok=True)
+    except OSError:
+        return
+
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -178,7 +189,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 str(role),
             ),
             "theme_mode": normalize_theme_mode(theme_mode),
-            "avatar_url": f"/api/auth/avatar/{int(user_id)}" if avatar_storage_key else None,
+            "avatar_url": (
+                f"/api/auth/avatar/{int(user_id)}?v={Path(str(avatar_storage_key)).stem}"
+                if avatar_storage_key else None
+            ),
         },
     }
 
@@ -235,9 +249,13 @@ async def upload_avatar(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     root = Path(settings.USER_AVATAR_DIR).resolve()
     user_dir = (root / str(user["id"])).resolve()
+    if user_dir.parent != root:
+        raise HTTPException(status_code=400, detail="头像目录无效")
     user_dir.mkdir(parents=True, exist_ok=True)
     storage_name = f"{uuid.uuid4()}{extension}"
     target = (user_dir / storage_name).resolve()
+    if target.parent != user_dir:
+        raise HTTPException(status_code=400, detail="头像路径无效")
     target.write_bytes(content)
     storage_key = f"{user['id']}/{storage_name}"
     pool = db_manager.get_pool("online_data")
@@ -245,12 +263,25 @@ async def upload_avatar(
     try:
         async with conn.cursor() as cur:
             await cur.execute(
+                "SELECT avatar_storage_key FROM _users WHERE id=%s",
+                (user["id"],),
+            )
+            previous_row = await cur.fetchone()
+            previous_storage_key = str(previous_row[0]) if previous_row and previous_row[0] else None
+            await cur.execute(
                 "UPDATE _users SET avatar_storage_key=%s, avatar_mime=%s WHERE id=%s",
                 (storage_key, mime_type, user["id"]),
             )
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
     finally:
         pool.release(conn)
-    return {"message": "头像已更新", "avatar_url": f"/api/auth/avatar/{int(user['id'])}"}
+    _remove_avatar(previous_storage_key)
+    return {
+        "message": "头像已更新",
+        "avatar_url": f"/api/auth/avatar/{int(user['id'])}?v={Path(storage_key).stem}",
+    }
 
 
 @router.get("/avatar/{user_id}")
@@ -272,7 +303,11 @@ async def get_avatar(user_id: int, _user: dict = Depends(get_current_user)):
         path = _resolve_avatar(str(row[0]))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="头像不存在") from exc
-    return FileResponse(path, media_type=str(row[1] or "image/jpeg"))
+    return FileResponse(
+        path,
+        media_type=str(row[1] or "image/jpeg"),
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.post("/activity")

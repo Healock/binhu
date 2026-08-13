@@ -104,7 +104,7 @@ export default function Profile() {
           <div className="profile-avatar-editor">
             <Avatar
               size={72}
-              src={user.avatar_url ? `${user.avatar_url}?v=${user.updated_at || ''}` : undefined}
+              src={user.avatar_url || undefined}
               icon={<UserOutlined />}
             >
               {getUserDisplayName(user).slice(0, 1)}

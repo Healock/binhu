@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Depends, HTTPException, Request, status
@@ -339,7 +340,7 @@ async def _load_current_user(
                 "username": row[1],
                 "display_name": str(row[23] or row[13] or row[1]),
                 "avatar_url": (
-                    f"/api/auth/avatar/{int(row[0])}"
+                    f"/api/auth/avatar/{int(row[0])}?v={Path(str(row[24])).stem}"
                     if len(row) > 24 and row[24]
                     else None
                 ),
