@@ -295,8 +295,8 @@ export function QuerySpreadsheet({
     })
     const worksheet = workbook.getActiveSheet()
     const initialValues = [
-      columns.map(querySheetTextCell),
-      ...sheetRows.map(row => columns.map(column => querySheetTextCell(row.data[column]))),
+      columns.map(column => querySheetTextCell(column)),
+      ...sheetRows.map(row => columns.map(column => querySheetTextCell(row.data[column], column))),
     ]
     worksheet.getRange(0, 0, initialValues.length, columns.length).setValues(initialValues)
     worksheet.setFreeze({ startRow: 1, startColumn: 0, xSplit: 0, ySplit: 1 })
@@ -464,7 +464,7 @@ export function QuerySpreadsheet({
           change.row[change.column] = change.before
           worksheet
             .getRange(descriptorIndex + 1, columnIndex)
-            .setValue(querySheetTextCell(change.before))
+            .setValue(querySheetTextCell(change.before, change.column))
           applyInspectorValidation(descriptorIndex)
         }
       } finally {

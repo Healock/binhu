@@ -113,10 +113,19 @@ const QUERY_SHEET_LONG_TEXT_COLUMNS = new Set([
  * 把 7.30、身份证号或长手机号重新推断为数字，也不会在公式栏暴露
  * FORCE_STRING 使用的前导单引号标记。
  */
-export function querySheetTextCell(value: unknown): ICellData {
+export function isQuerySheetExactTextColumn(column: string): boolean {
+  return /(身份证|证件|手机号|手机|电话|联系号码|联系方式)/u.test(String(column || ''))
+}
+
+export function querySheetTextCell(value: unknown, column = ''): ICellData {
   return {
     v: stringifyCell(value),
-    t: CellValueType.STRING,
+    // FORCE_STRING prevents Univer from rendering long digit-only identifiers
+    // through JavaScript's precision-losing numeric path. Its marker is hidden
+    // by QUERY_SHEET_FEATURE_CONFIG, so users still see clean text.
+    t: isQuerySheetExactTextColumn(column)
+      ? CellValueType.FORCE_STRING
+      : CellValueType.STRING,
   }
 }
 
