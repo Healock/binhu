@@ -24,7 +24,6 @@ import {
   HistoryOutlined,
   PlusOutlined,
   SearchOutlined,
-  SortAscendingOutlined,
 } from '@ant-design/icons'
 import {
   createQuerySourceRow,
@@ -564,36 +563,6 @@ export default function DataQuery() {
                 { value: 'archive', label: '归档数据' },
               ]}
             />
-            <Select
-              allowClear
-              showSearch
-              value={sortBy}
-              placeholder="选择排序字段"
-              optionFilterProp="label"
-              className="query-spreadsheet-toolbar__sort-field"
-              suffixIcon={<SortAscendingOutlined />}
-              options={columns.map(column => ({ value: column, label: column }))}
-              onChange={value => {
-                setSortBy(value)
-                setMobilePage(1)
-                setSelectedSheetRow(null)
-              }}
-            />
-            {sortBy && (
-              <Segmented
-                value={sortOrder}
-                aria-label="排序方向"
-                options={[
-                  { value: 'asc', label: '升序' },
-                  { value: 'desc', label: '降序' },
-                ]}
-                onChange={value => {
-                  setSortOrder(value as 'asc' | 'desc')
-                  setMobilePage(1)
-                  setSelectedSheetRow(null)
-                }}
-              />
-            )}
           </div>
           <div className="query-spreadsheet-toolbar__status">
             {sortBy && (
@@ -702,6 +671,12 @@ export default function DataQuery() {
               revision={sheetRevision}
               layoutRevision={sheetFullscreen ? 1 : 0}
               filterCriteria={sheetFilterCriteria}
+              onSortChange={(column, order) => {
+                setSortBy(column)
+                setSortOrder(order)
+                setMobilePage(1)
+                setSelectedSheetRow(null)
+              }}
               onDraftsChange={setDraftRows}
               onFilterCriteriaChange={criteria => {
                 setSheetFilterCriteria(criteria)
@@ -717,7 +692,7 @@ export default function DataQuery() {
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不回写腾讯表格。
+          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不回写腾讯表格。
         </div>
       </div>
 

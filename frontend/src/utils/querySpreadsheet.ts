@@ -81,6 +81,27 @@ export interface QuerySheetRequestFilters {
   unsupportedColorColumns: string[]
 }
 
+export interface QuerySheetSortColumn {
+  column: number
+  ascending: boolean
+}
+
+export interface QuerySheetSortRequest {
+  column: string
+  order: 'asc' | 'desc'
+}
+
+export function resolveQuerySheetSortRequest(
+  columns: string[],
+  rangeStartColumn: number,
+  sortColumns: QuerySheetSortColumn[],
+): QuerySheetSortRequest | null {
+  const first = sortColumns[0]
+  if (!first) return null
+  const column = columns[rangeStartColumn + first.column]
+  return column ? { column, order: first.ascending ? 'asc' : 'desc' } : null
+}
+
 export const QUERY_SHEET_FEATURE_CONFIG = {
   disableForceStringAlert: true,
   disableForceStringMark: true,
