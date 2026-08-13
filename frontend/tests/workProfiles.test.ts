@@ -15,6 +15,18 @@ test('贡献强度使用固定工作量区间', () => {
   )
 })
 
+test('profile upload and light theme contrast', () => {
+  const profile = readFileSync(new URL('../src/pages/Profile.tsx', import.meta.url), 'utf8')
+  const workbench = readFileSync(new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  assert.match(profile, /uploadAvatar\(file\)/)
+  assert.match(profile, /beforeUpload=\{handleAvatarUpload\}/)
+  assert.match(profile, /user\.avatar_url/)
+  assert.match(workbench, /police-dispatch-workbench__hero/)
+  assert.doesNotMatch(workbench, /bg-gradient-to-br from-blue-700/)
+  assert.match(styles, /police-dispatch-workbench__hero[\s\S]*var\(--app-surface\)/)
+})
+
 test('热力图只接收所选年度日期并保留年度边界', () => {
   assert.deepEqual(contributionDaysForYear([
     { date: '2025-12-31', count: 8 },

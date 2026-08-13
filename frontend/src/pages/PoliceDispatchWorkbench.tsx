@@ -595,13 +595,13 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
 
   return (
     <div className="police-dispatch-workbench mx-auto max-w-7xl space-y-4 pb-4">
-      <section className="app-card overflow-hidden border-0 bg-gradient-to-br from-blue-700 to-indigo-700 p-5 text-white shadow-lg">
+      <section className="police-dispatch-workbench__hero app-card overflow-hidden p-5 shadow-lg">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-xs font-medium text-blue-100">内勤业务 · 共享队列</div>
+            <div className="police-dispatch-workbench__eyebrow text-xs font-medium">内勤业务 · 共享队列</div>
             <h1 className="mt-1 text-xl font-semibold">{analysisOnly ? '下发数据复核' : '下发任务处理'}</h1>
           </div>
-          <Button ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
+          <Button className="police-dispatch-workbench__refresh" ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
         </div>
         <div className="mt-4 flex items-center gap-2">
           <Select
@@ -642,9 +642,9 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
                 ['重复', activeBatch.counts.duplicate],
                 ['待研判', activeBatch.counts.abnormal],
               ].map(([label, value]) => (
-                <div key={String(label)} className="rounded-xl bg-white/10 px-2 py-2.5">
+                <div key={String(label)} className="police-dispatch-workbench__metric rounded-xl px-2 py-2.5">
                   <div className="text-lg font-semibold">{value}</div>
-                  <div className="text-[11px] text-blue-100">{label}</div>
+                  <div className="police-dispatch-workbench__metric-label text-[11px]">{label}</div>
                 </div>
               ))}
             </div>

@@ -2841,6 +2841,42 @@ button.role-dashboard-metric:hover {
   min-width: 184px;
 }
 
+.police-dispatch-workbench__hero {
+  border: 1px solid var(--app-primary-border);
+  color: var(--app-text-strong);
+  background: linear-gradient(145deg, var(--app-primary-soft), var(--app-surface));
+}
+
+.police-dispatch-workbench__eyebrow,
+.police-dispatch-workbench__metric-label {
+  color: var(--app-text-secondary);
+}
+
+.police-dispatch-workbench__refresh {
+  color: var(--app-primary-text) !important;
+  border-color: var(--app-primary-border) !important;
+  background: var(--app-surface) !important;
+}
+
+.police-dispatch-workbench__metric {
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.profile-avatar-editor {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.profile-avatar-editor__content {
+  display: grid;
+  gap: 8px;
+}
+
 html[data-theme='dark'] .ant-drawer .app-surface-muted,
 html[data-theme='dark'] .ant-modal .app-surface-muted {
   border-color: var(--app-border);

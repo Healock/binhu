@@ -315,6 +315,7 @@ export interface User extends UserPreferences {
   id: number
   username: string
   display_name: string
+  avatar_url?: string | null
   role: Role
   table_display_mode: TableDisplayMode
   report_column_mode: ReportColumnMode

@@ -163,7 +163,7 @@ async def _load_current_user(
                        department.department_type, community.name,
                        session.created_at, session.last_activity_at,
                        session.expires_at, UTC_TIMESTAMP(),
-                       user.display_name
+                       user.display_name, user.avatar_storage_key, user.avatar_mime
                 FROM _sessions AS session
                 JOIN _users AS user ON user.id=session.user_id
                 LEFT JOIN _grid_members AS member ON member.id=user.member_id
@@ -338,6 +338,11 @@ async def _load_current_user(
                 "id": row[0],
                 "username": row[1],
                 "display_name": str(row[23] or row[13] or row[1]),
+                "avatar_url": (
+                    f"/api/auth/avatar/{int(row[0])}"
+                    if len(row) > 24 and row[24]
+                    else None
+                ),
                 "role": row[2],
                 "table_display_mode": row[3] or "table",
                 "report_column_mode": row[4] or "three",

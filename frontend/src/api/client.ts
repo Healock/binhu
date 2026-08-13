@@ -152,6 +152,13 @@ export async function getCurrentUser(): Promise<User> {
   return data.user
 }
 
+export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/auth/avatar', form)
+  return data
+}
+
 export async function getAppBootstrap(): Promise<AppBootstrapSummary> {
   const response = await fetchWithAuth(
     '/api/app/bootstrap',
