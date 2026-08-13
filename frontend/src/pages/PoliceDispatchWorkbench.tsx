@@ -22,11 +22,12 @@ import {
   CopyOutlined,
   DeleteOutlined,
   ExclamationCircleOutlined,
+  FileSearchOutlined,
   ReloadOutlined,
   SearchOutlined,
   SendOutlined,
 } from '@ant-design/icons'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   bulkReviewPoliceDispatchTasks,
   deletePoliceDispatchBatch,
@@ -239,6 +240,7 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
 export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all' | 'analysis' }) {
   const { user } = useAuth()
   const mobile = useMobileViewport()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [batches, setBatches] = useState<PoliceDispatchBatch[]>([])
   const [communities, setCommunities] = useState<PoliceCommunityOption[]>([])
@@ -614,6 +616,16 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
               label: `#${item.id} · ${item.file_name} · ${item.status === 'completed' ? '已完成' : '处理中'}`,
             }))}
           />
+          {!analysisOnly && activeBatch && (
+            <Button
+              ghost
+              icon={<FileSearchOutlined />}
+              className="shrink-0"
+              onClick={() => navigate(`/police-dispatch/batches/${activeBatch.id}`)}
+            >
+              <span className="hidden sm:inline">批次详情</span>
+            </Button>
+          )}
           {isSuperAdmin && activeBatch && (
             <Button
               danger
