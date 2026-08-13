@@ -19,6 +19,7 @@ import {
 } from 'antd'
 import {
   CheckOutlined,
+  CheckSquareOutlined,
   CopyOutlined,
   DeleteOutlined,
   ExclamationCircleOutlined,
@@ -32,9 +33,10 @@ import {
   bulkReviewPoliceDispatchTasks,
   deletePoliceDispatchBatch,
   getPoliceDispatchTask,
+  getPoliceDispatchPublishableSelection,
   getPoliceDispatchWorkbench,
   listPoliceDispatchTasks,
-  publishPoliceDispatchBatch,
+  publishSelectedPoliceDispatchTasks,
   resolvePoliceDispatchConflict,
   reviewPoliceDispatchTask,
   updatePoliceDispatchBusinessFields,
@@ -122,7 +124,19 @@ function CopyIconButton({ value, label }: { value: string; label: string }) {
   )
 }
 
-function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => void }) {
+function TaskCard({
+  item,
+  onOpen,
+  selectionMode = false,
+  selected = false,
+  selectable = false,
+}: {
+  item: PoliceDispatchTask
+  onOpen: () => void
+  selectionMode?: boolean
+  selected?: boolean
+  selectable?: boolean
+}) {
   const taskStatus = item.publish_status === 'needs_reconciliation'
     ? { color: 'warning', text: '等待同步对账' }
     : item.publish_status === 'conflict'
@@ -144,11 +158,24 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
     <article
       role="button"
       tabIndex={0}
+      aria-pressed={selectionMode ? selected : undefined}
+      aria-disabled={selectionMode && !selectable ? true : undefined}
       onClick={onOpen}
       onKeyDown={event => {
-        if (event.target === event.currentTarget && event.key === 'Enter') onOpen()
+        if (
+          event.target === event.currentTarget
+          && (event.key === 'Enter' || (selectionMode && event.key === ' '))
+        ) {
+          event.preventDefault()
+          onOpen()
+        }
       }}
-      className="mobile-task-item-card police-dispatch-task-card"
+      className={[
+        'mobile-task-item-card police-dispatch-task-card',
+        selectionMode ? 'is-selection-mode' : '',
+        selected ? 'is-selected' : '',
+        selectionMode && !selectable ? 'is-selection-disabled' : '',
+      ].filter(Boolean).join(' ')}
     >
       <div className="mobile-task-item-card__body">
         <div className="mobile-task-item-card__header">
@@ -276,7 +303,10 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   const [saving, setSaving] = useState(false)
   const [fieldSaving, setFieldSaving] = useState(false)
   const [deletingBatch, setDeletingBatch] = useState(false)
-  const [publishingBatch, setPublishingBatch] = useState(false)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set())
+  const [selectingAll, setSelectingAll] = useState(false)
+  const [publishingSelected, setPublishingSelected] = useState(false)
   const [error, setError] = useState('')
   const taskRequestId = useRef(0)
 
@@ -290,11 +320,18 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     () => batches.find(item => item.id === batchId) || null,
     [batches, batchId],
   )
-  const publishableCount = activeBatch
-    ? activeBatch.import_mode === 'clean' && activeBatch.counts.pending_review > 0
-      ? activeBatch.counts.partial_publishable
-      : activeBatch.counts.publishable
-    : 0
+  const selectedCount = selectedTaskIds.size
+
+  const leavePublishSelection = () => {
+    setSelectionMode(false)
+    setSelectedTaskIds(new Set())
+  }
+
+  const isTaskPublishable = (item: PoliceDispatchTask) => (
+    item.final_action === 'dispatch'
+    && item.task_status === 'pending_publish'
+    && ['pending', 'retryable'].includes(item.publish_status)
+  )
 
   const loadHome = async () => {
     try {
@@ -352,6 +389,9 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
 
   useEffect(() => { void loadHome() }, [])
   useEffect(() => { if (batchId) void loadTasks(1) }, [batchId, status, category, appliedKeyword])
+  useEffect(() => {
+    setSelectedTaskIds(new Set())
+  }, [analysisOnly, batchId, status, category, appliedKeyword])
 
   useEffect(() => {
     if (!batchId) return
@@ -363,6 +403,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   }, [analysisOnly, batchId, category, setSearchParams, status])
 
   const changeBatch = (value: number) => {
+    leavePublishSelection()
     setBatchId(value)
     const next = new URLSearchParams(searchParams)
     next.set('batch', String(value))
@@ -370,6 +411,15 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     next.set('category', analysisOnly ? 'manual' : category)
     setSearchParams(next, { replace: true })
     setPage(1)
+  }
+
+  const enterPublishSelection = () => {
+    setSelectionMode(true)
+    setSelectedTaskIds(new Set())
+    if (!['pending_publish', 'retryable', 'all'].includes(status)) {
+      setStatus('pending_publish')
+      setPage(1)
+    }
   }
 
   const deleteActiveBatch = () => {
@@ -406,18 +456,42 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     })
   }
 
-  const publishActiveBatch = async () => {
-    if (!activeBatch || publishingBatch) return
-    setPublishingBatch(true)
+  const selectAllPublishable = async () => {
+    if (!batchId || selectingAll) return
+    setSelectingAll(true)
     try {
-      const result = await publishPoliceDispatchBatch(activeBatch.id)
+      const result = await getPoliceDispatchPublishableSelection({
+        batch_id: batchId,
+        status,
+        category,
+        keyword: appliedKeyword,
+      })
+      setSelectedTaskIds(new Set(result.task_ids))
+      if (!result.total) message.info('当前筛选结果中没有可发布任务')
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '全选当前筛选失败')
+    } finally {
+      setSelectingAll(false)
+    }
+  }
+
+  const publishSelection = async () => {
+    if (!activeBatch || !selectedCount || publishingSelected) return
+    setPublishingSelected(true)
+    try {
+      const result = await publishSelectedPoliceDispatchTasks(
+        activeBatch.id,
+        [...selectedTaskIds],
+      )
       message[result.failed_count ? 'warning' : 'success'](result.message)
+      leavePublishSelection()
       await loadHome()
       await loadTasks(1)
     } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '整批发布失败')
+      message.error(reason?.response?.data?.detail || '所选任务发布失败')
+      await loadTasks(page)
     } finally {
-      setPublishingBatch(false)
+      setPublishingSelected(false)
     }
   }
 
@@ -700,24 +774,14 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
           </>}
           meta={<span>当前筛选 {total} 条</span>}
           actions={<>
-            {!analysisOnly && activeBatch && publishableCount > 0 && (
-              <Popconfirm
-                title={`整批发布 ${publishableCount} 条已审核任务？`}
-                description={activeBatch.counts.pending_review > 0
-                  ? `其余 ${activeBatch.counts.pending_review} 条待复核记录不会发布，仍保留在当前批次中。`
-                  : '发布后将写入腾讯全链条表；异常、冲突和待对账记录不会重复写入。'}
-                okText="确认整批发布"
-                cancelText="取消"
-                onConfirm={publishActiveBatch}
+            {!analysisOnly && activeBatch && !selectionMode && (
+              <Button
+                type="primary"
+                icon={<CheckSquareOutlined />}
+                onClick={enterPublishSelection}
               >
-                <Button
-                  type="primary"
-                  icon={<SendOutlined />}
-                  loading={publishingBatch}
-                >
-                  整批发布（{publishableCount}）
-                </Button>
-              </Popconfirm>
+                选择发布
+              </Button>
             )}
             {!analysisOnly && (
               <Popconfirm
@@ -738,9 +802,78 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         />
       </section>
 
+      {!analysisOnly && selectionMode && (
+        <section className="app-card mobile-task-bulk-toolbar is-sticky">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="small" onClick={leavePublishSelection}>退出选择</Button>
+            <Button size="small" loading={selectingAll} onClick={selectAllPublishable}>
+              全选当前筛选
+            </Button>
+            <Button
+              size="small"
+              disabled={!selectedCount}
+              onClick={() => setSelectedTaskIds(new Set())}
+            >
+              清空
+            </Button>
+            <span className="text-sm font-medium text-[var(--app-text)]">已选 {selectedCount} 条</span>
+            <Popconfirm
+              title={`发布选中的 ${selectedCount} 条任务？`}
+              description="只发布当前明确选中的已审核任务；发布前会再次校验状态和重复人员组。"
+              okText="确认发布"
+              cancelText="取消"
+              disabled={!selectedCount}
+              onConfirm={publishSelection}
+            >
+              <Button
+                type="primary"
+                size="small"
+                icon={<SendOutlined />}
+                loading={publishingSelected}
+                disabled={!selectedCount}
+              >
+                发布所选
+              </Button>
+            </Popconfirm>
+          </div>
+          <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
+            直接点击卡片多选；“全选当前筛选”会包含其他分页中的可发布任务。
+          </div>
+        </section>
+      )}
+
       <Spin spinning={loading}>
         <div className="mobile-task-list">
-          {tasks.map(item => <TaskCard key={item.id} item={item} onOpen={() => openTask(item)} />)}
+          {tasks.map(item => {
+            const selectable = isTaskPublishable(item)
+            const isSelected = selectedTaskIds.has(item.id)
+            const openOrSelect = () => {
+              if (!selectionMode) {
+                void openTask(item)
+                return
+              }
+              if (!selectable) {
+                message.info('该任务当前不可发布')
+                return
+              }
+              setSelectedTaskIds(current => {
+                const next = new Set(current)
+                if (next.has(item.id)) next.delete(item.id)
+                else next.add(item.id)
+                return next
+              })
+            }
+            return (
+              <TaskCard
+                key={item.id}
+                item={item}
+                selectionMode={selectionMode}
+                selected={isSelected}
+                selectable={selectable}
+                onOpen={openOrSelect}
+              />
+            )
+          })}
           {!loading && !tasks.length && <div className="app-card mobile-task-list__empty py-12"><Empty description="当前筛选没有任务" /></div>}
         </div>
       </Spin>
@@ -765,7 +898,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
             && ['pending', 'retryable'].includes(selected.publish_status)
             ? (
                 <div className="text-center text-sm text-[var(--app-text-secondary)]">
-                  该条已经审核，无需逐条保存；请关闭详情后使用页面上方的“整批发布”。
+                  该条已经审核，无需逐条保存；请关闭详情后进入“选择发布”进行多选。
                 </div>
               )
             : (

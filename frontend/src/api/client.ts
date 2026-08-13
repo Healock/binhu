@@ -1941,6 +1941,20 @@ export async function listPoliceDispatchTasks(params: {
   return data
 }
 
+export async function getPoliceDispatchPublishableSelection(params: {
+  batch_id: number
+  status?: string
+  category?: string
+  keyword?: string
+}): Promise<{ task_ids: number[]; total: number }> {
+  const { data } = await api.post('/police-dispatch/tasks/publishable-selection', {
+    ...params,
+    page: 1,
+    page_size: 1,
+  }, activeRequest)
+  return data
+}
+
 export async function getPoliceDispatchTask(id: number): Promise<{
   task: PoliceDispatchTask
   duplicates: PoliceDispatchTask[]
@@ -1997,12 +2011,17 @@ export async function bulkReviewPoliceDispatchTasks(payload: {
   await api.post('/police-dispatch/tasks/bulk-review', payload)
 }
 
-export async function publishPoliceDispatchBatch(id: number): Promise<{
+export async function publishSelectedPoliceDispatchTasks(
+  id: number,
+  taskIds: number[],
+): Promise<{
   message: string
   success_count: number
   failed_count: number
 }> {
-  const { data } = await api.post(`/police-dispatch/batches/${id}/publish`)
+  const { data } = await api.post(`/police-dispatch/batches/${id}/publish-selected`, {
+    task_ids: taskIds,
+  })
   return data
 }
 

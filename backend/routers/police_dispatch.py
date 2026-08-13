@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from database import get_db
 from deps import require_permission, require_super_admin
@@ -113,6 +113,17 @@ class TaskSearch(BaseModel):
     keyword: str = Field(default="", max_length=100)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=500)
+
+
+class TaskPublishSelection(BaseModel):
+    task_ids: list[int] = Field(min_length=1, max_length=5000)
+
+    @field_validator("task_ids")
+    @classmethod
+    def validate_task_ids(cls, value: list[int]) -> list[int]:
+        if any(task_id <= 0 for task_id in value):
+            raise ValueError("task_ids must contain positive integers")
+        return list(dict.fromkeys(value))
 
 
 class TaskBusinessFieldsUpdate(BaseModel):
@@ -1177,7 +1188,7 @@ TASK_SELECT = """
 """
 
 
-async def _search_tasks(cur, search: TaskSearch) -> dict[str, Any]:
+def _task_search_where(search: TaskSearch) -> tuple[list[str], list[Any]]:
     where = ["task.batch_id=%s"]
     params: list[Any] = [search.batch_id]
     if search.status == "pending_review":
@@ -1207,6 +1218,11 @@ async def _search_tasks(cur, search: TaskSearch) -> dict[str, Any]:
     if search.keyword.strip():
         where.append("CONCAT_WS(' ', task.person_name, task.identity_number, task.phone, task.original_address) LIKE %s")
         params.append(f"%{search.keyword.strip()}%")
+    return where, params
+
+
+async def _search_tasks(cur, search: TaskSearch) -> dict[str, Any]:
+    where, params = _task_search_where(search)
     where_sql = " AND ".join(where)
     await cur.execute(f"SELECT COUNT(*) FROM _police_dispatch_tasks AS task WHERE {where_sql}", params)
     total = int((await cur.fetchone())[0] or 0)
@@ -1248,6 +1264,38 @@ async def search_tasks(
     del user
     async with conn.cursor() as cur:
         return await _search_tasks(cur, data)
+
+
+@router.post("/tasks/publishable-selection")
+async def publishable_task_selection(
+    data: TaskSearch,
+    user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    del user
+    where, params = _task_search_where(data)
+    where.extend([
+        "task.final_action='dispatch'",
+        "task.task_status='pending_publish'",
+        "task.publish_status IN ('pending', 'retryable')",
+        "TRIM(COALESCE(task.phone, ''))<>''",
+        "(task.duplicate_group_key='' OR NOT EXISTS ("
+        "SELECT 1 FROM _police_dispatch_tasks AS grouped "
+        "WHERE grouped.batch_id=task.batch_id "
+        "AND grouped.duplicate_group_key=task.duplicate_group_key "
+        "GROUP BY grouped.duplicate_group_key "
+        "HAVING SUM(grouped.final_action<>'duplicate_exclude')<>1))",
+    ])
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT task.id FROM _police_dispatch_tasks AS task "
+            f"WHERE {' AND '.join(where)} ORDER BY task.source_row, task.id LIMIT 5001",
+            params,
+        )
+        task_ids = [int(row[0]) for row in await cur.fetchall()]
+    if len(task_ids) > 5000:
+        raise HTTPException(409, "当前筛选可发布任务超过 5000 条，请缩小筛选范围后再全选")
+    return {"task_ids": task_ids, "total": len(task_ids)}
 
 
 @router.get("/tasks/{task_id}")
@@ -2090,116 +2138,117 @@ async def _mark_overwrite_uncertain(
     return True
 
 
-def _allows_clean_partial_publish(batch: dict[str, Any]) -> bool:
-    counts = batch.get("counts") or {}
-    return (
-        batch.get("import_mode") == "clean"
-        and int(counts.get("pending_review") or 0) > 0
-        and int(counts.get("partial_publishable") or 0) > 0
-    )
-
-
-@router.post("/batches/{batch_id}/publish")
-async def publish_batch(
+@router.post("/batches/{batch_id}/publish-selected")
+async def publish_selected_tasks(
     batch_id: int,
+    data: TaskPublishSelection,
     request: Request,
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
     parser = get_parser("全链条")
-    async with conn.cursor() as cur:
-        batch = await _batch_payload(cur, batch_id)
-        allow_clean_partial_publish = _allows_clean_partial_publish(batch)
-        if batch["counts"]["pending_review"] and not allow_clean_partial_publish:
-            raise HTTPException(409, "必须先完成全批审核")
-        if not allow_clean_partial_publish:
-            await cur.execute("""
-                SELECT duplicate_group_key,
-                       SUM(final_action<>'duplicate_exclude') AS kept
-                FROM _police_dispatch_tasks
-                WHERE batch_id=%s AND duplicate_group_key<>''
-                GROUP BY duplicate_group_key
+    selected_ids = data.task_ids
+    placeholders = ",".join(["%s"] * len(selected_ids))
+    spreadsheet: dict[str, Any] | None = None
+    sheet_lock_acquired = False
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await _batch_payload(cur, batch_id)
+            if not await _writeback_enabled(cur):
+                raise HTTPException(503, "在线回写已由超级管理员暂停")
+            spreadsheets = await _enabled_spreadsheets(cur, "全链条")
+            if len(spreadsheets) != 1:
+                raise HTTPException(409, "全链条业务没有唯一启用的腾讯来源表")
+            spreadsheet = spreadsheets[0]
+            await cur.execute(f"""
+                SELECT task.id, task.source_row, task.source_name, task.person_name,
+                       task.identity_number, task.phone, task.original_address,
+                       task.source_created_time, task.transfer_note,
+                       task.raw_values_json, community.name
+                FROM _police_dispatch_tasks AS task
+                JOIN _communities AS community ON community.id=task.final_community_id
+                WHERE task.batch_id=%s AND task.id IN ({placeholders})
+                  AND task.final_action='dispatch' AND task.task_status='pending_publish'
+                  AND task.publish_status IN ('pending', 'retryable')
+                ORDER BY task.source_row, task.id
+                FOR UPDATE
+            """, [batch_id, *selected_ids])
+            pending = [
+                {
+                    "id": int(row[0]), "source_row": int(row[1]),
+                    "source_name": str(row[2] or ""), "person_name": str(row[3] or ""),
+                    "identity_number": str(row[4] or ""), "phone": str(row[5] or ""),
+                    "original_address": str(row[6] or ""), "created_time": str(row[7] or ""),
+                    "transfer_note": str(row[8] or ""),
+                    "registration_status": dispatch_values_from_raw(
+                        json_value(row[9], {})
+                    ).get("registration_status", ""),
+                    "community": str(row[10]),
+                }
+                for row in await cur.fetchall()
+            ]
+            if len(pending) != len(selected_ids):
+                raise HTTPException(409, "部分所选任务已不可发布，请刷新列表后重新选择")
+            await cur.execute(f"""
+                SELECT grouped.duplicate_group_key,
+                       SUM(grouped.final_action<>'duplicate_exclude') AS kept
+                FROM _police_dispatch_tasks AS grouped
+                WHERE grouped.batch_id=%s
+                  AND grouped.duplicate_group_key IN (
+                      SELECT selected.duplicate_group_key
+                      FROM _police_dispatch_tasks AS selected
+                      WHERE selected.batch_id=%s AND selected.id IN ({placeholders})
+                        AND selected.duplicate_group_key<>''
+                  )
+                GROUP BY grouped.duplicate_group_key
                 HAVING kept<>1
                 LIMIT 1
-            """, (batch_id,))
+            """, [batch_id, batch_id, *selected_ids])
             if await cur.fetchone():
-                raise HTTPException(409, "每个重复人员组必须且只能确认保留一条")
-        if not await _writeback_enabled(cur):
-            raise HTTPException(503, "在线回写已由超级管理员暂停")
-        spreadsheets = await _enabled_spreadsheets(cur, "全链条")
-        if len(spreadsheets) != 1:
-            raise HTTPException(409, "全链条业务没有唯一启用的腾讯来源表")
-        spreadsheet = spreadsheets[0]
-        duplicate_filter = (
-            "AND task.duplicate_group_key=''"
-            if allow_clean_partial_publish
-            else ""
-        )
-        await cur.execute(f"""
-            SELECT task.id, task.source_row, task.source_name, task.person_name,
-                   task.identity_number, task.phone, task.original_address,
-                   task.source_created_time, task.transfer_note,
-                   task.raw_values_json, community.name
-            FROM _police_dispatch_tasks AS task
-            JOIN _communities AS community ON community.id=task.final_community_id
-            WHERE task.batch_id=%s AND task.final_action='dispatch'
-              AND task.publish_status IN ('pending', 'retryable')
-              {duplicate_filter}
-            ORDER BY task.source_row, task.id
-        """, (batch_id,))
-        pending = [
-            {
-                "id": int(row[0]), "source_row": int(row[1]), "source_name": str(row[2] or ""),
-                "person_name": str(row[3] or ""), "identity_number": str(row[4] or ""),
-                "phone": str(row[5] or ""), "original_address": str(row[6] or ""),
-                "created_time": str(row[7] or ""), "transfer_note": str(row[8] or ""),
-                "registration_status": dispatch_values_from_raw(
-                    json_value(row[9], {})
-                ).get("registration_status", ""),
-                "community": str(row[10]),
-            }
-            for row in await cur.fetchall()
-        ]
-        if not pending:
-            raise HTTPException(409, "当前批次没有可整批发布的已审核任务")
-        missing_phone_count = sum(not item["phone"].strip() for item in pending)
-        if missing_phone_count:
-            raise HTTPException(
-                409,
-                f"有 {missing_phone_count} 条待下发任务缺少手机号，请先研判或补齐手机号",
-            )
-        publish_date = await get_business_date(cur)
-        await cur.execute("""
-            UPDATE _police_dispatch_batches
-            SET first_publish_date=COALESCE(first_publish_date, %s),
-                publish_started_at=COALESCE(publish_started_at, UTC_TIMESTAMP()),
-                status='publishing', last_error=''
-            WHERE id=%s
-        """, (publish_date, batch_id))
-        await cur.execute(
-            "SELECT first_publish_date FROM _police_dispatch_batches WHERE id=%s",
-            (batch_id,),
-        )
-        publish_date = (await cur.fetchone())[0]
-        if pending:
-            pending_ids = [item["id"] for item in pending]
-            placeholders = ",".join(["%s"] * len(pending_ids))
-            await cur.execute(
-                f"UPDATE _police_dispatch_tasks SET publish_status='publishing', "
-                f"task_status='pending_publish', publish_error='' "
-                f"WHERE id IN ({placeholders})",
-                pending_ids,
-            )
-        if not await acquire_sheet_lock(cur, spreadsheet["id"], timeout=2):
-            if pending:
-                await cur.execute(
-                    f"UPDATE _police_dispatch_tasks SET publish_status='retryable', "
-                    f"publish_error='工作表锁正忙，尚未向腾讯发送请求' "
-                    f"WHERE id IN ({placeholders})",
-                    pending_ids,
+                raise HTTPException(409, "所选任务中存在尚未正确处理的重复人员组")
+            missing_phone_count = sum(not item["phone"].strip() for item in pending)
+            if missing_phone_count:
+                raise HTTPException(
+                    409,
+                    f"有 {missing_phone_count} 条待下发任务缺少手机号，请先研判或补齐手机号",
                 )
-            await _refresh_batch_status(cur, batch_id)
-            raise HTTPException(409, "全链条表格正在同步或被他人编辑，请稍后重试")
+            if not await acquire_sheet_lock(cur, spreadsheet["id"], timeout=2):
+                raise HTTPException(409, "全链条表格正在同步或被他人编辑，请稍后重试")
+            sheet_lock_acquired = True
+            publish_date = await get_business_date(cur)
+            await cur.execute("""
+                UPDATE _police_dispatch_batches
+                SET first_publish_date=COALESCE(first_publish_date, %s),
+                    publish_started_at=COALESCE(publish_started_at, UTC_TIMESTAMP()),
+                    status='publishing', last_error=''
+                WHERE id=%s
+            """, (publish_date, batch_id))
+            await cur.execute(
+                "SELECT first_publish_date FROM _police_dispatch_batches WHERE id=%s",
+                (batch_id,),
+            )
+            publish_date = (await cur.fetchone())[0]
+            pending_ids = [item["id"] for item in pending]
+            pending_placeholders = ",".join(["%s"] * len(pending_ids))
+            await cur.execute(f"""
+                UPDATE _police_dispatch_tasks
+                SET publish_status='publishing', task_status='pending_publish', publish_error=''
+                WHERE batch_id=%s AND id IN ({pending_placeholders})
+                  AND final_action='dispatch' AND task_status='pending_publish'
+                  AND publish_status IN ('pending', 'retryable')
+            """, [batch_id, *pending_ids])
+            if cur.rowcount != len(pending_ids):
+                raise HTTPException(409, "部分所选任务状态已经变化，请刷新后重新选择")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        if sheet_lock_acquired and spreadsheet is not None:
+            async with conn.cursor() as cur:
+                await release_sheet_lock(cur, spreadsheet["id"])
+        raise
+
+    assert spreadsheet is not None
 
     client = None
     success_count = 0
@@ -2375,7 +2424,7 @@ async def publish_batch(
         try:
             await _refresh_spreadsheet(conn, client, spreadsheet)
             async with conn.cursor() as cur:
-                await cur.execute("""
+                await cur.execute(f"""
                     UPDATE _police_dispatch_tasks AS task
                     JOIN _police_dispatch_publish_results AS result
                       ON result.task_id=task.id
@@ -2387,36 +2436,39 @@ async def publish_batch(
                         task.linked_row_hash=source.row_hash,
                         result.source_row_id=source.id,
                         result.expected_row_hash=source.row_hash
-                    WHERE task.batch_id=%s
-                """, (batch_id,))
-                await cur.execute("""
+                    WHERE task.batch_id=%s AND task.id IN ({pending_placeholders})
+                """, [batch_id, *pending_ids])
+                await cur.execute(f"""
                     UPDATE _police_dispatch_tasks AS task
                     JOIN _police_dispatch_publish_results AS result
                       ON result.task_id=task.id
                     SET task.cache_pending=0, result.cache_pending=0
                     WHERE task.batch_id=%s AND task.publish_status='success'
-                """, (batch_id,))
+                      AND task.id IN ({pending_placeholders})
+                """, [batch_id, *pending_ids])
         except Exception:
             async with conn.cursor() as cur:
-                await cur.execute("""
+                await cur.execute(f"""
                     UPDATE _police_dispatch_tasks AS task
                     JOIN _police_dispatch_publish_results AS result
                       ON result.task_id=task.id
                     SET task.cache_pending=1, result.cache_pending=1
                     WHERE task.batch_id=%s AND task.publish_status='success'
-                """, (batch_id,))
+                      AND task.id IN ({pending_placeholders})
+                """, [batch_id, *pending_ids])
     finally:
         try:
             if client:
                 await client.close()
         finally:
             async with conn.cursor() as cur:
-                await cur.execute("""
+                await cur.execute(f"""
                     UPDATE _police_dispatch_tasks
                     SET publish_status='retryable', task_status='pending_publish',
                         publish_error='尚未向腾讯发送，可安全重试'
                     WHERE batch_id=%s AND publish_status='publishing'
-                """, (batch_id,))
+                      AND id IN ({pending_placeholders})
+                """, [batch_id, *pending_ids])
                 counts = await _refresh_batch_status(cur, batch_id)
                 await cur.execute("""
                     UPDATE _police_dispatch_batches SET
@@ -2428,7 +2480,9 @@ async def publish_batch(
                 await release_sheet_lock(cur, spreadsheet["id"])
     await record_admin_audit(
         user, "police_dispatch.publish", target_type="police_dispatch_batch",
-        target_name=str(batch_id), detail={"success": success_count, "failed": failed_count},
+        target_name=str(batch_id), detail={
+            "selected": len(selected_ids), "success": success_count, "failed": failed_count,
+        },
         result="partial" if failed_count else "success", **request_audit_fields(request),
     )
     return {

@@ -35,6 +35,7 @@ from services.police_dispatch import (
 from routers.police_dispatch import (
     AddressCreate,
     TaskBusinessFieldsUpdate,
+    TaskPublishSelection,
     TaskReview,
     TaskSearch,
     router,
@@ -53,10 +54,11 @@ from routers.police_dispatch import (
     delete_address,
     export_addresses,
     list_tasks,
+    publishable_task_selection,
+    publish_selected_tasks,
     require_police_access,
     update_task_business_fields,
     _address_scope_community_ids,
-    _allows_clean_partial_publish,
     _assert_address_scope,
     _filter_address_rows,
     require_police_address_access,
@@ -593,19 +595,105 @@ def test_task_counts_keeps_review_and_publish_states_separate():
     }
 
 
-def test_only_clean_batches_can_publish_reviewed_rows_before_all_reviews_finish():
-    counts = {"pending_review": 2, "partial_publishable": 5}
+def test_publish_selection_deduplicates_ids_and_rejects_invalid_values():
+    assert TaskPublishSelection(task_ids=[7, 7, 9]).task_ids == [7, 9]
+    with pytest.raises(ValueError):
+        TaskPublishSelection(task_ids=[0])
+    with pytest.raises(ValueError):
+        TaskPublishSelection(task_ids=list(range(1, 5002)))
 
-    assert _allows_clean_partial_publish({"import_mode": "clean", "counts": counts})
-    assert not _allows_clean_partial_publish({"import_mode": "raw", "counts": counts})
-    assert not _allows_clean_partial_publish({
-        "import_mode": "clean",
-        "counts": {"pending_review": 2, "partial_publishable": 0},
+
+def test_publish_routes_only_expose_selected_task_publishing():
+    routes = {
+        (route.path, tuple(sorted(route.methods or [])))
+        for route in router.routes
+    }
+    assert (
+        "/api/police-dispatch/batches/{batch_id}/publish-selected",
+        ("POST",),
+    ) in routes
+    assert not any(path.endswith("/publish") for path, _methods in routes)
+
+
+def test_publishable_selection_preserves_filters_and_excludes_unsafe_tasks():
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(return_value=[(9,), (11,)])
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+
+    result = asyncio.run(publishable_task_selection(
+        TaskSearch(
+            batch_id=7,
+            status="all",
+            category="dispatch",
+            keyword="safe keyword",
+        ),
+        user={},
+        conn=conn,
+    ))
+
+    assert result == {"task_ids": [9, 11], "total": 2}
+    sql, params = cursor.execute.await_args.args
+    assert "task.final_action='dispatch'" in sql
+    assert "task.task_status='pending_publish'" in sql
+    assert "task.publish_status IN ('pending', 'retryable')" in sql
+    assert "TRIM(COALESCE(task.phone, ''))<>''" in sql
+    assert "HAVING SUM(grouped.final_action<>'duplicate_exclude')<>1" in sql
+    assert params == [7, "dispatch", "%safe keyword%"]
+
+
+def test_publishable_selection_requires_narrower_filter_above_limit():
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(return_value=[(task_id,) for task_id in range(1, 5002)])
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(publishable_task_selection(
+            TaskSearch(batch_id=7), user={}, conn=conn,
+        ))
+
+    assert error.value.status_code == 409
+    assert "5000" in str(error.value.detail)
+
+
+def test_publish_selected_rejects_mixed_or_changed_task_ids_before_writeback(monkeypatch):
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(return_value=[(
+        9, 2, "来源", "甲", "32050020000101001X", "18800000001",
+        "地址", "2026-08-13 09:00:00", "", "{}", "社区",
+    )])
+    conn = MagicMock()
+    conn.begin = AsyncMock()
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    monkeypatch.setattr("routers.police_dispatch._batch_payload", AsyncMock(return_value={}))
+    monkeypatch.setattr("routers.police_dispatch._writeback_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "routers.police_dispatch._enabled_spreadsheets",
+        AsyncMock(return_value=[{"id": 3}]),
+    )
+    request = Request({
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
     })
-    assert not _allows_clean_partial_publish({
-        "import_mode": "clean",
-        "counts": {"pending_review": 0, "partial_publishable": 5},
-    })
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(publish_selected_tasks(
+            7,
+            TaskPublishSelection(task_ids=[9, 10]),
+            request,
+            user={"id": 1},
+            conn=conn,
+        ))
+
+    assert error.value.status_code == 409
+    conn.rollback.assert_awaited_once()
+    conn.commit.assert_not_awaited()
 
 
 def test_batch_payloads_expands_mysql_placeholders_before_execution():
