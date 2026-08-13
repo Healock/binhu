@@ -374,6 +374,8 @@ async def ensure_permission_schema(cur) -> None:
             "active_session_id",
             "VARCHAR(64) DEFAULT NULL AFTER password_is_temporary",
         ),
+        ("avatar_storage_key", "VARCHAR(500) DEFAULT NULL"),
+        ("avatar_mime", "VARCHAR(100) DEFAULT NULL"),
     ]:
         await _ensure_column(cur, "_users", column_name, definition)
     await _ensure_index(
@@ -1833,6 +1835,14 @@ class DatabaseManager:
                     (
                         "theme_mode",
                         "VARCHAR(10) NOT NULL DEFAULT 'light'",
+                    ),
+                    (
+                        "avatar_storage_key",
+                        "VARCHAR(500) DEFAULT NULL",
+                    ),
+                    (
+                        "avatar_mime",
+                        "VARCHAR(100) DEFAULT NULL",
                     ),
                 ]:
                     await cur.execute(

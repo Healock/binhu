@@ -71,6 +71,7 @@ services:
       BACKUP_DIR: /app/backups
       WORKFLOW_ATTACHMENT_DIR: /app/workflow-attachments
       WORKFLOW_PHOTO_IMPORT_DIR: /app/workflow-photo-imports
+      USER_AVATAR_DIR: /app/user-avatars
       STATIC_DIR: /app/static
     volumes:
       - ./frontend/dist:/app/static:ro
@@ -78,6 +79,7 @@ services:
       - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
       - ${BINHU_WORKFLOW_ATTACHMENT_DIR:-/data/binhu/workflow-attachments}:/app/workflow-attachments
       - ${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:-/data/binhu/workflow-photo-imports}:/app/workflow-photo-imports
+      - ${BINHU_USER_AVATAR_DIR:-/data/binhu/user-avatars}:/app/user-avatars
     logging:
       driver: json-file
       options:

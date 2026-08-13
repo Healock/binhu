@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     BACKUP_DIR: str = "../backups"
     WORKFLOW_ATTACHMENT_DIR: str = "../workflow-attachments"
     WORKFLOW_PHOTO_IMPORT_DIR: str = "../workflow-photo-imports"
+    USER_AVATAR_DIR: str = "../user-avatars"
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 
     @property

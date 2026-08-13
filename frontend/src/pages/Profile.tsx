@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Descriptions, Form, Input, Select, Skeleton, Tag, message } from 'antd'
-import { LockOutlined, UserOutlined } from '@ant-design/icons'
+import { Alert, Avatar, Button, Descriptions, Form, Input, Select, Skeleton, Tag, Upload, message } from 'antd'
+import { LockOutlined, UploadOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, type PublicProfile } from '../types'
-import { getPublicProfile } from '../api/client'
+import { getPublicProfile, uploadAvatar } from '../api/client'
 import { PageHeader, Panel } from '../components/ui'
 import ContributionCalendar from '../components/ContributionCalendar'
 
@@ -21,7 +21,7 @@ function errorMessage(error: any): string {
 }
 
 export default function Profile() {
-  const { user, changePassword } = useAuth()
+  const { user, changePassword, refreshUser } = useAuth()
   const [form] = Form.useForm<PasswordFormValues>()
   const [year, setYear] = useState(new Date().getFullYear())
   const [publicProfile, setPublicProfile] = useState<PublicProfile | null>(null)
@@ -48,6 +48,17 @@ export default function Profile() {
     } catch (error) {
       message.error(errorMessage(error))
     }
+  }
+
+  const handleAvatarUpload = async (file: File) => {
+    try {
+      await uploadAvatar(file)
+      await refreshUser()
+      message.success('头像已更新')
+    } catch (error) {
+      message.error(errorMessage(error))
+    }
+    return false
   }
 
   return (
@@ -90,6 +101,22 @@ export default function Profile() {
           title="账号资料"
           description="姓名用于平台显示，用户名只用于登录。"
         >
+          <div className="profile-avatar-editor">
+            <Avatar
+              size={72}
+              src={user.avatar_url || undefined}
+              icon={<UserOutlined />}
+            >
+              {getUserDisplayName(user).slice(0, 1)}
+            </Avatar>
+            <div className="profile-avatar-editor__content">
+              <div className="font-medium">个人头像</div>
+              <div className="text-sm text-[var(--app-text-secondary)]">支持 JPG、PNG、WebP 或 HEIC，最大 5MB</div>
+              <Upload accept=".jpg,.jpeg,.png,.webp,.heic" showUploadList={false} beforeUpload={handleAvatarUpload}>
+                <Button icon={<UploadOutlined />}>上传头像</Button>
+              </Upload>
+            </div>
+          </div>
           <Descriptions column={1} size="middle" colon={false}>
             <Descriptions.Item label="姓名">
               <span className="font-medium">{getUserDisplayName(user)}</span>
