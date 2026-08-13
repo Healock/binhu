@@ -31,6 +31,8 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         # 否则 aiomysql 会把它误当作 Python 格式化符。
         self.assertIn("%%无法核实%%", builder.ledger_unable_sql("task"))
         self.assertIn("%%已登记%%", builder.ledger_reached_bottom_sql("task"))
+        self.assertIn("%%待登记%%", builder.ledger_reached_bottom_sql("task"))
+        self.assertIn("LIKE '%%待登记%%' THEN '待登记'", builder.ledger_result_category_sql("task"))
 
     def test_completed_task_ignores_address_and_same_category_notes(self):
         sql = FullChainBuilder().ledger_change_sql("today", "previous")

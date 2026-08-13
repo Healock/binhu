@@ -300,9 +300,25 @@ async def _managed_column_metadata(
                 {"id": text, "text": text}
                 for text in workflow.result_options
             ]
+        else:
+            known_texts = {
+                str(option.get("text") or "").strip()
+                for option in options
+            }
+            options.extend(
+                {"id": text, "text": text}
+                for text in workflow.result_options
+                if text not in known_texts
+            )
         metadata[result_field] = _editor_select_metadata(
             metadata[result_field], options
         )
+        # 业务结果允许在保留腾讯原有选项 ID 的同时补充平台新增选项。
+        # 必须同时更新编辑器和写回校验列表，否则页面虽然能展示
+        # 新选项，保存时仍会被判定为“无效的下拉选项”。
+        metadata[result_field]["options"] = list(options)
+        if metadata[result_field].get("write_type") == "select":
+            metadata[result_field]["write_options"] = list(options)
     return metadata
 
 

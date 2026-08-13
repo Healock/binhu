@@ -102,7 +102,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         identity_fields=("身份证号",),
         source_fields=("来源",),
         secondary_fields=("二次反馈",),
-        result_options=("已登记", "无法核实", "移交", "无需登记", "离苏"),
+        result_options=("已登记", "待登记", "无法核实", "移交", "无需登记", "离苏"),
     ),
     "出租房屋核查": TaskWorkflow(
         parser_type="出租房屋核查",

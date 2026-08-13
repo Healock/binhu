@@ -721,10 +721,29 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             }},
         )
 
-        self.assertEqual(metadata["核查结果"]["options"], [
-            {"id": "result-1", "text": "已登记"},
-            {"id": "result-2", "text": "无法核实"},
-        ])
+        self.assertEqual(
+            [item["text"] for item in metadata["核查结果"]["options"]],
+            ["已登记", "无法核实", "待登记", "移交", "无需登记", "离苏"],
+        )
+        self.assertEqual(
+            metadata["核查结果"]["write_options"],
+            [
+                {"id": "result-1", "text": "已登记"},
+                {"id": "result-2", "text": "无法核实"},
+                {"id": "待登记", "text": "待登记"},
+                {"id": "移交", "text": "移交"},
+                {"id": "无需登记", "text": "无需登记"},
+                {"id": "离苏", "text": "离苏"},
+            ],
+        )
+        request = TxDocsClient("client", "token", "user").build_update_cell_request(
+            "sheet", 8, 4, "待登记", metadata["核查结果"]
+        )
+        self.assertEqual(
+            request["updateRangeRequest"]["gridData"]["rows"][0]["values"][0]
+            ["cellValue"],
+            {"text": "待登记"},
+        )
 
     async def test_result_options_have_business_fallback_without_cached_metadata(self):
         parser = get_parser("疑似未注销模型三")
