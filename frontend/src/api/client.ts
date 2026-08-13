@@ -934,6 +934,7 @@ export interface MobileTaskItem {
   state: MobileTaskState
   needs_review: boolean
   review_stage: '' | 'waiting_analysis' | 'analyzed'
+  photo_fetched: boolean
   source_count: number
   conflict: boolean
   pending_sync: boolean

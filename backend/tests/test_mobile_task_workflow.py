@@ -19,6 +19,7 @@ from routers.mobile_tasks import (
     _flow_context,
     _scope_where,
     _source_in_community,
+    _task_photo_fetched_rows,
     _task_photo_results,
     _task_filter_options,
     _validate_assignment,
@@ -442,6 +443,8 @@ class PhotoResultCursor:
         self.executed.append((self.last_sql, params))
 
     async def fetchall(self):
+        if self.last_sql.startswith("SELECT DISTINCT detail.source_row_key"):
+            return [("row-key-1", 17), ("row-key-2", 18)]
         if self.last_sql.startswith("SELECT order_row.id, order_row.ticket_no"):
             return [(17, "PHOTO-17"), (18, "PHOTO-18")]
         if self.last_sql.startswith("SELECT file_id, original_name"):
@@ -474,6 +477,33 @@ class PhotoResultPool:
 
 
 class MobileTaskPhotoResultTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_photo_status_only_returns_accessible_rows(self):
+        cursor = PhotoResultCursor(allowed_ticket_ids=(17,))
+        pool = PhotoResultPool(cursor)
+        user = {"id": 5, "permissions": ["workflow.attachment.view"]}
+
+        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", True), \
+             patch("routers.mobile_tasks.db_manager.get_pool", return_value=pool):
+            result = await _task_photo_fetched_rows(
+                user,
+                "全链条",
+                ["row-key-1", "row-key-2"],
+            )
+
+        self.assertEqual(result, {"row-key-1"})
+        self.assertIn("detail.source_row_key IN (%s,%s)", cursor.executed[0][0])
+
+    async def test_batch_photo_status_requires_attachment_permission(self):
+        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", True), \
+             patch("routers.mobile_tasks.db_manager.get_pool") as get_pool:
+            result = await _task_photo_fetched_rows(
+                {"id": 5, "permissions": ["online.raw.view"]},
+                "全链条",
+                ["row-key-1"],
+            )
+        self.assertEqual(result, set())
+        get_pool.assert_not_called()
+
     async def test_only_returns_attachments_from_exact_accessible_task_link(self):
         cursor = PhotoResultCursor(allowed_ticket_ids=(17,))
         pool = PhotoResultPool(cursor)
