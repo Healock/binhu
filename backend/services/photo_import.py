@@ -21,6 +21,7 @@ MAX_PHOTO_IMPORT_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 MAX_PHOTO_IMPORT_SINGLE_BYTES = 20 * 1024 * 1024
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 _IDENTITY = re.compile(r"^(?:\d{15}|\d{17}[0-9X])$")
+_GENERATED_PHOTO_NAME = re.compile(r"^(?:photo|照片)-\d+-[0-9a-f]{8}(?:\.[a-z0-9]+)?$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,22 @@ class ParsedPhoto:
 
 def normalize_identity(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).upper()
+
+
+def canonical_photo_filename(person_name: str, identity_number: str, extension: str) -> str:
+    """生成照片附件对用户可见的规范名称，统一 JPEG 后缀为 .jpg。"""
+    name = str(person_name or "").strip()
+    identity = normalize_identity(identity_number)
+    suffix = str(extension or ".jpg").lower()
+    if suffix == ".jpeg":
+        suffix = ".jpg"
+    if suffix not in PHOTO_EXTENSIONS:
+        suffix = ".jpg"
+    return f"{name}_{identity}{suffix}"
+
+
+def is_generated_photo_filename(value: str) -> bool:
+    return bool(_GENERATED_PHOTO_NAME.fullmatch(str(value or "").strip()))
 
 
 def repair_legacy_zip_text(value: str) -> str:

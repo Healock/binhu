@@ -42,7 +42,9 @@ from services.workflow_support import (
 )
 from services.photo_import import (
     MAX_PHOTO_IMPORT_ZIP_BYTES,
+    canonical_photo_filename,
     inspect_photo_zip,
+    is_generated_photo_filename,
     parse_photo_filename,
     read_photo_zip_members,
     repair_legacy_zip_text,
@@ -202,6 +204,26 @@ async def _refresh_photo_import_preview(cur, batch_id: int, parsed: list) -> dic
 
 async def _can_view_ticket(cur, ticket_id: int, user: dict) -> tuple:
     return await workflow_ticket_access(cur, ticket_id, user)
+
+
+async def _photo_ticket_identity(cur, ticket_id: int) -> tuple[str, str] | None:
+    await cur.execute(
+        "SELECT subject_name, identity_number FROM photo_request_details WHERE work_order_id=%s",
+        (ticket_id,),
+    )
+    row = await cur.fetchone()
+    return (str(row[0] or "").strip(), str(row[1] or "").strip()) if row else None
+
+
+def _attachment_display_name(
+    original_name: str,
+    mime_type: str,
+    identity: tuple[str, str] | None,
+) -> str:
+    if not identity or not is_generated_photo_filename(original_name):
+        return original_name
+    extension = ".jpg" if mime_type == "image/jpeg" else ".png" if mime_type == "image/png" else ".webp" if mime_type == "image/webp" else ".heic"
+    return canonical_photo_filename(identity[0], identity[1], extension)
 
 
 class WorkflowStepPayload(BaseModel):
@@ -1267,8 +1289,9 @@ async def list_attachments(
             (ticket_id,),
         )
         rows = await cur.fetchall()
+        identity = await _photo_ticket_identity(cur, ticket_id)
     return {"data": [
-        {"file_id": row[0], "original_name": row[1], "mime_type": row[2], "size_bytes": int(row[3]),
+        {"file_id": row[0], "original_name": _attachment_display_name(row[1], row[2], identity), "mime_type": row[2], "size_bytes": int(row[3]),
          "sha256": row[4], "retention_until": _iso(row[5]), "deleted_at": _iso(row[6]),
          "created_at": _iso(row[7])} for row in rows
     ]}
@@ -1360,8 +1383,11 @@ async def download_attachment(
     async with conn.cursor() as cur:
         await _can_view_ticket(cur, ticket_id, user)
         await cur.execute(
-            "SELECT original_name, storage_key, mime_type FROM work_order_attachments "
-            "WHERE work_order_id=%s AND file_id=%s AND deleted_at IS NULL",
+            "SELECT attachment.original_name, attachment.storage_key, attachment.mime_type, "
+            "detail.subject_name, detail.identity_number "
+            "FROM work_order_attachments attachment "
+            "LEFT JOIN photo_request_details detail ON detail.work_order_id=attachment.work_order_id "
+            "WHERE attachment.work_order_id=%s AND attachment.file_id=%s AND attachment.deleted_at IS NULL",
             (ticket_id, file_id),
         )
         row = await cur.fetchone()
@@ -1371,8 +1397,15 @@ async def download_attachment(
         path = resolve_attachment(str(row[1]))
     except FileNotFoundError as exc:
         raise HTTPException(404, "附件文件不存在") from exc
-    disposition = "inline" if inline else f'attachment; filename="{file_id}"'
-    return FileResponse(path, media_type=row[2], filename=None if inline else str(row[0]), headers={"Content-Disposition": disposition})
+    display_name = _attachment_display_name(
+        row[0], row[2], (str(row[3] or ""), str(row[4] or "")) if row[3] is not None else None,
+    )
+    return FileResponse(
+        path,
+        media_type=row[2],
+        filename=None if inline else display_name,
+        content_disposition_type="inline" if inline else "attachment",
+    )
 
 
 @router.delete("/tickets/{ticket_id}/attachments/{file_id}")
@@ -1777,13 +1810,18 @@ async def confirm_photo_import(
                                 status = "failed"
                                 reason = "对应工单附件数量已达到上限"
                                 continue
-                            saved = save_attachment(ticket_id, f"photo-{batch_id}-{item.sha256[:8]}{item.extension}", data)
+                            attachment_name = canonical_photo_filename(
+                                str(row[3] or item.person_name),
+                                item.identity_number,
+                                item.extension,
+                            )
+                            saved = save_attachment(ticket_id, attachment_name, data)
                             saved_files.append(saved["storage_key"])
                             await cur.execute(
                                 "INSERT INTO work_order_attachments "
                                 "(work_order_id, file_id, original_name, storage_key, mime_type, sha256, size_bytes, uploaded_by) "
                                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                                (ticket_id, saved["file_id"], f"照片-{batch_id}-{item.sha256[:8]}{item.extension}",
+                                (ticket_id, saved["file_id"], attachment_name,
                                  saved["storage_key"], saved["mime_type"], saved["sha256"], saved["size_bytes"], user["id"]),
                             )
                             ticket_counts[ticket_id] = ticket_counts.get(ticket_id, 0) + 1
