@@ -52,6 +52,11 @@ export default function PoliceDispatchBatchDetail() {
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState('')
   const listRequestId = useRef(0)
+  const publishableCount = batch
+    ? batch.import_mode === 'clean' && batch.counts.pending_review > 0
+      ? batch.counts.partial_publishable || 0
+      : batch.counts.publishable || 0
+    : 0
 
   const load = async (targetPage = page, targetPageSize = pageSize) => {
     if (!id) return
@@ -156,8 +161,10 @@ export default function PoliceDispatchBatchDetail() {
               导出反馈 XLSX
             </Button>
             <Popconfirm
-              title="发布所有已审核的社区任务？"
-              description="全批必须审核完成；成功后写入腾讯全链条表，不自动同步汇总。"
+              title={`整批发布 ${publishableCount} 条已审核任务？`}
+              description={batch.import_mode === 'clean' && batch.counts.pending_review > 0
+                ? `其余 ${batch.counts.pending_review} 条待复核记录不会发布，仍保留在当前批次中。`
+                : '成功后写入腾讯全链条表，不自动同步汇总。'}
               okText="确认发布"
               cancelText="取消"
               onConfirm={publish}
@@ -166,13 +173,9 @@ export default function PoliceDispatchBatchDetail() {
                 type="primary"
                 icon={<SendOutlined />}
                 loading={publishing}
-                disabled={!batch || batch.counts.pending_review > 0 || (
-                  batch.counts.pending_publish
-                  - batch.counts.needs_reconciliation
-                  - batch.counts.conflict
-                ) <= 0}
+                disabled={!batch || (batch.import_mode !== 'clean' && batch.counts.pending_review > 0) || publishableCount <= 0}
               >
-                发布到腾讯表格
+                整批发布到腾讯（{publishableCount}）
               </Button>
             </Popconfirm>
           </Space>

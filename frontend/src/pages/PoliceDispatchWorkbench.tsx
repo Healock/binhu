@@ -24,6 +24,7 @@ import {
   ExclamationCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
+  SendOutlined,
 } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -32,6 +33,7 @@ import {
   getPoliceDispatchTask,
   getPoliceDispatchWorkbench,
   listPoliceDispatchTasks,
+  publishPoliceDispatchBatch,
   resolvePoliceDispatchConflict,
   reviewPoliceDispatchTask,
   updatePoliceDispatchBusinessFields,
@@ -43,6 +45,7 @@ import { useAuth } from '../context/AuthContext'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import { ListToolbar } from '../components/ui'
 import useMobileViewport from '../hooks/useMobileViewport'
+import { mobileTaskSourceTags } from '../utils/mobileTasks'
 
 const actionLabels: Record<string, string> = {
   dispatch: '下发到社区',
@@ -73,20 +76,27 @@ const categoryOptions = [
   { label: '待研判', value: 'manual' },
 ]
 
-function CopyButton({ value }: { value: string }) {
-  if (!value) return null
+function CardCopyValue({ value, label }: { value: string; label: string }) {
   return (
-    <Button
-      type="text"
-      size="small"
-      icon={<CopyOutlined />}
-      aria-label="复制"
+    <button
+      type="button"
+      className="mobile-task-copy-value"
+      title={`点击复制${label}`}
+      aria-label={`复制${label}`}
       onClick={async event => {
         event.stopPropagation()
-        await navigator.clipboard.writeText(value)
-        message.success('已复制')
+        try {
+          await navigator.clipboard.writeText(value)
+          message.success(`${label}已复制`)
+        } catch {
+          message.error(`${label}复制失败，请长按或选中文字复制`)
+        }
       }}
-    />
+      onKeyDown={event => event.stopPropagation()}
+    >
+      <span className="mobile-task-copy-value__text">{value}</span>
+      <CopyOutlined aria-hidden="true" />
+    </button>
   )
 }
 
@@ -104,71 +114,104 @@ function TaskCard({ item, onOpen }: { item: PoliceDispatchTask; onOpen: () => vo
           : item.task_status === 'completed'
             ? { color: 'success', text: '已完成' }
             : { color: 'processing', text: '待发布' }
+  const communityName = item.final_community_name || item.suggested_community_name || '社区待确定'
+  const actionName = actionLabels[item.final_action || item.suggested_action] || '待处理'
+  const suggestedActionName = actionLabels[item.suggested_action] || '等待人工判断'
+  const sourceTags = mobileTaskSourceTags(item.source_name)
   return (
-    <button
-      type="button"
+    <article
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
-      className="app-card w-full border-0 p-4 text-left shadow-sm transition-transform active:scale-[0.99]"
+      onKeyDown={event => {
+        if (event.target === event.currentTarget && event.key === 'Enter') onOpen()
+      }}
+      className="mobile-task-item-card police-dispatch-task-card"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-base font-semibold text-slate-900">{item.person_name || '姓名缺失'}</span>
-            <Tag color={taskStatus.color}>{taskStatus.text}</Tag>
+      <div className="mobile-task-item-card__body">
+        <div className="mobile-task-item-card__header">
+          <div className="mobile-task-item-card__header-main">
+            <div className="mobile-task-item-card__title-row">
+              <h2 title={item.person_name || '姓名缺失'}>{item.person_name || '姓名缺失'}</h2>
+            </div>
           </div>
-          <div className="mt-1 text-xs text-slate-500">来源：{item.source_name || '-'} · Excel 第 {item.source_row} 行</div>
+          <Tag color={taskStatus.color} className="mobile-task-item-card__state">{taskStatus.text}</Tag>
         </div>
-        <span className="shrink-0 text-xs text-slate-400">v{item.version}</span>
-      </div>
 
-      <div className="mt-3 space-y-2 text-sm text-slate-700">
-        <div className="flex items-start gap-2">
-          <span className="w-16 shrink-0 text-slate-400">身份证号</span>
-          <span className="break-all font-mono">{item.identity_number || '-'}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-16 shrink-0 text-slate-400">手机号</span>
-          <span className="break-all">{item.phone || '-'}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="w-16 shrink-0 text-slate-400">创建时间</span>
-          <span className="break-all">{item.created_time || '-'}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="w-16 shrink-0 text-slate-400">原地址</span>
-          <span className="line-clamp-3 flex-1">{item.original_address || '-'}</span>
-        </div>
-        {item.transfer_note && (
-          <div className="flex items-start gap-2">
-            <span className="w-16 shrink-0 text-slate-400">移交信息</span>
-            <span className="line-clamp-2 flex-1">{item.transfer_note}</span>
+        {(item.duplicate_group_key || item.allocation_mode === 'balanced' || item.suggested_action === 'manual') && (
+          <div className="mobile-task-item-card__flags">
+            {item.duplicate_group_key && (
+              <Tag color="orange" icon={<ExclamationCircleOutlined />}>
+                {item.duplicate_kind === 'exact' ? '同批完全重复' : '同身份证信息有差异'}
+              </Tag>
+            )}
+            {item.allocation_mode === 'balanced' && <Tag color="blue">模糊地址 · 平均分配</Tag>}
+            {item.suggested_action === 'manual' && <Tag color="red">需人工研判</Tag>}
           </div>
         )}
-      </div>
 
-      <div className="mt-3 rounded-xl bg-blue-50 p-3 text-sm text-blue-900">
-        <div className="font-medium">
-          建议：{actionLabels[item.suggested_action]}
-          {item.suggested_community_name ? ` · ${item.suggested_community_name}` : ''}
+        <dl className="mobile-task-item-card__key-info">
+          {item.identity_number && (
+            <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
+              <dt>身份证号</dt>
+              <dd className="mobile-task-item-card__identity">
+                <CardCopyValue value={item.identity_number} label="身份证号" />
+              </dd>
+            </div>
+          )}
+          {item.phone && (
+            <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--phone">
+              <dt>手机号</dt>
+              <dd><CardCopyValue value={item.phone} label="手机号" /></dd>
+            </div>
+          )}
+          {item.original_address && (
+            <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--address">
+              <dt>地址</dt>
+              <dd>
+                <CardCopyValue value={item.original_address} label="地址" />
+              </dd>
+            </div>
+          )}
+        </dl>
+
+        <div className="mobile-task-analysis police-dispatch-task-card__suggestion">
+          <div className="mobile-task-analysis__label">平台建议</div>
+          <div className="mobile-task-analysis__value">
+            {suggestedActionName}{item.suggested_community_name ? ` · ${item.suggested_community_name}` : ''}
+          </div>
+          <div className="police-dispatch-task-card__suggestion-reason">
+            {item.suggestion_reason || '等待人工判断'}
+          </div>
         </div>
-        <div className="mt-1 text-xs text-blue-700">{item.suggestion_reason || '等待人工判断'}</div>
-      </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        {item.duplicate_group_key && (
-          <Tag color="orange" icon={<ExclamationCircleOutlined />}>
-            {item.duplicate_kind === 'exact' ? '同批完全重复' : '同身份证信息有差异'}
-          </Tag>
+        {sourceTags.length > 0 && (
+          <div className="mobile-task-source-cloud mobile-task-source-cloud--card">
+            <div>
+              {sourceTags.map(tag => (
+                <Tag key={`${item.id}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+              ))}
+            </div>
+          </div>
         )}
-        {item.allocation_mode === 'balanced' && <Tag color="blue">模糊地址 · 平均分配</Tag>}
-        {item.suggested_action === 'manual' && <Tag color="red">需人工研判</Tag>}
+
+        {item.publish_error && (
+          <div className="police-dispatch-task-card__error">{item.publish_error}</div>
+        )}
       </div>
-      {item.publish_error && (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
-          {item.publish_error}
+      <div className="mobile-task-item-card__footer">
+        <div className="mobile-task-item-card__footer-meta">
+          <div className="mobile-task-item-card__ownership">
+            <span title={communityName}>{communityName}</span>
+            <span aria-hidden="true">·</span>
+            <span title={actionName}>{actionName}</span>
+          </div>
+          <div className="mobile-task-item-card__date">
+            {item.created_time || `Excel 第 ${item.source_row} 行`}
+          </div>
         </div>
-      )}
-    </button>
+      </div>
+    </article>
   )
 }
 
@@ -210,6 +253,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   const [saving, setSaving] = useState(false)
   const [fieldSaving, setFieldSaving] = useState(false)
   const [deletingBatch, setDeletingBatch] = useState(false)
+  const [publishingBatch, setPublishingBatch] = useState(false)
   const [error, setError] = useState('')
   const taskRequestId = useRef(0)
 
@@ -223,6 +267,11 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     () => batches.find(item => item.id === batchId) || null,
     [batches, batchId],
   )
+  const publishableCount = activeBatch
+    ? activeBatch.import_mode === 'clean' && activeBatch.counts.pending_review > 0
+      ? activeBatch.counts.partial_publishable
+      : activeBatch.counts.publishable
+    : 0
 
   const loadHome = async () => {
     try {
@@ -332,6 +381,21 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         }
       },
     })
+  }
+
+  const publishActiveBatch = async () => {
+    if (!activeBatch || publishingBatch) return
+    setPublishingBatch(true)
+    try {
+      const result = await publishPoliceDispatchBatch(activeBatch.id)
+      message[result.failed_count ? 'warning' : 'success'](result.message)
+      await loadHome()
+      await loadTasks(1)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '整批发布失败')
+    } finally {
+      setPublishingBatch(false)
+    }
   }
 
   const openTask = async (item: PoliceDispatchTask) => {
@@ -603,6 +667,25 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
           </>}
           meta={<span>当前筛选 {total} 条</span>}
           actions={<>
+            {!analysisOnly && activeBatch && publishableCount > 0 && (
+              <Popconfirm
+                title={`整批发布 ${publishableCount} 条已审核任务？`}
+                description={activeBatch.counts.pending_review > 0
+                  ? `其余 ${activeBatch.counts.pending_review} 条待复核记录不会发布，仍保留在当前批次中。`
+                  : '发布后将写入腾讯全链条表；异常、冲突和待对账记录不会重复写入。'}
+                okText="确认整批发布"
+                cancelText="取消"
+                onConfirm={publishActiveBatch}
+              >
+                <Button
+                  type="primary"
+                  icon={<SendOutlined />}
+                  loading={publishingBatch}
+                >
+                  整批发布（{publishableCount}）
+                </Button>
+              </Popconfirm>
+            )}
             {!analysisOnly && (
               <Popconfirm
                 title="确认当前筛选结果的全部建议？"
@@ -623,9 +706,9 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
       </section>
 
       <Spin spinning={loading}>
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="mobile-task-list">
           {tasks.map(item => <TaskCard key={item.id} item={item} onOpen={() => openTask(item)} />)}
-          {!loading && !tasks.length && <div className="app-card py-12 md:col-span-2"><Empty description="当前筛选没有任务" /></div>}
+          {!loading && !tasks.length && <div className="app-card mobile-task-list__empty py-12"><Empty description="当前筛选没有任务" /></div>}
         </div>
       </Spin>
 
@@ -645,16 +728,25 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         destroyOnHidden
         extra={selected && <Tag>v{selected.version}</Tag>}
         footer={(
-          <Button
-            block
-            type="primary"
-            size="large"
-            loading={saving}
-            disabled={Boolean(selected && ['success', 'publishing', 'needs_reconciliation', 'conflict'].includes(selected.publish_status))}
-            onClick={saveReview}
-          >
-            {selected?.publish_status === 'conflict' ? '请先处理内容冲突' : '保存审核结果'}
-          </Button>
+          selected?.task_status === 'pending_publish'
+            && ['pending', 'retryable'].includes(selected.publish_status)
+            ? (
+                <div className="text-center text-sm text-[var(--app-text-secondary)]">
+                  该条已经审核，无需逐条保存；请关闭详情后使用页面上方的“整批发布”。
+                </div>
+              )
+            : (
+                <Button
+                  block
+                  type="primary"
+                  size="large"
+                  loading={saving}
+                  disabled={Boolean(selected && ['success', 'publishing', 'needs_reconciliation', 'conflict'].includes(selected.publish_status))}
+                  onClick={saveReview}
+                >
+                  {selected?.publish_status === 'conflict' ? '请先处理内容冲突' : '保存审核结果'}
+                </Button>
+              )
         )}
       >
         <Spin spinning={detailLoading}>

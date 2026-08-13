@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Input, Progress, Select, Segmented, Space, Statistic, Tag, Upload, message } from 'antd'
+import { Alert, Button, Input, Popconfirm, Progress, Select, Segmented, Space, Statistic, Tag, Upload, message } from 'antd'
 import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
-import { ExportOutlined, InboxOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
+import { ExportOutlined, InboxOutlined, RightOutlined, SendOutlined, UploadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import AppTable from './AppTable'
 import { Panel } from './ui'
 import {
   listPoliceDispatchBatches,
   policeDispatchFeedbackUrl,
+  publishPoliceDispatchBatch,
   uploadPoliceDispatchBatch,
   type PoliceDispatchBatch,
 } from '../api/client'
@@ -34,6 +35,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const [status, setStatus] = useState('all')
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [publishingBatchId, setPublishingBatchId] = useState<number | null>(null)
   const [importMode, setImportMode] = useState<'raw' | 'clean'>('raw')
   const [cleanPreview, setCleanPreview] = useState<NonNullable<Awaited<ReturnType<typeof uploadPoliceDispatchBatch>>['preview']> | null>(null)
   const [cleanPreviewToken, setCleanPreviewToken] = useState('')
@@ -109,9 +111,11 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       await load(1)
       if (result.batch) {
         navigate(
-          result.batch.counts.pending_review > 0
-            ? `/police-tasks?batch=${result.batch.id}&status=pending_review&category=all`
-            : `/police-dispatch/batches/${result.batch.id}`,
+          result.batch.counts.pending_publish > 0
+            ? `/police-tasks?batch=${result.batch.id}&status=pending_publish&category=all`
+            : result.batch.counts.pending_review > 0
+              ? `/police-tasks?batch=${result.batch.id}&status=pending_review&category=all`
+              : `/police-dispatch/batches/${result.batch.id}`,
         )
       }
     } catch (reason: any) {
@@ -120,6 +124,25 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       setUploading(false)
     }
   }
+
+  const publishBatch = async (batch: PoliceDispatchBatch) => {
+    setPublishingBatchId(batch.id)
+    try {
+      const result = await publishPoliceDispatchBatch(batch.id)
+      message[result.failed_count ? 'warning' : 'success'](result.message)
+      await load(page)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '整批发布失败')
+    } finally {
+      setPublishingBatchId(null)
+    }
+  }
+
+  const publishableCount = (batch: PoliceDispatchBatch) => (
+    batch.import_mode === 'clean' && batch.counts.pending_review > 0
+      ? batch.counts.partial_publishable || 0
+      : batch.counts.publishable || 0
+  )
 
   const latest = batches[0]
   const columns: TableColumnsType<PoliceDispatchBatch> = [
@@ -144,9 +167,28 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       render: value => <Tag color={statusMeta[value]?.color}>{statusMeta[value]?.text || value}</Tag>,
     },
     {
-      title: '操作', width: 220,
+      title: '操作', width: 330,
       render: (_, item) => (
         <Space>
+          {publishableCount(item) > 0 && (
+            <Popconfirm
+              title={`整批发布 ${publishableCount(item)} 条已审核任务？`}
+              description={item.counts.pending_review > 0
+                ? `其余 ${item.counts.pending_review} 条待复核记录不会发布。`
+                : '发布后将写入腾讯全链条表。'}
+              okText="确认发布"
+              cancelText="取消"
+              onConfirm={() => publishBatch(item)}
+            >
+              <Button
+                type="link"
+                icon={<SendOutlined />}
+                loading={publishingBatchId === item.id}
+              >
+                整批发布（{publishableCount(item)}）
+              </Button>
+            </Popconfirm>
+          )}
           <Button type="link" onClick={() => navigate(`/police-dispatch/batches/${item.id}`)}>
             查看批次 <RightOutlined />
           </Button>
@@ -241,7 +283,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             onClick={upload}
           >
             {importMode === 'clean'
-              ? (cleanPreviewToken ? '确认导入并进入任务处理' : '先预览已处理数据')
+              ? (cleanPreviewToken ? '确认导入并进入待发布' : '先预览已处理数据')
               : '导入并生成审核任务'}
           </Button>
         </div>

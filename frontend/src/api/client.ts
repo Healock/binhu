@@ -1745,6 +1745,8 @@ export interface PoliceDispatchCounts {
   needs_reconciliation: number
   conflict: number
   cache_pending: number
+  publishable: number
+  partial_publishable: number
 }
 
 export interface PoliceDispatchBatch {

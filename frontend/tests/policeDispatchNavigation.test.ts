@@ -56,3 +56,33 @@ test('使用搜索图标的下发和小区页面显式导入图标', () => {
     assert.match(source, /prefix=\{<SearchOutlined \/>\}/)
   }
 })
+
+test('已处理数据可从待发布工作台整批发布且卡片沿用流口任务规范', () => {
+  const workbenchSource = readFileSync(
+    new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+  const panelSource = readFileSync(
+    new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
+    'utf8',
+  )
+  const batchSource = readFileSync(
+    new URL('../src/pages/PoliceDispatchBatchDetail.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(workbenchSource, /整批发布（\{publishableCount\}）/)
+  assert.match(workbenchSource, /其余.*pending_review.*待复核记录不会发布/s)
+  assert.match(workbenchSource, /该条已经审核，无需逐条保存/)
+  assert.match(workbenchSource, /className="mobile-task-item-card police-dispatch-task-card"/)
+  assert.match(workbenchSource, /mobile-task-item-card__key-row--identity/)
+  assert.match(workbenchSource, /mobile-task-item-card__key-row--phone/)
+  assert.match(workbenchSource, /mobile-task-item-card__key-row--address/)
+  assert.match(workbenchSource, /mobile-task-analysis__label">平台建议/)
+  assert.match(workbenchSource, /mobile-task-source-cloud--card/)
+  assert.match(workbenchSource, /mobile-task-item-card__footer/)
+  assert.match(panelSource, /status=pending_publish&category=all/)
+  assert.match(panelSource, /确认导入并进入待发布/)
+  assert.match(panelSource, /整批发布（\{publishableCount\(item\)\}）/)
+  assert.match(batchSource, /整批发布到腾讯（\{publishableCount\}）/)
+})
