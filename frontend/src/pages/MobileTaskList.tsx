@@ -5,13 +5,14 @@ import {
   PhoneOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Modal, Segmented, Select, Skeleton, Tag, message } from 'antd'
+import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
   bulkAssignMobileTasks,
   listMobileTasks,
+  MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE,
   selectMobileTasksForAssignment,
   type MobileTaskFacets,
   type MobileTaskFilterOption,
@@ -91,6 +92,27 @@ const EMPTY_ASSIGNMENT = {
   enabled: false,
   community_aliases: {} as Record<string, string>,
   inspectors_by_community: {} as Record<string, string[]>,
+}
+
+interface BulkAssignmentProgress {
+  total: number
+  processed: number
+  updated: number
+  skipped: number
+  failed: number
+  assignmentCounts: Record<string, number>
+  details: Array<{ row_key: string; reason: string }>
+  error: string
+}
+
+function bulkSkipSummary(details: Array<{ row_key: string; reason: string }>) {
+  const counts = details.reduce<Record<string, number>>((result, item) => {
+    result[item.reason] = (result[item.reason] || 0) + 1
+    return result
+  }, {})
+  return Object.entries(counts)
+    .map(([reason, count]) => `${reason} ${count}条`)
+    .join('、')
 }
 
 function readMulti(searchParams: URLSearchParams, key: string) {
@@ -176,6 +198,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [bulkMode, setBulkMode] = useState<'single' | 'balanced'>('single')
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
   const [bulkSaving, setBulkSaving] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState<BulkAssignmentProgress | null>(null)
   const [selectingAll, setSelectingAll] = useState(false)
   const [selectionCommunity, setSelectionCommunity] = useState('')
   const optionsRequestId = useRef(0)
@@ -206,6 +229,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     setSelectionCommunity('')
     setBulkInspector(undefined)
     setBulkMode('single')
+    setBulkProgress(null)
   }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
 
   const toggleSelected = (rowKey: string, checked: boolean) => {
@@ -263,6 +287,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const clearSelection = () => {
     setSelectedRows(new Set())
     setSelectionCommunity('')
+    setBulkProgress(null)
   }
 
   const leaveSelectionMode = () => {
@@ -274,25 +299,68 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
 
   const submitBulkAssignment = async () => {
     if (!selectedRows.size || (bulkMode === 'single' && !bulkInspector)) return
+    const rowKeys = [...selectedRows]
+    const resumed = bulkProgress?.error && bulkProgress.total === rowKeys.length
+      ? bulkProgress
+      : null
+    let processed = resumed?.processed || 0
+    let updated = resumed?.updated || 0
+    let skipped = resumed?.skipped || 0
+    let failed = resumed?.failed || 0
+    let details = resumed?.details || []
+    const assignmentCounts = { ...(resumed?.assignmentCounts || {}) }
     setBulkSaving(true)
+    setBulkProgress({
+      total: rowKeys.length,
+      processed,
+      updated,
+      skipped,
+      failed,
+      assignmentCounts,
+      details,
+      error: '',
+    })
     try {
-      const result = await bulkAssignMobileTasks(parserType, {
-        row_keys: [...selectedRows],
-        inspector: bulkMode === 'single' ? bulkInspector : undefined,
-        mode: bulkMode,
-      })
-      if (result.updated) {
-        if (result.mode === 'balanced') {
-          const summary = Object.entries(result.assignment_counts)
+      for (let offset = processed; offset < rowKeys.length; offset += MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE) {
+        const chunk = rowKeys.slice(offset, offset + MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE)
+        const result = await bulkAssignMobileTasks(parserType, {
+          row_keys: chunk,
+          inspector: bulkMode === 'single' ? bulkInspector : undefined,
+          mode: bulkMode,
+          balanced_offset: bulkMode === 'balanced' ? offset : undefined,
+          balanced_total: bulkMode === 'balanced' ? rowKeys.length : undefined,
+        })
+        processed = offset + chunk.length
+        updated += result.updated
+        skipped += result.skipped
+        failed += result.failed
+        details = [...details, ...result.details]
+        Object.entries(result.assignment_counts).forEach(([name, count]) => {
+          assignmentCounts[name] = (assignmentCounts[name] || 0) + count
+        })
+        setBulkProgress({
+          total: rowKeys.length,
+          processed,
+          updated,
+          skipped,
+          failed,
+          assignmentCounts: { ...assignmentCounts },
+          details,
+          error: '',
+        })
+      }
+      if (updated) {
+        if (bulkMode === 'balanced') {
+          const summary = Object.entries(assignmentCounts)
             .filter(([, count]) => count > 0)
             .map(([name, count]) => `${name} ${count}条`)
             .join('、')
-          message.success(`已平均分配 ${result.updated} 条任务${summary ? `：${summary}` : ''}`)
+          message.success(`已平均分配 ${updated} 条任务${summary ? `：${summary}` : ''}`)
         } else {
-          message.success(`已分配 ${result.updated} 条任务给 ${result.inspector}`)
+          message.success(`已分配 ${updated} 条任务给 ${bulkInspector}`)
         }
       }
-      if (result.skipped) message.warning(`有 ${result.skipped} 条任务已变化或不再符合条件，列表已刷新`)
+      if (skipped) message.warning(`有 ${skipped} 条任务已分配、已变化或不再符合条件，列表已刷新`)
       setSelectionMode(false)
       clearSelection()
       setBulkOpen(false)
@@ -300,7 +368,18 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       setBulkMode('single')
       await load(1)
     } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '批量分配失败')
+      const errorMessage = reason?.response?.data?.detail || reason?.message || '批量分配失败'
+      setBulkProgress({
+        total: rowKeys.length,
+        processed,
+        updated,
+        skipped,
+        failed,
+        assignmentCounts: { ...assignmentCounts },
+        details,
+        error: errorMessage,
+      })
+      message.error(`分配在 ${processed}/${rowKeys.length} 条后中断，可直接继续，不会覆盖已成功任务`)
     } finally {
       setBulkSaving(false)
     }
@@ -710,14 +789,14 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                   type="primary"
                   size="small"
                   disabled={!selectedCount}
-                  onClick={() => { setBulkMode('single'); setBulkOpen(true) }}
+                  onClick={() => { setBulkMode('single'); setBulkProgress(null); setBulkOpen(true) }}
                 >
                   指定分配
                 </Button>
                 <Button
                   size="small"
                   disabled={!selectedCount || !selectedCommunity || bulkInspectorOptions.length < 2}
-                  onClick={() => { setBulkMode('balanced'); setBulkOpen(true) }}
+                  onClick={() => { setBulkMode('balanced'); setBulkProgress(null); setBulkOpen(true) }}
                 >
                   平均分配
                 </Button>
@@ -943,7 +1022,9 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       <Modal
         open={bulkOpen}
         title={bulkMode === 'balanced' ? '平均分配核查人' : '指定分配核查人'}
-        okText={bulkMode === 'balanced' ? '确认平均分配' : '确认分配'}
+        okText={bulkProgress?.error
+          ? '继续分配'
+          : bulkMode === 'balanced' ? '确认平均分配' : '确认分配'}
         cancelText="取消"
         confirmLoading={bulkSaving}
         okButtonProps={{
@@ -952,7 +1033,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
             || (bulkMode === 'single' && !bulkInspector),
         }}
         onOk={() => void submitBulkAssignment()}
-        onCancel={() => { if (!bulkSaving) setBulkOpen(false) }}
+        onCancel={() => {
+          if (!bulkSaving) {
+            setBulkOpen(false)
+            setBulkProgress(null)
+          }
+        }}
       >
         <div className="space-y-3 text-sm">
           {selectedCommunity ? (
@@ -973,7 +1059,10 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               placeholder="请选择核查人"
               value={bulkInspector}
               options={bulkInspectorOptions.map(value => ({ value, label: value }))}
-              onChange={setBulkInspector}
+              onChange={value => {
+                setBulkInspector(value)
+                setBulkProgress(null)
+              }}
             />
           ) : (
             <div className="mobile-task-balanced-preview">
@@ -985,6 +1074,30 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                   <span key={name}>{name}<strong>{count} 条</strong></span>
                 )
               })}
+            </div>
+          )}
+          {bulkProgress && (
+            <div className="space-y-2 rounded border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3">
+              <Progress
+                percent={Math.round((bulkProgress.processed / bulkProgress.total) * 100)}
+                status={bulkProgress.error ? 'exception' : bulkSaving ? 'active' : 'normal'}
+              />
+              <p className="text-xs text-[var(--app-text-secondary)]">
+                已处理 {bulkProgress.processed}/{bulkProgress.total} 条；确认写入 {bulkProgress.updated} 条，跳过 {bulkProgress.skipped} 条{bulkProgress.failed ? `，失败 ${bulkProgress.failed} 条` : ''}。
+              </p>
+              {bulkProgress.details.length > 0 && (
+                <p className="text-xs text-[var(--app-text-secondary)]">
+                  跳过原因：{bulkSkipSummary(bulkProgress.details)}
+                </p>
+              )}
+              {bulkProgress.error && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="本次分配已中断"
+                  description={`${bulkProgress.error}。点击“继续分配”会从当前分块续传，已经成功的任务不会被覆盖。`}
+                />
+              )}
             </div>
           )}
           <p className="text-xs text-[var(--app-text-secondary)]">已有核查人的任务、已完成任务、来源冲突任务会被跳过，不会被覆盖。</p>

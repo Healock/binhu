@@ -66,6 +66,7 @@ SortMode = Literal["priority", "updated_desc", "updated_asc"]
 AssignmentMode = Literal["single", "balanced"]
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
+MAX_BULK_ASSIGNMENT_CHUNK = 20
 
 
 async def _task_photo_results(user: dict, parser_type: str, row_key: str) -> list[dict]:
@@ -211,9 +212,11 @@ class TaskBatchUpdate(BaseModel):
 
 
 class BulkAssignmentRequest(BaseModel):
-    row_keys: list[str] = Field(min_length=1, max_length=MAX_BULK_ASSIGNMENT_TASKS)
+    row_keys: list[str] = Field(min_length=1, max_length=MAX_BULK_ASSIGNMENT_CHUNK)
     inspector: str = Field(default="", max_length=100)
     mode: AssignmentMode = "single"
+    balanced_offset: int = Field(default=0, ge=0)
+    balanced_total: int = Field(default=0, ge=0, le=MAX_BULK_ASSIGNMENT_TASKS)
 
 
 class TaskSearch(BaseModel):
@@ -241,6 +244,9 @@ def _iso_utc(value) -> str | None:
 def _balanced_assignment_plan(
     row_keys: list[str],
     inspectors: list[str],
+    *,
+    total_count: int | None = None,
+    start_index: int = 0,
 ) -> tuple[dict[str, str], dict[str, int]]:
     """把已筛出的任务按连续区段尽量平均分给在岗组员。
 
@@ -252,16 +258,27 @@ def _balanced_assignment_plan(
     members = list(dict.fromkeys(str(name).strip() for name in inspectors if str(name).strip()))
     if not keys or not members:
         return {}, {name: 0 for name in members}
-    base, remainder = divmod(len(keys), len(members))
-    plan: dict[str, str] = {}
-    counts = {name: 0 for name in members}
-    cursor = 0
+    total = total_count if total_count is not None else len(keys)
+    if total < len(keys) or start_index < 0 or start_index + len(keys) > total:
+        return {}, {name: 0 for name in members}
+    base, remainder = divmod(total, len(members))
+    member_ranges: list[tuple[int, int, str]] = []
+    range_start = 0
     for index, member in enumerate(members):
         size = base + (1 if index < remainder else 0)
-        for key in keys[cursor:cursor + size]:
-            plan[key] = member
-        counts[member] = size
-        cursor += size
+        member_ranges.append((range_start, range_start + size, member))
+        range_start += size
+    plan: dict[str, str] = {}
+    counts = {name: 0 for name in members}
+    for local_index, key in enumerate(keys):
+        global_index = start_index + local_index
+        member = next(
+            name
+            for lower, upper, name in member_ranges
+            if lower <= global_index < upper
+        )
+        plan[key] = member
+        counts[member] += 1
     return plan, counts
 
 
@@ -1536,9 +1553,9 @@ async def bulk_assign_mobile_tasks(
     """Manually assign selected unassigned tasks to one or all local members.
 
     Tencent writeback is inherently row/version based, so each physical source
-    row is still revalidated and written through the existing safe path.  The
-    endpoint only provides the batch selection and a compact result summary;
-    it never bypasses the per-row permission, revision, hash, or option checks.
+    row is still revalidated and written through the existing safe path.  Each
+    request is capped to a small resumable chunk; balanced_offset/total keep the
+    allocation deterministic across retries without bypassing per-row checks.
     """
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
@@ -1553,6 +1570,11 @@ async def bulk_assign_mobile_tasks(
         raise HTTPException(400, "请选择任务")
     if data.mode == "single" and not inspector:
         raise HTTPException(400, "请选择在岗组员")
+    balanced_total = data.balanced_total or len(row_keys)
+    if data.mode == "balanced" and (
+        data.balanced_offset + len(row_keys) > balanced_total
+    ):
+        raise HTTPException(400, "平均分配分块范围无效，请重新发起分配")
 
     projection_by_key: dict[str, dict] = {}
     source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
@@ -1643,8 +1665,10 @@ async def bulk_assign_mobile_tasks(
 
     if data.mode == "balanced":
         assignment_plan, assignment_counts = _balanced_assignment_plan(
-            eligible_keys,
+            row_keys,
             available_inspectors,
+            total_count=balanced_total,
+            start_index=data.balanced_offset,
         )
     else:
         assignment_plan = {row_key: inspector for row_key in eligible_keys}

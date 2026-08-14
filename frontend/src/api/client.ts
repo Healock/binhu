@@ -1203,6 +1203,8 @@ export async function bulkAssignMobileTasks(
     row_keys: string[]
     inspector?: string
     mode?: 'single' | 'balanced'
+    balanced_offset?: number
+    balanced_total?: number
   },
 ): Promise<{
   updated: number
@@ -1220,6 +1222,8 @@ export async function bulkAssignMobileTasks(
   )
   return data
 }
+
+export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 20
 
 export interface QueryWritebackAudit {
   id: number

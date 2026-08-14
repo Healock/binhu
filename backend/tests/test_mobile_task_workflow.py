@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from routers.mobile_tasks import (
     MAX_BULK_ASSIGNMENT_TASKS,
+    MAX_BULK_ASSIGNMENT_CHUNK,
     BulkAssignmentRequest,
     EMPTY_FILTER_VALUE,
     TaskSearch,
@@ -372,17 +373,18 @@ class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
-    def test_bulk_assignment_accepts_full_filtered_selection_with_safety_cap(self):
+    def test_bulk_assignment_requires_bounded_chunks(self):
         request = BulkAssignmentRequest(
-            row_keys=[f"row-{index}" for index in range(MAX_BULK_ASSIGNMENT_TASKS)],
+            row_keys=[f"row-{index}" for index in range(MAX_BULK_ASSIGNMENT_CHUNK)],
             mode="balanced",
+            balanced_total=MAX_BULK_ASSIGNMENT_TASKS,
         )
-        self.assertEqual(len(request.row_keys), MAX_BULK_ASSIGNMENT_TASKS)
+        self.assertEqual(len(request.row_keys), MAX_BULK_ASSIGNMENT_CHUNK)
         with self.assertRaises(ValueError):
             BulkAssignmentRequest(
                 row_keys=[
                     f"row-{index}"
-                    for index in range(MAX_BULK_ASSIGNMENT_TASKS + 1)
+                    for index in range(MAX_BULK_ASSIGNMENT_CHUNK + 1)
                 ],
                 mode="balanced",
             )
@@ -394,6 +396,22 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(list(plan), ["a", "b", "c", "d", "e"])
         self.assertEqual(counts, {"组员甲": 2, "组员乙": 2, "组员丙": 1})
+
+    def test_balanced_assignment_is_stable_across_retried_chunks(self):
+        keys = [f"row-{index}" for index in range(11)]
+        inspectors = ["组员甲", "组员乙", "组员丙"]
+        full_plan, _ = _balanced_assignment_plan(keys, inspectors)
+        chunk_plan: dict[str, str] = {}
+        for offset in range(0, len(keys), 4):
+            plan, _ = _balanced_assignment_plan(
+                keys[offset:offset + 4],
+                inspectors,
+                total_count=len(keys),
+                start_index=offset,
+            )
+            chunk_plan.update(plan)
+
+        self.assertEqual(chunk_plan, full_plan)
 
     async def test_admin_assignment_uses_global_row_permission_validation(self):
         cursor = MagicMock()
