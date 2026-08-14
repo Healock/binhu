@@ -926,6 +926,20 @@
   width: 100%;
 }
 
+.mobile-task-source-cloud--table {
+  margin-top: 0;
+}
+
+.mobile-task-source-cloud--table > div {
+  width: 100%;
+  gap: 4px;
+}
+
+.mobile-task-source-cloud--table .mobile-task-source-cloud__tag.ant-tag {
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .mobile-task-bulk-toolbar {
   padding: 10px 12px;
 }
