@@ -1,13 +1,24 @@
 import {
   CopyOutlined,
+  EditOutlined,
   EyeOutlined,
   ExclamationCircleOutlined,
+  SaveOutlined,
 } from '@ant-design/icons'
-import { Button, Table, Tag, Tooltip, type TableColumnsType } from 'antd'
-import type { Key } from 'react'
-import type { MobileTaskItem } from '../api/client'
+import { Button, Input, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
+import { useMemo, useRef, useState, type Key } from 'react'
 import {
+  getMobileTaskAnalysisDetail,
+  getMobileTaskDetail,
+  updateMobileTask,
+  updateMobileTaskAnalysis,
+  type MobileTaskDetailData,
+  type MobileTaskItem,
+} from '../api/client'
+import {
+  buildMobileTaskChanges,
   formatMobileTaskDeadline,
+  mobileTaskEditorFields,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
 } from '../utils/mobileTasks'
@@ -23,6 +34,7 @@ interface MobileTaskTableProps {
   total: number
   page: number
   loading: boolean
+  analysisMode?: boolean
   selectionMode: boolean
   selectedRowKeys: Key[]
   canSelect: (task: MobileTaskItem) => boolean
@@ -30,15 +42,43 @@ interface MobileTaskTableProps {
   onOpen: (task: MobileTaskItem) => void
   onCopy: (value: string, label: '身份证号' | '手机号') => void
   onPageChange: (page: number) => void
+  onSaved: () => Promise<void> | void
 }
 
-function FilledField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="mobile-task-table-edit-field">
+function ReadonlyField({
+  label,
+  value,
+  onEdit,
+}: {
+  label: string
+  value: string
+  onEdit?: () => void
+}) {
+  const content = (
+    <>
       <span>{label}</span>
       <strong title={value || '未填写'}>{value || '未填写'}</strong>
-    </div>
+    </>
   )
+  return onEdit ? (
+    <button
+      type="button"
+      className="mobile-task-table-edit-field mobile-task-table-edit-field--clickable"
+      onClick={event => {
+        event.stopPropagation()
+        onEdit()
+      }}
+    >
+      {content}
+    </button>
+  ) : <div className="mobile-task-table-edit-field">{content}</div>
+}
+
+function errorMessage(reason: any, fallback: string) {
+  const detail = reason?.response?.data?.detail
+  return typeof detail === 'object'
+    ? detail?.message || fallback
+    : detail || reason?.message || fallback
 }
 
 export default function MobileTaskTable({
@@ -46,6 +86,7 @@ export default function MobileTaskTable({
   total,
   page,
   loading,
+  analysisMode = false,
   selectionMode,
   selectedRowKeys,
   canSelect,
@@ -53,7 +94,188 @@ export default function MobileTaskTable({
   onOpen,
   onCopy,
   onPageChange,
+  onSaved,
 }: MobileTaskTableProps) {
+  const [editingRowKey, setEditingRowKey] = useState('')
+  const [editorLoading, setEditorLoading] = useState(false)
+  const [editorSaving, setEditorSaving] = useState(false)
+  const [editorData, setEditorData] = useState<MobileTaskDetailData | null>(null)
+  const [editorValues, setEditorValues] = useState<Record<string, string>>({})
+  const editorRequestId = useRef(0)
+  const editorSource = editorData?.sources[0] || null
+  const editorFields = useMemo(() => (
+    editorData && editorSource
+      ? mobileTaskEditorFields(
+          editorData,
+          editorSource.editable_fields,
+          editorValues,
+          editorSource.values,
+        )
+      : []
+  ), [editorData, editorSource, editorValues])
+  const editorChanges = useMemo(() => (
+    editorSource
+      ? buildMobileTaskChanges(editorSource.values, editorValues, editorFields)
+      : {}
+  ), [editorFields, editorSource, editorValues])
+  const editorDirty = Object.keys(editorChanges).length > 0
+
+  const closeEditor = () => {
+    editorRequestId.current += 1
+    setEditingRowKey('')
+    setEditorLoading(false)
+    setEditorSaving(false)
+    setEditorData(null)
+    setEditorValues({})
+  }
+
+  const beginEdit = async (task: MobileTaskItem) => {
+    if (selectionMode || editingRowKey === task.row_key) return
+    if (editingRowKey && editorDirty && !window.confirm('当前行有未保存内容，确定放弃并编辑另一条任务吗？')) return
+    if (task.conflict || task.source_count > 1) {
+      message.info('该任务有多个来源，请进入详情选择需要修改的腾讯行')
+      onOpen(task)
+      return
+    }
+
+    const requestId = editorRequestId.current + 1
+    editorRequestId.current = requestId
+    setEditingRowKey(task.row_key)
+    setEditorData(null)
+    setEditorValues({})
+    setEditorLoading(true)
+    try {
+      const detail = analysisMode
+        ? await getMobileTaskAnalysisDetail(task.parser_type, task.row_key)
+        : await getMobileTaskDetail(task.parser_type, task.row_key)
+      if (requestId !== editorRequestId.current) return
+      if (detail.sources.length !== 1) {
+        closeEditor()
+        message.info('该任务需要在详情页选择来源后再修改')
+        onOpen(task)
+        return
+      }
+      setEditorData(detail)
+      setEditorValues({ ...detail.sources[0].values })
+    } catch (reason: any) {
+      if (requestId !== editorRequestId.current) return
+      closeEditor()
+      message.error(errorMessage(reason, '任务编辑信息读取失败'))
+    } finally {
+      if (requestId === editorRequestId.current) setEditorLoading(false)
+    }
+  }
+
+  const saveEditor = async (task: MobileTaskItem) => {
+    if (!editorSource || !editorDirty || !editorData?.writeback_enabled) return
+    setEditorSaving(true)
+    try {
+      const updater = analysisMode ? updateMobileTaskAnalysis : updateMobileTask
+      await updater(task.parser_type, editorSource.id, {
+        changes: editorChanges,
+        expected_revision: editorSource.revision,
+      })
+      message.success('任务已保存并写回腾讯表格')
+      closeEditor()
+      await onSaved()
+    } catch (reason: any) {
+      message.error(errorMessage(reason, '保存失败，请稍后重试'))
+    } finally {
+      setEditorSaving(false)
+    }
+  }
+
+  const renderExpandedRow = (task: MobileTaskItem) => {
+    const editing = editingRowKey === task.row_key
+    if (!editing) {
+      const edit = selectionMode ? undefined : () => void beginEdit(task)
+      return (
+        <div
+          className="mobile-task-table-edit-grid"
+          onDoubleClick={() => onOpen(task)}
+        >
+          <ReadonlyField label="现住址" value={task.summary.current_address} onEdit={edit} />
+          <ReadonlyField label="核查结果" value={task.summary.result} onEdit={edit} />
+          <ReadonlyField label="研判" value={task.summary.analysis} onEdit={edit} />
+          <ReadonlyField label="二次反馈" value={task.summary.secondary_feedback} onEdit={edit} />
+          <ReadonlyField label="调取照片" value={task.photo_fetched ? '已调照片' : '未调照片'} />
+          <div className="mobile-task-table-edit-action">
+            <Button
+              size="small"
+              type="primary"
+              ghost
+              icon={<EditOutlined />}
+              disabled={selectionMode}
+              onClick={event => {
+                event.stopPropagation()
+                void beginEdit(task)
+              }}
+            >编辑本行</Button>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div
+        className="mobile-task-table-inline-editor"
+        onClick={event => event.stopPropagation()}
+        onDoubleClick={event => event.stopPropagation()}
+      >
+        {editorLoading ? (
+          <div className="mobile-task-table-inline-status">正在读取可编辑字段和下拉选项…</div>
+        ) : editorFields.length === 0 ? (
+          <div className="mobile-task-table-inline-status">
+            {editorData?.writeback_enabled ? '当前任务没有可编辑字段' : '在线回写已暂停，当前任务只能查看'}
+          </div>
+        ) : (
+          <div className="mobile-task-table-inline-fields">
+            {editorFields.map(field => {
+              const metadata = editorSource?.cell_meta[field] || { type: 'text' }
+              const options = metadata.options?.map(option => ({
+                value: String(option.text),
+                label: String(option.text),
+              })) || []
+              return (
+                <label key={field} className="mobile-task-table-inline-field">
+                  <span>{field === '核查人' ? '任务分配' : field}</span>
+                  {metadata.type === 'select' || field === '核查人' ? (
+                    <Select
+                      allowClear
+                      showSearch
+                      size="small"
+                      value={editorValues[field] || undefined}
+                      options={options}
+                      onChange={value => setEditorValues(current => ({ ...current, [field]: value || '' }))}
+                    />
+                  ) : (
+                    <Input.TextArea
+                      size="small"
+                      autoSize={{ minRows: 1, maxRows: 3 }}
+                      value={editorValues[field] || ''}
+                      onChange={event => setEditorValues(current => ({ ...current, [field]: event.target.value }))}
+                    />
+                  )}
+                </label>
+              )
+            })}
+          </div>
+        )}
+        <div className="mobile-task-table-inline-actions">
+          <Button size="small" disabled={editorSaving} onClick={closeEditor}>取消</Button>
+          <Button
+            size="small"
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={editorSaving}
+            disabled={!editorDirty || !editorData?.writeback_enabled}
+            onClick={() => void saveEditor(task)}
+          >{editorDirty ? `保存 ${Object.keys(editorChanges).length} 项` : '没有修改'}</Button>
+        </div>
+      </div>
+    )
+  }
+
   const columns: TableColumnsType<MobileTaskItem> = [
     {
       title: '截止日期',
@@ -209,23 +431,7 @@ export default function MobileTaskTable({
         expandable={{
           expandedRowKeys: rows.map(task => task.row_key),
           showExpandColumn: false,
-          expandedRowRender: task => (
-            <div
-              className="mobile-task-table-edit-grid"
-              role="button"
-              tabIndex={0}
-              onDoubleClick={() => onOpen(task)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') onOpen(task)
-              }}
-            >
-              <FilledField label="现住址" value={task.summary.current_address} />
-              <FilledField label="核查结果" value={task.summary.result} />
-              <FilledField label="研判" value={task.summary.analysis} />
-              <FilledField label="二次反馈" value={task.summary.secondary_feedback} />
-              <FilledField label="调取照片" value={task.photo_fetched ? '已调照片' : '未调照片'} />
-            </div>
-          ),
+          expandedRowRender: renderExpandedRow,
         }}
         pagination={{
           current: page,
@@ -233,12 +439,16 @@ export default function MobileTaskTable({
           total,
           showSizeChanger: false,
           showTotal: count => `共 ${count} 条`,
-          onChange: onPageChange,
+          onChange: nextPage => {
+            closeEditor()
+            onPageChange(nextPage)
+          },
         }}
         onRow={task => ({
-          className: selectionMode && selectedRowKeys.includes(task.row_key)
-            ? 'mobile-task-table-row-selected'
-            : '',
+          className: [
+            'mobile-task-table-primary-row',
+            selectionMode && selectedRowKeys.includes(task.row_key) ? 'mobile-task-table-row-selected' : '',
+          ].filter(Boolean).join(' '),
           onDoubleClick: () => onOpen(task),
         })}
       />
