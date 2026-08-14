@@ -31,7 +31,7 @@ DOMAIN_TABLES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "visit": (
         settings.MYSQL_ONLINE_DATA_DB,
         settings.MYSQL_VISIT_DB,
-        ("_visit_import_batches", "t_visit_details", "_visit_import_issues"),
+        ("_visit_import_batches", "t_visit_details", "_visit_import_issues", "_visit_source_runs"),
     ),
     "dispatch": (
         settings.MYSQL_ONLINE_DATA_DB,

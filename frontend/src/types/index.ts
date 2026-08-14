@@ -251,6 +251,7 @@ export type PermissionCode =
   | 'personnel.basic.view' | 'personnel.sensitive.view' | 'community.view'
   | 'notification.view' | 'preferences.manage' | 'sync.trigger'
   | 'report.config.manage' | 'visit.import'
+  | 'visit.source.manage'
   | 'worklog.manage' | 'attendance.manage' | 'personnel.manage'
   | 'community.manage' | 'user.manage' | 'permission.manage'
   | 'announcement.manage' | 'system.manage' | 'ops.manage'
@@ -264,6 +265,32 @@ export type TableDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
 export type MobileNavigationMode = 'sidebar' | 'dock'
 export type ThemeMode = 'light' | 'dark' | 'system'
+
+export interface VisitSourceRun {
+  id: number
+  source: 'detail' | 'rating'
+  trigger_source: 'manual' | 'scheduled'
+  status: 'preview' | 'pending_confirmation' | 'confirmed' | 'superseded' | 'kept' | 'failed'
+  start_date: string | null
+  end_date: string | null
+  response_business_date: string | null
+  source_page: string
+  record_count: number
+  valid_count: number
+  issue_count: number
+  issues?: string[]
+  error_code?: string | null
+  error_message?: string | null
+  created_at?: string | null
+  diff?: {
+    inserted: number
+    updated: number
+    unchanged: number
+    deleted: number
+    unmatched: number
+    ambiguous: number
+  }
+}
 export type MobileNavigationGroupId =
   | 'workspace'
   | 'tasks'

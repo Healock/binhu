@@ -624,6 +624,8 @@ CREATE TABLE IF NOT EXISTS _visit_import_batches (
     file_size_bytes    BIGINT NOT NULL DEFAULT 0,
     status             VARCHAR(20) NOT NULL DEFAULT 'running',
     uploader_id        INT DEFAULT NULL,
+    source_type        VARCHAR(20) NOT NULL DEFAULT 'manual',
+    source_run_id      BIGINT DEFAULT NULL,
     sheet_name         VARCHAR(100) DEFAULT NULL,
     total_rows         INT NOT NULL DEFAULT 0,
     valid_rows         INT NOT NULL DEFAULT 0,
@@ -644,6 +646,7 @@ CREATE TABLE IF NOT EXISTS _visit_import_batches (
     INDEX idx_visit_batch_hash (file_sha256),
     INDEX idx_visit_batch_type_hash (import_type, file_sha256, status),
     INDEX idx_visit_batch_status (status),
+    INDEX idx_visit_batch_source (source_type, source_run_id),
     INDEX idx_visit_batch_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -704,6 +707,34 @@ CREATE TABLE IF NOT EXISTS _visit_import_issues (
     row_preview  JSON DEFAULT NULL,
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_visit_issue_batch (batch_id, severity, source_row_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _visit_source_runs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source_kind VARCHAR(20) NOT NULL,
+    trigger_source VARCHAR(20) NOT NULL DEFAULT 'manual',
+    status VARCHAR(30) NOT NULL DEFAULT 'preview',
+    requested_by INT DEFAULT NULL,
+    requested_start_date DATE NOT NULL,
+    requested_end_date DATE NOT NULL,
+    response_business_date DATE DEFAULT NULL,
+    source_page VARCHAR(120) NOT NULL,
+    source_url VARCHAR(500) DEFAULT NULL,
+    record_count INT NOT NULL DEFAULT 0,
+    valid_count INT NOT NULL DEFAULT 0,
+    issue_count INT NOT NULL DEFAULT 0,
+    summary_json JSON DEFAULT NULL,
+    payload_json JSON DEFAULT NULL,
+    error_code VARCHAR(60) DEFAULT NULL,
+    error_message VARCHAR(500) DEFAULT NULL,
+    confirmed_by INT DEFAULT NULL,
+    confirmed_at DATETIME DEFAULT NULL,
+    superseded_by BIGINT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_visit_source_kind_status (source_kind, status),
+    INDEX idx_visit_source_dates (requested_start_date, requested_end_date),
+    INDEX idx_visit_source_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 1. 全链条（15列业务数据，兼容旧版14列腾讯来源表）
