@@ -175,6 +175,24 @@ test('无法核实时才显示授权的二次反馈字段', () => {
     mobileTaskEditorFields(detail, ['核查人', '核查结果', '二次反馈'], { 核查结果: '无法核实' }),
     ['核查人', '核查结果', '二次反馈'],
   )
+  assert.deepEqual(
+    mobileTaskEditorFields(
+      detail,
+      ['核查人', '核查结果', '二次反馈'],
+      { 核查结果: '已登记', 二次反馈: '重新联系后可以登记' },
+      { 核查结果: '无法核实', 二次反馈: '' },
+    ),
+    ['核查人', '核查结果', '二次反馈'],
+  )
+})
+
+test('最终结果保存后保留二次反馈只读记录', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /preservedSecondaryFeedback/)
+  assert.match(detailSource, /\{item\.field\}记录/)
 })
 
 test('来源行保存后立即按业务真实口径更新状态', () => {

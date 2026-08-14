@@ -355,6 +355,55 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             ["核查结果", "二次反馈"],
         )
 
+    async def test_secondary_feedback_is_preserved_when_result_becomes_final(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("全链条")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+            "核查结果": "无法核实",
+        })
+        after = {
+            **before,
+            "核查结果": "已登记",
+            "二次反馈": "重新联系后确认可以登记",
+        }
+
+        await validate_row_changes(
+            SqlAwareCursor(formal={"长板": "长板"}),
+            user,
+            parser,
+            before,
+            after,
+            ["核查结果", "二次反馈"],
+        )
+
+    async def test_secondary_feedback_cannot_be_changed_after_final_result(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("全链条")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+            "核查结果": "已登记",
+            "二次反馈": "历史反馈",
+        })
+
+        with self.assertRaises(PermissionError):
+            await validate_row_changes(
+                SqlAwareCursor(formal={"长板": "长板"}),
+                user,
+                parser,
+                before,
+                {**before, "二次反馈": "篡改历史反馈"},
+                ["二次反馈"],
+            )
+
     async def test_model_three_mobile_remark_is_editable_without_changing_result(self):
         user = make_user("组员", communities=["长板"])
         parser = get_parser("疑似未注销模型三")

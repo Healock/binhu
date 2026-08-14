@@ -168,6 +168,7 @@ export function mobileTaskEditorFields(
   detail: Pick<MobileTaskDetailData, 'workflow' | 'analysis_mode'>,
   editableFields: string[],
   formValues: Record<string, string>,
+  sourceValues: Record<string, string> = formValues,
 ): string[] {
   if (detail.analysis_mode) {
     return detail.workflow.analysis_fields.filter((field, index, fields) => (
@@ -175,11 +176,14 @@ export function mobileTaskEditorFields(
     ))
   }
   const result = formValues[detail.workflow.result_field] || ''
+  const sourceResult = sourceValues[detail.workflow.result_field] || ''
+  const canFinishSecondaryFeedback = result.includes('无法核实')
+    || sourceResult.includes('无法核实')
   const candidates = [
     '核查人',
     '现住址',
     detail.workflow.result_field,
-    ...(result.includes('无法核实') ? detail.workflow.secondary_fields : []),
+    ...(canFinishSecondaryFeedback ? detail.workflow.secondary_fields : []),
     ...(detail.workflow.extra_edit_fields || []),
   ]
   return candidates.filter((field, index) => (
