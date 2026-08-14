@@ -175,6 +175,24 @@ test('无法核实时才显示授权的二次反馈字段', () => {
     mobileTaskEditorFields(detail, ['核查人', '核查结果', '二次反馈'], { 核查结果: '无法核实' }),
     ['核查人', '核查结果', '二次反馈'],
   )
+  assert.deepEqual(
+    mobileTaskEditorFields(
+      detail,
+      ['核查人', '核查结果', '二次反馈'],
+      { 核查结果: '已登记', 二次反馈: '重新联系后可以登记' },
+      { 核查结果: '无法核实', 二次反馈: '' },
+    ),
+    ['核查人', '核查结果', '二次反馈'],
+  )
+})
+
+test('最终结果保存后保留二次反馈只读记录', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /preservedSecondaryFeedback/)
+  assert.match(detailSource, /\{item\.field\}记录/)
 })
 
 test('来源行保存后立即按业务真实口径更新状态', () => {
@@ -356,6 +374,21 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /bulkMode/)
   assert.match(pageSource, /平均分配/)
   assert.match(pageSource, /assignment_counts/)
+  assert.match(pageSource, /selectMobileTasksForAssignment/)
+  assert.match(pageSource, /全选当前筛选/)
+  assert.match(pageSource, /row_keys: chunk/)
+  assert.match(pageSource, /MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE/)
+  assert.match(pageSource, /for \(let offset = processed; offset < rowKeys\.length;/)
+  assert.match(pageSource, /balanced_offset: bulkMode === 'balanced' \? offset/)
+  assert.match(pageSource, /balanced_total: bulkMode === 'balanced' \? rowKeys\.length/)
+  assert.match(pageSource, /点击“继续分配”会从当前分块续传/)
+  assert.match(pageSource, /<Progress/)
+  assert.match(pageSource, /跳过原因：/)
+  assert.match(pageSource, /result\.failed_details/)
+  assert.match(pageSource, /失败原因：/)
+  assert.match(pageSource, /setInterval\(refreshVisibleList, 30_000\)/)
+  assert.match(pageSource, /visibilitychange/)
+  assert.doesNotMatch(pageSource, /selectAllLoaded/)
   assert.match(pageSource, /formatMobileTaskDeadline/)
   assert.match(pageSource, /aria-pressed=\{selectionMode \? isSelected : undefined\}/)
   assert.match(pageSource, /isSelected \? 'is-selected'/)

@@ -339,6 +339,18 @@ async def validate_row_changes(
             after,
             extra_fields=getattr(parser, "MOBILE_EDITABLE_FIELDS", ()),
         ))
+        # A secondary feedback value may be entered while the row is
+        # "无法核实" and saved together with a final primary result.  Keep
+        # those fields writable for this transition so the historical
+        # feedback is not silently dropped from the batch request.
+        primary_before = str(
+            before.get("核查结果") or before.get("核查反馈") or ""
+        )
+        if "无法核实" in primary_before:
+            editable.update(
+                column for column in parser.COLUMNS
+                if column in SECONDARY_FIELDS
+            )
     if any(column not in editable for column in columns):
         raise PermissionError("当前岗位不能修改该字段或该社区数据")
     role_class = _role_class(user)

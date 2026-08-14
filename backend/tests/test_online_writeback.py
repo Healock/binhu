@@ -14,6 +14,7 @@ from routers.query import (
     _looks_like_automatic_text_coercion,
     _managed_column_metadata,
     _row_values_match,
+    _source_data_version,
     new_row_required_fields,
     update_source_cell,
     update_source_fields,
@@ -210,6 +211,13 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_source_data_version_contains_no_business_content(self):
+        cursor = AsyncMock()
+        cursor.fetchone.return_value = (12, 19, None)
+        version = await _source_data_version(cursor, "全链条")
+        self.assertEqual(version, "12:19:")
+        self.assertEqual(cursor.execute.await_args.args[1], ("全链条",))
+
     def test_detects_known_text_number_coercion_patterns(self):
         self.assertTrue(_looks_like_automatic_text_coercion(
             "身份证号",
@@ -346,6 +354,55 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             after,
             ["核查结果", "二次反馈"],
         )
+
+    async def test_secondary_feedback_is_preserved_when_result_becomes_final(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("全链条")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+            "核查结果": "无法核实",
+        })
+        after = {
+            **before,
+            "核查结果": "已登记",
+            "二次反馈": "重新联系后确认可以登记",
+        }
+
+        await validate_row_changes(
+            SqlAwareCursor(formal={"长板": "长板"}),
+            user,
+            parser,
+            before,
+            after,
+            ["核查结果", "二次反馈"],
+        )
+
+    async def test_secondary_feedback_cannot_be_changed_after_final_result(self):
+        user = make_user("组员", communities=["长板"])
+        parser = get_parser("全链条")
+        before = {column: "" for column in parser.COLUMNS}
+        before.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+            "核查结果": "已登记",
+            "二次反馈": "历史反馈",
+        })
+
+        with self.assertRaises(PermissionError):
+            await validate_row_changes(
+                SqlAwareCursor(formal={"长板": "长板"}),
+                user,
+                parser,
+                before,
+                {**before, "二次反馈": "篡改历史反馈"},
+                ["二次反馈"],
+            )
 
     async def test_model_three_mobile_remark_is_editable_without_changing_result(self):
         user = make_user("组员", communities=["长板"])

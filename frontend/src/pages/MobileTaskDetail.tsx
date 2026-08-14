@@ -86,9 +86,22 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   )
   const visibleEditorFields = useMemo(() => (
     data && selectedSource
-      ? mobileTaskEditorFields(data, selectedSource.editable_fields, formValues)
+      ? mobileTaskEditorFields(
+          data,
+          selectedSource.editable_fields,
+          formValues,
+          selectedSource.values,
+        )
       : []
   ), [data, formValues, selectedSource])
+  const preservedSecondaryFeedback = useMemo(() => (
+    data && selectedSource
+      ? data.workflow.secondary_fields
+          .filter(field => !visibleEditorFields.includes(field))
+          .map(field => ({ field, value: selectedSource.values[field]?.trim() || '' }))
+          .filter(item => item.value)
+      : []
+  ), [data, selectedSource, visibleEditorFields])
   const changes = useMemo(() => {
     if (!selectedSource) return {}
     return buildMobileTaskChanges(
@@ -198,7 +211,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         } : source),
       } : current)
       setFormValues(savedValues)
-      setSavedMessage('已写回腾讯表格，汇总待同步')
+      setSavedMessage('已保存，滨湖平台数据已同步并写回腾讯表格')
     } catch (reason: any) {
       const status = reason?.response?.status
       setError(detailError(reason, '保存失败，请稍后重试'))
@@ -411,6 +424,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             <div className="mobile-task-analysis__value">{analysis}</div>
           </div>
         )}
+        {preservedSecondaryFeedback.map(item => (
+          <div key={item.field} className="mobile-task-analysis mt-4">
+            <div className="mobile-task-analysis__label">{item.field}记录</div>
+            <div className="mobile-task-analysis__value">{item.value}</div>
+          </div>
+        ))}
       </section>
 
       {data.photo_requests?.some(request => request.attachments.length > 0) && (

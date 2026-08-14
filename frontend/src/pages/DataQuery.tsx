@@ -29,6 +29,7 @@ import {
   createQuerySourceRow,
   deleteQuerySourceRow,
   formatUTCTime,
+  getQueryDataVersion,
   getQuerySourceRows,
   getQueryTypes,
   getQueryWritebackAudit,
@@ -102,6 +103,8 @@ export default function DataQuery() {
   const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
   const [selectedSheetRow, setSelectedSheetRow] = useState<DisplayRow | null>(null)
   const [sheetSaving, setSheetSaving] = useState(false)
+  const [sheetEditing, setSheetEditing] = useState(false)
+  const [refreshAvailable, setRefreshAvailable] = useState(false)
   const [sheetFullscreen, setSheetFullscreen] = useState(false)
   const [sheetRevision, setSheetRevision] = useState(0)
   const [sheetFilterCriteria, setSheetFilterCriteria] = useState<
@@ -123,6 +126,10 @@ export default function DataQuery() {
   const [auditPage, setAuditPage] = useState(1)
   const [auditTotal, setAuditTotal] = useState(0)
   const fetchSequence = useRef(0)
+  const dataVersionRef = useRef('')
+  const versionContextRef = useRef('')
+  const refreshBlockedRef = useRef(false)
+  const pollingRef = useRef(false)
   const [messageApi, messageContext] = message.useMessage()
 
   const isSuperAdmin = user?.role === 'super_admin'
@@ -171,10 +178,12 @@ export default function DataQuery() {
       .catch(() => setError('业务类型加载失败'))
   }, [])
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (silent = false) => {
     const sequence = ++fetchSequence.current
-    setLoading(true)
-    setError('')
+    if (!silent) {
+      setLoading(true)
+      setError('')
+    }
     try {
       const result = await loadCompleteQueryResult((requestPage, requestPageSize) => queryData({
         type: selectedType,
@@ -200,6 +209,8 @@ export default function DataQuery() {
       setCanAdd(Boolean(result.can_add))
       setRequiredFields(result.required_fields || [])
       setPendingCount(Number(result.pending_count || 0))
+      dataVersionRef.current = String(result.data_version || '')
+      setRefreshAvailable(false)
       setMobilePage(current => Math.min(
         current,
         Math.max(1, Math.ceil(result.total / MOBILE_CARD_PAGE_SIZE)),
@@ -208,6 +219,7 @@ export default function DataQuery() {
       setSheetRevision(current => current + 1)
     } catch (requestError) {
       if (sequence !== fetchSequence.current) return
+      if (silent) return
       setError(errorText(requestError, '查询失败，请检查网络后重试'))
       setRows([])
       setTotal(0)
@@ -222,11 +234,67 @@ export default function DataQuery() {
       setSelectedSheetRow(null)
       setSheetRevision(current => current + 1)
     } finally {
-      if (sequence === fetchSequence.current) setLoading(false)
+      if (sequence === fetchSequence.current && !silent) setLoading(false)
     }
   }, [selectedType, source, keyword, sheetRequestFilters, sortBy, sortOrder])
 
+  useEffect(() => {
+    dataVersionRef.current = ''
+    setRefreshAvailable(false)
+  }, [selectedType, source])
+
   useEffect(() => { fetchData() }, [fetchData])
+
+  const refreshBlocked = sheetSaving
+    || sheetEditing
+    || adding
+    || drawerSaving
+    || savingDraftIds.size > 0
+    || draftRows.some(row => isQueryDraftTouched(row, columns))
+  refreshBlockedRef.current = refreshBlocked
+
+  const checkForUpdates = useCallback(async () => {
+    if (source !== 'online' || pollingRef.current || document.visibilityState === 'hidden') return
+    const requestContext = `${selectedType}:${source}`
+    pollingRef.current = true
+    try {
+      const result = await getQueryDataVersion(selectedType)
+      if (versionContextRef.current !== requestContext) return
+      const latest = String(result.data_version || '')
+      if (!dataVersionRef.current) {
+        dataVersionRef.current = latest
+      } else if (latest && latest !== dataVersionRef.current) {
+        if (refreshBlockedRef.current) setRefreshAvailable(true)
+        else await fetchData(true)
+      }
+    } catch {
+      // Background freshness checks must not interrupt normal page use.
+    } finally {
+      pollingRef.current = false
+    }
+  }, [fetchData, selectedType, source])
+
+  versionContextRef.current = `${selectedType}:${source}`
+
+  useEffect(() => {
+    if (source !== 'online') return
+    const interval = window.setInterval(checkForUpdates, 15_000)
+    const handleFocus = () => { void checkForUpdates() }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void checkForUpdates()
+    }
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [checkForUpdates, source])
+
+  useEffect(() => {
+    if (refreshAvailable && !refreshBlocked) void fetchData(true)
+  }, [fetchData, refreshAvailable, refreshBlocked])
 
   const handleDelete = useCallback(async (row: DisplayRow) => {
     const sourceId = Number(row.__source_id)
@@ -323,8 +391,8 @@ export default function DataQuery() {
         completed += 1
       }
       messageApi.success(changes.length > 1
-        ? `已将 ${changes.length} 个单元格写回腾讯表格`
-        : '已写回腾讯表格')
+        ? `已保存 ${changes.length} 个单元格，平台数据已同步并写回腾讯表格`
+        : '已保存，平台数据已同步并写回腾讯表格')
       if (newlyPendingSourceIds.size > 0) {
         setPendingCount(current => current + newlyPendingSourceIds.size)
       }
@@ -406,7 +474,7 @@ export default function DataQuery() {
           },
         ),
       )
-      messageApi.success('修改已写回腾讯表格')
+      messageApi.success('修改已保存，平台数据已同步并写回腾讯表格')
       setDrawerOpen(false)
       await fetchData()
     } catch (requestError) {
@@ -532,12 +600,20 @@ export default function DataQuery() {
       {source === 'online' && rowManageMessage && (
         <Alert type="warning" showIcon message={rowManageMessage} />
       )}
+      {source === 'online' && refreshAvailable && (
+        <Alert
+          type="info"
+          showIcon
+          message="其他用户更新了当前数据"
+          description="你正在编辑或有未保存草稿，系统暂不自动刷新。保存或清空后会自动载入最新数据。"
+        />
+      )}
       {source === 'online' && sourceReady && pendingCount > 0 && (
         <Alert
           type="warning"
           showIcon
-          message="腾讯表格已更新，业务库和汇总尚未同步"
-          description="查询页显示最新来源内容；下一次正常同步后，在线汇总、归档和日报才会更新。"
+          message="滨湖平台当前数据已更新，业务归档和报表尚待同步"
+          description="其他平台用户会直接看到最新内容；下一次正常同步后，归档和日报也会更新。"
         />
       )}
       {source === 'online' && sourceReady && !writebackEnabled && (
@@ -686,6 +762,7 @@ export default function DataQuery() {
               onCommit={handleSheetCommit}
               onBlocked={messageApi.warning}
               onSavingChange={setSheetSaving}
+              onEditingChange={setSheetEditing}
             />
           ) : (
             <div className="p-10"><Empty description={error || '没有找到符合条件的数据'} /></div>
