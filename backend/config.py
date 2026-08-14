@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # platform contract and server-side credentials are configured.
     VISIT_SOURCE_BASE_URL: str = ""
     VISIT_SOURCE_AUTHORIZATION: str = ""
+    VISIT_SOURCE_USERNAME: str = ""
+    VISIT_SOURCE_PASSWORD: str = ""
+    VISIT_SOURCE_LOGIN_PATH: str = "/api/login"
     VISIT_SOURCE_DETAIL_FIELD_MAP: str = ""
     VISIT_SOURCE_RATING_FIELD_MAP: str = ""
     VISIT_SOURCE_TIMEOUT_SECONDS: int = 30
