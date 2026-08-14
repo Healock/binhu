@@ -282,6 +282,28 @@ def _balanced_assignment_plan(
     return plan, counts
 
 
+def _bulk_assignment_result(
+    *,
+    updated: int,
+    skipped: list[dict[str, str]],
+    failures: list[dict[str, str]],
+    inspector: str,
+    mode: AssignmentMode,
+    assignment_counts: dict[str, int],
+) -> dict:
+    """Build mutually exclusive assignment outcome counts and details."""
+    return {
+        "updated": updated,
+        "skipped": len(skipped),
+        "failed": len(failures),
+        "details": skipped,
+        "failed_details": failures,
+        "inspector": inspector if mode == "single" else "",
+        "mode": mode,
+        "assignment_counts": assignment_counts,
+    }
+
+
 def require_flow_user(user: dict) -> tuple[str, str]:
     member = user.get("member") or {}
     position = str(member.get("position") or "").strip()
@@ -1677,7 +1699,7 @@ async def bulk_assign_mobile_tasks(
         }
 
     update_count = 0
-    failed_count = 0
+    failures: list[dict[str, str]] = []
     successful_assignment_counts = {name: 0 for name in assignment_counts}
     for row_key in eligible_keys:
         assigned_inspector = assignment_plan.get(row_key, "")
@@ -1703,14 +1725,13 @@ async def bulk_assign_mobile_tasks(
                 )
             except HTTPException as exc:
                 task_ok = False
-                failed_count += 1
                 reason = {
                     400: "数据校验未通过",
                     403: "没有该任务的编辑权限",
                     409: "任务已变化，请刷新后重试",
                     502: "腾讯回写校验失败",
                 }.get(exc.status_code, "保存失败")
-                skipped.append({"row_key": row_key, "reason": reason})
+                failures.append({"row_key": row_key, "reason": reason})
                 break
         if task_ok:
             update_count += 1
@@ -1718,6 +1739,14 @@ async def bulk_assign_mobile_tasks(
                 successful_assignment_counts.get(assigned_inspector, 0) + 1
             )
 
+    result = _bulk_assignment_result(
+        updated=update_count,
+        skipped=skipped,
+        failures=failures,
+        inspector=inspector,
+        mode=data.mode,
+        assignment_counts=successful_assignment_counts,
+    )
     await record_admin_audit(
         user,
         "mobile_tasks.bulk_assign",
@@ -1725,21 +1754,13 @@ async def bulk_assign_mobile_tasks(
         target_name=parser_type,
         detail={
             "task_count": len(row_keys),
-            "updated_count": update_count,
-            "skipped_count": len(skipped),
-            "failed_count": failed_count,
+            "updated_count": result["updated"],
+            "skipped_count": result["skipped"],
+            "failed_count": result["failed"],
             "inspector": inspector if data.mode == "single" else "",
             "allocation_mode": data.mode,
             "assignment_counts": successful_assignment_counts,
         },
         **request_audit_fields(request),
     )
-    return {
-        "updated": update_count,
-        "skipped": len(skipped),
-        "failed": failed_count,
-        "details": skipped,
-        "inspector": inspector if data.mode == "single" else "",
-        "mode": data.mode,
-        "assignment_counts": successful_assignment_counts,
-    }
+    return result

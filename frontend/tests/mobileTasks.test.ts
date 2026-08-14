@@ -384,6 +384,8 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /点击“继续分配”会从当前分块续传/)
   assert.match(pageSource, /<Progress/)
   assert.match(pageSource, /跳过原因：/)
+  assert.match(pageSource, /result\.failed_details/)
+  assert.match(pageSource, /失败原因：/)
   assert.match(pageSource, /setInterval\(refreshVisibleList, 30_000\)/)
   assert.match(pageSource, /visibilitychange/)
   assert.doesNotMatch(pageSource, /selectAllLoaded/)

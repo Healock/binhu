@@ -16,6 +16,7 @@ from routers.mobile_tasks import (
     TaskSearch,
     _address_order,
     _balanced_assignment_plan,
+    _bulk_assignment_result,
     _multi_filter_condition,
     _priority_bucket,
     _review_stage_condition,
@@ -412,6 +413,25 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
             chunk_plan.update(plan)
 
         self.assertEqual(chunk_plan, full_plan)
+
+    def test_bulk_assignment_outcomes_are_mutually_exclusive(self):
+        result = _bulk_assignment_result(
+            updated=17,
+            skipped=[{"row_key": "skipped-a", "reason": "已有核查人"}],
+            failures=[
+                {"row_key": "failed-a", "reason": "腾讯回写校验失败"},
+                {"row_key": "failed-b", "reason": "任务已变化，请刷新后重试"},
+            ],
+            inspector="",
+            mode="balanced",
+            assignment_counts={"组员甲": 9, "组员乙": 8},
+        )
+
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["failed"], 2)
+        self.assertEqual(result["updated"] + result["skipped"] + result["failed"], 20)
+        self.assertEqual(len(result["details"]), result["skipped"])
+        self.assertEqual(len(result["failed_details"]), result["failed"])
 
     async def test_admin_assignment_uses_global_row_permission_validation(self):
         cursor = MagicMock()

@@ -102,6 +102,7 @@ interface BulkAssignmentProgress {
   failed: number
   assignmentCounts: Record<string, number>
   details: Array<{ row_key: string; reason: string }>
+  failedDetails: Array<{ row_key: string; reason: string }>
   error: string
 }
 
@@ -308,6 +309,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     let skipped = resumed?.skipped || 0
     let failed = resumed?.failed || 0
     let details = resumed?.details || []
+    let failedDetails = resumed?.failedDetails || []
     const assignmentCounts = { ...(resumed?.assignmentCounts || {}) }
     setBulkSaving(true)
     setBulkProgress({
@@ -318,6 +320,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       failed,
       assignmentCounts,
       details,
+      failedDetails,
       error: '',
     })
     try {
@@ -335,6 +338,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         skipped += result.skipped
         failed += result.failed
         details = [...details, ...result.details]
+        failedDetails = [...failedDetails, ...(result.failed_details || [])]
         Object.entries(result.assignment_counts).forEach(([name, count]) => {
           assignmentCounts[name] = (assignmentCounts[name] || 0) + count
         })
@@ -346,6 +350,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           failed,
           assignmentCounts: { ...assignmentCounts },
           details,
+          failedDetails,
           error: '',
         })
       }
@@ -361,6 +366,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         }
       }
       if (skipped) message.warning(`有 ${skipped} 条任务已分配、已变化或不再符合条件，列表已刷新`)
+      if (failed) message.error(`有 ${failed} 条任务写入失败：${bulkSkipSummary(failedDetails)}`)
       setSelectionMode(false)
       clearSelection()
       setBulkOpen(false)
@@ -377,6 +383,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         failed,
         assignmentCounts: { ...assignmentCounts },
         details,
+        failedDetails,
         error: errorMessage,
       })
       message.error(`分配在 ${processed}/${rowKeys.length} 条后中断，可直接继续，不会覆盖已成功任务`)
@@ -1088,6 +1095,11 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               {bulkProgress.details.length > 0 && (
                 <p className="text-xs text-[var(--app-text-secondary)]">
                   跳过原因：{bulkSkipSummary(bulkProgress.details)}
+                </p>
+              )}
+              {bulkProgress.failedDetails.length > 0 && (
+                <p className="text-xs text-[var(--app-danger)]">
+                  失败原因：{bulkSkipSummary(bulkProgress.failedDetails)}
                 </p>
               )}
               {bulkProgress.error && (

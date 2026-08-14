@@ -1212,6 +1212,7 @@ export async function bulkAssignMobileTasks(
   skipped: number
   failed: number
   details: Array<{ row_key: string; reason: string }>
+  failed_details: Array<{ row_key: string; reason: string }>
   inspector: string
   mode: 'single' | 'balanced'
   assignment_counts: Record<string, number>
