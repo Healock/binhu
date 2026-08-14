@@ -299,7 +299,17 @@ export default function MobileTaskTable({
       render: (_, task) => {
         const sources = mobileTaskSourceTags(task.summary.source)
         return sources.length
-          ? <Tooltip title={sources.join('、')}><span className="block truncate">{sources.join('、')}</span></Tooltip>
+          ? (
+              <Tooltip title={sources.join('、')}>
+                <div className="mobile-task-source-cloud mobile-task-source-cloud--table">
+                  <div>
+                    {sources.map(tag => (
+                      <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+                    ))}
+                  </div>
+                </div>
+              </Tooltip>
+            )
           : <span className="text-[var(--app-text-muted)]">未填写</span>
       },
     },
