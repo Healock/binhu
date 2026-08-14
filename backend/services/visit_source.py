@@ -323,6 +323,7 @@ async def preview_diff(
     kind: str,
     rows: list[dict[str, Any]],
     timezone_name: str,
+    projected_detail_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Calculate a read-only diff using the same parser and matching rules."""
     import asyncio
@@ -357,16 +358,79 @@ async def preview_diff(
         }
 
     from services.star_rating_import import (
+        VisitCandidate,
         _load_visit_candidates,
         choose_star_rating_matches,
         parse_star_rating_workbook,
     )
 
     parsed = await asyncio.to_thread(parse_star_rating_workbook, content, timezone_name)
-    candidates = await _load_visit_candidates(
-        conn,
-        sorted({row.address_key for row in parsed.rows}),
-    )
+    rating_address_keys = sorted({row.address_key for row in parsed.rows})
+    candidates = await _load_visit_candidates(conn, rating_address_keys)
+    if projected_detail_rows is not None:
+        from services.visit_import import parse_visit_workbook
+
+        projected_detail = await asyncio.to_thread(
+            parse_visit_workbook,
+            workbook_bytes("detail", projected_detail_rows),
+            timezone_name,
+        )
+        existing_by_row_key: dict[str, tuple[int, tuple[Any, ...] | None]] = {}
+        row_keys = [row.row_key for row in projected_detail.rows]
+        async with conn.cursor() as cur:
+            for offset in range(0, len(row_keys), 800):
+                chunk = row_keys[offset:offset + 800]
+                if not chunk:
+                    continue
+                placeholders = ", ".join(["%s"] * len(chunk))
+                await cur.execute(
+                    f"""
+                    SELECT id, `_row_key`, `星级派出所名称`, `星级所属社区`,
+                           `星级社区`, `星级地址`, `得分`, `星级`,
+                           `星级采集时间`, `星级采集日期`, `_raw_star_time`,
+                           `隐患详情`
+                    FROM t_visit_details
+                    WHERE `_row_key` IN ({placeholders})
+                    """,
+                    chunk,
+                )
+                for existing in await cur.fetchall():
+                    existing_by_row_key[str(existing[1])] = (
+                        int(existing[0]),
+                        tuple(existing[2:12]) if existing[8] is not None else None,
+                    )
+
+        retained_ids: set[int] = set()
+        projected_candidates: list[VisitCandidate] = []
+        for index, visit in enumerate(projected_detail.rows, start=1):
+            existing = existing_by_row_key.get(visit.row_key)
+            candidate_id = existing[0] if existing else -index
+            if existing:
+                retained_ids.add(candidate_id)
+            projected_candidates.append(VisitCandidate(
+                id=candidate_id,
+                address_key=visit.address_key,
+                visit_at=visit.visit_at,
+                existing_star_values=existing[1] if existing else None,
+                existing_time_difference_seconds=None,
+            ))
+
+        # Detail confirmation replaces its parsed date range. Keep only
+        # current database candidates outside that range; rows inside it are
+        # represented by the projected candidates above or will be deleted.
+        for candidate in candidates:
+            if candidate.id in retained_ids:
+                continue
+            if (
+                projected_detail.start_date
+                and projected_detail.end_date
+                and projected_detail.start_date
+                <= candidate.visit_at.date()
+                <= projected_detail.end_date
+            ):
+                continue
+            projected_candidates.append(candidate)
+        candidates = projected_candidates
     matches, _, unmatched, ambiguous = choose_star_rating_matches(parsed.rows, candidates)
     inserted = 0
     updated = 0
