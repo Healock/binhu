@@ -21,6 +21,7 @@ import {
   querySheetCellKey,
   resolveQuerySheetColumnWidth,
   resolveQuerySheetPasteValues,
+  resolveQuerySheetSortRequest,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   toggleQuerySheetFullscreen,
@@ -92,6 +93,19 @@ test('社区和核查人使用紧凑箭头下拉并感知其他用户更新', ()
 })
 
 const columns = ['社区', '核查人', '姓名']
+
+test('Univer 排序列按当前选区映射为后台字段', () => {
+  assert.deepEqual(resolveQuerySheetSortRequest(columns, 0, [
+    { column: 2, ascending: true },
+  ]), { column: '姓名', order: 'asc' })
+  assert.deepEqual(resolveQuerySheetSortRequest(columns, 1, [
+    { column: 1, ascending: false },
+  ]), { column: '姓名', order: 'desc' })
+  assert.equal(resolveQuerySheetSortRequest(columns, 2, [
+    { column: 4, ascending: true },
+  ]), null)
+  assert.equal(resolveQuerySheetSortRequest(columns, 0, []), null)
+})
 
 test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅色', () => {
   assert.equal(QUERY_SHEET_FEATURE_CONFIG.disableForceStringAlert, true)

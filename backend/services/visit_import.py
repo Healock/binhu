@@ -705,15 +705,17 @@ async def create_import_batch(
     file_size: int,
     uploader_id: int,
     import_type: str = "detail",
+    source_type: str = "manual",
+    source_run_id: int | None = None,
 ) -> int:
     async with conn.cursor() as cur:
         await cur.execute(
             """
             INSERT INTO _visit_import_batches (
                 import_type, filename, file_sha256, file_size_bytes, status,
-                uploader_id, started_at, created_at
+                uploader_id, source_type, source_run_id, started_at, created_at
             ) VALUES (
-                %s, %s, %s, %s, 'running', %s,
+                %s, %s, %s, %s, 'running', %s, %s, %s,
                 UTC_TIMESTAMP(), UTC_TIMESTAMP()
             )
             """,
@@ -723,6 +725,8 @@ async def create_import_batch(
                 file_sha256,
                 file_size,
                 uploader_id,
+                source_type,
+                source_run_id,
             ),
         )
         return int(cur.lastrowid)
@@ -842,6 +846,7 @@ async def import_parsed_workbook(
     *,
     batch_id: int,
     parsed: ParsedVisitWorkbook,
+    replace_range: bool = False,
 ) -> dict[str, Any]:
     issues = list(parsed.issues)
     inserted_rows = 0
@@ -911,6 +916,27 @@ async def import_parsed_workbook(
 
     await conn.begin()
     try:
+        if replace_range and parsed.start_date and parsed.end_date:
+            incoming_keys = {row.row_key for row in parsed.rows}
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT `_row_key`
+                    FROM t_visit_details
+                    WHERE `业务日期` BETWEEN %s AND %s
+                    """,
+                    (parsed.start_date, parsed.end_date),
+                )
+                stale_keys = [
+                    row[0] for row in await cur.fetchall()
+                    if row[0] not in incoming_keys
+                ]
+                for chunk in _chunks(stale_keys):
+                    placeholders = ", ".join(["%s"] * len(chunk))
+                    await cur.execute(
+                        f"DELETE FROM t_visit_details WHERE `_row_key` IN ({placeholders})",
+                        chunk,
+                    )
         (
             communities,
             community_lookup,

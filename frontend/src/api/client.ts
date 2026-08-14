@@ -6,6 +6,7 @@ import type {
   BackupJob, AuditActionOption, AuditEvent, User, UserPreferences, ReportColumnMode,
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
   PublicProfile, PublicProfileSummary,
+  VisitSourceRun,
 } from '../types'
 
 const api = axios.create({
@@ -1205,12 +1206,15 @@ export async function bulkAssignMobileTasks(
     row_keys: string[]
     inspector?: string
     mode?: 'single' | 'balanced'
+    balanced_offset?: number
+    balanced_total?: number
   },
 ): Promise<{
   updated: number
   skipped: number
   failed: number
   details: Array<{ row_key: string; reason: string }>
+  failed_details: Array<{ row_key: string; reason: string }>
   inspector: string
   mode: 'single' | 'balanced'
   assignment_counts: Record<string, number>
@@ -1222,6 +1226,8 @@ export async function bulkAssignMobileTasks(
   )
   return data
 }
+
+export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 20
 
 export interface QueryWritebackAudit {
   id: number
@@ -1721,6 +1727,35 @@ export async function getVisitImportIssues(
   const { data } = await api.get(`/visits/imports/${batchId}/issues`, {
     params: { page, page_size: pageSize },
   })
+  return data
+}
+
+export async function previewVisitSource(payload: {
+  source: 'detail' | 'rating' | 'both'
+  start_date: string
+  end_date: string
+}): Promise<{ data: VisitSourceRun[]; requires_confirmation: boolean }> {
+  const { data } = await api.post('/visits/sources/preview', payload, activeRequest)
+  return data
+}
+
+export async function confirmVisitSource(payload: {
+  run_ids: number[]
+  strategy: 'replace' | 'keep'
+}): Promise<{ data: Array<{ id: number; status: string; batch_id?: number }>; strategy: string }> {
+  const { data } = await api.post('/visits/sources/confirm', payload, activeRequest)
+  return data
+}
+
+export async function getVisitSourceStatus(): Promise<{
+  business_date: string
+  timezone: string
+  data: Record<string, VisitSourceRun>
+  latest_attempts: Record<string, VisitSourceRun>
+  current_sources: Record<string, { batch_id: number; source_type: string; source_run_id: number | null; finished_at: string | null }>
+  runs: VisitSourceRun[]
+}> {
+  const { data } = await api.get('/visits/sources/status', activeRequest)
   return data
 }
 
@@ -2724,7 +2759,10 @@ export const workflowApi = {
   async previewPhotoImport(file: File) {
     const form = new FormData()
     form.append('file', file)
-    return (await api.post('/workflow/photo-imports/preview', form, activeRequest)).data as PhotoImportBatch
+    return (await api.post('/workflow/photo-imports/preview', form, {
+      ...activeRequest,
+      timeout: 300000,
+    })).data as PhotoImportBatch
   },
   async confirmPhotoImport(batchId: number) {
     return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, activeRequest)).data as PhotoImportBatch

@@ -25,6 +25,22 @@ test('基础管控照片工作台支持只读表格、批量领取和 XLSX 导�
   assert.doesNotMatch(apiSource, /api\.get\('\/workflow\/photo-requests/)
 })
 
+test('照片批次上传使用长超时并明确提示网关大小限制', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataUploadCenter.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /api\.post\('\/workflow\/photo-imports\/preview', form, \{[\s\S]*timeout: 300000/)
+  assert.match(pageSource, /error\?\.response\?\.status === 413/)
+  assert.match(pageSource, /照片 ZIP 超过服务器上传限制/)
+  assert.match(pageSource, /照片 ZIP 上传或解析超时/)
+})
+
 test('调照片使用独立任务页面，通用工单中心不再混入照片待办标签', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),

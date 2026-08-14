@@ -66,6 +66,7 @@ SortMode = Literal["priority", "updated_desc", "updated_asc"]
 AssignmentMode = Literal["single", "balanced"]
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
+MAX_BULK_ASSIGNMENT_CHUNK = 20
 
 
 async def _task_photo_results(user: dict, parser_type: str, row_key: str) -> list[dict]:
@@ -211,9 +212,11 @@ class TaskBatchUpdate(BaseModel):
 
 
 class BulkAssignmentRequest(BaseModel):
-    row_keys: list[str] = Field(min_length=1, max_length=MAX_BULK_ASSIGNMENT_TASKS)
+    row_keys: list[str] = Field(min_length=1, max_length=MAX_BULK_ASSIGNMENT_CHUNK)
     inspector: str = Field(default="", max_length=100)
     mode: AssignmentMode = "single"
+    balanced_offset: int = Field(default=0, ge=0)
+    balanced_total: int = Field(default=0, ge=0, le=MAX_BULK_ASSIGNMENT_TASKS)
 
 
 class TaskSearch(BaseModel):
@@ -241,6 +244,9 @@ def _iso_utc(value) -> str | None:
 def _balanced_assignment_plan(
     row_keys: list[str],
     inspectors: list[str],
+    *,
+    total_count: int | None = None,
+    start_index: int = 0,
 ) -> tuple[dict[str, str], dict[str, int]]:
     """把已筛出的任务按连续区段尽量平均分给在岗组员。
 
@@ -252,17 +258,50 @@ def _balanced_assignment_plan(
     members = list(dict.fromkeys(str(name).strip() for name in inspectors if str(name).strip()))
     if not keys or not members:
         return {}, {name: 0 for name in members}
-    base, remainder = divmod(len(keys), len(members))
-    plan: dict[str, str] = {}
-    counts = {name: 0 for name in members}
-    cursor = 0
+    total = total_count if total_count is not None else len(keys)
+    if total < len(keys) or start_index < 0 or start_index + len(keys) > total:
+        return {}, {name: 0 for name in members}
+    base, remainder = divmod(total, len(members))
+    member_ranges: list[tuple[int, int, str]] = []
+    range_start = 0
     for index, member in enumerate(members):
         size = base + (1 if index < remainder else 0)
-        for key in keys[cursor:cursor + size]:
-            plan[key] = member
-        counts[member] = size
-        cursor += size
+        member_ranges.append((range_start, range_start + size, member))
+        range_start += size
+    plan: dict[str, str] = {}
+    counts = {name: 0 for name in members}
+    for local_index, key in enumerate(keys):
+        global_index = start_index + local_index
+        member = next(
+            name
+            for lower, upper, name in member_ranges
+            if lower <= global_index < upper
+        )
+        plan[key] = member
+        counts[member] += 1
     return plan, counts
+
+
+def _bulk_assignment_result(
+    *,
+    updated: int,
+    skipped: list[dict[str, str]],
+    failures: list[dict[str, str]],
+    inspector: str,
+    mode: AssignmentMode,
+    assignment_counts: dict[str, int],
+) -> dict:
+    """Build mutually exclusive assignment outcome counts and details."""
+    return {
+        "updated": updated,
+        "skipped": len(skipped),
+        "failed": len(failures),
+        "details": skipped,
+        "failed_details": failures,
+        "inspector": inspector if mode == "single" else "",
+        "mode": mode,
+        "assignment_counts": assignment_counts,
+    }
 
 
 def require_flow_user(user: dict) -> tuple[str, str]:
@@ -1536,9 +1575,9 @@ async def bulk_assign_mobile_tasks(
     """Manually assign selected unassigned tasks to one or all local members.
 
     Tencent writeback is inherently row/version based, so each physical source
-    row is still revalidated and written through the existing safe path.  The
-    endpoint only provides the batch selection and a compact result summary;
-    it never bypasses the per-row permission, revision, hash, or option checks.
+    row is still revalidated and written through the existing safe path.  Each
+    request is capped to a small resumable chunk; balanced_offset/total keep the
+    allocation deterministic across retries without bypassing per-row checks.
     """
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
@@ -1553,6 +1592,11 @@ async def bulk_assign_mobile_tasks(
         raise HTTPException(400, "请选择任务")
     if data.mode == "single" and not inspector:
         raise HTTPException(400, "请选择在岗组员")
+    balanced_total = data.balanced_total or len(row_keys)
+    if data.mode == "balanced" and (
+        data.balanced_offset + len(row_keys) > balanced_total
+    ):
+        raise HTTPException(400, "平均分配分块范围无效，请重新发起分配")
 
     projection_by_key: dict[str, dict] = {}
     source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
@@ -1643,8 +1687,10 @@ async def bulk_assign_mobile_tasks(
 
     if data.mode == "balanced":
         assignment_plan, assignment_counts = _balanced_assignment_plan(
-            eligible_keys,
+            row_keys,
             available_inspectors,
+            total_count=balanced_total,
+            start_index=data.balanced_offset,
         )
     else:
         assignment_plan = {row_key: inspector for row_key in eligible_keys}
@@ -1653,7 +1699,7 @@ async def bulk_assign_mobile_tasks(
         }
 
     update_count = 0
-    failed_count = 0
+    failures: list[dict[str, str]] = []
     successful_assignment_counts = {name: 0 for name in assignment_counts}
     for row_key in eligible_keys:
         assigned_inspector = assignment_plan.get(row_key, "")
@@ -1679,14 +1725,13 @@ async def bulk_assign_mobile_tasks(
                 )
             except HTTPException as exc:
                 task_ok = False
-                failed_count += 1
                 reason = {
                     400: "数据校验未通过",
                     403: "没有该任务的编辑权限",
                     409: "任务已变化，请刷新后重试",
                     502: "腾讯回写校验失败",
                 }.get(exc.status_code, "保存失败")
-                skipped.append({"row_key": row_key, "reason": reason})
+                failures.append({"row_key": row_key, "reason": reason})
                 break
         if task_ok:
             update_count += 1
@@ -1694,6 +1739,14 @@ async def bulk_assign_mobile_tasks(
                 successful_assignment_counts.get(assigned_inspector, 0) + 1
             )
 
+    result = _bulk_assignment_result(
+        updated=update_count,
+        skipped=skipped,
+        failures=failures,
+        inspector=inspector,
+        mode=data.mode,
+        assignment_counts=successful_assignment_counts,
+    )
     await record_admin_audit(
         user,
         "mobile_tasks.bulk_assign",
@@ -1701,21 +1754,13 @@ async def bulk_assign_mobile_tasks(
         target_name=parser_type,
         detail={
             "task_count": len(row_keys),
-            "updated_count": update_count,
-            "skipped_count": len(skipped),
-            "failed_count": failed_count,
+            "updated_count": result["updated"],
+            "skipped_count": result["skipped"],
+            "failed_count": result["failed"],
             "inspector": inspector if data.mode == "single" else "",
             "allocation_mode": data.mode,
             "assignment_counts": successful_assignment_counts,
         },
         **request_audit_fields(request),
     )
-    return {
-        "updated": update_count,
-        "skipped": len(skipped),
-        "failed": failed_count,
-        "details": skipped,
-        "inspector": inspector if data.mode == "single" else "",
-        "mode": data.mode,
-        "assignment_counts": successful_assignment_counts,
-    }
+    return result

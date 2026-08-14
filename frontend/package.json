@@ -1,7 +1,7 @@
 {
   "name": "binhu-frontend",
   "private": true,
-  "version": "0.19.24",
+  "version": "0.19.27",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -21,6 +21,7 @@
     "@univerjs/preset-sheets-core": "^0.25.1",
     "@univerjs/preset-sheets-data-validation": "^0.25.1",
     "@univerjs/preset-sheets-filter": "^0.25.1",
+    "@univerjs/preset-sheets-sort": "^0.25.1",
     "@univerjs/themes": "^0.25.1",
     "antd": "^6.5.2",
     "axios": "^1.7.9",

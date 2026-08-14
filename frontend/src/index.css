@@ -2386,10 +2386,6 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   width: 176px;
 }
 
-.query-spreadsheet-toolbar__sort-field {
-  width: 176px;
-}
-
 .query-spreadsheet {
   position: relative;
   width: 100%;

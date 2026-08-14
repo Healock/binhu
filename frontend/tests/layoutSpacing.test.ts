@@ -44,17 +44,26 @@ test('在线查询桌面端把数据范围控件放在工作表状态提示左�
   assert.match(styles, /\.query-spreadsheet-toolbar__type\s*\{[^}]*width:\s*176px/s)
 })
 
-test('在线查询工作表提供后台全量排序并在切换数据范围时清除', () => {
+test('在线查询使用 Univer 原生入口触发后台全量排序并在切换数据范围时清除', () => {
   const querySource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),
     'utf8',
   )
+  const sheetSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
 
-  assert.match(querySource, /placeholder="选择排序字段"/)
+  assert.doesNotMatch(querySource, /placeholder="选择排序字段"/)
   assert.match(querySource, /sort_by:\s*sortBy/)
   assert.match(querySource, /sort_order:\s*sortBy \? sortOrder : undefined/)
   assert.match(querySource, /按 \{sortBy\} \{sortOrder === 'asc' \? '升序' : '降序'\}/)
   assert.match(querySource, /清除排序/)
+  assert.match(sheetSource, /UniverSheetsSortPreset/)
+  assert.match(sheetSource, /Event\.SheetBeforeRangeSort/)
+  assert.match(sheetSource, /params\.cancel = true/)
+  assert.match(sheetSource, /resolveQuerySheetSortRequest/)
+  assert.match(sheetSource, /onSortChange\(sortRequest\.column, sortRequest\.order\)/)
 
   const sourceReset = querySource.slice(
     querySource.indexOf('const changeSourceType'),
