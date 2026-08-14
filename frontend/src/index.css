@@ -167,27 +167,53 @@
   background: var(--app-primary-soft) !important;
 }
 
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td {
+  border-bottom: 0;
+  background: var(--app-surface);
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row:not(:first-child) > td {
+  border-top: 1px solid var(--app-border-strong);
+  box-shadow: inset 0 1px 0 var(--app-border);
+}
+
 .mobile-task-table .ant-table-expanded-row > td {
   padding: 0 !important;
+  border-bottom: 8px solid var(--app-bg) !important;
+  background: var(--app-surface) !important;
+  box-shadow: inset 0 -1px 0 var(--app-border);
 }
 
 .mobile-task-table-edit-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1.5fr) minmax(140px, 0.8fr) minmax(180px, 1fr) minmax(220px, 1.4fr) minmax(110px, 0.6fr);
+  grid-template-columns: minmax(220px, 1.5fr) minmax(140px, 0.8fr) minmax(180px, 1fr) minmax(220px, 1.4fr) minmax(110px, 0.6fr) 104px;
   gap: 0;
-  min-width: 940px;
+  min-width: 1044px;
   border-top: 1px solid var(--app-border);
   background: var(--app-surface-muted);
 }
 
 .mobile-task-table-edit-field {
+  display: block;
   min-width: 0;
+  min-height: 58px;
   padding: 10px 14px;
   border-right: 1px solid var(--app-border);
+  color: inherit;
+  background: transparent;
+  text-align: left;
 }
 
-.mobile-task-table-edit-field:last-child {
-  border-right: 0;
+.mobile-task-table-edit-field--clickable {
+  cursor: pointer;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.mobile-task-table-edit-field--clickable:hover,
+.mobile-task-table-edit-field--clickable:focus-visible {
+  outline: 0;
+  background: var(--app-primary-soft);
+  box-shadow: inset 0 0 0 1px var(--app-primary-border);
 }
 
 .mobile-task-table-edit-field span,
@@ -208,6 +234,69 @@
   color: var(--app-text-strong);
   font-size: 13px;
   font-weight: 600;
+}
+
+.mobile-task-table-edit-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+
+.mobile-task-table-inline-editor {
+  display: flex;
+  min-width: 1044px;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.mobile-task-table-inline-fields {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.mobile-task-table-inline-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mobile-task-table-inline-field > span {
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mobile-task-table-inline-field .ant-select,
+.mobile-task-table-inline-field .ant-input {
+  width: 100%;
+}
+
+.mobile-task-table-inline-status {
+  min-width: 0;
+  flex: 1;
+  padding: 8px 0;
+  color: var(--app-text-secondary);
+  font-size: 13px;
+}
+
+.mobile-task-table-inline-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.mobile-task-table .mobile-task-table-row-selected + .ant-table-expanded-row > td,
+.mobile-task-table .mobile-task-table-row-selected + .ant-table-expanded-row .mobile-task-table-edit-grid,
+.mobile-task-table .mobile-task-table-row-selected + .ant-table-expanded-row .mobile-task-table-inline-editor {
+  background: var(--app-primary-soft) !important;
 }
 
 .mobile-task-list__empty {

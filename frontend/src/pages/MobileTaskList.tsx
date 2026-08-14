@@ -853,12 +853,14 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 total={total}
                 page={page}
                 loading={loading}
+                analysisMode={analysisOnly}
                 selectionMode={selectionMode}
                 selectedRowKeys={[...selectedRows]}
                 canSelect={canSelectTask}
                 onSelect={(task, selected) => toggleSelected(task.row_key, selected)}
                 onOpen={openTask}
                 onCopy={(value, label) => void copyValue(value, label)}
+                onSaved={() => load(page, false, true)}
                 onPageChange={nextPage => {
                   void load(nextPage)
                   window.scrollTo({ top: 0, behavior: 'smooth' })
