@@ -1,14 +1,15 @@
 """Read-only acquisition adapter for the internal visit/rating platform.
 
-The external response contract is intentionally configurable. Until a real
-redacted response is supplied, production access stays disabled and tests use
-the deterministic mock transport below.
+The response fields and login contract were verified with a minimal read-only
+sample on 2026-08-14. Production access still remains disabled until the base
+URL and server-side credentials are explicitly configured.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import date
+from hashlib import sha256
 from io import BytesIO
 from typing import Any
 
@@ -56,25 +57,25 @@ REQUIRED_HEADERS = {
 DEFAULT_ALIASES = {
     "detail": {
         VISIT_HEADERS[0]: ["pcsname", "policeStation", "police_station", VISIT_HEADERS[0]],
-        VISIT_HEADERS[1]: ["community", "communityName", "village", VISIT_HEADERS[1]],
-        VISIT_HEADERS[2]: ["entryMethod", "enterType", VISIT_HEADERS[2]],
-        VISIT_HEADERS[3]: ["address", "dz", "住址", VISIT_HEADERS[3]],
-        VISIT_HEADERS[4]: ["operatorName", "trueName", "gridName", VISIT_HEADERS[4]],
-        VISIT_HEADERS[5]: ["operatorAccount", "account", "idCard", VISIT_HEADERS[5]],
-        VISIT_HEADERS[6]: ["visitAt", "enterTime", "clockInTime", "走访时间", VISIT_HEADERS[6]],
-        VISIT_HEADERS[7]: ["roomCheckCount", "roomCount", "checkCount", VISIT_HEADERS[7]],
-        VISIT_HEADERS[8]: ["addedCount", "addCount", VISIT_HEADERS[8]],
-        VISIT_HEADERS[9]: ["changedCount", "changeCount", VISIT_HEADERS[9]],
-        VISIT_HEADERS[10]: ["cancelledCount", "cancelCount", "注销", VISIT_HEADERS[10]],
+        VISIT_HEADERS[1]: ["jgmc", "community", "communityName", "village", VISIT_HEADERS[1]],
+        VISIT_HEADERS[2]: ["isPlate", "entryMethod", "enterType", VISIT_HEADERS[2]],
+        VISIT_HEADERS[3]: ["dz", "address", "住址", VISIT_HEADERS[3]],
+        VISIT_HEADERS[4]: ["trueName", "operatorName", "gridName", VISIT_HEADERS[4]],
+        VISIT_HEADERS[5]: ["createBy", "operatorAccount", "account", VISIT_HEADERS[5]],
+        VISIT_HEADERS[6]: ["createTime", "visitAt", "enterTime", "clockInTime", "走访时间", VISIT_HEADERS[6]],
+        VISIT_HEADERS[7]: ["checkRoomCnt", "roomCheckCount", "roomCount", "checkCount", VISIT_HEADERS[7]],
+        VISIT_HEADERS[8]: ["cnt1", "addedCount", "addCount", VISIT_HEADERS[8]],
+        VISIT_HEADERS[9]: ["cnt2", "changedCount", "changeCount", VISIT_HEADERS[9]],
+        VISIT_HEADERS[10]: ["cnt3", "cancelledCount", "cancelCount", "注销", VISIT_HEADERS[10]],
     },
     "rating": {
         STAR_RATING_HEADERS[0]: ["pcsname", "policeStation", STAR_RATING_HEADERS[0]],
-        STAR_RATING_HEADERS[1]: ["community", "communityName", "village", STAR_RATING_HEADERS[1]],
+        STAR_RATING_HEADERS[1]: ["sssq", "community", "communityName", "village", STAR_RATING_HEADERS[1]],
         STAR_RATING_HEADERS[2]: ["address", "dz", "住址", STAR_RATING_HEADERS[2]],
         STAR_RATING_HEADERS[3]: ["score", "得分", STAR_RATING_HEADERS[3]],
-        STAR_RATING_HEADERS[4]: ["starLevel", "houseLevel", "level", STAR_RATING_HEADERS[4]],
-        STAR_RATING_HEADERS[5]: ["collectedAt", "createTime", "createtime", STAR_RATING_HEADERS[5]],
-        STAR_RATING_HEADERS[6]: ["hazardDetails", "hiddenDanger", "remark", STAR_RATING_HEADERS[6]],
+        STAR_RATING_HEADERS[4]: ["houselevelName", "starLevel", "houseLevel", "level", STAR_RATING_HEADERS[4]],
+        STAR_RATING_HEADERS[5]: ["createtime", "collectedAt", "createTime", STAR_RATING_HEADERS[5]],
+        STAR_RATING_HEADERS[6]: ["yhxq", "hazardDetails", "hiddenDanger", "remark", STAR_RATING_HEADERS[6]],
     },
 }
 
@@ -103,17 +104,20 @@ def _items(payload: Any) -> list[dict[str, Any]]:
 def _configured_aliases(kind: str) -> dict[str, list[str]]:
     raw = getattr(settings, f"VISIT_SOURCE_{kind.upper()}_FIELD_MAP", "")
     if not raw:
-        if not settings.VISIT_SOURCE_MOCK:
-            raise VisitSourceError(
-                "field_map_required",
-                "尚未配置经确认的来源字段映射，已阻止读取生产响应",
-            )
         return DEFAULT_ALIASES[kind]
     try:
         value = json.loads(raw)
         if not isinstance(value, dict):
             raise ValueError
-        return {key: [str(item) for item in values] for key, values in value.items()}
+        aliases: dict[str, list[str]] = {}
+        for key, values in value.items():
+            if isinstance(values, str):
+                aliases[str(key)] = [values]
+            elif isinstance(values, list) and all(isinstance(item, str) for item in values):
+                aliases[str(key)] = values
+            else:
+                raise ValueError
+        return aliases
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise VisitSourceError("invalid_field_map", "来源字段映射配置不是有效 JSON") from exc
 
@@ -123,6 +127,27 @@ def _value(row: dict[str, Any], aliases: list[str]) -> str:
         if alias in row and row[alias] not in (None, ""):
             return _text(row[alias])
     return ""
+
+
+def _business_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise VisitSourceError("invalid_response", "来源平台响应结构无效")
+    if str(payload.get("code", "")) != "200":
+        raise VisitSourceError("upstream_error", "来源平台返回业务错误")
+    return payload
+
+
+def _is_expected_police_station(value: str) -> bool:
+    actual = "".join(value.split())
+    expected = "".join(settings.VISIT_SOURCE_POLICE_NAME.split())
+    if not actual or not expected:
+        return False
+    if actual == expected:
+        return True
+    # The visit endpoint prefixes the canonical station name with its parent
+    # organisation. Only a short organisational prefix is accepted.
+    prefix = actual[:-len(expected)] if actual.endswith(expected) else ""
+    return bool(prefix) and len(prefix) <= 24 and "派出所" not in prefix
 
 
 def _mock_rows(kind: str) -> list[dict[str, Any]]:
@@ -163,6 +188,8 @@ async def fetch_rows(kind: str, start_date: date, end_date: date) -> dict[str, A
         headers = {"Accept": "application/json"}
         if settings.VISIT_SOURCE_AUTHORIZATION:
             headers["Authorization"] = settings.VISIT_SOURCE_AUTHORIZATION
+        elif not settings.VISIT_SOURCE_USERNAME or not settings.VISIT_SOURCE_PASSWORD:
+            raise VisitSourceError("authentication_required", "来源平台认证信息尚未配置")
         raw_rows = []
         endpoint = SOURCE_META[kind]["endpoint"]
         async with httpx.AsyncClient(
@@ -170,23 +197,57 @@ async def fetch_rows(kind: str, start_date: date, end_date: date) -> dict[str, A
             timeout=settings.VISIT_SOURCE_TIMEOUT_SECONDS,
             headers=headers,
         ) as client:
+            if "Authorization" not in headers:
+                try:
+                    login_response = await client.post(
+                        settings.VISIT_SOURCE_LOGIN_PATH,
+                        params={
+                            "username": settings.VISIT_SOURCE_USERNAME,
+                            "password": settings.VISIT_SOURCE_PASSWORD,
+                        },
+                    )
+                    login_response.raise_for_status()
+                    login_payload = login_response.json()
+                    if (
+                        not isinstance(login_payload, dict)
+                        or str(login_payload.get("code", "")) != "200"
+                    ):
+                        raise VisitSourceError("authentication_failed", "来源平台认证失败")
+                    token = login_payload.get("data")
+                    if not isinstance(token, str) or not token.strip():
+                        raise VisitSourceError("authentication_failed", "来源平台认证失败")
+                    client.headers["Authorization"] = token.strip()
+                except VisitSourceError:
+                    raise
+                except httpx.TimeoutException as exc:
+                    raise VisitSourceError("timeout", "来源平台认证请求超时") from exc
+                except httpx.HTTPStatusError as exc:
+                    raise VisitSourceError("authentication_failed", "来源平台认证失败") from exc
+                except (httpx.RequestError, ValueError) as exc:
+                    raise VisitSourceError("authentication_failed", "来源平台认证响应无法读取") from exc
+
+            page_fingerprints: set[str] = set()
             for page in range(1, settings.VISIT_SOURCE_MAX_PAGES + 1):
                 try:
-                    response = await client.get(endpoint, params={
+                    params = {
                         "deptCode": settings.VISIT_SOURCE_POLICE_CODE,
                         "startTime": start_date.isoformat(),
                         "endTime": end_date.isoformat(),
                         "pageNum": page,
                         "pageSize": 200,
-                    })
+                    }
+                    if kind == "detail":
+                        params["pcsdm"] = settings.VISIT_SOURCE_POLICE_CODE
+                    response = await client.get(endpoint, params=params)
                     response.raise_for_status()
-                    payload = response.json()
-                    if isinstance(payload, dict):
-                        for key in ("businessDate", "business_date", "dataDate", "statDate", "date"):
-                            value = payload.get(key)
-                            if value:
-                                response_business_date = _text(value)[:10]
-                                break
+                    payload = _business_payload(response.json())
+                    for key in ("businessDate", "business_date", "dataDate", "statDate", "date"):
+                        value = payload.get(key)
+                        if value:
+                            response_business_date = _text(value)[:10]
+                            break
+                except VisitSourceError:
+                    raise
                 except httpx.TimeoutException as exc:
                     raise VisitSourceError("timeout", "来源平台请求超时") from exc
                 except httpx.HTTPStatusError as exc:
@@ -195,6 +256,13 @@ async def fetch_rows(kind: str, start_date: date, end_date: date) -> dict[str, A
                 except (httpx.RequestError, ValueError) as exc:
                     raise VisitSourceError("request_error", "来源平台响应无法读取") from exc
                 page_rows = _items(payload)
+                if len(page_rows) == 200:
+                    fingerprint = sha256(
+                        json.dumps(page_rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()
+                    if fingerprint in page_fingerprints:
+                        raise VisitSourceError("pagination_repeated", "来源平台重复返回同一分页，已停止读取")
+                    page_fingerprints.add(fingerprint)
                 raw_rows.extend(page_rows)
                 if len(raw_rows) > settings.VISIT_SOURCE_MAX_RECORDS:
                     raise VisitSourceError("too_many_records", "来源记录数超过保护阈值")
@@ -210,9 +278,11 @@ async def fetch_rows(kind: str, start_date: date, end_date: date) -> dict[str, A
     issues: list[str] = []
     for row in raw_rows:
         normalized = {header: _value(row, aliases.get(header, [header])) for header in SOURCE_META[kind]["headers"]}
-        if normalized[SOURCE_META[kind]["headers"][0]] != settings.VISIT_SOURCE_POLICE_NAME:
+        police_header = SOURCE_META[kind]["headers"][0]
+        if not _is_expected_police_station(normalized[police_header]):
             issues.append("派出所范围不符")
             continue
+        normalized[police_header] = settings.VISIT_SOURCE_POLICE_NAME
         missing = [header for header in REQUIRED_HEADERS[kind] if not normalized[header]]
         if missing:
             issues.append("必填字段缺失")
