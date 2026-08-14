@@ -155,36 +155,62 @@
   align-items: stretch;
 }
 
-.mobile-task-table-row-selected > td {
-  background: var(--app-primary-soft) !important;
+.mobile-task-table {
+  padding: 0 10px 10px;
+  background: color-mix(in srgb, var(--app-bg) 72%, var(--app-surface));
 }
 
-.mobile-task-table-row-selected:hover > td {
-  background: var(--app-primary-soft) !important;
+.mobile-task-table .ant-table,
+.mobile-task-table .ant-table-container,
+.mobile-task-table .ant-table-content {
+  background: transparent;
 }
 
-.mobile-task-table-row-selected + .ant-table-expanded-row > td {
-  background: var(--app-primary-soft) !important;
+.mobile-task-table .ant-table-thead > tr > th {
+  border-bottom: 1px solid var(--app-border) !important;
+  background: color-mix(in srgb, var(--app-surface-muted) 84%, var(--app-surface)) !important;
+  color: var(--app-text-strong);
+}
+
+.mobile-task-table .ant-table-thead > tr > th:first-child {
+  border-start-start-radius: 10px;
+}
+
+.mobile-task-table .ant-table-thead > tr > th:last-child {
+  border-start-end-radius: 10px;
+}
+
+.mobile-task-table .ant-table-tbody::before {
+  display: table-row;
+  height: 10px;
+  content: "";
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td {
-  border-bottom: 0;
+  border-top: 1px solid var(--app-border) !important;
+  border-bottom: 0 !important;
   background: var(--app-surface);
+  transition: background 140ms ease, border-color 140ms ease;
 }
 
-.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row:not(:first-child) > td {
-  border-top: 2px solid var(--app-border-strong);
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row:hover > td {
+  background: color-mix(in srgb, var(--app-primary-soft) 22%, var(--app-surface)) !important;
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td:first-child {
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--app-primary) 45%, transparent);
+  border-left: 1px solid var(--app-border);
+  border-start-start-radius: 12px;
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td:last-child {
+  border-right: 1px solid var(--app-border);
+  border-start-end-radius: 12px;
 }
 
 .mobile-task-table .ant-table-expanded-row > td {
-  padding: 0 !important;
-  border-bottom: 10px solid var(--app-bg) !important;
-  background: var(--app-surface) !important;
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--app-primary) 45%, transparent), inset 0 -1px 0 var(--app-border);
+  padding: 0 0 10px !important;
+  border: 0 !important;
+  background: transparent !important;
 }
 
 .mobile-task-table-inline-editor {
@@ -194,14 +220,17 @@
   align-items: stretch;
   gap: 14px;
   padding: 10px 12px 11px 16px;
-  border-top: 1px solid var(--app-border);
+  border: 1px solid var(--app-border);
+  border-radius: 0 0 12px 12px;
   background: color-mix(in srgb, var(--app-surface-muted) 88%, var(--app-primary-soft));
-  transition: background 140ms ease, box-shadow 140ms ease;
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--app-text) 7%, transparent);
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .mobile-task-table-inline-editor--dirty {
+  border-color: var(--app-primary-border);
   background: color-mix(in srgb, var(--app-primary-soft) 54%, var(--app-surface-muted));
-  box-shadow: inset 0 1px 0 var(--app-primary-border);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--app-primary) 14%, transparent);
 }
 
 .mobile-task-table-inline-editor--loading {
@@ -245,6 +274,7 @@
 .mobile-task-table-inline-field .ant-select-selector,
 .mobile-task-table-inline-field .ant-input {
   border-color: var(--app-border-strong) !important;
+  border-radius: 7px !important;
   background: var(--app-surface) !important;
 }
 
@@ -303,12 +333,42 @@
 }
 
 .mobile-task-table-inline-actions .ant-btn {
+  min-height: 30px;
   min-width: 84px;
+  border-radius: 9px;
 }
 
-.mobile-task-table .mobile-task-table-row-selected + .ant-table-expanded-row > td,
-.mobile-task-table .mobile-task-table-row-selected + .ant-table-expanded-row .mobile-task-table-inline-editor {
+.mobile-task-table .mobile-task-table-primary-row:has(+ .ant-table-expanded-row .mobile-task-table-inline-editor--dirty) > td {
+  border-top-color: var(--app-primary-border) !important;
+  background: color-mix(in srgb, var(--app-primary-soft) 18%, var(--app-surface)) !important;
+}
+
+.mobile-task-table .mobile-task-table-primary-row:has(+ .ant-table-expanded-row .mobile-task-table-inline-editor--dirty) > td:first-child {
+  border-left-color: var(--app-primary-border);
+}
+
+.mobile-task-table .mobile-task-table-primary-row:has(+ .ant-table-expanded-row .mobile-task-table-inline-editor--dirty) > td:last-child {
+  border-right-color: var(--app-primary-border);
+}
+
+.mobile-task-table .mobile-task-table-row-selected > td,
+.mobile-task-table .mobile-task-table-row-selected:hover > td {
+  border-top-color: var(--app-primary) !important;
   background: var(--app-primary-soft) !important;
+}
+
+.mobile-task-table .mobile-task-table-row-selected > td:first-child {
+  border-left-color: var(--app-primary);
+}
+
+.mobile-task-table .mobile-task-table-row-selected > td:last-child {
+  border-right-color: var(--app-primary);
+}
+
+.mobile-task-table .mobile-task-table-row-selected + .ant-table-expanded-row .mobile-task-table-inline-editor {
+  border-color: var(--app-primary);
+  background: var(--app-primary-soft) !important;
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--app-primary) 16%, transparent);
 }
 
 .mobile-task-list__empty {
