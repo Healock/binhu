@@ -73,6 +73,7 @@ ACTION_LABELS: dict[str, str] = {
     "visit_summary.export": "导出走访汇总",
     "police_dispatch.feedback.export": "导出下发反馈表",
     "mobile_tasks.bulk_assign": "批量分配核查人",
+    "qmf_registration.preview": "全民防模型三只读预演",
     "registry.property.create": "辖区房屋档案创建",
     "registry.property.update": "修改辖区房屋档案",
     "registry.property.status": "修改辖区房屋状态",

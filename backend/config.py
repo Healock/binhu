@@ -82,6 +82,23 @@ class Settings(BaseSettings):
     VISIT_SOURCE_MAX_RECORDS: int = 100000
     VISIT_SOURCE_AUTO_CONFIRM: bool = False
 
+    # 全民防模型三 API 单条只读预演。所有敏感值仅在生产环境注入；
+    # LOGIN_PROTOCOL_VERIFIED 必须在登录及只读查询实测通过后才可开启。
+    QMF_PREVIEW_ENABLED: bool = False
+    QMF_PREVIEW_ALLOWED_USERNAME: str = "shenshenghua"
+    QMF_API_BASE_URL: str = ""
+    QMF_LOGIN_HOST: str = ""
+    QMF_LOGIN_PORT: int = 0
+    QMF_SOURCE_USERNAME: str = ""
+    QMF_SOURCE_PASSWORD: str = ""
+    QMF_SOURCE_IMEI: str = ""
+    QMF_SOURCE_MACHINE_UID: str = ""
+    QMF_EXPECTED_STATION_CODE: str = "320584710000"
+    QMF_EXPECTED_STATION_NAME: str = "滨湖新城派出所"
+    QMF_TIMEOUT_SECONDS: int = 15
+    QMF_PREVIEW_COOLDOWN_SECONDS: int = 45
+    QMF_LOGIN_PROTOCOL_VERIFIED: bool = False
+
     # Pagination
     PAGE_SIZE_DEFAULT: int = 50
     PAGE_SIZE_MAX: int = 200
