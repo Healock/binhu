@@ -1,6 +1,7 @@
 """手动与定时同步共用的任务创建、执行和排期逻辑。"""
 
 import asyncio
+import json
 from datetime import datetime
 
 from database import db_manager
@@ -40,6 +41,106 @@ async def _estimate_steps(cur) -> int:
     parser_types = [row[0] for row in await cur.fetchall()]
     report_types = {ptype for ptype in parser_types if ptype in BUILDERS}
     return len(parser_types) + len(report_types) + (1 if report_types else 0)
+
+
+async def run_scheduled_visit_source_acquisition() -> None:
+    """Run the optional source preview only when explicitly configured.
+
+    This is deliberately isolated from SyncEngine: a source failure is stored
+    as a failed preview run and never changes the current visit projection.
+    """
+    from config import settings
+    from services.business_time import get_business_date
+    from services.visit_source import VisitSourceError, commit_rows, fetch_rows
+    from services.visit_import import VISIT_IMPORT_LOCK_NAME
+
+    if not settings.VISIT_SOURCE_AUTO_CONFIRM:
+        return
+    if not settings.VISIT_SOURCE_MOCK and not settings.VISIT_SOURCE_BASE_URL:
+        return
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT GET_LOCK(%s, 0)", (VISIT_IMPORT_LOCK_NAME,))
+            lock_row = await cur.fetchone()
+        if not lock_row or lock_row[0] != 1:
+            return
+        async with conn.cursor() as cur:
+            business_date = await get_business_date(cur)
+        for source in ("detail", "rating"):
+            try:
+                result = await fetch_rows(source, business_date, business_date)
+                status = "pending_confirmation"
+                error_code = None
+                error_message = None
+            except VisitSourceError as exc:
+                result = {"rows": [], "record_count": 0, "valid_count": 0, "issue_count": 1, "issues": [exc.message]}
+                status = "failed"
+                error_code = exc.code
+                error_message = exc.message
+
+            # Close the fetch/insert cursor before invoking the existing importers;
+            # they manage their own transaction and commit the projection atomically.
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO _visit_source_runs (
+                        source_kind, trigger_source, status, requested_start_date,
+                        requested_end_date, response_business_date, source_page,
+                        record_count, valid_count, issue_count, summary_json,
+                        payload_json, error_code, error_message
+                    ) VALUES (%s, 'scheduled', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        source,
+                        status,
+                        business_date,
+                        business_date,
+                        result.get("response_business_date"),
+                        "走访明细" if source == "detail" else "新星级评分管理",
+                        result.get("record_count", 0),
+                        result.get("valid_count", 0),
+                        result.get("issue_count", 0),
+                        json.dumps({"issues": result.get("issues", [])}, ensure_ascii=False),
+                        json.dumps(result.get("rows", []), ensure_ascii=False, default=str) if result.get("rows") else None,
+                        error_code,
+                        error_message,
+                    ),
+                )
+                run_id = int(cur.lastrowid)
+            if status != "pending_confirmation":
+                await conn.commit()
+                continue
+            try:
+                import_result = await commit_rows(
+                    conn,
+                    kind=source,
+                    rows=result["rows"],
+                    start_date=business_date,
+                    user_id=0,
+                    source_type="scheduled_source",
+                    source_run_id=run_id,
+                )
+                final_status = "confirmed" if import_result.get("status") in ("success", "partial") else "failed"
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "UPDATE _visit_source_runs SET status=%s, summary_json=%s, confirmed_at=UTC_TIMESTAMP() WHERE id=%s",
+                        (final_status, json.dumps({"batch_id": import_result.get("batch_id"), "import_status": import_result.get("status")}, ensure_ascii=False), run_id),
+                    )
+                await conn.commit()
+            except Exception as exc:
+                await conn.rollback()
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "UPDATE _visit_source_runs SET status='failed', error_code='commit_failed', error_message=%s WHERE id=%s",
+                        (str(exc)[:500], run_id),
+                    )
+                await conn.commit()
+    finally:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT RELEASE_LOCK(%s)", (VISIT_IMPORT_LOCK_NAME,))
+        pool.release(conn)
 
 
 async def create_sync_task(
@@ -161,6 +262,13 @@ async def run_sync_task(task_id: int) -> None:
     try:
         engine = SyncEngine(db_manager.get_pool("online_data"))
         await engine.run_full_sync(task_id)
+        task_state = await _get_task_terminal_state(task_id)
+        if task_state and task_state[1] == "scheduled":
+            try:
+                await run_scheduled_visit_source_acquisition()
+            except Exception as exc:
+                # Source acquisition is isolated from the legacy sync result.
+                print(f"[VISIT_SOURCE] scheduled acquisition failed: {type(exc).__name__}")
     except asyncio.CancelledError:
         raise
     except Exception as exc:

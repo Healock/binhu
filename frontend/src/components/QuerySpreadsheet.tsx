@@ -24,10 +24,13 @@ import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-v
 import validationZhCN from '@univerjs/preset-sheets-data-validation/locales/zh-CN'
 import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter'
 import filterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN'
+import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort'
+import sortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 
 import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
 import '@univerjs/preset-sheets-filter/lib/index.css'
+import '@univerjs/preset-sheets-sort/lib/index.css'
 
 import type { QueryColumnMeta, QueryDataRow, QueryDependentOptions } from '../api/client'
 import { useAppThemeMode } from './AppThemeProvider'
@@ -48,6 +51,7 @@ import {
   querySheetCellKey,
   resolveQuerySheetColumnWidth,
   resolveQuerySheetPasteValues,
+  resolveQuerySheetSortRequest,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   updateQuerySheetDrafts,
@@ -69,6 +73,7 @@ export interface QuerySpreadsheetProps {
   revision: number
   layoutRevision?: number
   filterCriteria: Record<string, QuerySheetFilterCriteria>
+  onSortChange: (column: string, order: 'asc' | 'desc') => void
   onDraftsChange: (drafts: QueryDisplayRow[]) => void
   onFilterCriteriaChange: (criteria: Record<string, QuerySheetFilterCriteria>) => void
   onSelectionChange: (row: QueryDisplayRow | null) => void
@@ -96,17 +101,18 @@ function createQueryUniver(
   corePreset: ReturnType<typeof UniverSheetsCorePreset>,
   validationPreset: ReturnType<typeof UniverSheetsDataValidationPreset>,
   filterPreset: ReturnType<typeof UniverSheetsFilterPreset>,
+  sortPreset: ReturnType<typeof UniverSheetsSortPreset>,
 ) {
   const univer = new Univer({
     locale: LocaleType.ZH_CN,
     locales: {
-      [LocaleType.ZH_CN]: merge({}, sheetsZhCN, validationZhCN, filterZhCN),
+      [LocaleType.ZH_CN]: merge({}, sheetsZhCN, validationZhCN, filterZhCN, sortZhCN),
     },
     theme: defaultTheme,
     logLevel: LogLevel.WARN,
   })
   const plugins = new Map<string, { plugin: any; options?: any }>()
-  for (const preset of [corePreset, validationPreset, filterPreset]) {
+  for (const preset of [corePreset, validationPreset, filterPreset, sortPreset]) {
     for (const entry of preset.plugins) {
       const [plugin, options] = Array.isArray(entry) ? entry : [entry, undefined]
       plugins.set(plugin.pluginName, { plugin, options })
@@ -128,6 +134,7 @@ export function QuerySpreadsheet({
   revision,
   layoutRevision = 0,
   filterCriteria,
+  onSortChange,
   onDraftsChange,
   onFilterCriteriaChange,
   onSelectionChange,
@@ -143,6 +150,7 @@ export function QuerySpreadsheet({
   const callbacksRef = useRef({
     onDraftsChange,
     onFilterCriteriaChange,
+    onSortChange,
     onSelectionChange,
     onCommit,
     onBlocked,
@@ -152,6 +160,7 @@ export function QuerySpreadsheet({
   callbacksRef.current = {
     onDraftsChange,
     onFilterCriteriaChange,
+    onSortChange,
     onSelectionChange,
     onCommit,
     onBlocked,
@@ -277,6 +286,7 @@ export function QuerySpreadsheet({
         showSearchOnDropdown: true,
       }),
       UniverSheetsFilterPreset(),
+      UniverSheetsSortPreset(),
     )
 
     const workbook = univerAPI.createWorkbook({
@@ -627,6 +637,23 @@ export function QuerySpreadsheet({
       univerAPI.addEvent(univerAPI.Event.SheetRangeFilterCleared, () => {
         filterCriteriaRef.current = {}
         callbacksRef.current.onFilterCriteriaChange({})
+      }),
+      univerAPI.addEvent(univerAPI.Event.SheetBeforeRangeSort, params => {
+        params.cancel = true
+        const range = params.range.getRange()
+        const sortRequest = resolveQuerySheetSortRequest(
+          columns,
+          range.startColumn,
+          params.sortColumn,
+        )
+        if (!sortRequest) {
+          callbacksRef.current.onBlocked('无法识别排序字段，请重新选择数据列')
+          return
+        }
+        if (params.sortColumn.length > 1) {
+          callbacksRef.current.onBlocked('在线查询暂时只支持单列排序，已按第一排序条件处理')
+        }
+        callbacksRef.current.onSortChange(sortRequest.column, sortRequest.order)
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeSheetEditStart, params => {
         const descriptor = sheetRows[params.row - 1]

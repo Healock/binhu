@@ -23,6 +23,7 @@ from services.visit_import import (
     _parse_business_datetime,
     _require_text,
     _text,
+    _chunks,
     _validate_xlsx_archive,
     fail_import_batch,
     normalize_address,
@@ -506,6 +507,7 @@ async def import_star_rating_workbook(
     *,
     batch_id: int,
     parsed: ParsedStarRatingWorkbook,
+    replace_range: bool = False,
 ) -> dict[str, Any]:
     issues = list(parsed.issues)
     inserted_rows = 0
@@ -574,6 +576,11 @@ async def import_star_rating_workbook(
         issues.extend(match_issues)
         ignored_rows += unmatched_rows + ambiguous_rows
 
+        if replace_range and (unmatched_rows or ambiguous_rows):
+            raise VisitWorkbookError(
+                "星级预览存在未匹配或歧义记录，已阻止替换当前快照"
+            )
+
         if parsed.start_date and parsed.end_date:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -627,6 +634,38 @@ async def import_star_rating_workbook(
                     match.visit.id,
                 )
             )
+
+        if replace_range and parsed.start_date and parsed.end_date:
+            matched_ids = {match.visit.id for match in matches}
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT id FROM t_visit_details
+                    WHERE `星级采集日期` BETWEEN %s AND %s
+                    """,
+                    (parsed.start_date, parsed.end_date),
+                )
+                stale_ids = [
+                    row[0] for row in await cur.fetchall()
+                    if row[0] not in matched_ids
+                ]
+                for chunk in _chunks(stale_ids):
+                    placeholders = ", ".join(["%s"] * len(chunk))
+                    await cur.execute(
+                        f"""
+                        UPDATE t_visit_details
+                        SET `星级派出所名称`=NULL, `星级所属社区`=NULL,
+                            `星级社区`=NULL, `星级地址`=NULL, `得分`=NULL,
+                            `星级`=NULL, `星级采集时间`=NULL,
+                            `星级采集日期`=NULL, `_raw_star_time`=NULL,
+                            `隐患详情`=NULL, `星级时间差秒`=NULL,
+                            star_import_batch_id=NULL,
+                            star_source_row_number=NULL,
+                            updated_at=UTC_TIMESTAMP()
+                        WHERE id IN ({placeholders})
+                        """,
+                        chunk,
+                    )
 
         async with conn.cursor() as cur:
             if updates:

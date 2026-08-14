@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     # Tencent Docs API
     TXDOCS_BASE_URL: str = "https://docs.qq.com/openapi/spreadsheet/v3"
 
+    # Visit/rating source acquisition. Keep disabled until the internal
+    # platform contract and server-side credentials are configured.
+    VISIT_SOURCE_BASE_URL: str = ""
+    VISIT_SOURCE_AUTHORIZATION: str = ""
+    VISIT_SOURCE_DETAIL_FIELD_MAP: str = ""
+    VISIT_SOURCE_RATING_FIELD_MAP: str = ""
+    VISIT_SOURCE_TIMEOUT_SECONDS: int = 30
+    VISIT_SOURCE_MOCK: bool = False
+    VISIT_SOURCE_POLICE_CODE: str = "320584710000"
+    VISIT_SOURCE_POLICE_NAME: str = "滨湖新城派出所"
+    VISIT_SOURCE_MAX_PAGES: int = 1000
+    VISIT_SOURCE_MAX_RECORDS: int = 100000
+    VISIT_SOURCE_AUTO_CONFIRM: bool = False
+
     # Pagination
     PAGE_SIZE_DEFAULT: int = 50
     PAGE_SIZE_MAX: int = 200

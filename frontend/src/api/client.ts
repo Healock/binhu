@@ -6,6 +6,7 @@ import type {
   BackupJob, AuditActionOption, AuditEvent, User, UserPreferences, ReportColumnMode,
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
   PublicProfile, PublicProfileSummary,
+  VisitSourceRun,
 } from '../types'
 
 const api = axios.create({
@@ -1696,6 +1697,35 @@ export async function getVisitImportIssues(
   const { data } = await api.get(`/visits/imports/${batchId}/issues`, {
     params: { page, page_size: pageSize },
   })
+  return data
+}
+
+export async function previewVisitSource(payload: {
+  source: 'detail' | 'rating' | 'both'
+  start_date: string
+  end_date: string
+}): Promise<{ data: VisitSourceRun[]; requires_confirmation: boolean }> {
+  const { data } = await api.post('/visits/sources/preview', payload, activeRequest)
+  return data
+}
+
+export async function confirmVisitSource(payload: {
+  run_ids: number[]
+  strategy: 'replace' | 'keep'
+}): Promise<{ data: Array<{ id: number; status: string; batch_id?: number }>; strategy: string }> {
+  const { data } = await api.post('/visits/sources/confirm', payload, activeRequest)
+  return data
+}
+
+export async function getVisitSourceStatus(): Promise<{
+  business_date: string
+  timezone: string
+  data: Record<string, VisitSourceRun>
+  latest_attempts: Record<string, VisitSourceRun>
+  current_sources: Record<string, { batch_id: number; source_type: string; source_run_id: number | null; finished_at: string | null }>
+  runs: VisitSourceRun[]
+}> {
+  const { data } = await api.get('/visits/sources/status', activeRequest)
   return data
 }
 
