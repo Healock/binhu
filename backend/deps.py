@@ -28,6 +28,7 @@ from services.permissions import (
 from services.theme_preferences import normalize_theme_mode
 from services.member_departments import get_member_departments
 from services.maintenance import enforce_maintenance, is_super_admin_user
+from services.dashboard_scope import is_admin_account
 
 
 FEATURE_PERMISSION_GATES = {
@@ -164,7 +165,8 @@ async def _load_current_user(
                        department.department_type, community.name,
                        session.created_at, session.last_activity_at,
                        session.expires_at, UTC_TIMESTAMP(),
-                       user.display_name, user.avatar_storage_key, user.avatar_mime
+                       user.display_name, user.avatar_storage_key, user.avatar_mime,
+                       user.task_display_mode
                 FROM _sessions AS session
                 JOIN _users AS user ON user.id=session.user_id
                 LEFT JOIN _grid_members AS member ON member.id=user.member_id
@@ -346,6 +348,9 @@ async def _load_current_user(
                 ),
                 "role": row[2],
                 "table_display_mode": row[3] or "table",
+                "task_display_mode": (
+                    row[26] if len(row) > 26 and row[26] else "card"
+                ),
                 "report_column_mode": row[4] or "three",
                 "mobile_navigation_mode": normalize_mobile_navigation_mode(
                     row[5]
@@ -449,6 +454,18 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="当前权限组不能执行此业务操作",
+        )
+    return user
+
+
+async def require_admin_account(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Require an administrator or super-administrator account/group."""
+    if not is_admin_account(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
         )
     return user
 

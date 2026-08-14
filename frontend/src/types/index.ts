@@ -261,6 +261,7 @@ export type PermissionCode =
   | 'workflow.ticket.handle' | 'workflow.ticket.manage'
   | 'workflow.config.manage' | 'workflow.attachment.view'
 export type TableDisplayMode = 'table' | 'card'
+export type TaskDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
 export type MobileNavigationMode = 'sidebar' | 'dock'
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -305,6 +306,7 @@ export interface MobileDockConfig {
 
 export interface UserPreferences {
   table_display_mode?: TableDisplayMode
+  task_display_mode?: TaskDisplayMode
   report_column_mode?: ReportColumnMode
   mobile_navigation_mode?: MobileNavigationMode
   mobile_dock_config?: MobileDockConfig
@@ -318,6 +320,7 @@ export interface User extends UserPreferences {
   avatar_url?: string | null
   role: Role
   table_display_mode: TableDisplayMode
+  task_display_mode: TaskDisplayMode
   report_column_mode: ReportColumnMode
   mobile_navigation_mode: MobileNavigationMode
   mobile_dock_config: MobileDockConfig

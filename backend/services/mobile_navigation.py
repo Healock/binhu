@@ -102,6 +102,15 @@ def _item_is_accessible(
     position: str | None = None,
 ) -> bool:
     admin_access = _admin_code_access(role, permission_group_codes)
+    if item_id == "online_query":
+        group_codes = {
+            str(code).strip() for code in permission_group_codes or []
+        }
+        query_admin_access = bool(group_codes & {"admin", "super_admin"}) or (
+            not group_codes and role in {"admin", "super_admin"}
+        )
+        if not query_admin_access:
+            return False
     if item_id == "flow_tasks":
         has_task_manage = permissions is not None and "online.task.manage" in permissions
         if position not in {"组长", "组员"} and not has_task_manage and not admin_access:

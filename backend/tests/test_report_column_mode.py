@@ -283,6 +283,7 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
 
         request = UserPreferencesRequest(
             table_display_mode="card",
+            task_display_mode="table",
             report_column_mode="two",
         )
         with patch("routers.auth.db_manager.get_pool", return_value=pool):
@@ -293,14 +294,16 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
                     "username": "tester",
                     "role": "member",
                     "table_display_mode": "table",
+                    "task_display_mode": "card",
                     "report_column_mode": "three",
                 },
             )
 
         sql, params = cursor.execute.await_args.args
         self.assertIn("UPDATE _users", sql)
-        self.assertEqual(params, ("card", "two", 7))
+        self.assertEqual(params, ("card", "table", "two", 7))
         self.assertEqual(result["user"]["table_display_mode"], "card")
+        self.assertEqual(result["user"]["task_display_mode"], "table")
         self.assertEqual(result["user"]["report_column_mode"], "two")
 
     def test_invalid_preference_value_is_rejected(self):
@@ -309,6 +312,9 @@ class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
                 table_display_mode="terminal",
                 report_column_mode="two",
             )
+
+        with self.assertRaises(ValidationError):
+            UserPreferencesRequest(task_display_mode="grid")
 
 
 if __name__ == "__main__":

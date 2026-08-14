@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 
+from deps import require_admin_account
 from routers.auth import UserPreferencesRequest, update_preferences
 from services.mobile_navigation import (
     default_mobile_dock_config,
@@ -72,7 +73,18 @@ class MobileNavigationConfigTests(unittest.TestCase):
                 for item in group["items"]
             },
         )
-
+        self.assertNotIn(
+            "online_query",
+            {item for group in member["groups"] for item in group["items"]},
+        )
+        self.assertIn(
+            "online_query",
+            {
+                item
+                for group in delegated_admin["groups"]
+                for item in group["items"]
+            },
+        )
     def test_normalize_filters_unknown_duplicate_and_forbidden_items(self):
         result = normalize_mobile_dock_config(
             {
@@ -256,6 +268,26 @@ class MobileNavigationConfigTests(unittest.TestCase):
                 },
                 "member",
             )
+
+
+class AdminQueryAccessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_raw_view_permission_alone_does_not_grant_query_access(self):
+        with self.assertRaises(HTTPException) as raised:
+            await require_admin_account({
+                "role": "member",
+                "permissions": ["online.raw.view"],
+                "permission_groups": [{"code": "flow_post"}],
+            })
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_admin_permission_group_grants_query_access(self):
+        user = {
+            "role": "member",
+            "permission_groups": [{"code": "admin"}],
+        }
+
+        self.assertIs(await require_admin_account(user), user)
 
 
 class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):

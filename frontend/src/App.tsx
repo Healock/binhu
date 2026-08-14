@@ -58,9 +58,16 @@ function QueryEntry() {
   if (shouldUsePoliceDispatchWorkbench(user?.member?.position, mobile)) {
     return <Navigate to="/police-tasks" replace />
   }
-  return shouldUseMobileTaskWorkbench(user?.member?.position, mobile)
-    ? <Navigate to="/tasks" replace />
-    : <LazyPage><DataQuery /></LazyPage>
+  if (shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
+    return <Navigate to="/tasks" replace />
+  }
+  const permissionGroupCodes = user?.permission_groups?.map(group => group.code) || []
+  const adminAccess = permissionGroupCodes.length > 0
+    ? permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+    : ['admin', 'super_admin'].includes(user?.role || '')
+  return adminAccess
+    ? <LazyPage><DataQuery /></LazyPage>
+    : <Navigate to="/" replace />
 }
 
 function MobileTaskEntry({ detail = false }: { detail?: boolean }) {

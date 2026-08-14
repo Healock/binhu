@@ -268,12 +268,17 @@ export function isNavigationItemAccessible(
   permissionGroupCodes: string[] = [],
   position?: string | null,
 ): boolean {
+  const adminAccess = ['admin', 'super_admin'].includes(role)
+    || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+  const queryAdminAccess = permissionGroupCodes.length > 0
+    ? permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+    : ['admin', 'super_admin'].includes(role)
+  if (item.id === 'online_query' && !queryAdminAccess) return false
   if (
     item.id === 'flow_tasks'
     && !['组长', '组员', '片长', '基础管控', '中队长', '社区民警', '所队领导'].includes(position || '')
     && !permissions?.includes('online.task.manage')
-    && !['admin', 'super_admin'].includes(role)
-    && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+    && !adminAccess
   ) return false
   if (
     item.id === 'police_tasks'
@@ -281,8 +286,7 @@ export function isNavigationItemAccessible(
     && !(
       !position
       && (
-        ['admin', 'super_admin'].includes(role)
-        || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+        adminAccess
       )
     )
   ) return false
@@ -291,15 +295,13 @@ export function isNavigationItemAccessible(
     && !permissions?.some(permission => (
       permission === 'online.task.manage' || permission === 'police.dispatch.manage'
     ))
-    && !['admin', 'super_admin'].includes(role)
-    && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+    && !adminAccess
   ) return false
   if (
     item.id === 'photo_tasks'
     && position !== '基础管控'
     && !permissions?.includes('workflow.ticket.manage')
-    && !['admin', 'super_admin'].includes(role)
-    && !permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
+    && !adminAccess
   ) return false
   if (item.permission) {
     // Permission data is authoritative.  If it is unavailable, fail closed

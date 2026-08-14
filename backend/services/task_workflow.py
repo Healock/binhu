@@ -87,6 +87,8 @@ class TaskWorkflow:
             "date": self.first_value(values, self.date_fields),
             "result": str(values.get(self.result_field, "") or "").strip(),
             "analysis": self.first_value(values, self.analysis_fields),
+            "secondary_feedback": self.first_value(values, self.secondary_fields),
+            "registration_status": str(values.get("登记情况", "") or "").strip(),
         }
 
 

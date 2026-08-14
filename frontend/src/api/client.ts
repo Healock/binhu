@@ -936,6 +936,8 @@ export interface MobileTaskSummaryFields {
   date: string
   result: string
   analysis: string
+  secondary_feedback: string
+  registration_status: string
 }
 
 export interface MobileTaskItem {
