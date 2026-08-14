@@ -579,3 +579,13 @@ test('流口任务数量卡顺序固定为已研判优先、已完成沉底', ()
   assert.ok(completedIndex > waitingIndex)
   assert.match(pageSource, /setReviewStage\('all'\)/)
 })
+
+test('mobile task choice fields disable search on mobile', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /const mobile = useMobileViewport\(\)/)
+  assert.match(detailSource, /showSearch=\{!mobile\}/)
+  assert.equal(detailSource.includes('\n                        showSearch\n'), false)
+})
