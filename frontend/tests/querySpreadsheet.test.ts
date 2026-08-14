@@ -74,6 +74,23 @@ test('spreadsheet reconciliation reads edited cells instead of the whole sheet',
   assert.match(componentSource, /cell\.getValue\(\)/)
 })
 
+test('社区和核查人使用紧凑箭头下拉并感知其他用户更新', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /DataValidationRenderMode\.ARROW/)
+  assert.match(componentSource, /onEditingChange/)
+  assert.match(pageSource, /getQueryDataVersion/)
+  assert.match(pageSource, /setInterval\(checkForUpdates, 15_000\)/)
+  assert.match(pageSource, /其他用户更新了当前数据/)
+  assert.match(pageSource, /visibilitychange/)
+})
+
 const columns = ['社区', '核查人', '姓名']
 
 test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅色', () => {

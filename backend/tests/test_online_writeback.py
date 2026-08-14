@@ -14,6 +14,7 @@ from routers.query import (
     _looks_like_automatic_text_coercion,
     _managed_column_metadata,
     _row_values_match,
+    _source_data_version,
     new_row_required_fields,
     update_source_cell,
     update_source_fields,
@@ -210,6 +211,13 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_source_data_version_contains_no_business_content(self):
+        cursor = AsyncMock()
+        cursor.fetchone.return_value = (12, 19, None)
+        version = await _source_data_version(cursor, "全链条")
+        self.assertEqual(version, "12:19:")
+        self.assertEqual(cursor.execute.await_args.args[1], ("全链条",))
+
     def test_detects_known_text_number_coercion_patterns(self):
         self.assertTrue(_looks_like_automatic_text_coercion(
             "身份证号",

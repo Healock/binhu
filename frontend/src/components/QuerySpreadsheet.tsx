@@ -75,6 +75,7 @@ export interface QuerySpreadsheetProps {
   onCommit: (changes: QuerySheetCellChange[]) => Promise<void>
   onBlocked: (message: string) => void
   onSavingChange?: (saving: boolean) => void
+  onEditingChange?: (editing: boolean) => void
 }
 
 function rangeSize(range: IRange): { rows: number; columns: number } {
@@ -134,6 +135,7 @@ export function QuerySpreadsheet({
   onCommit,
   onBlocked,
   onSavingChange,
+  onEditingChange,
 }: QuerySpreadsheetProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const themeMode = useAppThemeMode()
@@ -147,6 +149,7 @@ export function QuerySpreadsheet({
     onCommit,
     onBlocked,
     onSavingChange,
+    onEditingChange,
   })
 
   callbacksRef.current = {
@@ -156,6 +159,7 @@ export function QuerySpreadsheet({
     onCommit,
     onBlocked,
     onSavingChange,
+    onEditingChange,
   }
   themeModeRef.current = themeMode
   filterCriteriaRef.current = filterCriteria
@@ -368,6 +372,9 @@ export function QuerySpreadsheet({
     const buildValidationRule = (options: string[], multiple = false) => univerAPI
       .newDataValidation()
       .requireValueInList(options, multiple, true)
+      .setOptions({
+        renderMode: univerAPI.Enum.DataValidationRenderMode.ARROW,
+      })
       .setAllowBlank(true)
       .setAllowInvalid(true)
       .build()
@@ -639,6 +646,7 @@ export function QuerySpreadsheet({
         } else if (column === dependentOptions?.inspector_column) {
           applyInspectorValidation(params.row - 1)
         }
+        if (!params.cancel) callbacksRef.current.onEditingChange?.(true)
         editingValues.delete(querySheetCellKey(params.row, params.column))
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeClipboardChange, params => {
@@ -748,6 +756,7 @@ export function QuerySpreadsheet({
         }
       }),
       univerAPI.addEvent(univerAPI.Event.SheetEditEnded, params => {
+        callbacksRef.current.onEditingChange?.(false)
         editingValues.delete(querySheetCellKey(params.row, params.column))
         if (!params.isConfirm) return
         if (params.row >= 1 && params.column >= 0) {
@@ -771,6 +780,7 @@ export function QuerySpreadsheet({
 
     return () => {
       disposed = true
+      callbacksRef.current.onEditingChange?.(false)
       if (reconcileTimer) clearTimeout(reconcileTimer)
       disposables.forEach(disposable => disposable.dispose())
       if (applyAppearanceRef.current === applyAppearance) applyAppearanceRef.current = null

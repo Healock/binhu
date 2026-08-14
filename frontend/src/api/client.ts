@@ -788,9 +788,15 @@ export interface QueryResponse {
   can_add: boolean
   required_fields: string[]
   pending_count: number
+  data_version?: string
   scope_message?: string
   row_manage_message?: string
   dependent_options?: QueryDependentOptions
+}
+
+export async function getQueryDataVersion(type: string): Promise<{ data_version: string }> {
+  const { data } = await api.get(`/query/${type}/version`, activeRequest)
+  return data
 }
 
 export async function queryData(params: {
@@ -1027,7 +1033,7 @@ export async function getMobileTaskHome(
   return data
 }
 
-export async function listMobileTasks(params: {
+export interface MobileTaskSearchParams {
   parser_type: string
   scope: MobileTaskScope
   status: MobileTaskStatus
@@ -1040,7 +1046,25 @@ export async function listMobileTasks(params: {
   keyword?: string
   page?: number
   page_size?: number
-}): Promise<{
+}
+
+function mobileTaskSearchPayload(params: MobileTaskSearchParams) {
+  return {
+    scope: params.scope,
+    status: params.status,
+    review_stage: params.review_stage || 'all',
+    communities: params.communities || [],
+    inspectors: params.inspectors || [],
+    watch_categories: params.watch_categories || [],
+    priority: params.priority || 'all',
+    sort: params.sort || 'priority',
+    keyword: params.keyword || '',
+    page: params.page || 1,
+    page_size: params.page_size || 20,
+  }
+}
+
+export async function listMobileTasks(params: MobileTaskSearchParams): Promise<{
   data: MobileTaskItem[]
   total: number
   page: number
@@ -1063,19 +1087,18 @@ export async function listMobileTasks(params: {
 }> {
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(params.parser_type)}/search`,
-    {
-      scope: params.scope,
-      status: params.status,
-      review_stage: params.review_stage || 'all',
-      communities: params.communities || [],
-      inspectors: params.inspectors || [],
-      watch_categories: params.watch_categories || [],
-      priority: params.priority || 'all',
-      sort: params.sort || 'priority',
-      keyword: params.keyword || '',
-      page: params.page || 1,
-      page_size: params.page_size || 20,
-    },
+    mobileTaskSearchPayload(params),
+    activeRequest,
+  )
+  return data
+}
+
+export async function selectMobileTasksForAssignment(
+  params: MobileTaskSearchParams,
+): Promise<{ row_keys: string[]; total: number; community: string }> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(params.parser_type)}/assignment-selection`,
+    mobileTaskSearchPayload(params),
     activeRequest,
   )
   return data

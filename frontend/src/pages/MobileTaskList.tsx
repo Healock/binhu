@@ -12,6 +12,7 @@ import {
   getMobileTaskFilterOptions,
   bulkAssignMobileTasks,
   listMobileTasks,
+  selectMobileTasksForAssignment,
   type MobileTaskFacets,
   type MobileTaskFilterOption,
   type MobileTaskItem,
@@ -175,8 +176,11 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [bulkMode, setBulkMode] = useState<'single' | 'balanced'>('single')
   const [bulkInspector, setBulkInspector] = useState<string | undefined>()
   const [bulkSaving, setBulkSaving] = useState(false)
+  const [selectingAll, setSelectingAll] = useState(false)
+  const [selectionCommunity, setSelectionCommunity] = useState('')
   const optionsRequestId = useRef(0)
   const listRequestId = useRef(0)
+  const loadedPageRef = useRef(1)
   const canBulkAssign = assignment.enabled
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
@@ -188,31 +192,18 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const selectedCommunities = useMemo(() => Array.from(new Set(
     selectedTasks.map(assignmentCommunity).filter(Boolean),
   )), [assignmentCommunity, selectedTasks])
-  const selectedCommunity = selectedCommunities.length === 1
-    ? selectedCommunities[0]
-    : ''
+  const selectedCommunity = selectionCommunity || (
+    selectedCommunities.length === 1 ? selectedCommunities[0] : ''
+  )
   const bulkInspectorOptions = selectedCommunity
     ? assignment.inspectors_by_community[selectedCommunity] || []
     : []
-  const selectableRows = rows.filter(task => {
-    const community = assignmentCommunity(task)
-    return canBulkAssign
-      && !task.inspector
-      && task.state !== 'completed'
-      && !task.conflict
-      && Boolean(community)
-      && Boolean(assignment.inspectors_by_community[community]?.length)
-  })
   const selectedCount = selectedRows.size
-
-  useEffect(() => {
-    const visibleKeys = new Set(rows.map(task => task.row_key))
-    setSelectedRows(current => new Set([...current].filter(key => visibleKeys.has(key))))
-  }, [rows])
 
   useEffect(() => {
     setSelectionMode(false)
     setSelectedRows(new Set())
+    setSelectionCommunity('')
     setBulkInspector(undefined)
     setBulkMode('single')
   }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
@@ -224,6 +215,10 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       message.warning(`本次已锁定为${selectedCommunity}，请分开选择其他社区任务`)
       return
     }
+    if (checked && !selectedCommunity) setSelectionCommunity(community)
+    if (!checked && selectedRows.size === 1 && selectedRows.has(rowKey)) {
+      setSelectionCommunity('')
+    }
     setSelectedRows(current => {
       const next = new Set(current)
       if (checked) next.add(rowKey)
@@ -232,25 +227,47 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     })
   }
 
-  const selectAllLoaded = () => {
-    const communities = Array.from(new Set(selectableRows.map(assignmentCommunity)))
-    const targetCommunity = selectedCommunity || (communities.length === 1 ? communities[0] : '')
-    if (!targetCommunity) {
-      message.info('请先筛选到一个社区，或先勾选一条任务再全选')
-      return
+  const selectAllFiltered = async () => {
+    setSelectingAll(true)
+    try {
+      const result = await selectMobileTasksForAssignment({
+        parser_type: parserType,
+        scope: analysisOnly ? 'all' : scope,
+        status: analysisOnly ? 'all' : status,
+        review_stage: reviewStage,
+        communities,
+        inspectors,
+        watch_categories: watchCategories,
+        priority: analysisOnly ? 'all' : priority,
+        sort,
+        keyword: keyword || undefined,
+        page: 1,
+        page_size: 50,
+      })
+      if (!result.total) {
+        setSelectedRows(new Set())
+        setSelectionCommunity('')
+        message.info('当前筛选中没有可分配的未处理任务')
+        return
+      }
+      setSelectedRows(new Set(result.row_keys))
+      setSelectionCommunity(result.community)
+      message.success(`已选择当前筛选中的 ${result.total} 条可分配任务`)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '全选当前筛选失败')
+    } finally {
+      setSelectingAll(false)
     }
-    setSelectedRows(current => {
-      const next = new Set(current)
-      selectableRows
-        .filter(task => assignmentCommunity(task) === targetCommunity)
-        .forEach(task => next.add(task.row_key))
-      return next
-    })
+  }
+
+  const clearSelection = () => {
+    setSelectedRows(new Set())
+    setSelectionCommunity('')
   }
 
   const leaveSelectionMode = () => {
     setSelectionMode(false)
-    setSelectedRows(new Set())
+    clearSelection()
     setBulkInspector(undefined)
     setBulkMode('single')
   }
@@ -260,7 +277,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     setBulkSaving(true)
     try {
       const result = await bulkAssignMobileTasks(parserType, {
-        row_keys: selectedTasks.map(task => task.row_key),
+        row_keys: [...selectedRows],
         inspector: bulkMode === 'single' ? bulkInspector : undefined,
         mode: bulkMode,
       })
@@ -275,9 +292,9 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           message.success(`已分配 ${result.updated} 条任务给 ${result.inspector}`)
         }
       }
-      if (result.skipped) message.warning(`有 ${result.skipped} 条任务未处理，请查看原因后刷新`)
+      if (result.skipped) message.warning(`有 ${result.skipped} 条任务已变化或不再符合条件，列表已刷新`)
       setSelectionMode(false)
-      setSelectedRows(new Set())
+      clearSelection()
       setBulkOpen(false)
       setBulkInspector(undefined)
       setBulkMode('single')
@@ -335,37 +352,52 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     }
   }, [bulkInspector, bulkInspectorOptions])
 
-  const load = useCallback(async (targetPage = 1, append = false) => {
+  const load = useCallback(async (targetPage = 1, append = false, silent = false) => {
     const requestId = ++listRequestId.current
-    append ? setLoadingMore(true) : setLoading(true)
-    setError('')
+    if (!silent) {
+      append ? setLoadingMore(true) : setLoading(true)
+      setError('')
+    }
     try {
-      const result = await listMobileTasks({
-        parser_type: parserType,
-        scope: analysisOnly ? 'all' : scope,
-        status: analysisOnly ? 'all' : status,
-        review_stage: reviewStage,
-        communities,
-        inspectors,
-        watch_categories: watchCategories,
-        priority: analysisOnly ? 'all' : priority,
-        sort,
-        keyword: keyword || undefined,
-        page: targetPage,
-        page_size: 50,
-      })
+      const requestPage = (requestedPage: number) => listMobileTasks({
+          parser_type: parserType,
+          scope: analysisOnly ? 'all' : scope,
+          status: analysisOnly ? 'all' : status,
+          review_stage: reviewStage,
+          communities,
+          inspectors,
+          watch_categories: watchCategories,
+          priority: analysisOnly ? 'all' : priority,
+          sort,
+          keyword: keyword || undefined,
+          page: requestedPage,
+          page_size: 50,
+        })
+      const results = silent
+        ? await Promise.all(Array.from(
+            { length: Math.max(1, loadedPageRef.current) },
+            (_, index) => requestPage(index + 1),
+          ))
+        : [await requestPage(targetPage)]
       if (requestId !== listRequestId.current) return
-      setRows(current => append ? [...current, ...result.data] : result.data)
+      const result = results[0]
+      const refreshedRows = results.flatMap(item => item.data)
+      setRows(current => append ? [...current, ...result.data] : refreshedRows)
       setTotal(result.total)
-      setPage(targetPage)
+      if (!silent) {
+        setPage(targetPage)
+        loadedPageRef.current = targetPage
+      }
       setFacets(result.facets || EMPTY_FACETS)
       setSourceMessage(result.message || '')
     } catch (reason: any) {
       if (requestId !== listRequestId.current) return
-      setError(reason?.response?.data?.detail || reason?.message || '任务列表读取失败')
-      if (!append) setRows([])
+      if (!silent) {
+        setError(reason?.response?.data?.detail || reason?.message || '任务列表读取失败')
+        if (!append) setRows([])
+      }
     } finally {
-      if (requestId === listRequestId.current) {
+      if (!silent && requestId === listRequestId.current) {
         setLoading(false)
         setLoadingMore(false)
       }
@@ -373,6 +405,23 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    const refreshVisibleList = () => {
+      if (document.visibilityState === 'visible') void load(1, false, true)
+    }
+    const visibilityChanged = () => {
+      if (document.visibilityState === 'visible') refreshVisibleList()
+    }
+    const timer = window.setInterval(refreshVisibleList, 30_000)
+    window.addEventListener('focus', refreshVisibleList)
+    document.addEventListener('visibilitychange', visibilityChanged)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshVisibleList)
+      document.removeEventListener('visibilitychange', visibilityChanged)
+    }
+  }, [load])
 
   useEffect(() => {
     const next = new URLSearchParams()
@@ -639,17 +688,21 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               type={selectionMode ? 'primary' : 'default'}
               size="small"
               icon={<CheckSquareOutlined />}
-              disabled={!selectionMode && !selectableRows.length}
+              disabled={!selectionMode && total === 0}
               onClick={() => selectionMode ? leaveSelectionMode() : setSelectionMode(true)}
             >
               {selectionMode ? '退出选择' : '选择'}
             </Button>
             {selectionMode && (
               <>
-                <Button size="small" onClick={selectAllLoaded} disabled={!selectableRows.length}>
-                  全选未分配任务
+                <Button
+                  size="small"
+                  loading={selectingAll}
+                  onClick={() => void selectAllFiltered()}
+                >
+                  全选当前筛选
                 </Button>
-                <Button size="small" onClick={() => setSelectedRows(new Set())} disabled={!selectedCount}>
+                <Button size="small" onClick={clearSelection} disabled={!selectedCount}>
                   清空
                 </Button>
                 <span className="text-xs text-[var(--app-text-secondary)]">已选 {selectedCount} 条</span>

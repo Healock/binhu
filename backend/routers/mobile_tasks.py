@@ -65,6 +65,7 @@ Priority = Literal[
 SortMode = Literal["priority", "updated_desc", "updated_asc"]
 AssignmentMode = Literal["single", "balanced"]
 EMPTY_FILTER_VALUE = "__empty__"
+MAX_BULK_ASSIGNMENT_TASKS = 2000
 
 
 async def _task_photo_results(user: dict, parser_type: str, row_key: str) -> list[dict]:
@@ -210,7 +211,7 @@ class TaskBatchUpdate(BaseModel):
 
 
 class BulkAssignmentRequest(BaseModel):
-    row_keys: list[str] = Field(min_length=1, max_length=100)
+    row_keys: list[str] = Field(min_length=1, max_length=MAX_BULK_ASSIGNMENT_TASKS)
     inspector: str = Field(default="", max_length=100)
     mode: AssignmentMode = "single"
 
@@ -1111,6 +1112,76 @@ async def search_mobile_tasks(
     conn=Depends(get_db),
 ):
     return await _list_mobile_tasks_data(parser_type, data, user, conn)
+
+
+@router.post("/{parser_type}/assignment-selection")
+async def select_mobile_tasks_for_assignment(
+    parser_type: str,
+    data: TaskSearch,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """Resolve every currently eligible task for the complete filter result."""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
+
+    where_sql, query_params = _task_where(context, parser_type, data)
+    async with conn.cursor() as cur:
+        if not await _writeback_enabled(cur):
+            raise HTTPException(503, "在线回写已由超级管理员暂停")
+        await cur.execute(
+            f"""
+            SELECT projection.row_key, projection.community
+            FROM _online_source_projection AS projection
+            WHERE {where_sql}
+              AND TRIM(COALESCE(projection.inspector, ''))=''
+              AND projection.task_state<>'completed'
+              AND projection.conflict=0
+              AND EXISTS (
+                  SELECT 1 FROM _online_source_rows AS source_row
+                  WHERE source_row.parser_type=projection.parser_type
+                    AND source_row.row_key=projection.row_key
+              )
+            ORDER BY {_address_order(parser_type)}, projection.row_key
+            LIMIT %s
+            """,
+            [*query_params, MAX_BULK_ASSIGNMENT_TASKS + 1],
+        )
+        rows = await cur.fetchall()
+        if len(rows) > MAX_BULK_ASSIGNMENT_TASKS:
+            raise HTTPException(
+                409,
+                f"当前筛选可分配任务超过 {MAX_BULK_ASSIGNMENT_TASKS} 条，请继续缩小筛选范围",
+            )
+        assignment_context = await inspector_option_context(
+            cur,
+            user,
+            assignment_only=True,
+        )
+
+    aliases = assignment_context["community_aliases"]
+    formal_communities = {
+        aliases.get(str(community or "").strip(), "")
+        for _, community in rows
+    }
+    if "" in formal_communities:
+        raise HTTPException(403, "部分任务社区不在当前账号可分配范围内")
+    if len(formal_communities) > 1:
+        raise HTTPException(400, "请先筛选到一个社区，再全选当前筛选结果")
+    formal_community = next(iter(formal_communities), "")
+    if formal_community and not assignment_context["inspectors_by_community"].get(
+        formal_community
+    ):
+        raise HTTPException(400, "该社区当前没有在岗组员可分配")
+    return {
+        "row_keys": [str(row_key) for row_key, _ in rows],
+        "total": len(rows),
+        "community": formal_community,
+    }
 
 
 @router.get("/{parser_type}")

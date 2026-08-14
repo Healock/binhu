@@ -9,6 +9,8 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from fastapi import HTTPException
 
 from routers.mobile_tasks import (
+    MAX_BULK_ASSIGNMENT_TASKS,
+    BulkAssignmentRequest,
     EMPTY_FILTER_VALUE,
     TaskSearch,
     _address_order,
@@ -370,6 +372,21 @@ class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    def test_bulk_assignment_accepts_full_filtered_selection_with_safety_cap(self):
+        request = BulkAssignmentRequest(
+            row_keys=[f"row-{index}" for index in range(MAX_BULK_ASSIGNMENT_TASKS)],
+            mode="balanced",
+        )
+        self.assertEqual(len(request.row_keys), MAX_BULK_ASSIGNMENT_TASKS)
+        with self.assertRaises(ValueError):
+            BulkAssignmentRequest(
+                row_keys=[
+                    f"row-{index}"
+                    for index in range(MAX_BULK_ASSIGNMENT_TASKS + 1)
+                ],
+                mode="balanced",
+            )
+
     def test_balanced_assignment_keeps_counts_within_one(self):
         plan, counts = _balanced_assignment_plan(
             ["a", "b", "c", "d", "e"],

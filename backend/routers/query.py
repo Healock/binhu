@@ -469,6 +469,21 @@ async def _source_ready(cur, spreadsheets: list[dict]) -> bool:
     return int((await cur.fetchone())[0] or 0) == len(ids)
 
 
+async def _source_data_version(cur, parser_type: str) -> str:
+    """Return a non-sensitive token that changes when cached source rows change."""
+    await cur.execute(
+        """
+        SELECT COUNT(*), COALESCE(SUM(revision), 0), MAX(refreshed_at)
+        FROM _online_source_rows
+        WHERE parser_type=%s
+        """,
+        (parser_type,),
+    )
+    count, revision_sum, refreshed_at = await cur.fetchone()
+    timestamp = refreshed_at.isoformat() if refreshed_at else ""
+    return f"{int(count or 0)}:{int(revision_sum or 0)}:{timestamp}"
+
+
 async def _oauth_client(cur) -> TxDocsClient:
     await cur.execute(
         "SELECT client_id, access_token, open_id "
@@ -884,7 +899,7 @@ async def update_source_fields(
     ):
         warnings.append("核查人与当前社区不一致")
     return {
-        "message": "已写回腾讯表格，汇总将在下次同步后更新",
+        "message": "已保存，滨湖平台数据已同步更新并写回腾讯表格",
         "values": verified_values,
         "row_key": new_key,
         "revision": revision,
@@ -1180,6 +1195,7 @@ async def _projection_query(
         )
         pending_count = int((await cur.fetchone())[0] or 0)
         enabled = await _writeback_enabled(cur)
+        data_version = await _source_data_version(cur, parser_type)
 
         data = []
         for row in rows:
@@ -1242,12 +1258,26 @@ async def _projection_query(
         "can_add": bool(enabled and len(spreadsheets) == 1 and row_manage_allowed),
         "required_fields": new_row_required_fields(parser),
         "pending_count": pending_count,
+        "data_version": data_version,
         "row_manage_message": row_manage_message,
         "dependent_options": inspector_context,
         "scope_message": (
             "当前账号尚未分配社区部门，暂无业务数据" if scopes == [] else ""
         ),
     }
+
+
+@router.get("/{parser_type}/version")
+async def query_data_version(
+    parser_type: str,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    del user
+    if parser_type not in QUERY_TYPES:
+        raise HTTPException(400, "不支持的业务类型")
+    async with conn.cursor() as cur:
+        return {"data_version": await _source_data_version(cur, parser_type)}
 
 
 @router.get("/{parser_type}")
@@ -1503,7 +1533,7 @@ async def create_source_row(
         **request_audit_fields(request),
     )
     return {
-        "message": "已新增到腾讯表格，汇总将在下次同步后更新",
+        "message": "已新增，滨湖平台数据已同步更新并写回腾讯表格",
         "row_key": new_key,
         "pending_sync": True,
     }
@@ -1597,6 +1627,6 @@ async def delete_source_row(
         **request_audit_fields(request),
     )
     return {
-        "message": "已从腾讯表格删除，汇总将在下次同步后更新",
+        "message": "已删除，滨湖平台数据已同步更新并写回腾讯表格",
         "pending_sync": True,
     }

@@ -198,7 +198,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         } : source),
       } : current)
       setFormValues(savedValues)
-      setSavedMessage('已写回腾讯表格，汇总待同步')
+      setSavedMessage('已保存，滨湖平台数据已同步并写回腾讯表格')
     } catch (reason: any) {
       const status = reason?.response?.status
       setError(detailError(reason, '保存失败，请稍后重试'))
