@@ -1026,6 +1026,17 @@ export interface MobileTaskDetailData {
   sources: MobileTaskSource[]
 }
 
+export interface MobileTaskInlineEditorItem {
+  available: boolean
+  reason?: string
+  detail?: MobileTaskDetailData
+}
+
+export interface MobileTaskInlineEditorsData {
+  analysis_mode: boolean
+  items: Record<string, MobileTaskInlineEditorItem>
+}
+
 export async function getMobileTaskHome(
   scope: MobileTaskScope,
 ): Promise<MobileTaskHomeData> {
@@ -1157,6 +1168,20 @@ export async function getMobileTaskDetail(
 ): Promise<MobileTaskDetailData> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}`,
+    activeRequest,
+  )
+  return data
+}
+
+export async function getMobileTaskInlineEditors(
+  parserType: string,
+  rowKeys: string[],
+  analysisMode = false,
+): Promise<MobileTaskInlineEditorsData> {
+  const prefix = analysisMode ? '/mobile-tasks/analysis' : '/mobile-tasks'
+  const { data } = await api.post(
+    `${prefix}/${encodeURIComponent(parserType)}/inline-editors`,
+    { row_keys: rowKeys },
     activeRequest,
   )
   return data

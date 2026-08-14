@@ -13,6 +13,7 @@ from routers.mobile_tasks import (
     MAX_BULK_ASSIGNMENT_CHUNK,
     BulkAssignmentRequest,
     EMPTY_FILTER_VALUE,
+    InlineEditorRequest,
     TaskSearch,
     _address_order,
     _balanced_assignment_plan,
@@ -21,6 +22,7 @@ from routers.mobile_tasks import (
     _priority_bucket,
     _review_stage_condition,
     _flow_context,
+    _mobile_task_inline_editors_data,
     _scope_where,
     _source_in_community,
     _task_photo_fetched_rows,
@@ -55,6 +57,36 @@ class FilterOptionsCursor:
 
 
 class MobileTaskWorkflowTests(unittest.TestCase):
+    def test_inline_editor_request_limits_current_page(self):
+        request = InlineEditorRequest(row_keys=["row-1", "row-2"])
+        self.assertEqual(request.row_keys, ["row-1", "row-2"])
+        with self.assertRaises(ValueError):
+            InlineEditorRequest(row_keys=[])
+        with self.assertRaises(ValueError):
+            InlineEditorRequest(row_keys=[str(index) for index in range(51)])
+
+    def test_inline_editors_deduplicate_rows_and_skip_photo_queries(self):
+        detail = {
+            "task": {"conflict": False},
+            "sources": [{"id": 7}],
+        }
+        detail_mock = AsyncMock(return_value=detail)
+        with patch(
+            "routers.mobile_tasks._mobile_task_detail_data",
+            detail_mock,
+        ):
+            result = asyncio.run(_mobile_task_inline_editors_data(
+                "全链条",
+                ["row-1", "row-1", "row-2"],
+                {},
+                object(),
+            ))
+        self.assertEqual(set(result["items"]), {"row-1", "row-2"})
+        self.assertTrue(result["items"]["row-1"]["available"])
+        self.assertEqual(detail_mock.await_count, 2)
+        for call in detail_mock.await_args_list:
+            self.assertFalse(call.kwargs["include_photo_requests"])
+
     def test_task_summary_keeps_current_and_original_addresses(self):
         workflow = TASK_WORKFLOWS["全链条"]
         summary = workflow.summary({"现住址": "新住址", "地址": "原地址"})

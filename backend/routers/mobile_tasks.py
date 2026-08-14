@@ -233,6 +233,10 @@ class TaskSearch(BaseModel):
     page_size: int = Field(default=20, ge=1, le=50)
 
 
+class InlineEditorRequest(BaseModel):
+    row_keys: list[str] = Field(min_length=1, max_length=50)
+
+
 def _iso_utc(value) -> str | None:
     if not value:
         return None
@@ -1267,6 +1271,7 @@ async def _mobile_task_detail_data(
     conn,
     *,
     analysis_mode: bool = False,
+    include_photo_requests: bool = True,
 ) -> dict:
     if analysis_mode:
         user = _require_analysis_user(user)
@@ -1423,7 +1428,10 @@ async def _mobile_task_detail_data(
             raise HTTPException(404, "任务不存在或不属于当前社区")
 
     workflow = TASK_WORKFLOWS[parser_type]
-    photo_requests = await _task_photo_results(user, parser_type, row_key)
+    photo_requests = (
+        await _task_photo_results(user, parser_type, row_key)
+        if include_photo_requests else []
+    )
     return {
         "task": _task_record(
             parser_type,
@@ -1454,6 +1462,89 @@ async def _mobile_task_detail_data(
         "photo_requests": photo_requests,
         "sources": sources,
     }
+
+
+async def _mobile_task_inline_editors_data(
+    parser_type: str,
+    row_keys: list[str],
+    user: dict,
+    conn,
+    *,
+    analysis_mode: bool = False,
+) -> dict:
+    """Prepare the current page's editors in one browser request.
+
+    The detail permission, community scope and editable-field calculation stay
+    identical to the normal task detail endpoint.  A row that moved out of the
+    current scope is returned as unavailable instead of failing the whole page.
+    """
+    normalized_keys = list(dict.fromkeys(
+        str(row_key).strip() for row_key in row_keys if str(row_key).strip()
+    ))
+    if not normalized_keys:
+        raise HTTPException(400, "请至少选择一条任务")
+
+    items: dict[str, dict] = {}
+    for row_key in normalized_keys:
+        try:
+            detail = await _mobile_task_detail_data(
+                parser_type,
+                row_key,
+                user,
+                conn,
+                analysis_mode=analysis_mode,
+                include_photo_requests=False,
+            )
+        except HTTPException as exc:
+            if exc.status_code not in {404, 409}:
+                raise
+            items[row_key] = {
+                "available": False,
+                "reason": str(exc.detail),
+            }
+            continue
+        if detail["task"]["conflict"] or len(detail["sources"]) != 1:
+            items[row_key] = {
+                "available": False,
+                "reason": "该任务包含多个腾讯来源，请进入详情选择来源后修改",
+            }
+            continue
+        items[row_key] = {
+            "available": True,
+            "detail": detail,
+        }
+    return {"items": items, "analysis_mode": analysis_mode}
+
+
+@router.post("/analysis/{parser_type}/inline-editors")
+async def get_mobile_task_analysis_inline_editors(
+    parser_type: str,
+    data: InlineEditorRequest,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    return await _mobile_task_inline_editors_data(
+        parser_type,
+        data.row_keys,
+        user,
+        conn,
+        analysis_mode=True,
+    )
+
+
+@router.post("/{parser_type}/inline-editors")
+async def get_mobile_task_inline_editors(
+    parser_type: str,
+    data: InlineEditorRequest,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    return await _mobile_task_inline_editors_data(
+        parser_type,
+        data.row_keys,
+        user,
+        conn,
+    )
 
 
 @router.get("/analysis/{parser_type}/{row_key}")
