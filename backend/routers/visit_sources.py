@@ -120,6 +120,7 @@ async def preview_source(
     async with conn.cursor() as cur:
         timezone_name = await get_business_timezone_name(cur)
     data = []
+    projected_detail_rows = None
     for source in sources:
         try:
             result = await fetch_rows(source, payload.start_date, payload.end_date)
@@ -130,7 +131,12 @@ async def preview_source(
                 kind=source,
                 rows=result["rows"],
                 timezone_name=timezone_name,
+                projected_detail_rows=(
+                    projected_detail_rows if source == "rating" else None
+                ),
             )
+            if source == "detail":
+                projected_detail_rows = result["rows"]
         except (VisitSourceError, VisitWorkbookError) as exc:
             error_code = exc.code if isinstance(exc, VisitSourceError) else "schema_changed"
             result = {

@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 from services.star_rating_import import STAR_RATING_HEADERS
 from services.visit_import import VISIT_HEADERS
-from services.visit_source import VisitSourceError, fetch_rows, workbook_bytes
+from services.visit_source import (
+    VisitSourceError,
+    fetch_rows,
+    preview_diff,
+    workbook_bytes,
+)
 
 
 class FakeResponse:
@@ -50,6 +55,25 @@ class FakeAsyncClient:
     async def get(self, path, *, params):
         self.gets.append((path, params.copy(), self.headers.copy()))
         return type(self).get_responses.pop(0)
+
+
+class EmptyCursor:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, query, params=None):
+        del query, params
+
+    async def fetchall(self):
+        return []
+
+
+class EmptyConnection:
+    def cursor(self):
+        return EmptyCursor()
 
 
 def visit_row(police_name="吴江区公安局滨湖新城派出所"):
@@ -219,6 +243,40 @@ class VisitSourceAdapterTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(VisitSourceError) as raised:
                 await fetch_rows("detail", date(2026, 8, 14), date(2026, 8, 14))
         self.assertEqual(raised.exception.code, "pagination_repeated")
+
+    async def test_joint_preview_matches_rating_against_pending_detail_rows(self):
+        detail = {
+            VISIT_HEADERS[0]: "滨湖新城派出所",
+            VISIT_HEADERS[1]: "测试社区",
+            VISIT_HEADERS[2]: "扫码",
+            VISIT_HEADERS[3]: "测试地址",
+            VISIT_HEADERS[4]: "测试人员",
+            VISIT_HEADERS[5]: "test-account",
+            VISIT_HEADERS[6]: "2026-06-10 09:00:00",
+            VISIT_HEADERS[7]: "1",
+            VISIT_HEADERS[8]: "1",
+            VISIT_HEADERS[9]: "0",
+            VISIT_HEADERS[10]: "0",
+        }
+        rating = {
+            STAR_RATING_HEADERS[0]: "滨湖新城派出所",
+            STAR_RATING_HEADERS[1]: "测试社区",
+            STAR_RATING_HEADERS[2]: "测试地址",
+            STAR_RATING_HEADERS[3]: "90",
+            STAR_RATING_HEADERS[4]: "三星出租房",
+            STAR_RATING_HEADERS[5]: "2026-06-10 10:00:00",
+            STAR_RATING_HEADERS[6]: "",
+        }
+        result = await preview_diff(
+            EmptyConnection(),
+            kind="rating",
+            rows=[rating],
+            timezone_name="Asia/Shanghai",
+            projected_detail_rows=[detail],
+        )
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["unmatched"], 0)
+        self.assertEqual(result["ambiguous"], 0)
 
 
 if __name__ == "__main__":
