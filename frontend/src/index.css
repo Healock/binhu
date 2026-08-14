@@ -57,6 +57,10 @@
     grid-template-columns: repeat(auto-fit, minmax(264px, 1fr));
   }
 
+  .mobile-task-list.mobile-task-list--table-fallback {
+    display: none;
+  }
+
   .mobile-task-load-more {
     grid-column: 1 / -1;
   }

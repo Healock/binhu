@@ -868,7 +868,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               />
             </div>
           )}
-          <div className={`mobile-task-list${taskDisplayMode === 'table' ? ' md:hidden' : ''}`}>
+          <div className={`mobile-task-list${taskDisplayMode === 'table' ? ' mobile-task-list--table-fallback' : ''}`}>
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
             const phoneOptions = mobileTaskPhoneOptions(task.summary.phone)
