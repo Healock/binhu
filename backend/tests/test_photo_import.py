@@ -1,8 +1,13 @@
+import hashlib
 import io
+import os
 import unittest
 import zipfile
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock, patch
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from routers.workflow_extended import (
     PhotoRequestBatchClaimPayload,
@@ -17,6 +22,7 @@ from routers.workflow_extended import (
     _photo_pending_filter,
     _photo_pending_queue,
     batch_claim_photo_requests,
+    confirm_photo_import,
     get_photo_import_detail,
     restore_ticket_to_queue,
     router,
@@ -568,6 +574,76 @@ class PhotoImportPreviewRouteTests(unittest.IsolatedAsyncioTestCase):
         connection.commit.assert_awaited_once()
         statements = [call.args[0] for call in connection.cursor_obj.execute.call_args_list]
         self.assertTrue(any("status='preview'" in item for item in statements))
+
+
+class PhotoImportConfirmRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirm_uses_each_matched_ticket_subject_name(self):
+        identity = "32050020000101001X"
+        content = make_zip({f"Uploaded Name_{identity}.jpg": JPEG})
+        zip_sha256 = hashlib.sha256(content).hexdigest()
+
+        class Cursor:
+            def __init__(self):
+                self.statement = ""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def execute(self, statement, _params=()):
+                self.statement = statement
+
+            async def fetchone(self):
+                if "SELECT storage_key" in self.statement:
+                    return ("batch.zip", zip_sha256, "preview", "PHOTO-TEST")
+                if "SELECT status, batch_no" in self.statement:
+                    return ("preview", "PHOTO-TEST")
+                if "SELECT COUNT(*) FROM work_order_attachments" in self.statement:
+                    return (0,)
+                if "SELECT requester_user_id" in self.statement:
+                    return (101, 1, "in_progress", 7, "base_control")
+                if "SELECT external_origin" in self.statement:
+                    return ("manual",)
+                return None
+
+            async def fetchall(self):
+                if "FROM work_orders order_row" in self.statement:
+                    return [(11, "PHOTO-11", 101, "Ticket Subject", "in_progress")]
+                return []
+
+        cursor = Cursor()
+        conn = type("Conn", (), {})()
+        conn.begin = AsyncMock()
+        conn.commit = AsyncMock()
+        conn.rollback = AsyncMock()
+        conn.cursor = MagicMock(return_value=cursor)
+        path = MagicMock()
+        path.read_bytes.return_value = content
+        saved = {
+            "file_id": "file-id",
+            "storage_key": "11/file-id.jpg",
+            "mime_type": "image/jpeg",
+            "sha256": hashlib.sha256(JPEG).hexdigest(),
+            "size_bytes": len(JPEG),
+        }
+        user = {"id": 7, "role": "super_admin", "permissions": []}
+
+        with patch("routers.workflow_extended.resolve_photo_import_zip", return_value=path), \
+             patch("routers.workflow_extended.hmac_digest", return_value=("hmac", 1)), \
+             patch("routers.workflow_extended.save_attachment", return_value=saved) as save, \
+             patch("routers.workflow_extended.remove_photo_import_zip"), \
+             patch("routers.workflow_extended.workflow_notification", new=AsyncMock()), \
+             patch("routers.workflow_extended.record_admin_audit", new=AsyncMock()), \
+             patch("routers.workflow_extended.request_audit_fields", return_value={}), \
+             patch("routers.workflow_extended.get_photo_import_detail", new=AsyncMock(return_value={"id": 42})):
+            result = await confirm_photo_import(42, MagicMock(), user, conn)
+
+        self.assertEqual(result, {"id": 42})
+        self.assertEqual(save.call_args.args[1], f"Ticket Subject_{identity}.jpg")
+        conn.commit.assert_awaited_once()
+        conn.rollback.assert_not_awaited()
 
 
 if __name__ == "__main__":

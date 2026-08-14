@@ -1783,6 +1783,10 @@ async def confirm_photo_import(
                     reason = "没有可补挂照片的工单"
                 else:
                     status = "duplicate" if duplicate_all else "matched"
+                    match_names = {
+                        int(match[0]): str(match[3] or item.person_name).strip() or item.person_name
+                        for match in matches
+                    }
                     if duplicate_all:
                         reason = "照片已经挂载到对应工单"
                     if any(str(row[3] or "").strip() != item.person_name for row in matches):
@@ -1811,7 +1815,7 @@ async def confirm_photo_import(
                                 reason = "对应工单附件数量已达到上限"
                                 continue
                             attachment_name = canonical_photo_filename(
-                                str(row[3] or item.person_name),
+                                match_names.get(ticket_id, item.person_name),
                                 item.identity_number,
                                 item.extension,
                             )
