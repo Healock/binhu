@@ -213,6 +213,13 @@
   background: transparent !important;
 }
 
+.mobile-task-table .ant-table-expanded-row-fixed {
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box;
+}
+
 .mobile-task-table-inline-editor {
   display: flex;
   min-width: 1044px;

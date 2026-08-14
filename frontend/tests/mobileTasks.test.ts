@@ -486,6 +486,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(styleSource, /mobile-task-table-primary-row > td:first-child[\s\S]*border-start-start-radius: 12px/)
   assert.match(styleSource, /mobile-task-table-primary-row > td:last-child[\s\S]*border-start-end-radius: 12px/)
   assert.match(styleSource, /ant-table-expanded-row > td[\s\S]*padding: 0 0 10px/)
+  assert.match(styleSource, /ant-table-expanded-row-fixed[\s\S]*width: 100% !important[\s\S]*margin: 0 !important[\s\S]*padding: 0 !important/)
   assert.match(styleSource, /mobile-task-table-inline-editor\s*\{[\s\S]*border-radius: 0 0 12px 12px/)
   assert.match(styleSource, /mobile-task-table-inline-editor\s*\{[\s\S]*box-shadow: 0 5px 14px/)
   assert.doesNotMatch(styleSource, /inset 3px 0 0 color-mix/)
