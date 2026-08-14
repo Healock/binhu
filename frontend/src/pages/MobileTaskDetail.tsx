@@ -47,6 +47,7 @@ import {
   mobileTaskSourceState,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
+import useMobileViewport from '../hooks/useMobileViewport'
 
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
@@ -68,6 +69,7 @@ function detailError(reason: any, fallback: string) {
 
 export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
   const navigate = useNavigate()
+  const mobile = useMobileViewport()
   const { recordActivity, user } = useAuth()
   const { parserType = '', rowKey = '' } = useParams()
   const [data, setData] = useState<MobileTaskDetailData | null>(null)
@@ -556,7 +558,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     {metadata.type === 'select' || field === '核查人' ? (
                       <Select
                         allowClear
-                        showSearch
+                        showSearch={!mobile}
                         className="w-full"
                         size="large"
                         value={formValues[field] || undefined}
