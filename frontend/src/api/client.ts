@@ -2729,7 +2729,10 @@ export const workflowApi = {
   async previewPhotoImport(file: File) {
     const form = new FormData()
     form.append('file', file)
-    return (await api.post('/workflow/photo-imports/preview', form, activeRequest)).data as PhotoImportBatch
+    return (await api.post('/workflow/photo-imports/preview', form, {
+      ...activeRequest,
+      timeout: 300000,
+    })).data as PhotoImportBatch
   },
   async confirmPhotoImport(batchId: number) {
     return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, activeRequest)).data as PhotoImportBatch

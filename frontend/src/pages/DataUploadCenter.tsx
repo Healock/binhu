@@ -356,7 +356,14 @@ export default function DataUploadCenter() {
       setPhotoBatch(await workflowApi.previewPhotoImport(photoFile))
       await loadPhotoHistory()
     } catch (error: any) {
-      setPhotoError(error?.response?.data?.detail || '照片 ZIP 解析失败，请检查文件名和内容')
+      setPhotoError(
+        error?.response?.data?.detail
+          || (error?.response?.status === 413
+            ? '照片 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
+            : error?.code === 'ECONNABORTED'
+              ? '照片 ZIP 上传或解析超时，请稍后重试'
+              : '照片 ZIP 解析失败，请检查文件名和内容'),
+      )
     } finally {
       setPhotoLoading(false)
     }

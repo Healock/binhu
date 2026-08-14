@@ -1301,3 +1301,9 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 - 修复“同一次预览的走访全部为新增时，星级只匹配当前数据库而显示全部未匹配”的口径错误；数据源仍为新星级评分管理。
 - 发布不修改数据库结构，使用 `backup_scope=none / release_scope=auto`。上线后保留旧待确认运行，不自动确认；重新生成同日期范围预览，核对星级匹配数后再由用户决定是否替换。
+
+### 0.19.27 照片批次上传限制修复
+
+- 照片批次预览接口单独允许最多 201MB 的 HTTP 请求体，其中后端继续严格限制 ZIP 文件本身不超过 200MB；上传、代理和前端等待时间统一为 300 秒。
+- 发布后把仓库中的 `nginx/migration/new-app-locations.conf` 安全更新到生产 `/etc/nginx/snippets/binhu-app-locations.conf`，执行 `nginx -t` 成功后再 reload，并保留更新前配置副本。
+- 使用用户原 ZIP 重新预览前只做本地结构检查，不制造照片工单、不确认批次。该版本不修改数据库结构，使用 `backup_scope=none / release_scope=auto`。
