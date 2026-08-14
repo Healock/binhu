@@ -72,6 +72,14 @@ test('管理员权限组可以配置独立流口任务入口', () => {
     delegatedAdmin.groups.some(group => group.items.includes('flow_tasks')),
     true,
   )
+  assert.equal(
+    regular.groups.some(group => group.items.includes('online_query')),
+    false,
+  )
+  assert.equal(
+    delegatedAdmin.groups.some(group => group.items.includes('online_query')),
+    true,
+  )
 })
 
 test('上级任务岗位在具备查看权限时显示流口任务入口', () => {

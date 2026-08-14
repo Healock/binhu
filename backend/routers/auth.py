@@ -63,6 +63,7 @@ class ChangePasswordRequest(BaseModel):
 
 class UserPreferencesRequest(BaseModel):
     table_display_mode: Literal["table", "card"] | None = None
+    task_display_mode: Literal["table", "card"] | None = None
     report_column_mode: Literal["two", "three"] | None = None
     mobile_navigation_mode: Literal["sidebar", "dock"] | None = None
     mobile_dock_config: dict[str, Any] | None = None
@@ -82,7 +83,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 "mobile_navigation_mode, mobile_dock_config, theme_mode, "
                 "COALESCE(NULLIF(display_name, ''), "
                 "(SELECT name FROM _grid_members WHERE id=_users.member_id), "
-                "username), avatar_storage_key "
+                "username), avatar_storage_key, task_display_mode "
                 "FROM _users WHERE username = %s",
                 (req.username,),
             )
@@ -101,6 +102,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 theme_mode,
                 display_name,
                 avatar_storage_key,
+                task_display_mode,
             ) = row
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
@@ -180,6 +182,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
             "display_name": display_name,
             "role": role,
             "table_display_mode": table_display_mode or "table",
+            "task_display_mode": task_display_mode or "card",
             "report_column_mode": report_column_mode or "three",
             "mobile_navigation_mode": normalize_mobile_navigation_mode(
                 mobile_navigation_mode,
@@ -378,6 +381,10 @@ async def update_preferences(
         updates.append("table_display_mode=%s")
         values.append(req.table_display_mode)
         updated_user["table_display_mode"] = req.table_display_mode
+    if req.task_display_mode is not None:
+        updates.append("task_display_mode=%s")
+        values.append(req.task_display_mode)
+        updated_user["task_display_mode"] = req.task_display_mode
     if req.report_column_mode is not None:
         updates.append("report_column_mode=%s")
         values.append(req.report_column_mode)

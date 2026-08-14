@@ -16,6 +16,7 @@ import type {
   MobileDockConfig,
   MobileNavigationMode,
   ReportColumnMode,
+  TaskDisplayMode,
   ThemeMode,
 } from '../types'
 
@@ -29,6 +30,7 @@ export default function PersonalizationSettings() {
     groups: [],
   })
   const [themeMode, setThemeMode] = useState<ThemeMode>('light')
+  const [taskDisplayMode, setTaskDisplayMode] = useState<TaskDisplayMode>('card')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -37,6 +39,7 @@ export default function PersonalizationSettings() {
     setColumnMode(user.report_column_mode || 'three')
     setNavigationMode(user.mobile_navigation_mode || 'dock')
     setThemeMode(user.theme_mode || 'light')
+    setTaskDisplayMode(user.task_display_mode || 'card')
     setDockConfig(normalizeMobileDockConfig(
       user.mobile_dock_config || defaultMobileDockConfig(
         user.role,
@@ -57,11 +60,12 @@ export default function PersonalizationSettings() {
     try {
       await updatePreferences({
         theme_mode: themeMode,
+        task_display_mode: taskDisplayMode,
         report_column_mode: columnMode,
         mobile_navigation_mode: navigationMode,
         mobile_dock_config: dockConfig,
       })
-      setMsg('保存成功，外观、手机导航和汇总表设置已更新')
+      setMsg('保存成功，外观、任务视图、手机导航和汇总表设置已更新')
     } catch {
       setMsg('保存失败，请稍后重试')
     } finally {
@@ -75,6 +79,27 @@ export default function PersonalizationSettings() {
       description="这些设置跟随当前账号，在其他电脑登录后也会保持一致。"
     >
       <div className="flex flex-col gap-7">
+        <div className="flex flex-col items-start gap-2">
+          <div className="text-sm font-medium text-slate-800">
+            流口任务展示
+          </div>
+          <div className="w-full max-w-sm">
+            <Segmented
+              block
+              size="large"
+              value={taskDisplayMode}
+              onChange={value => setTaskDisplayMode(value as TaskDisplayMode)}
+              options={[
+                { label: '卡片视图', value: 'card' },
+                { label: '表格视图', value: 'table' },
+              ]}
+            />
+          </div>
+          <p className="text-sm text-slate-500">
+            表格视图适合电脑端连续浏览和批量选择；手机端仍使用卡片。
+          </p>
+        </div>
+
         <div className="flex flex-col items-start gap-2">
           <div className="text-sm font-medium text-slate-800">
             外观模式

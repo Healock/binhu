@@ -1858,6 +1858,7 @@ class DatabaseManager:
                         password_hash VARCHAR(255) NOT NULL,
                         role ENUM('super_admin','admin','leader','member') NOT NULL DEFAULT 'member',
                         table_display_mode VARCHAR(10) NOT NULL DEFAULT 'table',
+                        task_display_mode VARCHAR(10) NOT NULL DEFAULT 'card',
                         report_column_mode VARCHAR(10) NOT NULL DEFAULT 'three',
                         mobile_navigation_mode VARCHAR(10) NOT NULL DEFAULT 'dock',
                         mobile_dock_config JSON DEFAULT NULL,
@@ -1875,6 +1876,10 @@ class DatabaseManager:
                     (
                         "table_display_mode",
                         "VARCHAR(10) NOT NULL DEFAULT 'table'",
+                    ),
+                    (
+                        "task_display_mode",
+                        "VARCHAR(10) NOT NULL DEFAULT 'card'",
                     ),
                     (
                         "report_column_mode",

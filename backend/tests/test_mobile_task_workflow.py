@@ -77,6 +77,16 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(fallback["deadline"], "")
         self.assertEqual(fallback["date"], "8.01")
 
+    def test_task_summary_exposes_grid_worker_follow_up_fields(self):
+        workflow = TASK_WORKFLOWS["全链条"]
+        summary = workflow.summary({
+            "二次反馈": "已联系后重新登记",
+            "登记情况": "已注销",
+        })
+
+        self.assertEqual(summary["secondary_feedback"], "已联系后重新登记")
+        self.assertEqual(summary["registration_status"], "已注销")
+
     def test_standard_workflow_uses_three_internal_states(self):
         self.assertEqual(task_state("全链条", {}), "unchecked")
         self.assertEqual(

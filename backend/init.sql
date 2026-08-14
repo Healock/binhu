@@ -593,6 +593,7 @@ CREATE TABLE IF NOT EXISTS _users (
     password_is_temporary    TINYINT(1) NOT NULL DEFAULT 0,
     active_session_id        VARCHAR(64) DEFAULT NULL,
     table_display_mode       VARCHAR(10) NOT NULL DEFAULT 'table',
+    task_display_mode        VARCHAR(10) NOT NULL DEFAULT 'card',
     report_column_mode       VARCHAR(10) NOT NULL DEFAULT 'three',
     mobile_navigation_mode   VARCHAR(10) NOT NULL DEFAULT 'dock',
     mobile_dock_config       JSON DEFAULT NULL,

@@ -32,6 +32,7 @@ import {
   mobileTaskSourceTags,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
+import MobileTaskTable from '../components/MobileTaskTable'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 
@@ -206,6 +207,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const listRequestId = useRef(0)
   const loadedPageRef = useRef(1)
   const canBulkAssign = assignment.enabled
+  const taskDisplayMode = user?.task_display_mode || 'card'
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
   ), [assignment.community_aliases])
@@ -223,6 +225,24 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     ? assignment.inspectors_by_community[selectedCommunity] || []
     : []
   const selectedCount = selectedRows.size
+  const isTaskAssignable = useCallback((task: MobileTaskItem) => {
+    const community = assignmentCommunity(task)
+    return canBulkAssign
+      && !task.inspector
+      && task.state !== 'completed'
+      && !task.conflict
+      && Boolean(community)
+      && Boolean(assignment.inspectors_by_community[community]?.length)
+  }, [assignment.inspectors_by_community, assignmentCommunity, canBulkAssign])
+  const canSelectTask = useCallback((task: MobileTaskItem) => {
+    const community = assignmentCommunity(task)
+    return isTaskAssignable(task)
+      && (!selectedCommunity || selectedCommunity === community)
+  }, [assignmentCommunity, isTaskAssignable, selectedCommunity])
+
+  const openTask = useCallback((task: MobileTaskItem) => {
+    navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+  }, [analysisOnly, navigate, scope])
 
   useEffect(() => {
     setSelectionMode(false)
@@ -460,10 +480,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           page_size: 50,
         })
       const results = silent
-        ? await Promise.all(Array.from(
-            { length: Math.max(1, loadedPageRef.current) },
-            (_, index) => requestPage(index + 1),
-          ))
+        ? taskDisplayMode === 'table'
+          ? [await requestPage(loadedPageRef.current)]
+          : await Promise.all(Array.from(
+              { length: Math.max(1, loadedPageRef.current) },
+              (_, index) => requestPage(index + 1),
+            ))
         : [await requestPage(targetPage)]
       if (requestId !== listRequestId.current) return
       const result = results[0]
@@ -488,7 +510,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         setLoadingMore(false)
       }
     }
-  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
+  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, taskDisplayMode, watchCategories])
 
   useEffect(() => { void load() }, [load])
 
@@ -812,8 +834,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           </div>
           <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
             {selectionMode
-              ? '直接点击卡片进行多选；选中第一条后会锁定同一社区，只处理未分配任务。'
-              : '点击“选择”进入多选模式，再直接点击任务卡片进行批量分配。'}
+              ? '选择任务进行多选；选中第一条后会锁定同一社区，只处理未分配任务。'
+              : '点击“选择”进入多选模式，再选择任务进行批量分配。'}
           </div>
         </section>
       )}
@@ -823,7 +845,28 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       ) : rows.length === 0 ? (
         <div className="app-card py-8"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有符合条件的任务" /></div>
       ) : (
-        <div className="mobile-task-list">
+        <>
+          {taskDisplayMode === 'table' && (
+            <div className="hidden md:block">
+              <MobileTaskTable
+                rows={rows}
+                total={total}
+                page={page}
+                loading={loading}
+                selectionMode={selectionMode}
+                selectedRowKeys={[...selectedRows]}
+                canSelect={canSelectTask}
+                onSelect={(task, selected) => toggleSelected(task.row_key, selected)}
+                onOpen={openTask}
+                onCopy={(value, label) => void copyValue(value, label)}
+                onPageChange={nextPage => {
+                  void load(nextPage)
+                  window.scrollTo({ top: 0, behavior: 'smooth' })
+                }}
+              />
+            </div>
+          )}
+          <div className={`mobile-task-list${taskDisplayMode === 'table' ? ' md:hidden' : ''}`}>
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
             const phoneOptions = mobileTaskPhoneOptions(task.summary.phone)
@@ -832,15 +875,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               : task.summary.phone ? [task.summary.phone] : []
             const primaryPhone = copyPhones[0] || ''
             const extraPhoneCount = Math.max(copyPhones.length - 1, 0)
-            const taskCommunity = assignmentCommunity(task)
-            const isAssignable = canBulkAssign
-              && !task.inspector
-              && task.state !== 'completed'
-              && !task.conflict
-              && Boolean(taskCommunity)
-              && Boolean(assignment.inspectors_by_community[taskCommunity]?.length)
-            const canSelect = isAssignable
-              && (!selectedCommunity || selectedCommunity === taskCommunity)
+            const isAssignable = isTaskAssignable(task)
+            const canSelect = canSelectTask(task)
             const isSelected = selectedRows.has(task.row_key)
             const sourceTags = mobileTaskSourceTags(task.summary.source)
             const currentAddress = String(task.summary.current_address || '').trim()
@@ -861,7 +897,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 toggleSelected(task.row_key, !isSelected)
                 return
               }
-              navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+              openTask(task)
             }
             return (
               <article
@@ -1023,7 +1059,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           {rows.length < total && (
             <Button block className="mobile-task-load-more min-h-11" loading={loadingMore} onClick={() => void load(page + 1, true)}>加载更多</Button>
           )}
-        </div>
+          </div>
+        </>
       )}
 
       <Modal

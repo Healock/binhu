@@ -438,6 +438,43 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.doesNotMatch(styleSource, /repeat\(8, minmax\(0, 1fr\)\)/)
 })
 
+test('流口任务支持账号级表格视图并在手机端保留卡片', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  const settingsSource = readFileSync(
+    new URL('../src/pages/PersonalizationSettings.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /user\?\.task_display_mode \|\| 'card'/)
+  assert.match(pageSource, /<MobileTaskTable/)
+  assert.match(pageSource, /className="hidden md:block"/)
+  assert.match(pageSource, /taskDisplayMode === 'table' \? ' md:hidden' : ''/)
+  assert.match(pageSource, /taskDisplayMode === 'table'[\s\S]*requestPage\(loadedPageRef\.current\)/)
+  assert.match(tableSource, /Table<MobileTaskItem>/)
+  assert.match(tableSource, /title: '截止日期'/)
+  assert.match(tableSource, /title: '登记情况'/)
+  assert.match(tableSource, /expandedRowRender/)
+  assert.match(tableSource, /label="现住址"/)
+  assert.match(tableSource, /label="核查结果"/)
+  assert.match(tableSource, /label="研判"/)
+  assert.match(tableSource, /label="二次反馈"/)
+  assert.match(tableSource, /label="调取照片"/)
+  assert.match(tableSource, /hideSelectAll: true/)
+  assert.match(tableSource, /current: page/)
+  assert.match(tableSource, /pageSize: 50/)
+  assert.match(settingsSource, /流口任务展示/)
+  assert.match(settingsSource, /task_display_mode: taskDisplayMode/)
+  assert.match(settingsSource, /卡片视图/)
+  assert.match(settingsSource, /表格视图/)
+})
+
 test('任务详情桌面端使用更紧凑的最大宽度', () => {
   const styleSource = readFileSync(
     new URL('../src/index.css', import.meta.url),

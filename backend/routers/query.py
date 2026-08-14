@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from deps import require_permission, require_super_admin
+from deps import require_admin_account, require_permission, require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
@@ -51,7 +51,11 @@ from services.work_activity import (
 )
 
 
-router = APIRouter(prefix="/api/query", tags=["数据查询"])
+router = APIRouter(
+    prefix="/api/query",
+    tags=["数据查询"],
+    dependencies=[Depends(require_admin_account)],
+)
 QUERY_TYPES = [item for item in PARSER_REGISTRY if item != "default"]
 
 
