@@ -2765,7 +2765,10 @@ export const workflowApi = {
     })).data as PhotoImportBatch
   },
   async confirmPhotoImport(batchId: number) {
-    return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, activeRequest)).data as PhotoImportBatch
+    return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, {
+      ...activeRequest,
+      timeout: 300000,
+    })).data as PhotoImportBatch
   },
   async photoImports(page = 1, pageSize = 20) {
     return (await api.get('/workflow/photo-imports', {

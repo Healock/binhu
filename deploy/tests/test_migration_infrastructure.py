@@ -116,6 +116,20 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             self.assertIn("proxy_read_timeout 300s", block)
             self.assertIn("proxy_send_timeout 300s", block)
 
+    def test_photo_batch_confirm_allows_large_batches_to_finish(self) -> None:
+        configs = [
+            (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8"),
+            (ROOT / "nginx/migration/new-app-locations.conf").read_text(
+                encoding="utf-8"
+            ),
+        ]
+        route = "location ~ ^/api/workflow/photo-imports/[0-9]+/confirm$"
+        for config in configs:
+            start = config.index(route)
+            block = config[start : start + 800]
+            self.assertIn("proxy_read_timeout 300s", block)
+            self.assertIn("proxy_send_timeout 300s", block)
+
     def test_templates_do_not_contain_real_public_hosts_or_secrets(self) -> None:
         paths = [
             ROOT / "deploy/install-offsite-backup.sh",

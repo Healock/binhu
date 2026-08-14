@@ -36,6 +36,7 @@ test('照片批次上传使用长超时并明确提示网关大小限制', () =>
   )
 
   assert.match(apiSource, /api\.post\('\/workflow\/photo-imports\/preview', form, \{[\s\S]*timeout: 300000/)
+  assert.match(apiSource, /api\.post\(`\/workflow\/photo-imports\/\$\{batchId\}\/confirm`, \{\}, \{[\s\S]*timeout: 300000/)
   assert.match(pageSource, /error\?\.response\?\.status === 413/)
   assert.match(pageSource, /照片 ZIP 超过服务器上传限制/)
   assert.match(pageSource, /照片 ZIP 上传或解析超时/)

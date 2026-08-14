@@ -1307,3 +1307,10 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - 照片批次预览接口单独允许最多 201MB 的 HTTP 请求体，其中后端继续严格限制 ZIP 文件本身不超过 200MB；上传、代理和前端等待时间统一为 300 秒。
 - 发布后把仓库中的 `nginx/migration/new-app-locations.conf` 安全更新到生产 `/etc/nginx/snippets/binhu-app-locations.conf`，执行 `nginx -t` 成功后再 reload，并保留更新前配置副本。
 - 使用用户原 ZIP 重新预览前只做本地结构检查，不制造照片工单、不确认批次。该版本不修改数据库结构，使用 `backup_scope=none / release_scope=auto`。
+
+### 0.19.28 流口任务视图与批量分配稳定性
+
+- 流口任务电脑端新增账号级卡片/双层表格视图，在线数据查询只向管理员和超级管理员开放。
+- 下发批量分配按每批 20 条执行，支持中断续传，并将成功、跳过、失败统计保持互斥。
+- 本版为 `PlatformData._users` 幂等增加可空的 `task_display_mode` 字段，发布使用 `backup_scope=all / release_scope=auto`。
+- 修复照片批次预览成功但确认阶段生成附件名时报错的问题；确认接口前端和 Nginx 超时统一为 300 秒。
