@@ -30,9 +30,11 @@ from services.registry_import import (
     ISSUE_CERTIFICATE_DUPLICATE,
     ISSUE_CERTIFICATE_NON_RENTAL,
     ISSUE_HOUSEHOLD_DUPLICATE,
+    ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED,
     ISSUE_HOUSEHOLD_MISSING_TYPE,
     classify_certificate_rows,
     classify_household_rows,
+    household_community_candidates,
     normalize_address,
     normalize_community,
     normalize_text,
@@ -159,6 +161,21 @@ async def _canonical_community(
     if require_active and not bool(row[2]):
         raise HTTPException(409, "所属社区已停用")
     return int(row[0]), str(row[1]).strip()
+
+
+async def _household_import_community(cur, snapshot: str) -> tuple[int | None, str]:
+    """Resolve an import label without weakening the global community rules."""
+    last_error: HTTPException | None = None
+    for candidate in household_community_candidates(snapshot):
+        try:
+            return await _canonical_community(cur, None, candidate)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise HTTPException(422, "所属社区为空")
 
 
 async def _housing_person_scope(cur, person_id: int, user: dict, permission: str) -> None:
@@ -1601,15 +1618,37 @@ async def confirm_household_import(
                 import_rows.append((int(record_id), str(source_ref), payload))
 
             # Resolve aliases once per source community instead of once per row.
-            community_cache: dict[str, tuple[int | None, str]] = {}
+            community_cache: dict[str, tuple[int | None, str] | None] = {}
+            unresolved_community_issues: list[tuple] = []
             resolved_rows: list[tuple[int, str, dict, int | None, str, str]] = []
             for record_id, source_ref, payload in import_rows:
                 community_name = normalize_community(payload.get("community"))
                 if community_name not in community_cache:
-                    community_cache[community_name] = await _canonical_community(cur, None, community_name)
-                community_id, canonical_name = community_cache[community_name]
+                    try:
+                        community_cache[community_name] = await _household_import_community(
+                            cur,
+                            community_name,
+                        )
+                    except HTTPException as exc:
+                        if exc.status_code not in {409, 422}:
+                            raise
+                        community_cache[community_name] = None
+                resolved_community = community_cache[community_name]
+                if resolved_community is None:
+                    unresolved_community_issues.append((
+                        batch_id,
+                        ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED,
+                        "household",
+                        source_ref,
+                        normalize_address(payload.get("address")) or source_ref,
+                        json.dumps(_issue_payload(payload), ensure_ascii=False),
+                        "所属社区无法唯一对应到启用的正式社区或别名，需人工核对",
+                    ))
+                    continue
+                community_id, canonical_name = resolved_community
                 address = normalize_text(payload.get("address"))
                 resolved_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalize_address(address)))
+            await _bulk_insert_import_issues(cur, unresolved_community_issues)
 
             # Fetch and lock existing properties in chunks to avoid an N+1 query
             # for the large historical workbook.

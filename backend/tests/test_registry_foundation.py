@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import os
 
+import pytest
+from fastapi import HTTPException
+
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import settings
+from routers.registry_extended import _household_import_community
 from services.permissions import (
     ALL_PERMISSIONS,
     DEFAULT_PERMISSION_GROUPS,
@@ -20,6 +24,7 @@ from services.registry_import import (
     ISSUE_HOUSEHOLD_MISSING_TYPE,
     classify_household_rows,
     classify_certificate_rows,
+    household_community_candidates,
     normalize_address,
     normalize_community,
 )
@@ -50,6 +55,56 @@ def test_household_import_keeps_other_housing_types_as_normal_data():
     assert result["normal_count"] == 3
     assert result["other_type_count"] == 3
     assert normalize_community("芦荡社区") == "芦荡社区"
+
+
+def test_household_community_candidates_keep_exact_alias_first():
+    assert household_community_candidates(" 芦荡社区 ") == ["芦荡社区", "芦荡"]
+    assert household_community_candidates("顾家荡社区居委会") == [
+        "顾家荡社区居委会",
+        "顾家荡社区",
+        "顾家荡",
+    ]
+    assert household_community_candidates("南厍村") == ["南厍村", "南厍"]
+
+
+class _CommunityCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.requested = []
+        self.current = None
+
+    async def execute(self, _sql, params):
+        self.current = params[0]
+        self.requested.append(self.current)
+
+    async def fetchone(self):
+        return self.rows.get(self.current)
+
+
+@pytest.mark.asyncio
+async def test_household_import_community_prefers_alias_then_suffix_fallback():
+    alias_cursor = _CommunityCursor({"芦荡社区": (9, "长板社区", 1)})
+    assert await _household_import_community(alias_cursor, "芦荡社区") == (
+        9,
+        "长板社区",
+    )
+    assert alias_cursor.requested == ["芦荡社区"]
+
+    suffix_cursor = _CommunityCursor({"顾家荡社区": (3, "顾家荡社区", 1)})
+    assert await _household_import_community(
+        suffix_cursor,
+        "顾家荡社区居委会",
+    ) == (3, "顾家荡社区")
+    assert suffix_cursor.requested == ["顾家荡社区居委会", "顾家荡社区"]
+
+
+@pytest.mark.asyncio
+async def test_household_import_community_does_not_bypass_disabled_exact_match():
+    cursor = _CommunityCursor({"冬梅社区": (1, "冬梅社区", 0), "冬梅": (2, "冬梅", 1)})
+    with pytest.raises(HTTPException) as error:
+        await _household_import_community(cursor, "冬梅社区")
+    assert error.value.status_code == 409
+    assert cursor.requested == ["冬梅社区"]
 
 
 def test_household_import_separates_duplicate_and_missing_type_issues():
