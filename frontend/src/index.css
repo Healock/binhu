@@ -1551,6 +1551,17 @@
   color: var(--app-danger);
 }
 
+.mobile-task-review-badge {
+  min-height: 22px;
+  border: 0;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
 html[data-theme='dark'] .mobile-task-hero {
   border-color: rgb(148 163 184 / 0.18);
   background:
@@ -3140,7 +3151,7 @@ button.role-dashboard-metric:hover {
   border-radius: 8px;
 }
 
-.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card) {
+.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card):not(.mobile-task-review-badge) {
   min-height: 36px;
   border-radius: 8px;
 }
@@ -3991,7 +4002,7 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   .mobile-task-page input:not([type='checkbox']):not([type='radio']):not([class^='ant-']):not([class*=' ant-']),
   .mobile-task-page select:not([class^='ant-']):not([class*=' ant-']),
   .mobile-task-page textarea:not([class^='ant-']):not([class*=' ant-']),
-  .mobile-task-page button:not(.ant-btn):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card) {
+  .mobile-task-page button:not(.ant-btn):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card):not(.mobile-task-review-badge) {
     min-height: 44px;
   }
 
