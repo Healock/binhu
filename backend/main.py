@@ -48,6 +48,10 @@ from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 from services.visit_import import recover_interrupted_visit_imports
 from services.workflow_scheduler import run_workflow_scheduler
 from services.photo_sheet_sync import stop_photo_sheet_tasks
+from services.online_local_writeback import (
+    run_online_writeback_scheduler,
+    stop_online_writeback_tasks,
+)
 from services.client_compatibility import ClientCompatibilityMiddleware
 
 
@@ -73,21 +77,26 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
+    online_writeback_task = asyncio.create_task(run_online_writeback_scheduler())
     try:
         yield
     finally:
         scheduler_task.cancel()
         backup_scheduler_task.cancel()
         workflow_scheduler_task.cancel()
+        online_writeback_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
             await workflow_scheduler_task
+        with suppress(asyncio.CancelledError):
+            await online_writeback_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()
+        await stop_online_writeback_tasks()
         await close_db()
 
 

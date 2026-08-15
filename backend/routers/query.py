@@ -35,6 +35,13 @@ from services.online_source import (
     stable_json,
     update_cached_source_row,
 )
+from services.online_local_writeback import (
+    enqueue_local_changes,
+    launch_local_change_processing,
+    load_local_changes,
+    overlay_local_values,
+    source_sync_payload,
+)
 from services.parsers import PARSER_REGISTRY, get_parser
 from services.permissions import (
     ONLINE_RAW_EDIT,
@@ -908,6 +915,210 @@ async def update_source_fields(
         "row_key": new_key,
         "revision": revision,
         "pending_sync": True,
+        "warnings": warnings,
+        "inspector_mismatch": bool(warnings),
+    }
+
+
+async def queue_source_fields(
+    *,
+    parser_type: str,
+    source_id: int,
+    changes: dict[str, str],
+    base_values: dict[str, str] | None = None,
+    expected_revision: int,
+    request: Request,
+    user: dict,
+    conn,
+    explicit_text_edit: bool = False,
+    allowed_columns: set[str] | None = None,
+    current_values_validator=None,
+    redact_audit_values: bool = False,
+) -> dict:
+    """先保存平台有效值，再由后台按字段安全写回腾讯。"""
+    if parser_type not in QUERY_TYPES:
+        raise HTTPException(400, "不支持的业务类型")
+    parser = get_parser(parser_type)
+    normalized_changes = {
+        str(column): str(value or "").strip()
+        for column, value in changes.items()
+    }
+    if not normalized_changes:
+        raise HTTPException(400, "没有需要保存的修改")
+    if len(normalized_changes) > 5:
+        raise HTTPException(400, "一次最多保存 5 个字段")
+    if any(len(value) > 10000 for value in normalized_changes.values()):
+        raise HTTPException(400, "单个字段内容不能超过 10000 个字符")
+    unknown = [column for column in normalized_changes if column not in parser.COLUMNS]
+    if unknown:
+        raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
+    if allowed_columns is not None and any(
+        column not in allowed_columns for column in normalized_changes
+    ):
+        raise HTTPException(400, "提交包含当前入口不允许修改的字段")
+
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            if not await _writeback_enabled(cur):
+                raise HTTPException(503, "在线回写已由超级管理员暂停")
+            source = await _load_source_row(cur, parser_type, source_id)
+            grouped = await load_local_changes(cur, [source_id])
+            current_values = overlay_local_values(
+                source["values"], grouped.get(source_id, [])
+            )
+            if current_values_validator is not None:
+                current_values_validator(current_values)
+            inspector_context = await inspector_option_context(cur, user)
+            metadata = await _managed_column_metadata(
+                cur,
+                parser,
+                source.get("cell_meta") or {},
+                spreadsheet_id=source["spreadsheet_id"],
+                sheet_id=source["sheet_id"],
+                inspector_context=inspector_context,
+            )
+            if source["revision"] != expected_revision:
+                submitted_base = {
+                    str(field): str(value or "").strip()
+                    for field, value in (base_values or {}).items()
+                }
+                changed_since_load = [
+                    field for field in normalized_changes
+                    if field not in submitted_base
+                    or not _same_value(
+                        current_values.get(field, ""),
+                        submitted_base[field],
+                        _physical_cell_type(metadata.get(field)),
+                    )
+                ]
+                if changed_since_load:
+                    raise HTTPException(
+                        409,
+                        {
+                            "message": "所编辑字段已被其他平台用户更新，请重新确认",
+                            "columns": changed_since_load,
+                        },
+                    )
+            ordered_columns = [
+                column for column in parser.COLUMNS
+                if column in normalized_changes
+                and not _same_value(
+                    current_values.get(column, ""),
+                    normalized_changes[column],
+                    _physical_cell_type(metadata.get(column)),
+                )
+            ]
+            if not ordered_columns:
+                raise HTTPException(400, "提交值与平台当前值相同，无需保存")
+            normalized_changes = {
+                column: normalized_changes[column] for column in ordered_columns
+            }
+            after = dict(current_values)
+            after.update(normalized_changes)
+            try:
+                await validate_row_changes(
+                    cur, user, parser, current_values, after, ordered_columns
+                )
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+            if any(column in set(parser.get_business_key()) for column in ordered_columns):
+                try:
+                    parser.validate_existing_row_key(after)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+            suspicious_columns = [
+                column
+                for column in ordered_columns
+                if not explicit_text_edit
+                and _looks_like_automatic_text_coercion(
+                    column,
+                    current_values.get(column, ""),
+                    normalized_changes[column],
+                    _physical_cell_type(metadata.get(column)),
+                )
+            ]
+            if suspicious_columns:
+                raise HTTPException(
+                    400,
+                    "检测到身份证、手机号或小数文本疑似被表格自动转换，请重新明确输入完整文本后再保存："
+                    + "、".join(suspicious_columns),
+                )
+            if "核查人" in ordered_columns:
+                try:
+                    validate_inspector_assignment(
+                        inspector_context,
+                        parser.community_value(after),
+                        after.get("核查人"),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+            new_key = parser.make_row_key(after)
+            if new_key != source["row_key"]:
+                await cur.execute(
+                    "SELECT id FROM _online_source_rows "
+                    "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
+                    (parser_type, new_key, source_id),
+                )
+                if await cur.fetchone():
+                    raise HTTPException(409, "修改后会形成重复业务主键")
+            audit_id = await _insert_writeback_audit(
+                cur,
+                user=user,
+                action="update",
+                parser_type=parser_type,
+                spreadsheet_id=source["spreadsheet_id"],
+                sheet_id=source["sheet_id"],
+                physical_row=source["physical_row"],
+                column_name="、".join(ordered_columns),
+                row_key_before=source["row_key"],
+                row_key_after=new_key,
+                before_values=None if redact_audit_values else current_values,
+                after_values=None if redact_audit_values else after,
+                sync_status="pending",
+            )
+            revision = await enqueue_local_changes(
+                conn,
+                source=source,
+                changes=normalized_changes,
+                user=user,
+                audit_id=audit_id,
+            )
+            sync_payload = await source_sync_payload(cur, source_id)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    await record_admin_audit(
+        user,
+        "online.writeback.queue",
+        target_type="online_source_row",
+        target_name=f"{parser_type}:{source_id}",
+        detail={"source_id": source_id, "columns": ordered_columns},
+        **request_audit_fields(request),
+    )
+    if is_actual_online_work(ordered_columns):
+        await record_work_activity(
+            user,
+            ONLINE_TASK_UPDATE,
+            event_key=f"writeback:{audit_id}",
+        )
+    launch_local_change_processing(source_id)
+    warnings = []
+    if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
+        inspector_context,
+        parser.community_value(after),
+        after.get("核查人"),
+    ):
+        warnings.append("核查人与当前社区不一致")
+    return {
+        "message": "已保存到滨湖平台，正在后台同步腾讯表格",
+        "values": after,
+        "row_key": new_key,
+        "revision": revision,
+        "pending_sync": bool(sync_payload["state"]),
+        "sync_state": sync_payload["state"],
         "warnings": warnings,
         "inspector_mismatch": bool(warnings),
     }

@@ -949,7 +949,9 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                       {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
                       {task.photo_fetched && <Tag color="green">已调照片</Tag>}
                       {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
-                      {task.pending_sync && <Tag color="blue">待同步</Tag>}
+                      {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
+                      {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
+                      {task.sync_state === 'pending' && <Tag color="blue">待同步</Tag>}
                       {task.watch_marks?.map(mark => (
                         <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
                       ))}

@@ -561,6 +561,36 @@ test('任务详情桌面端使用更紧凑的最大宽度', () => {
   assert.match(styleSource, /\.mobile-task-detail-page\s*\{[\s\S]*max-width: 1240px/)
 })
 
+test('流口任务本地保存后显示异步同步状态并支持逐字段冲突处理', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /task\.sync_state === 'conflict'[\s\S]*同步冲突/)
+  assert.match(tableSource, /task\.sync_state === 'retry'[\s\S]*同步重试/)
+  assert.match(detailSource, /平台与腾讯表格修改了同一字段/)
+  assert.match(detailSource, />采用平台值</)
+  assert.match(detailSource, />采用腾讯值</)
+  assert.match(detailSource, /item\.error_code === 'source_missing'/)
+  assert.match(clientSource, /resolveMobileTaskSyncConflict/)
+  assert.match(clientSource, /resolve-sync-conflict/)
+  assert.doesNotMatch(detailSource, /已保存，滨湖平台数据已同步并写回腾讯表格/)
+  assert.doesNotMatch(tableSource, /已自动保存并写回腾讯表格/)
+})
+
 test('模型三备注会进入手机任务编辑字段', () => {
   const detail = {
     workflow: {
@@ -662,7 +692,7 @@ test('全民防预演只从任务详情按内部来源定位发起且没有提�
   assert.match(detailSource, /data\.qmf_preview\.enabled/)
   assert.match(detailSource, /expected_revision: selectedSource\.revision/)
   assert.match(detailSource, /qmfPreviewRequestActive\.current/)
-  assert.match(detailSource, /disabled=\{!data\.qmf_preview\.enabled \|\| dirty \|\| qmfPreviewLoading\}/)
+  assert.match(detailSource, /disabled=\{!data\.qmf_preview\.enabled \|\| !selectedSource\?\.source_available \|\| dirty \|\| qmfPreviewLoading\}/)
   assert.match(detailSource, /仅供人工核对，不会执行登记或反馈/)
   assert.match(detailSource, /qmfPreviewResult\.photo\.data_base64/)
   assert.match(detailSource, /后续登记步骤/)

@@ -30,8 +30,14 @@ from services.online_edit_permissions import (
 )
 from services.online_source import (
     cleanup_expired_writeback_audit,
+    match_source_cache_rows,
     rebuild_projection,
     source_row_hash,
+)
+from services.online_local_writeback import (
+    local_sync_state,
+    overlay_local_values,
+    split_remote_changes,
 )
 from services.parsers import get_parser
 from services.permissions import (
@@ -111,8 +117,10 @@ class ProjectionCursor:
     async def execute(self, sql, params=None):
         del params
         compact = " ".join(sql.split())
-        if compact.startswith("SELECT row_key, values_json"):
+        if compact.startswith("SELECT id, row_key, values_json"):
             self.mode = "sources"
+        elif compact.startswith("SELECT source_id, field_name, local_value"):
+            self.mode = "local_changes"
         elif compact.startswith("SELECT row_key_before"):
             self.mode = "pending"
         else:
@@ -120,7 +128,10 @@ class ProjectionCursor:
 
     async def fetchall(self):
         if self.mode == "sources":
-            return list(self.source_rows)
+            return [
+                (index, row_key, values_json)
+                for index, (row_key, values_json) in enumerate(self.source_rows, 1)
+            ]
         if self.mode == "pending":
             return list(self.pending_rows)
         return []
@@ -211,6 +222,75 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
+    def test_cache_refresh_tracks_a_business_row_when_its_physical_row_moves(self):
+        existing = [
+            {"id": 7, "sheet_id": "sheet", "physical_row": 10,
+             "row_key": "person-a", "has_local_changes": True},
+            {"id": 8, "sheet_id": "sheet", "physical_row": 11,
+             "row_key": "person-b", "has_local_changes": False},
+        ]
+        incoming = [
+            {"sheet_id": "sheet", "physical_row": 11, "row_key": "person-a"},
+            {"sheet_id": "sheet", "physical_row": 12, "row_key": "person-b"},
+        ]
+
+        matched, inserted, removed = match_source_cache_rows(existing, incoming)
+
+        self.assertEqual(
+            [(old["id"], new["physical_row"]) for old, new in matched],
+            [(7, 11), (8, 12)],
+        )
+        self.assertEqual(inserted, [])
+        self.assertEqual(removed, [])
+
+    def test_pending_row_is_not_reused_for_an_unrelated_tencent_row(self):
+        existing = [{
+            "id": 7, "sheet_id": "sheet", "physical_row": 10,
+            "row_key": "person-a", "has_local_changes": True,
+        }]
+        incoming = [{
+            "sheet_id": "sheet", "physical_row": 10, "row_key": "person-b",
+        }]
+
+        matched, inserted, removed = match_source_cache_rows(existing, incoming)
+
+        self.assertEqual(matched, [])
+        self.assertEqual(inserted, incoming)
+        self.assertEqual(removed, existing)
+
+    def test_remote_same_field_change_conflicts_but_other_fields_can_merge(self):
+        changes = [{
+            "field_name": "核查结果",
+            "base_value": "无法核实",
+            "local_value": "已登记",
+        }]
+
+        safe, conflicts = split_remote_changes(
+            {"核查结果": "无法核实", "现住址": "腾讯新地址"}, changes
+        )
+        self.assertEqual(len(safe), 1)
+        self.assertEqual(conflicts, [])
+
+        safe, conflicts = split_remote_changes(
+            {"核查结果": "已注销", "现住址": "腾讯新地址"}, changes
+        )
+        self.assertEqual(safe, [])
+        self.assertEqual(conflicts[0]["remote_value"], "已注销")
+
+    def test_conflict_keeps_platform_value_visible_and_has_highest_sync_priority(self):
+        changes = [
+            {"field_name": "现住址", "local_value": "平台地址", "status": "retry"},
+            {"field_name": "核查结果", "local_value": "已登记", "status": "conflict"},
+        ]
+
+        effective = overlay_local_values(
+            {"现住址": "腾讯地址", "核查结果": "无法核实"}, changes
+        )
+
+        self.assertEqual(effective["现住址"], "平台地址")
+        self.assertEqual(effective["核查结果"], "已登记")
+        self.assertEqual(local_sync_state(changes), "conflict")
+
     async def test_source_data_version_contains_no_business_content(self):
         cursor = AsyncMock()
         cursor.fetchone.return_value = (12, 19, None)
