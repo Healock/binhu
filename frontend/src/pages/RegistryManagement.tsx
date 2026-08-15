@@ -190,7 +190,7 @@ export default function RegistryManagement() {
     setImporting(true)
     try {
       const result = await registryApi.previewHouseholdImport(importFile)
-      setImportPreview(result)
+      setImportPreview({ ...result, source_type: 'household' })
       message.success(`已完成预览：${result.normal_count} 条可导入，${result.issue_count} 条需核查`)
       if (tab !== 'issues') setTab('issues')
     } catch (reason: any) {
@@ -200,12 +200,31 @@ export default function RegistryManagement() {
     }
   }
 
+  const previewCertificateSource = async () => {
+    setImporting(true)
+    try {
+      const result = await registryApi.previewCertificateSource()
+      setImportPreview({ ...result, source_type: 'certificate' })
+      message.success(`告知书只读预览完成：${result.normal_count} 条可挂载，${result.problem_row_count} 条需核查`)
+      if (tab !== 'issues') setTab('issues')
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '告知书来源读取失败')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const confirmImport = async () => {
     if (!importPreview?.batch_id) return
     setImporting(true)
     try {
-      const result = await registryApi.confirmHouseholdImport(importPreview.batch_id)
-      message.success(`已导入 ${result.imported_count} 条房屋档案；问题数据仍保留在核查清单`)
+      const certificate = importPreview.source_type === 'certificate'
+      const result = certificate
+        ? await registryApi.confirmCertificateImport(importPreview.batch_id)
+        : await registryApi.confirmHouseholdImport(importPreview.batch_id)
+      message.success(certificate
+        ? `已挂载 ${result.imported_count} 条告知书；未匹配出租房的记录已进入核查清单`
+        : `已导入 ${result.imported_count} 条房屋档案；问题数据仍保留在核查清单`)
       setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count })
       await load()
     } catch (reason: any) {
@@ -311,12 +330,17 @@ export default function RegistryManagement() {
                 <Button icon={<UploadOutlined />}>选择户号表</Button>
               </Upload>
               <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览导入</Button>
-              {importPreview?.status === 'preview' && <Button onClick={() => void confirmImport()} loading={importing}>确认导入可导入数据</Button>}
+              <Button onClick={() => void previewCertificateSource()} loading={importing}>读取告知书</Button>
+              {importPreview?.status === 'preview' && <Button onClick={() => void confirmImport()} loading={importing}>
+                {importPreview.source_type === 'certificate' ? '确认挂载告知书' : '确认导入可导入数据'}
+              </Button>}
             </>}
           </>}
         />
         {tab === 'issues' && <>
-          {importPreview && <Alert className="mb-3" type="info" showIcon message={`本批次共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条问题数据；其中“借住/其他/其它”等非空住房类型已按正常类型保留。`} />}
+          {importPreview && <Alert className="mb-3" type="info" showIcon message={importPreview.source_type === 'certificate'
+            ? `告知书共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可尝试挂载；${importPreview.problem_row_count} 条重复记录先进入问题核查，其中内容不一致会同时标记冲突。确认时，未匹配出租房的记录也会转入核查。`
+            : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条问题数据；其中“借住/其他/其它”等非空住房类型已按正常类型保留。`} />}
           <Space wrap className="mb-3">
           <Select value={issueStatus} onChange={value => setIssueStatus(value)} className="w-full md:w-40" options={[{ value: 'pending', label: '待核查' }, { value: 'resolved', label: '已核查' }, { value: 'dismissed', label: '已忽略' }]} />
           <Select allowClear placeholder="按问题类型筛选" value={issueType || undefined} onChange={value => setIssueType(value || '')} className="w-full md:w-72" options={[
@@ -337,7 +361,9 @@ export default function RegistryManagement() {
             { title: '地址/对象', render: (_: unknown, row: any) => row.payload?.address || row.payload?.normalized_address || row.entity_key, ellipsis: true },
             { title: '住房类型', render: (_: unknown, row: any) => row.payload?.housing_type || '-' },
             { title: '说明', dataIndex: 'reason', ellipsis: true, width: 260 },
-            { title: '操作', width: 180, render: (_: unknown, row: any) => <Space><Button size="small" type="primary" onClick={() => void reviewImportIssue(row.id, 'accept')}>标记已核查</Button><Button size="small" onClick={() => void reviewImportIssue(row.id, 'reject')}>忽略</Button></Space> },
+            { title: '操作', width: 180, render: (_: unknown, row: any) => canReview
+              ? <Space><Button size="small" type="primary" onClick={() => void reviewImportIssue(row.id, 'accept')}>标记已核查</Button><Button size="small" onClick={() => void reviewImportIssue(row.id, 'reject')}>忽略</Button></Space>
+              : <Tag>仅查看</Tag> },
           ]} />
         </>}
         {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={false} scroll={{ x: 950 }} />}
@@ -432,6 +458,15 @@ export default function RegistryManagement() {
           {detail.organizations && <Panel title="房屋机构关系"><AppTable rowKey="relation_id" pagination={false} dataSource={detail.organizations} columns={[{ title: '机构', dataIndex: 'organization_name' }, { title: '角色', dataIndex: 'role_name' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }, { title: '操作', render: (_: unknown, row: any) => canManage && !row.valid_to && <Popconfirm title="结束该关系？" onConfirm={() => void endRelation('organization', row)}><Button type="link" size="small">结束</Button></Popconfirm> }]} /></Panel>}
           {detail.members && <Panel title="机构经办人"><AppTable rowKey="membership_id" pagination={false} dataSource={detail.members} columns={[{ title: '姓名', dataIndex: 'person_name' }, { title: '职位', dataIndex: 'title' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }, { title: '操作', render: (_: unknown, row: any) => canManage && !row.valid_to && <Popconfirm title="结束该任职关系？" onConfirm={() => void endRelation('membership', row)}><Button type="link" size="small">结束</Button></Popconfirm> }]} /></Panel>}
           {detail.properties && <Panel title="机构关联房屋"><AppTable rowKey="relation_id" pagination={false} dataSource={detail.properties} columns={[{ title: '地址', dataIndex: 'normalized_address' }, { title: '角色', dataIndex: 'role_name' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }]} /></Panel>}
+          {detail.certificates && <Panel title="房东责任告知书"><AppTable rowKey="id" pagination={false} dataSource={detail.certificates} columns={[
+            { title: '来源行', dataIndex: 'source_row', width: 90 },
+            { title: '房东', dataIndex: 'landlord_name', width: 130 },
+            { title: '实际出租人', dataIndex: 'actual_renter_name', width: 130 },
+            { title: '签署状态', dataIndex: 'signed_status', width: 110 },
+            { title: '签署类型', dataIndex: 'sign_type', width: 130 },
+            { title: '签署时间', dataIndex: 'sign_time', width: 180, render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
+            { title: '文件', dataIndex: 'document_ref', ellipsis: true },
+          ]} /></Panel>}
           {detail.versions && <Panel title="地址版本历史"><AppTable rowKey="version" pagination={false} dataSource={detail.versions} columns={[{ title: '版本', dataIndex: 'version', width: 80 }, { title: '标准化地址', dataIndex: 'normalized_address' }, { title: '变更原因', dataIndex: 'reason' }, { title: '时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) }]} /></Panel>}
         </div>}
       </Drawer>

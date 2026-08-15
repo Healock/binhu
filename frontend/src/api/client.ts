@@ -2528,6 +2528,25 @@ export const registryApi = {
       batch_id: number; status: string; imported_count: number; idempotent: boolean
     }
   },
+  async previewCertificateSource() {
+    return (await api.post('/registry/imports/certificates/source-preview', {}, {
+      ...activeRequest,
+      timeout: 180_000,
+    })).data as {
+      batch_id: number; status: string; idempotent: boolean; total_count: number; normal_count: number
+      issue_count: number; problem_row_count: number; duplicate_groups: number; conflict_groups: number
+      source_record_count: number; source_rejected_count: number
+    }
+  },
+  async confirmCertificateImport(batchId: number) {
+    return (await api.post(`/registry/imports/certificates/${batchId}/confirm`, {}, {
+      ...activeRequest,
+      timeout: 180_000,
+    })).data as {
+      batch_id: number; status: string; imported_count: number; skipped_count: number
+      pending_issue_count: number; idempotent: boolean
+    }
+  },
   async importIssues(status = 'pending', issueType?: string) {
     return (await api.get('/registry/import/issues', {
       ...activeRequest,

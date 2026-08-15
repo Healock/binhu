@@ -19,6 +19,8 @@ from services.registry_import import (
     ISSUE_HOUSEHOLD_DUPLICATE,
     ISSUE_HOUSEHOLD_MISSING_TYPE,
     classify_household_rows,
+    classify_certificate_rows,
+    normalize_address,
     normalize_community,
 )
 
@@ -60,6 +62,39 @@ def test_household_import_separates_duplicate_and_missing_type_issues():
     assert issue_types.count(ISSUE_HOUSEHOLD_DUPLICATE) == 2
     assert issue_types.count(ISSUE_HOUSEHOLD_MISSING_TYPE) == 1
     assert result["normal_count"] == 0
+
+
+def test_household_import_normalizes_full_width_and_cosmetic_address_separators():
+    assert normalize_address("松陵镇南厍村22号") == normalize_address(" 松陵镇南厍村２－２号 ")
+    assert normalize_address("长板社区（东区）1—2号") == normalize_address("长板社区东区12号")
+    result = classify_household_rows([
+        {"source_row": 20, "community": "长板社区", "address": "松陵镇南厍村22号", "housing_type": "个人出租"},
+        {"source_row": 21, "community": "长板社区", "address": "松陵镇南厍村2-2号", "housing_type": "个人出租"},
+    ])
+    assert result["duplicate_groups"] == 1
+    assert result["issue_count"] == 2
+
+
+def test_household_import_does_not_merge_distinct_address_digits():
+    result = classify_household_rows([
+        {"source_row": 30, "community": "长板社区", "address": "松陵镇南厍村22号", "housing_type": "个人出租"},
+        {"source_row": 31, "community": "长板社区", "address": "松陵镇南厍村23号", "housing_type": "个人出租"},
+    ])
+    assert result["duplicate_groups"] == 0
+    assert result["normal_count"] == 2
+
+
+def test_certificate_import_keeps_physical_rows_and_flags_content_conflicts():
+    result = classify_certificate_rows([
+        {"source_row": 1, "dz": "长板社区1号", "sssq": "长板社区", "czrxm": "甲"},
+        {"source_row": 2, "dz": "长板社区1-号", "sssq": "长板社区", "czrxm": "乙"},
+        {"source_row": 3, "dz": "长板社区2号", "sssq": "长板社区", "czrxm": "丙"},
+    ])
+    assert result["duplicate_groups"] == 1
+    assert result["conflict_groups"] == 1
+    assert result["issue_count"] == 4
+    assert result["problem_row_count"] == 2
+    assert result["normal_count"] == 1
 
 
 def test_new_permissions_are_catalogued_and_defaulted():

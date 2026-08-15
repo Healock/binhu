@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import defaultdict
 from typing import Any, Iterable
 
@@ -37,11 +38,90 @@ def normalize_community(value: Any) -> str:
 
 
 def normalize_address(value: Any) -> str:
-    return re.sub(r"[\s,，。；;]+", "", normalize_text(value)).lower()
+    """Return the stable key used by both import preview and source matching.
+
+    Source workbooks contain a mix of full-width punctuation and cosmetic
+    separators (for example ``2-2号`` versus ``22号``).  The original analysis
+    treated those as the same address, so the production importer must use the
+    identical rule or it will silently miss duplicate source rows.
+    """
+    text = unicodedata.normalize("NFKC", str(value or "")).lower()
+    return re.sub(r"[\s\u3000,，。．.、;；:：()（）\[\]【】\-—_]+", "", text)
 
 
 def normalize_housing_type(value: Any) -> str:
     return normalize_text(value)
+
+
+def _certificate_signature(row: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (key, normalize_text(value))
+        for key, value in sorted(row.items())
+        if key not in {"source_row", "_source_row"}
+    )
+
+
+def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Classify source responsibility-notice rows before touching house records.
+
+    A physical source row is retained as an independent record.  Rows sharing
+    the same normalized address are held for review, and content differences
+    are additionally reported as conflicts; no de-duplication is performed.
+    """
+    materialized: list[dict[str, Any]] = []
+    groups: dict[str, list[int]] = defaultdict(list)
+    for index, raw in enumerate(rows, start=1):
+        row = {str(key): value for key, value in raw.items()}
+        address = normalize_text(row.get("address") or row.get("dz") or row.get("详细地址"))
+        row["address"] = address
+        row["community"] = normalize_community(row.get("community") or row.get("sssq") or row.get("社区名称"))
+        row["source_row"] = row.get("source_row") or row.get("_source_row") or index
+        row["source_key"] = normalize_address(address)
+        materialized.append(row)
+        if row["source_key"]:
+            groups[row["source_key"]].append(len(materialized) - 1)
+
+    issues: list[dict[str, Any]] = []
+    blocked: set[int] = set()
+    duplicate_groups = 0
+    conflict_groups = 0
+    for key, indexes in groups.items():
+        if len(indexes) < 2:
+            continue
+        duplicate_groups += 1
+        signatures = {_certificate_signature(materialized[index]) for index in indexes}
+        has_conflict = len(signatures) > 1
+        if has_conflict:
+            conflict_groups += 1
+        for index in indexes:
+            blocked.add(index)
+            issues.append({
+                "issue_type": ISSUE_CERTIFICATE_DUPLICATE,
+                "entity_key": key,
+                "source_ref": str(materialized[index].get("source_row") or ""),
+                "payload": materialized[index],
+                "reason": "同一标准化地址存在多条告知书记录，需人工确认",
+            })
+            if has_conflict:
+                issues.append({
+                    "issue_type": ISSUE_CERTIFICATE_CONTENT_CONFLICT,
+                    "entity_key": key,
+                    "source_ref": str(materialized[index].get("source_row") or ""),
+                    "payload": materialized[index],
+                    "reason": "同一标准化地址的告知书内容不一致，需人工判断",
+                })
+
+    normal_rows = [row for index, row in enumerate(materialized) if index not in blocked]
+    return {
+        "rows": materialized,
+        "normal_rows": normal_rows,
+        "issues": issues,
+        "duplicate_groups": duplicate_groups,
+        "conflict_groups": conflict_groups,
+        "problem_row_count": len(blocked),
+        "normal_count": len(normal_rows),
+        "issue_count": len(issues),
+    }
 
 
 def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:

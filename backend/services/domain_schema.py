@@ -334,6 +334,32 @@ async def ensure_registry_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_certificates (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            property_id BIGINT NOT NULL,
+            source_type VARCHAR(30) NOT NULL DEFAULT 'certificate',
+            source_ref VARCHAR(190) NOT NULL DEFAULT '',
+            source_row VARCHAR(100) NOT NULL DEFAULT '',
+            community_snapshot VARCHAR(200) NOT NULL DEFAULT '',
+            address_snapshot VARCHAR(500) NOT NULL DEFAULT '',
+            landlord_name VARCHAR(100) NOT NULL DEFAULT '',
+            landlord_identity_number VARCHAR(50) NOT NULL DEFAULT '',
+            actual_renter_name VARCHAR(100) NOT NULL DEFAULT '',
+            actual_renter_identity_number VARCHAR(50) NOT NULL DEFAULT '',
+            signed_status VARCHAR(50) NOT NULL DEFAULT '',
+            sign_type VARCHAR(100) NOT NULL DEFAULT '',
+            sign_time DATETIME DEFAULT NULL,
+            document_ref VARCHAR(500) NOT NULL DEFAULT '',
+            payload_json JSON NOT NULL,
+            created_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_registry_property_certificate_source (source_type, source_ref),
+            INDEX idx_registry_property_certificate_property (property_id, created_at),
+            INDEX idx_registry_property_certificate_address (address_snapshot(190))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_merge_history (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             source_person_id BIGINT NOT NULL,
