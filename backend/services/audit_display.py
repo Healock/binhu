@@ -76,6 +76,7 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.feedback.export": "导出下发反馈表",
     "mobile_tasks.bulk_assign": "批量分配核查人",
     "qmf_registration.preview": "全民防模型三只读预演",
+    "qmf_registration.config.update": "修改全民防只读预演配置",
     "registry.household_import.preview": "预览户号表导入",
     "registry.household_import.confirm": "确认户号表导入",
     "registry.certificate_import.preview": "预览房东责任告知书导入",

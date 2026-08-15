@@ -23,7 +23,10 @@ router = APIRouter(
 async def get_config(conn=Depends(get_db)):
     """获取系统配置"""
     async with conn.cursor() as cur:
-        await cur.execute("SELECT config_key, config_value FROM _system_config")
+        await cur.execute(
+            "SELECT config_key, config_value FROM _system_config "
+            "WHERE config_key NOT LIKE 'qmf_%'"
+        )
         rows = await cur.fetchall()
     return {"data": {r[0]: r[1] for r in rows}}
 
@@ -36,6 +39,8 @@ async def update_config(
     conn=Depends(get_db),
 ):
     """更新系统配置"""
+    if any(str(key).startswith("qmf_") for key in config):
+        raise HTTPException(400, "全民防配置请在专用设置页面修改")
     async with conn.cursor() as cur:
         maintenance_updates: dict[str, str] = {}
         maintenance_keys = {

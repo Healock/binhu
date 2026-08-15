@@ -11,12 +11,14 @@ import {
 } from 'antd'
 import {
   formatUTCTime,
+  getQmfConfig,
   getSyncSchedule,
   getSystemConfig,
+  updateQmfConfig,
   updateSyncSchedule,
   updateSystemConfig,
 } from '../api/client'
-import type { SyncSchedule } from '../types'
+import type { QmfConfig, SyncSchedule } from '../api/client'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -140,10 +142,14 @@ export default function SystemSettings() {
   const [maintenanceMessage, setMaintenanceMessage] = useState('平台正在维护中，请稍后再试')
   const [savingMaintenance, setSavingMaintenance] = useState(false)
   const [maintenanceMsg, setMaintenanceMsg] = useState('')
+  const [qmfConfig, setQmfConfig] = useState<QmfConfig | null>(null)
+  const [qmfPassword, setQmfPassword] = useState('')
+  const [savingQmf, setSavingQmf] = useState(false)
+  const [qmfMsg, setQmfMsg] = useState('')
 
   useEffect(() => {
-    Promise.all([getSystemConfig(), getSyncSchedule()])
-      .then(([config, currentSchedule]) => {
+    Promise.all([getSystemConfig(), getSyncSchedule(), getQmfConfig()])
+      .then(([config, currentSchedule, currentQmf]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
         const configuredTimezone = config.timezone || 'Asia/Shanghai'
         const configuredStartAt = formatDateTimeInput(config.maintenance_start_at, configuredTimezone)
@@ -181,6 +187,7 @@ export default function SystemSettings() {
             ? currentSchedule.interval_minutes
             : 'custom',
         )
+        setQmfConfig(currentQmf)
       })
       .catch(() => setScheduleMsg('系统设置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
@@ -333,6 +340,37 @@ export default function SystemSettings() {
     }
   }
 
+  const handleSaveQmf = async () => {
+    if (!qmfConfig) return
+    setSavingQmf(true)
+    setQmfMsg('')
+    try {
+      const result = await updateQmfConfig({
+        preview_enabled: qmfConfig.preview_enabled,
+        login_protocol_verified: qmfConfig.login_protocol_verified,
+        api_base_url: qmfConfig.api_base_url,
+        login_host: qmfConfig.login_host,
+        login_port: qmfConfig.login_port,
+        source_username: qmfConfig.source_username,
+        ...(qmfPassword ? { source_password: qmfPassword } : {}),
+        source_imei: qmfConfig.source_imei,
+        source_machine_uid: qmfConfig.source_machine_uid,
+        expected_station_code: qmfConfig.expected_station_code,
+        expected_station_name: qmfConfig.expected_station_name,
+        timeout_seconds: qmfConfig.timeout_seconds,
+        session_max_seconds: qmfConfig.session_max_seconds,
+        preview_cooldown_seconds: qmfConfig.preview_cooldown_seconds,
+      })
+      setQmfConfig(result)
+      setQmfPassword('')
+      setQmfMsg('全民防只读预演配置已保存')
+    } catch (error: any) {
+      setQmfMsg(error?.response?.data?.detail || '全民防配置保存失败')
+    } finally {
+      setSavingQmf(false)
+    }
+  }
+
   return (
     <div className="system-settings-page settings-stack">
       <Panel
@@ -433,6 +471,168 @@ export default function SystemSettings() {
             />
           )}
         </div>
+      </Panel>
+
+      <Panel
+        title="全民防模型三只读预演"
+        description="仅用于单条只读核对；不会登记、反馈、上传照片或执行批量操作。"
+      >
+        {!qmfConfig ? (
+          <Alert type="info" showIcon message="全民防配置加载中" />
+        ) : (
+          <div className="flex flex-col gap-5">
+            <Alert
+              type={qmfConfig.configured ? 'success' : 'warning'}
+              showIcon
+              message={qmfConfig.configured ? '配置完整，可执行只读预演' : '配置尚未完整'}
+              description="账号密码、设备身份和接口地址只用于当前只读链路。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
+            />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="settings-field">
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">预演开关</span>
+                <div className="flex min-h-9 items-center gap-3">
+                  <Switch
+                    checked={qmfConfig.preview_enabled}
+                    onChange={value => setQmfConfig(current => current ? { ...current, preview_enabled: value } : current)}
+                    disabled={savingQmf}
+                  />
+                  <span className="text-sm text-[var(--app-text-secondary)]">
+                    {qmfConfig.preview_enabled ? '已开启' : '已关闭'}
+                  </span>
+                </div>
+              </div>
+              <div className="settings-field">
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">登录协议已实测</span>
+                <div className="flex min-h-9 items-center gap-3">
+                  <Switch
+                    checked={qmfConfig.login_protocol_verified}
+                    onChange={value => setQmfConfig(current => current ? { ...current, login_protocol_verified: value } : current)}
+                    disabled={savingQmf}
+                  />
+                  <span className="text-sm text-[var(--app-text-secondary)]">
+                    {qmfConfig.login_protocol_verified ? '已确认' : '未确认'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">HTTP 接口地址</span>
+                <Input
+                  value={qmfConfig.api_base_url}
+                  onChange={event => setQmfConfig(current => current ? { ...current, api_base_url: event.target.value } : current)}
+                  placeholder="填写报告确认的全民防 HTTP 接口地址"
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">TCP 登录主机</span>
+                <Input
+                  value={qmfConfig.login_host}
+                  onChange={event => setQmfConfig(current => current ? { ...current, login_host: event.target.value } : current)}
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">TCP 登录端口</span>
+                <InputNumber
+                  min={0}
+                  max={65535}
+                  value={qmfConfig.login_port}
+                  onChange={value => setQmfConfig(current => current ? { ...current, login_port: Number(value || 0) } : current)}
+                  className="w-full"
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">旧平台账号</span>
+                <Input
+                  value={qmfConfig.source_username}
+                  onChange={event => setQmfConfig(current => current ? { ...current, source_username: event.target.value } : current)}
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">旧平台密码</span>
+                <Input.Password
+                  value={qmfPassword}
+                  onChange={event => setQmfPassword(event.target.value)}
+                  placeholder={qmfConfig.source_password_configured ? '已配置；留空保持不变' : '请输入密码'}
+                  autoComplete="new-password"
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">目标派出所</span>
+                <Input
+                  value={qmfConfig.expected_station_name}
+                  readOnly
+                  disabled={savingQmf}
+                />
+              </label>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">IMEI（完整显示）</span>
+                <Input
+                  value={qmfConfig.source_imei}
+                  onChange={event => setQmfConfig(current => current ? { ...current, source_imei: event.target.value } : current)}
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">MACHINEUID（完整显示）</span>
+                <Input
+                  value={qmfConfig.source_machine_uid}
+                  onChange={event => setQmfConfig(current => current ? { ...current, source_machine_uid: event.target.value } : current)}
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">派出所机构代码</span>
+                <Input
+                  value={qmfConfig.expected_station_code}
+                  readOnly
+                  disabled={savingQmf}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">请求超时（秒）</span>
+                <InputNumber
+                  min={1}
+                  max={120}
+                  value={qmfConfig.timeout_seconds}
+                  onChange={value => setQmfConfig(current => current ? { ...current, timeout_seconds: Number(value || 15) } : current)}
+                  className="w-full"
+                  disabled={savingQmf}
+                />
+              </label>
+            </div>
+            <Descriptions
+              size="small"
+              colon={false}
+              column={{ xs: 1, sm: 2 }}
+              items={[
+                { key: 'allowed', label: '平台允许账号', children: qmfConfig.preview_allowed_username },
+                { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
+                { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
+                { key: 'cooldown', label: '预演冷却时间', children: `${qmfConfig.preview_cooldown_seconds} 秒` },
+              ]}
+            />
+            <div className="settings-actions">
+              <Button type="primary" loading={savingQmf} onClick={handleSaveQmf}>
+                保存全民防配置
+              </Button>
+            </div>
+            {qmfMsg && (
+              <Alert
+                type={qmfMsg.includes('失败') || qmfMsg.includes('请先') || qmfMsg.includes('必须') ? 'error' : 'success'}
+                showIcon
+                message={qmfMsg}
+              />
+            )}
+          </div>
+        )}
       </Panel>
 
       <Panel

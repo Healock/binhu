@@ -10,11 +10,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from database import get_db
-from deps import require_permission
+from deps import require_permission, require_super_admin
 from routers.mobile_tasks import _mobile_task_detail_data
 from services.audit import record_admin_audit, request_audit_fields
 from services.online_source import source_row_hash
 from services.permissions import ONLINE_RAW_VIEW
+from services.qmf_config import (
+    QMF_CONFIG_KEYS,
+    load_qmf_config,
+    public_config,
+    serialize_value,
+    settings_config,
+)
 from services.qmf_registration import (
     ALLOWED_PLATFORM_USERNAME,
     MODEL_THREE_PARSER,
@@ -39,8 +46,121 @@ class QmfPreviewRequest(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class QmfConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_enabled: bool = False
+    login_protocol_verified: bool = False
+    api_base_url: str = Field(default="", max_length=500)
+    login_host: str = Field(default="", max_length=255)
+    login_port: int = Field(default=0, ge=0, le=65535)
+    source_username: str = Field(default="", max_length=200)
+    source_password: str | None = Field(default=None, max_length=500)
+    source_imei: str = Field(default="", max_length=200)
+    source_machine_uid: str = Field(default="", max_length=200)
+    expected_station_code: str = Field(default="320584710000", max_length=100)
+    expected_station_name: str = Field(default="滨湖新城派出所", max_length=200)
+    timeout_seconds: int = Field(default=15, ge=1, le=120)
+    session_max_seconds: int = Field(default=45, ge=1, le=120)
+    preview_cooldown_seconds: int = Field(default=45, ge=1, le=3600)
+
+
 def _safe_error_detail(code: str, message: str) -> dict[str, str]:
     return {"code": code, "message": message}
+
+
+async def _stored_qmf_keys(conn) -> set[str]:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT config_key FROM _system_config WHERE config_key LIKE 'qmf_%'"
+        )
+        return {str(row[0]) for row in await cur.fetchall()}
+
+
+@router.get("/config")
+async def get_qmf_config(
+    _user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    config = await load_qmf_config(conn)
+    return public_config(config, await _stored_qmf_keys(conn))
+
+
+@router.put("/config")
+async def update_qmf_config(
+    data: QmfConfigUpdate,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    current = await load_qmf_config(conn)
+    if (
+        data.expected_station_code.strip() != "320584710000"
+        or data.expected_station_name.strip() != "滨湖新城派出所"
+    ):
+        raise HTTPException(400, "全民防只读预演目标固定为滨湖新城派出所")
+    if data.preview_enabled and not data.login_protocol_verified:
+        raise HTTPException(400, "开启全民防预演前必须确认登录协议已完成实测")
+
+    values: dict[str, Any] = {
+        "qmf_preview_enabled": "1" if data.preview_enabled else "0",
+        "qmf_login_protocol_verified": "1" if data.login_protocol_verified else "0",
+        "qmf_api_base_url": data.api_base_url.strip(),
+        "qmf_login_host": data.login_host.strip(),
+        "qmf_login_port": str(data.login_port),
+        "qmf_source_username": data.source_username.strip(),
+        "qmf_source_imei": data.source_imei.strip(),
+        "qmf_source_machine_uid": data.source_machine_uid.strip(),
+        "qmf_expected_station_code": data.expected_station_code.strip(),
+        "qmf_expected_station_name": data.expected_station_name.strip(),
+        "qmf_timeout_seconds": str(data.timeout_seconds),
+        "qmf_session_max_seconds": str(data.session_max_seconds),
+        "qmf_preview_cooldown_seconds": str(data.preview_cooldown_seconds),
+    }
+    if data.source_password is not None:
+        values["qmf_source_password"] = data.source_password
+
+    if data.preview_enabled:
+        password = (
+            data.source_password
+            if data.source_password is not None
+            else current.source_password
+        )
+        required = (
+            values["qmf_api_base_url"],
+            values["qmf_login_host"],
+            values["qmf_login_port"],
+            values["qmf_source_username"],
+            password,
+            values["qmf_source_imei"],
+            values["qmf_source_machine_uid"],
+            values["qmf_expected_station_code"],
+            values["qmf_expected_station_name"],
+        )
+        if not all(required):
+            raise HTTPException(400, "开启全民防预演前请先完整填写接口、账号和设备信息")
+
+    async with conn.cursor() as cur:
+        for key, value in values.items():
+            if key not in QMF_CONFIG_KEYS:
+                continue
+            stored = serialize_value(key, value)
+            await cur.execute(
+                "INSERT INTO _system_config (config_key, config_value) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE config_value = %s",
+                (key, stored, stored),
+            )
+    changed_keys = sorted(values)
+    await record_admin_audit(
+        user,
+        "qmf_registration.config.update",
+        target_type="system_config",
+        target_name="qmf_readonly_preview",
+        detail={"keys": changed_keys},
+        **request_audit_fields(request),
+    )
+    config = await load_qmf_config(conn)
+    return public_config(config, await _stored_qmf_keys(conn))
 
 
 async def _record_preview_audit(
@@ -118,7 +238,12 @@ async def preview_qmf_registration(
     if user.get("username") != ALLOWED_PLATFORM_USERNAME:
         raise HTTPException(403, "当前账号不能使用全民防只读预演")
     try:
-        if not preview_configured():
+        runtime_config = (
+            await load_qmf_config(conn)
+            if hasattr(conn, "cursor")
+            else settings_config()
+        )
+        if not preview_configured(runtime_config):
             raise QmfPreviewError(
                 "preview_not_configured",
                 "全民防只读预演尚未完成安全配置",
@@ -173,7 +298,10 @@ async def preview_qmf_registration(
             "community": str(values.get("下发社区") or "").strip(),
             "result": SUPPORTED_RESULT,
         }
-        result = await run_guarded_preview(platform_task=platform_task)
+        result = await run_guarded_preview(
+            platform_task=platform_task,
+            config=runtime_config,
+        )
         # 上游读取可能持续数秒；返回敏感资料前再次确认平台来源仍未变化。
         await _assert_source_unchanged(
             conn,
