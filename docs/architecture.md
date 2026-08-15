@@ -1003,6 +1003,8 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 
 `RegistryData` 保存辖区房屋、地址版本、房屋相关人员和机构关系、人员标记及指令任务标记快照；`WorkflowData` 保存流程版本、工单、节点、事件、评论和附件元数据。身份证和手机号按当前策略明文保存并同时保存 HMAC 摘要，HMAC 密钥只存在服务器私密配置中。
 
+户号表与房东责任告知书通过 `registry_source_batches`、`registry_source_records` 先预览后确认。户号表以 Unicode NFKC 和统一标点规则生成地址键，重复来源行及未标注住房类型进入 `registry_import_issues`；“借住/其他/其它”保留为正常住房类型。正式社区归属始终通过 `_communities` 与 `_community_aliases` 解析，因此芦荡等历史名称不在导入代码中硬编码。告知书从只读接口 `/api/address/queryHouseCertificate` 分页获取，只接受配置中的滨湖新城派出所记录；重复、内容冲突及未匹配个人出租/单位出租房屋的数据进入问题核查，正常记录挂载到 `registry_property_certificates` 并在房屋详情展示。
+
 ## v0.17.0 应用级维护模式
 
 维护状态继续保存在 `_system_config`，不新增业务表。公共接口 `GET /api/maintenance/status` 只返回是否维护、开始/结束时间、维护说明、服务器时间和系统时区，不返回账号、任务或数据库信息。
