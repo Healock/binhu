@@ -197,6 +197,34 @@ function OverviewTab({
         </Card>
       </div>
 
+      <Panel
+        title="腾讯同步次数"
+        description={`按${data?.sync_timezone || '系统'}时区统计最近 14 个业务日的同步任务`}
+      >
+        <Table
+          size="small"
+          rowKey="business_date"
+          pagination={false}
+          scroll={{ x: 720 }}
+          locale={{ emptyText: '暂无同步记录' }}
+          dataSource={data?.sync_daily_counts || []}
+          columns={[
+            {
+              title: '业务日期',
+              dataIndex: 'business_date',
+              render: (value: string) => dayjs(value).format('YYYY-MM-DD'),
+            },
+            { title: '总次数', dataIndex: 'total', align: 'right' as const },
+            { title: '成功', dataIndex: 'success', align: 'right' as const },
+            { title: '部分成功', dataIndex: 'partial', align: 'right' as const },
+            { title: '失败', dataIndex: 'failed', align: 'right' as const },
+            { title: '未完成', dataIndex: 'unfinished', align: 'right' as const },
+            { title: '手动', dataIndex: 'manual', align: 'right' as const },
+            { title: '自动', dataIndex: 'scheduled', align: 'right' as const },
+          ]}
+        />
+      </Panel>
+
       <Panel title="容器状态" description="只读显示，不提供重启或命令执行">
         <div className="grid gap-4 lg:grid-cols-2">
           {(data?.containers || []).map((container: OpsContainer) => {

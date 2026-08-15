@@ -30,6 +30,7 @@ from services.audit_display import (
     target_display,
 )
 from services.ops_database import require_database_name
+from services.ops_overview import build_daily_sync_counts
 from services.ops_redaction import redact_text, sanitize_detail, sanitized_json
 
 
@@ -142,6 +143,29 @@ class AdminOperationsSecurityTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     with self.assertRaises(HTTPException):
                         _require_log_source(invalid)
+
+    def test_daily_sync_counts_use_configured_business_timezone(self):
+        rows = [
+            ("success", "scheduled", datetime(2026, 8, 15, 15, 59), None),
+            ("failed", "manual", datetime(2026, 8, 15, 16, 1), None),
+            ("partial", "manual", None, datetime(2026, 8, 15, 16, 4)),
+        ]
+
+        counts = build_daily_sync_counts(
+            rows,
+            now_utc=datetime(2026, 8, 15, 16, 30),
+            timezone_name="Asia/Shanghai",
+            window_days=2,
+        )
+
+        self.assertEqual(counts[0]["business_date"], "2026-08-16")
+        self.assertEqual(counts[0]["total"], 2)
+        self.assertEqual(counts[0]["failed"], 1)
+        self.assertEqual(counts[0]["partial"], 1)
+        self.assertEqual(counts[0]["manual"], 2)
+        self.assertEqual(counts[1]["business_date"], "2026-08-15")
+        self.assertEqual(counts[1]["total"], 1)
+        self.assertEqual(counts[1]["scheduled"], 1)
 
     def test_redaction_removes_common_credentials(self):
         raw = (
