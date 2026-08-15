@@ -13,7 +13,7 @@ import hashlib
 import re
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import urljoin
@@ -21,7 +21,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from config import settings
+from config import settings  # kept as a compatibility patch target for tests
+from services.qmf_config import QmfRuntimeConfig, settings_config
 
 
 MODEL_THREE_PARSER = "疑似未注销模型三"
@@ -73,9 +74,10 @@ class QmfLoginSession:
     writer: asyncio.StreamWriter
     context: QmfLoginContext
     started_at: float
+    config: QmfRuntimeConfig = field(default_factory=settings_config)
 
     def ensure_available(self) -> None:
-        max_seconds = max(1, int(settings.QMF_SESSION_MAX_SECONDS))
+        max_seconds = max(1, int(self.config.session_max_seconds))
         if time.monotonic() - self.started_at >= max_seconds:
             raise QmfPreviewError(
                 "login_session_expired",
@@ -134,24 +136,8 @@ def _station_matches(actual: Any, expected: Any) -> bool:
     return _normalized_name(actual) == _normalized_name(expected)
 
 
-def preview_configured() -> bool:
-    required = (
-        settings.QMF_API_BASE_URL,
-        settings.QMF_LOGIN_HOST,
-        settings.QMF_LOGIN_PORT,
-        settings.QMF_SOURCE_USERNAME,
-        settings.QMF_SOURCE_PASSWORD,
-        settings.QMF_SOURCE_IMEI,
-        settings.QMF_SOURCE_MACHINE_UID,
-        settings.QMF_EXPECTED_STATION_CODE,
-        settings.QMF_EXPECTED_STATION_NAME,
-    )
-    return bool(
-        settings.QMF_PREVIEW_ENABLED
-        and settings.QMF_LOGIN_PROTOCOL_VERIFIED
-        and settings.QMF_PREVIEW_ALLOWED_USERNAME == ALLOWED_PLATFORM_USERNAME
-        and all(required)
-    )
+def preview_configured(config: QmfRuntimeConfig | None = None) -> bool:
+    return (config or settings_config()).configured
 
 
 def preview_capability(
@@ -161,6 +147,7 @@ def preview_capability(
     source_count: int,
     conflict: bool,
     values: dict[str, Any] | None,
+    config: QmfRuntimeConfig | None = None,
 ) -> dict[str, Any]:
     """Return server-computed visibility without exposing configuration values."""
     visible = (
@@ -169,7 +156,7 @@ def preview_capability(
     )
     if not visible:
         return {"visible": False, "enabled": False, "reason": ""}
-    if not preview_configured():
+    if not preview_configured(config):
         return {
             "visible": True,
             "enabled": False,
@@ -344,7 +331,9 @@ def parse_mid_local_response(payload: bytes, *, expected_sequence: str) -> dict[
 
 
 def _login_context(
-    base_parameters: dict[str, str], identity_parameters: dict[str, str]
+    base_parameters: dict[str, str],
+    identity_parameters: dict[str, str],
+    config: QmfRuntimeConfig,
 ) -> QmfLoginContext:
     if base_parameters.get("JGBM") and identity_parameters.get("JGBM"):
         if base_parameters["JGBM"] != identity_parameters["JGBM"]:
@@ -353,7 +342,7 @@ def _login_context(
         if base_parameters["MJXM"] != identity_parameters["MJXM"]:
             raise QmfPreviewError("login_response_invalid", "全民防登录身份字段不一致")
     context = QmfLoginContext(
-        username=settings.QMF_SOURCE_USERNAME,
+        username=config.source_username,
         operator_id=_text(identity_parameters.get("MJJH")),
         operator_name=_text(identity_parameters.get("MJXM")),
         station_code=_text(identity_parameters.get("JGBM")),
@@ -367,22 +356,23 @@ def _login_context(
     )):
         raise QmfPreviewError("login_identity_missing", "全民防登录身份信息不完整")
     if (
-        context.station_code != settings.QMF_EXPECTED_STATION_CODE
+        context.station_code != config.expected_station_code
         or not _station_matches(
-            context.station_name, settings.QMF_EXPECTED_STATION_NAME
+            context.station_name, config.expected_station_name
         )
     ):
         raise QmfPreviewError("login_station_mismatch", "全民防登录机构不符合预演范围", 403)
     return context
 
 
-async def open_login_session() -> QmfLoginSession:
+async def open_login_session(config: QmfRuntimeConfig | None = None) -> QmfLoginSession:
+    config = config or settings_config()
     sequence = _login_sequence()
     request_bytes = build_login_request(
-        username=settings.QMF_SOURCE_USERNAME,
-        password=settings.QMF_SOURCE_PASSWORD,
-        imei=settings.QMF_SOURCE_IMEI,
-        machine_uid=settings.QMF_SOURCE_MACHINE_UID,
+        username=config.source_username,
+        password=config.source_password,
+        imei=config.source_imei,
+        machine_uid=config.source_machine_uid,
         sequence=sequence,
     )
     writer: asyncio.StreamWriter | None = None
@@ -390,17 +380,17 @@ async def open_login_session() -> QmfLoginSession:
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(
-                settings.QMF_LOGIN_HOST,
-                settings.QMF_LOGIN_PORT,
+                config.login_host,
+                config.login_port,
                 limit=MAX_LOGIN_RESPONSE_BYTES,
             ),
-            timeout=settings.QMF_TIMEOUT_SECONDS,
+            timeout=config.timeout_seconds,
         )
         writer.write(request_bytes)
-        await asyncio.wait_for(writer.drain(), timeout=settings.QMF_TIMEOUT_SECONDS)
+        await asyncio.wait_for(writer.drain(), timeout=config.timeout_seconds)
         base_response = await asyncio.wait_for(
             reader.readuntil(b"</message>"),
-            timeout=settings.QMF_TIMEOUT_SECONDS,
+            timeout=config.timeout_seconds,
         )
         base_parameters = parse_login_response(
             base_response, expected_sequence=sequence
@@ -408,10 +398,10 @@ async def open_login_session() -> QmfLoginSession:
 
         timesync_sequence = _next_sequence(sequence)
         writer.write(build_timesync_request(sequence=timesync_sequence))
-        await asyncio.wait_for(writer.drain(), timeout=settings.QMF_TIMEOUT_SECONDS)
+        await asyncio.wait_for(writer.drain(), timeout=config.timeout_seconds)
         timesync_response = await asyncio.wait_for(
             reader.readuntil(b"</message>"),
-            timeout=settings.QMF_TIMEOUT_SECONDS,
+            timeout=config.timeout_seconds,
         )
         parse_timesync_response(
             timesync_response, expected_sequence=timesync_sequence
@@ -419,23 +409,24 @@ async def open_login_session() -> QmfLoginSession:
 
         identity_sequence = _next_sequence(timesync_sequence)
         writer.write(build_mid_local_request(
-            username=settings.QMF_SOURCE_USERNAME,
+            username=config.source_username,
             sequence=identity_sequence,
         ))
-        await asyncio.wait_for(writer.drain(), timeout=settings.QMF_TIMEOUT_SECONDS)
+        await asyncio.wait_for(writer.drain(), timeout=config.timeout_seconds)
         identity_response = await asyncio.wait_for(
             reader.readuntil(b"</message>"),
-            timeout=settings.QMF_TIMEOUT_SECONDS,
+            timeout=config.timeout_seconds,
         )
         identity_parameters = parse_mid_local_response(
             identity_response, expected_sequence=identity_sequence
         )
-        context = _login_context(base_parameters, identity_parameters)
+        context = _login_context(base_parameters, identity_parameters, config)
         session = QmfLoginSession(
             reader=reader,
             writer=writer,
             context=context,
             started_at=time.monotonic(),
+            config=config,
         )
         return session
     except (asyncio.TimeoutError, OSError, asyncio.IncompleteReadError) as exc:
@@ -451,9 +442,9 @@ async def open_login_session() -> QmfLoginSession:
                 pass
 
 
-async def login_readonly() -> QmfLoginContext:
+async def login_readonly(config: QmfRuntimeConfig | None = None) -> QmfLoginContext:
     """Compatibility helper for callers that only need the identity context."""
-    session = await open_login_session()
+    session = await open_login_session(config)
     try:
         return session.context
     finally:
@@ -548,9 +539,11 @@ class QmfReadOnlyClient:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         login_provider: Callable[[], Any] | None = None,
+        config: QmfRuntimeConfig | None = None,
     ):
         self._transport = transport
         self._login_provider = login_provider
+        self._config = config or settings_config()
 
     async def _request(
         self,
@@ -563,7 +556,7 @@ class QmfReadOnlyClient:
         method = READ_ONLY_ENDPOINTS.get(endpoint)
         if not method:
             raise QmfPreviewError("endpoint_not_allowed", "请求不在全民防只读白名单", 500)
-        url = urljoin(settings.QMF_API_BASE_URL.rstrip("/") + "/", endpoint)
+        url = urljoin(self._config.api_base_url.rstrip("/") + "/", endpoint)
         try:
             response = await client.request(method, url, data=data, params=params)
             if not response.is_success:
@@ -585,7 +578,7 @@ class QmfReadOnlyClient:
             raise QmfPreviewError("identity_invalid", "任务身份证号格式无效", 422)
         login_session: QmfLoginSession | None = None
         if self._login_provider is None:
-            login_session = await open_login_session()
+            login_session = await open_login_session(self._config)
             login_context = login_session.context
         else:
             login_context = await self._login_provider()
@@ -612,7 +605,7 @@ class QmfReadOnlyClient:
             "pageNum": "1",
             "source": "android",
         }
-        timeout = httpx.Timeout(settings.QMF_TIMEOUT_SECONDS)
+        timeout = httpx.Timeout(self._config.timeout_seconds)
         try:
             async with httpx.AsyncClient(
                 timeout=timeout,
@@ -653,7 +646,7 @@ class QmfReadOnlyClient:
                 ):
                     raise QmfPreviewError("task_person_mismatch", "全民防任务人员与平台任务不一致", 409)
                 if not _station_matches(
-                    upstream_task["police_station"], settings.QMF_EXPECTED_STATION_NAME
+                    upstream_task["police_station"], self._config.expected_station_name
                 ):
                     raise QmfPreviewError("task_station_mismatch", "全民防任务不属于目标派出所", 403)
 
@@ -742,10 +735,12 @@ async def run_guarded_preview(
     *,
     platform_task: dict[str, Any],
     client: QmfReadOnlyClient | None = None,
+    config: QmfRuntimeConfig | None = None,
 ) -> dict[str, Any]:
     global _preview_active, _last_preview_started
     now = time.monotonic()
-    cooldown = max(1, int(settings.QMF_PREVIEW_COOLDOWN_SECONDS))
+    runtime_config = config or settings_config()
+    cooldown = max(1, int(runtime_config.preview_cooldown_seconds))
     if _preview_active:
         raise QmfPreviewError("preview_busy", "已有一条全民防预演正在执行", 429)
     if _last_preview_started and now - _last_preview_started < cooldown:
@@ -758,7 +753,7 @@ async def run_guarded_preview(
     _preview_active = True
     _last_preview_started = now
     try:
-        return await (client or QmfReadOnlyClient()).preview(
+        return await (client or QmfReadOnlyClient(config=runtime_config)).preview(
             platform_task=platform_task
         )
     finally:

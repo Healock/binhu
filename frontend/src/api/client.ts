@@ -1104,6 +1104,43 @@ export interface QmfPreviewResult {
   warnings: string[]
 }
 
+export interface QmfConfig {
+  preview_enabled: boolean
+  login_protocol_verified: boolean
+  preview_allowed_username: string
+  api_base_url: string
+  login_host: string
+  login_port: number
+  source_username: string
+  source_password_configured: boolean
+  source_imei: string
+  source_machine_uid: string
+  expected_station_code: string
+  expected_station_name: string
+  timeout_seconds: number
+  session_max_seconds: number
+  preview_cooldown_seconds: number
+  configured: boolean
+  database_keys: string[]
+}
+
+export interface QmfConfigUpdate {
+  preview_enabled: boolean
+  login_protocol_verified: boolean
+  api_base_url: string
+  login_host: string
+  login_port: number
+  source_username: string
+  source_password?: string
+  source_imei: string
+  source_machine_uid: string
+  expected_station_code: string
+  expected_station_name: string
+  timeout_seconds: number
+  session_max_seconds: number
+  preview_cooldown_seconds: number
+}
+
 export interface MobileTaskInlineEditorItem {
   available: boolean
   reason?: string
@@ -1261,6 +1298,16 @@ export async function previewQmfRegistration(payload: {
     ...activeRequest,
     timeout: 60000,
   })
+  return data
+}
+
+export async function getQmfConfig(): Promise<QmfConfig> {
+  const { data } = await api.get('/qmf-registration/config', activeRequest)
+  return data
+}
+
+export async function updateQmfConfig(payload: QmfConfigUpdate): Promise<QmfConfig> {
+  const { data } = await api.put('/qmf-registration/config', payload, activeRequest)
   return data
 }
 
