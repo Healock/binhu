@@ -192,6 +192,39 @@ export interface OpsOverview {
     manual: number
     scheduled: number
   }>
+  txdocs_request_usage: {
+    daily_limit: number
+    timezone: string
+    today: {
+      business_date: string
+      attempts: number
+      success: number
+      failure: number
+      retries: number
+      quota_exhausted_responses: number
+      estimated_remaining: number
+    }
+    metering_started_at: string | null
+    today_coverage_complete: boolean
+    daily: Array<{
+      business_date: string
+      attempts: number
+      success: number
+      failure: number
+      retries: number
+      quota_exhausted_responses: number
+      estimated_remaining: number
+    }>
+    today_breakdown: Array<{
+      source: string
+      endpoint: string
+      method: string
+      attempts: number
+      success: number
+      failure: number
+      retries: number
+    }>
+  }
   latest_backup: {
     id: number
     status: string

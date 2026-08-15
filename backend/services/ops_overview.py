@@ -77,6 +77,118 @@ def build_daily_sync_counts(
     return [buckets[day] for day in dates]
 
 
+def build_daily_txdocs_usage(
+    rows: list[tuple],
+    *,
+    now_utc: datetime,
+    timezone_name: str,
+    daily_limit: int,
+    window_days: int = SYNC_DAILY_WINDOW_DAYS,
+) -> dict:
+    """Aggregate actual outbound attempts; 400011 overrides local estimates."""
+    timezone_info = resolve_timezone(timezone_name)
+    aware_now = (
+        now_utc.replace(tzinfo=timezone.utc)
+        if now_utc.tzinfo is None
+        else now_utc.astimezone(timezone.utc)
+    )
+    today = current_business_date(timezone_name, now=aware_now)
+    dates = [today - timedelta(days=offset) for offset in range(max(window_days, 1))]
+    buckets = {
+        day: {
+            "business_date": day.isoformat(),
+            "attempts": 0,
+            "success": 0,
+            "failure": 0,
+            "retries": 0,
+            "quota_exhausted_responses": 0,
+            "estimated_remaining": max(int(daily_limit), 0),
+        }
+        for day in dates
+    }
+    today_breakdown: dict[tuple[str, str, str], dict] = {}
+    metering_started_at: datetime | None = None
+    for row in rows:
+        bucket_hour = row[0]
+        if bucket_hour is None:
+            continue
+        if bucket_hour.tzinfo is None:
+            bucket_hour = bucket_hour.replace(tzinfo=timezone.utc)
+        if metering_started_at is None or bucket_hour < metering_started_at:
+            metering_started_at = bucket_hour
+        business_day = bucket_hour.astimezone(timezone_info).date()
+        bucket = buckets.get(business_day)
+        if bucket is None:
+            continue
+        attempts = int(row[4] or 0)
+        success = int(row[5] or 0)
+        failure = int(row[6] or 0)
+        retries = int(row[7] or 0)
+        exhausted = int(row[8] or 0)
+        bucket["attempts"] += attempts
+        bucket["success"] += success
+        bucket["failure"] += failure
+        bucket["retries"] += retries
+        bucket["quota_exhausted_responses"] += exhausted
+        if business_day == today:
+            source = str(row[1] or "unknown")
+            endpoint = str(row[2] or "other")
+            method = str(row[3] or "GET")
+            breakdown_bucket = today_breakdown.setdefault(
+                (source, endpoint, method),
+                {
+                    "source": source,
+                    "endpoint": endpoint,
+                    "method": method,
+                    "attempts": 0,
+                    "success": 0,
+                    "failure": 0,
+                    "retries": 0,
+                },
+            )
+            breakdown_bucket["attempts"] += attempts
+            breakdown_bucket["success"] += success
+            breakdown_bucket["failure"] += failure
+            breakdown_bucket["retries"] += retries
+    for bucket in buckets.values():
+        bucket["estimated_remaining"] = (
+            0
+            if bucket["quota_exhausted_responses"] > 0
+            else max(int(daily_limit) - bucket["attempts"], 0)
+        )
+    daily = [buckets[day] for day in dates]
+    metering_business_day = (
+        metering_started_at.astimezone(timezone_info).date()
+        if metering_started_at is not None
+        else None
+    )
+    return {
+        "daily_limit": int(daily_limit),
+        "timezone": timezone_name,
+        "today": daily[0],
+        "daily": daily,
+        "metering_started_at": (
+            metering_started_at.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+            if metering_started_at is not None
+            else None
+        ),
+        "today_coverage_complete": bool(
+            metering_business_day is not None
+            and metering_business_day < today
+        ),
+        "today_breakdown": sorted(
+            today_breakdown.values(),
+            key=lambda item: (
+                -item["attempts"],
+                item["source"],
+                item["endpoint"],
+            ),
+        ),
+    }
+
+
 async def build_operations_overview() -> dict:
     try:
         container_data = await get_container_overview()
@@ -160,6 +272,18 @@ async def build_operations_overview() -> dict:
             sync_rows = await cur.fetchall()
             await cur.execute(
                 """
+                SELECT bucket_hour, request_source, endpoint, method,
+                       attempt_count, success_count, failure_count,
+                       retry_count, quota_exhausted_count
+                FROM _txdocs_api_usage_hourly
+                WHERE bucket_hour >= %s
+                ORDER BY bucket_hour DESC
+                """,
+                (first_day_utc,),
+            )
+            txdocs_usage_rows = await cur.fetchall()
+            await cur.execute(
+                """
                 SELECT id, status, finished_at, size_bytes
                 FROM _backup_jobs ORDER BY id DESC LIMIT 1
                 """
@@ -182,6 +306,12 @@ async def build_operations_overview() -> dict:
         sync_rows,
         now_utc=server_time,
         timezone_name=timezone_name,
+    )
+    txdocs_request_usage = build_daily_txdocs_usage(
+        txdocs_usage_rows,
+        now_utc=server_time,
+        timezone_name=timezone_name,
+        daily_limit=settings.TXDOCS_DAILY_REQUEST_LIMIT,
     )
 
     oauth = {"configured": bool(oauth_row), "status": "not_configured"}
@@ -221,6 +351,7 @@ async def build_operations_overview() -> dict:
         else None,
         "sync_timezone": timezone_name,
         "sync_daily_counts": sync_daily_counts,
+        "txdocs_request_usage": txdocs_request_usage,
         "latest_backup": {
             "id": backup_row[0],
             "status": backup_row[1],

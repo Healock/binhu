@@ -205,6 +205,24 @@ CREATE TABLE IF NOT EXISTS _backup_jobs (
     INDEX idx_backup_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _txdocs_api_usage_hourly (
+    bucket_hour          DATETIME NOT NULL,
+    request_source       VARCHAR(40) NOT NULL DEFAULT 'unknown',
+    endpoint             VARCHAR(40) NOT NULL,
+    method               VARCHAR(10) NOT NULL,
+    attempt_count        INT UNSIGNED NOT NULL DEFAULT 0,
+    success_count        INT UNSIGNED NOT NULL DEFAULT 0,
+    failure_count        INT UNSIGNED NOT NULL DEFAULT 0,
+    retry_count          INT UNSIGNED NOT NULL DEFAULT 0,
+    quota_exhausted_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_http_status     SMALLINT DEFAULT NULL,
+    last_error_code      VARCHAR(40) NOT NULL DEFAULT '',
+    updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                         ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_hour, request_source, endpoint, method),
+    INDEX idx_txdocs_usage_hour (bucket_hour)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _admin_audit_log (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id      INT DEFAULT NULL,
