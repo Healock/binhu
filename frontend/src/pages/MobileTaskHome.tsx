@@ -126,17 +126,36 @@ export default function MobileTaskHome() {
 
             <div className="mobile-task-business-list">
               {sortMobileTaskBusinesses(data.businesses).map(item => (
-                <button
+                <div
                   key={item.parser_type}
-                  type="button"
-                  className={`mobile-task-business-card${item.pending === 0 ? ' is-empty' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  className={`mobile-task-business-card cursor-pointer${item.pending === 0 ? ' is-empty' : ''}`}
                   onClick={() => navigate(`/tasks?type=${encodeURIComponent(item.parser_type)}&scope=${scope}`)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      navigate(`/tasks?type=${encodeURIComponent(item.parser_type)}&scope=${scope}`)
+                    }
+                  }}
                 >
                   <div className="min-w-0 flex-1 text-left">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-[var(--app-text-strong)]">{item.label}</span>
                       {!item.source_ready && <span className="mobile-task-badge is-warning">等待同步</span>}
-                      {item.review > 0 && <span className="mobile-task-badge is-danger">异常来源 {item.review}</span>}
+                      {item.review > 0 && (
+                        <button
+                          type="button"
+                          className="mobile-task-badge is-danger"
+                          onClick={event => {
+                            event.stopPropagation()
+                            navigate(`/tasks?type=${encodeURIComponent(item.parser_type)}&scope=${scope}&status=review`)
+                          }}
+                          onKeyDown={event => event.stopPropagation()}
+                        >
+                          需复核 {item.review}
+                        </button>
+                      )}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--app-text-secondary)]">
                       <span>未开始 {item.unchecked}</span>
@@ -148,7 +167,7 @@ export default function MobileTaskHome() {
                     <strong className="text-2xl font-semibold text-[var(--app-primary)]">{item.pending}</strong>
                     <RightOutlined className="text-[var(--app-text-muted)]" />
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           </section>
