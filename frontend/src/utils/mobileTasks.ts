@@ -1,12 +1,23 @@
 import type {
   MobileTaskBusinessSummary,
   MobileTaskDetailData,
+  MobileTaskItem,
   MobileTaskSource,
 } from '../api/client'
+
+export type MobileTaskSurfaceTone = 'exception' | 'review' | 'unchecked' | 'checked' | 'completed'
 
 export interface MobileTaskSourceDifference {
   field: string
   values: string[]
+}
+
+export function mobileTaskSurfaceTone(
+  task: Pick<MobileTaskItem, 'conflict' | 'source_count' | 'needs_review' | 'state'>,
+): MobileTaskSurfaceTone {
+  if (task.conflict || task.source_count > 1) return 'exception'
+  if (task.needs_review) return 'review'
+  return task.state
 }
 
 export function mobileTaskPhoneOptions(value: string): string[] {

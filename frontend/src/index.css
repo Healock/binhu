@@ -140,6 +140,10 @@
   box-shadow: var(--app-shadow);
 }
 
+.mobile-task-item-card {
+  box-shadow: var(--mobile-task-panel-shadow);
+}
+
 .mobile-task-business-card {
   display: flex;
   min-height: 92px;
@@ -193,12 +197,45 @@
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td {
   border-top: 1px solid var(--app-border) !important;
   border-bottom: 0 !important;
-  background: var(--app-surface);
-  transition: background 140ms ease, border-color 140ms ease;
+  background: var(--mobile-task-row-bg, var(--app-surface));
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row:hover > td {
-  background: color-mix(in srgb, var(--app-primary-soft) 22%, var(--app-surface)) !important;
+  background: var(--mobile-task-row-bg, var(--app-surface)) !important;
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row {
+  box-shadow: var(--mobile-task-panel-shadow);
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row:hover {
+  box-shadow: var(--mobile-task-panel-shadow-hover);
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-exception,
+.mobile-task-table-inline-editor--tone-exception {
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 10%, var(--app-surface));
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-review,
+.mobile-task-table-inline-editor--tone-review {
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 11%, var(--app-surface));
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-unchecked,
+.mobile-task-table-inline-editor--tone-unchecked {
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 7%, var(--app-surface));
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-checked,
+.mobile-task-table-inline-editor--tone-checked {
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 8%, var(--app-surface));
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-completed,
+.mobile-task-table-inline-editor--tone-completed {
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-success) 8%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td:first-child {
@@ -233,8 +270,8 @@
   padding: 10px 12px 11px 16px;
   border: 1px solid var(--app-border);
   border-radius: 0 0 12px 12px;
-  background: color-mix(in srgb, var(--app-surface-muted) 88%, var(--app-primary-soft));
-  box-shadow: 0 5px 14px color-mix(in srgb, var(--app-text) 7%, transparent);
+  background: var(--mobile-task-row-bg, color-mix(in srgb, var(--app-surface-muted) 88%, var(--app-primary-soft)));
+  box-shadow: var(--mobile-task-panel-shadow);
   transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -352,6 +389,10 @@
 .mobile-task-table .mobile-task-table-primary-row:has(+ .ant-table-expanded-row .mobile-task-table-inline-editor--dirty) > td {
   border-top-color: var(--app-primary-border) !important;
   background: color-mix(in srgb, var(--app-primary-soft) 18%, var(--app-surface)) !important;
+}
+
+.mobile-task-table .mobile-task-table-primary-row:has(+ .ant-table-expanded-row .mobile-task-table-inline-editor--dirty) {
+  box-shadow: var(--mobile-task-panel-shadow);
 }
 
 .mobile-task-table .mobile-task-table-primary-row:has(+ .ant-table-expanded-row .mobile-task-table-inline-editor--dirty) > td:first-child {
@@ -558,7 +599,7 @@
 
 .mobile-task-item-card:hover {
   border-color: var(--app-primary-border);
-  box-shadow: 0 8px 24px rgb(15 23 42 / 0.09);
+  box-shadow: var(--mobile-task-panel-shadow-hover);
 }
 
 .mobile-task-item-card.is-selection-mode {
@@ -578,6 +619,26 @@
   cursor: not-allowed;
   filter: saturate(0.72);
   opacity: 0.58;
+}
+
+.mobile-task-item-card--tone-exception {
+  background: color-mix(in srgb, var(--app-danger) 10%, var(--app-surface));
+}
+
+.mobile-task-item-card--tone-review {
+  background: color-mix(in srgb, var(--app-warning) 11%, var(--app-surface));
+}
+
+.mobile-task-item-card--tone-unchecked {
+  background: color-mix(in srgb, var(--app-danger) 7%, var(--app-surface));
+}
+
+.mobile-task-item-card--tone-checked {
+  background: color-mix(in srgb, var(--app-warning) 8%, var(--app-surface));
+}
+
+.mobile-task-item-card--tone-completed {
+  background: color-mix(in srgb, var(--app-success) 8%, var(--app-surface));
 }
 
 .mobile-task-item-card__body {
@@ -1592,6 +1653,8 @@ html[data-theme='dark'] .mobile-task-hero {
   --app-surface-muted: #f8fafc;
   --app-surface-subtle: #f1f5f9;
   --mobile-task-footer-bg: #eef3f8;
+  --mobile-task-panel-shadow: 0 3px 12px rgb(15 23 42 / 0.07);
+  --mobile-task-panel-shadow-hover: 0 7px 20px rgb(15 23 42 / 0.12);
   --app-border: #e2e8f0;
   --app-border-strong: #cbd5e1;
   --app-text: #172033;
@@ -1628,6 +1691,8 @@ html[data-theme='dark'] {
   --app-surface-muted: #151f2e;
   --app-surface-subtle: #1a2638;
   --mobile-task-footer-bg: #0b1320;
+  --mobile-task-panel-shadow: 0 3px 14px rgb(0 0 0 / 0.28);
+  --mobile-task-panel-shadow-hover: 0 7px 22px rgb(0 0 0 / 0.42);
   --app-border: #253247;
   --app-border-strong: #34445c;
   --app-text: #e5edf7;

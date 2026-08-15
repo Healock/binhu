@@ -30,6 +30,7 @@ import {
   mobileTaskCanLaunchTelephone,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
+  mobileTaskSurfaceTone,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
 import MobileTaskTable from '../components/MobileTaskTable'
@@ -871,6 +872,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           <div className={`mobile-task-list${taskDisplayMode === 'table' ? ' mobile-task-list--table-fallback' : ''}`}>
           {rows.map(task => {
             const state = STATE_LABELS[task.state]
+            const surfaceTone = mobileTaskSurfaceTone(task)
             const phoneOptions = mobileTaskPhoneOptions(task.summary.phone)
             const copyPhones = phoneOptions.length > 0
               ? phoneOptions
@@ -910,6 +912,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 aria-disabled={selectionMode && !canSelect ? true : undefined}
                 className={[
                   'mobile-task-item-card',
+                  `mobile-task-item-card--tone-${surfaceTone}`,
                   selectionMode ? 'is-selection-mode' : '',
                   isSelected ? 'is-selected' : '',
                   selectionMode && !canSelect ? 'is-selection-disabled' : '',

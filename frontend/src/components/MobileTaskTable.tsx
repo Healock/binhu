@@ -18,6 +18,7 @@ import {
   mobileTaskEditorFields,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
+  mobileTaskSurfaceTone,
 } from '../utils/mobileTasks'
 
 const STATE_LABELS = {
@@ -179,6 +180,8 @@ export default function MobileTaskTable({
   }
 
   const renderExpandedRow = (task: MobileTaskItem) => {
+    const surfaceTone = mobileTaskSurfaceTone(task)
+    const toneClass = `mobile-task-table-inline-editor--tone-${surfaceTone}`
     const item = editorItems[task.row_key]
     const detail = item?.detail
     const source = detail?.sources[0]
@@ -191,7 +194,7 @@ export default function MobileTaskTable({
 
     if (editorsLoading && !item) {
       return (
-        <div className="mobile-task-table-inline-editor mobile-task-table-inline-editor--loading">
+        <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--loading`}>
           <div className="mobile-task-table-inline-status">正在准备本行填写项…</div>
         </div>
       )
@@ -199,7 +202,7 @@ export default function MobileTaskTable({
 
     if (!item?.available || !detail || !source) {
       return (
-        <div className="mobile-task-table-inline-editor mobile-task-table-inline-editor--readonly">
+        <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}>
           <div className="mobile-task-table-inline-fields">
             <div className="mobile-task-table-inline-readonly"><span>现住址</span><strong>{task.summary.current_address || '未填写'}</strong></div>
             <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
@@ -225,7 +228,7 @@ export default function MobileTaskTable({
 
     return (
       <div
-        className={`mobile-task-table-inline-editor${dirtyCount ? ' mobile-task-table-inline-editor--dirty' : ''}`}
+        className={`mobile-task-table-inline-editor ${toneClass}${dirtyCount ? ' mobile-task-table-inline-editor--dirty' : ''}`}
         onClick={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
       >
@@ -479,6 +482,7 @@ export default function MobileTaskTable({
         onRow={task => ({
           className: [
             'mobile-task-table-primary-row',
+            `mobile-task-table-primary-row--tone-${mobileTaskSurfaceTone(task)}`,
             selectionMode && selectedRowKeys.includes(task.row_key) ? 'mobile-task-table-row-selected' : '',
           ].filter(Boolean).join(' '),
           onDoubleClick: () => onOpen(task),
