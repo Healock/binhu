@@ -115,9 +115,9 @@ async def _persist_usage_batch(events: list[dict]) -> None:
                     attempt_count, success_count, failure_count,
                     retry_count, quota_exhausted_count,
                     last_http_status, last_error_code
-                ) VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    attempt_count=attempt_count+1,
+                    attempt_count=attempt_count+VALUES(attempt_count),
                     success_count=success_count+VALUES(success_count),
                     failure_count=failure_count+VALUES(failure_count),
                     retry_count=retry_count+VALUES(retry_count),
