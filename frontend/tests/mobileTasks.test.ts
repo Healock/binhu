@@ -670,7 +670,7 @@ test('全民防预演只从任务详情按内部来源定位发起且没有提�
   assert.doesNotMatch(detailSource, /全民防模型三只读预演[\s\S]*提交登记/)
 
   const apiFunction = clientSource.match(
-    /export async function previewQmfRegistration[\s\S]*?\n}\n/,
+    /export async function previewQmfRegistration[\s\S]*?\r?\n}\r?\n/,
   )?.[0] || ''
   assert.match(apiFunction, /api\.post\('\/qmf-registration\/preview', payload/)
   assert.match(apiFunction, /parser_type: string/)

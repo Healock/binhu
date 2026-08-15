@@ -443,7 +443,7 @@ class QmfReadOnlyClient:
             timeout=timeout,
             follow_redirects=False,
             transport=self._transport,
-            headers={"User-Agent": "Binhu-QMF-Readonly/0.20.0"},
+            headers={"User-Agent": "Binhu-QMF-Readonly/0.20.1"},
         ) as client:
             task_response = await self._request(
                 client, "fnmx/queryYysList", data=query_data

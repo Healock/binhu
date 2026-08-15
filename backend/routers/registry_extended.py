@@ -43,6 +43,8 @@ from services.visit_source import VisitSourceError
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
 
+REGISTRY_IMPORT_WRITE_CHUNK = 500
+
 
 def _can_view_identity(user: dict) -> bool:
     return user.get("role") == "super_admin"
@@ -1418,6 +1420,39 @@ def _issue_payload(payload: dict) -> dict:
     return {key: value.isoformat() if isinstance(value, datetime) else value for key, value in payload.items()}
 
 
+def _chunked(values: list[tuple], size: int = REGISTRY_IMPORT_WRITE_CHUNK):
+    for offset in range(0, len(values), size):
+        yield values[offset:offset + size]
+
+
+async def _bulk_insert_source_records(cur, values: list[tuple]) -> None:
+    sql = (
+        "INSERT INTO registry_source_records "
+        "(batch_id, source_ref, entity_type, payload_json) VALUES (%s,%s,%s,%s)"
+    )
+    await _executemany_chunked(cur, sql, values)
+
+
+async def _bulk_insert_import_issues(cur, values: list[tuple]) -> None:
+    sql = (
+        "INSERT INTO registry_import_issues "
+        "(batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s)"
+    )
+    await _executemany_chunked(cur, sql, values)
+
+
+async def _executemany_chunked(cur, sql: str, values: list[tuple]) -> None:
+    for chunk in _chunked(values):
+        await cur.executemany(sql, chunk)
+
+
+def _household_source_ref(row: dict) -> str:
+    sheet = normalize_text(row.get("source_sheet"))
+    physical_row = normalize_text(row.get("source_row"))
+    return f"{sheet}:{physical_row}"[:190] if sheet else physical_row[:190]
+
+
 def _source_datetime(value):
     """Only pass valid datetimes to DATETIME columns; preserve invalid source text in preview payload."""
     if isinstance(value, datetime):
@@ -1478,18 +1513,27 @@ async def preview_household_import(
                 (normalize_text(file.filename)[:255], file_hash, classified["normal_count"], classified["issue_count"], user["id"]),
             )
             batch_id = int(cur.lastrowid)
-            for row in classified["rows"]:
-                await cur.execute(
-                    "INSERT INTO registry_source_records (batch_id, source_ref, entity_type, payload_json) VALUES (%s,%s,'household_property',%s)",
-                    (batch_id, str(row.get("source_row") or ""), json.dumps(_issue_payload(row), ensure_ascii=False)),
+            await _bulk_insert_source_records(cur, [
+                (
+                    batch_id,
+                    _household_source_ref(row),
+                    "household_property",
+                    json.dumps(_issue_payload(row), ensure_ascii=False),
                 )
-            for issue in classified["issues"]:
-                await cur.execute(
-                    "INSERT INTO registry_import_issues (batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason) "
-                    "VALUES (%s,%s,'household',%s,%s,%s,%s)",
-                    (batch_id, issue["issue_type"], issue["source_ref"], issue["entity_key"],
-                     json.dumps(_issue_payload(issue["payload"]), ensure_ascii=False), issue["reason"]),
+                for row in classified["rows"]
+            ])
+            await _bulk_insert_import_issues(cur, [
+                (
+                    batch_id,
+                    issue["issue_type"],
+                    "household",
+                    _household_source_ref(issue["payload"]),
+                    issue["entity_key"],
+                    json.dumps(_issue_payload(issue["payload"]), ensure_ascii=False),
+                    issue["reason"],
                 )
+                for issue in classified["issues"]
+            ])
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -1584,6 +1628,7 @@ async def confirm_household_import(
                 for existing_row in await cur.fetchall():
                     existing_cache[(str(existing_row[6]), existing_row[1])] = existing_row
 
+            new_rows: list[tuple[int, str, dict, int | None, str, str]] = []
             for record_id, source_ref, payload, community_id, canonical_name, normalized in resolved_rows:
                 address = normalize_text(payload.get("address"))
                 existing = existing_cache.get((normalized, community_id))
@@ -1628,24 +1673,78 @@ async def confirm_household_import(
                                 "VALUES (%s,1,'',%s,'','',%s,UTC_TIMESTAMP(),'household',%s,'户号表导入补齐初始地址',%s)",
                                 (property_id, address, normalized, str(source_ref), user["id"]),
                             )
+                    await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (property_id, record_id))
+                    imported += 1
                 else:
-                    await cur.execute(
-                        "INSERT INTO registry_properties (street, community_id, community_name_snapshot, natural_address, building, room, "
-                        "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
-                        "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                        (community_id, canonical_name, address, payload.get("housing_type") or "", payload.get("residence_type") or "",
-                         payload.get("house_no") or "", _source_datetime(payload.get("updated_at")), "household", str(source_ref), normalized, user["id"], user["id"]),
+                    new_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalized))
+
+            await _executemany_chunked(
+                cur,
+                "INSERT INTO registry_properties (street, community_id, community_name_snapshot, natural_address, building, room, "
+                "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
+                "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                [
+                    (
+                        community_id,
+                        canonical_name,
+                        normalize_text(payload.get("address")),
+                        payload.get("housing_type") or "",
+                        payload.get("residence_type") or "",
+                        payload.get("house_no") or "",
+                        _source_datetime(payload.get("updated_at")),
+                        "household",
+                        str(source_ref),
+                        normalized,
+                        user["id"],
+                        user["id"],
                     )
-                    property_id = int(cur.lastrowid)
-                    await cur.execute(
-                        "INSERT INTO registry_property_address_versions "
-                        "(property_id, version_no, street, natural_address, building, room, normalized_address, "
-                        "effective_from, source_type, source_ref, change_reason, changed_by) "
-                        "VALUES (%s,1,'',%s,'','',%s,UTC_TIMESTAMP(),'household',%s,'户号表导入初始地址',%s)",
-                        (property_id, address, normalized, str(source_ref), user["id"]),
-                    )
-                await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (property_id, record_id))
-                imported += 1
+                    for _, source_ref, payload, community_id, canonical_name, normalized in new_rows
+                ],
+            )
+
+            inserted_cache: dict[tuple[str, int | None], int] = {}
+            for offset in range(0, len(new_rows), REGISTRY_IMPORT_WRITE_CHUNK):
+                chunk = new_rows[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
+                keys = sorted({item[5] for item in chunk if item[5]})
+                if not keys:
+                    continue
+                placeholders = ",".join(["%s"] * len(keys))
+                await cur.execute(
+                    "SELECT id, community_id, normalized_address FROM registry_properties "
+                    f"WHERE normalized_address IN ({placeholders}) ORDER BY id",
+                    tuple(keys),
+                )
+                for property_id, community_id, normalized in await cur.fetchall():
+                    inserted_cache[(str(normalized), community_id)] = int(property_id)
+
+            address_versions: list[tuple] = []
+            source_links: list[tuple] = []
+            for record_id, source_ref, payload, community_id, _, normalized in new_rows:
+                property_id = inserted_cache.get((normalized, community_id))
+                if property_id is None:
+                    raise RuntimeError("户号表导入后无法重新定位新建房屋")
+                address_versions.append((
+                    property_id,
+                    normalize_text(payload.get("address")),
+                    normalized,
+                    str(source_ref),
+                    user["id"],
+                ))
+                source_links.append((property_id, record_id))
+            await _executemany_chunked(
+                cur,
+                "INSERT INTO registry_property_address_versions "
+                "(property_id, version_no, street, natural_address, building, room, normalized_address, "
+                "effective_from, source_type, source_ref, change_reason, changed_by) "
+                "VALUES (%s,1,'',%s,'','',%s,UTC_TIMESTAMP(),'household',%s,'户号表导入初始地址',%s)",
+                address_versions,
+            )
+            await _executemany_chunked(
+                cur,
+                "UPDATE registry_source_records SET entity_id=%s WHERE id=%s",
+                source_links,
+            )
+            imported += len(new_rows)
             await cur.execute("SELECT COUNT(*) FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
             pending_issue_count = int((await cur.fetchone())[0])
             await cur.execute(
@@ -1709,20 +1808,27 @@ async def preview_certificate_import(
                 (data.source_name[:255], file_hash, classified["normal_count"], classified["problem_row_count"], classified["conflict_groups"]),
             )
             batch_id = int(cur.lastrowid)
-            for row in classified["rows"]:
-                source_ref = f"{data.source_name}:{row.get('source_row') or ''}"[:190]
-                await cur.execute(
-                    "INSERT INTO registry_source_records (batch_id, source_ref, entity_type, payload_json) VALUES (%s,%s,'property_certificate',%s)",
-                    (batch_id, source_ref, json.dumps(_issue_payload(row), ensure_ascii=False, default=str)),
+            await _bulk_insert_source_records(cur, [
+                (
+                    batch_id,
+                    f"{data.source_name}:{row.get('source_row') or ''}"[:190],
+                    "property_certificate",
+                    json.dumps(_issue_payload(row), ensure_ascii=False, default=str),
                 )
-            for issue in classified["issues"]:
-                source_ref = f"{data.source_name}:{issue['source_ref']}"[:190]
-                await cur.execute(
-                    "INSERT INTO registry_import_issues (batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason) "
-                    "VALUES (%s,%s,'certificate',%s,%s,%s,%s)",
-                    (batch_id, issue["issue_type"], source_ref, issue["entity_key"],
-                     json.dumps(_issue_payload(issue["payload"]), ensure_ascii=False, default=str), issue["reason"]),
+                for row in classified["rows"]
+            ])
+            await _bulk_insert_import_issues(cur, [
+                (
+                    batch_id,
+                    issue["issue_type"],
+                    "certificate",
+                    f"{data.source_name}:{issue['source_ref']}"[:190],
+                    issue["entity_key"],
+                    json.dumps(_issue_payload(issue["payload"]), ensure_ascii=False, default=str),
+                    issue["reason"],
                 )
+                for issue in classified["issues"]
+            ])
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -1792,6 +1898,8 @@ async def confirm_certificate_import(
             records = await cur.fetchall()
             await cur.execute("SELECT source_ref FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
             blocked_refs = {str(row[0]) for row in await cur.fetchall()}
+            community_cache: dict[str, tuple[int | None, str]] = {}
+            candidates: list[tuple[int, str, dict, int | None, str, str]] = []
             for record_id, source_ref, payload_json in records:
                 if str(source_ref) in blocked_refs:
                     skipped += 1
@@ -1803,49 +1911,101 @@ async def confirm_certificate_import(
                     skipped += 1
                     continue
                 community_name = normalize_community(payload.get("community"))
-                try:
-                    community_id, canonical_name = await _canonical_community(cur, None, community_name)
-                except HTTPException:
-                    community_id, canonical_name = None, community_name
+                if community_name not in community_cache:
+                    try:
+                        community_cache[community_name] = await _canonical_community(cur, None, community_name)
+                    except HTTPException:
+                        community_cache[community_name] = (None, community_name)
+                community_id, canonical_name = community_cache[community_name]
+                candidates.append((int(record_id), str(source_ref), payload, community_id, canonical_name, normalized))
+
+            property_cache: dict[tuple[str, int | None], tuple[int, str]] = {}
+            for offset in range(0, len(candidates), REGISTRY_IMPORT_WRITE_CHUNK):
+                chunk = candidates[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
+                keys = sorted({item[5] for item in chunk if item[5]})
+                if not keys:
+                    continue
+                placeholders = ",".join(["%s"] * len(keys))
                 await cur.execute(
-                    "SELECT id, housing_type FROM registry_properties WHERE normalized_address=%s AND community_id <=> %s LIMIT 1 FOR UPDATE",
-                    (normalized, community_id),
+                    "SELECT id, community_id, normalized_address, housing_type FROM registry_properties "
+                    f"WHERE normalized_address IN ({placeholders}) FOR UPDATE",
+                    tuple(keys),
                 )
-                property_row = await cur.fetchone()
+                for property_id, property_community_id, property_normalized, housing_type in await cur.fetchall():
+                    property_cache[(str(property_normalized), property_community_id)] = (int(property_id), str(housing_type or ""))
+
+            certificate_values: list[tuple] = []
+            certificate_links: list[tuple[int, str]] = []
+            non_rental_issues: list[tuple] = []
+            for record_id, source_ref, payload, community_id, canonical_name, normalized in candidates:
+                property_row = property_cache.get((normalized, community_id))
                 if not property_row or str(property_row[1] or "") not in {"个人出租", "单位出租"}:
-                    await cur.execute(
-                        "SELECT id FROM registry_import_issues WHERE batch_id=%s AND issue_type='certificate_non_rental' "
-                        "AND source_ref=%s AND status='pending' LIMIT 1",
-                        (batch_id, source_ref),
-                    )
-                    if not await cur.fetchone():
-                        await cur.execute(
-                            "INSERT INTO registry_import_issues (batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason) "
-                            "VALUES (%s,'certificate_non_rental','certificate',%s,%s,%s,%s)",
-                            (batch_id, source_ref, normalized, json.dumps(payload, ensure_ascii=False, default=str),
-                             "告知书地址未匹配到个人出租/单位出租房屋档案"),
-                        )
+                    non_rental_issues.append((
+                        batch_id,
+                        ISSUE_CERTIFICATE_NON_RENTAL,
+                        "certificate",
+                        source_ref,
+                        normalized,
+                        json.dumps(payload, ensure_ascii=False, default=str),
+                        "告知书地址未匹配到个人出租/单位出租房屋档案",
+                    ))
                     skipped += 1
                     continue
                 property_id = int(property_row[0])
+                certificate_values.append((
+                    property_id,
+                    source_ref,
+                    str(payload.get("source_row") or ""),
+                    canonical_name or normalize_community(payload.get("community")),
+                    normalize_text(payload.get("address")),
+                    str(payload.get("czrxm") or payload.get("landlord_name") or ""),
+                    str(payload.get("czrzjhm") or payload.get("landlord_identity_number") or ""),
+                    str(payload.get("sjczrxm") or payload.get("actual_renter_name") or ""),
+                    str(payload.get("sjczrzjhm") or payload.get("actual_renter_identity_number") or ""),
+                    str(payload.get("isSign") or payload.get("signed_status") or ""),
+                    str(payload.get("signType") or payload.get("sign_type") or ""),
+                    _source_datetime(payload.get("signTime") or payload.get("sign_time")),
+                    str(payload.get("signurl") or payload.get("document_ref") or ""),
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                    user["id"],
+                ))
+                certificate_links.append((record_id, source_ref))
+
+            await _bulk_insert_import_issues(cur, non_rental_issues)
+            await _executemany_chunked(
+                cur,
+                "INSERT IGNORE INTO registry_property_certificates "
+                "(property_id, source_type, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
+                "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, payload_json, created_by) "
+                "VALUES (%s,'certificate',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                certificate_values,
+            )
+
+            certificate_ids: dict[str, int] = {}
+            for offset in range(0, len(certificate_links), REGISTRY_IMPORT_WRITE_CHUNK):
+                chunk = certificate_links[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
+                refs = [item[1] for item in chunk]
+                placeholders = ",".join(["%s"] * len(refs))
                 await cur.execute(
-                    "INSERT IGNORE INTO registry_property_certificates "
-                    "(property_id, source_type, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
-                    "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, payload_json, created_by) "
-                    "VALUES (%s,'certificate',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (property_id, source_ref, str(payload.get("source_row") or ""), canonical_name or community_name, address,
-                     str(payload.get("czrxm") or payload.get("landlord_name") or ""),
-                     str(payload.get("czrzjhm") or payload.get("landlord_identity_number") or ""),
-                     str(payload.get("sjczrxm") or payload.get("actual_renter_name") or ""),
-                     str(payload.get("sjczrzjhm") or payload.get("actual_renter_identity_number") or ""),
-                     str(payload.get("isSign") or payload.get("signed_status") or ""), str(payload.get("signType") or payload.get("sign_type") or ""),
-                     _source_datetime(payload.get("signTime") or payload.get("sign_time")),
-                     str(payload.get("signurl") or payload.get("document_ref") or ""), json.dumps(payload, ensure_ascii=False, default=str), user["id"]),
+                    "SELECT id, source_ref FROM registry_property_certificates "
+                    f"WHERE source_type='certificate' AND source_ref IN ({placeholders}) ORDER BY id",
+                    tuple(refs),
                 )
-                await cur.execute("SELECT id FROM registry_property_certificates WHERE source_type='certificate' AND source_ref=%s", (source_ref,))
-                certificate_id = await cur.fetchone()
-                await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (certificate_id[0] if certificate_id else property_id, record_id))
-                imported += 1
+                for certificate_id, source_ref in await cur.fetchall():
+                    certificate_ids[str(source_ref)] = int(certificate_id)
+            source_links = [
+                (certificate_ids[source_ref], record_id)
+                for record_id, source_ref in certificate_links
+                if source_ref in certificate_ids
+            ]
+            if len(source_links) != len(certificate_links):
+                raise RuntimeError("告知书导入后无法重新定位已挂载记录")
+            await _executemany_chunked(
+                cur,
+                "UPDATE registry_source_records SET entity_id=%s WHERE id=%s",
+                source_links,
+            )
+            imported += len(certificate_links)
             await cur.execute("SELECT COUNT(*) FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
             pending_issue_count = int((await cur.fetchone())[0])
             await cur.execute(

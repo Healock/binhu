@@ -2517,6 +2517,7 @@ export const registryApi = {
     return (await api.post('/registry/imports/households/preview', form, {
       ...activeRequest,
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300_000,
     })).data as {
       batch_id: number; status: string; idempotent: boolean; total_count: number; normal_count: number
       issue_count: number; duplicate_groups: number; other_type_count: number
@@ -2524,14 +2525,17 @@ export const registryApi = {
     }
   },
   async confirmHouseholdImport(batchId: number) {
-    return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, activeRequest)).data as {
+    return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, {
+      ...activeRequest,
+      timeout: 300_000,
+    })).data as {
       batch_id: number; status: string; imported_count: number; idempotent: boolean
     }
   },
   async previewCertificateSource() {
     return (await api.post('/registry/imports/certificates/source-preview', {}, {
       ...activeRequest,
-      timeout: 180_000,
+      timeout: 300_000,
     })).data as {
       batch_id: number; status: string; idempotent: boolean; total_count: number; normal_count: number
       issue_count: number; problem_row_count: number; duplicate_groups: number; conflict_groups: number
@@ -2541,7 +2545,7 @@ export const registryApi = {
   async confirmCertificateImport(batchId: number) {
     return (await api.post(`/registry/imports/certificates/${batchId}/confirm`, {}, {
       ...activeRequest,
-      timeout: 180_000,
+      timeout: 300_000,
     })).data as {
       batch_id: number; status: string; imported_count: number; skipped_count: number
       pending_issue_count: number; idempotent: boolean
