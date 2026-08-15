@@ -178,21 +178,23 @@ source=android
 APK 静态代码已经确认：
 
 - 登录请求使用用户名、密码，并附带 `IMEI` 和 `MACHINEUID`；
-- 登录成功后，账号输入值被保存为 `userID`；
-- 登录响应中的 `MJXM` 被保存为操作人姓名；
+- 登录成功后，账号输入值被保存为 `WpaUserData.userID`；
+- 模型三 HTTP 的 `mjjh` 直接取 `WpaUserData.userID`，不是 `MID_LOCAL.MJJH`；
+- `MID_LOCAL/QID_D_LOCAL` 返回的 `MJJH`、`MJXM`、`JGBM`、`JGMC` 只刷新工作身份参数；
 - 登录响应参数表被整体保存，`JGBM` 等机构字段通过 `getDataByName` 动态读取；
-- `hcczr` 和 `operateBy` 使用当前登录态的 `userID`；
+- `hcczr`、`operateBy` 和模型三 `mjjh` 使用当前登录态的 `userID`；
 - `beizhu` 使用当前登录态的操作人姓名；
 - 机构代码从登录响应动态取得，不应硬编码。
 
 静态分析还原的登录传输合同为：
 
 - 独立 TCP 连接，不使用 HTTP，也没有额外长度前缀；
-- 请求是 GB2312 编码的 XML，根节点为 `message`，模块为 `base`；
+- 请求是无 XML 声明、GB2312 兼容字节的 XML，根节点为 `message`，模块为 `base`；
 - `login` 节点包含账号、密码、`platform=Android` 和 `violent=true`；
 - `IMEI`、`MACHINEUID` 作为登录参数发送；
-- 客户端读取到 `</message>` 为止，并严格校验响应序号、模块、响应类型和登录业务码；
-- 登录返回的 `MJJH`、`MJXM`、`JGBM`、`JGMC` 分别作为操作人标识、操作人姓名、机构代码和机构名称，任一缺失都终止预演。
+- 客户端读取到 `</message>` 为止，并严格校验响应序号、模块和响应类型；`errcode` 缺失或为 `0` 都表示协议层通过，非零才失败；
+- 登录后必须依次完成时间同步和 `MID_LOCAL/QID_D_LOCAL`，再进入只读 HTTP；
+- `MID_LOCAL` 的工作身份字段与登录账号 `userID` 分开保存，不能相互替代。
 
 登录主机、端口、账号、密码和设备标识只从生产密钥读取。代码和共享配置只保留空占位；在真实授权设备确认前，`QMF_LOGIN_PROTOCOL_VERIFIED` 必须保持关闭。
 
@@ -207,13 +209,20 @@ APK 静态代码已经确认：
 
 ### 6.1 设备标识例外
 
-APK 的 `getIMEI()` 行为是：
+APK 的 `MACHINEUID` 行为是：
 
-1. 优先读取 Android `TelephonyManager.getDeviceId()`；
-2. 取不到时回退到 Android ID；
-3. 没有读取手机状态权限时返回空值并提示。
+1. 读取 `Build.MANUFACTURER`；
+2. 拼接一个空格；
+3. 再读取 `Build.MODEL`。
 
-设备标识不是账号资料，服务器不能根据登录账号动态推导，也不得随机生成或伪造。第一阶段只能使用经授权的专用旧设备标识作为受保护配置；如果后续确认旧平台支持正式服务接入身份，应改用正式接入方式。
+`IMEI` 的最终生成或持久化来源仍未从 APK 侧完整确认。两者都不是账号资料，服务器不能随机生成、伪造或用自身主机属性替代。第一阶段只能使用经授权的专用设备值作为受保护配置；`MACHINEUID` 必须与授权设备的厂商/型号组合一致。
+
+### 6.2 TCP 会话边界
+
+- APK 在 HTTP 读取期间保持登录 TCP 连接，并大约每 60 秒发送一次心跳；
+- 当前只读预演在会话内依次完成登录、时间同步、`MID_LOCAL/QID_D_LOCAL` 和四个白名单 HTTP 请求；
+- 服务端是否强制要求 TCP 在线、是否按来源 IP 或会话状态校验 HTTP，仍未得到服务端契约确认；
+- 未确认的心跳帧、错误码目录、会话过期和并发规则不能靠猜测补造。预演遇到连接中断、未知响应或结构变化时必须失败即停。
 
 ## 7. 封闭测试设计
 

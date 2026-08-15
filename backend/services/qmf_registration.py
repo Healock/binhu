@@ -59,6 +59,46 @@ class QmfLoginContext:
     station_name: str
 
 
+@dataclass
+class QmfLoginSession:
+    """A short-lived APK-compatible TCP login session.
+
+    The old client keeps this connection alive while it performs HTTP reads.
+    We intentionally do not invent a heartbeat frame here: one preview is
+    bounded below the observed 60-second heartbeat interval, and an unknown
+    heartbeat format must fail closed rather than be guessed.
+    """
+
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    context: QmfLoginContext
+    started_at: float
+
+    def ensure_available(self) -> None:
+        max_seconds = max(1, int(settings.QMF_SESSION_MAX_SECONDS))
+        if time.monotonic() - self.started_at >= max_seconds:
+            raise QmfPreviewError(
+                "login_session_expired",
+                "全民防登录会话超过只读预演安全时限",
+                502,
+            )
+
+    async def close(self) -> None:
+        if self.writer.is_closing():
+            return
+        self.writer.close()
+        try:
+            await self.writer.wait_closed()
+        except OSError:
+            pass
+
+    async def __aenter__(self) -> "QmfLoginSession":
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+        await self.close()
+
+
 _preview_active = False
 _last_preview_started = 0.0
 
@@ -157,14 +197,19 @@ def preview_capability(
 
 
 def _login_sequence(now: datetime | None = None) -> str:
-    current = now or datetime.now()
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     return current.strftime("%Y%m%d%H%M%S") + "1"
 
 
 def build_login_request(
     *, username: str, password: str, imei: str, machine_uid: str, sequence: str
 ) -> bytes:
-    """Build the APK-compatible, GB2312 encoded login message."""
+    """Build the APK-compatible login message.
+
+    The captured APK request has no XML declaration.  Its non-ASCII bytes are
+    in the GB2312-compatible subset; GB18030 is the strict superset used by
+    the receiver so we do not add an encoding declaration the APK never sent.
+    """
     message = ET.Element(
         "message",
         {"type": "request", "seq": sequence, "module": "base"},
@@ -186,10 +231,44 @@ def build_login_request(
         "parameter",
         {"id": "MACHINEUID", "value": machine_uid},
     )
-    return ET.tostring(message, encoding="gb2312", xml_declaration=True)
+    return ET.tostring(message, encoding="gb18030", xml_declaration=False)
 
 
-def parse_login_response(payload: bytes, *, expected_sequence: str) -> dict[str, str]:
+def _encode_xml(message: ET.Element) -> bytes:
+    return ET.tostring(message, encoding="gb18030", xml_declaration=False)
+
+
+def build_timesync_request(*, sequence: str) -> bytes:
+    message = ET.Element(
+        "message",
+        {"type": "request", "seq": sequence, "module": "base"},
+    )
+    ET.SubElement(message, "timesync")
+    return _encode_xml(message)
+
+
+def build_mid_local_request(*, username: str, sequence: str) -> bytes:
+    message = ET.Element(
+        "message",
+        {"type": "request", "seq": sequence, "module": "MID_LOCAL"},
+    )
+    query = ET.SubElement(message, "query", {"p": "qid=QID_D_LOCAL|page=1|size=8|"})
+    meta = ET.SubElement(query, "meta")
+    ET.SubElement(meta, "ZDDM", {"p": ""})
+    ET.SubElement(meta, "MJJH", {"p": ""}).text = username
+    return _encode_xml(message)
+
+
+def _next_sequence(sequence: str) -> str:
+    try:
+        return str(int(sequence) + 1).zfill(len(sequence))
+    except ValueError as exc:
+        raise QmfPreviewError("login_sequence_invalid", "全民防登录序号无效") from exc
+
+
+def _parse_message(
+    payload: bytes, *, expected_sequence: str, expected_module: str
+) -> ET.Element:
     if not payload or len(payload) > MAX_LOGIN_RESPONSE_BYTES:
         raise QmfPreviewError("login_response_invalid", "全民防登录响应结构无效")
     try:
@@ -198,25 +277,17 @@ def parse_login_response(payload: bytes, *, expected_sequence: str) -> dict[str,
         raise QmfPreviewError(
             "login_response_invalid", "全民防登录响应结构无效"
         ) from exc
-    if root.tag == "session":
-        messages = [child for child in root if child.tag == "message"]
-        if len(messages) != 1:
-            raise QmfPreviewError("login_response_invalid", "全民防登录响应结构无效")
-        root = messages[0]
     if (
         root.tag != "message"
         or root.attrib.get("type", "").lower() != "response"
         or root.attrib.get("seq") != expected_sequence
-        or root.attrib.get("module") != "base"
+        or root.attrib.get("module") != expected_module
     ):
         raise QmfPreviewError("login_response_invalid", "全民防登录响应校验失败")
-    children = list(root)
-    if len(children) != 1 or children[0].tag != "login":
-        raise QmfPreviewError("login_response_invalid", "全民防登录响应结构无效")
-    login = children[0]
-    if _text(login.attrib.get("errcode")) != "0":
-        raise QmfPreviewError("login_failed", "全民防登录失败", 502)
-    parameters = login.find("parameters")
+    return root
+
+
+def _parameter_values(parameters: ET.Element | None) -> dict[str, str]:
     if parameters is None:
         raise QmfPreviewError("login_response_invalid", "全民防登录响应缺少身份参数")
     result: dict[str, str] = {}
@@ -231,13 +302,62 @@ def parse_login_response(payload: bytes, *, expected_sequence: str) -> dict[str,
     return result
 
 
-def _login_context(parameters: dict[str, str]) -> QmfLoginContext:
+def parse_login_response(payload: bytes, *, expected_sequence: str) -> dict[str, str]:
+    root = _parse_message(
+        payload, expected_sequence=expected_sequence, expected_module="base"
+    )
+    login = root.find("login")
+    if login is None:
+        raise QmfPreviewError("login_response_invalid", "全民防登录响应结构无效")
+    errcode = _text(login.attrib.get("errcode"))
+    if errcode and errcode != "0":
+        raise QmfPreviewError("login_failed", "全民防登录失败", 502)
+    return _parameter_values(login.find("parameters"))
+
+
+def parse_timesync_response(payload: bytes, *, expected_sequence: str) -> str:
+    root = _parse_message(
+        payload, expected_sequence=expected_sequence, expected_module="base"
+    )
+    timesync = root.find("timesync")
+    target = _text(timesync.attrib.get("to")) if timesync is not None else ""
+    if timesync is None or not target:
+        raise QmfPreviewError("login_response_invalid", "全民防时间同步响应结构无效")
+    return target
+
+
+def parse_mid_local_response(payload: bytes, *, expected_sequence: str) -> dict[str, str]:
+    root = _parse_message(
+        payload, expected_sequence=expected_sequence, expected_module="MID_LOCAL"
+    )
+    query = root.find("query")
+    data_nodes = query.findall("datas/data") if query is not None else []
+    if len(data_nodes) != 1:
+        raise QmfPreviewError("login_response_invalid", "全民防身份响应结构无效")
+    data = data_nodes[0]
+    values: dict[str, str] = {}
+    for child in list(data):
+        if child.tag in values:
+            raise QmfPreviewError("login_response_invalid", "全民防身份响应包含重复字段")
+        values[child.tag] = _text(child.text)
+    return values
+
+
+def _login_context(
+    base_parameters: dict[str, str], identity_parameters: dict[str, str]
+) -> QmfLoginContext:
+    if base_parameters.get("JGBM") and identity_parameters.get("JGBM"):
+        if base_parameters["JGBM"] != identity_parameters["JGBM"]:
+            raise QmfPreviewError("login_response_invalid", "全民防登录机构字段不一致")
+    if base_parameters.get("MJXM") and identity_parameters.get("MJXM"):
+        if base_parameters["MJXM"] != identity_parameters["MJXM"]:
+            raise QmfPreviewError("login_response_invalid", "全民防登录身份字段不一致")
     context = QmfLoginContext(
         username=settings.QMF_SOURCE_USERNAME,
-        operator_id=_text(parameters.get("MJJH")),
-        operator_name=_text(parameters.get("MJXM")),
-        station_code=_text(parameters.get("JGBM")),
-        station_name=_text(parameters.get("JGMC")),
+        operator_id=_text(identity_parameters.get("MJJH")),
+        operator_name=_text(identity_parameters.get("MJXM")),
+        station_code=_text(identity_parameters.get("JGBM")),
+        station_name=_text(identity_parameters.get("JGMC")),
     )
     if not all((
         context.operator_id,
@@ -256,7 +376,7 @@ def _login_context(parameters: dict[str, str]) -> QmfLoginContext:
     return context
 
 
-async def login_readonly() -> QmfLoginContext:
+async def open_login_session() -> QmfLoginSession:
     sequence = _login_sequence()
     request_bytes = build_login_request(
         username=settings.QMF_SOURCE_USERNAME,
@@ -265,7 +385,8 @@ async def login_readonly() -> QmfLoginContext:
         machine_uid=settings.QMF_SOURCE_MACHINE_UID,
         sequence=sequence,
     )
-    writer = None
+    writer: asyncio.StreamWriter | None = None
+    session: QmfLoginSession | None = None
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(
@@ -277,22 +398,66 @@ async def login_readonly() -> QmfLoginContext:
         )
         writer.write(request_bytes)
         await asyncio.wait_for(writer.drain(), timeout=settings.QMF_TIMEOUT_SECONDS)
-        response = await asyncio.wait_for(
+        base_response = await asyncio.wait_for(
             reader.readuntil(b"</message>"),
             timeout=settings.QMF_TIMEOUT_SECONDS,
         )
+        base_parameters = parse_login_response(
+            base_response, expected_sequence=sequence
+        )
+
+        timesync_sequence = _next_sequence(sequence)
+        writer.write(build_timesync_request(sequence=timesync_sequence))
+        await asyncio.wait_for(writer.drain(), timeout=settings.QMF_TIMEOUT_SECONDS)
+        timesync_response = await asyncio.wait_for(
+            reader.readuntil(b"</message>"),
+            timeout=settings.QMF_TIMEOUT_SECONDS,
+        )
+        parse_timesync_response(
+            timesync_response, expected_sequence=timesync_sequence
+        )
+
+        identity_sequence = _next_sequence(timesync_sequence)
+        writer.write(build_mid_local_request(
+            username=settings.QMF_SOURCE_USERNAME,
+            sequence=identity_sequence,
+        ))
+        await asyncio.wait_for(writer.drain(), timeout=settings.QMF_TIMEOUT_SECONDS)
+        identity_response = await asyncio.wait_for(
+            reader.readuntil(b"</message>"),
+            timeout=settings.QMF_TIMEOUT_SECONDS,
+        )
+        identity_parameters = parse_mid_local_response(
+            identity_response, expected_sequence=identity_sequence
+        )
+        context = _login_context(base_parameters, identity_parameters)
+        session = QmfLoginSession(
+            reader=reader,
+            writer=writer,
+            context=context,
+            started_at=time.monotonic(),
+        )
+        return session
     except (asyncio.TimeoutError, OSError, asyncio.IncompleteReadError) as exc:
         raise QmfPreviewError("login_unavailable", "全民防登录服务暂时不可用") from exc
     except asyncio.LimitOverrunError as exc:
         raise QmfPreviewError("login_response_too_large", "全民防登录响应超过安全限制") from exc
     finally:
-        if writer is not None:
+        if writer is not None and session is None:
             writer.close()
             try:
                 await writer.wait_closed()
             except OSError:
                 pass
-    return _login_context(parse_login_response(response, expected_sequence=sequence))
+
+
+async def login_readonly() -> QmfLoginContext:
+    """Compatibility helper for callers that only need the identity context."""
+    session = await open_login_session()
+    try:
+        return session.context
+    finally:
+        await session.close()
 
 
 def _business_payload(response: httpx.Response, *, expected_object: bool) -> Any:
@@ -382,7 +547,7 @@ class QmfReadOnlyClient:
         self,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
-        login_provider: Callable[[], Any] = login_readonly,
+        login_provider: Callable[[], Any] | None = None,
     ):
         self._transport = transport
         self._login_provider = login_provider
@@ -418,8 +583,15 @@ class QmfReadOnlyClient:
         name = _text(platform_task.get("name"))
         if not valid_identity(identity):
             raise QmfPreviewError("identity_invalid", "任务身份证号格式无效", 422)
-        login_context = await self._login_provider()
+        login_session: QmfLoginSession | None = None
+        if self._login_provider is None:
+            login_session = await open_login_session()
+            login_context = login_session.context
+        else:
+            login_context = await self._login_provider()
         if not isinstance(login_context, QmfLoginContext):
+            if login_session is not None:
+                await login_session.close()
             raise QmfPreviewError("login_response_invalid", "全民防登录身份信息无效")
 
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -428,7 +600,9 @@ class QmfReadOnlyClient:
             "sfzh": identity,
             "xm": "",
             "dz": "",
-            "mjjh": login_context.operator_id,
+            # APK uses WpaUserData.userID, which is the input login account;
+            # MID_LOCAL.MJJH is a separately refreshed display/work field.
+            "mjjh": login_context.username,
             "hcjg": "",
             "cljg": "0",
             "pageSize": "10",
@@ -439,83 +613,95 @@ class QmfReadOnlyClient:
             "source": "android",
         }
         timeout = httpx.Timeout(settings.QMF_TIMEOUT_SECONDS)
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=False,
-            transport=self._transport,
-            headers={"User-Agent": "Binhu-QMF-Readonly/0.20.1"},
-        ) as client:
-            task_response = await self._request(
-                client, "fnmx/queryYysList", data=query_data
-            )
-            task_data = _business_payload(task_response, expected_object=True)
-            raw_tasks = task_data.get("list")
-            if not isinstance(raw_tasks, list):
-                raise QmfPreviewError("task_response_invalid", "全民防任务响应结构无效")
-            try:
-                total_tasks = int(task_data.get("total", -1))
-            except (TypeError, ValueError) as exc:
-                raise QmfPreviewError(
-                    "task_response_invalid", "全民防任务响应结构无效"
-                ) from exc
-            matching_tasks = [
-                item for item in raw_tasks
-                if isinstance(item, dict)
-                and normalize_identity(_first(item, "sfzh", "personID")) == identity
-            ]
-            if total_tasks != 1 or len(matching_tasks) != 1:
-                code = "task_not_found" if not matching_tasks else "task_not_unique"
-                message = "全民防未找到唯一待处理任务"
-                raise QmfPreviewError(code, message, 409)
-            upstream_task = _safe_upstream_task(matching_tasks[0])
-            if not upstream_task["task_id"] or not upstream_task["record_id"]:
-                raise QmfPreviewError("task_identity_missing", "全民防任务标识不完整")
-            if (
-                upstream_task["identity_number"] != identity
-                or _normalized_name(upstream_task["name"]) != _normalized_name(name)
-            ):
-                raise QmfPreviewError("task_person_mismatch", "全民防任务人员与平台任务不一致", 409)
-            if not _station_matches(
-                upstream_task["police_station"], settings.QMF_EXPECTED_STATION_NAME
-            ):
-                raise QmfPreviewError("task_station_mismatch", "全民防任务不属于目标派出所", 403)
-
-            person_response = await self._request(
-                client,
-                "enterHouse/queryPeopleBySfzh",
-                data={"sfzh": identity, "source": "android"},
-            )
-            raw_person = _business_payload(person_response, expected_object=True)
-            person = _safe_person(raw_person)
-            if (
-                person["identity_number"] != identity
-                or _normalized_name(person["name"]) != _normalized_name(name)
-            ):
-                raise QmfPreviewError("person_mismatch", "全民防人员登记资料与平台任务不一致", 409)
-            if (
-                not upstream_task["community_code"]
-                or not person["community_code"]
-                or upstream_task["community_code"] != person["community_code"]
-            ):
-                raise QmfPreviewError(
-                    "person_jurisdiction_mismatch",
-                    "全民防人员资料与任务辖区不一致",
-                    409,
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=False,
+                transport=self._transport,
+                headers={"User-Agent": "Binhu-QMF-Readonly/0.20.1"},
+            ) as client:
+                if login_session is not None:
+                    login_session.ensure_available()
+                task_response = await self._request(
+                    client, "fnmx/queryYysList", data=query_data
                 )
+                task_data = _business_payload(task_response, expected_object=True)
+                raw_tasks = task_data.get("list")
+                if not isinstance(raw_tasks, list):
+                    raise QmfPreviewError("task_response_invalid", "全民防任务响应结构无效")
+                try:
+                    total_tasks = int(task_data.get("total", -1))
+                except (TypeError, ValueError) as exc:
+                    raise QmfPreviewError(
+                        "task_response_invalid", "全民防任务响应结构无效"
+                    ) from exc
+                matching_tasks = [
+                    item for item in raw_tasks
+                    if isinstance(item, dict)
+                    and normalize_identity(_first(item, "sfzh", "personID")) == identity
+                ]
+                if total_tasks != 1 or len(matching_tasks) != 1:
+                    code = "task_not_found" if not matching_tasks else "task_not_unique"
+                    message = "全民防未找到唯一待处理任务"
+                    raise QmfPreviewError(code, message, 409)
+                upstream_task = _safe_upstream_task(matching_tasks[0])
+                if not upstream_task["task_id"] or not upstream_task["record_id"]:
+                    raise QmfPreviewError("task_identity_missing", "全民防任务标识不完整")
+                if (
+                    upstream_task["identity_number"] != identity
+                    or _normalized_name(upstream_task["name"]) != _normalized_name(name)
+                ):
+                    raise QmfPreviewError("task_person_mismatch", "全民防任务人员与平台任务不一致", 409)
+                if not _station_matches(
+                    upstream_task["police_station"], settings.QMF_EXPECTED_STATION_NAME
+                ):
+                    raise QmfPreviewError("task_station_mismatch", "全民防任务不属于目标派出所", 403)
 
-            photo_response = await self._request(
-                client,
-                "jzz/queryLocalPhoto",
-                params={"sfzh": identity, "timestamp": str(int(time.time() * 1000))},
-            )
-            photo = _photo_payload(photo_response)
+                if login_session is not None:
+                    login_session.ensure_available()
+                person_response = await self._request(
+                    client,
+                    "enterHouse/queryPeopleBySfzh",
+                    data={"sfzh": identity, "source": "android"},
+                )
+                raw_person = _business_payload(person_response, expected_object=True)
+                person = _safe_person(raw_person)
+                if (
+                    person["identity_number"] != identity
+                    or _normalized_name(person["name"]) != _normalized_name(name)
+                ):
+                    raise QmfPreviewError("person_mismatch", "全民防人员登记资料与平台任务不一致", 409)
+                if (
+                    not upstream_task["community_code"]
+                    or not person["community_code"]
+                    or upstream_task["community_code"] != person["community_code"]
+                ):
+                    raise QmfPreviewError(
+                        "person_jurisdiction_mismatch",
+                        "全民防人员资料与任务辖区不一致",
+                        409,
+                    )
 
-            check_response = await self._request(
-                client,
-                "enterHouse/checkCk",
-                data={"sfzh": identity, "source": "android"},
-            )
-            _business_payload(check_response, expected_object=False)
+                if login_session is not None:
+                    login_session.ensure_available()
+                photo_response = await self._request(
+                    client,
+                    "jzz/queryLocalPhoto",
+                    params={"sfzh": identity, "timestamp": str(int(time.time() * 1000))},
+                )
+                photo = _photo_payload(photo_response)
+
+                if login_session is not None:
+                    login_session.ensure_available()
+                check_response = await self._request(
+                    client,
+                    "enterHouse/checkCk",
+                    data={"sfzh": identity, "source": "android"},
+                )
+                _business_payload(check_response, expected_object=False)
+        finally:
+            if login_session is not None:
+                await login_session.close()
 
         return {
             "mode": "read_only",
