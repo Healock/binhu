@@ -34,8 +34,11 @@ import {
 } from '../utils/mobileTasks'
 import {
   clearMobileTaskListRestoration,
+  clearMobileTaskListSnapshot,
   readMobileTaskListRestoration,
+  readMobileTaskListSnapshot,
   writeMobileTaskListRestoration,
+  writeMobileTaskListSnapshot,
   type MobileTaskListRestoration,
 } from '../utils/mobileTaskListState'
 import MobilePhonePicker from '../components/MobilePhonePicker'
@@ -187,11 +190,18 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
   const taskDisplayMode = user?.task_display_mode || 'card'
   const restorationRef = useRef<MobileTaskListRestoration | null | undefined>(undefined)
+  const snapshotRef = useRef<ReturnType<typeof readMobileTaskListSnapshot> | undefined>(undefined)
   if (restorationRef.current === undefined) {
     restorationRef.current = navigationType === 'POP'
       ? readMobileTaskListRestoration(window.sessionStorage, mode, taskDisplayMode)
       : null
-    if (navigationType !== 'POP') clearMobileTaskListRestoration(window.sessionStorage)
+    snapshotRef.current = navigationType === 'POP'
+      ? readMobileTaskListSnapshot(mode, taskDisplayMode)
+      : null
+    if (navigationType !== 'POP') {
+      clearMobileTaskListRestoration(window.sessionStorage)
+      clearMobileTaskListSnapshot()
+    }
   }
   const restorationStartedRef = useRef(false)
   const pageRootRef = useRef<HTMLDivElement>(null)
@@ -202,16 +212,16 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
   const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
   const [watchCategoryOptions, setWatchCategoryOptions] = useState<Array<{ value: number; label: string; color: string; alert_level: string; count: number }>>([])
-  const [facets, setFacets] = useState<MobileTaskFacets>(EMPTY_FACETS)
-  const [rows, setRows] = useState<MobileTaskItem[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [loading, setLoading] = useState(true)
+  const [facets, setFacets] = useState<MobileTaskFacets>(() => snapshotRef.current?.facets || EMPTY_FACETS)
+  const [rows, setRows] = useState<MobileTaskItem[]>(() => snapshotRef.current?.rows || [])
+  const [total, setTotal] = useState(() => snapshotRef.current?.total || 0)
+  const [page, setPage] = useState(() => snapshotRef.current?.page || 1)
+  const [loading, setLoading] = useState(() => !snapshotRef.current)
   const [loadingMore, setLoadingMore] = useState(false)
   const [optionsLoading, setOptionsLoading] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
   const [error, setError] = useState('')
-  const [sourceMessage, setSourceMessage] = useState('')
+  const [sourceMessage, setSourceMessage] = useState(() => snapshotRef.current?.source_message || '')
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -225,7 +235,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const loadingMoreRef = useRef(false)
   const optionsRequestId = useRef(0)
   const listRequestId = useRef(0)
-  const loadedPageRef = useRef(1)
+  const loadedPageRef = useRef(snapshotRef.current?.loaded_page || 1)
   const canBulkAssign = assignment.enabled
   const usesDesktopTable = useCallback(() => (
     taskDisplayMode === 'table' && window.matchMedia('(min-width: 768px)').matches
@@ -264,6 +274,17 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
 
   const openTask = useCallback((task: MobileTaskItem) => {
     const scrollContainer = pageRootRef.current?.closest('main')
+    writeMobileTaskListSnapshot({
+      mode,
+      display_mode: taskDisplayMode,
+      rows,
+      total,
+      page,
+      loaded_page: loadedPageRef.current,
+      facets,
+      source_message: sourceMessage,
+      saved_at: Date.now(),
+    })
     writeMobileTaskListRestoration(window.sessionStorage, {
       version: 1,
       mode,
@@ -277,7 +298,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       saved_at: Date.now(),
     })
     navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
-  }, [analysisOnly, keywordInput, mode, navigate, page, scope, taskDisplayMode])
+  }, [analysisOnly, facets, keywordInput, mode, navigate, page, rows, scope, sourceMessage, taskDisplayMode, total])
 
   useEffect(() => {
     setSelectionMode(false)
@@ -542,7 +563,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         restorationRef.current = null
       }
       setTotal(result.total)
-      if (!silent) {
+      if (!silent || restorePageCount > 0) {
         setPage(targetPage)
         loadedPageRef.current = targetPage
       }
@@ -584,7 +605,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     if (restoration) {
       if (!restorationStartedRef.current) {
         restorationStartedRef.current = true
-        void load(restoration.page, false, false, restoration.loaded_page)
+        void load(
+          restoration.page,
+          false,
+          Boolean(snapshotRef.current),
+          restoration.loaded_page,
+        )
       }
       return
     }
