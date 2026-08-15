@@ -29,6 +29,30 @@ ISSUE_LABELS = {
 
 NORMAL_HOUSING_TYPES = {"个人出租", "单位出租", "自购房屋", "借住", "其他", "其它"}
 
+CERTIFICATE_FIELD_LABELS = {
+    "czrxm": "房东姓名",
+    "landlord_name": "房东姓名",
+    "czrzjhm": "房东身份证号",
+    "landlord_identity_number": "房东身份证号",
+    "sjczrxm": "实际承租人",
+    "actual_renter_name": "实际承租人",
+    "sjczrzjhm": "承租人身份证号",
+    "actual_renter_identity_number": "承租人身份证号",
+    "isSign": "签署状态",
+    "signed_status": "签署状态",
+    "signType": "签署类型",
+    "sign_type": "签署类型",
+    "signTime": "签署时间",
+    "sign_time": "签署时间",
+    "signurl": "告知书链接",
+    "document_ref": "告知书链接",
+}
+
+ISSUE_COMPARE_IGNORED_FIELDS = {
+    "source_row", "_source_row", "source_key", "source_sheet",
+    "address", "dz", "详细地址", "community", "sssq", "社区名称", "pcsname",
+}
+
 
 def normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
@@ -79,6 +103,61 @@ def normalize_address(value: Any) -> str:
 
 def normalize_housing_type(value: Any) -> str:
     return normalize_text(value)
+
+
+def issue_problem_details(
+    issue_type: str,
+    payload: dict[str, Any],
+    *,
+    entity_key: str = "",
+    group_payloads: Iterable[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    """Translate an import issue into user-facing field/value evidence.
+
+    The issue page is an external-system correction checklist.  It therefore
+    needs the exact field and current source value, not an opaque internal
+    issue code or an invitation to edit RegistryData directly.
+    """
+    address = normalize_text(
+        payload.get("address") or payload.get("dz") or payload.get("详细地址")
+        or payload.get("normalized_address") or entity_key
+    )
+    community = normalize_text(
+        payload.get("community") or payload.get("community_name")
+        or payload.get("社区名称") or payload.get("sssq")
+    )
+    housing_type = normalize_housing_type(payload.get("housing_type") or payload.get("住房类型"))
+
+    if issue_type == ISSUE_HOUSEHOLD_MISSING_TYPE:
+        return [{"field": "住房类型", "value": housing_type or "（空白）"}]
+    if issue_type == ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED:
+        return [{"field": "所属社区", "value": community or "（空白）"}]
+    if issue_type == ISSUE_HOUSEHOLD_DUPLICATE:
+        return [{"field": "标准详细地址", "value": address or "（空白）"}]
+    if issue_type == ISSUE_CERTIFICATE_DUPLICATE:
+        return [{"field": "告知书地址", "value": address or "（空白）"}]
+    if issue_type == ISSUE_CERTIFICATE_NON_RENTAL:
+        return [{"field": "告知书地址", "value": address or "（空白）"}]
+    if issue_type != ISSUE_CERTIFICATE_CONTENT_CONFLICT:
+        return [{"field": "来源数据", "value": entity_key or "（无法识别）"}]
+
+    comparable = list(group_payloads or [payload])
+    keys = sorted({
+        str(key)
+        for row in comparable
+        for key in row
+        if str(key) not in ISSUE_COMPARE_IGNORED_FIELDS
+    })
+    details: list[dict[str, str]] = []
+    for key in keys:
+        values = {normalize_text(row.get(key)) for row in comparable}
+        if len(values) <= 1:
+            continue
+        details.append({
+            "field": CERTIFICATE_FIELD_LABELS.get(key, key),
+            "value": normalize_text(payload.get(key)) or "（空白）",
+        })
+    return details or [{"field": "告知书内容", "value": "同一地址的多条记录内容不一致"}]
 
 
 def _certificate_signature(row: dict[str, Any]) -> tuple[tuple[str, str], ...]:

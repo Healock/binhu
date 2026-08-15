@@ -57,6 +57,15 @@ class RegistrySearch(BaseModel):
     page_size: int = Field(default=50, ge=1, le=200)
 
 
+class PropertySearch(BaseModel):
+    keyword: str = Field(default="", max_length=200)
+    community_id: int | None = None
+    housing_category: Literal["", "rental", "self_owned", "other", "unmarked"] = ""
+    status: Literal["", "active", "inactive"] = "active"
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
+
+
 class PropertyPersonRoleCreate(BaseModel):
     person_id: int = Field(gt=0)
     role_type_id: int = Field(gt=0)
@@ -155,29 +164,77 @@ def _person_payload(row, include_identity: bool = True) -> dict:
     }
 
 
-@router.get("/properties")
-async def list_properties(
-    community_id: int | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
-    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
-    conn=Depends(get_registry_db),
-):
+def _property_payload(row) -> dict:
+    return {
+        "id": int(row[0]),
+        "street": row[1],
+        "community_id": row[2],
+        "community_name": row[3],
+        "natural_address": row[4],
+        "building": row[5],
+        "room": row[6],
+        "housing_type": row[7],
+        "residence_type": row[8],
+        "source_house_no": row[9],
+        "source_updated_at": row[10].isoformat() if row[10] else None,
+        "source_type": row[11],
+        "source_ref": row[12],
+        "normalized_address": row[13],
+        "status": row[14],
+        "version": int(row[15]),
+        "created_at": row[16].isoformat() if row[16] else None,
+        "updated_at": row[17].isoformat() if row[17] else None,
+    }
+
+
+async def _property_search_result(
+    data: PropertySearch,
+    user: dict,
+    conn,
+) -> dict:
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
-    if allowed is not None and community_id is not None and community_id not in allowed:
+    if allowed is not None and data.community_id is not None and data.community_id not in allowed:
         raise HTTPException(403, "无权查看该社区档案")
+
     where: list[str] = []
     params: list[object] = []
     if allowed is not None:
         if not allowed:
-            return {"total": 0, "page": page, "page_size": page_size, "data": []}
+            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
         where.append("community_id IN (" + ",".join(["%s"] * len(allowed)) + ")")
         params.extend(allowed)
-    if community_id is not None:
+    if data.community_id is not None:
         where.append("community_id=%s")
-        params.append(community_id)
+        params.append(data.community_id)
+    if data.status:
+        where.append("status=%s")
+        params.append(data.status)
+    if data.housing_category == "rental":
+        where.append("housing_type IN (%s,%s)")
+        params.extend(["个人出租", "单位出租"])
+    elif data.housing_category == "self_owned":
+        where.append("housing_type=%s")
+        params.append("自购房屋")
+    elif data.housing_category == "other":
+        where.append("COALESCE(housing_type,'')<>'' AND housing_type NOT IN (%s,%s,%s)")
+        params.extend(["个人出租", "单位出租", "自购房屋"])
+    elif data.housing_category == "unmarked":
+        where.append("COALESCE(housing_type,'')='' ")
+
+    keyword = data.keyword.strip()
+    if keyword:
+        like_value = f"%{keyword}%"
+        where.append(
+            "(community_name_snapshot LIKE %s OR natural_address LIKE %s OR normalized_address LIKE %s "
+            "OR source_house_no LIKE %s OR building LIKE %s OR room LIKE %s "
+            "OR housing_type LIKE %s OR residence_type LIKE %s "
+            "OR EXISTS (SELECT 1 FROM registry_address_aliases alias "
+            "WHERE alias.property_id=registry_properties.id AND alias.enabled=1 AND alias.alias LIKE %s))"
+        )
+        params.extend([like_value] * 9)
+
     clause = " WHERE " + " AND ".join(where) if where else ""
-    offset = (page - 1) * page_size
+    offset = (data.page - 1) * data.page_size
     async with conn.cursor() as cur:
         await cur.execute(f"SELECT COUNT(*) FROM registry_properties{clause}", tuple(params))
         total = int((await cur.fetchone())[0])
@@ -186,37 +243,48 @@ async def list_properties(
             "building, room, housing_type, residence_type, source_house_no, source_updated_at, "
             "source_type, source_ref, normalized_address, status, current_version, created_at, updated_at "
             f"FROM registry_properties{clause} ORDER BY id DESC LIMIT %s OFFSET %s",
-            tuple(params) + (page_size, offset),
+            tuple(params) + (data.page_size, offset),
         )
         rows = await cur.fetchall()
     return {
         "total": total,
-        "page": page,
-        "page_size": page_size,
-        "data": [
-            {
-                "id": int(row[0]),
-                "street": row[1],
-                "community_id": row[2],
-                "community_name": row[3],
-                "natural_address": row[4],
-                "building": row[5],
-                "room": row[6],
-                "housing_type": row[7],
-                "residence_type": row[8],
-                "source_house_no": row[9],
-                "source_updated_at": row[10].isoformat() if row[10] else None,
-                "source_type": row[11],
-                "source_ref": row[12],
-                "normalized_address": row[13],
-                "status": row[14],
-                "version": int(row[15]),
-                "created_at": row[16].isoformat() if row[16] else None,
-                "updated_at": row[17].isoformat() if row[17] else None,
-            }
-            for row in rows
-        ],
+        "page": data.page,
+        "page_size": data.page_size,
+        "data": [_property_payload(row) for row in rows],
     }
+
+
+@router.get("/properties")
+async def list_properties(
+    community_id: int | None = Query(default=None),
+    housing_category: Literal["", "rental", "self_owned", "other", "unmarked"] = Query(default=""),
+    status: Literal["", "active", "inactive"] = Query(default="active"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    return await _property_search_result(
+        PropertySearch(
+            community_id=community_id,
+            housing_category=housing_category,
+            status=status,
+            page=page,
+            page_size=page_size,
+        ),
+        user,
+        conn,
+    )
+
+
+@router.post("/properties/search")
+async def search_properties(
+    data: PropertySearch,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    """搜索房屋档案；地址和户号关键词放在请求正文，避免进入访问日志 URL。"""
+    return await _property_search_result(data, user, conn)
 
 
 @router.post("/properties")

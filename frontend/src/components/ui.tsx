@@ -70,7 +70,7 @@ interface FeedbackProps {
 }
 
 interface ListToolbarProps {
-  filters: ReactNode
+  filters?: ReactNode
   meta?: ReactNode
   actions?: ReactNode
   notice?: ReactNode
@@ -82,7 +82,7 @@ export function ListToolbar({ filters, meta, actions, notice, extra, className =
   return (
     <section className={`app-card list-toolbar ${className}`.trim()}>
       {notice && <div className="list-toolbar__notice">{notice}</div>}
-      <div className="list-toolbar__filters">{filters}</div>
+      {filters && <div className="list-toolbar__filters">{filters}</div>}
       {extra && <div className="list-toolbar__extra">{extra}</div>}
       {(meta || actions) && (
         <div className="list-toolbar__status-row">

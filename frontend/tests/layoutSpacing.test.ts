@@ -26,6 +26,20 @@ test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   assert.match(styles, /\.settings-field--counted\s*\{[^}]*padding-bottom:\s*22px/s)
 })
 
+test('辖区档案连续区块由父级 gap 分隔且筛选不游离在工具栏外', () => {
+  const registrySource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(registrySource, /className="registry-management__content"/)
+  assert.match(registrySource, /filters=\{toolbarFilters\}/)
+  assert.doesNotMatch(registrySource, /<Space wrap className="mb-3">/)
+  assert.match(styles, /\.registry-management__content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*16px/s)
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.registry-management__content\s*\{[^}]*gap:\s*12px/s)
+})
+
 test('在线查询桌面端把数据范围控件放在工作表状态提示左侧', () => {
   const querySource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),
