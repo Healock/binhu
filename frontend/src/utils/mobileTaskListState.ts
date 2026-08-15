@@ -1,3 +1,5 @@
+import type { MobileTaskFacets, MobileTaskItem } from '../api/client'
+
 export type MobileTaskListMode = 'tasks' | 'analysis'
 export type MobileTaskListDisplayMode = 'card' | 'table'
 
@@ -14,8 +16,43 @@ export interface MobileTaskListRestoration {
   saved_at: number
 }
 
+export interface MobileTaskListSnapshot {
+  mode: MobileTaskListMode
+  display_mode: MobileTaskListDisplayMode
+  rows: MobileTaskItem[]
+  total: number
+  page: number
+  loaded_page: number
+  facets: MobileTaskFacets
+  source_message: string
+  saved_at: number
+}
+
 const STORAGE_KEY = 'mobile-task-list-restoration:v1'
 const MAX_AGE_MS = 30 * 60 * 1000
+let taskListSnapshot: MobileTaskListSnapshot | null = null
+
+export function writeMobileTaskListSnapshot(snapshot: MobileTaskListSnapshot) {
+  taskListSnapshot = snapshot
+}
+
+export function readMobileTaskListSnapshot(
+  mode: MobileTaskListMode,
+  displayMode: MobileTaskListDisplayMode,
+  now = Date.now(),
+): MobileTaskListSnapshot | null {
+  if (
+    !taskListSnapshot
+    || taskListSnapshot.mode !== mode
+    || taskListSnapshot.display_mode !== displayMode
+    || now - taskListSnapshot.saved_at > MAX_AGE_MS
+  ) return null
+  return taskListSnapshot
+}
+
+export function clearMobileTaskListSnapshot() {
+  taskListSnapshot = null
+}
 
 function isRestoration(value: unknown): value is MobileTaskListRestoration {
   if (!value || typeof value !== 'object') return false
