@@ -2511,6 +2511,35 @@ export interface RegistryImportIssue {
 
 export type RegistryHousingCategory = '' | 'rental' | 'self_owned' | 'other' | 'unmarked'
 
+export interface RegistryCertificateSourceRun {
+  id: number
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  phase: 'queued' | 'reading' | 'classifying' | 'writing_preview' | 'finished'
+  current_page: number
+  fetched_count: number
+  accepted_count: number
+  rejected_count: number
+  batch_id: number | null
+  preview: {
+    batch_id?: number
+    status?: string
+    idempotent?: boolean
+    total_count?: number
+    normal_count?: number
+    issue_count?: number
+    problem_row_count?: number
+    duplicate_groups?: number
+    conflict_groups?: number
+  }
+  error_code: string | null
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  reused?: boolean
+}
+
 export interface WatchCategory {
   id: number
   code: string
@@ -2584,6 +2613,20 @@ export const registryApi = {
       issue_count: number; problem_row_count: number; duplicate_groups: number; conflict_groups: number
       source_record_count: number; source_rejected_count: number
     }
+  },
+  async startCertificateSourceRun() {
+    return (await api.post('/registry/imports/certificates/source-runs', {}, activeRequest)).data as RegistryCertificateSourceRun
+  },
+  async latestCertificateSourceRun() {
+    return (await api.get('/registry/imports/certificates/source-runs/latest')).data as {
+      data: RegistryCertificateSourceRun | null
+    }
+  },
+  async certificateSourceRun(runId: number) {
+    return (await api.get(`/registry/imports/certificates/source-runs/${runId}`)).data as RegistryCertificateSourceRun
+  },
+  async retryCertificateSourceRun(runId: number, restart = false) {
+    return (await api.post(`/registry/imports/certificates/source-runs/${runId}/retry`, { restart }, activeRequest)).data as RegistryCertificateSourceRun
   },
   async confirmCertificateImport(batchId: number) {
     return (await api.post(`/registry/imports/certificates/${batchId}/confirm`, {}, {

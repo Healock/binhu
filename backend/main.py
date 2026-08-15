@@ -54,6 +54,10 @@ from services.online_local_writeback import (
 )
 from services.client_compatibility import ClientCompatibilityMiddleware
 from services.txdocs_usage import stop_txdocs_usage_tasks
+from services.registry_certificate_jobs import (
+    recover_interrupted_certificate_source_runs,
+    stop_certificate_source_tasks,
+)
 
 
 @asynccontextmanager
@@ -74,6 +78,12 @@ async def lifespan(app: FastAPI):
         print(
             f"[VISIT] 已关闭 {interrupted_visit_imports} "
             "个服务重启前遗留的导入任务"
+        )
+    interrupted_certificate_runs = await recover_interrupted_certificate_source_runs()
+    if interrupted_certificate_runs:
+        print(
+            f"[REGISTRY_CERTIFICATE] 已保留 {interrupted_certificate_runs} 个"
+            "服务重启前遗留任务的分页进度"
         )
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
@@ -99,6 +109,7 @@ async def lifespan(app: FastAPI):
         await stop_photo_sheet_tasks()
         await stop_online_writeback_tasks()
         await stop_txdocs_usage_tasks()
+        await stop_certificate_source_tasks()
         await close_db()
 
 

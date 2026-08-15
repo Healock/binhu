@@ -164,6 +164,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "visit_summary": "走访汇总",
     "registry_property": "辖区房屋档案",
     "registry_source_batch": "档案导入批次",
+    "registry_certificate_source_run": "告知书读取任务",
     "registry_import_issue": "档案导入问题",
     "registry_property_person_role": "房屋人员关系",
     "registry_property_organization_role": "房屋机构关系",

@@ -182,7 +182,7 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 conn=FakeConnection(),
             )
 
-        self.assertEqual(payload["server_version"], "0.20.5")
+        self.assertEqual(payload["server_version"], "0.20.6")
         self.assertEqual(payload["business_date"], "2026-08-11")
         self.assertEqual(payload["timezone"], "Asia/Shanghai")
         self.assertTrue(payload["must_upgrade"])

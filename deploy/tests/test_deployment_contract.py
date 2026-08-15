@@ -40,6 +40,8 @@ class DeploymentContractTests(unittest.TestCase):
             'bundle_size="$(wc -c < release-output/binhu-release.tar.gz)"',
             workflow,
         )
+        self.assertIn('gateway_started="$(date +%s)"', workflow)
+        self.assertIn("Fixed gateway upload and server deployment completed", workflow)
         self.assertIn(
             '"deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $RELEASE_SCOPE $bundle_size"',
             workflow,
@@ -88,6 +90,25 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('release_scope="full"', script)
         self.assertIn('RELEASE_SCOPE=%s', script)
         self.assertIn('release received in', script)
+        self.assertIn('release validated and extracted in', script)
+        self.assertIn('deployment preflight completed in', script)
+        self.assertIn('database backup scope ${backup_scope} completed in', script)
+        self.assertIn('application files switched in', script)
+        self.assertIn('application containers recreated in', script)
+        self.assertIn('deployment health checks completed in', script)
+        self.assertIn('"timings_seconds"', script)
+        for timing_name in (
+            "RECEIVE",
+            "VALIDATE_EXTRACT",
+            "PREFLIGHT",
+            "IMAGE_BUILD",
+            "PROGRAM_BACKUP",
+            "DATABASE_BACKUP",
+            "SWITCH_FILES",
+            "CONTAINER_RECREATE",
+            "HEALTH_CHECKS",
+        ):
+            self.assertIn(f"DEPLOY_TIMING_{timing_name}_SECONDS", script)
         self.assertIn('if [[ "$status" == "success" ]]', script)
         self.assertIn('rm -rf -- "$project_dir/backend"', script)
         self.assertIn('release_scope" == "frontend"', script)

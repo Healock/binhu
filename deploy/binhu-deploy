@@ -105,6 +105,15 @@ program_backup=""
 rollback_tag=""
 candidate_tag=""
 previous_version=""
+timing_receive=0
+timing_validate=0
+timing_preflight=0
+timing_build=0
+timing_program_backup=0
+timing_database_backup=0
+timing_switch_files=0
+timing_container_recreate=0
+timing_health_checks=0
 
 cleanup() {
   [[ "$incoming_bundle" == "$state_dir/incoming/"* ]] \
@@ -127,7 +136,7 @@ from pathlib import Path
 
 target = Path(sys.argv[1])
 payload = {
-    "schema": 1,
+    "schema": 2,
     "status": sys.argv[2],
     "version": "$release_version",
     "commit": "$release_commit",
@@ -139,6 +148,17 @@ payload = {
     "release_dir": "$release_dir",
     "program_backup": "$program_backup",
     "rollback_image": "$rollback_tag",
+    "timings_seconds": {
+        "receive": $timing_receive,
+        "validate_extract": $timing_validate,
+        "preflight": $timing_preflight,
+        "image_build": $timing_build,
+        "program_backup": $timing_program_backup,
+        "database_backup": $timing_database_backup,
+        "switch_files": $timing_switch_files,
+        "container_recreate": $timing_container_recreate,
+        "health_checks": $timing_health_checks,
+    },
 }
 target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
@@ -187,8 +207,10 @@ log "receiving ${release_scope} release ${release_version} (${short_commit}), ${
 head -c "$expected_bundle_size" > "$incoming_bundle"
 bundle_size="$(wc -c < "$incoming_bundle")"
 [[ "$bundle_size" == "$expected_bundle_size" ]] || fail "incomplete release bundle"
-log "release received in $(( $(date +%s) - receive_started ))s"
+timing_receive=$(( $(date +%s) - receive_started ))
+log "release received in ${timing_receive}s"
 
+validate_started="$(date +%s)"
 python3 - "$incoming_bundle" <<'PY'
 import sys
 import tarfile
@@ -312,7 +334,10 @@ else
 fi
 [[ ! -e "$release_dir/source/.env" && ! -e "$release_dir/source/AGENTS.local.md" ]] \
   || fail "release contains a private local file"
+timing_validate=$(( $(date +%s) - validate_started ))
+log "release validated and extracted in ${timing_validate}s"
 
+preflight_started="$(date +%s)"
 available_kb="$(df -Pk "$project_dir" | awk 'NR == 2 {print $4}')"
 [[ "$available_kb" =~ ^[0-9]+$ && "$available_kb" -ge "$BINHU_DEPLOY_MIN_FREE_KB" ]] \
   || fail "not enough free disk space"
@@ -324,6 +349,8 @@ active_jobs="$(docker exec binhu-mysql sh -c \
   'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -Nse "SELECT (SELECT COUNT(*) FROM OnlineData._sync_log WHERE status IN ('"'"'pending'"'"','"'"'running'"'"')) + (SELECT COUNT(*) FROM OnlineData._backup_jobs WHERE status IN ('"'"'pending'"'"','"'"'running'"'"'));"' \
   2>/dev/null)"
 [[ "$active_jobs" == "0" ]] || fail "sync or backup task is active"
+timing_preflight=$(( $(date +%s) - preflight_started ))
+log "deployment preflight completed in ${timing_preflight}s"
 
 previous_version="$(tr -d '\r\n' < "$project_dir/VERSION")"
 [[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "current VERSION is invalid"
@@ -337,7 +364,8 @@ else
   log "building candidate image"
   docker build --pull=false -t "$candidate_tag" \
     -f "$release_dir/source/backend/Dockerfile" "$release_dir/source/backend"
-  log "candidate image built in $(( $(date +%s) - build_started ))s"
+  timing_build=$(( $(date +%s) - build_started ))
+  log "candidate image built in ${timing_build}s"
 fi
 
 readonly backup_dir="$project_dir/deploy-backups/automated/$release_id"
@@ -360,7 +388,8 @@ gzip -t "$program_backup"
 if [[ -n "$rollback_tag" ]]; then
   docker tag binhu-backend:latest "$rollback_tag"
 fi
-log "rollback program archive prepared in $(( $(date +%s) - program_backup_started ))s"
+timing_program_backup=$(( $(date +%s) - program_backup_started ))
+log "rollback program archive prepared in ${timing_program_backup}s"
 
 backup_database() {
   local database_name="$1"
@@ -374,6 +403,7 @@ backup_database() {
   sha256sum "$destination" > "$destination.sha256"
 }
 
+database_backup_started="$(date +%s)"
 case "$backup_scope" in
   online) backup_database OnlineData ;;
   daily) backup_database daily_report ;;
@@ -421,8 +451,11 @@ payload = {
     json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
 )
 PY
+timing_database_backup=$(( $(date +%s) - database_backup_started ))
+log "database backup scope ${backup_scope} completed in ${timing_database_backup}s"
 
 log "switching from ${previous_version} to ${release_version}"
+switch_files_started="$(date +%s)"
 readonly dist_target="$(readlink -m "$project_dir/frontend/dist")"
 [[ "$dist_target" == "$project_dir/frontend/dist" ]] || fail "unexpected frontend target"
 switched=1
@@ -438,12 +471,19 @@ tar -C "$release_dir/source" -cf - . | tar -C "$project_dir" -xf -
 if [[ -n "$candidate_tag" ]]; then
   docker tag "$candidate_tag" binhu-backend:latest
 fi
+timing_switch_files=$(( $(date +%s) - switch_files_started ))
+log "application files switched in ${timing_switch_files}s"
+
+container_recreate_started="$(date +%s)"
 (
   cd "$project_dir"
   docker compose config --quiet
   docker compose up -d --no-deps --force-recreate ops-agent backend
 )
+timing_container_recreate=$(( $(date +%s) - container_recreate_started ))
+log "application containers recreated in ${timing_container_recreate}s"
 
+health_checks_started="$(date +%s)"
 ready=0
 for _ in $(seq 1 60); do
   if health="$(curl -fsS http://127.0.0.1:37125/api/health 2>/dev/null)" \
@@ -486,6 +526,8 @@ PY
 
 error_lines="$(docker logs --since "$started_at" binhu-backend 2>&1 \
   | grep -Eic 'Traceback|ERROR|CRITICAL|Exception' || true)"
+timing_health_checks=$(( $(date +%s) - health_checks_started ))
+log "deployment health checks completed in ${timing_health_checks}s"
 write_history "success"
 log "deployment succeeded"
 printf 'DEPLOY_RESULT=success\n'
@@ -496,3 +538,12 @@ printf 'BACKUP_SCOPE=%s\n' "$backup_scope"
 printf 'RELEASE_SCOPE=%s\n' "$release_scope"
 printf 'RELEASE_BYTES=%s\n' "$bundle_size"
 printf 'STARTUP_ERROR_LINES=%s\n' "$error_lines"
+printf 'DEPLOY_TIMING_RECEIVE_SECONDS=%s\n' "$timing_receive"
+printf 'DEPLOY_TIMING_VALIDATE_EXTRACT_SECONDS=%s\n' "$timing_validate"
+printf 'DEPLOY_TIMING_PREFLIGHT_SECONDS=%s\n' "$timing_preflight"
+printf 'DEPLOY_TIMING_IMAGE_BUILD_SECONDS=%s\n' "$timing_build"
+printf 'DEPLOY_TIMING_PROGRAM_BACKUP_SECONDS=%s\n' "$timing_program_backup"
+printf 'DEPLOY_TIMING_DATABASE_BACKUP_SECONDS=%s\n' "$timing_database_backup"
+printf 'DEPLOY_TIMING_SWITCH_FILES_SECONDS=%s\n' "$timing_switch_files"
+printf 'DEPLOY_TIMING_CONTAINER_RECREATE_SECONDS=%s\n' "$timing_container_recreate"
+printf 'DEPLOY_TIMING_HEALTH_CHECKS_SECONDS=%s\n' "$timing_health_checks"

@@ -280,6 +280,43 @@ async def ensure_registry_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_certificate_source_runs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            phase VARCHAR(30) NOT NULL DEFAULT 'queued',
+            requested_by BIGINT DEFAULT NULL,
+            current_page INT UNSIGNED NOT NULL DEFAULT 0,
+            fetched_count INT UNSIGNED NOT NULL DEFAULT 0,
+            accepted_count INT UNSIGNED NOT NULL DEFAULT 0,
+            rejected_count INT UNSIGNED NOT NULL DEFAULT 0,
+            batch_id BIGINT DEFAULT NULL,
+            summary_json JSON DEFAULT NULL,
+            error_code VARCHAR(60) DEFAULT NULL,
+            error_message VARCHAR(500) DEFAULT NULL,
+            started_at DATETIME DEFAULT NULL,
+            finished_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_registry_certificate_run_status (status, created_at),
+            INDEX idx_registry_certificate_run_requester (requested_by, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_certificate_source_pages (
+            run_id BIGINT NOT NULL,
+            page_no INT UNSIGNED NOT NULL,
+            row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            accepted_count INT UNSIGNED NOT NULL DEFAULT 0,
+            rejected_count INT UNSIGNED NOT NULL DEFAULT 0,
+            fingerprint CHAR(64) NOT NULL,
+            payload_json JSON NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (run_id, page_no),
+            INDEX idx_registry_certificate_page_fingerprint (run_id, fingerprint)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_change_candidates (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             batch_id BIGINT DEFAULT NULL,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -18,9 +19,45 @@ from services.visit_source import VisitSourceError, _business_payload, _items, _
 
 
 CERTIFICATE_ENDPOINT = "/api/address/queryHouseCertificate"
+CERTIFICATE_PAGE_SIZE = 200
 
 
-async def fetch_certificate_rows() -> dict[str, Any]:
+def certificate_page_fingerprint(rows: list[dict[str, Any]]) -> str:
+    return sha256(
+        json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def normalize_certificate_page(
+    page_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    rejected = 0
+    for raw in page_rows:
+        station = _text(raw.get("pcsname") or raw.get("policeStation") or raw.get("派出所"))
+        if not _is_expected_police_station(station):
+            rejected += 1
+            continue
+        address = _text(raw.get("dz") or raw.get("address"))
+        community = _text(raw.get("sssq") or raw.get("community"))
+        if not address or not community:
+            rejected += 1
+            continue
+        row = dict(raw)
+        row["pcsname"] = settings.VISIT_SOURCE_POLICE_NAME
+        row["address"] = address
+        row["community"] = community
+        rows.append(row)
+    return rows, rejected
+
+
+async def iter_certificate_pages(
+    *,
+    start_page: int = 1,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield validated upstream pages without keeping the full source in memory."""
+    if start_page < 1:
+        raise ValueError("start_page must be positive")
     if not settings.VISIT_SOURCE_BASE_URL:
         raise VisitSourceError("not_configured", "来源平台地址尚未配置")
     headers = {"Accept": "application/json"}
@@ -29,8 +66,6 @@ async def fetch_certificate_rows() -> dict[str, Any]:
     elif not settings.VISIT_SOURCE_USERNAME or not settings.VISIT_SOURCE_PASSWORD:
         raise VisitSourceError("authentication_required", "来源平台认证信息尚未配置")
 
-    rows: list[dict[str, Any]] = []
-    rejected = 0
     async with httpx.AsyncClient(
         base_url=settings.VISIT_SOURCE_BASE_URL.rstrip("/"),
         timeout=settings.VISIT_SOURCE_TIMEOUT_SECONDS,
@@ -57,15 +92,14 @@ async def fetch_certificate_rows() -> dict[str, Any]:
             except (httpx.RequestError, ValueError) as exc:
                 raise VisitSourceError("authentication_failed", "来源平台认证响应无法读取") from exc
 
-        fingerprints: set[str] = set()
-        for page in range(1, settings.VISIT_SOURCE_MAX_PAGES + 1):
+        for page in range(start_page, settings.VISIT_SOURCE_MAX_PAGES + 1):
             try:
                 response = await client.get(
                     CERTIFICATE_ENDPOINT,
                     params={
                         "deptCode": settings.VISIT_SOURCE_POLICE_CODE,
                         "pageNum": page,
-                        "pageSize": 200,
+                        "pageSize": CERTIFICATE_PAGE_SIZE,
                     },
                 )
                 response.raise_for_status()
@@ -81,34 +115,39 @@ async def fetch_certificate_rows() -> dict[str, Any]:
                 raise VisitSourceError("request_error", "告知书来源响应无法读取") from exc
 
             page_rows = _items(payload)
-            if len(page_rows) == 200:
-                fingerprint = sha256(json.dumps(page_rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-                if fingerprint in fingerprints:
-                    raise VisitSourceError("pagination_repeated", "告知书来源重复返回同一分页，已停止读取")
-                fingerprints.add(fingerprint)
-            for raw in page_rows:
-                station = _text(raw.get("pcsname") or raw.get("policeStation") or raw.get("派出所"))
-                if not _is_expected_police_station(station):
-                    rejected += 1
-                    continue
-                address = _text(raw.get("dz") or raw.get("address"))
-                community = _text(raw.get("sssq") or raw.get("community"))
-                if not address or not community:
-                    rejected += 1
-                    continue
-                row = dict(raw)
-                row["pcsname"] = settings.VISIT_SOURCE_POLICE_NAME
-                row["address"] = address
-                row["community"] = community
-                row["source_row"] = len(rows) + 1
-                rows.append(row)
-            if len(rows) > settings.VISIT_SOURCE_MAX_RECORDS:
-                raise VisitSourceError("too_many_records", "告知书来源记录数超过保护阈值")
-            if len(page_rows) < 200:
-                break
-        else:
-            raise VisitSourceError("too_many_pages", "告知书来源分页超过保护阈值")
+            normalized, rejected = normalize_certificate_page(page_rows)
+            yield {
+                "page": page,
+                "raw_count": len(page_rows),
+                "rows": normalized,
+                "rejected_count": rejected,
+                "fingerprint": certificate_page_fingerprint(page_rows),
+                "is_last": len(page_rows) < CERTIFICATE_PAGE_SIZE,
+            }
+            if len(page_rows) < CERTIFICATE_PAGE_SIZE:
+                return
+    raise VisitSourceError("too_many_pages", "告知书来源分页超过保护阈值")
+
+
+async def fetch_certificate_rows() -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    rejected = 0
+    fingerprints: set[str] = set()
+    total_records = 0
+    async for page in iter_certificate_pages():
+        fingerprint = str(page["fingerprint"])
+        if page["raw_count"] == CERTIFICATE_PAGE_SIZE and fingerprint in fingerprints:
+            raise VisitSourceError("pagination_repeated", "告知书来源重复返回同一分页，已停止读取")
+        fingerprints.add(fingerprint)
+        for row in page["rows"]:
+            materialized = dict(row)
+            materialized["source_row"] = len(rows) + 1
+            rows.append(materialized)
+        rejected += int(page["rejected_count"])
+        total_records += int(page["raw_count"])
+        if total_records > settings.VISIT_SOURCE_MAX_RECORDS:
+            raise VisitSourceError("too_many_records", "告知书来源记录数超过保护阈值")
 
     if not rows:
         raise VisitSourceError("scope_or_schema", "没有通过派出所、社区和地址校验的告知书记录")
-    return {"rows": rows, "record_count": len(rows) + rejected, "valid_count": len(rows), "issue_count": rejected}
+    return {"rows": rows, "record_count": total_records, "valid_count": len(rows), "issue_count": rejected}

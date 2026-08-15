@@ -183,6 +183,8 @@ jobs:
           set -Eeuo pipefail
           bundle_size="$(wc -c < release-output/binhu-release.tar.gz)"
           [[ "$bundle_size" =~ ^[1-9][0-9]*$ ]]
+          printf 'Release bundle size: %s bytes\n' "$bundle_size"
+          gateway_started="$(date +%s)"
           ssh -F /dev/null \
             -i "$RUNNER_TEMP/binhu-ssh/deploy_key" \
             -o BatchMode=yes \
@@ -197,3 +199,5 @@ jobs:
             "binhu-deploy@$DEPLOY_HOST" \
             "deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $RELEASE_SCOPE $bundle_size" \
             < release-output/binhu-release.tar.gz
+          gateway_elapsed=$(( $(date +%s) - gateway_started ))
+          printf 'Fixed gateway upload and server deployment completed in %ss\n' "$gateway_elapsed"
