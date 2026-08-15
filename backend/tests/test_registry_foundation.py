@@ -9,6 +9,8 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import settings
+from routers import registry as registry_router
+from routers.registry import PropertySearch, _property_search_result
 from routers.registry_extended import _household_import_community
 from services.permissions import (
     ALL_PERMISSIONS,
@@ -25,6 +27,7 @@ from services.registry_import import (
     classify_household_rows,
     classify_certificate_rows,
     household_community_candidates,
+    issue_problem_details,
     normalize_address,
     normalize_community,
 )
@@ -150,6 +153,88 @@ def test_certificate_import_keeps_physical_rows_and_flags_content_conflicts():
     assert result["issue_count"] == 4
     assert result["problem_row_count"] == 2
     assert result["normal_count"] == 1
+
+
+def test_import_issue_evidence_names_field_and_current_bad_value():
+    assert issue_problem_details(
+        ISSUE_HOUSEHOLD_MISSING_TYPE,
+        {"address": "长板社区1号", "housing_type": ""},
+    ) == [{"field": "住房类型", "value": "（空白）"}]
+
+    group = [
+        {"address": "长板社区2号", "czrxm": "甲", "isSign": "已签署"},
+        {"address": "长板社区2号", "czrxm": "乙", "isSign": "未签署"},
+    ]
+    details = issue_problem_details(
+        "certificate_content_conflict",
+        group[0],
+        group_payloads=group,
+    )
+    assert {item["field"]: item["value"] for item in details} == {
+        "房东姓名": "甲",
+        "签署状态": "已签署",
+    }
+
+
+class _PropertySearchCursor:
+    def __init__(self):
+        self.calls = []
+        self.mode = ""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def execute(self, sql, params=()):
+        self.calls.append((sql, tuple(params)))
+        self.mode = "count" if sql.startswith("SELECT COUNT") else "rows"
+
+    async def fetchone(self):
+        return (12,)
+
+    async def fetchall(self):
+        return []
+
+
+class _PropertySearchConnection:
+    def __init__(self):
+        self.search_cursor = _PropertySearchCursor()
+
+    def cursor(self):
+        return self.search_cursor
+
+
+@pytest.mark.asyncio
+async def test_property_search_combines_scope_keyword_community_and_housing_filters(monkeypatch):
+    async def allowed_ids(_user, _permission):
+        return [3, 4]
+
+    monkeypatch.setattr(registry_router, "_allowed_community_ids", allowed_ids)
+    conn = _PropertySearchConnection()
+    result = await _property_search_result(
+        PropertySearch(
+            keyword="南厍",
+            community_id=3,
+            housing_category="rental",
+            status="active",
+            page=2,
+            page_size=20,
+        ),
+        {"id": 1},
+        conn,
+    )
+
+    count_sql, count_params = conn.search_cursor.calls[0]
+    row_sql, row_params = conn.search_cursor.calls[1]
+    assert "community_id IN" in count_sql
+    assert "community_id=%s" in count_sql
+    assert "housing_type IN" in count_sql
+    assert "registry_address_aliases" in count_sql
+    assert count_params.count("%南厍%") == 9
+    assert row_params[-2:] == (20, 20)
+    assert result == {"total": 12, "page": 2, "page_size": 20, "data": []}
 
 
 def test_new_permissions_are_catalogued_and_defaulted():

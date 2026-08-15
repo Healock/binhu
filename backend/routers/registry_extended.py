@@ -35,6 +35,7 @@ from services.registry_import import (
     classify_certificate_rows,
     classify_household_rows,
     household_community_candidates,
+    issue_problem_details,
     normalize_address,
     normalize_community,
     normalize_text,
@@ -357,6 +358,17 @@ class RegistryIssueItem(BaseModel):
     entity_key: str = Field(default="", max_length=500)
     payload: dict = Field(default_factory=dict)
     reason: str = Field(default="", max_length=500)
+
+
+class RegistryIssueSearch(BaseModel):
+    keyword: str = Field(default="", max_length=200)
+    status: Literal["", "pending", "resolved", "dismissed"] = "pending"
+    issue_type: str = Field(default="", max_length=60)
+    source_type: Literal["", "household", "certificate"] = ""
+    community_id: int | None = None
+    housing_category: Literal["", "rental", "self_owned", "other", "unmarked"] = ""
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=500)
 
 
 class RegistryIssueBulkCreate(BaseModel):
@@ -1483,14 +1495,28 @@ def _source_datetime(value):
         return None
 
 
-def _issue_public(row, include_payload: bool = False, reveal_sensitive: bool = False) -> dict:
+def _issue_public(
+    row,
+    include_payload: bool = False,
+    reveal_sensitive: bool = False,
+    group_payloads: list[dict] | None = None,
+) -> dict:
     payload = _json(row[6], {})
     safe_payload = payload if reveal_sensitive else _redact_sensitive_payload(payload)
+    safe_group_payloads = group_payloads or []
+    if not reveal_sensitive:
+        safe_group_payloads = [_redact_sensitive_payload(item) for item in safe_group_payloads]
     return {
         "id": int(row[0]), "batch_id": row[1], "issue_type": row[2], "source_type": row[3],
         "source_ref": row[4], "entity_key": row[5], "payload": safe_payload if include_payload else {},
         "reason": row[7], "status": row[8], "review_note": row[9], "reviewed_by": row[10],
         "reviewed_at": _iso(row[11]), "created_at": _iso(row[12]),
+        "problem_details": issue_problem_details(
+            str(row[2]),
+            safe_payload,
+            entity_key=str(row[5] or ""),
+            group_payloads=safe_group_payloads or None,
+        ),
     }
 
 
@@ -2074,6 +2100,124 @@ async def confirm_certificate_import(
     return result
 
 
+async def _registry_import_issue_search_result(
+    data: RegistryIssueSearch,
+    user: dict,
+    conn,
+) -> dict:
+    where: list[str] = []
+    params: list[object] = []
+    if data.status:
+        where.append("status=%s")
+        params.append(data.status)
+    if data.issue_type:
+        where.append("issue_type=%s")
+        params.append(data.issue_type)
+    if data.source_type:
+        where.append("source_type=%s")
+        params.append(data.source_type)
+
+    allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
+    if allowed is not None and data.community_id is not None and data.community_id not in allowed:
+        raise HTTPException(403, "无权查看该社区问题数据")
+    scoped_communities = [data.community_id] if data.community_id is not None else allowed
+    community_expr = (
+        "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community')), ''), "
+        "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community_name')), ''), "
+        "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.社区名称')), ''), "
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.sssq')))"
+    )
+    if scoped_communities is not None:
+        if not scoped_communities:
+            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+        placeholders = ",".join(["%s"] * len(scoped_communities))
+        where.append(
+            "EXISTS (SELECT 1 FROM _communities c LEFT JOIN _community_aliases a ON a.community_id=c.id "
+            f"WHERE c.id IN ({placeholders}) AND (c.name={community_expr} OR a.alias={community_expr}))"
+        )
+        params.extend(scoped_communities)
+
+    housing_expr = (
+        "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.housing_type')), ''), "
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.住房类型')), '')"
+    )
+    if data.housing_category == "rental":
+        where.append(f"{housing_expr} IN (%s,%s)")
+        params.extend(["个人出租", "单位出租"])
+    elif data.housing_category == "self_owned":
+        where.append(f"{housing_expr}=%s")
+        params.append("自购房屋")
+    elif data.housing_category == "other":
+        where.append(f"{housing_expr}<>'' AND {housing_expr} NOT IN (%s,%s,%s)")
+        params.extend(["个人出租", "单位出租", "自购房屋"])
+    elif data.housing_category == "unmarked":
+        where.append(f"{housing_expr}='' ")
+
+    keyword = data.keyword.strip()
+    if keyword:
+        address_expr = (
+            "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.address')), ''), "
+            "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.normalized_address')), ''), "
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.详细地址')), '')"
+        )
+        house_no_expr = (
+            "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.house_no')), ''), "
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.户号')), '')"
+        )
+        like_value = f"%{keyword}%"
+        where.append(
+            f"(source_ref LIKE %s OR entity_key LIKE %s OR reason LIKE %s OR {community_expr} LIKE %s "
+            f"OR {address_expr} LIKE %s OR {house_no_expr} LIKE %s OR {housing_expr} LIKE %s)"
+        )
+        params.extend([like_value] * 7)
+
+    clause = " AND ".join(where) if where else "1=1"
+    async with conn.cursor() as cur:
+        await cur.execute(f"SELECT COUNT(*) FROM registry_import_issues WHERE {clause}", tuple(params))
+        total = int((await cur.fetchone())[0])
+        await cur.execute(
+            "SELECT id, batch_id, issue_type, source_type, source_ref, entity_key, payload_json, "
+            "reason, status, review_note, reviewed_by, reviewed_at, created_at "
+            f"FROM registry_import_issues WHERE {clause} ORDER BY id DESC LIMIT %s OFFSET %s",
+            tuple(params) + (data.page_size, (data.page - 1) * data.page_size),
+        )
+        rows = await cur.fetchall()
+
+        conflict_batches = sorted({
+            int(row[1]) for row in rows
+            if row[1] is not None and str(row[2]) == ISSUE_CERTIFICATE_CONTENT_CONFLICT
+        })
+        conflict_groups: dict[tuple[int, str], list[dict]] = {}
+        if conflict_batches:
+            placeholders = ",".join(["%s"] * len(conflict_batches))
+            await cur.execute(
+                "SELECT batch_id, entity_key, payload_json FROM registry_import_issues "
+                f"WHERE issue_type=%s AND batch_id IN ({placeholders})",
+                (ISSUE_CERTIFICATE_CONTENT_CONFLICT, *conflict_batches),
+            )
+            for batch_id, entity_key, payload_json in await cur.fetchall():
+                conflict_groups.setdefault((int(batch_id), str(entity_key or "")), []).append(
+                    _json(payload_json, {})
+                )
+
+    reveal_sensitive = REGISTRY_IMPORT_MANAGE in set(user.get("permissions") or [])
+    return {
+        "total": total,
+        "page": data.page,
+        "page_size": data.page_size,
+        "data": [
+            _issue_public(
+                row,
+                include_payload=True,
+                reveal_sensitive=reveal_sensitive,
+                group_payloads=conflict_groups.get((int(row[1]), str(row[5] or "")))
+                if row[1] is not None else None,
+            )
+            for row in rows
+        ],
+    }
+
+
 @router.get("/import/issues")
 async def list_registry_import_issues(
     status: str = Query(default="pending", max_length=20),
@@ -2083,35 +2227,26 @@ async def list_registry_import_issues(
     user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
     conn=Depends(get_registry_db),
 ):
-    where = ["status=%s"]
-    params: list[object] = [status]
-    allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
-    if allowed is not None:
-        if not allowed:
-            return {"total": 0, "page": page, "page_size": page_size, "data": []}
-        placeholders = ",".join(["%s"] * len(allowed))
-        community_expr = "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.社区名称')), ''), JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.sssq')))"
-        where.append(
-            "EXISTS (SELECT 1 FROM _communities c LEFT JOIN _community_aliases a ON a.community_id=c.id "
-            f"WHERE c.id IN ({placeholders}) AND (c.name={community_expr} OR a.alias={community_expr}))"
-        )
-        params.extend(allowed)
-    if issue_type:
-        where.append("issue_type=%s")
-        params.append(issue_type)
-    clause = " AND ".join(where)
-    async with conn.cursor() as cur:
-        await cur.execute(f"SELECT COUNT(*) FROM registry_import_issues WHERE {clause}", tuple(params))
-        total = int((await cur.fetchone())[0])
-        await cur.execute(
-            f"SELECT id, batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason, status, review_note, reviewed_by, reviewed_at, created_at "
-            f"FROM registry_import_issues WHERE {clause} ORDER BY id DESC LIMIT %s OFFSET %s",
-            tuple(params) + (page_size, (page - 1) * page_size),
-        )
-        rows = await cur.fetchall()
-    reveal_sensitive = REGISTRY_IMPORT_MANAGE in set(user.get("permissions") or [])
-    return {"total": total, "page": page, "page_size": page_size,
-            "data": [_issue_public(row, include_payload=True, reveal_sensitive=reveal_sensitive) for row in rows]}
+    return await _registry_import_issue_search_result(
+        RegistryIssueSearch(
+            status=status if status in {"pending", "resolved", "dismissed"} else "",
+            issue_type=issue_type or "",
+            page=page,
+            page_size=page_size,
+        ),
+        user,
+        conn,
+    )
+
+
+@router.post("/import/issues/search")
+async def search_registry_import_issues(
+    data: RegistryIssueSearch,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    """搜索问题房屋；地址、户号和错误值关键词不进入访问日志 URL。"""
+    return await _registry_import_issue_search_result(data, user, conn)
 
 
 @router.post("/import/issues/bulk")

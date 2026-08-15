@@ -2506,7 +2506,10 @@ export interface RegistryImportIssue {
   reviewed_by: number | null
   reviewed_at: string | null
   created_at: string | null
+  problem_details: Array<{ field: string; value: string }>
 }
+
+export type RegistryHousingCategory = '' | 'rental' | 'self_owned' | 'other' | 'unmarked'
 
 export interface WatchCategory {
   id: number
@@ -2530,8 +2533,15 @@ export interface WatchPerson {
 }
 
 export const registryApi = {
-  async properties(params: { community_id?: number; page?: number; page_size?: number } = {}) {
-    return (await api.get('/registry/properties', { ...activeRequest, params })).data as {
+  async properties(params: {
+    keyword?: string
+    community_id?: number
+    housing_category?: RegistryHousingCategory
+    status?: '' | 'active' | 'inactive'
+    page?: number
+    page_size?: number
+  } = {}) {
+    return (await api.post('/registry/properties/search', params, activeRequest)).data as {
       data: RegistryProperty[]; total: number; page: number; page_size: number
     }
   },
@@ -2584,11 +2594,19 @@ export const registryApi = {
       pending_issue_count: number; idempotent: boolean
     }
   },
-  async importIssues(status = 'pending', issueType?: string) {
-    return (await api.get('/registry/import/issues', {
-      ...activeRequest,
-      params: { status, ...(issueType ? { issue_type: issueType } : {}) },
-    })).data as { data: RegistryImportIssue[]; total: number; page: number; page_size: number }
+  async importIssues(params: {
+    keyword?: string
+    status?: '' | 'pending' | 'resolved' | 'dismissed'
+    issue_type?: string
+    source_type?: '' | 'household' | 'certificate'
+    community_id?: number
+    housing_category?: RegistryHousingCategory
+    page?: number
+    page_size?: number
+  } = {}) {
+    return (await api.post('/registry/import/issues/search', params, activeRequest)).data as {
+      data: RegistryImportIssue[]; total: number; page: number; page_size: number
+    }
   },
   async reviewImportIssue(id: number, payload: { action: 'accept' | 'reject'; reason: string }) {
     return (await api.post(`/registry/import/issues/${id}/review`, payload, activeRequest)).data

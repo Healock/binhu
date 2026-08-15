@@ -1310,6 +1310,69 @@
   border-radius: 10px;
 }
 
+.registry-management__content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.registry-import-result {
+  min-width: 0;
+}
+
+.registry-import-empty {
+  display: grid;
+  min-height: 140px;
+  place-items: center;
+  padding: 24px;
+  border: 1px dashed var(--app-border);
+  border-radius: 12px;
+  background: var(--app-surface-soft);
+  color: var(--app-text-secondary);
+  text-align: center;
+}
+
+.registry-issue-evidence {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.registry-issue-evidence__item {
+  display: grid;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.registry-issue-evidence__field {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.registry-issue-evidence__value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--app-danger);
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.registry-issue-reason {
+  display: block;
+  color: var(--app-text);
+  line-height: 1.65;
+  white-space: normal;
+}
+
+.registry-issue-source {
+  display: grid;
+  gap: 4px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
 @media (max-width: 767px) {
   .list-toolbar__filters {
     display: grid;
@@ -1336,6 +1399,14 @@
   .list-toolbar__actions {
     justify-content: flex-start;
     width: 100%;
+  }
+
+  .registry-management__content {
+    gap: 12px;
+  }
+
+  .registry-issue-evidence__item {
+    grid-template-columns: minmax(68px, auto) minmax(0, 1fr);
   }
 
   .mobile-task-detail-primary-actions {
