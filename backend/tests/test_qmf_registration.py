@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -12,12 +13,18 @@ from starlette.requests import Request
 from routers.qmf_registration import QmfPreviewRequest, preview_qmf_registration
 from services.qmf_registration import (
     QmfLoginContext,
+    QmfLoginSession,
     QmfPreviewError,
     QmfReadOnlyClient,
     READ_ONLY_ENDPOINTS,
     _photo_payload,
     build_login_request,
+    build_mid_local_request,
+    build_timesync_request,
+    open_login_session,
     parse_login_response,
+    parse_mid_local_response,
+    parse_timesync_response,
     preview_capability,
     preview_configured,
     reset_preview_guard_for_tests,
@@ -140,6 +147,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             sequence="202608150700001",
         )
         decoded = request.decode("gb2312")
+        self.assertFalse(decoded.startswith("<?xml"))
         self.assertIn('type="request"', decoded)
         self.assertIn('module="base"', decoded)
         self.assertIn('platform="Android"', decoded)
@@ -148,17 +156,40 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
 
         response = (
             "<message type='response' seq='202608150700001' module='base'>"
-            "<login errcode='0' errmsg=''>"
+            "<login>"
             "<parameters>"
-            "<parameter id='MJJH' value='operator-id'/>"
             "<parameter id='MJXM' value='只读操作人'/>"
             "<parameter id='JGBM' value='320584710000'/>"
-            "<parameter id='JGMC' value='滨湖新城派出所'/>"
             "</parameters><modules/><services/>"
             "</login></message>"
         ).encode("gb2312")
         params = parse_login_response(response, expected_sequence="202608150700001")
-        self.assertEqual(params["JGMC"], "滨湖新城派出所")
+        self.assertEqual(params["MJXM"], "只读操作人")
+
+        identity_response = (
+            "<message type='response' seq='202608150700003' module='MID_LOCAL'>"
+            "<query><datas><data>"
+            "<MJJH>operator-id</MJJH>"
+            "<MJXM>只读操作人</MJXM>"
+            "<JGBM>320584710000</JGBM>"
+            "<JGMC>滨湖新城派出所</JGMC>"
+            "</data></datas></query></message>"
+        ).encode("gb2312")
+        identity = parse_mid_local_response(
+            identity_response, expected_sequence="202608150700003"
+        )
+        self.assertEqual(identity["MJJH"], "operator-id")
+
+        timesync_response = (
+            "<message type='response' seq='202608150700002' module='base'>"
+            "<timesync to='2026-08-15 07:00:00'/></message>"
+        ).encode("gb2312")
+        self.assertEqual(
+            parse_timesync_response(
+                timesync_response, expected_sequence="202608150700002"
+            ),
+            "2026-08-15 07:00:00",
+        )
 
     def test_login_response_rejects_sequence_and_error_without_leaking_message(self):
         wrong_sequence = (
@@ -378,6 +409,110 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(any(path.endswith("/" + suffix) for suffix in allowed_suffixes) for _, path in seen))
         for forbidden in ("uploadPhoto", "saveLocalPhoto", "addPeople", "fnmxCheck"):
             self.assertTrue(all(forbidden not in path for _, path in seen))
+
+    async def test_readonly_query_uses_login_username_not_mid_local_operator_id(self):
+        bodies = []
+        handler, _seen = upstream_handler()
+
+        async def wrapped(request: httpx.Request) -> httpx.Response:
+            bodies.append(request.content)
+            return await handler(request)
+
+        async def fake_login():
+            return login_context()
+
+        with (
+            patch("services.qmf_registration.settings.QMF_API_BASE_URL", "http://source.invalid/grid_terminal_interface/"),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+            patch("services.qmf_registration.settings.QMF_EXPECTED_STATION_NAME", "滨湖新城派出所"),
+        ):
+            await QmfReadOnlyClient(
+                transport=httpx.MockTransport(wrapped),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+
+        self.assertIn(b"mjjh=readonly-user", bodies[0])
+        self.assertNotIn(b"mjjh=operator-id", bodies[0])
+
+    async def test_open_login_session_follows_apk_initialization_and_keeps_tcp_open(self):
+        received = []
+        server_ready = asyncio.Event()
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            try:
+                for index in range(3):
+                    request = await reader.readuntil(b"</message>")
+                    received.append(request.decode("gb18030"))
+                    if index == 0:
+                        response = (
+                            "<message type='response' seq='202608150700001' module='base'>"
+                            "<login><parameters>"
+                            "<parameter id='MJXM' value='滨湖新城派出所'/>"
+                            "<parameter id='JGBM' value='320584710000'/>"
+                            "</parameters><modules/><services/></login></message>"
+                        )
+                    elif index == 1:
+                        response = (
+                            "<message type='response' seq='202608150700002' module='base'>"
+                            "<timesync to='2026-08-15 07:00:00'/></message>"
+                        )
+                    else:
+                        response = (
+                            "<message type='response' seq='202608150700003' module='MID_LOCAL'>"
+                            "<query><datas><data>"
+                            "<MJJH>operator-id</MJJH>"
+                            "<MJXM>滨湖新城派出所</MJXM>"
+                            "<JGBM>320584710000</JGBM>"
+                            "<JGMC>滨湖新城派出所</JGMC>"
+                            "</data></datas></query></message>"
+                        )
+                    writer.write(response.encode("gb18030"))
+                    await writer.drain()
+                server_ready.set()
+                await reader.read()
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with (
+                patch("services.qmf_registration.settings.QMF_LOGIN_HOST", "127.0.0.1"),
+                patch("services.qmf_registration.settings.QMF_LOGIN_PORT", port),
+                patch("services.qmf_registration.settings.QMF_SOURCE_USERNAME", "readonly-user"),
+                patch("services.qmf_registration.settings.QMF_SOURCE_PASSWORD", "secret"),
+                patch("services.qmf_registration.settings.QMF_SOURCE_IMEI", "authorized-imei"),
+                patch("services.qmf_registration.settings.QMF_SOURCE_MACHINE_UID", "authorized-machine"),
+                patch("services.qmf_registration.settings.QMF_EXPECTED_STATION_CODE", "320584710000"),
+                patch("services.qmf_registration.settings.QMF_EXPECTED_STATION_NAME", "滨湖新城派出所"),
+                patch("services.qmf_registration._login_sequence", return_value="202608150700001"),
+            ):
+                session = await open_login_session()
+                self.assertFalse(session.writer.is_closing())
+                self.assertEqual(session.context.operator_id, "operator-id")
+                await server_ready.wait()
+                self.assertIn('module="MID_LOCAL"', received[2])
+                self.assertIn("readonly-user", received[2])
+                await session.close()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    def test_login_session_deadline_fails_closed_without_guessing_heartbeat(self):
+        session = QmfLoginSession(
+            reader=None,
+            writer=None,
+            context=login_context(),
+            started_at=time.monotonic() - 60,
+        )
+        with patch("services.qmf_registration.settings.QMF_SESSION_MAX_SECONDS", 45):
+            with self.assertRaises(QmfPreviewError) as raised:
+                session.ensure_available()
+        self.assertEqual(raised.exception.code, "login_session_expired")
 
     async def test_upstream_http_and_business_errors_do_not_leak_response_body(self):
         async def fake_login():
