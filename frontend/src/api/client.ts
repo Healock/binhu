@@ -886,6 +886,7 @@ export type MobileTaskStatus =
   | 'completed'
   | 'all'
 export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
+export type MobileTaskSyncState = '' | 'pending' | 'retry' | 'conflict'
 export type MobileTaskReviewStage = 'all' | 'waiting_analysis' | 'analyzed'
 export type MobileTaskPriority =
   | 'all'
@@ -954,6 +955,7 @@ export interface MobileTaskItem {
   source_count: number
   conflict: boolean
   pending_sync: boolean
+  sync_state: MobileTaskSyncState
   priority: Exclude<MobileTaskPriority, 'all'>
   watch_marks: MobileTaskWatchMark[]
   first_dispatch_at: string | null
@@ -985,6 +987,7 @@ export interface MobileTaskFacets {
 export interface MobileTaskSource {
   id: number
   physical_row: number
+  source_available: boolean
   values: Record<string, string>
   cell_meta: Record<string, Omit<QueryColumnMeta, 'field'>>
   revision: number
@@ -993,6 +996,14 @@ export interface MobileTaskSource {
   state: MobileTaskState
   needs_review: boolean
   review_stage: '' | 'waiting_analysis' | 'analyzed'
+  sync_state: MobileTaskSyncState
+  sync_fields: Array<{
+    field: string
+    platform_value: string
+    tencent_value: string | null
+    status: Exclude<MobileTaskSyncState, ''> | 'processing'
+    error_code: string
+  }>
 }
 
 export interface MobileTaskDetailData {
@@ -1270,12 +1281,17 @@ export async function getMobileTaskInlineEditors(
 export async function updateMobileTask(
   parserType: string,
   sourceId: number,
-  payload: { changes: Record<string, string>; expected_revision: number },
+  payload: {
+    changes: Record<string, string>
+    base_values?: Record<string, string>
+    expected_revision: number
+  },
 ): Promise<{
   values: Record<string, string>
   row_key: string
   revision: number
   pending_sync: boolean
+  sync_state: MobileTaskSyncState
   message: string
   warnings?: string[]
   inspector_mismatch?: boolean
@@ -1290,16 +1306,33 @@ export async function updateMobileTask(
 export async function updateMobileTaskAnalysis(
   parserType: string,
   sourceId: number,
-  payload: { changes: Record<string, string>; expected_revision: number },
+  payload: {
+    changes: Record<string, string>
+    base_values?: Record<string, string>
+    expected_revision: number
+  },
 ): Promise<{
   values: Record<string, string>
   row_key: string
   revision: number
   pending_sync: boolean
+  sync_state: MobileTaskSyncState
   message: string
 }> {
   const { data } = await api.patch(
     `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
+    payload,
+  )
+  return data
+}
+
+export async function resolveMobileTaskSyncConflict(
+  parserType: string,
+  sourceId: number,
+  payload: { choice: 'platform' | 'tencent'; fields: string[] },
+): Promise<{ message: string; sync_state: MobileTaskSyncState }> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}/resolve-sync-conflict`,
     payload,
   )
   return data

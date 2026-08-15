@@ -708,6 +708,42 @@ async def ensure_online_editor_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_local_changes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            audit_id BIGINT NOT NULL,
+            source_id BIGINT NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            spreadsheet_id INT NOT NULL,
+            sheet_id VARCHAR(100) NOT NULL,
+            physical_row INT NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            field_name VARCHAR(200) NOT NULL,
+            base_value TEXT NOT NULL,
+            local_value TEXT NOT NULL,
+            remote_value TEXT DEFAULT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+            next_attempt_at DATETIME DEFAULT NULL,
+            error_code VARCHAR(100) NOT NULL DEFAULT '',
+            last_error VARCHAR(500) NOT NULL DEFAULT '',
+            user_id INT NOT NULL,
+            username VARCHAR(50) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_online_local_change_field (source_id, field_name),
+            INDEX idx_online_local_change_audit (audit_id, status),
+            INDEX idx_online_local_change_due (
+                status, next_attempt_at, updated_at
+            ),
+            INDEX idx_online_local_change_row (
+                parser_type, row_key, status
+            ),
+            INDEX idx_online_local_change_source (source_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
     await cur.execute(
         "INSERT IGNORE INTO _system_config (config_key, config_value) "
         "VALUES ('online_writeback_enabled', '0')"
@@ -719,6 +755,13 @@ async def ensure_online_editor_schema(cur) -> None:
     await cur.execute(
         "UPDATE _online_writeback_audit SET sync_status='failed' "
         "WHERE sync_status='writing'"
+    )
+    await cur.execute(
+        "UPDATE _online_local_changes "
+        "SET status='retry', next_attempt_at=UTC_TIMESTAMP(), "
+        "error_code='service_restarted', "
+        "last_error='服务重启后等待重新同步' "
+        "WHERE status='processing'"
     )
 
 

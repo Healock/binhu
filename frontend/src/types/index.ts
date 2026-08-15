@@ -181,6 +181,17 @@ export interface OpsOverview {
     trigger_source: string
     finished_at: string | null
   } | null
+  sync_timezone: string
+  sync_daily_counts: Array<{
+    business_date: string
+    total: number
+    success: number
+    partial: number
+    failed: number
+    unfinished: number
+    manual: number
+    scheduled: number
+  }>
   latest_backup: {
     id: number
     status: string

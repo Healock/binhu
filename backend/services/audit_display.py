@@ -46,6 +46,8 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.conflict.overwrite_tencent": "用平台内容覆盖腾讯表格",
     "police_dispatch.publish": "发布下发任务",
     "online.writeback.update": "修改腾讯原始行",
+    "online.writeback.queue": "保存平台数据并排队同步",
+    "online.writeback.resolve_conflict": "处理腾讯同步冲突",
     "online.writeback.create": "新增腾讯原始行",
     "online.writeback.delete": "删除腾讯原始行",
     "spreadsheet.config.update": "批量修改在线表格配置",

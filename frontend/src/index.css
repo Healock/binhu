@@ -215,31 +215,36 @@
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-exception,
 .mobile-task-table-inline-editor--tone-exception {
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 10%, var(--app-surface));
+  --mobile-task-row-accent: var(--app-danger);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-review,
 .mobile-task-table-inline-editor--tone-review {
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 11%, var(--app-surface));
+  --mobile-task-row-accent: var(--app-warning);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-unchecked,
 .mobile-task-table-inline-editor--tone-unchecked {
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 7%, var(--app-surface));
+  --mobile-task-row-accent: var(--app-danger);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-checked,
 .mobile-task-table-inline-editor--tone-checked {
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 8%, var(--app-surface));
+  --mobile-task-row-accent: var(--app-warning);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-completed,
 .mobile-task-table-inline-editor--tone-completed {
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-success) 8%, var(--app-surface));
+  --mobile-task-row-accent: var(--app-success);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-success) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row > td:first-child {
-  border-left: 1px solid var(--app-border);
+  border-left: 3px solid var(--mobile-task-row-accent, var(--app-border));
   border-start-start-radius: 12px;
 }
 
@@ -269,8 +274,9 @@
   gap: 14px;
   padding: 10px 12px 11px 16px;
   border: 1px solid var(--app-border);
+  border-inline-start: 3px solid var(--mobile-task-row-accent, var(--app-border));
   border-radius: 0 0 12px 12px;
-  background: var(--mobile-task-row-bg, color-mix(in srgb, var(--app-surface-muted) 88%, var(--app-primary-soft)));
+  background: var(--mobile-task-row-bg, var(--app-surface-muted));
   box-shadow: var(--mobile-task-panel-shadow);
   transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
@@ -410,7 +416,7 @@
 }
 
 .mobile-task-table .mobile-task-table-row-selected > td:first-child {
-  border-left-color: var(--app-primary);
+  border-left: 3px solid var(--app-primary);
 }
 
 .mobile-task-table .mobile-task-table-row-selected > td:last-child {
@@ -622,23 +628,28 @@
 }
 
 .mobile-task-item-card--tone-exception {
-  background: color-mix(in srgb, var(--app-danger) 10%, var(--app-surface));
+  border-inline-start: 3px solid var(--app-danger);
+  background: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card--tone-review {
-  background: color-mix(in srgb, var(--app-warning) 11%, var(--app-surface));
+  border-inline-start: 3px solid var(--app-warning);
+  background: color-mix(in srgb, var(--app-warning) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card--tone-unchecked {
-  background: color-mix(in srgb, var(--app-danger) 7%, var(--app-surface));
+  border-inline-start: 3px solid var(--app-danger);
+  background: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card--tone-checked {
-  background: color-mix(in srgb, var(--app-warning) 8%, var(--app-surface));
+  border-inline-start: 3px solid var(--app-warning);
+  background: color-mix(in srgb, var(--app-warning) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card--tone-completed {
-  background: color-mix(in srgb, var(--app-success) 8%, var(--app-surface));
+  border-inline-start: 3px solid var(--app-success);
+  background: color-mix(in srgb, var(--app-success) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card__body {

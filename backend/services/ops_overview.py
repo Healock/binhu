@@ -1,14 +1,80 @@
 """Combined read-only health information for the operations center."""
 
 import os
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from config import settings
 from database import db_manager
 from services.backups import get_backup_schedule
+from services.business_time import (
+    current_business_date,
+    get_business_timezone_name,
+    resolve_timezone,
+)
 from services.ops_client import get_container_overview
 from services.ops_database import get_database_overview, get_mysql_status
 from services.ops_redaction import redact_text
+
+
+SYNC_DAILY_WINDOW_DAYS = 14
+
+
+def build_daily_sync_counts(
+    rows: list[tuple],
+    *,
+    now_utc: datetime,
+    timezone_name: str,
+    window_days: int = SYNC_DAILY_WINDOW_DAYS,
+) -> list[dict]:
+    """按系统业务时区汇总同步任务，避免用服务器 UTC 日期误分日。"""
+    timezone_info = resolve_timezone(timezone_name)
+    aware_now = (
+        now_utc.replace(tzinfo=timezone.utc)
+        if now_utc.tzinfo is None
+        else now_utc.astimezone(timezone.utc)
+    )
+    today = current_business_date(timezone_name, now=aware_now)
+    dates = [today - timedelta(days=offset) for offset in range(max(window_days, 1))]
+    buckets = {
+        day: {
+            "business_date": day.isoformat(),
+            "total": 0,
+            "success": 0,
+            "partial": 0,
+            "failed": 0,
+            "unfinished": 0,
+            "manual": 0,
+            "scheduled": 0,
+        }
+        for day in dates
+    }
+    for row in rows:
+        status = str(row[0] or "pending")
+        trigger_source = str(row[1] or "manual")
+        occurred_at = row[2] or row[3]
+        if occurred_at is None:
+            continue
+        if occurred_at.tzinfo is None:
+            occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+        business_day = occurred_at.astimezone(timezone_info).date()
+        bucket = buckets.get(business_day)
+        if bucket is None:
+            continue
+        bucket["total"] += 1
+        if status in {"success", "completed"}:
+            bucket["success"] += 1
+        elif status == "partial":
+            bucket["partial"] += 1
+        elif status == "failed":
+            bucket["failed"] += 1
+        else:
+            bucket["unfinished"] += 1
+        if trigger_source == "scheduled":
+            bucket["scheduled"] += 1
+        else:
+            bucket["manual"] += 1
+    return [buckets[day] for day in dates]
 
 
 async def build_operations_overview() -> dict:
@@ -60,6 +126,21 @@ async def build_operations_overview() -> dict:
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            timezone_name = await get_business_timezone_name(cur)
+            await cur.execute("SELECT UTC_TIMESTAMP()")
+            server_time = (await cur.fetchone())[0]
+            business_today = current_business_date(
+                timezone_name,
+                now=server_time.replace(tzinfo=timezone.utc),
+            )
+            first_business_day = business_today - timedelta(
+                days=SYNC_DAILY_WINDOW_DAYS - 1,
+            )
+            first_day_utc = datetime.combine(
+                first_business_day,
+                time.min,
+                tzinfo=resolve_timezone(timezone_name),
+            ).astimezone(timezone.utc).replace(tzinfo=None)
             await cur.execute(
                 """
                 SELECT id, status, trigger_source, finished_at
@@ -67,6 +148,16 @@ async def build_operations_overview() -> dict:
                 """
             )
             sync_row = await cur.fetchone()
+            await cur.execute(
+                """
+                SELECT status, trigger_source, started_at, finished_at
+                FROM _sync_log
+                WHERE COALESCE(started_at, finished_at) >= %s
+                ORDER BY COALESCE(started_at, finished_at) DESC
+                """,
+                (first_day_utc,),
+            )
+            sync_rows = await cur.fetchall()
             await cur.execute(
                 """
                 SELECT id, status, finished_at, size_bytes
@@ -81,13 +172,17 @@ async def build_operations_overview() -> dict:
                 """
             )
             oauth_row = await cur.fetchone()
-            await cur.execute("SELECT UTC_TIMESTAMP()")
-            server_time = (await cur.fetchone())[0]
     finally:
         pool.release(conn)
 
     def iso(value):
         return value.isoformat() + "Z" if value else None
+
+    sync_daily_counts = build_daily_sync_counts(
+        sync_rows,
+        now_utc=server_time,
+        timezone_name=timezone_name,
+    )
 
     oauth = {"configured": bool(oauth_row), "status": "not_configured"}
     if oauth_row:
@@ -124,6 +219,8 @@ async def build_operations_overview() -> dict:
         }
         if sync_row
         else None,
+        "sync_timezone": timezone_name,
+        "sync_daily_counts": sync_daily_counts,
         "latest_backup": {
             "id": backup_row[0],
             "status": backup_row[1],

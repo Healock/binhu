@@ -26,6 +26,7 @@ import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
   previewQmfRegistration,
+  resolveMobileTaskSyncConflict,
   updateMobileTask,
   updateMobileTaskAnalysis,
   workflowApi,
@@ -58,6 +59,12 @@ const STATE_LABELS = {
   completed: { text: '已完成', color: 'green' },
 } as const
 
+const SYNC_LABELS = {
+  pending: { text: '待同步', color: 'blue' },
+  retry: { text: '同步重试', color: 'orange' },
+  conflict: { text: '同步冲突', color: 'red' },
+} as const
+
 function firstValue(values: Record<string, string>, fields: string[]) {
   for (const field of fields) {
     if (values[field]?.trim()) return values[field].trim()
@@ -80,6 +87,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [formValues, setFormValues] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [resolvingConflict, setResolvingConflict] = useState('')
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
@@ -180,6 +188,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       const updater = mode === 'analysis' ? updateMobileTaskAnalysis : updateMobileTask
       const result = await updater(parserType, selectedSource.id, {
         changes,
+        base_values: Object.fromEntries(
+          Object.keys(changes).map(field => [field, selectedSource.values[field] || '']),
+        ),
         expected_revision: selectedSource.revision,
       })
       const savedValues = mergeMobileTaskSaveValues(
@@ -193,6 +204,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         task: {
           ...current.task,
           pending_sync: true,
+          sync_state: result.sync_state,
           review_stage: mode === 'analysis'
             ? (firstValue(savedValues, current.workflow.analysis_fields) ? 'analyzed' : 'waiting_analysis')
             : current.task.review_stage,
@@ -205,6 +217,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           ...source,
           values: savedValues,
           revision: result.revision,
+          sync_state: result.sync_state,
+          sync_fields: [
+            ...source.sync_fields.filter(item => !(item.field in changes)),
+            ...Object.entries(changes).map(([field, platformValue]) => ({
+              field,
+              platform_value: platformValue,
+              tencent_value: null,
+              status: 'pending' as const,
+              error_code: '',
+            })),
+          ],
           state: mobileTaskSourceState(
             parserType,
             current.workflow.result_field,
@@ -221,13 +244,32 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         } : source),
       } : current)
       setFormValues(savedValues)
-      setSavedMessage('已保存，滨湖平台数据已同步并写回腾讯表格')
+      setSavedMessage(result.message)
     } catch (reason: any) {
       const status = reason?.response?.status
       setError(detailError(reason, '保存失败，请稍后重试'))
       if (status === 409 || status === 502) await load(selectedSource.id)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const resolveConflict = async (field: string, choice: 'platform' | 'tencent') => {
+    if (!selectedSource || dirty) return
+    const key = `${field}:${choice}`
+    setResolvingConflict(key)
+    setError('')
+    try {
+      const result = await resolveMobileTaskSyncConflict(parserType, selectedSource.id, {
+        choice,
+        fields: [field],
+      })
+      message.success(result.message)
+      await load(selectedSource.id)
+    } catch (reason: any) {
+      setError(detailError(reason, '同步冲突处理失败'))
+    } finally {
+      setResolvingConflict('')
     }
   }
 
@@ -350,6 +392,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const phoneOptions = mobileTaskPhoneOptions(phone)
   const phoneDisplay = phoneOptions.length > 0 ? phoneOptions.join('、') : phone
   const sourceTags = mobileTaskSourceTags(source)
+  const syncState = selectedSource?.sync_state || data.task.sync_state
+  const syncLabel = syncState ? SYNC_LABELS[syncState] : null
+  const conflictFields = selectedSource?.sync_fields.filter(item => item.status === 'conflict') || []
   const detailFacts = [
     { label: '身份证号', value: identityNumber || '未填写', copyValue: identityNumber, copyLabel: '身份证号' },
     { label: '手机号', value: phoneDisplay || '未填写', phones: phoneOptions },
@@ -370,7 +415,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         <Button type="text" className="min-h-11 px-1" icon={<ArrowLeftOutlined />} onClick={() => { if (confirmPendingNavigation()) navigate(-1) }}>返回</Button>
         <div className="flex items-center gap-2">
           <Tag color={state.color}>{state.text}</Tag>
-          {data.task.pending_sync && <Tag color="blue">待同步</Tag>}
+          {syncLabel && <Tag color={syncLabel.color}>{syncLabel.text}</Tag>}
         </div>
       </div>
 
@@ -459,8 +504,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             <Button
               className="mobile-task-detail-pill"
               icon={<SafetyCertificateOutlined />}
-              disabled={!data.qmf_preview.enabled || dirty || qmfPreviewLoading}
-              title={dirty ? '请先保存或放弃当前修改' : data.qmf_preview.reason}
+              disabled={!data.qmf_preview.enabled || !selectedSource?.source_available || dirty || qmfPreviewLoading}
+              title={dirty
+                ? '请先保存或放弃当前修改'
+                : !selectedSource?.source_available
+                  ? '腾讯来源行已不存在，不能发起预演'
+                  : data.qmf_preview.reason}
               onClick={() => void openQmfPreview()}
             >全民防只读预演</Button>
           )}
@@ -523,6 +572,52 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         />
       )}
 
+      {conflictFields.length > 0 && (
+        <section className="app-card p-4">
+          <Alert
+            type="error"
+            showIcon
+            message="平台与腾讯表格修改了同一字段"
+            description="平台值仍在滨湖平台生效。请逐项核对后决定采用哪一边，系统不会自动覆盖。"
+          />
+          <div className="mt-4 space-y-3">
+            {conflictFields.map(item => (
+              <div key={item.field} className="rounded border border-[var(--app-border)] p-3">
+                <div className="mb-2 font-medium text-[var(--app-text-strong)]">{item.field}</div>
+                <Descriptions
+                  size="small"
+                  column={mobile ? 1 : 2}
+                  items={[
+                    { key: 'platform', label: '平台值', children: item.platform_value || '空白' },
+                    {
+                      key: 'tencent',
+                      label: '腾讯值',
+                      children: item.error_code === 'source_missing'
+                        ? '腾讯来源行已删除或已更换对象'
+                        : item.tencent_value || '空白',
+                    },
+                  ]}
+                />
+                <div className="mt-3 flex flex-wrap justify-end gap-2">
+                  <Button
+                    disabled={dirty || item.error_code === 'source_missing'}
+                    loading={resolvingConflict === `${item.field}:platform`}
+                    onClick={() => void resolveConflict(item.field, 'platform')}
+                  >采用平台值</Button>
+                  <Button
+                    type="primary"
+                    danger
+                    disabled={dirty}
+                    loading={resolvingConflict === `${item.field}:tencent`}
+                    onClick={() => void resolveConflict(item.field, 'tencent')}
+                  >采用腾讯值</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {data.sources.length > 1 && (
         <section className="app-card mobile-task-source-panel">
           <div>
@@ -543,7 +638,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               >
                 <span className="mobile-task-source-card__header">
                   <span className="font-semibold">来源 {index + 1}</span>
-                  <span>腾讯第 {source.physical_row} 行</span>
+                  <span>{source.source_available ? `腾讯第 ${source.physical_row} 行` : '腾讯来源已删除'}</span>
                   <span className="mobile-task-source-card__state">
                     {source.id === selectedSourceId ? '当前选中' : '点击选择'}
                   </span>
@@ -579,7 +674,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 {mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : '确认所有修改后统一保存'}
               </p>
             </div>
-            <span className="text-xs text-[var(--app-text-muted)]">腾讯第 {selectedSource.physical_row} 行</span>
+            <span className="text-xs text-[var(--app-text-muted)]">
+              {selectedSource.source_available ? `腾讯第 ${selectedSource.physical_row} 行` : '腾讯来源已删除'}
+            </span>
           </div>
 
           {visibleEditorFields.length === 0 ? (

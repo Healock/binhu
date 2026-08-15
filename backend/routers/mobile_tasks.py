@@ -16,7 +16,7 @@ from routers.query import (
     _managed_column_metadata,
     _source_ready,
     _writeback_enabled,
-    update_source_fields,
+    queue_source_fields,
 )
 from routers.workflow import _can_view_ticket as workflow_ticket_access
 from services.business_time import get_business_date
@@ -27,6 +27,13 @@ from services.online_edit_permissions import (
     row_edit_capabilities,
 )
 from services.online_source import json_value
+from services.online_local_writeback import (
+    launch_local_change_processing,
+    load_local_changes,
+    local_sync_state,
+    overlay_local_values,
+    resolve_source_conflict,
+)
 from services.parsers import get_parser
 from services.permissions import (
     ONLINE_RAW_EDIT,
@@ -209,7 +216,13 @@ FLOW_TASK_ELEVATED_POSITIONS = {
 
 class TaskBatchUpdate(BaseModel):
     changes: dict[str, str]
+    base_values: dict[str, str] = Field(default_factory=dict)
     expected_revision: int = Field(gt=0)
+
+
+class SyncConflictResolution(BaseModel):
+    choice: Literal["platform", "tencent"]
+    fields: list[str] = Field(min_length=1, max_length=5)
 
 
 class BulkAssignmentRequest(BaseModel):
@@ -439,7 +452,7 @@ def _priority_case(parser_type: str) -> str:
         "WHEN projection.task_state='completed' THEN 'completed' "
         f"WHEN {analyzed} THEN 'analyzed' "
         f"WHEN {source_exception} THEN 'source_exception' "
-        "WHEN projection.pending_state='pending' THEN 'pending_sync' "
+        "WHEN projection.pending_state IN ('pending','retry','conflict') THEN 'pending_sync' "
         f"WHEN {waiting} THEN 'waiting_analysis' "
         "ELSE 'ordinary' END"
     )
@@ -732,6 +745,7 @@ def _task_record(
     task_state_value: str,
     watch: dict | None = None,
     photo_fetched: bool = False,
+    sync_state: str = "",
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
@@ -752,6 +766,7 @@ def _task_record(
         "source_count": int(source_count or 0),
         "conflict": bool(conflict),
         "pending_sync": bool(pending),
+        "sync_state": sync_state or ("pending" if pending else ""),
         "photo_fetched": bool(photo_fetched),
         "priority": _priority_bucket(
             parser_type,
@@ -1082,10 +1097,11 @@ async def _list_mobile_tasks_data(
                 json_value(row[1], {}),
                 int(row[2] or 0),
                 bool(row[3]),
-                str(row[4] or "") == "pending",
+                bool(str(row[4] or "")),
                 str(row[5] or ""),
                 watch_by_row.get(str(row[0])),
                 str(row[0]) in photo_fetched_rows,
+                str(row[4] or ""),
             )
             for row in rows
         ],
@@ -1314,6 +1330,9 @@ async def _mobile_task_detail_data(
             (parser_type, row_key),
         )
         raw_sources = await cur.fetchall()
+        local_changes = await load_local_changes(
+            cur, [int(row[0]) for row in raw_sources]
+        )
         enabled = await _writeback_enabled(cur)
         assignment_context = (
             await inspector_option_context(cur, capability_user, assignment_only=True)
@@ -1337,7 +1356,10 @@ async def _mobile_task_detail_data(
             spreadsheet_id,
             sheet_id,
         ) in raw_sources:
-            values = json_value(raw_values, {})
+            source_changes = local_changes.get(int(source_id), [])
+            values = overlay_local_values(
+                json_value(raw_values, {}), source_changes
+            )
             # 同一业务主键偶尔会跨社区重复。父投影可以用于定位任务，
             # 但详情绝不能因此暴露其他社区的腾讯原始行。
             if not _source_in_community(
@@ -1378,7 +1400,7 @@ async def _mobile_task_detail_data(
                 values,
                 1,
                 False,
-                str(parent_row[3] or "") == "pending",
+                bool(str(parent_row[3] or "")),
                 TASK_WORKFLOWS[parser_type].state(values),
             )
             editable_fields = (
@@ -1412,6 +1434,7 @@ async def _mobile_task_detail_data(
             sources.append({
                 "id": int(source_id),
                 "physical_row": int(physical_row),
+                "source_available": int(physical_row) > 0,
                 "values": {
                     column: str(values.get(column, "") or "")
                     for column in parser.COLUMNS
@@ -1423,6 +1446,17 @@ async def _mobile_task_detail_data(
                 "state": source_task["state"],
                 "needs_review": source_task["needs_review"],
                 "review_stage": source_task["review_stage"],
+                "sync_state": local_sync_state(source_changes),
+                "sync_fields": [
+                    {
+                        "field": item["field_name"],
+                        "platform_value": item["local_value"],
+                        "tencent_value": item["remote_value"],
+                        "status": item["status"],
+                        "error_code": item["error_code"],
+                    }
+                    for item in source_changes
+                ],
             })
 
         if not sources:
@@ -1447,9 +1481,11 @@ async def _mobile_task_detail_data(
             parent_values,
             len(sources),
             bool(parent_row[2]) and len(sources) > 1,
-            str(parent_row[3] or "") == "pending",
+            bool(str(parent_row[3] or "")),
             str(parent_row[4] or ""),
             watch_by_row.get(row_key),
+            False,
+            str(parent_row[3] or ""),
         ),
         "workflow": {
             "label": workflow.label,
@@ -1609,10 +1645,11 @@ async def update_mobile_task_analysis(
         }:
             raise HTTPException(409, "该任务当前不属于网格核查研判范围")
 
-    return await update_source_fields(
+    return await queue_source_fields(
         parser_type=parser_type,
         source_id=source_id,
         changes=data.changes,
+        base_values=data.base_values,
         expected_revision=data.expected_revision,
         request=request,
         user=scoped_user,
@@ -1652,16 +1689,102 @@ async def update_mobile_task(
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
         await _validate_assignment(cur, context, data.changes)
-    return await update_source_fields(
+    return await queue_source_fields(
         parser_type=parser_type,
         source_id=source_id,
         changes=data.changes,
+        base_values=data.base_values,
         expected_revision=data.expected_revision,
         request=request,
         user=user,
         conn=conn,
         explicit_text_edit=True,
     )
+
+
+@router.post("/{parser_type}/source-rows/{source_id}/resolve-sync-conflict")
+async def resolve_mobile_task_sync_conflict(
+    parser_type: str,
+    source_id: int,
+    data: SyncConflictResolution,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    fields = list(dict.fromkeys(str(field).strip() for field in data.fields if str(field).strip()))
+    if not fields:
+        raise HTTPException(400, "请选择需要处理的冲突字段")
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT row_key FROM _online_source_rows WHERE id=%s AND parser_type=%s",
+            (source_id, parser_type),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "来源行不存在")
+        row_key = str(row[0])
+
+    analysis_fields = set(TASK_WORKFLOWS[parser_type].analysis_fields)
+    analysis_mode = any(field in analysis_fields for field in fields)
+    if analysis_mode and any(field not in analysis_fields for field in fields):
+        raise HTTPException(400, "核查字段和研判字段的冲突请分别处理")
+    scoped_user = (
+        _require_analysis_user(user)
+        if analysis_mode else _require_task_edit_user(user)
+    )
+    detail = await _mobile_task_detail_data(
+        parser_type,
+        row_key,
+        scoped_user,
+        conn,
+        analysis_mode=analysis_mode,
+        include_photo_requests=False,
+    )
+    source = next((item for item in detail["sources"] if item["id"] == source_id), None)
+    if not source:
+        raise HTTPException(404, "来源行不存在或不属于当前社区")
+    conflict_fields = {
+        item["field"] for item in source.get("sync_fields", [])
+        if item.get("status") == "conflict"
+    }
+    if any(field not in conflict_fields for field in fields):
+        raise HTTPException(409, "所选字段已不处于同步冲突状态，请刷新后重试")
+    if any(field not in source.get("editable_fields", []) for field in fields):
+        raise HTTPException(403, "当前账号无权处理所选字段")
+
+    try:
+        result = await resolve_source_conflict(
+            conn,
+            source_id=source_id,
+            choice=data.choice,
+            fields=fields,
+        )
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    await record_admin_audit(
+        scoped_user,
+        "online.writeback.resolve_conflict",
+        target_type="online_source_row",
+        target_name=f"{parser_type}:{source_id}",
+        detail={"choice": data.choice, "columns": fields},
+        **request_audit_fields(request),
+    )
+    if data.choice == "platform":
+        launch_local_change_processing(source_id)
+    return {
+        "message": (
+            "已采用平台值，正在重新同步腾讯表格"
+            if data.choice == "platform"
+            else "已采用腾讯值"
+        ),
+        **result,
+    }
 
 
 @router.post("/{parser_type}/bulk-assign")
@@ -1813,7 +1936,7 @@ async def bulk_assign_mobile_tasks(
         task_ok = True
         for source_id, revision in sources:
             try:
-                await update_source_fields(
+                await queue_source_fields(
                     parser_type=parser_type,
                     source_id=source_id,
                     changes={"核查人": assigned_inspector},

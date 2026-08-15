@@ -16,6 +16,9 @@ from services.watch_matching import (
 )
 
 
+ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
+
+
 def json_value(value: Any, fallback):
     if isinstance(value, str):
         try:
@@ -31,6 +34,55 @@ def stable_json(value: Any) -> str:
 
 def source_row_hash(values: dict[str, str]) -> str:
     return hashlib.sha256(stable_json(values).encode("utf-8")).hexdigest()
+
+
+def match_source_cache_rows(
+    existing_rows: list[dict[str, Any]],
+    incoming_rows: list[dict[str, Any]],
+) -> tuple[
+    list[tuple[dict[str, Any], dict[str, Any]]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Pair refreshed rows without changing an existing business row's source id."""
+    available = {int(row["id"]): row for row in existing_rows}
+    matched: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    unmatched_incoming: list[dict[str, Any]] = []
+
+    for incoming in sorted(incoming_rows, key=lambda row: int(row["physical_row"])):
+        logical = [
+            row for row in available.values()
+            if row["sheet_id"] == incoming["sheet_id"]
+            and row["row_key"] == incoming["row_key"]
+        ]
+        if logical:
+            existing = min(
+                logical,
+                key=lambda row: (
+                    abs(int(row["physical_row"]) - int(incoming["physical_row"])),
+                    int(row["id"]),
+                ),
+            )
+            matched.append((existing, incoming))
+            available.pop(int(existing["id"]), None)
+        else:
+            unmatched_incoming.append(incoming)
+
+    still_incoming: list[dict[str, Any]] = []
+    for incoming in unmatched_incoming:
+        positional = next((
+            row for row in available.values()
+            if not row.get("has_local_changes")
+            and row["sheet_id"] == incoming["sheet_id"]
+            and int(row["physical_row"]) == int(incoming["physical_row"])
+        ), None)
+        if positional:
+            matched.append((positional, incoming))
+            available.pop(int(positional["id"]), None)
+        else:
+            still_incoming.append(incoming)
+
+    return matched, still_incoming, list(available.values())
 
 
 def sheet_lock_name(spreadsheet_id: int) -> str:
@@ -71,13 +123,27 @@ async def rebuild_projection(cur, parser_type: str) -> None:
         str(row[0]): row[1] for row in await cur.fetchall() if row[1]
     }
     await cur.execute(
-        "SELECT row_key, values_json FROM _online_source_rows "
+        "SELECT id, row_key, values_json FROM _online_source_rows "
         "WHERE parser_type=%s ORDER BY spreadsheet_id, physical_row",
         (parser_type,),
     )
+    source_records = await cur.fetchall()
+    source_ids = [int(row[0]) for row in source_records]
+    local_by_source: dict[int, dict[str, str]] = defaultdict(dict)
+    if source_ids:
+        placeholders = ", ".join(["%s"] * len(source_ids))
+        await cur.execute(
+            f"SELECT source_id, field_name, local_value "
+            f"FROM _online_local_changes WHERE source_id IN ({placeholders}) "
+            f"AND status IN ('pending','processing','retry','conflict')",
+            source_ids,
+        )
+        for source_id, field_name, local_value in await cur.fetchall():
+            local_by_source[int(source_id)][str(field_name)] = str(local_value or "")
     grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row_key, raw_values in await cur.fetchall():
+    for source_id, row_key, raw_values in source_records:
         values = json_value(raw_values, {})
+        values.update(local_by_source.get(int(source_id), {}))
         grouped[str(row_key)].append({
             column: str(values.get(column, "") or "").strip()
             for column in parser.COLUMNS
@@ -88,12 +154,25 @@ async def rebuild_projection(cur, parser_type: str) -> None:
         "WHERE parser_type=%s AND sync_status='pending'",
         (parser_type,),
     )
-    pending_keys = {
-        str(value)
+    pending_states = {
+        str(value): "pending"
         for row in await cur.fetchall()
         for value in row
         if value
     }
+    await cur.execute(
+        "SELECT row_key, status FROM _online_local_changes "
+        "WHERE parser_type=%s "
+        "AND status IN ('pending','processing','retry','conflict')",
+        (parser_type,),
+    )
+    state_priority = {"pending": 1, "processing": 1, "retry": 2, "conflict": 3}
+    for row_key, status in await cur.fetchall():
+        key = str(row_key)
+        candidate = str(status)
+        current = pending_states.get(key, "")
+        if state_priority.get(candidate, 0) > state_priority.get(current, 0):
+            pending_states[key] = "pending" if candidate == "processing" else candidate
     if parser_type == "全链条":
         await cur.execute("""
             SELECT source.row_key
@@ -104,7 +183,9 @@ async def rebuild_projection(cur, parser_type: str) -> None:
              AND source.physical_row=result.physical_row
             WHERE result.status='success'
         """)
-        pending_keys.update(str(row[0]) for row in await cur.fetchall() if row[0])
+        pending_states.update({
+            str(row[0]): "pending" for row in await cur.fetchall() if row[0]
+        })
 
     projection_rows = []
     for row_key, source_rows in grouped.items():
@@ -143,7 +224,7 @@ async def rebuild_projection(cur, parser_type: str) -> None:
             len(source_rows),
             int(conflict),
             "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS),
-            "pending" if row_key in pending_keys else "",
+            pending_states.get(row_key, ""),
         ))
 
     await cur.execute(
@@ -169,7 +250,7 @@ async def replace_source_cache(
     spreadsheet: dict,
     source_rows: list[dict],
 ) -> None:
-    """用一次腾讯读取结果原子替换来源定位并重建业务投影。"""
+    """增量吸收腾讯读取结果，保留来源 id 并合并平台待写回字段。"""
     parser = get_parser(spreadsheet["parser_type"])
     prepared = []
     for source in source_rows:
@@ -178,25 +259,161 @@ async def replace_source_cache(
             column: (source.get("cell_meta") or {}).get(column, {"type": "text"})
             for column in parser.COLUMNS
         }
-        prepared.append((
-            int(spreadsheet["id"]),
-            spreadsheet["parser_type"],
-            str(spreadsheet["data_sheet_id"]),
-            int(source["physical_row"]),
-            parser.make_row_key(values),
-            source_row_hash(values),
-            stable_json(values),
-            stable_json(metadata),
-        ))
+        prepared.append({
+            "spreadsheet_id": int(spreadsheet["id"]),
+            "parser_type": spreadsheet["parser_type"],
+            "sheet_id": str(spreadsheet["data_sheet_id"]),
+            "physical_row": int(source["physical_row"]),
+            "row_key": parser.make_row_key(values),
+            "row_hash": source_row_hash(values),
+            "values": values,
+            "values_json": stable_json(values),
+            "cell_meta_json": stable_json(metadata),
+        })
 
     await conn.begin()
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "DELETE FROM _online_source_rows WHERE spreadsheet_id=%s",
+                """
+                SELECT id, sheet_id, physical_row, row_key, row_hash,
+                       values_json, cell_meta_json, revision
+                FROM _online_source_rows
+                WHERE spreadsheet_id=%s
+                FOR UPDATE
+                """,
                 (spreadsheet["id"],),
             )
-            if prepared:
+            existing = [
+                {
+                    "id": int(row[0]),
+                    "sheet_id": str(row[1]),
+                    "physical_row": int(row[2]),
+                    "row_key": str(row[3]),
+                    "row_hash": str(row[4]),
+                    "values_json": row[5],
+                    "cell_meta_json": row[6],
+                    "revision": int(row[7]),
+                    "has_local_changes": False,
+                }
+                for row in await cur.fetchall()
+            ]
+            existing_ids = [row["id"] for row in existing]
+            changes_by_source: dict[int, list[dict[str, Any]]] = defaultdict(list)
+            if existing_ids:
+                placeholders = ", ".join(["%s"] * len(existing_ids))
+                await cur.execute(
+                    f"""
+                    SELECT id, source_id, audit_id, field_name, base_value,
+                           local_value, status
+                    FROM _online_local_changes
+                    WHERE source_id IN ({placeholders})
+                      AND status IN ('pending','processing','retry','conflict')
+                    FOR UPDATE
+                    """,
+                    existing_ids,
+                )
+                for change in await cur.fetchall():
+                    changes_by_source[int(change[1])].append({
+                        "id": int(change[0]),
+                        "audit_id": int(change[2]),
+                        "field_name": str(change[3]),
+                        "base_value": str(change[4] or ""),
+                        "local_value": str(change[5] or ""),
+                        "status": str(change[6]),
+                    })
+                for row in existing:
+                    row["has_local_changes"] = bool(changes_by_source.get(row["id"]))
+
+            matched, incoming_only, existing_only = match_source_cache_rows(
+                existing, prepared
+            )
+            if existing_ids:
+                await cur.execute(
+                    "UPDATE _online_source_rows SET physical_row=-id "
+                    "WHERE spreadsheet_id=%s",
+                    (spreadsheet["id"],),
+                )
+
+            affected_audits: set[int] = set()
+            for old, incoming in matched:
+                changed = any((
+                    old["sheet_id"] != incoming["sheet_id"],
+                    int(old["physical_row"]) != int(incoming["physical_row"]),
+                    old["row_hash"] != incoming["row_hash"],
+                    stable_json(json_value(old["cell_meta_json"], {}))
+                    != incoming["cell_meta_json"],
+                ))
+                await cur.execute(
+                    """
+                    UPDATE _online_source_rows
+                    SET parser_type=%s, sheet_id=%s, physical_row=%s,
+                        row_key=%s, row_hash=%s, values_json=%s,
+                        cell_meta_json=%s, revision=%s,
+                        refreshed_at=UTC_TIMESTAMP()
+                    WHERE id=%s
+                    """,
+                    (
+                        incoming["parser_type"], incoming["sheet_id"],
+                        incoming["physical_row"], incoming["row_key"],
+                        incoming["row_hash"], incoming["values_json"],
+                        incoming["cell_meta_json"],
+                        old["revision"] + (1 if changed else 0), old["id"],
+                    ),
+                )
+                for change in changes_by_source.get(old["id"], []):
+                    affected_audits.add(change["audit_id"])
+                    remote = str(incoming["values"].get(change["field_name"], "") or "")
+                    if remote == change["local_value"]:
+                        await cur.execute(
+                            "DELETE FROM _online_local_changes WHERE id=%s",
+                            (change["id"],),
+                        )
+                    elif remote != change["base_value"]:
+                        await cur.execute(
+                            """
+                            UPDATE _online_local_changes
+                            SET status='conflict', remote_value=%s,
+                                error_code='field_changed',
+                                last_error='腾讯同一字段已被修改'
+                            WHERE id=%s
+                            """,
+                            (remote, change["id"]),
+                        )
+                    elif change["status"] == "conflict":
+                        await cur.execute(
+                            """
+                            UPDATE _online_local_changes
+                            SET status='pending', remote_value=NULL,
+                                attempt_count=0, next_attempt_at=NULL,
+                                error_code='', last_error=''
+                            WHERE id=%s
+                            """,
+                            (change["id"],),
+                        )
+
+            for old in existing_only:
+                changes = changes_by_source.get(old["id"], [])
+                if changes:
+                    affected_audits.update(change["audit_id"] for change in changes)
+                    await cur.execute(
+                        """
+                        UPDATE _online_local_changes
+                        SET status='conflict', remote_value=NULL,
+                            error_code='source_missing',
+                            last_error='腾讯来源行已删除或业务主键已变化'
+                        WHERE source_id=%s
+                          AND status IN ('pending','processing','retry','conflict')
+                        """,
+                        (old["id"],),
+                    )
+                else:
+                    await cur.execute(
+                        "DELETE FROM _online_source_rows WHERE id=%s",
+                        (old["id"],),
+                    )
+
+            if incoming_only:
                 await cur.executemany(
                     """
                     INSERT INTO _online_source_rows (
@@ -204,7 +421,30 @@ async def replace_source_cache(
                         row_key, row_hash, values_json, cell_meta_json
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    prepared,
+                    [(
+                        row["spreadsheet_id"], row["parser_type"], row["sheet_id"],
+                        row["physical_row"], row["row_key"], row["row_hash"],
+                        row["values_json"], row["cell_meta_json"],
+                    ) for row in incoming_only],
+                )
+
+            for audit_id in affected_audits:
+                await cur.execute(
+                    "SELECT status FROM _online_local_changes WHERE audit_id=%s",
+                    (audit_id,),
+                )
+                statuses = {str(row[0]) for row in await cur.fetchall()}
+                if "conflict" in statuses:
+                    audit_status = "conflict"
+                elif statuses & ACTIVE_LOCAL_CHANGE_STATUSES:
+                    audit_status = "pending"
+                else:
+                    audit_status = "synced"
+                await cur.execute(
+                    "UPDATE _online_writeback_audit SET sync_status=%s, "
+                    "synced_at=IF(%s='synced',UTC_TIMESTAMP(),synced_at) "
+                    "WHERE id=%s",
+                    (audit_status, audit_status, audit_id),
                 )
             await cur.execute(
                 """

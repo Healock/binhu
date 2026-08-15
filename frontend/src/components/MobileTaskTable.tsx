@@ -130,6 +130,9 @@ export default function MobileTaskTable({
       const updater = analysisMode ? updateMobileTaskAnalysis : updateMobileTask
       const result = await updater(task.parser_type, source.id, {
         changes,
+        base_values: Object.fromEntries(
+          Object.keys(changes).map(field => [field, source.values[field] || '']),
+        ),
         expected_revision: source.revision,
       })
       const savedValues = mergeMobileTaskSaveValues(
@@ -149,7 +152,7 @@ export default function MobileTaskTable({
         },
       }))
       setEditorValues(current => ({ ...current, [task.row_key]: savedValues }))
-      message.success('已自动保存并写回腾讯表格')
+      message.success(result.message)
       await onSaved()
     } catch (reason: any) {
       message.error(errorMessage(reason, '保存失败，请稍后重试'))
@@ -437,7 +440,9 @@ export default function MobileTaskTable({
             {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
             {task.photo_fetched && <Tag color="green">已调照片</Tag>}
             {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
-            {task.pending_sync && <Tag color="blue">待同步</Tag>}
+            {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
+            {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
+            {task.sync_state === 'pending' && <Tag color="blue">待同步</Tag>}
             {task.watch_marks?.map(mark => (
               <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
             ))}
