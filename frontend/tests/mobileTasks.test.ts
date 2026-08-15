@@ -95,7 +95,8 @@ test('管理员手机导航使用独立流口任务入口', () => {
   const query = navigationItemById('online_query')!
 
   assert.equal(flowTasks.path, '/tasks/home')
-  assert.equal(flowTasks.shortLabel, '流口核查')
+  assert.equal(flowTasks.shortLabel, '指令核查')
+  assert.equal(navigationItemById('police_tasks')?.shortLabel, '任务下发')
   assert.equal(routeIsActive('/tasks/全链条/row', flowTasks), true)
   assert.equal(routeIsActive('/tasks/全链条/row', query), false)
 })
