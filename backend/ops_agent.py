@@ -112,6 +112,23 @@ def _network_totals(stats: dict) -> tuple[int, int]:
     )
 
 
+def _memory_totals(memory: dict) -> tuple[int, int]:
+    """Return Docker-style working set and reclaimable file cache.
+
+    Docker's API reports raw cgroup usage, which includes inactive file cache.
+    The CLI subtracts that cache for its MEM USAGE value because Linux can
+    reclaim it under pressure.  Use the same cgroup v1/v2 fallback here so the
+    operations page does not present cache as application working memory.
+    """
+    usage = max(int(memory.get("usage") or 0), 0)
+    stats = memory.get("stats") or {}
+    inactive_file = stats.get("total_inactive_file")
+    if inactive_file is None:
+        inactive_file = stats.get("inactive_file", 0)
+    reclaimable_cache = min(max(int(inactive_file or 0), 0), usage)
+    return usage - reclaimable_cache, reclaimable_cache
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -132,6 +149,7 @@ async def overview():
             ).json()
             state = inspect.get("State") or {}
             memory = stats.get("memory_stats") or {}
+            memory_used, memory_cache = _memory_totals(memory)
             rx_bytes, tx_bytes = _network_totals(stats)
             containers.append(
                 {
@@ -143,7 +161,8 @@ async def overview():
                     "started_at": state.get("StartedAt"),
                     "restart_count": inspect.get("RestartCount", 0),
                     "cpu_percent": _cpu_percent(stats),
-                    "memory_used_bytes": memory.get("usage", 0),
+                    "memory_used_bytes": memory_used,
+                    "memory_cache_bytes": memory_cache,
                     "memory_limit_bytes": memory.get("limit", 0),
                     "network_rx_bytes": rx_bytes,
                     "network_tx_bytes": tx_bytes,

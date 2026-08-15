@@ -59,3 +59,19 @@ test('运维中心区分腾讯请求额度和同步任务次数', () => {
   assert.match(typeSource, /txdocs_request_usage/)
   assert.match(typeSource, /quota_exhausted_responses/)
 })
+
+test('运维中心按 Docker 口径区分工作内存和可回收缓存', () => {
+  const operationsSource = readFileSync(
+    new URL('../src/pages/OperationsCenter.tsx', import.meta.url),
+    'utf8',
+  )
+  const typeSource = readFileSync(
+    new URL('../src/types/index.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(operationsSource, /label: '工作内存'/)
+  assert.match(operationsSource, /label: '可回收缓存'/)
+  assert.match(operationsSource, /工作内存 \$\{value\}%/)
+  assert.match(typeSource, /memory_cache_bytes\?: number/)
+})
