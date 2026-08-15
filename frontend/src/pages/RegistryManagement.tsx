@@ -194,7 +194,13 @@ export default function RegistryManagement() {
       message.success(`已完成预览：${result.normal_count} 条可导入，${result.issue_count} 条需核查`)
       if (tab !== 'issues') setTab('issues')
     } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '户号表预览失败')
+      if (reason?.response?.status === 413) {
+        message.error('户号表超过服务器当前上传限制，请联系管理员更新服务后重试')
+      } else if (reason?.code === 'ECONNABORTED') {
+        message.error('户号表预览超时；请勿重复点击，稍后刷新页面确认批次状态')
+      } else {
+        message.error(reason?.response?.data?.detail || '户号表预览失败')
+      }
     } finally {
       setImporting(false)
     }
@@ -208,7 +214,11 @@ export default function RegistryManagement() {
       message.success(`告知书只读预览完成：${result.normal_count} 条可挂载，${result.problem_row_count} 条需核查`)
       if (tab !== 'issues') setTab('issues')
     } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '告知书来源读取失败')
+      if (reason?.code === 'ECONNABORTED' || reason?.response?.status === 504) {
+        message.error('告知书读取超时；请勿重复点击，稍后刷新页面确认批次状态')
+      } else {
+        message.error(reason?.response?.data?.detail || '告知书来源读取失败')
+      }
     } finally {
       setImporting(false)
     }
