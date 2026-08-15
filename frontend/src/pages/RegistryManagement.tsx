@@ -359,12 +359,14 @@ export default function RegistryManagement() {
             { value: 'certificate_non_rental', label: '告知书非出租/其他房屋' },
             { value: 'household_duplicate', label: '户号表重复来源' },
             { value: 'household_missing_type', label: '户号表未标注类型' },
+            { value: 'household_community_unresolved', label: '户号表社区待核对' },
           ]} />
           </Space>
           <AppTable rowKey="id" loading={loading} dataSource={issues} pagination={false} scroll={{ x: 1100 }} columns={[
             { title: '问题类型', dataIndex: 'issue_type', width: 170, render: value => ({
               certificate_duplicate: '告知书重复记录', certificate_content_conflict: '告知书内容不一致', certificate_non_rental: '告知书非出租/其他房屋',
               household_duplicate: '户号表重复来源', household_missing_type: '户号表未标注类型',
+              household_community_unresolved: '户号表社区待核对',
             } as Record<string, string>)[value] || value },
             { title: '来源行', dataIndex: 'source_ref', width: 90 },
             { title: '社区', render: (_: unknown, row: any) => row.payload?.community || row.payload?.community_name || '-' },

@@ -16,6 +16,7 @@ ISSUE_CERTIFICATE_CONTENT_CONFLICT = "certificate_content_conflict"
 ISSUE_CERTIFICATE_NON_RENTAL = "certificate_non_rental"
 ISSUE_HOUSEHOLD_DUPLICATE = "household_duplicate"
 ISSUE_HOUSEHOLD_MISSING_TYPE = "household_missing_type"
+ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED = "household_community_unresolved"
 
 ISSUE_LABELS = {
     ISSUE_CERTIFICATE_DUPLICATE: "告知书重复记录",
@@ -23,6 +24,7 @@ ISSUE_LABELS = {
     ISSUE_CERTIFICATE_NON_RENTAL: "告知书非出租/其他房屋",
     ISSUE_HOUSEHOLD_DUPLICATE: "户号表重复来源",
     ISSUE_HOUSEHOLD_MISSING_TYPE: "户号表未标注类型",
+    ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED: "户号表社区待核对",
 }
 
 NORMAL_HOUSING_TYPES = {"个人出租", "单位出租", "自购房屋", "借住", "其他", "其它"}
@@ -35,6 +37,32 @@ def normalize_text(value: Any) -> str:
 def normalize_community(value: Any) -> str:
     """只做文本清理，正式社区/别名归属由社区目录解析。"""
     return normalize_text(value)
+
+
+def household_community_candidates(value: Any) -> list[str]:
+    """Return increasingly relaxed community labels for household imports.
+
+    The configured formal name or alias always wins.  Administrative source
+    suffixes are only removed as a fallback, so an alias such as ``芦荡社区``
+    can still map to ``长板社区`` before the shorter ``芦荡`` is considered.
+    """
+    exact = normalize_community(value)
+    if not exact:
+        return []
+    candidates = [exact]
+    for suffix in ("居民委员会", "村民委员会", "居委会"):
+        for candidate in list(candidates):
+            if candidate.endswith(suffix):
+                shortened = candidate[: -len(suffix)].strip()
+                if shortened and shortened not in candidates:
+                    candidates.append(shortened)
+    for suffix in ("社区", "村"):
+        for candidate in list(candidates):
+            if candidate.endswith(suffix):
+                shortened = candidate[: -len(suffix)].strip()
+                if shortened and shortened not in candidates:
+                    candidates.append(shortened)
+    return candidates
 
 
 def normalize_address(value: Any) -> str:
