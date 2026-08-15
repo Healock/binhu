@@ -5,7 +5,8 @@ import type {
   MobileTaskSource,
 } from '../api/client'
 
-export type MobileTaskSurfaceTone = 'exception' | 'review' | 'unchecked' | 'checked' | 'completed'
+export type MobileTaskSurfaceTone =
+  'unassigned' | 'unchecked' | 'transfer' | 'checked' | 'analysis-review' | 'completed'
 
 export interface MobileTaskSourceDifference {
   field: string
@@ -13,10 +14,20 @@ export interface MobileTaskSourceDifference {
 }
 
 export function mobileTaskSurfaceTone(
-  task: Pick<MobileTaskItem, 'conflict' | 'source_count' | 'needs_review' | 'state'>,
+  task: Pick<MobileTaskItem, 'inspector' | 'state' | 'review_stage'> & {
+    summary: Pick<MobileTaskItem['summary'], 'result' | 'secondary_feedback'>
+  },
 ): MobileTaskSurfaceTone {
-  if (task.conflict || task.source_count > 1) return 'exception'
-  if (task.needs_review) return 'review'
+  const result = String(task.summary.result || '').trim()
+  const secondaryFeedback = String(task.summary.secondary_feedback || '').trim()
+  if (result.includes('移交')) return 'transfer'
+  if (
+    task.review_stage === 'analyzed'
+    && result.includes('无法核实')
+    && !secondaryFeedback
+  ) return 'analysis-review'
+  if (task.state === 'completed') return 'completed'
+  if (!String(task.inspector || '').trim()) return 'unassigned'
   return task.state
 }
 
