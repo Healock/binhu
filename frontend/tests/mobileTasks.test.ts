@@ -478,6 +478,8 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /onBlur=\{\(\) => void saveField\(/)
   assert.doesNotMatch(tableSource, /保存 \$\{dirtyCount\} 项/)
   assert.doesNotMatch(tableSource, /title="查看任务"/)
+  assert.match(tableSource, /<Tooltip title=\{task\.summary\.analysis \|\| '未填写'\}>/)
+  assert.match(tableSource, /<Tooltip title=\{task\.summary\.analysis\}>/)
   assert.match(tableSource, /mobileTaskEditorFields/)
   assert.match(tableSource, /placeholder="请选择"/)
   assert.match(tableSource, /placeholder="请输入"/)

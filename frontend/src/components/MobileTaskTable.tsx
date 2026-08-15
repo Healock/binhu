@@ -203,7 +203,14 @@ export default function MobileTaskTable({
           <div className="mobile-task-table-inline-fields">
             <div className="mobile-task-table-inline-readonly"><span>现住址</span><strong>{task.summary.current_address || '未填写'}</strong></div>
             <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
-            <div className="mobile-task-table-inline-readonly"><span>研判</span><strong>{task.summary.analysis || '未填写'}</strong></div>
+            <div className="mobile-task-table-inline-readonly">
+              <span>研判</span>
+              <strong>
+                <Tooltip title={task.summary.analysis || '未填写'}>
+                  <span className="block truncate">{task.summary.analysis || '未填写'}</span>
+                </Tooltip>
+              </strong>
+            </div>
             <div className="mobile-task-table-inline-readonly"><span>二次反馈</span><strong>{task.summary.secondary_feedback || '未填写'}</strong></div>
             <div className="mobile-task-table-inline-readonly"><span>调取照片</span><strong>{task.photo_fetched ? '已调照片' : '未调照片'}</strong></div>
           </div>
@@ -273,7 +280,14 @@ export default function MobileTaskTable({
               )
             })}
             {!analysisMode && !fields.includes('研判') && task.summary.analysis && (
-              <div className="mobile-task-table-inline-readonly"><span>研判</span><strong>{task.summary.analysis}</strong></div>
+              <div className="mobile-task-table-inline-readonly">
+                <span>研判</span>
+                <strong>
+                  <Tooltip title={task.summary.analysis}>
+                    <span className="block truncate">{task.summary.analysis}</span>
+                  </Tooltip>
+                </strong>
+              </div>
             )}
             <div className="mobile-task-table-inline-readonly mobile-task-table-inline-readonly--photo">
               <span>调取照片</span>
