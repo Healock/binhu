@@ -293,7 +293,7 @@ test('任务面板按未分配、核查进度、移交和研判待复核映射�
   })), 'completed')
 })
 
-test('任务列表返回记录只在同一路由、视图且未过期时恢复', () => {
+test('任务列表返回记录按视图和有效期恢复，不因返回路由细节变化而丢失', () => {
   const values = new Map<string, string>()
   const storage = {
     getItem: (key: string) => values.get(key) || null,
@@ -318,7 +318,6 @@ test('任务列表返回记录只在同一路由、视图且未过期时恢复',
     readMobileTaskListRestoration(
       storage,
       'tasks',
-      '/tasks?type=流口指令核查',
       'card',
       savedAt + 1000,
     ),
@@ -335,7 +334,7 @@ test('任务列表返回记录只在同一路由、视图且未过期时恢复',
       saved_at: savedAt,
     },
   )
-  assert.equal(readMobileTaskListRestoration(storage, 'analysis', '/tasks?type=流口指令核查', 'card', savedAt + 1000), null)
+  assert.equal(readMobileTaskListRestoration(storage, 'analysis', 'card', savedAt + 1000), null)
 })
 
 test('有待办的业务优先，零任务业务沉底', () => {
@@ -625,8 +624,12 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, />二次反馈</)
   assert.match(tableSource, />调取照片</)
   assert.match(tableSource, /hideSelectAll: true/)
-  assert.match(tableSource, /current: page/)
-  assert.match(tableSource, /pageSize: 50/)
+  assert.match(tableSource, /pagination=\{false\}/)
+  assert.match(pageSource, /new IntersectionObserver/)
+  assert.match(pageSource, /rootMargin: '720px 0px'/)
+  assert.match(pageSource, /继续下滑加载更多/)
+  assert.match(pageSource, /useNavigationType/)
+  assert.match(pageSource, /navigationType === 'POP'/)
   assert.match(tableSource, /mobile-task-source-cloud mobile-task-source-cloud--table/)
   assert.match(tableSource, /mobileTaskSourceTags\(task\.summary\.source\)[\s\S]*sources\.map\(tag =>/)
   assert.match(styleSource, /mobile-task-source-cloud--table[\s\S]*margin-top: 0/)

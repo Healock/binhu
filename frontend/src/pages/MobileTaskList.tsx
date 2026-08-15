@@ -7,7 +7,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
   bulkAssignMobileTasks,
@@ -146,6 +146,7 @@ function readSort(value: string | null): MobileTaskSort {
 
 export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
   const navigate = useNavigate()
+  const navigationType = useNavigationType()
   const { recordActivity, user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedType = searchParams.get('type') || MOBILE_TASK_TYPES[0]
@@ -187,12 +188,10 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const taskDisplayMode = user?.task_display_mode || 'card'
   const restorationRef = useRef<MobileTaskListRestoration | null | undefined>(undefined)
   if (restorationRef.current === undefined) {
-    restorationRef.current = readMobileTaskListRestoration(
-      window.sessionStorage,
-      mode,
-      `${window.location.pathname}${window.location.search}`,
-      taskDisplayMode,
-    )
+    restorationRef.current = navigationType === 'POP'
+      ? readMobileTaskListRestoration(window.sessionStorage, mode, taskDisplayMode)
+      : null
+    if (navigationType !== 'POP') clearMobileTaskListRestoration(window.sessionStorage)
   }
   const restorationStartedRef = useRef(false)
   const pageRootRef = useRef<HTMLDivElement>(null)
@@ -222,6 +221,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [bulkProgress, setBulkProgress] = useState<BulkAssignmentProgress | null>(null)
   const [selectingAll, setSelectingAll] = useState(false)
   const [selectionCommunity, setSelectionCommunity] = useState('')
+  const loadMoreRef = useRef<HTMLDivElement>(null)
+  const loadingMoreRef = useRef(false)
   const optionsRequestId = useRef(0)
   const listRequestId = useRef(0)
   const loadedPageRef = useRef(1)
@@ -498,6 +499,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     silent = false,
     restorePageCount = 0,
   ) => {
+    if (append && loadingMoreRef.current) return
+    if (append) loadingMoreRef.current = true
     const requestId = ++listRequestId.current
     if (!silent) {
       append ? setLoadingMore(true) : setLoading(true)
@@ -560,8 +563,21 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         setLoading(false)
         setLoadingMore(false)
       }
+      if (append) loadingMoreRef.current = false
     }
   }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, usesDesktopTable, watchCategories])
+
+  useEffect(() => {
+    const sentinel = loadMoreRef.current
+    if (!sentinel || loading || loadingMore || rows.length >= total) return undefined
+    const root = pageRootRef.current?.closest('main') || null
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return
+      void load(page + 1, true)
+    }, { root, rootMargin: '720px 0px' })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [load, loading, loadingMore, page, rows.length, total])
 
   useEffect(() => {
     const restoration = restorationRef.current
@@ -579,30 +595,37 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     const restoration = restorationRef.current
     if (!restoration || loading || rows.length === 0) return undefined
 
-    let secondFrame = 0
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
-        const scrollContainer = pageRootRef.current?.closest('main')
-        if (scrollContainer) {
-          const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight)
-          scrollContainer.scrollTop = Math.min(restoration.scroll_top, maxScrollTop)
+    let frame = 0
+    let attempts = 0
+    const restore = () => {
+      attempts += 1
+      const scrollContainer = pageRootRef.current?.closest('main') as HTMLElement | null
+      if (scrollContainer) {
+        const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight)
+        scrollContainer.scrollTop = Math.min(restoration.scroll_top, maxScrollTop)
+        if (Math.abs(scrollContainer.scrollTop - restoration.scroll_top) <= 16 || attempts >= 20) {
           if (Math.abs(scrollContainer.scrollTop - restoration.scroll_top) > 16) {
             const anchor = Array.from(
               pageRootRef.current?.querySelectorAll<HTMLElement>('[data-mobile-task-row-key]') || [],
             ).find(element => element.dataset.mobileTaskRowKey === restoration.row_key)
             anchor?.scrollIntoView({ block: 'center' })
           }
-        } else {
-          window.scrollTo({ top: restoration.scroll_top, behavior: 'auto' })
+          clearMobileTaskListRestoration(window.sessionStorage)
+          restorationRef.current = null
+          return
         }
+      } else {
+        window.scrollTo({ top: restoration.scroll_top, behavior: 'auto' })
         clearMobileTaskListRestoration(window.sessionStorage)
         restorationRef.current = null
-      })
-    })
+        return
+      }
+      frame = window.requestAnimationFrame(restore)
+    }
+    frame = window.requestAnimationFrame(restore)
 
     return () => {
-      window.cancelAnimationFrame(firstFrame)
-      if (secondFrame) window.cancelAnimationFrame(secondFrame)
+      window.cancelAnimationFrame(frame)
     }
   }, [loading, rows])
 
@@ -943,8 +966,6 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
             <div className="hidden md:block">
               <MobileTaskTable
                 rows={rows}
-                total={total}
-                page={page}
                 loading={loading}
                 analysisMode={analysisOnly}
                 selectionMode={selectionMode}
@@ -954,10 +975,6 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 onOpen={openTask}
                 onCopy={(value, label) => void copyValue(value, label)}
                 onSaved={() => load(page, false, true)}
-                onPageChange={nextPage => {
-                  void load(nextPage)
-                  pageRootRef.current?.closest('main')?.scrollTo({ top: 0, behavior: 'smooth' })
-                }}
               />
             </div>
           )}
@@ -1156,10 +1173,13 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               </article>
             )
           })}
-          {rows.length < total && (
-            <Button block className="mobile-task-load-more min-h-11" loading={loadingMore} onClick={() => void load(page + 1, true)}>加载更多</Button>
-          )}
           </div>
+          {rows.length < total && (
+            <div ref={loadMoreRef} className="mobile-task-load-more min-h-11" aria-live="polite">
+              {loadingMore ? '正在加载更多任务…' : '继续下滑加载更多'}
+              <Button type="link" onClick={() => void load(page + 1, true)} loading={loadingMore}>手动加载</Button>
+            </div>
+          )}
         </>
       )}
 
