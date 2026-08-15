@@ -11,6 +11,7 @@ import json
 import httpx
 from typing import Optional
 from config import settings
+from services.txdocs_usage import classify_txdocs_endpoint, record_txdocs_request
 
 # 14 个业务列的列号映射（A=0, N=13）
 COLUMNS = [
@@ -54,12 +55,14 @@ class TxDocsClient:
         access_token: str,
         open_id: str,
         http_client: Optional[httpx.AsyncClient] = None,
+        usage_source: str = "unknown",
     ):
         self.client_id = client_id
         self.access_token = access_token
         self.open_id = open_id
         self._http = http_client
         self._owns_http = http_client is None
+        self.usage_source = usage_source
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -90,12 +93,28 @@ class TxDocsClient:
             try:
                 resp = await http.request(method, url, **kwargs)
                 if resp.status_code == 429:
+                    await self._record_request_attempt(
+                        method,
+                        url,
+                        success=False,
+                        retry=attempt > 0,
+                        http_status=resp.status_code,
+                        error_code="429",
+                    )
                     retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
                     await asyncio.sleep(retry_after)
                     continue
                 try:
                     payload = resp.json()
                 except (json.JSONDecodeError, ValueError) as exc:
+                    await self._record_request_attempt(
+                        method,
+                        url,
+                        success=False,
+                        retry=attempt > 0,
+                        http_status=resp.status_code,
+                        error_code="invalid_response",
+                    )
                     if resp.status_code >= 500 and attempt < max_retries - 1:
                         await asyncio.sleep(2 ** attempt)
                         continue
@@ -103,12 +122,32 @@ class TxDocsClient:
                         f"HTTP {resp.status_code} 返回了无法解析的响应"
                     ) from exc
                 if resp.status_code >= 400:
+                    api_error = self._api_error(
+                        payload,
+                        http_status=resp.status_code,
+                    )
+                    await self._record_request_attempt(
+                        method,
+                        url,
+                        success=False,
+                        retry=attempt > 0,
+                        http_status=resp.status_code,
+                        error_code=api_error.code,
+                    )
                     if resp.status_code >= 500 and attempt < max_retries - 1:
                         await asyncio.sleep(2 ** attempt)
                         continue
-                    raise self._api_error(payload, http_status=resp.status_code)
+                    raise api_error
                 business_error = self._business_error(payload)
                 if business_error is not None:
+                    await self._record_request_attempt(
+                        method,
+                        url,
+                        success=False,
+                        retry=attempt > 0,
+                        http_status=resp.status_code,
+                        error_code=business_error.code,
+                    )
                     # 腾讯偶尔会把上游 TCP 读超时包装成 HTTP 200 + 400010。
                     # 这类错误通常是瞬时传输问题，和参数/权限错误不同，可以安全重试；
                     # 只有明确包含传输超时特征时才重试，避免掩盖真实业务错误。
@@ -119,15 +158,51 @@ class TxDocsClient:
                         await asyncio.sleep(2 ** attempt)
                         continue
                     raise business_error
+                await self._record_request_attempt(
+                    method,
+                    url,
+                    success=True,
+                    retry=attempt > 0,
+                    http_status=resp.status_code,
+                    error_code=None,
+                )
                 # 请求间延迟，避免限频
                 await asyncio.sleep(settings.API_RATE_LIMIT_DELAY_MS / 1000)
                 return payload
             except httpx.RequestError:
+                await self._record_request_attempt(
+                    method,
+                    url,
+                    success=False,
+                    retry=attempt > 0,
+                    http_status=None,
+                    error_code="network_error",
+                )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise
         raise Exception(f"请求失败，已重试 {max_retries} 次: {url}")
+
+    async def _record_request_attempt(
+        self,
+        method: str,
+        url: str,
+        *,
+        success: bool,
+        retry: bool,
+        http_status: int | None,
+        error_code: str | int | None,
+    ) -> None:
+        await record_txdocs_request(
+            request_source=self.usage_source,
+            method=method,
+            endpoint=classify_txdocs_endpoint(url),
+            success=success,
+            retry=retry,
+            http_status=http_status,
+            error_code=error_code,
+        )
 
     @staticmethod
     def _is_retryable_transport_error(error: TxDocsAPIError) -> bool:

@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import httpx
 
@@ -346,6 +346,44 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await http.aclose()
 
+    async def test_quota_error_records_one_actual_request_attempt(self):
+        async def handler(_request):
+            return httpx.Response(
+                200,
+                json={"code": 400011, "message": "Requests Use Up"},
+            )
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient(
+            "client",
+            "token",
+            "user",
+            http_client=http,
+            usage_source="full_sync",
+        )
+        recorder = AsyncMock()
+        try:
+            with patch(
+                "services.txdocs_client.record_txdocs_request",
+                new=recorder,
+            ):
+                with self.assertRaisesRegex(TxDocsAPIError, "400011"):
+                    await client.read_range("file", "sheet", "A1:A1")
+            recorder.assert_awaited_once_with(
+                request_source="full_sync",
+                method="GET",
+                endpoint="range_read",
+                success=False,
+                retry=False,
+                http_status=200,
+                error_code=400011,
+            )
+        finally:
+            await http.aclose()
+
     async def test_transport_business_timeout_is_retried(self):
         responses = [
             httpx.Response(
@@ -373,10 +411,20 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.MockTransport(handler),
         )
         client = TxDocsClient("client", "token", "user", http_client=http)
+        recorder = AsyncMock()
         try:
-            result = await client.read_range("file", "sheet", "A1:A1")
+            with patch(
+                "services.txdocs_client.record_txdocs_request",
+                new=recorder,
+            ):
+                result = await client.read_range("file", "sheet", "A1:A1")
             self.assertEqual(result, {"code": 0, "data": {"ok": True}})
             self.assertEqual(responses, [])
+            self.assertEqual(recorder.await_count, 3)
+            self.assertFalse(recorder.await_args_list[0].kwargs["retry"])
+            self.assertTrue(recorder.await_args_list[1].kwargs["retry"])
+            self.assertTrue(recorder.await_args_list[2].kwargs["retry"])
+            self.assertTrue(recorder.await_args_list[2].kwargs["success"])
         finally:
             await http.aclose()
 

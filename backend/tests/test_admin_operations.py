@@ -30,7 +30,7 @@ from services.audit_display import (
     target_display,
 )
 from services.ops_database import require_database_name
-from services.ops_overview import build_daily_sync_counts
+from services.ops_overview import build_daily_sync_counts, build_daily_txdocs_usage
 from services.ops_redaction import redact_text, sanitize_detail, sanitized_json
 
 
@@ -166,6 +166,51 @@ class AdminOperationsSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counts[1]["business_date"], "2026-08-15")
         self.assertEqual(counts[1]["total"], 1)
         self.assertEqual(counts[1]["scheduled"], 1)
+
+    def test_txdocs_request_usage_counts_attempts_and_quota_exhaustion(self):
+        rows = [
+            (
+                datetime(2026, 8, 15, 15, 0),
+                "full_sync",
+                "range_read",
+                "GET",
+                120,
+                117,
+                3,
+                2,
+                1,
+            ),
+            (
+                datetime(2026, 8, 15, 15, 0),
+                "local_writeback",
+                "batch_update",
+                "POST",
+                4,
+                4,
+                0,
+                0,
+                0,
+            ),
+        ]
+
+        usage = build_daily_txdocs_usage(
+            rows,
+            now_utc=datetime(2026, 8, 15, 15, 30),
+            timezone_name="Asia/Shanghai",
+            daily_limit=20000,
+            window_days=1,
+        )
+
+        self.assertEqual(usage["today"]["attempts"], 124)
+        self.assertEqual(usage["today"]["retries"], 2)
+        self.assertEqual(usage["today"]["estimated_remaining"], 0)
+        self.assertFalse(usage["today_coverage_complete"])
+        self.assertEqual(
+            usage["metering_started_at"],
+            "2026-08-15T15:00:00Z",
+        )
+        self.assertEqual(usage["today_breakdown"][0]["source"], "full_sync")
+        self.assertEqual(usage["today_breakdown"][0]["endpoint"], "range_read")
 
     def test_redaction_removes_common_credentials(self):
         raw = (

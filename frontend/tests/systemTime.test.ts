@@ -41,3 +41,21 @@ test('照片工单搜索使用即时筛选并按系统时区显示时间', () =>
   assert.doesNotMatch(workflowSource, />\s*查询\s*<\/Button>/)
   assert.match(workflowSource, /formatUTCTime\(value, systemTimezone\)/)
 })
+
+test('运维中心区分腾讯请求额度和同步任务次数', () => {
+  const operationsSource = readFileSync(
+    new URL('../src/pages/OperationsCenter.tsx', import.meta.url),
+    'utf8',
+  )
+  const typeSource = readFileSync(
+    new URL('../src/types/index.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(operationsSource, /title="腾讯接口请求额度"/)
+  assert.match(operationsSource, /title="腾讯同步任务次数"/)
+  assert.match(operationsSource, /400011/)
+  assert.match(operationsSource, /estimated_remaining/)
+  assert.match(typeSource, /txdocs_request_usage/)
+  assert.match(typeSource, /quota_exhausted_responses/)
+})

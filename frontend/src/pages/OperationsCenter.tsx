@@ -92,6 +92,21 @@ const STATUS_LABELS: Record<string, string> = {
   scheduled: '自动',
 }
 
+const TXDOCS_SOURCE_LABELS: Record<string, string> = {
+  full_sync: '全量同步',
+  online_query: '在线数据操作',
+  local_writeback: '平台异步写回',
+  photo_sheet: '调照片名单',
+  unknown: '未标记来源',
+}
+
+const TXDOCS_ENDPOINT_LABELS: Record<string, string> = {
+  file_info: '文件信息',
+  range_read: '范围读取',
+  batch_update: '批量写入',
+  other: '其他接口',
+}
+
 function formatBytes(value?: number | null) {
   if (value == null) return '-'
   if (value < 1024) return `${value} B`
@@ -144,6 +159,11 @@ function OverviewTab({
   if (!data && !loading) return <Empty description="运行状态暂时不可用" />
   const diskUsedPercent = data?.disk.total_bytes
     ? Math.round((data.disk.used_bytes / data.disk.total_bytes) * 100)
+    : 0
+  const requestUsage = data?.txdocs_request_usage
+  const quotaExhausted = Boolean(requestUsage?.today.quota_exhausted_responses)
+  const requestPercent = requestUsage?.daily_limit
+    ? Math.min(100, Math.round((requestUsage.today.attempts / requestUsage.daily_limit) * 100))
     : 0
   return (
     <div className="min-w-0 space-y-5">
@@ -198,8 +218,93 @@ function OverviewTab({
       </div>
 
       <Panel
-        title="腾讯同步次数"
-        description={`按${data?.sync_timezone || '系统'}时区统计最近 14 个业务日的同步任务`}
+        title="腾讯接口请求额度"
+        description={`按${requestUsage?.timezone || '系统'}时区统计本服务器实际发出的 HTTP 请求尝试；共用同一腾讯应用的其他程序不在本地计数内`}
+      >
+        {requestUsage && !requestUsage.today_coverage_complete && (
+          <Alert
+            className="mb-4"
+            type="info"
+            showIcon
+            message="当前业务日的本地计数尚不完整"
+            description={`计数从 ${formatTime(requestUsage.metering_started_at)} 开始，部署前已经发生的请求无法还原；收到 400011 后仍会直接按额度耗尽处理。`}
+          />
+        )}
+        {quotaExhausted && (
+          <Alert
+            className="mb-4"
+            type="error"
+            showIcon
+            message="腾讯接口已返回 400011，当前业务日按额度耗尽处理"
+            description="即使本地计数低于日限额，也可能有其他服务器或程序共用同一应用额度。"
+          />
+        )}
+        <Descriptions
+          className="mb-3"
+          bordered
+          size="small"
+          column={{ xs: 1, sm: 2, lg: 4 }}
+          items={[
+            { key: 'attempts', label: '今日请求尝试', children: requestUsage?.today.attempts ?? 0 },
+            { key: 'remaining', label: '本地估算剩余', children: requestUsage?.today.estimated_remaining ?? '-' },
+            { key: 'success', label: '成功', children: requestUsage?.today.success ?? 0 },
+            { key: 'failure', label: '失败 / 重试', children: `${requestUsage?.today.failure ?? 0} / ${requestUsage?.today.retries ?? 0}` },
+          ]}
+        />
+        <Progress
+          className="mb-4"
+          percent={requestPercent}
+          status={quotaExhausted ? 'exception' : requestPercent >= 85 ? 'active' : 'normal'}
+          format={() => `${requestUsage?.today.attempts ?? 0} / ${requestUsage?.daily_limit ?? 0}`}
+        />
+        <Table
+          size="small"
+          rowKey="business_date"
+          pagination={false}
+          scroll={{ x: 760 }}
+          locale={{ emptyText: '尚未开始记录接口请求' }}
+          dataSource={requestUsage?.daily || []}
+          columns={[
+            { title: '业务日期', dataIndex: 'business_date' },
+            { title: '请求尝试', dataIndex: 'attempts', align: 'right' as const },
+            { title: '成功', dataIndex: 'success', align: 'right' as const },
+            { title: '失败', dataIndex: 'failure', align: 'right' as const },
+            { title: '重试请求', dataIndex: 'retries', align: 'right' as const },
+            { title: '400011', dataIndex: 'quota_exhausted_responses', align: 'right' as const },
+            { title: '估算剩余', dataIndex: 'estimated_remaining', align: 'right' as const },
+          ]}
+        />
+        <div className="mt-4 text-sm font-medium text-[var(--app-text-strong)]">当前业务日请求构成</div>
+        <Table
+          className="mt-2"
+          size="small"
+          rowKey={row => `${row.source}:${row.endpoint}:${row.method}`}
+          pagination={false}
+          locale={{ emptyText: '暂无请求来源记录' }}
+          dataSource={requestUsage?.today_breakdown || []}
+          columns={[
+            {
+              title: '来源',
+              dataIndex: 'source',
+              render: (value: string) => TXDOCS_SOURCE_LABELS[value] || value,
+            },
+            {
+              title: '接口类型',
+              dataIndex: 'endpoint',
+              render: (value: string) => TXDOCS_ENDPOINT_LABELS[value] || value,
+            },
+            { title: '方法', dataIndex: 'method' },
+            { title: '请求尝试', dataIndex: 'attempts', align: 'right' as const },
+            { title: '成功', dataIndex: 'success', align: 'right' as const },
+            { title: '失败', dataIndex: 'failure', align: 'right' as const },
+            { title: '重试请求', dataIndex: 'retries', align: 'right' as const },
+          ]}
+        />
+      </Panel>
+
+      <Panel
+        title="腾讯同步任务次数"
+        description={`按${data?.sync_timezone || '系统'}时区统计最近 14 个业务日；一次任务通常包含多次接口请求`}
       >
         <Table
           size="small"

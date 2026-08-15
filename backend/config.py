@@ -64,6 +64,7 @@ class Settings(BaseSettings):
 
     # Tencent Docs API
     TXDOCS_BASE_URL: str = "https://docs.qq.com/openapi/spreadsheet/v3"
+    TXDOCS_DAILY_REQUEST_LIMIT: int = 20000
 
     # Visit/rating source acquisition. Keep disabled until the internal
     # platform contract and server-side credentials are configured.

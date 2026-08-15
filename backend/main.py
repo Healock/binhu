@@ -53,6 +53,7 @@ from services.online_local_writeback import (
     stop_online_writeback_tasks,
 )
 from services.client_compatibility import ClientCompatibilityMiddleware
+from services.txdocs_usage import stop_txdocs_usage_tasks
 
 
 @asynccontextmanager
@@ -97,6 +98,7 @@ async def lifespan(app: FastAPI):
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()
         await stop_online_writeback_tasks()
+        await stop_txdocs_usage_tasks()
         await close_db()
 
 

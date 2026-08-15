@@ -169,7 +169,12 @@ class SyncEngine:
                 await self._fail(conn, task_id, "未配置OAuth凭据，请先在设置页配置腾讯文档OAuth")
                 return
 
-            client = TxDocsClient(creds["client_id"], creds["access_token"], creds["open_id"])
+            client = TxDocsClient(
+                creds["client_id"],
+                creds["access_token"],
+                creds["open_id"],
+                usage_source="full_sync",
+            )
 
             # 2. 获取启用的表格
             spreadsheets = await self._get_spreadsheets(conn)

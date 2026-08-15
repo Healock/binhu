@@ -342,7 +342,12 @@ async def _oauth_client(cur) -> TxDocsClient:
     row = await cur.fetchone()
     if not row or not row[1] or not row[2]:
         raise RuntimeError("腾讯文档 OAuth 尚未配置")
-    return TxDocsClient(str(row[0]), str(row[1]), str(row[2]))
+    return TxDocsClient(
+        str(row[0]),
+        str(row[1]),
+        str(row[2]),
+        usage_source="local_writeback",
+    )
 
 
 async def _writeback_enabled(cur) -> bool:
