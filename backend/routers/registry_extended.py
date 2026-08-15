@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from io import BytesIO
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from openpyxl import load_workbook
 from pydantic import BaseModel, Field
 
 from config import settings
@@ -23,6 +25,17 @@ from services.permissions import (
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.watch_matching import backfill_assignment_snapshots
+from services.registry_import import (
+    ISSUE_CERTIFICATE_CONTENT_CONFLICT,
+    ISSUE_CERTIFICATE_DUPLICATE,
+    ISSUE_CERTIFICATE_NON_RENTAL,
+    ISSUE_HOUSEHOLD_DUPLICATE,
+    ISSUE_HOUSEHOLD_MISSING_TYPE,
+    classify_household_rows,
+    normalize_address,
+    normalize_community,
+    normalize_text,
+)
 
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
@@ -222,6 +235,12 @@ class PropertyUpdate(BaseModel):
     natural_address: str = Field(default="", max_length=500)
     building: str = Field(default="", max_length=100)
     room: str = Field(default="", max_length=100)
+    housing_type: str = Field(default="", max_length=50)
+    residence_type: str = Field(default="", max_length=100)
+    source_house_no: str = Field(default="", max_length=100)
+    source_updated_at: datetime | None = None
+    source_type: str = Field(default="manual", max_length=30)
+    source_ref: str = Field(default="", max_length=190)
     normalized_address: str = Field(default="", max_length=1000)
     change_reason: str = Field(default="", max_length=500)
 
@@ -299,6 +318,26 @@ class ReviewDecision(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class RegistryIssueItem(BaseModel):
+    issue_type: Literal[
+        ISSUE_CERTIFICATE_DUPLICATE,
+        ISSUE_CERTIFICATE_CONTENT_CONFLICT,
+        ISSUE_CERTIFICATE_NON_RENTAL,
+        ISSUE_HOUSEHOLD_DUPLICATE,
+        ISSUE_HOUSEHOLD_MISSING_TYPE,
+    ]
+    source_type: str = Field(default="external", max_length=30)
+    source_ref: str = Field(default="", max_length=190)
+    entity_key: str = Field(default="", max_length=500)
+    payload: dict = Field(default_factory=dict)
+    reason: str = Field(default="", max_length=500)
+
+
+class RegistryIssueBulkCreate(BaseModel):
+    batch_id: int | None = Field(default=None, gt=0)
+    items: list[RegistryIssueItem] = Field(default_factory=list, max_length=50000)
+
+
 class MergeRequest(BaseModel):
     target_person_id: int = Field(gt=0)
     reason: str = Field(default="", max_length=500)
@@ -366,12 +405,16 @@ async def _apply_candidate_payload(
             community_name,
             str(payload.get("natural_address") or "")[:500],
             str(payload.get("building") or "")[:100], str(payload.get("room") or "")[:100],
+            str(payload.get("housing_type") or "")[:50], str(payload.get("residence_type") or "")[:100],
+            str(payload.get("source_house_no") or "")[:100], payload.get("source_updated_at"),
+            str(payload.get("source_type") or "candidate_review")[:30], str(payload.get("source_ref") or "")[:190],
             str(payload.get("normalized_address") or payload.get("natural_address") or "")[:1000],
         )
         if entity_id:
             await cur.execute(
                 "UPDATE registry_properties SET street=%s, community_id=%s, community_name_snapshot=%s, "
-                "natural_address=%s, building=%s, room=%s, normalized_address=%s, "
+                "natural_address=%s, building=%s, room=%s, housing_type=%s, residence_type=%s, source_house_no=%s, "
+                "source_updated_at=%s, source_type=%s, source_ref=%s, normalized_address=%s, "
                 "current_version=current_version+1, updated_by=%s WHERE id=%s",
                 (*values, user_id, entity_id),
             )
@@ -381,7 +424,8 @@ async def _apply_candidate_payload(
         await cur.execute(
             "INSERT INTO registry_properties "
             "(street, community_id, community_name_snapshot, natural_address, building, room, "
-            "normalized_address, created_by, updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (*values, user_id, user_id),
         )
         return int(cur.lastrowid)
@@ -470,6 +514,7 @@ async def get_property_detail(
         await _property_scope(cur, property_id, user, REGISTRY_PROPERTY_VIEW)
         await cur.execute(
             "SELECT id, street, community_id, community_name_snapshot, natural_address, building, room, "
+            "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, "
             "normalized_address, status, current_version, created_at, updated_at "
             "FROM registry_properties WHERE id=%s",
             (property_id,),
@@ -509,8 +554,10 @@ async def get_property_detail(
     return {
         "id": int(row[0]), "street": row[1], "community_id": row[2],
         "community_name": row[3], "natural_address": row[4], "building": row[5],
-        "room": row[6], "normalized_address": row[7], "status": row[8],
-        "version": int(row[9]), "created_at": _iso(row[10]), "updated_at": _iso(row[11]),
+        "room": row[6], "housing_type": row[7], "residence_type": row[8],
+        "source_house_no": row[9], "source_updated_at": _iso(row[10]),
+        "source_type": row[11], "source_ref": row[12], "normalized_address": row[13], "status": row[14],
+        "version": int(row[15]), "created_at": _iso(row[16]), "updated_at": _iso(row[17]),
         "aliases": [
             {"id": int(item[0]), "alias": item[1], "community_id": item[2], "enabled": bool(item[3]),
              "source_type": item[4], "created_at": _iso(item[5])} for item in aliases
@@ -597,10 +644,13 @@ async def update_property(
             )
             await cur.execute(
                 "UPDATE registry_properties SET street=%s, community_id=%s, community_name_snapshot=%s, "
-                "natural_address=%s, building=%s, room=%s, normalized_address=%s, current_version=%s, "
+                "natural_address=%s, building=%s, room=%s, housing_type=%s, residence_type=%s, source_house_no=%s, "
+                "source_updated_at=%s, source_type=%s, source_ref=%s, normalized_address=%s, current_version=%s, "
                 "updated_by=%s WHERE id=%s",
                 (data.street.strip(), community_id, community_name,
-                 data.natural_address.strip(), data.building.strip(), data.room.strip(), normalized,
+                 data.natural_address.strip(), data.building.strip(), data.room.strip(), data.housing_type.strip(),
+                 data.residence_type.strip(), data.source_house_no.strip(), data.source_updated_at,
+                 data.source_type.strip() or "manual", data.source_ref.strip(), normalized,
                  next_version, user["id"], property_id),
             )
         await conn.commit()
@@ -1245,6 +1295,314 @@ async def update_organization_membership(
         target_name=str(membership_id), detail={"has_end": bool(data.valid_to)}, **request_audit_fields(request),
     )
     return {"message": "机构经办人关系已更新"}
+
+
+def _find_header(headers: list[str], *names: str) -> int | None:
+    normalized = [normalize_text(item).replace(" ", "") for item in headers]
+    wanted = {normalize_text(name).replace(" ", "") for name in names}
+    for index, value in enumerate(normalized):
+        if value in wanted:
+            return index
+    return None
+
+
+def _parse_household_workbook(content: bytes) -> list[dict]:
+    """读取户号表，按中文表头解析，所有标识字段都先转为文本。"""
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(422, "户号表不是可读取的 XLSX 文件") from exc
+    rows: list[dict] = []
+    for sheet in workbook.worksheets:
+        values = list(sheet.iter_rows(values_only=True))
+        header_row = None
+        indexes: dict[str, int] = {}
+        for row_number, raw in enumerate(values[:20], start=1):
+            headers = [normalize_text(value) for value in raw]
+            address_index = _find_header(headers, "出租屋地址", "详细地址", "标准详细地址")
+            type_index = _find_header(headers, "住房类型", "房屋类型", "类型")
+            if address_index is not None and type_index is not None:
+                header_row = row_number
+                indexes = {
+                    "community": _find_header(headers, "社区名称", "社区", "所属社区") or -1,
+                    "police_station": _find_header(headers, "派出所名称", "派出所") or -1,
+                    "community_code": _find_header(headers, "社区代码", "社区编号") or -1,
+                    "house_no": _find_header(headers, "居住房屋编号", "房屋编号", "户号") or -1,
+                    "landlord": _find_header(headers, "房主", "房东") or -1,
+                    "address": address_index,
+                    "housing_type": type_index,
+                    "residence_type": _find_header(headers, "居住处所", "居住场所") or -1,
+                    "resident_count": _find_header(headers, "居住人数", "人数") or -1,
+                    "updated_at": _find_header(headers, "更新时间", "更新日期") or -1,
+                }
+                break
+        if header_row is None:
+            continue
+        for physical_row, raw in enumerate(values[header_row:], start=header_row + 1):
+            if not any(value not in (None, "") for value in raw):
+                continue
+            def cell(key: str):
+                index = indexes[key]
+                return raw[index] if index >= 0 and index < len(raw) else ""
+            updated_at = cell("updated_at")
+            if isinstance(updated_at, datetime):
+                parsed_updated_at = updated_at
+            else:
+                text_value = normalize_text(updated_at)
+                try:
+                    parsed_updated_at = datetime.fromisoformat(text_value.replace("/", "-")) if text_value else None
+                except ValueError:
+                    parsed_updated_at = None
+            rows.append({
+                "source_sheet": sheet.title,
+                "source_row": physical_row,
+                "community": cell("community"),
+                "police_station": cell("police_station"),
+                "community_code": cell("community_code"),
+                "house_no": cell("house_no"),
+                "landlord": cell("landlord"),
+                "address": cell("address"),
+                "housing_type": cell("housing_type"),
+                "residence_type": cell("residence_type"),
+                "resident_count": cell("resident_count"),
+                "updated_at": parsed_updated_at.isoformat() if parsed_updated_at else normalize_text(updated_at),
+            })
+    if not rows:
+        raise HTTPException(422, "未找到包含出租屋地址和住房类型的户号表表头")
+    return rows
+
+
+def _issue_payload(payload: dict) -> dict:
+    """避免把 datetime 等对象直接交给 JSON 编码器。"""
+    return {key: value.isoformat() if isinstance(value, datetime) else value for key, value in payload.items()}
+
+
+def _issue_public(row, include_payload: bool = False) -> dict:
+    payload = _json(row[6], {})
+    safe_payload = _redact_sensitive_payload(payload)
+    return {
+        "id": int(row[0]), "batch_id": row[1], "issue_type": row[2], "source_type": row[3],
+        "source_ref": row[4], "entity_key": row[5], "payload": safe_payload if include_payload else {},
+        "reason": row[7], "status": row[8], "review_note": row[9], "reviewed_by": row[10],
+        "reviewed_at": _iso(row[11]), "created_at": _iso(row[12]),
+    }
+
+
+@router.post("/imports/households/preview")
+async def preview_household_import(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(413, "户号表不能超过 50MB")
+    rows = _parse_household_workbook(content)
+    classified = classify_household_rows(rows)
+    file_hash = hashlib.sha256(content).hexdigest()
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, status FROM registry_source_batches WHERE source_type='household' AND file_sha256=%s",
+                (file_hash,),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                batch_id = int(existing[0])
+                await conn.rollback()
+                return {
+                    "batch_id": batch_id, "status": existing[1], "idempotent": True,
+                    "total_count": len(rows), "normal_count": classified["normal_count"],
+                    "issue_count": classified["issue_count"], "duplicate_groups": classified["duplicate_groups"],
+                    "other_type_count": classified["other_type_count"],
+                }
+            await cur.execute(
+                "INSERT INTO registry_source_batches (source_type, file_name, file_sha256, status, imported_count, candidate_count, conflict_count, created_by) "
+                "VALUES ('household',%s,%s,'preview',0,%s,%s,%s)",
+                (normalize_text(file.filename)[:255], file_hash, classified["normal_count"], classified["issue_count"], user["id"]),
+            )
+            batch_id = int(cur.lastrowid)
+            for row in classified["rows"]:
+                await cur.execute(
+                    "INSERT INTO registry_source_records (batch_id, source_ref, entity_type, payload_json) VALUES (%s,%s,'household_property',%s)",
+                    (batch_id, str(row.get("source_row") or ""), json.dumps(_issue_payload(row), ensure_ascii=False)),
+                )
+            for issue in classified["issues"]:
+                await cur.execute(
+                    "INSERT INTO registry_import_issues (batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason) "
+                    "VALUES (%s,%s,'household',%s,%s,%s,%s)",
+                    (batch_id, issue["issue_type"], issue["source_ref"], issue["entity_key"],
+                     json.dumps(_issue_payload(issue["payload"]), ensure_ascii=False), issue["reason"]),
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {
+        "batch_id": batch_id, "status": "preview", "idempotent": False,
+        "total_count": len(rows), "normal_count": classified["normal_count"],
+        "issue_count": classified["issue_count"], "duplicate_groups": classified["duplicate_groups"],
+        "other_type_count": classified["other_type_count"],
+        "issue_breakdown": {
+            ISSUE_HOUSEHOLD_DUPLICATE: sum(1 for item in classified["issues"] if item["issue_type"] == ISSUE_HOUSEHOLD_DUPLICATE),
+            ISSUE_HOUSEHOLD_MISSING_TYPE: sum(1 for item in classified["issues"] if item["issue_type"] == ISSUE_HOUSEHOLD_MISSING_TYPE),
+        },
+    }
+
+
+@router.post("/imports/households/{batch_id}/confirm")
+async def confirm_household_import(
+    batch_id: int,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    await conn.begin()
+    imported = 0
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT status FROM registry_source_batches WHERE id=%s AND source_type='household' FOR UPDATE", (batch_id,))
+            batch = await cur.fetchone()
+            if not batch:
+                raise HTTPException(404, "户号表导入批次不存在")
+            if str(batch[0]) == "imported":
+                await conn.rollback()
+                return {"batch_id": batch_id, "status": "imported", "imported_count": 0, "idempotent": True}
+            await cur.execute(
+                "SELECT id, source_ref, payload_json FROM registry_source_records WHERE batch_id=%s AND entity_type='household_property' ORDER BY id",
+                (batch_id,),
+            )
+            records = await cur.fetchall()
+            await cur.execute("SELECT source_ref FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
+            blocked_refs = {str(row[0]) for row in await cur.fetchall()}
+            for record_id, source_ref, payload_json in records:
+                if str(source_ref) in blocked_refs:
+                    continue
+                payload = _json(payload_json, {})
+                address = normalize_text(payload.get("address"))
+                normalized = normalize_address(address)
+                if not normalized:
+                    continue
+                community_name = normalize_community(payload.get("community"))
+                community_id, canonical_name = await _canonical_community(cur, None, community_name)
+                await cur.execute(
+                    "SELECT id FROM registry_properties WHERE normalized_address=%s AND community_id <=> %s LIMIT 1 FOR UPDATE",
+                    (normalized, community_id),
+                )
+                existing = await cur.fetchone()
+                values = (
+                    canonical_name, community_id, address, payload.get("house_no") or "", payload.get("housing_type") or "",
+                    payload.get("residence_type") or "", payload.get("updated_at") or None, "household", str(source_ref),
+                )
+                if existing:
+                    await cur.execute(
+                        "UPDATE registry_properties SET community_id=%s, community_name_snapshot=%s, natural_address=%s, "
+                        "housing_type=%s, residence_type=%s, source_house_no=%s, source_updated_at=%s, source_type=%s, source_ref=%s, "
+                        "updated_by=%s WHERE id=%s",
+                        (community_id, canonical_name, address, values[4], values[5], payload.get("house_no") or "", values[6], values[7], values[8], user["id"], existing[0]),
+                    )
+                else:
+                    await cur.execute(
+                        "INSERT INTO registry_properties (street, community_id, community_name_snapshot, natural_address, building, room, "
+                        "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
+                        "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (community_id, canonical_name, address, payload.get("housing_type") or "", payload.get("residence_type") or "",
+                         payload.get("house_no") or "", payload.get("updated_at") or None, "household", str(source_ref), normalized, user["id"], user["id"]),
+                    )
+                imported += 1
+            await cur.execute("SELECT COUNT(*) FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
+            pending_issue_count = int((await cur.fetchone())[0])
+            await cur.execute(
+                "UPDATE registry_source_batches SET status=%s, imported_count=%s WHERE id=%s",
+                ("partially_imported" if pending_issue_count else "imported", imported, batch_id),
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {
+        "batch_id": batch_id,
+        "status": "partially_imported" if pending_issue_count else "imported",
+        "imported_count": imported,
+        "idempotent": False,
+        "pending_issue_count": pending_issue_count,
+    }
+
+
+@router.get("/import/issues")
+async def list_registry_import_issues(
+    status: str = Query(default="pending", max_length=20),
+    issue_type: str | None = Query(default=None, max_length=60),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    where = ["status=%s"]
+    params: list[object] = [status]
+    if issue_type:
+        where.append("issue_type=%s")
+        params.append(issue_type)
+    clause = " AND ".join(where)
+    async with conn.cursor() as cur:
+        await cur.execute(f"SELECT COUNT(*) FROM registry_import_issues WHERE {clause}", tuple(params))
+        total = int((await cur.fetchone())[0])
+        await cur.execute(
+            f"SELECT id, batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason, status, review_note, reviewed_by, reviewed_at, created_at "
+            f"FROM registry_import_issues WHERE {clause} ORDER BY id DESC LIMIT %s OFFSET %s",
+            tuple(params) + (page_size, (page - 1) * page_size),
+        )
+        rows = await cur.fetchall()
+    return {"total": total, "page": page, "page_size": page_size, "data": [_issue_public(row, include_payload=True) for row in rows]}
+
+
+@router.post("/import/issues/bulk")
+async def create_registry_import_issues(
+    data: RegistryIssueBulkCreate,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    if not data.items:
+        return {"created_count": 0}
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            for item in data.items:
+                await cur.execute(
+                    "SELECT id FROM registry_import_issues WHERE issue_type=%s AND source_type=%s AND source_ref=%s AND status='pending' LIMIT 1",
+                    (item.issue_type, item.source_type, item.source_ref),
+                )
+                if await cur.fetchone():
+                    continue
+                await cur.execute(
+                    "INSERT INTO registry_import_issues (batch_id, issue_type, source_type, source_ref, entity_key, payload_json, reason) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (data.batch_id, item.issue_type, item.source_type, item.source_ref, item.entity_key,
+                     json.dumps(_redact_sensitive_payload(item.payload), ensure_ascii=False), item.reason.strip()),
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"created_count": len(data.items)}
+
+
+@router.post("/import/issues/{issue_id}/review")
+async def review_registry_import_issue(
+    issue_id: int,
+    data: ReviewDecision,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    status = "resolved" if data.action == "accept" else "dismissed"
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE registry_import_issues SET status=%s, review_note=%s, reviewed_by=%s, reviewed_at=UTC_TIMESTAMP() "
+            "WHERE id=%s AND status='pending'",
+            (status, data.reason.strip(), user["id"], issue_id),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(404, "问题数据不存在或已经处理")
+    return {"id": issue_id, "status": status}
 
 
 @router.get("/change-candidates")

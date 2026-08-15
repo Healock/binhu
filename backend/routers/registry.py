@@ -33,6 +33,12 @@ class PropertyCreate(BaseModel):
     natural_address: str = Field(default="", max_length=500)
     building: str = Field(default="", max_length=100)
     room: str = Field(default="", max_length=100)
+    housing_type: str = Field(default="", max_length=50)
+    residence_type: str = Field(default="", max_length=100)
+    source_house_no: str = Field(default="", max_length=100)
+    source_updated_at: datetime | None = None
+    source_type: str = Field(default="manual", max_length=30)
+    source_ref: str = Field(default="", max_length=190)
     normalized_address: str = Field(default="", max_length=1000)
 
 
@@ -177,7 +183,8 @@ async def list_properties(
         total = int((await cur.fetchone())[0])
         await cur.execute(
             "SELECT id, street, community_id, community_name_snapshot, natural_address, "
-            "building, room, normalized_address, status, current_version, created_at, updated_at "
+            "building, room, housing_type, residence_type, source_house_no, source_updated_at, "
+            "source_type, source_ref, normalized_address, status, current_version, created_at, updated_at "
             f"FROM registry_properties{clause} ORDER BY id DESC LIMIT %s OFFSET %s",
             tuple(params) + (page_size, offset),
         )
@@ -195,11 +202,17 @@ async def list_properties(
                 "natural_address": row[4],
                 "building": row[5],
                 "room": row[6],
-                "normalized_address": row[7],
-                "status": row[8],
-                "version": int(row[9]),
-                "created_at": row[10].isoformat() if row[10] else None,
-                "updated_at": row[11].isoformat() if row[11] else None,
+                "housing_type": row[7],
+                "residence_type": row[8],
+                "source_house_no": row[9],
+                "source_updated_at": row[10].isoformat() if row[10] else None,
+                "source_type": row[11],
+                "source_ref": row[12],
+                "normalized_address": row[13],
+                "status": row[14],
+                "version": int(row[15]),
+                "created_at": row[16].isoformat() if row[16] else None,
+                "updated_at": row[17].isoformat() if row[17] else None,
             }
             for row in rows
         ],
@@ -229,10 +242,13 @@ async def create_property(
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT INTO registry_properties "
-                "(street, community_id, community_name_snapshot, natural_address, building, room, normalized_address, created_by, updated_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "(street, community_id, community_name_snapshot, natural_address, building, room, housing_type, residence_type, "
+                "source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (data.street.strip(), community_id, community_name,
                  data.natural_address.strip(), data.building.strip(), data.room.strip(),
+                 data.housing_type.strip(), data.residence_type.strip(), data.source_house_no.strip(),
+                 data.source_updated_at, data.source_type.strip() or "manual", data.source_ref.strip(),
                  normalized, user["id"], user["id"]),
             )
             property_id = int(cur.lastrowid)

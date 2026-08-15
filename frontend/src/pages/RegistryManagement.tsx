@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm,
-  Select, Space, Tabs, Tag, message,
+  Select, Space, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -18,7 +18,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
-type TabKey = 'properties' | 'people' | 'organizations' | 'merges' | 'candidates' | 'conflicts'
+type TabKey = 'properties' | 'people' | 'organizations' | 'merges' | 'candidates' | 'conflicts' | 'issues'
 type ModalKind = 'property' | 'person' | 'organization' | 'phone' | 'alias' | 'personRelation' | 'organizationRelation' | 'merge'
 
 export default function RegistryManagement() {
@@ -30,6 +30,12 @@ export default function RegistryManagement() {
   const [merges, setMerges] = useState<any[]>([])
   const [candidates, setCandidates] = useState<any[]>([])
   const [conflicts, setConflicts] = useState<any[]>([])
+  const [issues, setIssues] = useState<any[]>([])
+  const [issueType, setIssueType] = useState('')
+  const [issueStatus, setIssueStatus] = useState('pending')
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importPreview, setImportPreview] = useState<any>(null)
+  const [importing, setImporting] = useState(false)
   const [communities, setCommunities] = useState<Array<{ id: number; name: string }>>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -63,6 +69,7 @@ export default function RegistryManagement() {
       if (tab === 'merges') setMerges((await registryApi.mergeHistory({ page_size: 100 })).data || [])
       if (tab === 'candidates') setCandidates((await registryApi.candidates()).data || [])
       if (tab === 'conflicts') setConflicts((await registryApi.conflicts()).data || [])
+      if (tab === 'issues') setIssues((await registryApi.importIssues(issueStatus, issueType || undefined)).data || [])
       if (requestId !== listRequestId.current) return
       setError('')
     } catch (reason: any) {
@@ -76,14 +83,15 @@ export default function RegistryManagement() {
     void getGridCommunities().then(items => setCommunities(items.filter(item => item.is_active))).catch(() => undefined)
     void registryApi.roleTypes().then(response => setRoleTypes(response.data.filter(item => item.is_active))).catch(() => undefined)
   }, [])
-  useEffect(() => { void load() }, [tab, debouncedKeyword])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, issueType, issueStatus])
 
   const currentCount = tab === 'properties' ? properties.length
     : tab === 'people' ? people.length
       : tab === 'organizations' ? organizations.length
         : tab === 'merges' ? merges.length
           : tab === 'candidates' ? candidates.length
-            : conflicts.length
+            : tab === 'conflicts' ? conflicts.length
+              : issues.length
 
   const communityOptions = useMemo(() => communities.map(item => ({ value: item.id, label: item.name })), [communities])
 
@@ -102,7 +110,8 @@ export default function RegistryManagement() {
     if (kind === 'property') {
       form.setFieldsValue({
         street: row.street, community_id: row.community_id, natural_address: row.natural_address,
-        building: row.building, room: row.room, normalized_address: row.normalized_address,
+        building: row.building, room: row.room, housing_type: row.housing_type, residence_type: row.residence_type,
+        source_house_no: row.source_house_no, source_updated_at: row.source_updated_at, normalized_address: row.normalized_address,
         change_reason: '',
       })
     } else if (kind === 'person') {
@@ -176,6 +185,42 @@ export default function RegistryManagement() {
     await load()
   }
 
+  const previewImport = async () => {
+    if (!importFile) return
+    setImporting(true)
+    try {
+      const result = await registryApi.previewHouseholdImport(importFile)
+      setImportPreview(result)
+      message.success(`已完成预览：${result.normal_count} 条可导入，${result.issue_count} 条需核查`)
+      if (tab !== 'issues') setTab('issues')
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '户号表预览失败')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const confirmImport = async () => {
+    if (!importPreview?.batch_id) return
+    setImporting(true)
+    try {
+      const result = await registryApi.confirmHouseholdImport(importPreview.batch_id)
+      message.success(`已导入 ${result.imported_count} 条房屋档案；问题数据仍保留在核查清单`)
+      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count })
+      await load()
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '户号表导入失败')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const reviewImportIssue = async (id: number, action: 'accept' | 'reject') => {
+    await registryApi.reviewImportIssue(id, { action, reason: action === 'accept' ? '已核查并确认' : '已核查并忽略' })
+    message.success('问题记录状态已更新')
+    await load()
+  }
+
   const endRelation = async (kind: 'person' | 'organization' | 'membership', relation: any) => {
     const payload = { valid_from: relation.valid_from || null, valid_to: new Date().toISOString(), verified: Boolean(relation.verified), ...(kind === 'membership' ? { title: relation.title || '' } : {}) }
     if (kind === 'person') await registryApi.updatePropertyPersonRelation(relation.relation_id, payload)
@@ -197,6 +242,7 @@ export default function RegistryManagement() {
     { title: '标准化地址', dataIndex: 'normalized_address', width: 340, ellipsis: true },
     { title: '幢', dataIndex: 'building', width: 90 },
     { title: '室', dataIndex: 'room', width: 90 },
+    { title: '住房类型', dataIndex: 'housing_type', width: 110, render: value => value || '未标注' },
     { title: '状态', dataIndex: 'status', width: 90, render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag> },
     { title: '版本', dataIndex: 'version', width: 80 },
     { title: '操作', key: 'actions', width: 210, render: (_, row) => <Space>
@@ -240,6 +286,7 @@ export default function RegistryManagement() {
             { key: 'organizations', label: '机构档案' },
             ...(canManage ? [{ key: 'merges', label: '合并历史' }] : []),
             ...(canReview ? [{ key: 'candidates', label: '待审核变更' }, { key: 'conflicts', label: '冲突处理' }] : []),
+            { key: 'issues', label: '问题数据核查' },
           ]}
         />
         <ListToolbar
@@ -259,8 +306,40 @@ export default function RegistryManagement() {
             {canManage && tab === 'properties' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('property')}>新增房屋</Button>}
             {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
             {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
+            {canReview && tab === 'issues' && <>
+              <Upload accept=".xlsx" maxCount={1} showUploadList={Boolean(importFile)} beforeUpload={file => { setImportFile(file); setImportPreview(null); return false }} onRemove={() => { setImportFile(null); setImportPreview(null) }}>
+                <Button icon={<UploadOutlined />}>选择户号表</Button>
+              </Upload>
+              <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览导入</Button>
+              {importPreview?.status === 'preview' && <Button onClick={() => void confirmImport()} loading={importing}>确认导入可导入数据</Button>}
+            </>}
           </>}
         />
+        {tab === 'issues' && <>
+          {importPreview && <Alert className="mb-3" type="info" showIcon message={`本批次共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条问题数据；其中“借住/其他/其它”等非空住房类型已按正常类型保留。`} />}
+          <Space wrap className="mb-3">
+          <Select value={issueStatus} onChange={value => setIssueStatus(value)} className="w-full md:w-40" options={[{ value: 'pending', label: '待核查' }, { value: 'resolved', label: '已核查' }, { value: 'dismissed', label: '已忽略' }]} />
+          <Select allowClear placeholder="按问题类型筛选" value={issueType || undefined} onChange={value => setIssueType(value || '')} className="w-full md:w-72" options={[
+            { value: 'certificate_duplicate', label: '告知书重复记录' },
+            { value: 'certificate_content_conflict', label: '告知书内容不一致' },
+            { value: 'certificate_non_rental', label: '告知书非出租/其他房屋' },
+            { value: 'household_duplicate', label: '户号表重复来源' },
+            { value: 'household_missing_type', label: '户号表未标注类型' },
+          ]} />
+          </Space>
+          <AppTable rowKey="id" loading={loading} dataSource={issues} pagination={false} scroll={{ x: 1100 }} columns={[
+            { title: '问题类型', dataIndex: 'issue_type', width: 170, render: value => ({
+              certificate_duplicate: '告知书重复记录', certificate_content_conflict: '告知书内容不一致', certificate_non_rental: '告知书非出租/其他房屋',
+              household_duplicate: '户号表重复来源', household_missing_type: '户号表未标注类型',
+            } as Record<string, string>)[value] || value },
+            { title: '来源行', dataIndex: 'source_ref', width: 90 },
+            { title: '社区', render: (_: unknown, row: any) => row.payload?.community || row.payload?.community_name || '-' },
+            { title: '地址/对象', render: (_: unknown, row: any) => row.payload?.address || row.payload?.normalized_address || row.entity_key, ellipsis: true },
+            { title: '住房类型', render: (_: unknown, row: any) => row.payload?.housing_type || '-' },
+            { title: '说明', dataIndex: 'reason', ellipsis: true, width: 260 },
+            { title: '操作', width: 180, render: (_: unknown, row: any) => <Space><Button size="small" type="primary" onClick={() => void reviewImportIssue(row.id, 'accept')}>标记已核查</Button><Button size="small" onClick={() => void reviewImportIssue(row.id, 'reject')}>忽略</Button></Space> },
+          ]} />
+        </>}
         {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={false} scroll={{ x: 950 }} />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}
@@ -295,6 +374,8 @@ export default function RegistryManagement() {
             <Form.Item name="street" label="街道"><Input /></Form.Item>
             <Form.Item name="natural_address" label="自然地址" rules={[{ required: true }]}><Input /></Form.Item>
             <div className="grid grid-cols-2 gap-3"><Form.Item name="building" label="幢"><Input /></Form.Item><Form.Item name="room" label="室"><Input /></Form.Item></div>
+            <div className="grid grid-cols-2 gap-3"><Form.Item name="housing_type" label="住房类型"><Input placeholder="个人出租、单位出租、自购房屋、借住、其他、其它" /></Form.Item><Form.Item name="residence_type" label="居住处所"><Input /></Form.Item></div>
+            <Form.Item name="source_house_no" label="来源房屋编号"><Input /></Form.Item>
             <Form.Item name="normalized_address" label="标准化地址"><Input.TextArea autoSize /></Form.Item>
             {selected && <Form.Item name="change_reason" label="变更原因"><Input.TextArea autoSize /></Form.Item>}
           </>}

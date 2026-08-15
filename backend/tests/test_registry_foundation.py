@@ -15,6 +15,12 @@ from services.permissions import (
     WORKFLOW_TICKET_CREATE,
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
+from services.registry_import import (
+    ISSUE_HOUSEHOLD_DUPLICATE,
+    ISSUE_HOUSEHOLD_MISSING_TYPE,
+    classify_household_rows,
+    normalize_community,
+)
 
 
 def test_registry_normalization_and_hmac_are_deterministic():
@@ -30,6 +36,30 @@ def test_registry_normalization_and_hmac_are_deterministic():
 def test_empty_sensitive_values_do_not_create_digest():
     assert hmac_digest("", kind="identity") == (None, 1)
     assert hmac_digest("  ", kind="phone") == (None, 1)
+
+
+def test_household_import_keeps_other_housing_types_as_normal_data():
+    result = classify_household_rows([
+        {"source_row": 1, "community": "芦荡社区", "address": "A 1", "housing_type": "借住"},
+        {"source_row": 2, "community": "长板社区", "address": "B 2", "housing_type": "其他"},
+        {"source_row": 3, "community": "长板社区", "address": "C 3", "housing_type": "其它"},
+    ])
+    assert result["issue_count"] == 0
+    assert result["normal_count"] == 3
+    assert result["other_type_count"] == 3
+    assert normalize_community("芦荡社区") == "芦荡社区"
+
+
+def test_household_import_separates_duplicate_and_missing_type_issues():
+    result = classify_household_rows([
+        {"source_row": 10, "community": "长板社区", "address": "同一地址", "housing_type": "个人出租"},
+        {"source_row": 11, "community": "长板社区", "address": "同一地址", "housing_type": "单位出租"},
+        {"source_row": 12, "community": "长板社区", "address": "未标注", "housing_type": ""},
+    ])
+    issue_types = [item["issue_type"] for item in result["issues"]]
+    assert issue_types.count(ISSUE_HOUSEHOLD_DUPLICATE) == 2
+    assert issue_types.count(ISSUE_HOUSEHOLD_MISSING_TYPE) == 1
+    assert result["normal_count"] == 0
 
 
 def test_new_permissions_are_catalogued_and_defaulted():

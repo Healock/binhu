@@ -2426,6 +2426,12 @@ export interface RegistryProperty {
   natural_address: string
   building: string
   room: string
+  housing_type: string
+  residence_type: string
+  source_house_no: string
+  source_updated_at: string | null
+  source_type: string
+  source_ref: string
   normalized_address: string
   status: string
   version: number
@@ -2451,6 +2457,22 @@ export interface RegistryOrganization {
   status: string
   notes: string
   updated_at: string | null
+}
+
+export interface RegistryImportIssue {
+  id: number
+  batch_id: number | null
+  issue_type: string
+  source_type: string
+  source_ref: string
+  entity_key: string
+  payload: Record<string, unknown>
+  reason: string
+  status: string
+  review_note: string
+  reviewed_by: number | null
+  reviewed_at: string | null
+  created_at: string | null
 }
 
 export interface WatchCategory {
@@ -2488,6 +2510,32 @@ export const registryApi = {
   },
   async updateProperty(id: number, payload: Record<string, unknown>) {
     return (await api.put(`/registry/properties/${id}`, payload)).data
+  },
+  async previewHouseholdImport(file: File) {
+    const form = new FormData()
+    form.append('file', file)
+    return (await api.post('/registry/imports/households/preview', form, {
+      ...activeRequest,
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })).data as {
+      batch_id: number; status: string; idempotent: boolean; total_count: number; normal_count: number
+      issue_count: number; duplicate_groups: number; other_type_count: number
+      issue_breakdown?: Record<string, number>
+    }
+  },
+  async confirmHouseholdImport(batchId: number) {
+    return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, activeRequest)).data as {
+      batch_id: number; status: string; imported_count: number; idempotent: boolean
+    }
+  },
+  async importIssues(status = 'pending', issueType?: string) {
+    return (await api.get('/registry/import/issues', {
+      ...activeRequest,
+      params: { status, ...(issueType ? { issue_type: issueType } : {}) },
+    })).data as { data: RegistryImportIssue[]; total: number; page: number; page_size: number }
+  },
+  async reviewImportIssue(id: number, payload: { action: 'accept' | 'reject'; reason: string }) {
+    return (await api.post(`/registry/import/issues/${id}/review`, payload, activeRequest)).data
   },
   async changePropertyStatus(id: number, payload: { status: 'active' | 'inactive'; reason?: string }) {
     return (await api.post(`/registry/properties/${id}/status`, payload)).data
