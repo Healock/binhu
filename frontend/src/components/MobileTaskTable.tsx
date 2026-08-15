@@ -1,8 +1,6 @@
 import {
   CopyOutlined,
-  EyeOutlined,
   ExclamationCircleOutlined,
-  SaveOutlined,
 } from '@ant-design/icons'
 import { Button, Input, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
@@ -150,7 +148,7 @@ export default function MobileTaskTable({
         },
       }))
       setEditorValues(current => ({ ...current, [task.row_key]: savedValues }))
-      message.success('任务已保存并写回腾讯表格')
+      message.success('已自动保存并写回腾讯表格')
       await onSaved()
     } catch (reason: any) {
       message.error(errorMessage(reason, '保存失败，请稍后重试'))
@@ -159,6 +157,24 @@ export default function MobileTaskTable({
       }
     } finally {
       setSavingRowKey('')
+    }
+  }
+
+  const saveField = async (
+    task: MobileTaskItem,
+    item: MobileTaskInlineEditorItem,
+    field: string,
+    value: string,
+  ) => {
+    const source = item.detail?.sources[0]
+    if (!source) return
+    const changes = buildMobileTaskChanges(
+      source.values,
+      { ...source.values, [field]: value },
+      [field],
+    )
+    if (Object.keys(changes).length) {
+      await saveEditor(task, item, changes)
     }
   }
 
@@ -237,6 +253,7 @@ export default function MobileTaskTable({
                         ...current,
                         [task.row_key]: { ...values, [field]: value || '' },
                       }))}
+                      onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
                   ) : (
                     <Input.TextArea
@@ -249,6 +266,7 @@ export default function MobileTaskTable({
                         ...current,
                         [task.row_key]: { ...values, [field]: event.target.value },
                       }))}
+                      onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
                   )}
                 </label>
@@ -263,16 +281,6 @@ export default function MobileTaskTable({
             </div>
           </div>
         )}
-        <div className="mobile-task-table-inline-actions">
-          <Button
-            size="small"
-            type="primary"
-            icon={<SaveOutlined />}
-            loading={savingRowKey === task.row_key}
-            disabled={!dirtyCount || !detail.writeback_enabled || selectionMode}
-            onClick={() => void saveEditor(task, item, changes)}
-          >{dirtyCount ? `保存 ${dirtyCount} 项` : '已保存'}</Button>
-        </div>
       </div>
     )
   }
@@ -350,18 +358,28 @@ export default function MobileTaskTable({
       width: 150,
       render: (_, task) => {
         const phones = mobileTaskPhoneOptions(task.summary.phone)
-        const phone = phones[0] || task.summary.phone
-        if (!phone) return <span className="text-[var(--app-text-muted)]">未填写</span>
+        const visiblePhones = phones.slice(0, 3)
+        if (!visiblePhones.length) return <span className="text-[var(--app-text-muted)]">未填写</span>
         return (
-          <Button
-            type="link"
-            size="small"
-            className="h-auto p-0"
-            icon={<CopyOutlined />}
-            onClick={() => onCopy(phone, '手机号')}
-          >
-            {phone}{phones.length > 1 ? ` +${phones.length - 1}` : ''}
-          </Button>
+          <div className="flex flex-col items-start">
+            {visiblePhones.map(phone => (
+              <Button
+                key={phone}
+                type="link"
+                size="small"
+                className="h-auto max-w-full p-0"
+                icon={<CopyOutlined />}
+                onClick={() => onCopy(phone, '手机号')}
+              >
+                <span className="truncate">{phone}</span>
+              </Button>
+            ))}
+            {phones.length > visiblePhones.length && (
+              <span className="pl-5 text-xs text-[var(--app-text-secondary)]">
+                +{phones.length - visiblePhones.length}
+              </span>
+            )}
+          </div>
         )
       },
     },
@@ -403,23 +421,6 @@ export default function MobileTaskTable({
         )
       },
     },
-    {
-      title: '操作',
-      key: 'actions',
-      fixed: 'right',
-      width: 64,
-      align: 'center',
-      render: (_, task) => (
-        <Tooltip title="查看任务">
-          <Button
-            type="text"
-            icon={<EyeOutlined />}
-            aria-label="查看任务"
-            onClick={() => onOpen(task)}
-          />
-        </Tooltip>
-      ),
-    },
   ]
 
   return (
@@ -431,7 +432,7 @@ export default function MobileTaskTable({
         dataSource={rows}
         columns={columns}
         tableLayout="fixed"
-        scroll={{ x: 1399 }}
+        scroll={{ x: 1335 }}
         rowSelection={selectionMode ? {
           selectedRowKeys,
           hideSelectAll: true,

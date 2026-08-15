@@ -428,7 +428,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             assignment_only=True,
         )
         self.assertTrue(any(
-            "member.position='组员'" in sql
+            "member.position IN ('组长', '组员')" in sql
             for sql, _ in cursor.calls
         ))
 
