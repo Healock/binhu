@@ -99,6 +99,17 @@ test('管理员手机导航使用独立流口任务入口', () => {
   assert.equal(routeIsActive('/tasks/全链条/row', query), false)
 })
 
+test('任务首页需复核徽标进入统一复核筛选而不是来源异常筛选', () => {
+  const homeSource = readFileSync(
+    new URL('../src/pages/MobileTaskHome.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(homeSource, /需复核 \{item\.review\}/)
+  assert.match(homeSource, /scope=\$\{scope\}&status=review/)
+  assert.doesNotMatch(homeSource, /异常来源 \{item\.review\}/)
+  assert.match(homeSource, /role="button"/)
+})
+
 test('批量保存只提交实际变化且不自动补造字段', () => {
   assert.deepEqual(buildMobileTaskChanges(
     { 核查人: '甲', 现住址: '', 核查结果: '' },
