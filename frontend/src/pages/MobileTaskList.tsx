@@ -32,6 +32,12 @@ import {
   mobileTaskSourceTags,
   mobileTaskSurfaceTone,
 } from '../utils/mobileTasks'
+import {
+  clearMobileTaskListRestoration,
+  readMobileTaskListRestoration,
+  writeMobileTaskListRestoration,
+  type MobileTaskListRestoration,
+} from '../utils/mobileTaskListState'
 import MobilePhonePicker from '../components/MobilePhonePicker'
 import MobileTaskTable from '../components/MobileTaskTable'
 import { ListToolbar } from '../components/ui'
@@ -62,7 +68,7 @@ const SORT_OPTIONS = [
 ] satisfies Array<{ label: string; value: MobileTaskSort }>
 
 const STATE_LABELS = {
-  unchecked: { text: '未核查', color: 'red' },
+  unchecked: { text: '未核查', color: 'gold' },
   checked: { text: '待补结果', color: 'orange' },
   completed: { text: '已完成', color: 'green' },
 } as const
@@ -178,7 +184,19 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [watchCategories, setWatchCategories] = useState<number[]>(readMultiNumber(searchParams, 'watch_category'))
   const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
-  const [keywordInput, setKeywordInput] = useState('')
+  const taskDisplayMode = user?.task_display_mode || 'card'
+  const restorationRef = useRef<MobileTaskListRestoration | null | undefined>(undefined)
+  if (restorationRef.current === undefined) {
+    restorationRef.current = readMobileTaskListRestoration(
+      window.sessionStorage,
+      mode,
+      `${window.location.pathname}${window.location.search}`,
+      taskDisplayMode,
+    )
+  }
+  const restorationStartedRef = useRef(false)
+  const pageRootRef = useRef<HTMLDivElement>(null)
+  const [keywordInput, setKeywordInput] = useState(() => restorationRef.current?.keyword || '')
   const [keywordFlush, setKeywordFlush] = useState(0)
   const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
@@ -208,7 +226,9 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const listRequestId = useRef(0)
   const loadedPageRef = useRef(1)
   const canBulkAssign = assignment.enabled
-  const taskDisplayMode = user?.task_display_mode || 'card'
+  const usesDesktopTable = useCallback(() => (
+    taskDisplayMode === 'table' && window.matchMedia('(min-width: 768px)').matches
+  ), [taskDisplayMode])
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
   ), [assignment.community_aliases])
@@ -242,8 +262,21 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   }, [assignmentCommunity, isTaskAssignable, selectedCommunity])
 
   const openTask = useCallback((task: MobileTaskItem) => {
+    const scrollContainer = pageRootRef.current?.closest('main')
+    writeMobileTaskListRestoration(window.sessionStorage, {
+      version: 1,
+      mode,
+      return_url: `${window.location.pathname}${window.location.search}`,
+      display_mode: taskDisplayMode,
+      scroll_top: scrollContainer?.scrollTop || window.scrollY,
+      page,
+      loaded_page: loadedPageRef.current,
+      keyword: keywordInput,
+      row_key: task.row_key,
+      saved_at: Date.now(),
+    })
     navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
-  }, [analysisOnly, navigate, scope])
+  }, [analysisOnly, keywordInput, mode, navigate, page, scope, taskDisplayMode])
 
   useEffect(() => {
     setSelectionMode(false)
@@ -459,7 +492,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     }
   }, [bulkInspector, bulkInspectorOptions])
 
-  const load = useCallback(async (targetPage = 1, append = false, silent = false) => {
+  const load = useCallback(async (
+    targetPage = 1,
+    append = false,
+    silent = false,
+    restorePageCount = 0,
+  ) => {
     const requestId = ++listRequestId.current
     if (!silent) {
       append ? setLoadingMore(true) : setLoading(true)
@@ -480,18 +518,26 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           page: requestedPage,
           page_size: 50,
         })
-      const results = silent
-        ? taskDisplayMode === 'table'
-          ? [await requestPage(loadedPageRef.current)]
-          : await Promise.all(Array.from(
-              { length: Math.max(1, loadedPageRef.current) },
-              (_, index) => requestPage(index + 1),
-            ))
-        : [await requestPage(targetPage)]
+      const refreshPageCount = Math.max(1, restorePageCount || loadedPageRef.current)
+      let results
+      if ((silent || restorePageCount > 0) && !usesDesktopTable()) {
+        results = []
+        for (let requestedPage = 1; requestedPage <= refreshPageCount; requestedPage += 1) {
+          results.push(await requestPage(requestedPage))
+        }
+      } else if (silent || restorePageCount > 0) {
+        results = [await requestPage(targetPage)]
+      } else {
+        results = [await requestPage(targetPage)]
+      }
       if (requestId !== listRequestId.current) return
       const result = results[0]
       const refreshedRows = results.flatMap(item => item.data)
       setRows(current => append ? [...current, ...result.data] : refreshedRows)
+      if (restorePageCount > 0 && refreshedRows.length === 0) {
+        clearMobileTaskListRestoration(window.sessionStorage)
+        restorationRef.current = null
+      }
       setTotal(result.total)
       if (!silent) {
         setPage(targetPage)
@@ -505,18 +551,64 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         setError(reason?.response?.data?.detail || reason?.message || '任务列表读取失败')
         if (!append) setRows([])
       }
+      if (restorePageCount > 0) {
+        clearMobileTaskListRestoration(window.sessionStorage)
+        restorationRef.current = null
+      }
     } finally {
       if (!silent && requestId === listRequestId.current) {
         setLoading(false)
         setLoadingMore(false)
       }
     }
-  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, taskDisplayMode, watchCategories])
+  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, usesDesktopTable, watchCategories])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const restoration = restorationRef.current
+    if (restoration) {
+      if (!restorationStartedRef.current) {
+        restorationStartedRef.current = true
+        void load(restoration.page, false, false, restoration.loaded_page)
+      }
+      return
+    }
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    const restoration = restorationRef.current
+    if (!restoration || loading || rows.length === 0) return undefined
+
+    let secondFrame = 0
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const scrollContainer = pageRootRef.current?.closest('main')
+        if (scrollContainer) {
+          const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight)
+          scrollContainer.scrollTop = Math.min(restoration.scroll_top, maxScrollTop)
+          if (Math.abs(scrollContainer.scrollTop - restoration.scroll_top) > 16) {
+            const anchor = Array.from(
+              pageRootRef.current?.querySelectorAll<HTMLElement>('[data-mobile-task-row-key]') || [],
+            ).find(element => element.dataset.mobileTaskRowKey === restoration.row_key)
+            anchor?.scrollIntoView({ block: 'center' })
+          }
+        } else {
+          window.scrollTo({ top: restoration.scroll_top, behavior: 'auto' })
+        }
+        clearMobileTaskListRestoration(window.sessionStorage)
+        restorationRef.current = null
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      if (secondFrame) window.cancelAnimationFrame(secondFrame)
+    }
+  }, [loading, rows])
 
   useEffect(() => {
     const refreshVisibleList = () => {
+      if (restorationRef.current) return
       if (document.visibilityState === 'visible') void load(1, false, true)
     }
     const visibilityChanged = () => {
@@ -629,7 +721,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   }
 
   return (
-    <div className="mobile-task-page">
+    <div ref={pageRootRef} className="mobile-task-page">
       <ListToolbar
         className="mobile-task-filter-card"
         filters={<div className="mobile-task-filter-grid">
@@ -864,7 +956,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 onSaved={() => load(page, false, true)}
                 onPageChange={nextPage => {
                   void load(nextPage)
-                  window.scrollTo({ top: 0, behavior: 'smooth' })
+                  pageRootRef.current?.closest('main')?.scrollTo({ top: 0, behavior: 'smooth' })
                 }}
               />
             </div>
@@ -910,6 +1002,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                 tabIndex={0}
                 aria-pressed={selectionMode ? isSelected : undefined}
                 aria-disabled={selectionMode && !canSelect ? true : undefined}
+                data-mobile-task-row-key={task.row_key}
                 className={[
                   'mobile-task-item-card',
                   `mobile-task-item-card--tone-${surfaceTone}`,

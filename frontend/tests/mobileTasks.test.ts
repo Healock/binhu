@@ -18,6 +18,10 @@ import {
   sortMobileTaskBusinesses,
 } from '../src/utils/mobileTasks.ts'
 import {
+  readMobileTaskListRestoration,
+  writeMobileTaskListRestoration,
+} from '../src/utils/mobileTaskListState.ts'
+import {
   canAccessFlowTaskWorkbench,
   canBulkAssignMobileTasks,
   isFlowTaskAdmin,
@@ -247,13 +251,90 @@ test('来源行保存后立即按业务真实口径更新状态', () => {
   )
 })
 
-test('任务面板状态背景按来源异常、需复核和主状态优先级映射', () => {
-  assert.equal(mobileTaskSurfaceTone({ conflict: true, source_count: 1, needs_review: true, state: 'completed' }), 'exception')
-  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 2, needs_review: true, state: 'completed' }), 'exception')
-  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: true, state: 'completed' }), 'review')
-  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: false, state: 'unchecked' }), 'unchecked')
-  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: false, state: 'checked' }), 'checked')
-  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: false, state: 'completed' }), 'completed')
+test('任务面板按未分配、核查进度、移交和研判待复核映射业务颜色', () => {
+  const task = (overrides: Partial<{
+    inspector: string
+    state: 'unchecked' | 'checked' | 'completed'
+    review_stage: '' | 'waiting_analysis' | 'analyzed'
+    result: string
+    secondary_feedback: string
+  }> = {}) => ({
+    inspector: overrides.inspector ?? '张三',
+    state: overrides.state ?? 'unchecked',
+    review_stage: overrides.review_stage ?? '',
+    summary: {
+      result: overrides.result ?? '',
+      secondary_feedback: overrides.secondary_feedback ?? '',
+    },
+  })
+
+  assert.equal(mobileTaskSurfaceTone(task({ inspector: '' })), 'unassigned')
+  assert.equal(mobileTaskSurfaceTone(task()), 'unchecked')
+  assert.equal(mobileTaskSurfaceTone(task({ state: 'checked' })), 'checked')
+  assert.equal(mobileTaskSurfaceTone(task({ state: 'completed' })), 'completed')
+  assert.equal(mobileTaskSurfaceTone(task({ inspector: '', state: 'completed' })), 'completed')
+  assert.equal(mobileTaskSurfaceTone(task({ state: 'completed', result: '移交其他社区' })), 'transfer')
+  assert.equal(mobileTaskSurfaceTone(task({
+    state: 'completed',
+    review_stage: 'analyzed',
+    result: '无法核实',
+  })), 'analysis-review')
+  assert.equal(mobileTaskSurfaceTone(task({
+    state: 'completed',
+    review_stage: 'analyzed',
+    result: '无法核实',
+    secondary_feedback: '已补充说明',
+  })), 'completed')
+  assert.equal(mobileTaskSurfaceTone(task({
+    state: 'completed',
+    review_stage: 'waiting_analysis',
+    result: '无法核实',
+  })), 'completed')
+})
+
+test('任务列表返回记录只在同一路由、视图且未过期时恢复', () => {
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) || null,
+    setItem: (key: string, value: string) => { values.set(key, value) },
+    removeItem: (key: string) => { values.delete(key) },
+  }
+  const savedAt = 1_000_000
+  writeMobileTaskListRestoration(storage, {
+    version: 1,
+    mode: 'tasks',
+    return_url: '/tasks?type=流口指令核查',
+    display_mode: 'card',
+    scroll_top: 1820,
+    page: 4,
+    loaded_page: 4,
+    keyword: '测试姓名',
+    row_key: 'row-42',
+    saved_at: savedAt,
+  })
+
+  assert.deepEqual(
+    readMobileTaskListRestoration(
+      storage,
+      'tasks',
+      '/tasks?type=流口指令核查',
+      'card',
+      savedAt + 1000,
+    ),
+    {
+      version: 1,
+      mode: 'tasks',
+      return_url: '/tasks?type=流口指令核查',
+      display_mode: 'card',
+      scroll_top: 1820,
+      page: 4,
+      loaded_page: 4,
+      keyword: '测试姓名',
+      row_key: 'row-42',
+      saved_at: savedAt,
+    },
+  )
+  assert.equal(readMobileTaskListRestoration(storage, 'analysis', '/tasks?type=流口指令核查', 'card', savedAt + 1000), null)
 })
 
 test('有待办的业务优先，零任务业务沉底', () => {
@@ -445,8 +526,11 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /--mobile-task-panel-shadow:/)
   assert.match(styleSource, /mobile-task-item-card--tone-completed[\s\S]*var\(--app-success\)/)
   assert.match(styleSource, /mobile-task-item-card--tone-checked[\s\S]*var\(--app-warning\)/)
-  assert.match(styleSource, /mobile-task-item-card--tone-exception[\s\S]*var\(--app-danger\)/)
-  assert.match(styleSource, /mobile-task-item-card--tone-exception[\s\S]*border-inline-start:\s*3px solid var\(--app-danger\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-transfer[\s\S]*var\(--app-danger\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-transfer[\s\S]*border-inline-start:\s*3px solid var\(--app-danger\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-unassigned[\s\S]*var\(--app-status-neutral\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-unchecked[\s\S]*var\(--app-status-unchecked\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-analysis-review[\s\S]*var\(--app-status-analysis-review\)/)
   assert.match(styleSource, /mobile-task-item-card--tone-completed[\s\S]*var\(--app-success\) 2%/)
   assert.match(styleSource, /\.mobile-task-bulk-toolbar\.is-sticky[\s\S]*position:\s*sticky/)
   assert.match(styleSource, /\.mobile-task-balanced-preview/)
@@ -500,7 +584,13 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(pageSource, /taskDisplayMode === 'table' \? ' mobile-task-list--table-fallback' : ''/)
   assert.match(styleSource, /@media \(min-width: 768px\)[\s\S]*mobile-task-list\.mobile-task-list--table-fallback[\s\S]*display: none/)
   assert.equal(pageSource.includes("taskDisplayMode === 'table' ? ' md:hidden'"), false)
-  assert.match(pageSource, /taskDisplayMode === 'table'[\s\S]*requestPage\(loadedPageRef\.current\)/)
+  assert.match(pageSource, /taskDisplayMode === 'table' && window\.matchMedia/)
+  assert.match(pageSource, /writeMobileTaskListRestoration\(window\.sessionStorage/)
+  assert.match(pageSource, /scroll_top: scrollContainer\?\.scrollTop \|\| window\.scrollY/)
+  assert.match(pageSource, /loaded_page: loadedPageRef\.current/)
+  assert.match(pageSource, /void load\(restoration\.page, false, false, restoration\.loaded_page\)/)
+  assert.match(pageSource, /scrollContainer\.scrollTop = Math\.min\(restoration\.scroll_top, maxScrollTop\)/)
+  assert.match(pageSource, /data-mobile-task-row-key=\{task\.row_key\}/)
   assert.match(tableSource, /Table<MobileTaskItem>/)
   assert.match(tableSource, /title: '截止日期'/)
   assert.match(tableSource, /title: '社区'/)
@@ -511,6 +601,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /mobile-task-table-primary-row/)
   assert.match(tableSource, /mobileTaskSurfaceTone\(task\)/)
   assert.match(tableSource, /mobile-task-table-primary-row--tone-\$\{mobileTaskSurfaceTone\(task\)\}/)
+  assert.match(tableSource, /'data-mobile-task-row-key': task\.row_key/)
   assert.match(tableSource, /mobile-task-table-inline-editor--tone-\$\{surfaceTone\}/)
   assert.doesNotMatch(tableSource, /编辑本行/)
   assert.match(tableSource, /getMobileTaskInlineEditors/)
@@ -548,6 +639,8 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(styleSource, /mobile-task-table-primary-row > td:first-child[\s\S]*border-left:\s*3px solid var\(--mobile-task-row-accent/)
   assert.match(styleSource, /mobile-task-table-inline-editor\s*\{[\s\S]*border-inline-start:\s*3px solid var\(--mobile-task-row-accent/)
   assert.match(styleSource, /mobile-task-table-primary-row--tone-completed[\s\S]*--mobile-task-row-bg:[\s\S]*var\(--app-success\) 2%/)
+  assert.match(styleSource, /mobile-task-table-primary-row--tone-transfer[\s\S]*var\(--app-danger\) 2%/)
+  assert.match(styleSource, /mobile-task-table-primary-row--tone-analysis-review[\s\S]*var\(--app-status-analysis-review\) 2%/)
   assert.doesNotMatch(styleSource, /inset 3px 0 0 color-mix/)
   assert.match(styleSource, /mobile-task-table-inline-fields/)
   assert.match(styleSource, /mobile-task-table-inline-editor--dirty/)

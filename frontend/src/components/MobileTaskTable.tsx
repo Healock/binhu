@@ -485,6 +485,7 @@ export default function MobileTaskTable({
           },
         }}
         onRow={task => ({
+          'data-mobile-task-row-key': task.row_key,
           className: [
             'mobile-task-table-primary-row',
             `mobile-task-table-primary-row--tone-${mobileTaskSurfaceTone(task)}`,

@@ -213,22 +213,28 @@
   box-shadow: var(--mobile-task-panel-shadow-hover);
 }
 
-.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-exception,
-.mobile-task-table-inline-editor--tone-exception {
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-transfer,
+.mobile-task-table-inline-editor--tone-transfer {
   --mobile-task-row-accent: var(--app-danger);
   --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
 }
 
-.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-review,
-.mobile-task-table-inline-editor--tone-review {
-  --mobile-task-row-accent: var(--app-warning);
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-warning) 2%, var(--app-surface));
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-analysis-review,
+.mobile-task-table-inline-editor--tone-analysis-review {
+  --mobile-task-row-accent: var(--app-status-analysis-review);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-status-analysis-review) 2%, var(--app-surface));
+}
+
+.mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-unassigned,
+.mobile-task-table-inline-editor--tone-unassigned {
+  --mobile-task-row-accent: var(--app-status-neutral);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-status-neutral) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-unchecked,
 .mobile-task-table-inline-editor--tone-unchecked {
-  --mobile-task-row-accent: var(--app-danger);
-  --mobile-task-row-bg: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
+  --mobile-task-row-accent: var(--app-status-unchecked);
+  --mobile-task-row-bg: color-mix(in srgb, var(--app-status-unchecked) 2%, var(--app-surface));
 }
 
 .mobile-task-table .ant-table-tbody > .mobile-task-table-primary-row--tone-checked,
@@ -627,19 +633,24 @@
   opacity: 0.58;
 }
 
-.mobile-task-item-card--tone-exception {
+.mobile-task-item-card--tone-transfer {
   border-inline-start: 3px solid var(--app-danger);
   background: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
 }
 
-.mobile-task-item-card--tone-review {
-  border-inline-start: 3px solid var(--app-warning);
-  background: color-mix(in srgb, var(--app-warning) 2%, var(--app-surface));
+.mobile-task-item-card--tone-analysis-review {
+  border-inline-start: 3px solid var(--app-status-analysis-review);
+  background: color-mix(in srgb, var(--app-status-analysis-review) 2%, var(--app-surface));
+}
+
+.mobile-task-item-card--tone-unassigned {
+  border-inline-start: 3px solid var(--app-status-neutral);
+  background: color-mix(in srgb, var(--app-status-neutral) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card--tone-unchecked {
-  border-inline-start: 3px solid var(--app-danger);
-  background: color-mix(in srgb, var(--app-danger) 2%, var(--app-surface));
+  border-inline-start: 3px solid var(--app-status-unchecked);
+  background: color-mix(in srgb, var(--app-status-unchecked) 2%, var(--app-surface));
 }
 
 .mobile-task-item-card--tone-checked {
@@ -1677,6 +1688,9 @@ html[data-theme='dark'] .mobile-task-hero {
   --app-success: #16a34a;
   --app-warning: #c2410c;
   --app-danger: #b91c1c;
+  --app-status-neutral: #64748b;
+  --app-status-unchecked: #ca8a04;
+  --app-status-analysis-review: #7c3aed;
   --contribution-0: #e8edf3;
   --contribution-1: #bfdbfe;
   --contribution-2: #60a5fa;
@@ -1715,6 +1729,9 @@ html[data-theme='dark'] {
   --app-success: #34d399;
   --app-warning: #fb923c;
   --app-danger: #f87171;
+  --app-status-neutral: #94a3b8;
+  --app-status-unchecked: #facc15;
+  --app-status-analysis-review: #a78bfa;
   --contribution-0: #1f2a3a;
   --contribution-1: #193b68;
   --contribution-2: #2563a5;
