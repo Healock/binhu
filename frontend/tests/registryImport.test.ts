@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-test('大批量房屋档案预览与确认使用五分钟请求超时', () => {
+test('户号表与确认接口保留长请求超时，告知书改为后台任务', () => {
   const apiSource = readFileSync(
     new URL('../src/api/client.ts', import.meta.url),
     'utf8',
@@ -10,11 +10,14 @@ test('大批量房屋档案预览与确认使用五分钟请求超时', () => {
 
   assert.match(apiSource, /api\.post\('\/registry\/imports\/households\/preview', form, \{[\s\S]*?timeout: 300_000/)
   assert.match(apiSource, /api\.post\(`\/registry\/imports\/households\/\$\{batchId\}\/confirm`, \{\}, \{[\s\S]*?timeout: 300_000/)
-  assert.match(apiSource, /api\.post\('\/registry\/imports\/certificates\/source-preview', \{\}, \{[\s\S]*?timeout: 300_000/)
   assert.match(apiSource, /api\.post\(`\/registry\/imports\/certificates\/\$\{batchId\}\/confirm`, \{\}, \{[\s\S]*?timeout: 300_000/)
+  assert.match(apiSource, /api\.post\('\/registry\/imports\/certificates\/source-runs', \{\}/)
+  assert.match(apiSource, /api\.get\('\/registry\/imports\/certificates\/source-runs\/latest'\)/)
+  assert.match(apiSource, /api\.get\(`\/registry\/imports\/certificates\/source-runs\/\$\{runId\}`\)/)
+  assert.match(apiSource, /source-runs\/\$\{runId\}\/retry/)
 })
 
-test('辖区档案页面明确区分上传过大和读取超时', () => {
+test('辖区档案页面显示告知书后台进度并允许断点继续', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
     'utf8',
@@ -22,7 +25,11 @@ test('辖区档案页面明确区分上传过大和读取超时', () => {
 
   assert.match(pageSource, /reason\?\.response\?\.status === 413/)
   assert.match(pageSource, /户号表超过服务器当前上传限制/)
-  assert.match(pageSource, /告知书读取超时/)
+  assert.match(pageSource, /已保存至第 \{certificateRun\.current_page\} 页/)
+  assert.match(pageSource, /继续读取/)
+  assert.match(pageSource, /重新读取/)
+  assert.match(pageSource, /可以离开本页面，任务会在服务器继续执行/)
+  assert.doesNotMatch(pageSource, /告知书读取超时/)
 })
 
 test('房屋档案和问题核查使用正文搜索并提供完整筛选', () => {

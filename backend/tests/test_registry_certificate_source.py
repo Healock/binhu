@@ -7,7 +7,12 @@ from unittest.mock import patch
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from services.registry_certificate_source import CERTIFICATE_ENDPOINT, fetch_certificate_rows
+from services.registry_certificate_source import (
+    CERTIFICATE_ENDPOINT,
+    fetch_certificate_rows,
+    iter_certificate_pages,
+    normalize_certificate_page,
+)
 
 
 class _Response:
@@ -63,6 +68,47 @@ class RegistryCertificateSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("startTime", params)
         self.assertNotIn("endTime", params)
         self.assertEqual(params["deptCode"], "320584710000")
+
+    async def test_page_iterator_can_resume_from_a_saved_page(self):
+        class PagedResponse(_Response):
+            def __init__(self, page):
+                self.page = page
+
+            def json(self):
+                return {
+                    "code": 200,
+                    "data": {
+                        "records": [{
+                            "pcsname": "滨湖新城派出所",
+                            "sssq": "长板社区",
+                            "dz": f"测试路{self.page}号",
+                        }],
+                    },
+                }
+
+        class PagedClient(_Client):
+            async def get(self, endpoint, params=None):
+                type(self).last_request = (endpoint, params)
+                return PagedResponse(params["pageNum"])
+
+        with (
+            patch("services.registry_certificate_source.httpx.AsyncClient", PagedClient),
+            patch("services.registry_certificate_source.settings.VISIT_SOURCE_BASE_URL", "http://source.invalid"),
+            patch("services.registry_certificate_source.settings.VISIT_SOURCE_AUTHORIZATION", "token"),
+        ):
+            pages = [page async for page in iter_certificate_pages(start_page=7)]
+        self.assertEqual([7], [page["page"] for page in pages])
+        self.assertEqual("测试路7号", pages[0]["rows"][0]["address"])
+        self.assertTrue(pages[0]["is_last"])
+
+    def test_page_normalization_reports_scope_and_required_field_rejections(self):
+        rows, rejected = normalize_certificate_page([
+            {"pcsname": "滨湖新城派出所", "sssq": "长板社区", "dz": "测试路1号"},
+            {"pcsname": "其他派出所", "sssq": "长板社区", "dz": "测试路2号"},
+            {"pcsname": "滨湖新城派出所", "sssq": "长板社区", "dz": ""},
+        ])
+        self.assertEqual(1, len(rows))
+        self.assertEqual(2, rejected)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm,
-  Select, Space, Tabs, Tag, Upload, message,
+  Select, Space, Spin, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
@@ -12,6 +12,7 @@ import {
   formatUTCTime,
   getGridCommunities,
   registryApi,
+  type RegistryCertificateSourceRun,
   type RegistryHousingCategory,
   type RegistryImportIssue,
   type RegistryOrganization,
@@ -72,6 +73,8 @@ export default function RegistryManagement() {
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importPreview, setImportPreview] = useState<any>(null)
   const [importing, setImporting] = useState(false)
+  const [certificateStarting, setCertificateStarting] = useState(false)
+  const [certificateRun, setCertificateRun] = useState<RegistryCertificateSourceRun | null>(null)
   const [communities, setCommunities] = useState<Array<{ id: number; name: string }>>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -86,6 +89,7 @@ export default function RegistryManagement() {
   const [detailOpen, setDetailOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const listRequestId = useRef(0)
+  const certificateRunRef = useRef<RegistryCertificateSourceRun | null>(null)
   const [form] = Form.useForm()
   const canManage = user?.permissions?.includes('registry.property.manage')
   const canReview = user?.permissions?.includes('registry.import.manage')
@@ -171,6 +175,52 @@ export default function RegistryManagement() {
     setPage(1)
   }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, propertyStatus])
   useEffect(() => { void load() }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, propertyStatus, page, pageSize])
+
+  const applyCertificateRun = (run: RegistryCertificateSourceRun, announce = false) => {
+    const previousStatus = certificateRunRef.current?.status
+    certificateRunRef.current = run
+    setCertificateRun(run)
+    if (run.status === 'completed' && run.batch_id && run.preview) {
+      const preview = { ...run.preview, batch_id: run.batch_id, source_type: 'certificate' }
+      setImportPreview(preview)
+      setTotal(preview.total_count || run.accepted_count)
+      if (announce && previousStatus !== 'completed') {
+        message.success(`告知书读取完成：${preview.normal_count || 0} 条可挂载，${preview.problem_row_count || 0} 条需核查`)
+      }
+    }
+    if (run.status === 'failed' && announce && previousStatus !== 'failed') {
+      message.error(run.error_message || '告知书读取失败，已保留读取进度')
+    }
+  }
+
+  useEffect(() => {
+    if (!canReview) return
+    let cancelled = false
+    void registryApi.latestCertificateSourceRun()
+      .then(response => {
+        if (!cancelled && response.data) applyCertificateRun(response.data)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [canReview])
+
+  useEffect(() => {
+    if (!certificateRun || !['pending', 'running'].includes(certificateRun.status)) return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const run = await registryApi.certificateSourceRun(certificateRun.id)
+        if (!cancelled) applyCertificateRun(run, true)
+      } catch {
+        // A temporary polling failure does not change the persistent server task.
+      }
+    }
+    const timer = window.setInterval(() => { void poll() }, 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [certificateRun?.id, certificateRun?.status])
 
   const communityOptions = useMemo(() => communities.map(item => ({ value: item.id, label: item.name })), [communities])
 
@@ -286,22 +336,30 @@ export default function RegistryManagement() {
     }
   }
 
-  const previewCertificateSource = async () => {
-    setImporting(true)
+  const startCertificateSource = async () => {
+    setCertificateStarting(true)
     try {
-      const result = await registryApi.previewCertificateSource()
-      setImportPreview({ ...result, source_type: 'certificate' })
-      setTotal(result.total_count)
-      message.success(`告知书只读预览完成：${result.normal_count} 条可挂载，${result.problem_row_count} 条需核查`)
-      if (tab !== 'imports') setTab('imports')
+      const run = await registryApi.startCertificateSourceRun()
+      applyCertificateRun(run)
+      message.success(run.reused ? '已有告知书读取任务正在运行' : '告知书读取任务已开始，可以离开页面后再回来查看')
     } catch (reason: any) {
-      if (reason?.code === 'ECONNABORTED' || reason?.response?.status === 504) {
-        message.error('告知书读取超时；请勿重复点击，稍后刷新页面确认批次状态')
-      } else {
-        message.error(reason?.response?.data?.detail || '告知书来源读取失败')
-      }
+      message.error(reason?.response?.data?.detail || '告知书读取任务启动失败')
     } finally {
-      setImporting(false)
+      setCertificateStarting(false)
+    }
+  }
+
+  const retryCertificateSource = async (restart: boolean) => {
+    if (!certificateRun) return
+    setCertificateStarting(true)
+    try {
+      const run = await registryApi.retryCertificateSourceRun(certificateRun.id, restart)
+      applyCertificateRun(run)
+      message.success(restart ? '已从第一页重新读取告知书' : '已从已保存进度继续读取告知书')
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '告知书读取任务恢复失败')
+    } finally {
+      setCertificateStarting(false)
     }
   }
 
@@ -501,6 +559,21 @@ export default function RegistryManagement() {
     description="户号表用于补充房屋档案，房东责任告知书只会挂载到已存在的出租房。预览不会修改正式房屋档案。"
   /> : undefined
 
+  const certificateRunActive = Boolean(certificateRun && ['pending', 'running'].includes(certificateRun.status))
+  const certificatePhaseLabel = certificateRun?.phase === 'reading'
+    ? `正在读取第 ${certificateRun.current_page + 1} 页`
+    : certificateRun?.phase === 'classifying'
+      ? '正在分析重复和冲突记录'
+      : certificateRun?.phase === 'writing_preview'
+        ? '正在生成导入预览'
+        : certificateRun?.status === 'pending'
+          ? '等待开始读取'
+          : certificateRun?.status === 'completed'
+            ? '读取完成'
+            : certificateRun?.status === 'failed'
+              ? '读取中断'
+              : ''
+
   const toolbarActions = <>
     {tab !== 'imports' && <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}
     {canManage && tab === 'properties' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('property')}>新增房屋</Button>}
@@ -511,7 +584,18 @@ export default function RegistryManagement() {
         <Button icon={<UploadOutlined />}>选择户号表</Button>
       </Upload>
       <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览户号表</Button>
-      <Button onClick={() => void previewCertificateSource()} loading={importing}>读取告知书</Button>
+      {!certificateRunActive && certificateRun?.status !== 'failed' && <Button onClick={() => void startCertificateSource()} loading={certificateStarting}>读取告知书</Button>}
+      {certificateRunActive && <Button loading disabled>{certificatePhaseLabel}</Button>}
+      {certificateRun?.status === 'failed' && <>
+        {certificateRun.error_code !== 'source_changed' && <Button onClick={() => void retryCertificateSource(false)} loading={certificateStarting}>继续读取</Button>}
+        <Popconfirm
+          title="确认从第一页重新读取告知书？"
+          description="已保存的分页进度会被清除，但不会影响上一次成功的导入预览。"
+          onConfirm={() => void retryCertificateSource(true)}
+        >
+          <Button loading={certificateStarting}>重新读取</Button>
+        </Popconfirm>
+      </>}
       {importPreview?.status === 'preview' && <Button onClick={() => void confirmImport()} loading={importing}>
         {importPreview.source_type === 'certificate' ? '确认挂载告知书' : '确认导入正常数据'}
       </Button>}
@@ -572,6 +656,29 @@ export default function RegistryManagement() {
             emptyText="当前筛选条件下没有问题房屋"
           />}
           {tab === 'imports' && <div className="registry-import-result">
+            {certificateRun && <div className={`registry-certificate-run registry-certificate-run--${certificateRun.status}`}>
+              <div className="registry-certificate-run__heading">
+                <span>{certificateRunActive && <Spin size="small" />}{certificatePhaseLabel}</span>
+                <Tag color={certificateRun.status === 'completed' ? 'success' : certificateRun.status === 'failed' ? 'error' : 'processing'}>
+                  {certificateRun.status === 'completed' ? '已完成' : certificateRun.status === 'failed' ? '已中断' : '执行中'}
+                </Tag>
+              </div>
+              <div className="registry-certificate-run__counts">
+                <span>已读取 {certificateRun.fetched_count} 条</span>
+                <span>通过范围校验 {certificateRun.accepted_count} 条</span>
+                <span>排除 {certificateRun.rejected_count} 条</span>
+                {certificateRun.current_page > 0 && <span>已保存至第 {certificateRun.current_page} 页</span>}
+              </div>
+              {certificateRun.status === 'failed' && <Alert
+                type="warning"
+                showIcon
+                message={certificateRun.error_message || '读取中断，已保存当前进度'}
+                description={certificateRun.error_code === 'source_changed'
+                  ? '断点位置的数据已经变化，为避免页码错位，需要从第一页重新读取。'
+                  : '可以点击“继续读取”从已保存分页继续；如来源数据已经大幅调整，也可以选择重新读取。'}
+              />}
+              {certificateRunActive && <div className="registry-certificate-run__hint">可以离开本页面，任务会在服务器继续执行；回来后会自动恢复进度显示。</div>}
+            </div>}
             {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
               ? `告知书共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可尝试挂载；${importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}

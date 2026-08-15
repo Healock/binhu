@@ -41,6 +41,12 @@ from services.registry_import import (
     normalize_text,
 )
 from services.registry_certificate_source import fetch_certificate_rows
+from services.registry_certificate_jobs import (
+    create_certificate_source_run,
+    get_certificate_source_run,
+    get_latest_certificate_source_run,
+    retry_certificate_source_run,
+)
 from services.visit_source import VisitSourceError
 
 
@@ -379,6 +385,10 @@ class RegistryIssueBulkCreate(BaseModel):
 class RegistryCertificateImport(BaseModel):
     source_name: str = Field(default="房东责任告知书", max_length=100)
     rows: list[dict] = Field(default_factory=list, max_length=50000)
+
+
+class RegistryCertificateSourceRetry(BaseModel):
+    restart: bool = False
 
 
 class MergeRequest(BaseModel):
@@ -1914,6 +1924,74 @@ async def preview_certificate_import(
         **request_audit_fields(request),
     )
     return result
+
+
+@router.post("/imports/certificates/source-runs", status_code=202)
+async def start_certificate_source_run(
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    _conn=Depends(get_registry_db),
+):
+    try:
+        run, reused = await create_certificate_source_run(int(user["id"]))
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await record_admin_audit(
+        user,
+        "registry.certificate_import.preview",
+        target_type="registry_certificate_source_run",
+        target_name=str(run["id"]),
+        result="pending" if not reused else "existing",
+        detail={"run_id": run["id"], "status": run["status"], "reused": reused},
+        **request_audit_fields(request),
+    )
+    return {**run, "reused": reused}
+
+
+@router.get("/imports/certificates/source-runs/latest")
+async def latest_certificate_source_run(
+    _user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    _conn=Depends(get_registry_db),
+):
+    return {"data": await get_latest_certificate_source_run()}
+
+
+@router.get("/imports/certificates/source-runs/{run_id}")
+async def certificate_source_run_detail(
+    run_id: int,
+    _user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    _conn=Depends(get_registry_db),
+):
+    run = await get_certificate_source_run(run_id)
+    if not run:
+        raise HTTPException(404, "告知书读取任务不存在")
+    return run
+
+
+@router.post("/imports/certificates/source-runs/{run_id}/retry", status_code=202)
+async def retry_certificate_source_run_endpoint(
+    run_id: int,
+    payload: RegistryCertificateSourceRetry,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    _conn=Depends(get_registry_db),
+):
+    try:
+        run = await retry_certificate_source_run(run_id, restart=payload.restart)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await record_admin_audit(
+        user,
+        "registry.certificate_import.preview",
+        target_type="registry_certificate_source_run",
+        target_name=str(run_id),
+        result="pending",
+        detail={"run_id": run_id, "restart": payload.restart},
+        **request_audit_fields(request),
+    )
+    return run
 
 
 @router.post("/imports/certificates/source-preview")

@@ -1328,7 +1328,49 @@
 }
 
 .registry-import-result {
+  display: grid;
+  gap: 16px;
   min-width: 0;
+}
+
+.registry-certificate-run {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  background: var(--app-surface-soft);
+}
+
+.registry-certificate-run--running,
+.registry-certificate-run--pending {
+  border-color: color-mix(in srgb, var(--app-primary) 32%, var(--app-border));
+}
+
+.registry-certificate-run__heading,
+.registry-certificate-run__counts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.registry-certificate-run__heading {
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.registry-certificate-run__heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.registry-certificate-run__counts,
+.registry-certificate-run__hint {
+  color: var(--app-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .registry-import-empty {
