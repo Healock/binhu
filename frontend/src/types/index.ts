@@ -116,6 +116,7 @@ export interface OpsContainer {
   restart_count?: number
   cpu_percent?: number
   memory_used_bytes?: number
+  memory_cache_bytes?: number
   memory_limit_bytes?: number
   network_rx_bytes?: number
   network_tx_bytes?: number

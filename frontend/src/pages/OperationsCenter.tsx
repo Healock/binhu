@@ -330,7 +330,7 @@ function OverviewTab({
         />
       </Panel>
 
-      <Panel title="容器状态" description="只读显示，不提供重启或命令执行">
+      <Panel title="容器状态" description="内存按 Docker 口径显示工作内存，可回收文件缓存单独列出；只读显示，不提供重启或命令执行">
         <div className="grid gap-4 lg:grid-cols-2">
           {(data?.containers || []).map((container: OpsContainer) => {
             const memoryPercent = container.memory_limit_bytes
@@ -351,11 +351,12 @@ function OverviewTab({
                   items={[
                     { key: 'cpu', label: 'CPU', children: `${container.cpu_percent || 0}%` },
                     { key: 'restart', label: '重启次数', children: container.restart_count ?? '-' },
-                    { key: 'memory', label: '内存', children: `${formatBytes(container.memory_used_bytes)} / ${formatBytes(container.memory_limit_bytes)}` },
+                    { key: 'memory', label: '工作内存', children: `${formatBytes(container.memory_used_bytes)} / ${formatBytes(container.memory_limit_bytes)}` },
+                    { key: 'cache', label: '可回收缓存', children: formatBytes(container.memory_cache_bytes) },
                     { key: 'started', label: '启动时间', children: formatTime(container.started_at) },
                   ]}
                 />
-                <Progress percent={memoryPercent} size="small" format={value => `内存 ${value}%`} />
+                <Progress percent={memoryPercent} size="small" format={value => `工作内存 ${value}%`} />
               </Card>
             )
           })}

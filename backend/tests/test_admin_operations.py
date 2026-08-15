@@ -17,7 +17,7 @@ import bcrypt
 from fastapi import HTTPException
 
 from deps import require_super_admin
-from ops_agent import _container_name, decode_docker_stream
+from ops_agent import _container_name, _memory_totals, decode_docker_stream
 from routers import admin_ops
 from routers.admin_ops import _require_log_source, router as admin_ops_router
 from services import backups
@@ -143,6 +143,31 @@ class AdminOperationsSecurityTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     with self.assertRaises(HTTPException):
                         _require_log_source(invalid)
+
+    def test_container_memory_subtracts_cgroup_v2_inactive_file_cache(self):
+        working_set, cache = _memory_totals({
+            "usage": 10_230_890_496,
+            "stats": {"inactive_file": 8_344_825_856},
+        })
+
+        self.assertEqual(working_set, 1_886_064_640)
+        self.assertEqual(cache, 8_344_825_856)
+
+    def test_container_memory_supports_cgroup_v1_and_clamps_invalid_cache(self):
+        self.assertEqual(
+            _memory_totals({
+                "usage": 1_000,
+                "stats": {"total_inactive_file": 250},
+            }),
+            (750, 250),
+        )
+        self.assertEqual(
+            _memory_totals({
+                "usage": 1_000,
+                "stats": {"inactive_file": 2_000},
+            }),
+            (0, 1_000),
+        )
 
     def test_daily_sync_counts_use_configured_business_timezone(self):
         rows = [
