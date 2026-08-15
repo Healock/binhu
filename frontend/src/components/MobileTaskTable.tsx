@@ -308,6 +308,13 @@ export default function MobileTaskTable({
       render: (_, task) => formatMobileTaskDeadline(task.summary.deadline) || '-',
     },
     {
+      title: '社区',
+      dataIndex: 'community',
+      width: 105,
+      ellipsis: true,
+      render: value => value || <span className="text-[var(--app-text-muted)]">未识别社区</span>,
+    },
+    {
       title: '核查人',
       dataIndex: 'inspector',
       width: 105,
@@ -446,7 +453,7 @@ export default function MobileTaskTable({
         dataSource={rows}
         columns={columns}
         tableLayout="fixed"
-        scroll={{ x: 1335 }}
+        scroll={{ x: 1440 }}
         rowSelection={selectionMode ? {
           selectedRowKeys,
           hideSelectAll: true,
