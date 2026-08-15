@@ -14,6 +14,7 @@ import {
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
+  mobileTaskSurfaceTone,
   sortMobileTaskBusinesses,
 } from '../src/utils/mobileTasks.ts'
 import {
@@ -246,6 +247,15 @@ test('来源行保存后立即按业务真实口径更新状态', () => {
   )
 })
 
+test('任务面板状态背景按来源异常、需复核和主状态优先级映射', () => {
+  assert.equal(mobileTaskSurfaceTone({ conflict: true, source_count: 1, needs_review: true, state: 'completed' }), 'exception')
+  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 2, needs_review: true, state: 'completed' }), 'exception')
+  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: true, state: 'completed' }), 'review')
+  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: false, state: 'unchecked' }), 'unchecked')
+  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: false, state: 'checked' }), 'checked')
+  assert.equal(mobileTaskSurfaceTone({ conflict: false, source_count: 1, needs_review: false, state: 'completed' }), 'completed')
+})
+
 test('有待办的业务优先，零任务业务沉底', () => {
   const base = { unchecked: 0, checked: 0, completed: 0, review: 0, source_ready: true }
   const sorted = sortMobileTaskBusinesses([
@@ -430,6 +440,12 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /\.mobile-task-item-card__body\s*\{[\s\S]*flex:\s*1[\s\S]*flex-direction:\s*column/)
   assert.match(styleSource, /\.mobile-task-source-cloud--card\s*\{[\s\S]*margin-top:\s*auto/)
   assert.match(styleSource, /\.mobile-task-item-card\.is-selected[\s\S]*box-shadow:/)
+  assert.match(pageSource, /mobileTaskSurfaceTone\(task\)/)
+  assert.match(pageSource, /mobile-task-item-card--tone-\$\{surfaceTone\}/)
+  assert.match(styleSource, /--mobile-task-panel-shadow:/)
+  assert.match(styleSource, /mobile-task-item-card--tone-completed[\s\S]*var\(--app-success\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-checked[\s\S]*var\(--app-warning\)/)
+  assert.match(styleSource, /mobile-task-item-card--tone-exception[\s\S]*var\(--app-danger\)/)
   assert.match(styleSource, /\.mobile-task-bulk-toolbar\.is-sticky[\s\S]*position:\s*sticky/)
   assert.match(styleSource, /\.mobile-task-balanced-preview/)
   assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*min-width:\s*0/)
@@ -491,6 +507,9 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /title: '登记情况'/)
   assert.match(tableSource, /expandedRowRender/)
   assert.match(tableSource, /mobile-task-table-primary-row/)
+  assert.match(tableSource, /mobileTaskSurfaceTone\(task\)/)
+  assert.match(tableSource, /mobile-task-table-primary-row--tone-\$\{mobileTaskSurfaceTone\(task\)\}/)
+  assert.match(tableSource, /mobile-task-table-inline-editor--tone-\$\{surfaceTone\}/)
   assert.doesNotMatch(tableSource, /编辑本行/)
   assert.match(tableSource, /getMobileTaskInlineEditors/)
   assert.match(tableSource, /rows\.map\(task => task\.row_key\)/)
@@ -523,7 +542,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(styleSource, /ant-table-expanded-row > td[\s\S]*padding: 0 0 10px/)
   assert.match(styleSource, /ant-table-expanded-row-fixed[\s\S]*width: 100% !important[\s\S]*margin: 0 !important[\s\S]*padding: 0 !important/)
   assert.match(styleSource, /mobile-task-table-inline-editor\s*\{[\s\S]*border-radius: 0 0 12px 12px/)
-  assert.match(styleSource, /mobile-task-table-inline-editor\s*\{[\s\S]*box-shadow: 0 5px 14px/)
+  assert.match(styleSource, /mobile-task-table-inline-editor\s*\{[\s\S]*box-shadow: var\(--mobile-task-panel-shadow\)/)
   assert.doesNotMatch(styleSource, /inset 3px 0 0 color-mix/)
   assert.match(styleSource, /mobile-task-table-inline-fields/)
   assert.match(styleSource, /mobile-task-table-inline-editor--dirty/)
