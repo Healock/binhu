@@ -146,7 +146,7 @@ export default function MobileTaskHome() {
                       {item.review > 0 && (
                         <button
                           type="button"
-                          className="mobile-task-badge is-danger"
+                          className="mobile-task-badge mobile-task-review-badge is-danger"
                           onClick={event => {
                             event.stopPropagation()
                             navigate(`/tasks?type=${encodeURIComponent(item.parser_type)}&scope=${scope}&status=review`)

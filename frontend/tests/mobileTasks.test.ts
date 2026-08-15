@@ -106,8 +106,17 @@ test('任务首页需复核徽标进入统一复核筛选而不是来源异常�
   )
   assert.match(homeSource, /需复核 \{item\.review\}/)
   assert.match(homeSource, /scope=\$\{scope\}&status=review/)
+  assert.match(homeSource, /mobile-task-review-badge/)
   assert.doesNotMatch(homeSource, /异常来源 \{item\.review\}/)
   assert.match(homeSource, /role="button"/)
+
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(styleSource, /\.mobile-task-review-badge\s*\{[\s\S]*min-height:\s*22px/)
+  assert.match(styleSource, /mobile-task-review-badge\) \{\s*min-height: 36px/)
+  assert.match(styleSource, /mobile-task-review-badge\) \{\s*min-height: 44px/)
 })
 
 test('批量保存只提交实际变化且不自动补造字段', () => {
