@@ -340,18 +340,28 @@ export default function MobileTaskTable({
       width: 150,
       render: (_, task) => {
         const phones = mobileTaskPhoneOptions(task.summary.phone)
-        const phone = phones[0] || task.summary.phone
-        if (!phone) return <span className="text-[var(--app-text-muted)]">未填写</span>
+        const visiblePhones = phones.slice(0, 3)
+        if (!visiblePhones.length) return <span className="text-[var(--app-text-muted)]">未填写</span>
         return (
-          <Button
-            type="link"
-            size="small"
-            className="h-auto p-0"
-            icon={<CopyOutlined />}
-            onClick={() => onCopy(phone, '手机号')}
-          >
-            {phone}{phones.length > 1 ? ` +${phones.length - 1}` : ''}
-          </Button>
+          <div className="flex flex-col items-start">
+            {visiblePhones.map(phone => (
+              <Button
+                key={phone}
+                type="link"
+                size="small"
+                className="h-auto max-w-full p-0"
+                icon={<CopyOutlined />}
+                onClick={() => onCopy(phone, '手机号')}
+              >
+                <span className="truncate">{phone}</span>
+              </Button>
+            ))}
+            {phones.length > visiblePhones.length && (
+              <span className="pl-5 text-xs text-[var(--app-text-secondary)]">
+                +{phones.length - visiblePhones.length}
+              </span>
+            )}
+          </div>
         )
       },
     },

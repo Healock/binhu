@@ -470,6 +470,8 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /getMobileTaskInlineEditors/)
   assert.match(tableSource, /rows\.map\(task => task\.row_key\)/)
   assert.match(tableSource, /updateMobileTask/)
+  assert.match(tableSource, /const visiblePhones = phones\.slice\(0, 3\)/)
+  assert.match(tableSource, /phones\.length - visiblePhones\.length/)
   assert.match(tableSource, /mobileTaskEditorFields/)
   assert.match(tableSource, /保存 \$\{dirtyCount\} 项/)
   assert.match(tableSource, /placeholder="请选择"/)

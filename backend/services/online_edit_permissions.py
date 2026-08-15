@@ -167,11 +167,9 @@ async def inspector_option_context(
         for alias, formal in aliases.items()
         if formal in allowed_set
     }
-    position_condition = (
-        "member.position='组员'"
-        if assignment_only
-        else "member.position IN ('组长', '组员')"
-    )
+    # 组长参与批量分配时也应作为可分配对象，尤其是平均分配场景。
+    # assignment_only 只限制候选来源为在岗的一线核查人员，不排除组长。
+    position_condition = "member.position IN ('组长', '组员')"
     await cur.execute(
         f"""
         SELECT DISTINCT community.name, member.name
