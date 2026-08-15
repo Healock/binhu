@@ -36,6 +36,7 @@ from services.permissions import (
     has_permission,
 )
 from services.report_overview import SUMMARY_TYPE, get_online_overview
+from services.qmf_registration import preview_capability
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
@@ -1432,6 +1433,13 @@ async def _mobile_task_detail_data(
         await _task_photo_results(user, parser_type, row_key)
         if include_photo_requests else []
     )
+    qmf_preview = preview_capability(
+        username=str(user.get("username") or ""),
+        parser_type=parser_type,
+        source_count=int(parent_row[1] or 0),
+        conflict=bool(parent_row[2]),
+        values=sources[0]["values"] if len(sources) == 1 else None,
+    )
     return {
         "task": _task_record(
             parser_type,
@@ -1460,6 +1468,7 @@ async def _mobile_task_detail_data(
         "writeback_enabled": enabled,
         "analysis_mode": analysis_mode,
         "photo_requests": photo_requests,
+        "qmf_preview": qmf_preview,
         "sources": sources,
     }
 

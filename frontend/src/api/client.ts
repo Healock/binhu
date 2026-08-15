@@ -1023,7 +1023,74 @@ export interface MobileTaskDetailData {
       size_bytes: number
     }>
   }>
+  qmf_preview?: {
+    visible: boolean
+    enabled: boolean
+    reason: string
+  }
   sources: MobileTaskSource[]
+}
+
+export interface QmfPreviewResult {
+  mode: 'read_only'
+  can_submit: false
+  platform_task: {
+    parser_type: string
+    row_key: string
+    source_id: number
+    name: string
+    identity_number: string
+    phone: string
+    address: string
+    community: string
+    result: string
+  }
+  upstream_task: {
+    task_id: string
+    record_id: string
+    name: string
+    identity_number: string
+    phone: string
+    address: string
+    police_station: string
+    community: string
+    community_code: string
+    check_status: string
+    check_status_text: string
+    dispatch_time: string
+  }
+  person: {
+    name: string
+    identity_number: string
+    phone: string
+    current_address: string
+    household_address: string
+    gender: string
+    birth_date: string
+    nation: string
+    education: string
+    marital_status: string
+    community_code: string
+    residence_type: string
+    residence_method: string
+    residence_reason: string
+    active_status: string
+  }
+  operator: {
+    username: string
+    name: string
+    station_code: string
+    station_name: string
+  }
+  photo: {
+    mime_type: string
+    size_bytes: number
+    sha256: string
+    data_base64: string
+  }
+  checks: Record<string, boolean>
+  planned_write_steps: Array<{ key: string; label: string; enabled: false }>
+  warnings: string[]
 }
 
 export interface MobileTaskInlineEditorItem {
@@ -1170,6 +1237,19 @@ export async function getMobileTaskDetail(
     `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}`,
     activeRequest,
   )
+  return data
+}
+
+export async function previewQmfRegistration(payload: {
+  parser_type: string
+  row_key: string
+  source_id: number
+  expected_revision: number
+}): Promise<QmfPreviewResult> {
+  const { data } = await api.post('/qmf-registration/preview', payload, {
+    ...activeRequest,
+    timeout: 60000,
+  })
   return data
 }
 

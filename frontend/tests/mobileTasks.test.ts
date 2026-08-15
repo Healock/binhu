@@ -599,3 +599,41 @@ test('mobile task choice fields disable search on mobile', () => {
   assert.match(detailSource, /showSearch=\{!mobile\}/)
   assert.equal(detailSource.includes('\n                        showSearch\n'), false)
 })
+
+test('全民防预演只从任务详情按内部来源定位发起且没有提交入口', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(detailSource, /data\.qmf_preview\?\.visible/)
+  assert.match(detailSource, /data\.qmf_preview\.enabled/)
+  assert.match(detailSource, /expected_revision: selectedSource\.revision/)
+  assert.match(detailSource, /qmfPreviewRequestActive\.current/)
+  assert.match(detailSource, /disabled=\{!data\.qmf_preview\.enabled \|\| dirty \|\| qmfPreviewLoading\}/)
+  assert.match(detailSource, /仅供人工核对，不会执行登记或反馈/)
+  assert.match(detailSource, /qmfPreviewResult\.photo\.data_base64/)
+  assert.match(detailSource, /后续登记步骤/)
+  assert.match(detailSource, /<Tag>未开放<\/Tag>/)
+  assert.doesNotMatch(detailSource, /全民防模型三只读预演[\s\S]*提交登记/)
+
+  const apiFunction = clientSource.match(
+    /export async function previewQmfRegistration[\s\S]*?\n}\n/,
+  )?.[0] || ''
+  assert.match(apiFunction, /api\.post\('\/qmf-registration\/preview', payload/)
+  assert.match(apiFunction, /parser_type: string/)
+  assert.match(apiFunction, /row_key: string/)
+  assert.match(apiFunction, /source_id: number/)
+  assert.match(apiFunction, /expected_revision: number/)
+  assert.doesNotMatch(apiFunction, /identity_number/)
+  assert.match(styleSource, /\.qmf-preview-person[\s\S]*grid-template-columns:/)
+  assert.match(styleSource, /@media \(max-width: 767px\)[\s\S]*\.qmf-preview-person[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
+})

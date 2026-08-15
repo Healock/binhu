@@ -2,6 +2,7 @@ import {
   ArrowLeftOutlined,
   CameraOutlined,
   DownloadOutlined,
+  SafetyCertificateOutlined,
   PhoneOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
@@ -20,15 +21,17 @@ import {
   message,
 } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
+  previewQmfRegistration,
   updateMobileTask,
   updateMobileTaskAnalysis,
   workflowApi,
   type MobileTaskDetailData,
   type MobileTaskSource,
+  type QmfPreviewResult,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -81,6 +84,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [savedMessage, setSavedMessage] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
   const [photoSubmitting, setPhotoSubmitting] = useState(false)
+  const [qmfPreviewOpen, setQmfPreviewOpen] = useState(false)
+  const [qmfPreviewLoading, setQmfPreviewLoading] = useState(false)
+  const [qmfPreviewResult, setQmfPreviewResult] = useState<QmfPreviewResult | null>(null)
+  const [qmfPreviewError, setQmfPreviewError] = useState('')
+  const qmfPreviewRequestActive = useRef(false)
 
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
@@ -278,6 +286,34 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     }
   }
 
+  const openQmfPreview = async () => {
+    if (
+      qmfPreviewRequestActive.current
+      || !selectedSource
+      || !data.qmf_preview?.enabled
+      || dirty
+    ) return
+    qmfPreviewRequestActive.current = true
+    setQmfPreviewOpen(true)
+    setQmfPreviewLoading(true)
+    setQmfPreviewResult(null)
+    setQmfPreviewError('')
+    try {
+      const result = await previewQmfRegistration({
+        parser_type: parserType,
+        row_key: rowKey,
+        source_id: selectedSource.id,
+        expected_revision: selectedSource.revision,
+      })
+      setQmfPreviewResult(result)
+    } catch (reason: any) {
+      setQmfPreviewError(detailError(reason, '全民防只读预演失败，请稍后重试'))
+    } finally {
+      qmfPreviewRequestActive.current = false
+      setQmfPreviewLoading(false)
+    }
+  }
+
   if (loading && !data) {
     return <div className="app-card p-5"><Skeleton active paragraph={{ rows: 10 }} /></div>
   }
@@ -418,6 +454,15 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               disabled={!identityNumber}
               onClick={() => setPhotoRequestOpen(true)}
             >{identityNumber ? '调取照片' : '缺少身份证号'}</Button>
+          )}
+          {mode === 'tasks' && data.qmf_preview?.visible && (
+            <Button
+              className="mobile-task-detail-pill"
+              icon={<SafetyCertificateOutlined />}
+              disabled={!data.qmf_preview.enabled || dirty || qmfPreviewLoading}
+              title={dirty ? '请先保存或放弃当前修改' : data.qmf_preview.reason}
+              onClick={() => void openQmfPreview()}
+            >全民防只读预演</Button>
           )}
         </div>
         {analysis && (
@@ -622,6 +667,133 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           <div><span className="font-medium text-[var(--app-text)]">身份证号：</span>{identityNumber}</div>
           <div><span className="font-medium text-[var(--app-text)]">社区：</span>{selectedSource?.values.社区 || data.task.community || '未填写'}</div>
           <div><span className="font-medium text-[var(--app-text)]">来源：</span>{data.workflow.label || parserType}</div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={qmfPreviewOpen}
+        title="全民防模型三只读预演"
+        width={mobile ? 'calc(100vw - 24px)' : 920}
+        footer={[
+          <Button
+            key="close"
+            onClick={() => {
+              if (qmfPreviewLoading) return
+              setQmfPreviewOpen(false)
+              setQmfPreviewResult(null)
+              setQmfPreviewError('')
+            }}
+          >关闭</Button>,
+        ]}
+        closable={!qmfPreviewLoading}
+        maskClosable={!qmfPreviewLoading}
+        onCancel={() => {
+          if (qmfPreviewLoading) return
+          setQmfPreviewOpen(false)
+          setQmfPreviewResult(null)
+          setQmfPreviewError('')
+        }}
+      >
+        <div className="qmf-preview-modal">
+          <Alert
+            type="warning"
+            showIcon
+            message="仅供人工核对，不会执行登记或反馈"
+            description="本次只读取一条全民防任务、人员资料和居住证照片；窗口关闭后照片不会保存在滨湖平台。"
+          />
+          {qmfPreviewLoading && <Skeleton active paragraph={{ rows: 8 }} />}
+          {qmfPreviewError && <Alert type="error" showIcon message={qmfPreviewError} />}
+          {qmfPreviewResult && (
+            <>
+              <section className="qmf-preview-section qmf-preview-person">
+                <div className="qmf-preview-photo">
+                  <Image
+                    src={`data:${qmfPreviewResult.photo.mime_type};base64,${qmfPreviewResult.photo.data_base64}`}
+                    alt="从居住证获取的照片"
+                    preview
+                  />
+                  <span>{qmfPreviewResult.photo.mime_type} · {Math.ceil(qmfPreviewResult.photo.size_bytes / 1024)} KB</span>
+                </div>
+                <Descriptions
+                  title="人员资料核对"
+                  size="small"
+                  column={mobile ? 1 : 2}
+                  items={[
+                    { key: 'name', label: '姓名', children: qmfPreviewResult.person.name || '未填写' },
+                    { key: 'identity', label: '身份证号', children: qmfPreviewResult.person.identity_number || '未填写' },
+                    { key: 'phone', label: '手机号', children: qmfPreviewResult.person.phone || '未填写' },
+                    { key: 'gender', label: '性别', children: qmfPreviewResult.person.gender || '未填写' },
+                    { key: 'birth', label: '出生日期', children: qmfPreviewResult.person.birth_date || '未填写' },
+                    { key: 'nation', label: '民族', children: qmfPreviewResult.person.nation || '未填写' },
+                    { key: 'education', label: '文化程度', children: qmfPreviewResult.person.education || '未填写' },
+                    { key: 'marriage', label: '婚姻状况', children: qmfPreviewResult.person.marital_status || '未填写' },
+                    { key: 'current-address', label: '现住址', children: qmfPreviewResult.person.current_address || '未填写', span: mobile ? 1 : 2 },
+                    { key: 'household-address', label: '户籍地址', children: qmfPreviewResult.person.household_address || '未填写', span: mobile ? 1 : 2 },
+                  ]}
+                />
+              </section>
+
+              <section className="qmf-preview-section">
+                <Descriptions
+                  title="全民防待处理任务"
+                  size="small"
+                  column={mobile ? 1 : 2}
+                  items={[
+                    { key: 'station', label: '派出所', children: qmfPreviewResult.upstream_task.police_station || '未填写' },
+                    { key: 'community', label: '社区', children: qmfPreviewResult.upstream_task.community || '未填写' },
+                    { key: 'status', label: '上游状态', children: qmfPreviewResult.upstream_task.check_status_text || qmfPreviewResult.upstream_task.check_status || '未填写' },
+                    { key: 'dispatch', label: '下发时间', children: qmfPreviewResult.upstream_task.dispatch_time || '未填写' },
+                    { key: 'address', label: '任务地址', children: qmfPreviewResult.upstream_task.address || '未填写', span: mobile ? 1 : 2 },
+                  ]}
+                />
+              </section>
+
+              <section className="qmf-preview-section">
+                <h3>只读安全校验</h3>
+                <div className="qmf-preview-disabled-steps">
+                  {[
+                    ['source_revision', '来源版本一致'],
+                    ['single_source', '平台来源唯一'],
+                    ['identity_match', '身份证一致'],
+                    ['name_match', '姓名一致'],
+                    ['single_upstream_task', '上游任务唯一'],
+                    ['station_match', '派出所一致'],
+                    ['person_match', '人员资料一致'],
+                    ['jurisdiction_match', '任务辖区一致'],
+                    ['precheck_passed', '只读校验通过'],
+                    ['photo_valid', '照片格式有效'],
+                  ].map(([key, label]) => (
+                    <Tag key={key} color={qmfPreviewResult.checks[key] ? 'success' : 'error'}>
+                      {label}
+                    </Tag>
+                  ))}
+                </div>
+              </section>
+
+              <section className="qmf-preview-section">
+                <Descriptions
+                  title="当前全民防登录身份"
+                  size="small"
+                  column={mobile ? 1 : 2}
+                  items={[
+                    { key: 'operator', label: '操作人', children: qmfPreviewResult.operator.name },
+                    { key: 'operator-id', label: '操作账号', children: qmfPreviewResult.operator.username },
+                    { key: 'operator-station', label: '所属机构', children: qmfPreviewResult.operator.station_name },
+                    { key: 'operator-station-code', label: '机构代码', children: qmfPreviewResult.operator.station_code },
+                  ]}
+                />
+              </section>
+
+              <section className="qmf-preview-section">
+                <h3>后续登记步骤</h3>
+                <div className="qmf-preview-disabled-steps">
+                  {qmfPreviewResult.planned_write_steps.map(step => (
+                    <span key={step.key}>{step.label}<Tag>未开放</Tag></span>
+                  ))}
+                </div>
+              </section>
+            </>
+          )}
         </div>
       </Modal>
     </div>
