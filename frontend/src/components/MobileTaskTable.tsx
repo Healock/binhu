@@ -29,8 +29,6 @@ const STATE_LABELS = {
 
 interface MobileTaskTableProps {
   rows: MobileTaskItem[]
-  total: number
-  page: number
   loading: boolean
   analysisMode?: boolean
   selectionMode: boolean
@@ -39,7 +37,6 @@ interface MobileTaskTableProps {
   onSelect: (task: MobileTaskItem, selected: boolean) => void
   onOpen: (task: MobileTaskItem) => void
   onCopy: (value: string, label: '身份证号' | '手机号') => void
-  onPageChange: (page: number) => void
   onSaved: () => Promise<void> | void
 }
 
@@ -52,8 +49,6 @@ function errorMessage(reason: any, fallback: string) {
 
 export default function MobileTaskTable({
   rows,
-  total,
-  page,
   loading,
   analysisMode = false,
   selectionMode,
@@ -62,7 +57,6 @@ export default function MobileTaskTable({
   onSelect,
   onOpen,
   onCopy,
-  onPageChange,
   onSaved,
 }: MobileTaskTableProps) {
   const [editorItems, setEditorItems] = useState<Record<string, MobileTaskInlineEditorItem>>({})
@@ -474,16 +468,7 @@ export default function MobileTaskTable({
           showExpandColumn: false,
           expandedRowRender: renderExpandedRow,
         }}
-        pagination={{
-          current: page,
-          pageSize: 50,
-          total,
-          showSizeChanger: false,
-          showTotal: count => `共 ${count} 条`,
-          onChange: nextPage => {
-            onPageChange(nextPage)
-          },
-        }}
+        pagination={false}
         onRow={task => ({
           'data-mobile-task-row-key': task.row_key,
           className: [

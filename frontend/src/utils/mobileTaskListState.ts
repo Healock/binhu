@@ -42,10 +42,27 @@ export function writeMobileTaskListRestoration(
 export function readMobileTaskListRestoration(
   storage: Pick<Storage, 'getItem' | 'removeItem'>,
   mode: MobileTaskListMode,
+  displayMode: MobileTaskListDisplayMode,
+  now?: number,
+): MobileTaskListRestoration | null
+export function readMobileTaskListRestoration(
+  storage: Pick<Storage, 'getItem' | 'removeItem'>,
+  mode: MobileTaskListMode,
   returnUrl: string,
   displayMode: MobileTaskListDisplayMode,
+  now?: number,
+): MobileTaskListRestoration | null
+export function readMobileTaskListRestoration(
+  storage: Pick<Storage, 'getItem' | 'removeItem'>,
+  mode: MobileTaskListMode,
+  returnUrlOrDisplayMode: string,
+  displayModeOrNow?: MobileTaskListDisplayMode | number,
   now = Date.now(),
 ): MobileTaskListRestoration | null {
+  const displayMode = typeof displayModeOrNow === 'string'
+    ? displayModeOrNow
+    : returnUrlOrDisplayMode as MobileTaskListDisplayMode
+  if (typeof displayModeOrNow === 'number') now = displayModeOrNow
   try {
     const raw = storage.getItem(STORAGE_KEY)
     if (!raw) return null
@@ -53,7 +70,6 @@ export function readMobileTaskListRestoration(
     if (
       !isRestoration(state)
       || state.mode !== mode
-      || state.return_url !== returnUrl
       || state.display_mode !== displayMode
       || now - state.saved_at > MAX_AGE_MS
     ) {
