@@ -444,11 +444,13 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 error_code="upstream_http_error",
                 error_step="query_photo",
                 upstream_status=500,
+                transport_error="read_timeout",
             )
         detail = audit.await_args.kwargs["detail"]
         self.assertEqual(detail["result_code"], "upstream_http_error")
         self.assertEqual(detail["error_step"], "query_photo")
         self.assertEqual(detail["upstream_http_status"], 500)
+        self.assertEqual(detail["transport_error"], "read_timeout")
         self.assertNotIn("response", detail)
         self.assertNotIn("body", detail)
 
@@ -565,6 +567,181 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(b"mjjh=readonly-user", bodies[0])
         self.assertNotIn(b"mjjh=operator-id", bodies[0])
+
+    async def test_readonly_request_retries_one_read_timeout_then_succeeds(self):
+        handler, _seen = upstream_handler()
+        task_attempts = 0
+
+        async def flaky_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal task_attempts
+            if request.url.path.endswith("/fnmx/queryYysList"):
+                task_attempts += 1
+                if task_attempts == 1:
+                    raise httpx.ReadTimeout("timed out", request=request)
+            return await handler(request)
+
+        async def fake_login():
+            return login_context()
+
+        with (
+            patch(
+                "services.qmf_registration.settings.QMF_API_BASE_URL",
+                "http://source.invalid/grid_terminal_interface/",
+            ),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+            patch("services.qmf_registration.READ_ONLY_RETRY_DELAY_SECONDS", 0),
+        ):
+            result = await QmfReadOnlyClient(
+                transport=httpx.MockTransport(flaky_handler),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+
+        self.assertEqual(task_attempts, 2)
+        self.assertEqual(result["mode"], "read_only")
+
+    async def test_readonly_request_reports_step_and_transport_after_retry(self):
+        task_attempts = 0
+
+        async def timeout_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal task_attempts
+            task_attempts += 1
+            raise httpx.ReadTimeout("sensitive timeout detail", request=request)
+
+        async def fake_login():
+            return login_context()
+
+        with (
+            patch(
+                "services.qmf_registration.settings.QMF_API_BASE_URL",
+                "http://source.invalid/grid_terminal_interface/",
+            ),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+            patch("services.qmf_registration.READ_ONLY_RETRY_DELAY_SECONDS", 0),
+            self.assertRaises(QmfPreviewError) as raised,
+        ):
+            await QmfReadOnlyClient(
+                transport=httpx.MockTransport(timeout_handler),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+
+        self.assertEqual(task_attempts, 2)
+        self.assertEqual(raised.exception.code, "upstream_unavailable")
+        self.assertEqual(raised.exception.step, "query_task")
+        self.assertEqual(raised.exception.transport_error, "read_timeout")
+        self.assertIn("已自动重试一次", raised.exception.message)
+        self.assertNotIn("sensitive timeout detail", raised.exception.message)
+
+    async def test_readonly_request_retries_503_but_not_500(self):
+        async def fake_login():
+            return login_context()
+
+        normal_handler, _seen = upstream_handler()
+        task_attempts = 0
+
+        async def service_unavailable_once(
+            request: httpx.Request,
+        ) -> httpx.Response:
+            nonlocal task_attempts
+            if request.url.path.endswith("/fnmx/queryYysList"):
+                task_attempts += 1
+                if task_attempts == 1:
+                    return httpx.Response(503)
+            return await normal_handler(request)
+
+        with (
+            patch(
+                "services.qmf_registration.settings.QMF_API_BASE_URL",
+                "http://source.invalid/grid_terminal_interface/",
+            ),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+            patch("services.qmf_registration.READ_ONLY_RETRY_DELAY_SECONDS", 0),
+        ):
+            result = await QmfReadOnlyClient(
+                transport=httpx.MockTransport(service_unavailable_once),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+
+        self.assertEqual(task_attempts, 2)
+        self.assertEqual(result["mode"], "read_only")
+
+        server_error_attempts = 0
+
+        async def server_error(request: httpx.Request) -> httpx.Response:
+            nonlocal server_error_attempts
+            server_error_attempts += 1
+            return httpx.Response(500, content=b"sensitive response body")
+
+        with (
+            patch(
+                "services.qmf_registration.settings.QMF_API_BASE_URL",
+                "http://source.invalid/grid_terminal_interface/",
+            ),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+            patch("services.qmf_registration.READ_ONLY_RETRY_DELAY_SECONDS", 0),
+            self.assertRaises(QmfPreviewError) as raised,
+        ):
+            await QmfReadOnlyClient(
+                transport=httpx.MockTransport(server_error),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+
+        self.assertEqual(server_error_attempts, 1)
+        self.assertEqual(raised.exception.code, "upstream_http_error")
+        self.assertEqual(raised.exception.upstream_status, 500)
+        self.assertNotIn("sensitive response body", raised.exception.message)
+
+    async def test_login_retries_one_unavailable_session_then_succeeds(self):
+        expected_session = object()
+        first_error = QmfPreviewError(
+            "login_unavailable",
+            "temporary login failure",
+            step="login",
+            transport_error="connect_timeout",
+        )
+        open_once = AsyncMock(side_effect=[first_error, expected_session])
+        with (
+            patch(
+                "services.qmf_registration._open_login_session_once",
+                open_once,
+            ),
+            patch("services.qmf_registration.asyncio.sleep", AsyncMock()),
+        ):
+            session = await open_login_session()
+
+        self.assertIs(session, expected_session)
+        self.assertEqual(open_once.await_count, 2)
+
+    async def test_login_reports_transport_after_retry_is_exhausted(self):
+        open_once = AsyncMock(side_effect=[
+            QmfPreviewError(
+                "login_unavailable",
+                "first sensitive failure",
+                step="login",
+                transport_error="connect_timeout",
+            ),
+            QmfPreviewError(
+                "login_unavailable",
+                "second sensitive failure",
+                step="login",
+                transport_error="read_timeout",
+            ),
+        ])
+        with (
+            patch(
+                "services.qmf_registration._open_login_session_once",
+                open_once,
+            ),
+            patch("services.qmf_registration.asyncio.sleep", AsyncMock()),
+            self.assertRaises(QmfPreviewError) as raised,
+        ):
+            await open_login_session()
+
+        self.assertEqual(open_once.await_count, 2)
+        self.assertEqual(raised.exception.code, "login_unavailable")
+        self.assertEqual(raised.exception.step, "login")
+        self.assertEqual(raised.exception.transport_error, "read_timeout")
+        self.assertIn("已自动重试一次", raised.exception.message)
+        self.assertNotIn("sensitive failure", raised.exception.message)
 
     async def test_open_login_session_follows_apk_initialization_and_keeps_tcp_open(self):
         received = []

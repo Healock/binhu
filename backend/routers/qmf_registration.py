@@ -55,6 +55,15 @@ from services.qmf_runs import (
 
 router = APIRouter(prefix="/api/qmf-registration", tags=["全民防模型三封闭测试"])
 _QMF_CLAIM_LOCK = "binhu:qmf-registration:claim"
+_QMF_SAFE_TRANSPORT_ERRORS = frozenset({
+    "read_timeout",
+    "write_timeout",
+    "connect_timeout",
+    "connect_error",
+    "connection_error",
+    "incomplete_read",
+    "request_error",
+})
 
 
 class QmfPreviewRequest(BaseModel):
@@ -203,6 +212,7 @@ async def _record_preview_audit(
     error_code: str = "",
     error_step: str = "",
     upstream_status: int | None = None,
+    transport_error: str = "",
     photo: dict[str, Any] | None = None,
 ) -> None:
     detail: dict[str, Any] = {
@@ -215,6 +225,8 @@ async def _record_preview_audit(
         detail["error_step"] = error_step[:64]
     if upstream_status is not None:
         detail["upstream_http_status"] = int(upstream_status)
+    if transport_error in _QMF_SAFE_TRANSPORT_ERRORS:
+        detail["transport_error"] = transport_error
     if photo:
         detail["photo"] = {
             "mime_type": str(photo.get("mime_type") or "")[:50],
@@ -1295,6 +1307,10 @@ async def prepare_qmf_registration(
                     {"upstream_http_status": int(exc.upstream_status)}
                     if exc.upstream_status is not None else {}
                 ),
+                **(
+                    {"transport_error": exc.transport_error}
+                    if exc.transport_error in _QMF_SAFE_TRANSPORT_ERRORS else {}
+                ),
                 "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
             },
             **request_audit_fields(request),
@@ -1509,6 +1525,7 @@ async def preview_qmf_registration(
             error_code=exc.code,
             error_step=exc.step,
             upstream_status=exc.upstream_status,
+            transport_error=exc.transport_error,
         )
         raise HTTPException(
             exc.status_code,
