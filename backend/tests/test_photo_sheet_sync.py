@@ -8,6 +8,8 @@ import services.photo_sheet_sync as photo_sheet_sync
 from services.photo_sheet_sync import (
     COLUMNS,
     ExistingPhotoSheetRow,
+    SourceRowsCache,
+    _pause_exhausted_outbox,
     _pair_relocated_rows,
     normalize_import_identity,
     historical_result,
@@ -285,6 +287,70 @@ class PhotoSheetOutboxRetryTests(unittest.TestCase):
         self.assertEqual(plan.attempt_count, 12)
         self.assertIsNone(plan.next_attempt_at)
         self.assertEqual(plan.error_code, "write_failed_exhausted")
+
+
+class PhotoSheetOutboxCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_relocation_reuses_one_full_source_snapshot(self):
+        first_values = ["冬梅社区", "来源甲", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]
+        second_values = ["蠡湖社区", "来源乙", "乙", "320500200001010028", "申请人", "2026/8/11", ""]
+        first = parse_rows([source_row(23, first_values)])[0]
+        second = parse_rows([source_row(24, second_values)])[0]
+        client = type("Client", (), {})()
+        client.read_source_row = AsyncMock(side_effect=[
+            source_row(10, ["其他社区", "其他", "丙", "", "", "", ""]),
+            source_row(11, ["其他社区", "其他", "丁", "", "", "", ""]),
+        ])
+        client.read_all_source_rows = AsyncMock(return_value=[
+            source_row(23, first_values),
+            source_row(24, second_values),
+        ])
+        source = {"file_id": "fake", "sheet_id": "fake-tab", "header_row": 1}
+        cache = SourceRowsCache()
+
+        first_cursor = type("Cursor", (), {})()
+        first_cursor.execute = AsyncMock()
+        first_cursor.fetchone = AsyncMock(return_value=(10, first.fingerprint))
+        second_cursor = type("Cursor", (), {})()
+        second_cursor.execute = AsyncMock()
+        second_cursor.fetchone = AsyncMock(return_value=(11, second.fingerprint))
+
+        first_result = await _locate_mapping(
+            client, source, first_cursor, 101, rows_cache=cache,
+        )
+        second_result = await _locate_mapping(
+            client, source, second_cursor, 102, rows_cache=cache,
+        )
+
+        self.assertEqual(first_result[0], 23)
+        self.assertEqual(second_result[0], 24)
+        client.read_all_source_rows.assert_awaited_once()
+
+    async def test_snapshot_load_failure_is_not_retried_inside_same_batch(self):
+        client = type("Client", (), {})()
+        client.read_all_source_rows = AsyncMock(side_effect=RuntimeError("synthetic timeout"))
+        source = {"file_id": "fake", "sheet_id": "fake-tab", "header_row": 1}
+        cache = SourceRowsCache()
+
+        for _ in range(2):
+            with self.assertRaisesRegex(RuntimeError, "synthetic timeout"):
+                await cache.load(client, source)
+
+        client.read_all_source_rows.assert_awaited_once()
+
+    async def test_old_unbounded_retries_are_paused_before_processing(self):
+        cursor = type("Cursor", (), {})()
+        cursor.execute = AsyncMock()
+        cursor.rowcount = 4
+
+        paused = await _pause_exhausted_outbox(cursor)
+
+        self.assertEqual(paused, 4)
+        self.assertEqual(cursor.execute.await_count, 2)
+        first_sql, first_params = cursor.execute.await_args_list[0].args
+        self.assertIn("status='paused'", first_sql)
+        self.assertEqual(first_params, (photo_sheet_sync.PHOTO_OUTBOX_MAX_AUTO_ATTEMPTS,))
+        second_sql, _ = cursor.execute.await_args_list[1].args
+        self.assertIn("external_sync_status='paused'", second_sql)
 
 
 class PhotoSheetRelocationTests(unittest.IsolatedAsyncioTestCase):
