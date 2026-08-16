@@ -569,6 +569,10 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
     new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
     'utf8',
   )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
   const styleSource = readFileSync(
     new URL('../src/index.css', import.meta.url),
     'utf8',
@@ -608,6 +612,8 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.doesNotMatch(tableSource, /编辑本行/)
   assert.match(tableSource, /getMobileTaskInlineEditors/)
   assert.match(tableSource, /rows\.map\(task => task\.row_key\)/)
+  assert.match(clientSource, /for \(let offset = 0; offset < uniqueRowKeys\.length; offset \+= 50\)/)
+  assert.match(clientSource, /uniqueRowKeys\.slice\(offset, offset \+ 50\)/)
   assert.match(tableSource, /updateMobileTask/)
   assert.match(tableSource, /const visiblePhones = phones\.slice\(0, 3\)/)
   assert.match(tableSource, /phones\.length - visiblePhones\.length/)
