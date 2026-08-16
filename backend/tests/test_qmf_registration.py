@@ -10,7 +10,11 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from routers.qmf_registration import QmfPreviewRequest, preview_qmf_registration
+from routers.qmf_registration import (
+    QmfPreviewRequest,
+    _record_preview_audit,
+    preview_qmf_registration,
+)
 from services.qmf_registration import (
     QmfLoginContext,
     QmfLoginSession,
@@ -327,6 +331,33 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(raised.exception.status_code, 403)
 
+    async def test_preview_audit_records_only_safe_http_failure_context(self):
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/api/qmf-registration/preview",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+        })
+        audit = AsyncMock()
+        with patch("routers.qmf_registration.record_admin_audit", audit):
+            await _record_preview_audit(
+                request=request,
+                user={"id": 1, "username": "shenshenghua"},
+                source_id=9,
+                result="failed",
+                started_at=time.monotonic(),
+                error_code="upstream_http_error",
+                error_step="query_photo",
+                upstream_status=500,
+            )
+        detail = audit.await_args.kwargs["detail"]
+        self.assertEqual(detail["result_code"], "upstream_http_error")
+        self.assertEqual(detail["error_step"], "query_photo")
+        self.assertEqual(detail["upstream_http_status"], 500)
+        self.assertNotIn("response", detail)
+        self.assertNotIn("body", detail)
+
     async def test_route_revalidates_source_before_and_after_upstream_read(self):
         request = Request({
             "type": "http",
@@ -549,6 +580,52 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                         ).preview(platform_task=platform_task())
                     self.assertEqual(raised.exception.code, expected_code)
                     self.assertNotIn(secret, raised.exception.message)
+                    if expected_code == "upstream_http_error":
+                        self.assertEqual(raised.exception.step, "query_task")
+                        self.assertEqual(raised.exception.upstream_status, 503)
+                        self.assertIn("任务查询", raised.exception.message)
+                        self.assertIn("HTTP 503", raised.exception.message)
+
+    async def test_photo_http_error_reports_safe_step_and_status(self):
+        async def fake_login():
+            return login_context()
+
+        normal_handler, seen = upstream_handler()
+
+        async def photo_error(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/jzz/queryLocalPhoto"):
+                return httpx.Response(
+                    500,
+                    content=b"sensitive photo backend detail",
+                    headers={"content-type": "application/json"},
+                )
+            return await normal_handler(request)
+
+        with (
+            patch(
+                "services.qmf_registration.settings.QMF_API_BASE_URL",
+                "http://source.invalid/grid_terminal_interface/",
+            ),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+            self.assertRaises(QmfPreviewError) as raised,
+        ):
+            await QmfReadOnlyClient(
+                transport=httpx.MockTransport(photo_error),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+        self.assertEqual(raised.exception.code, "upstream_http_error")
+        self.assertEqual(raised.exception.step, "query_photo")
+        self.assertEqual(raised.exception.upstream_status, 500)
+        self.assertIn("居住证照片查询", raised.exception.message)
+        self.assertIn("HTTP 500", raised.exception.message)
+        self.assertNotIn("sensitive photo backend detail", raised.exception.message)
+        self.assertEqual(
+            seen,
+            [
+                ("POST", "/grid_terminal_interface/fnmx/queryYysList"),
+                ("POST", "/grid_terminal_interface/enterHouse/queryPeopleBySfzh"),
+            ],
+        )
 
     async def test_task_person_station_and_image_mismatches_fail_closed(self):
         async def fake_login():

@@ -477,7 +477,7 @@ export default function SystemSettings() {
 
       <Panel
         title="全民防模型三封闭测试"
-        description="只向指定账号开放单条预演与人工确认登记；不提供批量、自动扫描、定时执行或自动重试。"
+        description="只向指定账号开放单条人工确认登记；系统会在登记前自动完成资料和照片核对，不提供批量、自动扫描、定时执行或自动重试。"
       >
         {!qmfConfig ? (
           <Alert type="info" showIcon message="全民防配置加载中" />
@@ -487,15 +487,15 @@ export default function SystemSettings() {
               type={qmfConfig.registration_configured ? 'success' : qmfConfig.configured ? 'info' : 'warning'}
               showIcon
               message={qmfConfig.registration_configured
-                ? '只读预演与真实登记均已开启'
+                ? '登记前核对与全民防登记均已开启'
                 : qmfConfig.configured
-                  ? '只读预演可用，真实登记仍关闭'
+                  ? '登记前核对可用，全民防登记仍关闭'
                   : '配置尚未完整'}
-              description="真实登记会向旧平台上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
+              description="全民防登记会向旧平台上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">预演开关</span>
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">登记前核对开关</span>
                 <div className="flex min-h-9 items-center gap-3">
                   <Switch
                     checked={qmfConfig.preview_enabled}
@@ -521,7 +521,7 @@ export default function SystemSettings() {
                 </div>
               </div>
               <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">真实登记开关</span>
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">全民防登记开关</span>
                 <div className="flex min-h-9 items-center gap-3">
                   <Switch
                     checked={qmfConfig.registration_enabled}
@@ -533,7 +533,7 @@ export default function SystemSettings() {
                   </span>
                 </div>
                 <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  开启后仍只允许 shenshenghua 单条执行，每条都要重新预演并二次确认。
+                  开启后仍只允许 shenshenghua 单条执行，每条都会重新完成登记前核对并要求二次确认。
                 </p>
               </div>
               <div className="settings-field">
@@ -554,9 +554,9 @@ export default function SystemSettings() {
               </div>
             </div>
             <Alert
-              type="error"
+              type="warning"
               showIcon
-              message="真实登记不可自动撤销"
+              message="全民防登记不可自动撤销"
               description="任一步骤出现超时、断线或结果不确定时，系统会冻结该次运行，不会自动重试，也不会从头重放。请先到旧平台人工核对。"
             />
             <div className="grid gap-4 md:grid-cols-2">
