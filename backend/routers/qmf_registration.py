@@ -205,6 +205,8 @@ async def _record_preview_audit(
     result: str,
     started_at: float,
     error_code: str = "",
+    error_step: str = "",
+    upstream_status: int | None = None,
     photo: dict[str, Any] | None = None,
 ) -> None:
     detail: dict[str, Any] = {
@@ -213,6 +215,10 @@ async def _record_preview_audit(
         "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
         "result_code": error_code or "success",
     }
+    if error_step:
+        detail["error_step"] = error_step[:64]
+    if upstream_status is not None:
+        detail["upstream_http_status"] = int(upstream_status)
     if photo:
         detail["photo"] = {
             "mime_type": str(photo.get("mime_type") or "")[:50],
@@ -1240,6 +1246,11 @@ async def prepare_qmf_registration(
             detail={
                 "source_id": data.source_id,
                 "result_code": exc.code,
+                **({"error_step": exc.step[:64]} if exc.step else {}),
+                **(
+                    {"upstream_http_status": int(exc.upstream_status)}
+                    if exc.upstream_status is not None else {}
+                ),
                 "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
             },
             **request_audit_fields(request),
@@ -1454,6 +1465,8 @@ async def preview_qmf_registration(
             result="failed",
             started_at=started_at,
             error_code=exc.code,
+            error_step=exc.step,
+            upstream_status=exc.upstream_status,
         )
         raise HTTPException(
             exc.status_code,

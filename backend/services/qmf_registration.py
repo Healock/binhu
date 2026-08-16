@@ -33,6 +33,12 @@ READ_ONLY_ENDPOINTS = {
     "jzz/queryLocalPhoto": "GET",
     "enterHouse/checkCk": "POST",
 }
+READ_ONLY_ENDPOINT_CONTEXT = {
+    "fnmx/queryYysList": ("query_task", "任务查询"),
+    "enterHouse/queryPeopleBySfzh": ("query_person", "人员资料查询"),
+    "jzz/queryLocalPhoto": ("query_photo", "居住证照片查询"),
+    "enterHouse/checkCk": ("precheck", "登记前校验"),
+}
 WRITE_ENDPOINTS = {
     "masses/uploadPhoto": "POST",
     "jzz/saveLocalPhoto": "POST",
@@ -78,12 +84,16 @@ class QmfPreviewError(RuntimeError):
         status_code: int = 502,
         *,
         uncertain: bool = False,
+        step: str = "",
+        upstream_status: int | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
         self.uncertain = uncertain
+        self.step = step
+        self.upstream_status = upstream_status
 
 
 @dataclass(frozen=True)
@@ -838,8 +848,14 @@ class QmfReadOnlyClient:
         try:
             response = await client.request(method, url, data=data, params=params)
             if not response.is_success:
+                step, label = READ_ONLY_ENDPOINT_CONTEXT.get(
+                    endpoint, ("readonly_request", "只读")
+                )
                 raise QmfPreviewError(
-                    "upstream_http_error", "全民防只读接口返回 HTTP 错误"
+                    "upstream_http_error",
+                    f"全民防{label}接口返回 HTTP {response.status_code}",
+                    step=step,
+                    upstream_status=response.status_code,
                 )
             return response
         except httpx.RequestError as exc:
@@ -1055,7 +1071,7 @@ class QmfReadOnlyClient:
                 timeout=timeout,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "Binhu-QMF-Readonly/0.21.0"},
+                headers={"User-Agent": "Binhu-QMF-Readonly/0.21.1"},
             ) as client:
                 context = await self._collect_context(
                     client=client,
@@ -1127,7 +1143,7 @@ class QmfRegistrationClient(QmfReadOnlyClient):
                 timeout=timeout,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "Binhu-QMF-Registration/0.21.0"},
+                headers={"User-Agent": "Binhu-QMF-Registration/0.21.1"},
             ) as client:
                 context = await self._collect_context(
                     client=client,

@@ -28,7 +28,6 @@ import {
   getQmfRegistrationRun,
   executeQmfRegistration,
   prepareQmfRegistration,
-  previewQmfRegistration,
   retryQmfTencentMarker,
   resolveMobileTaskSyncConflict,
   updateMobileTask,
@@ -37,7 +36,6 @@ import {
   type MobileTaskDetailData,
   type MobileTaskSource,
   type QmfPrepareResult,
-  type QmfPreviewResult,
   type QmfRegistrationRun,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -110,7 +108,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [photoSubmitting, setPhotoSubmitting] = useState(false)
   const [qmfPreviewOpen, setQmfPreviewOpen] = useState(false)
   const [qmfPreviewLoading, setQmfPreviewLoading] = useState(false)
-  const [qmfPreviewResult, setQmfPreviewResult] = useState<QmfPreviewResult | null>(null)
   const [qmfPrepareResult, setQmfPrepareResult] = useState<QmfPrepareResult | null>(null)
   const [qmfRun, setQmfRun] = useState<QmfRegistrationRun | null>(null)
   const [qmfConfirmation, setQmfConfirmation] = useState('')
@@ -349,37 +346,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     }
   }
 
-  const openQmfPreview = async () => {
-    if (
-      qmfPreviewRequestActive.current
-      || !selectedSource
-      || !data.qmf_preview?.enabled
-      || dirty
-    ) return
-    qmfPreviewRequestActive.current = true
-    setQmfPreviewOpen(true)
-    setQmfPreviewLoading(true)
-    setQmfPreviewResult(null)
-    setQmfPrepareResult(null)
-    setQmfRun(null)
-    setQmfConfirmation('')
-    setQmfPreviewError('')
-    try {
-      const result = await previewQmfRegistration({
-        parser_type: parserType,
-        row_key: rowKey,
-        source_id: selectedSource.id,
-        expected_revision: selectedSource.revision,
-      })
-      setQmfPreviewResult(result)
-    } catch (reason: any) {
-      setQmfPreviewError(detailError(reason, '全民防只读预演失败，请稍后重试'))
-    } finally {
-      qmfPreviewRequestActive.current = false
-      setQmfPreviewLoading(false)
-    }
-  }
-
   const openQmfRegistration = async () => {
     if (
       qmfPreviewRequestActive.current
@@ -390,7 +356,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     qmfPreviewRequestActive.current = true
     setQmfPreviewOpen(true)
     setQmfPreviewLoading(true)
-    setQmfPreviewResult(null)
     setQmfPrepareResult(null)
     setQmfRun(null)
     setQmfConfirmation('')
@@ -405,7 +370,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       setQmfPrepareResult(result)
       setQmfRun(result.run)
     } catch (reason: any) {
-      setQmfPreviewError(detailError(reason, '全民防真实登记准备失败，请稍后重试'))
+      setQmfPreviewError(detailError(reason, '全民防登记准备失败，请稍后重试'))
     } finally {
       qmfPreviewRequestActive.current = false
       setQmfPreviewLoading(false)
@@ -416,7 +381,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     const latest = data.qmf_registration?.latest_run
     if (!latest) return
     setQmfPreviewOpen(true)
-    setQmfPreviewResult(null)
     setQmfPrepareResult(null)
     setQmfRun(latest)
     setQmfConfirmation('')
@@ -426,11 +390,10 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const executePreparedQmfRun = () => {
     if (!canExecutePreparedQmfRun(qmfRun, qmfConfirmation, Boolean(qmfPrepareResult))) return
     Modal.confirm({
-      title: '最后确认：执行全民防真实登记？',
+      title: '最后确认：执行全民防登记？',
       content: '此操作会依次上传照片、保存人员资料并反馈模型三，提交后不能撤销。任何不确定结果都会冻结本次运行。',
       okText: '确认执行',
       cancelText: '取消',
-      okButtonProps: { danger: true },
       onOk: async () => {
         if (!qmfRun) return
         setQmfExecuting(true)
@@ -443,7 +406,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             qmf_registration: { ...current.qmf_registration, latest_run: next },
           } : current)
         } catch (reason: any) {
-          setQmfPreviewError(detailError(reason, '全民防真实登记启动失败'))
+          setQmfPreviewError(detailError(reason, '全民防登记启动失败'))
         } finally {
           setQmfExecuting(false)
         }
@@ -648,22 +611,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               onClick={() => setPhotoRequestOpen(true)}
             >{identityNumber ? '调取照片' : '缺少身份证号'}</Button>
           )}
-          {mode === 'tasks' && data.qmf_preview?.visible && (
-            <Button
-              className="mobile-task-detail-pill"
-              icon={<SafetyCertificateOutlined />}
-              disabled={!data.qmf_preview.enabled || !selectedSource?.source_available || dirty || qmfPreviewLoading}
-              title={dirty
-                ? '请先保存或放弃当前修改'
-                : !selectedSource?.source_available
-                  ? '腾讯来源行已不存在，不能发起预演'
-                  : data.qmf_preview.reason}
-              onClick={() => void openQmfPreview()}
-            >全民防只读预演</Button>
-          )}
           {mode === 'tasks' && data.qmf_registration?.visible && (
             <Button
-              danger
+              type="primary"
               className="mobile-task-detail-pill"
               icon={<SafetyCertificateOutlined />}
               disabled={
@@ -681,7 +631,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 if (shouldResumeQmfRun) openExistingQmfRun()
                 else void openQmfRegistration()
               }}
-            >{shouldResumeQmfRun ? '查看全民防登记记录' : '全民防真实登记'}</Button>
+            >{shouldResumeQmfRun ? '查看全民防登记记录' : '全民防登记'}</Button>
           )}
         </div>
         {analysis && (
@@ -960,10 +910,10 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       <Modal
         open={qmfPreviewOpen}
         title={qmfPrepareResult
-          ? '全民防模型三真实登记准备'
-          : qmfRun && !qmfPreviewResult
+          ? '全民防模型三登记确认'
+          : qmfRun
             ? '全民防模型三登记记录'
-            : '全民防模型三只读预演'}
+            : '全民防模型三登记'}
         width={mobile ? 'calc(100vw - 24px)' : 920}
         footer={[
           <Button
@@ -971,7 +921,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             disabled={qmfPreviewLoading || qmfExecuting}
             onClick={() => {
               setQmfPreviewOpen(false)
-              setQmfPreviewResult(null)
               setQmfPrepareResult(null)
               setQmfConfirmation('')
               setQmfPreviewError('')
@@ -983,7 +932,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         onCancel={() => {
           if (qmfPreviewLoading || qmfExecuting) return
           setQmfPreviewOpen(false)
-          setQmfPreviewResult(null)
           setQmfPrepareResult(null)
           setQmfConfirmation('')
           setQmfPreviewError('')
@@ -991,22 +939,22 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       >
         <div className="qmf-preview-modal">
           <Alert
-            type={qmfPrepareResult ? 'error' : qmfRun && !qmfPreviewResult ? 'info' : 'warning'}
+            type="info"
             showIcon
             message={qmfPrepareResult
-              ? '已完成本条任务的重新预演，确认后将执行真实登记'
-              : qmfRun && !qmfPreviewResult
+              ? '登记前核对已完成，确认后将执行全民防登记'
+              : qmfRun
                 ? '这里只恢复安全步骤状态，不保存或恢复人员照片正文'
-                : '仅供人工核对，不会执行登记或反馈'}
+                : '正在读取全民防任务、人员资料和居住证照片'}
             description={qmfPrepareResult
-              ? '请逐项核对人员、任务、操作人和照片。真实登记会写入旧平台，提交后不能自动撤销。'
-              : '照片只存在于本次认证响应和浏览器内存，窗口关闭后不会保存到滨湖平台。'}
+              ? '请逐项核对人员、任务、操作人和照片。确认执行后会写入旧平台，提交后不能自动撤销。'
+              : '登记前核对不会执行写入；照片只存在于本次认证响应和浏览器内存。'}
           />
           {qmfPreviewLoading && <Skeleton active paragraph={{ rows: 8 }} />}
           {qmfPreviewError && <Alert type="error" showIcon message={qmfPreviewError} />}
 
-          {(qmfPrepareResult || qmfPreviewResult) && (() => {
-            const preview = qmfPrepareResult || qmfPreviewResult!
+          {qmfPrepareResult && (() => {
+            const preview = qmfPrepareResult
             return (
               <>
                 <section className="qmf-preview-section qmf-preview-person">
@@ -1089,11 +1037,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 </section>
 
                 <section className="qmf-preview-section">
-                  <h3>{qmfPrepareResult ? '本次固定执行顺序' : '后续登记步骤'}</h3>
+                  <h3>本次固定执行顺序</h3>
                   <div className="qmf-preview-disabled-steps">
                     {preview.planned_write_steps.map(step => (
                       <span key={step.key}>
-                        {step.label}<Tag color={step.enabled ? 'warning' : 'default'}>{step.enabled ? '将执行' : '未开放'}</Tag>
+                        {step.label}<Tag color="processing">将执行</Tag>
                       </span>
                     ))}
                   </div>
@@ -1162,9 +1110,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           {qmfRun?.status === 'prepared' && qmfPrepareResult && (
             <section className="qmf-preview-section qmf-registration-confirm">
               <Alert
-                type="error"
+                type="warning"
                 showIcon
-                message="不可撤销操作"
+                message="执行前请再次核对"
                 description="执行前还会再次读取腾讯来源和全民防任务；任一内容变化都会在写入前停止。"
               />
               <label>
@@ -1178,20 +1126,19 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               </label>
               <Button
                 block
-                danger
                 type="primary"
                 loading={qmfExecuting}
                 disabled={!canExecutePreparedQmfRun(qmfRun, qmfConfirmation, true)}
                 onClick={executePreparedQmfRun}
-              >二次确认并执行真实登记</Button>
+              >二次确认并执行全民防登记</Button>
             </section>
           )}
 
           {qmfRun?.status === 'prepared' && !qmfPrepareResult && (
             <section className="qmf-preview-section">
-              <Alert type="warning" showIcon message="准备资料未保存在平台" description="为保证你重新看到完整人员资料和照片，执行前必须再次预演。" />
+              <Alert type="warning" showIcon message="准备资料未保存在平台" description="为保证你重新看到完整人员资料和照片，执行前必须再次完成登记前核对。" />
               <Button type="primary" onClick={() => void openQmfRegistration()}>
-                重新预演并准备
+                重新核对并准备
               </Button>
             </section>
           )}

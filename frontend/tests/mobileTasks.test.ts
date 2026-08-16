@@ -792,7 +792,7 @@ test('mobile task choice fields disable search on mobile', () => {
   assert.equal(detailSource.includes('\n                        showSearch\n'), false)
 })
 
-test('全民防预演和单条真实登记都从任务详情按内部来源定位发起', () => {
+test('全民防只保留单条登记入口并在内部完成登记前核对', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
@@ -806,34 +806,34 @@ test('全民防预演和单条真实登记都从任务详情按内部来源定�
     'utf8',
   )
 
-  assert.match(detailSource, /data\.qmf_preview\?\.visible/)
-  assert.match(detailSource, /data\.qmf_preview\.enabled/)
+  assert.doesNotMatch(detailSource, /data\.qmf_preview\?\.visible/)
+  assert.doesNotMatch(detailSource, /previewQmfRegistration/)
+  assert.doesNotMatch(detailSource, /全民防只读预演/)
   assert.match(detailSource, /data\.qmf_registration\?\.visible/)
   assert.match(detailSource, /data\.qmf_registration\.enabled/)
   assert.match(detailSource, /expected_revision: selectedSource\.revision/)
   assert.match(detailSource, /qmfPreviewRequestActive\.current/)
-  assert.match(detailSource, /disabled=\{!data\.qmf_preview\.enabled \|\| !selectedSource\?\.source_available \|\| dirty \|\| qmfPreviewLoading\}/)
-  assert.match(detailSource, /仅供人工核对，不会执行登记或反馈/)
+  assert.match(detailSource, />\{shouldResumeQmfRun \? '查看全民防登记记录' : '全民防登记'\}<\/Button>/)
+  assert.match(detailSource, /登记前核对已完成/)
   assert.match(detailSource, /preview\.photo\.data_base64/)
   assert.match(detailSource, /人员社区编码/)
   assert.match(detailSource, /任务辖区编码/)
   assert.match(detailSource, /辖区按派出所校验/)
-  assert.match(detailSource, /后续登记步骤/)
+  assert.match(detailSource, /本次固定执行顺序/)
   assert.match(detailSource, /QMF_CONFIRMATION/)
-  assert.match(detailSource, /二次确认并执行真实登记/)
+  assert.match(detailSource, /二次确认并执行全民防登记/)
   assert.match(detailSource, /仅重试腾讯完成标记/)
   assert.doesNotMatch(detailSource, /批量登记|自动登记|定时登记/)
 
   const apiFunction = clientSource.match(
-    /export async function previewQmfRegistration[\s\S]*?\r?\n}\r?\n/,
+    /export async function prepareQmfRegistration[\s\S]*?\r?\n}\r?\n/,
   )?.[0] || ''
-  assert.match(apiFunction, /api\.post\('\/qmf-registration\/preview', payload/)
+  assert.match(apiFunction, /api\.post\('\/qmf-registration\/prepare', payload/)
   assert.match(apiFunction, /parser_type: string/)
   assert.match(apiFunction, /row_key: string/)
   assert.match(apiFunction, /source_id: number/)
   assert.match(apiFunction, /expected_revision: number/)
   assert.doesNotMatch(apiFunction, /identity_number/)
-  assert.match(clientSource, /api\.post\('\/qmf-registration\/prepare', payload/)
   assert.match(clientSource, /`\/qmf-registration\/runs\/\$\{runId\}\/execute`/)
   assert.match(clientSource, /\{ confirmation \}/)
   assert.match(styleSource, /\.qmf-preview-person[\s\S]*grid-template-columns:/)
