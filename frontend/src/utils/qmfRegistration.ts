@@ -1,9 +1,16 @@
 import type {
+  QmfLegacyStatus,
   QmfRegistrationRun,
   QmfRegistrationRunStatus,
   QmfRegistrationStepStatus,
   QmfTencentMarkerStatus,
 } from '../api/client'
+
+export function qmfLegacyStatusAllowsRegistration(
+  status: QmfLegacyStatus | null | undefined,
+) {
+  return status?.state === 'pending' || status?.state === 'not_found'
+}
 
 export const QMF_RUN_STATUS: Record<
   QmfRegistrationRunStatus,

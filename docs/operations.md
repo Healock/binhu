@@ -1,5 +1,12 @@
 # 开发与运维手册
 
+## 0.21.8 全民防旧平台反馈状态复核
+
+- 本版复用生产已有的 `VISIT_SOURCE_BASE_URL`、`VISIT_SOURCE_USERNAME`、`VISIT_SOURCE_PASSWORD` 或 `VISIT_SOURCE_AUTHORIZATION`，只读访问旧管理平台登录和模型三状态查询。不得在全民防设置页重复保存这组管理端凭据。
+- 任务详情会显示旧平台未反馈、已反馈一致、结果冲突或状态无法确认。已反馈一致时不再生成登记准备；结果冲突和查询故障也会阻断，以避免重复登记。
+- 发布不新增数据库表或字段，若主开发在 #263 后决定上线，可使用 `backup_scope=none / release_scope=auto`。上线后只用一条已知手工完成任务和一条未完成自然任务做只读核对，不执行批量查询或制造真实反馈。
+- 本功能分支基于并依赖 PR #263，必须按 `#263 → 本 PR` 顺序合并。本 PR 只由副开发提交，不合并、不部署、不创建或推送标签。
+
 ## 0.21.7 全民防更多核查结果
 
 - 发布会向 `PlatformData._communities` 增加可空 `qmf_community_code`，并创建、全量导入 `_administrative_areas`，因此主开发如决定上线应使用 `backup_scope=all`。

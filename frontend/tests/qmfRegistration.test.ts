@@ -3,10 +3,11 @@ import test from 'node:test'
 
 import {
   canExecutePreparedQmfRun,
+  qmfLegacyStatusAllowsRegistration,
   qmfRunCanReprepare,
   qmfRunIsPolling,
 } from '../src/utils/qmfRegistration.ts'
-import type { QmfRegistrationRun } from '../src/api/client.ts'
+import type { QmfLegacyStatus, QmfRegistrationRun } from '../src/api/client.ts'
 
 function run(status: QmfRegistrationRun['status']): QmfRegistrationRun {
   return {
@@ -65,4 +66,23 @@ test('纯写入前失败即使缺少后端派生标记也显示重新准备', ()
 
   legacy.steps[4].status = 'sending'
   assert.equal(qmfRunCanReprepare(legacy), false)
+})
+
+test('只有未反馈或管理端未找到时允许继续登记准备', () => {
+  const status = (state: QmfLegacyStatus['state']): QmfLegacyStatus => ({
+    state,
+    result: '',
+    result_text: '',
+    checked_at: '',
+    station: '',
+    matches_platform_result: null,
+    origin: 'legacy_manual_or_other',
+    reason: '',
+  })
+  assert.equal(qmfLegacyStatusAllowsRegistration(status('pending')), true)
+  assert.equal(qmfLegacyStatusAllowsRegistration(status('not_found')), true)
+  assert.equal(qmfLegacyStatusAllowsRegistration(status('completed_match')), false)
+  assert.equal(qmfLegacyStatusAllowsRegistration(status('completed_mismatch')), false)
+  assert.equal(qmfLegacyStatusAllowsRegistration(status('unavailable')), false)
+  assert.equal(qmfLegacyStatusAllowsRegistration(null), false)
 })
