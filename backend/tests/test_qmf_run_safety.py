@@ -24,6 +24,7 @@ from routers.qmf_registration import (  # noqa: E402
     _freeze_unstarted_background_run,
     _run_payload,
     execute_qmf_registration,
+    get_qmf_legacy_status,
     get_qmf_registration_run,
     prepare_qmf_registration,
     retry_qmf_tencent_marker,
@@ -352,6 +353,15 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
                 conn=None,
             )
         self.assertEqual(prepare_error.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as status_error:
+            await get_qmf_legacy_status(
+                preview_request,
+                request("/api/qmf-registration/status"),
+                user={"id": 1, "username": "super-admin", "role": "super_admin"},
+                conn=None,
+            )
+        self.assertEqual(status_error.exception.status_code, 403)
 
         with self.assertRaises(HTTPException) as execute_error:
             await execute_qmf_registration(

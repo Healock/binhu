@@ -78,6 +78,7 @@ ACTION_LABELS: dict[str, str] = {
     "qmf_registration.preview": "全民防模型三只读预演",
     "qmf_registration.config.update": "修改全民防封闭测试配置",
     "qmf_registration.prepare": "准备全民防模型三真实登记",
+    "qmf_registration.status.read": "查询全民防模型三反馈状态",
     "qmf_registration.execute": "执行全民防模型三真实登记",
     "qmf_registration.tencent_marker.retry": "重试全民防腾讯完成标记",
     "registry.household_import.preview": "预览户号表导入",

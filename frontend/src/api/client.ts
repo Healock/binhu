@@ -1128,6 +1128,27 @@ export interface QmfPreviewResult {
   warnings: string[]
 }
 
+export type QmfLegacyStatusState =
+  | 'pending'
+  | 'completed_match'
+  | 'completed_mismatch'
+  | 'not_found'
+  | 'ambiguous'
+  | 'station_mismatch'
+  | 'unknown_result'
+  | 'unavailable'
+
+export interface QmfLegacyStatus {
+  state: QmfLegacyStatusState
+  result: string
+  result_text: string
+  checked_at: string
+  station: string
+  matches_platform_result: boolean | null
+  origin: 'legacy_manual_or_other' | 'binhu_automatic'
+  reason: string
+}
+
 export type QmfRegistrationRunStatus =
   | 'prepared'
   | 'executing'
@@ -1389,6 +1410,19 @@ export async function previewQmfRegistration(payload: {
   expected_revision: number
 }): Promise<QmfPreviewResult> {
   const { data } = await api.post('/qmf-registration/preview', payload, {
+    ...activeRequest,
+    timeout: 60000,
+  })
+  return data
+}
+
+export async function getQmfLegacyStatus(payload: {
+  parser_type: string
+  row_key: string
+  source_id: number
+  expected_revision: number
+}): Promise<QmfLegacyStatus> {
+  const { data } = await api.post('/qmf-registration/status', payload, {
     ...activeRequest,
     timeout: 60000,
   })

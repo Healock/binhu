@@ -56,6 +56,13 @@ from services.qmf_runs import (
     steps_for_result,
     utc_text,
 )
+from services.qmf_status import (
+    QmfLegacyStatus,
+    QmfLegacyStatusClient,
+    STATUS_COMPLETED_MATCH,
+    STATUS_COMPLETED_MISMATCH,
+    ensure_registration_allowed,
+)
 
 
 router = APIRouter(prefix="/api/qmf-registration", tags=["全民防模型三封闭测试"])
@@ -312,6 +319,7 @@ async def _eligible_platform_task(
     *,
     user: dict,
     conn,
+    resolve_registration_fields: bool = True,
 ) -> tuple[dict[str, Any], str]:
     if data.parser_type != MODEL_THREE_PARSER:
         raise QmfPreviewError(
@@ -362,7 +370,7 @@ async def _eligible_platform_task(
         "community": str(values.get("下发社区") or "").strip(),
         "result": result,
     }
-    if result == RESULT_LEAVE_NOT_RETURNING:
+    if result == RESULT_LEAVE_NOT_RETURNING and resolve_registration_fields:
         async with conn.cursor() as cur:
             area = await resolve_identity_area(cur, identity)
             if area is None or not area.full_name:
@@ -398,6 +406,37 @@ async def _eligible_platform_task(
             "destination_address": area.full_name,
         })
     return platform_task, current_hash
+
+
+async def _legacy_status_for_task(
+    conn,
+    *,
+    platform_task: dict[str, Any],
+    source_id: int,
+    client: QmfLegacyStatusClient | None = None,
+) -> QmfLegacyStatus:
+    status = await (client or QmfLegacyStatusClient()).query(
+        identity=str(platform_task.get("identity_number") or ""),
+        expected_result=str(platform_task.get("result") or ""),
+    )
+    if status.state not in {STATUS_COMPLETED_MATCH, STATUS_COMPLETED_MISMATCH}:
+        return status
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM _qmf_registration_runs "
+            "WHERE parser_type=%s AND source_id=%s AND status='succeeded' "
+            "LIMIT 1",
+            (str(platform_task.get("parser_type") or ""), int(source_id)),
+        )
+        locally_completed = bool(await cur.fetchone())
+    return QmfLegacyStatus(
+        **{
+            **status.public_payload(),
+            "origin": (
+                "binhu_automatic" if locally_completed else "legacy_manual_or_other"
+            ),
+        }
+    )
 
 
 _RUN_SELECT = """
@@ -945,6 +984,12 @@ async def _execute_run_background(
                     "在线回写已暂停，已在全民防写入前停止",
                     503,
                 )
+            legacy_status = await _legacy_status_for_task(
+                conn,
+                platform_task=platform_task,
+                source_id=run["source_id"],
+            )
+            ensure_registration_allowed(legacy_status)
             await _assert_source_unchanged(
                 conn,
                 parser_type=run["parser_type"],
@@ -1237,6 +1282,65 @@ def _launch_registration_run(
     )
 
 
+@router.post("/status")
+async def get_qmf_legacy_status(
+    data: QmfPreviewRequest,
+    request: Request,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    started_at = time.monotonic()
+    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
+        raise HTTPException(403, "当前账号不能查询全民防反馈状态")
+    audit_result = "failed"
+    audit_state = "unexpected_error"
+    try:
+        platform_task, current_hash = await _eligible_platform_task(
+            data,
+            user=user,
+            conn=conn,
+            resolve_registration_fields=False,
+        )
+        await _assert_source_unchanged(
+            conn,
+            parser_type=data.parser_type,
+            row_key=data.row_key,
+            source_id=data.source_id,
+            expected_revision=data.expected_revision,
+            expected_hash=current_hash,
+        )
+        status = await _legacy_status_for_task(
+            conn,
+            platform_task=platform_task,
+            source_id=data.source_id,
+        )
+        audit_state = status.state
+        audit_result = "success" if status.state != "unavailable" else "failed"
+        return JSONResponse(
+            content=status.public_payload(),
+            headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+        )
+    except QmfPreviewError as exc:
+        audit_state = exc.code
+        raise HTTPException(
+            exc.status_code, _safe_error_detail(exc.code, exc.message)
+        ) from exc
+    finally:
+        await record_admin_audit(
+            user,
+            "qmf_registration.status.read",
+            target_type="online_source_row",
+            target_name=str(data.source_id),
+            result=audit_result,
+            detail={
+                "source_id": data.source_id,
+                "state": audit_state[:64],
+                "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+            },
+            **request_audit_fields(request),
+        )
+
+
 @router.post("/prepare")
 async def prepare_qmf_registration(
     data: QmfPreviewRequest,
@@ -1276,6 +1380,12 @@ async def prepare_qmf_registration(
             expected_revision=data.expected_revision,
             expected_hash=current_hash,
         )
+        legacy_status = await _legacy_status_for_task(
+            conn,
+            platform_task=platform_task,
+            source_id=data.source_id,
+        )
+        ensure_registration_allowed(legacy_status)
         result = await run_guarded_preview(
             platform_task=platform_task,
             config=runtime_config,

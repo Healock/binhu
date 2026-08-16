@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
+  getQmfLegacyStatus,
   getQmfRegistrationRun,
   executeQmfRegistration,
   prepareQmfRegistration,
@@ -35,6 +36,7 @@ import {
   workflowApi,
   type MobileTaskDetailData,
   type MobileTaskSource,
+  type QmfLegacyStatus,
   type QmfPrepareResult,
   type QmfRegistrationRun,
 } from '../api/client'
@@ -62,6 +64,7 @@ import {
   QMF_RUN_STATUS,
   QMF_STEP_STATUS,
   canExecutePreparedQmfRun,
+  qmfLegacyStatusAllowsRegistration,
   qmfRunCanReprepare,
   qmfRunIsPolling,
 } from '../utils/qmfRegistration'
@@ -113,6 +116,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [qmfExecuting, setQmfExecuting] = useState(false)
   const [qmfMarkerRetrying, setQmfMarkerRetrying] = useState(false)
   const [qmfPreviewError, setQmfPreviewError] = useState('')
+  const [qmfLegacyStatus, setQmfLegacyStatus] = useState<QmfLegacyStatus | null>(null)
+  const [qmfLegacyStatusLoading, setQmfLegacyStatusLoading] = useState(false)
+  const [qmfLegacyStatusError, setQmfLegacyStatusError] = useState('')
   const qmfPreviewRequestActive = useRef(false)
 
   const selectedSource = useMemo(
@@ -174,6 +180,38 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }, [mode, parserType, rowKey, selectSource])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    if (
+      mode !== 'tasks'
+      || !data?.qmf_registration?.visible
+      || !selectedSource?.source_available
+    ) {
+      setQmfLegacyStatus(null)
+      setQmfLegacyStatusError('')
+      setQmfLegacyStatusLoading(false)
+      return
+    }
+    let cancelled = false
+    setQmfLegacyStatus(null)
+    setQmfLegacyStatusError('')
+    setQmfLegacyStatusLoading(true)
+    void getQmfLegacyStatus({
+      parser_type: parserType,
+      row_key: rowKey,
+      source_id: selectedSource.id,
+      expected_revision: selectedSource.revision,
+    }).then(result => {
+      if (!cancelled) setQmfLegacyStatus(result)
+    }).catch(reason => {
+      if (!cancelled) {
+        setQmfLegacyStatusError(detailError(reason, '旧平台反馈状态暂时无法确认'))
+      }
+    }).finally(() => {
+      if (!cancelled) setQmfLegacyStatusLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [data?.qmf_registration?.visible, mode, parserType, rowKey, selectedSource?.id, selectedSource?.revision, selectedSource?.source_available])
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -517,6 +555,31 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     latestQmfRun
     && ['prepared', 'executing', 'succeeded', 'failed', 'uncertain'].includes(latestQmfRun.status),
   )
+  const qmfStatusAllowsRegistration = qmfLegacyStatusAllowsRegistration(qmfLegacyStatus)
+  const qmfLegacyStatusView = qmfLegacyStatus ? (() => {
+    switch (qmfLegacyStatus.state) {
+      case 'pending':
+        return { type: 'info' as const, message: '旧平台尚未反馈', description: '可以继续生成全民防登记准备；执行前还会再次复核。' }
+      case 'not_found':
+        return { type: 'info' as const, message: '管理端未查到该记录', description: '这不等于未反馈；登记准备会继续通过手机待办接口确认唯一任务。' }
+      case 'completed_match':
+        return {
+          type: 'success' as const,
+          message: '旧平台已反馈，无需重复登记',
+          description: `${qmfLegacyStatus.result_text || '结果已确认'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''} · ${qmfLegacyStatus.origin === 'binhu_automatic' ? '由滨湖平台完成' : 'APP 手工或其他渠道完成'}`,
+        }
+      case 'completed_mismatch':
+        return { type: 'error' as const, message: '旧平台反馈结果与平台核查结果不一致', description: `${qmfLegacyStatus.result_text || '结果待核对'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}，请先人工核对。` }
+      case 'ambiguous':
+        return { type: 'warning' as const, message: '旧平台存在多条匹配记录', description: '为避免误登记，当前不能继续。' }
+      case 'station_mismatch':
+        return { type: 'warning' as const, message: '旧平台记录不属于滨湖新城派出所', description: qmfLegacyStatus.station || '请人工核对记录归属。' }
+      case 'unknown_result':
+        return { type: 'warning' as const, message: '旧平台核查结果暂不支持', description: '请人工核对旧平台记录后再处理。' }
+      default:
+        return { type: 'warning' as const, message: '旧平台反馈状态暂时无法确认', description: qmfLegacyStatus.reason || '为避免重复登记，当前不能继续。' }
+    }
+  })() : null
 
   return (
     <div className="mobile-task-page mobile-task-detail-page">
@@ -615,7 +678,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               className="mobile-task-detail-pill"
               icon={<SafetyCertificateOutlined />}
               disabled={
-                (!shouldResumeQmfRun && !data.qmf_registration.enabled)
+                (!shouldResumeQmfRun && (
+                  !data.qmf_registration.enabled
+                  || qmfLegacyStatusLoading
+                  || !qmfStatusAllowsRegistration
+                ))
                 || !selectedSource?.source_available
                 || dirty
                 || qmfPreviewLoading
@@ -624,7 +691,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 ? '请先保存或放弃当前修改'
                 : !selectedSource?.source_available
                   ? '腾讯来源行已不存在，不能准备登记'
-                  : data.qmf_registration.reason}
+                  : qmfLegacyStatusLoading
+                    ? '正在复核旧平台反馈状态'
+                    : qmfLegacyStatusError
+                      ? qmfLegacyStatusError
+                      : qmfLegacyStatus?.reason || data.qmf_registration.reason}
               onClick={() => {
                 if (shouldResumeQmfRun) openExistingQmfRun()
                 else void openQmfRegistration()
@@ -664,6 +735,21 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </div>
           )}
         />
+      )}
+
+      {mode === 'tasks' && data.qmf_registration?.visible && (
+        <div className="space-y-2">
+          {qmfLegacyStatusLoading && <Alert type="info" showIcon message="正在复核旧平台反馈状态" />}
+          {qmfLegacyStatusError && <Alert type="warning" showIcon message="旧平台反馈状态暂时无法确认" description={qmfLegacyStatusError} />}
+          {qmfLegacyStatusView && (
+            <Alert
+              type={qmfLegacyStatusView.type}
+              showIcon
+              message={qmfLegacyStatusView.message}
+              description={qmfLegacyStatusView.description}
+            />
+          )}
+        </div>
       )}
 
       {data.photo_requests?.some(request => request.attachments.length > 0) && (
