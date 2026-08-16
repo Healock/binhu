@@ -187,8 +187,10 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(forbidden, serialized)
 
     async def test_prior_execution_attempt_freezes_new_prepare(self):
+        uncertain_steps = initial_steps()
+        uncertain_steps[4]["status"] = "sending"
         cursor = _Cursor(fetchone_values=[(
-            88, "uncertain", serialize_steps(initial_steps())
+            88, "uncertain", serialize_steps(uncertain_steps)
         )])
         conn = _Conn(cursor)
         with self.assertRaises(QmfPreviewError) as raised:
@@ -254,6 +256,46 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             params == (88,) and "manual_reprepare_after_prewrite_failure" in sql
             for sql, params in cursor.executed
         ))
+
+    async def test_legacy_uncertain_run_without_write_progress_can_be_reprepared(self):
+        cursor = _Cursor(fetchone_values=[
+            (88, "uncertain", serialize_steps(initial_steps())),
+            (
+                99, "疑似未注销模型三", 9, 3, "a" * 64, 11, "prepared",
+                serialize_steps(initial_steps()), "", "b" * 64, "image/jpeg", 123,
+                "not_started", "", None, None, None, None, None, None,
+            ),
+        ])
+        cursor.lastrowid = 99
+        run = await _create_prepared_run(
+            _Conn(cursor),
+            data=QmfPreviewRequest(
+                parser_type="疑似未注销模型三",
+                row_key="legacy-uncertain-row",
+                source_id=9,
+                expected_revision=3,
+            ),
+            user={"id": 11},
+            expected_hash="a" * 64,
+            preview={
+                "upstream_task": {"task_id": "fictional-task"},
+                "photo": {"sha256": "b" * 64, "mime_type": "image/jpeg", "size_bytes": 123},
+            },
+        )
+        self.assertEqual(run["status"], "prepared")
+        self.assertTrue(any(
+            params == (88,) and "manual_reprepare_after_prewrite_failure" in sql
+            for sql, params in cursor.executed
+        ))
+
+    def test_uncertain_run_without_write_progress_is_recoverable(self):
+        row = (
+            1, "疑似未注销模型三", 9, 3, "a" * 64, 11, "uncertain",
+            serialize_steps(initial_steps()), "source_projection_refreshing",
+            "b" * 64, "image/jpeg", 123, "not_started", "", None, None,
+            None, None, None, None,
+        )
+        self.assertTrue(_run_payload(row)["can_reprepare"])
 
     async def test_claim_is_serialized_and_rejects_duplicate_execution(self):
         run_row = (
