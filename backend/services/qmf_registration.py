@@ -611,7 +611,7 @@ class QmfReadOnlyClient:
                 timeout=timeout,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "Binhu-QMF-Readonly/0.20.1"},
+                headers={"User-Agent": "Binhu-QMF-Readonly/0.20.7"},
             ) as client:
                 if login_session is not None:
                     login_session.ensure_available()
@@ -664,17 +664,6 @@ class QmfReadOnlyClient:
                     or _normalized_name(person["name"]) != _normalized_name(name)
                 ):
                     raise QmfPreviewError("person_mismatch", "全民防人员登记资料与平台任务不一致", 409)
-                if (
-                    not upstream_task["community_code"]
-                    or not person["community_code"]
-                    or upstream_task["community_code"] != person["community_code"]
-                ):
-                    raise QmfPreviewError(
-                        "person_jurisdiction_mismatch",
-                        "全民防人员资料与任务辖区不一致",
-                        409,
-                    )
-
                 if login_session is not None:
                     login_session.ensure_available()
                 photo_response = await self._request(
@@ -695,6 +684,24 @@ class QmfReadOnlyClient:
         finally:
             if login_session is not None:
                 await login_session.close()
+
+        warnings = ["本页面仅用于人工核对，不会向全民防提交任何数据。"]
+        task_community_code = upstream_task["community_code"]
+        person_community_code = person["community_code"]
+        if (
+            task_community_code
+            and person_community_code
+            and task_community_code != person_community_code
+        ):
+            warnings.append(
+                "任务辖区编码与人员社区编码来自不同编码体系，仅供人工核对；"
+                "系统已按登录机构、任务派出所、身份证号和姓名完成范围校验。"
+            )
+        elif not task_community_code or not person_community_code:
+            warnings.append(
+                "任务辖区编码或人员社区编码缺失，仅供人工核对；"
+                "系统已按登录机构、任务派出所、身份证号和姓名完成范围校验。"
+            )
 
         return {
             "mode": "read_only",
@@ -717,6 +724,10 @@ class QmfReadOnlyClient:
                 "single_upstream_task": True,
                 "station_match": True,
                 "person_match": True,
+                # Captured successful workflows use different code systems for
+                # task xfsq and PersonnelInfo communityCode. Jurisdiction is
+                # enforced by the authenticated login station and the task
+                # police-station field instead of comparing unrelated codes.
                 "jurisdiction_match": True,
                 "precheck_passed": True,
                 "photo_valid": True,
@@ -727,7 +738,7 @@ class QmfReadOnlyClient:
                 {"key": "register_person", "label": "保存人员登记", "enabled": False},
                 {"key": "complete_task", "label": "完成模型三反馈", "enabled": False},
             ],
-            "warnings": ["本页面仅用于人工核对，不会向全民防提交任何数据。"],
+            "warnings": warnings,
         }
 
 
