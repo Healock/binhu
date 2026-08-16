@@ -361,7 +361,6 @@ export default function SystemSettings() {
         expected_station_name: qmfConfig.expected_station_name,
         timeout_seconds: qmfConfig.timeout_seconds,
         session_max_seconds: qmfConfig.session_max_seconds,
-        preview_cooldown_seconds: qmfConfig.preview_cooldown_seconds,
       })
       setQmfConfig(result)
       setQmfPassword('')
@@ -660,7 +659,6 @@ export default function SystemSettings() {
                 { key: 'allowed', label: '平台允许账号', children: qmfConfig.preview_allowed_username },
                 { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
-                { key: 'cooldown', label: '单条冷却时间', children: `${qmfConfig.preview_cooldown_seconds} 秒` },
               ]}
             />
             <div className="settings-actions">

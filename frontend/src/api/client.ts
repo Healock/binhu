@@ -1089,10 +1089,15 @@ export interface QmfPreviewResult {
     current_address: string
     household_address: string
     gender: string
+    gender_code: string
     birth_date: string
+    birth_date_derived: boolean
     nation: string
+    nation_code: string
     education: string
+    education_code: string
     marital_status: string
+    marital_status_code: string
     community_code: string
     residence_type: string
     residence_method: string
@@ -1170,6 +1175,7 @@ export interface QmfRegistrationRun {
   created_at: string | null
   updated_at: string | null
   can_execute: boolean
+  can_reprepare: boolean
   can_retry_marker: boolean
 }
 
@@ -1200,7 +1206,6 @@ export interface QmfConfig {
   expected_station_name: string
   timeout_seconds: number
   session_max_seconds: number
-  preview_cooldown_seconds: number
   configured: boolean
   registration_configured: boolean
   database_keys: string[]
@@ -1222,7 +1227,6 @@ export interface QmfConfigUpdate {
   expected_station_name: string
   timeout_seconds: number
   session_max_seconds: number
-  preview_cooldown_seconds: number
 }
 
 export interface MobileTaskInlineEditorItem {
@@ -1400,11 +1404,10 @@ export async function prepareQmfRegistration(payload: {
 
 export async function executeQmfRegistration(
   runId: number,
-  confirmation: string,
 ): Promise<QmfRegistrationRun> {
   const { data } = await api.post(
     `/qmf-registration/runs/${runId}/execute`,
-    { confirmation },
+    {},
     activeRequest,
   )
   return data

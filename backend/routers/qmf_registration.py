@@ -84,13 +84,10 @@ class QmfConfigUpdate(BaseModel):
     expected_station_name: str = Field(default="滨湖新城派出所", max_length=200)
     timeout_seconds: int = Field(default=15, ge=1, le=120)
     session_max_seconds: int = Field(default=45, ge=1, le=120)
-    preview_cooldown_seconds: int = Field(default=45, ge=1, le=3600)
 
 
 class QmfExecuteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    confirmation: str = Field(min_length=1, max_length=20)
 
 
 def _safe_error_detail(code: str, message: str) -> dict[str, str]:
@@ -149,7 +146,6 @@ async def update_qmf_config(
         "qmf_expected_station_name": data.expected_station_name.strip(),
         "qmf_timeout_seconds": str(data.timeout_seconds),
         "qmf_session_max_seconds": str(data.session_max_seconds),
-        "qmf_preview_cooldown_seconds": str(data.preview_cooldown_seconds),
     }
     if data.source_password is not None:
         values["qmf_source_password"] = data.source_password
@@ -245,22 +241,40 @@ async def _assert_source_unchanged(
     expected_revision: int,
     expected_hash: str,
 ) -> None:
-    async with conn.cursor() as cur:
-        await cur.execute(
-            """
-            SELECT source.revision, source.row_hash,
-                   projection.source_count, projection.conflict
-            FROM _online_source_rows AS source
-            JOIN _online_source_projection AS projection
-              ON projection.parser_type=source.parser_type
-             AND projection.row_key=source.row_key
-            WHERE source.id=%s AND source.parser_type=%s AND source.row_key=%s
-            """,
-            (source_id, parser_type, row_key),
+    row = None
+    for attempt in range(3):
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT source.revision, source.row_hash,
+                       projection.source_count, projection.conflict
+                FROM _online_source_rows AS source
+                LEFT JOIN _online_source_projection AS projection
+                  ON projection.parser_type=source.parser_type
+                 AND projection.row_key=source.row_key
+                WHERE source.id=%s AND source.parser_type=%s AND source.row_key=%s
+                """,
+                (source_id, parser_type, row_key),
+            )
+            row = await cur.fetchone()
+        if not row:
+            raise QmfPreviewError(
+                "source_missing", "腾讯来源行已不存在，请刷新后重试", 409
+            )
+        if row[2] is not None:
+            break
+        # Older sync workers may briefly expose the source row before their
+        # delete-and-insert projection refresh finishes.  This is a local,
+        # pre-write consistency recheck only; no upstream or write request is
+        # retried, and the source revision/hash still must match below.
+        if attempt < 2:
+            await asyncio.sleep(0.05)
+    if row[2] is None:
+        raise QmfPreviewError(
+            "source_projection_refreshing",
+            "任务来源正在刷新，请稍后重新核对",
+            503,
         )
-        row = await cur.fetchone()
-    if not row:
-        raise QmfPreviewError("source_missing", "腾讯来源行已不存在，请刷新后重试", 409)
     if int(row[0]) != expected_revision or str(row[1]) != expected_hash:
         raise QmfPreviewError("source_changed", "腾讯来源行已变化，请刷新后重试", 409)
     if int(row[2] or 0) != 1 or bool(row[3]):
@@ -347,6 +361,14 @@ _RUN_SELECT = """
 def _run_payload(row: tuple[Any, ...]) -> dict[str, Any]:
     status = str(row[6] or "")
     marker_status = str(row[12] or "not_started")
+    steps = parse_steps(row[7])
+    write_progress = any(
+        item["key"] in {
+            "upload_photo", "save_local_photo", "register_person", "complete_task"
+        }
+        and item["status"] in {"sending", "succeeded", "uncertain"}
+        for item in steps
+    )
     return {
         "id": int(row[0]),
         "parser_type": str(row[1] or ""),
@@ -355,7 +377,7 @@ def _run_payload(row: tuple[Any, ...]) -> dict[str, Any]:
         "_expected_row_hash": str(row[4] or ""),
         "_requested_by": int(row[5]),
         "status": status,
-        "steps": parse_steps(row[7]),
+        "steps": steps,
         "result_code": str(row[8] or ""),
         "photo": {
             "sha256": str(row[9] or ""),
@@ -371,6 +393,7 @@ def _run_payload(row: tuple[Any, ...]) -> dict[str, Any]:
         "created_at": utc_text(row[18]),
         "updated_at": utc_text(row[19]),
         "can_execute": status == "prepared",
+        "can_reprepare": status == "failed" and not write_progress,
         "can_retry_marker": status == "succeeded" and marker_status in {
             "not_started", "pending", "conflict", "failed",
         },
@@ -414,7 +437,7 @@ async def _create_prepared_run(
     )
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, status FROM _qmf_registration_runs "
+            "SELECT id, status, steps_json FROM _qmf_registration_runs "
             "WHERE (row_key_digest=%s OR upstream_task_digest=%s "
             "OR idempotency_key=%s) "
             "AND status IN ('executing','succeeded','uncertain','failed') "
@@ -429,11 +452,28 @@ async def _create_prepared_run(
                     "该任务已有全民防成功反馈记录，不能重复登记",
                     409,
                 )
-            raise QmfPreviewError(
-                "registration_frozen",
-                "该任务已有真实登记执行记录，已冻结重复执行，请先人工核查",
-                409,
+            attempted_steps = parse_steps(attempted[2])
+            write_progress = any(
+                item["key"] in {
+                    "upload_photo", "save_local_photo", "register_person", "complete_task"
+                }
+                and item["status"] in {"sending", "succeeded", "uncertain"}
+                for item in attempted_steps
             )
+            if str(attempted[1]) == "failed" and not write_progress:
+                await cur.execute(
+                    "UPDATE _qmf_registration_runs "
+                    "SET status='superseded', "
+                    "result_code='manual_reprepare_after_prewrite_failure' "
+                    "WHERE id=%s AND status='failed'",
+                    (int(attempted[0]),),
+                )
+            else:
+                raise QmfPreviewError(
+                    "registration_frozen",
+                    "该任务已有真实登记执行记录，已冻结重复执行，请先人工核查",
+                    409,
+                )
         await cur.execute(
             "UPDATE _qmf_registration_runs "
             "SET status='superseded', result_code='new_prepare_created' "
@@ -1300,8 +1340,6 @@ async def execute_qmf_registration(
 ):
     if user.get("username") != ALLOWED_PLATFORM_USERNAME:
         raise HTTPException(403, "当前账号不能执行全民防真实登记")
-    if data.confirmation.strip() != "确认登记":
-        raise HTTPException(400, "请输入“确认登记”后再执行")
     config = await load_qmf_config(conn)
     run = await _claim_run(conn, run_id, user=user, config=config)
     try:

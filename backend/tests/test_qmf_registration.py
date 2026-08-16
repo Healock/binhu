@@ -22,6 +22,7 @@ from services.qmf_registration import (
     QmfReadOnlyClient,
     READ_ONLY_ENDPOINTS,
     _photo_payload,
+    _safe_person,
     build_login_request,
     build_mid_local_request,
     build_timesync_request,
@@ -149,6 +150,33 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(valid_identity(VALID_IDENTITY))
         self.assertFalse(valid_identity("110105194912310020"))
         self.assertFalse(valid_identity("11010520260230002X"))
+
+    def test_person_codes_are_translated_and_birth_is_derived_from_valid_identity(self):
+        person = _safe_person({
+            "name": "测试甲",
+            "personID": VALID_IDENTITY,
+            "gender": "1",
+            "nation": "01",
+            "degree": "60",
+            "hunyin": "1",
+            "birth": "",
+        })
+        self.assertEqual(person["gender"], "男")
+        self.assertEqual(person["nation"], "汉族")
+        self.assertEqual(person["education"], "高中")
+        self.assertEqual(person["marital_status"], "未婚")
+        self.assertEqual(person["birth_date"], "1949-12-31")
+        self.assertTrue(person["birth_date_derived"])
+        self.assertEqual(person["gender_code"], "1")
+
+    def test_unknown_numeric_person_code_is_not_guessed(self):
+        person = _safe_person({
+            "personID": VALID_IDENTITY,
+            "gender": "7",
+            "degree": "123",
+        })
+        self.assertEqual(person["gender"], "代码 7（待确认）")
+        self.assertEqual(person["education"], "代码 123（待确认）")
 
     def test_preview_request_rejects_browser_supplied_identity(self):
         with self.assertRaises(ValidationError):
@@ -727,7 +755,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                         ).preview(platform_task=platform_task())
                     self.assertEqual(raised.exception.code, expected_code)
 
-    async def test_guard_rejects_concurrency_and_enforces_cooldown(self):
+    async def test_guard_rejects_concurrency_but_allows_next_manual_preview(self):
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -738,19 +766,25 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
                 return {"mode": "read_only"}
 
-        with patch("services.qmf_registration.settings.QMF_PREVIEW_COOLDOWN_SECONDS", 30):
-            first = asyncio.create_task(run_guarded_preview(
-                platform_task=platform_task(), client=BlockingClient()
-            ))
-            await entered.wait()
-            with self.assertRaises(QmfPreviewError) as busy:
-                await run_guarded_preview(platform_task=platform_task(), client=BlockingClient())
-            self.assertEqual(busy.exception.code, "preview_busy")
-            release.set()
-            await first
-            with self.assertRaises(QmfPreviewError) as cooldown:
-                await run_guarded_preview(platform_task=platform_task(), client=BlockingClient())
-            self.assertEqual(cooldown.exception.code, "preview_cooldown")
+        first = asyncio.create_task(run_guarded_preview(
+            platform_task=platform_task(), client=BlockingClient()
+        ))
+        await entered.wait()
+        with self.assertRaises(QmfPreviewError) as busy:
+            await run_guarded_preview(platform_task=platform_task(), client=BlockingClient())
+        self.assertEqual(busy.exception.code, "preview_busy")
+        release.set()
+        await first
+
+        class ImmediateClient:
+            async def preview(self, *, platform_task):
+                del platform_task
+                return {"mode": "read_only"}
+
+        result = await run_guarded_preview(
+            platform_task=platform_task(), client=ImmediateClient()
+        )
+        self.assertEqual(result["mode"], "read_only")
 
 
 if __name__ == "__main__":
