@@ -237,9 +237,6 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const listRequestId = useRef(0)
   const loadedPageRef = useRef(snapshotRef.current?.loaded_page || 1)
   const canBulkAssign = assignment.enabled
-  const usesDesktopTable = useCallback(() => (
-    taskDisplayMode === 'table' && window.matchMedia('(min-width: 768px)').matches
-  ), [taskDisplayMode])
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
   ), [assignment.community_aliases])
@@ -544,13 +541,11 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         })
       const refreshPageCount = Math.max(1, restorePageCount || loadedPageRef.current)
       let results
-      if ((silent || restorePageCount > 0) && !usesDesktopTable()) {
+      if (silent || restorePageCount > 0) {
         results = []
         for (let requestedPage = 1; requestedPage <= refreshPageCount; requestedPage += 1) {
           results.push(await requestPage(requestedPage))
         }
-      } else if (silent || restorePageCount > 0) {
-        results = [await requestPage(targetPage)]
       } else {
         results = [await requestPage(targetPage)]
       }
@@ -586,7 +581,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       }
       if (append) loadingMoreRef.current = false
     }
-  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, usesDesktopTable, watchCategories])
+  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
 
   useEffect(() => {
     const sentinel = loadMoreRef.current
