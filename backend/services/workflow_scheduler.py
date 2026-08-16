@@ -8,7 +8,6 @@ from datetime import date, datetime, timedelta
 from database import db_manager
 from services.online_source import json_value
 from services.workflow_support import queue_user_ids, remove_attachment, workflow_notification
-from services.photo_sheet_sync import run_photo_sheet_maintenance_once
 from config import settings
 
 
@@ -55,8 +54,9 @@ async def run_workflow_maintenance_once() -> dict:
                 recipients = [int(assignee_id)] if assignee_id else await queue_user_ids(cur, str(queue or ""))
                 for recipient in recipients:
                     await cur.execute(
-                        "INSERT IGNORE INTO work_order_reminders "
-                        "(work_order_id, reminder_type, reminder_date, recipient_user_id) VALUES (%s,%s,%s,%s)",
+                        "INSERT INTO work_order_reminders "
+                        "(work_order_id, reminder_type, reminder_date, recipient_user_id) "
+                        "VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE id=id",
                         (ticket_id, reminder_type, reminder_date, recipient),
                     )
                     if cur.rowcount != 1:
@@ -106,10 +106,4 @@ async def run_workflow_scheduler() -> None:
             raise
         except Exception as exc:
             print(f"[WORKFLOW] maintenance failed: {type(exc).__name__}")
-        try:
-            await run_photo_sheet_maintenance_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(f"[PHOTO_SHEET] maintenance failed: {type(exc).__name__}")
         await asyncio.sleep(300)

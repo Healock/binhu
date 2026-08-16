@@ -3078,6 +3078,8 @@ export interface PhotoSheetConfig {
   last_sync_at: string | null
   last_sync_status: string
   last_error: string
+  outbox_pending_count: number
+  outbox_paused_count: number
 }
 
 export interface PhotoSheetPreview {
@@ -3263,5 +3265,8 @@ export const workflowApi = {
   },
   async retryPhotoSheetConflict(conflictId: number) {
     return (await api.post(`/workflow/photo-sheet/conflicts/${conflictId}/retry`, {})).data
+  },
+  async retryPhotoSheetOutbox(outboxId: number) {
+    return (await api.post(`/workflow/photo-sheet/outbox/${outboxId}/retry`, {})).data
   },
 }

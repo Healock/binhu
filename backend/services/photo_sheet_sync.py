@@ -31,6 +31,10 @@ PHOTO_INCREMENTAL_SYNC_TIMEOUT_SECONDS = 90
 PHOTO_OUTBOX_TIMEOUT_SECONDS = 90
 PHOTO_FULL_SYNC_TIMEOUT_SECONDS = 180
 PHOTO_FULL_SYNC_RETRY_SECONDS = 6 * 60 * 60
+PHOTO_SHEET_MAINTENANCE_INTERVAL_SECONDS = 5 * 60
+PHOTO_OUTBOX_RETRY_BASE_SECONDS = 5 * 60
+PHOTO_OUTBOX_RETRY_MAX_SECONDS = 6 * 60 * 60
+PHOTO_OUTBOX_MAX_AUTO_ATTEMPTS = 12
 _photo_sheet_background_tasks: set[asyncio.Task] = set()
 _next_full_sync_attempt_at: datetime | None = None
 _daily_full_sync_task: asyncio.Task | None = None
@@ -62,6 +66,71 @@ class ExistingPhotoSheetRow:
     work_order_id: int
     physical_row: int | None
     fingerprint: str
+
+
+@dataclass(slots=True, frozen=True)
+class OutboxRetryPlan:
+    status: str
+    attempt_count: int
+    next_attempt_at: datetime | None
+    error_code: str
+
+
+def outbox_retry_plan(
+    previous_attempt_count: int,
+    *,
+    uncertain: bool,
+    now: datetime | None = None,
+) -> OutboxRetryPlan:
+    """生成照片名单写回失败后的有限指数退避方案。"""
+    attempt_count = max(int(previous_attempt_count or 0), 0) + 1
+    base_code = "write_uncertain" if uncertain else "write_failed"
+    if attempt_count >= PHOTO_OUTBOX_MAX_AUTO_ATTEMPTS:
+        return OutboxRetryPlan(
+            status="paused",
+            attempt_count=attempt_count,
+            next_attempt_at=None,
+            error_code=f"{base_code}_exhausted",
+        )
+    delay_seconds = min(
+        PHOTO_OUTBOX_RETRY_BASE_SECONDS * (2 ** (attempt_count - 1)),
+        PHOTO_OUTBOX_RETRY_MAX_SECONDS,
+    )
+    return OutboxRetryPlan(
+        status="retry",
+        attempt_count=attempt_count,
+        next_attempt_at=(now or datetime.utcnow()) + timedelta(seconds=delay_seconds),
+        error_code=base_code,
+    )
+
+
+async def _record_outbox_failure(
+    cur,
+    *,
+    outbox_id: int,
+    ticket_id: int,
+    previous_attempt_count: int,
+    error_text: str,
+    uncertain: bool,
+) -> OutboxRetryPlan:
+    plan = outbox_retry_plan(previous_attempt_count, uncertain=uncertain)
+    await cur.execute(
+        "UPDATE photo_sheet_outbox SET status=%s,attempt_count=%s,next_attempt_at=%s,"
+        "last_error=%s,error_code=%s WHERE id=%s",
+        (
+            plan.status,
+            plan.attempt_count,
+            plan.next_attempt_at,
+            error_text[:500],
+            plan.error_code,
+            outbox_id,
+        ),
+    )
+    await cur.execute(
+        "UPDATE photo_request_details SET external_sync_status=%s WHERE work_order_id=%s",
+        ("paused" if plan.status == "paused" else "retry", ticket_id),
+    )
+    return plan
 
 
 def _pair_relocated_rows(
@@ -799,10 +868,11 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     "SELECT id,work_order_id,action,attempt_count FROM photo_sheet_outbox "
                     "WHERE status IN ('pending','retry') "
                     "AND (next_attempt_at IS NULL OR next_attempt_at<=UTC_TIMESTAMP())"
-                    f"{ticket_clause} ORDER BY id LIMIT %s", params,
+                    f"{ticket_clause} ORDER BY (next_attempt_at IS NOT NULL),next_attempt_at,id LIMIT %s", params,
                 )
                 jobs = await cur.fetchall()
             append_rows_cache: list[dict] | None = None
+            paused = 0
             for outbox_id, job_ticket_id, action, attempt_count in jobs:
                 await conn.begin()
                 try:
@@ -836,17 +906,15 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     await conn.rollback()
                     await conn.begin()
                     async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE photo_sheet_outbox SET status='retry',attempt_count=attempt_count+1,"
-                            "next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE),"
-                            "last_error='腾讯写回超时或任务被取消',error_code='write_uncertain' WHERE id=%s",
-                            (outbox_id,),
+                        plan = await _record_outbox_failure(
+                            cur,
+                            outbox_id=int(outbox_id),
+                            ticket_id=int(job_ticket_id),
+                            previous_attempt_count=int(attempt_count or 0),
+                            error_text="腾讯写回超时或任务被取消",
+                            uncertain=True,
                         )
-                        await cur.execute(
-                            "UPDATE photo_request_details SET external_sync_status='retry' "
-                            "WHERE work_order_id=%s",
-                            (job_ticket_id,),
-                        )
+                        paused += int(plan.status == "paused")
                     await conn.commit()
                     raise
                 except Exception as exc:
@@ -854,11 +922,15 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     await conn.rollback()
                     await conn.begin()
                     async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE photo_sheet_outbox SET status='retry',attempt_count=attempt_count+1,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE),last_error=%s,error_code='write_failed' WHERE id=%s",
-                            (str(exc)[:500], outbox_id),
+                        plan = await _record_outbox_failure(
+                            cur,
+                            outbox_id=int(outbox_id),
+                            ticket_id=int(job_ticket_id),
+                            previous_attempt_count=int(attempt_count or 0),
+                            error_text=str(exc),
+                            uncertain=False,
                         )
-                        await cur.execute("UPDATE photo_request_details SET external_sync_status='retry' WHERE work_order_id=%s", (job_ticket_id,))
+                        paused += int(plan.status == "paused")
                         if "唯一定位" in str(exc) or "多个相同" in str(exc):
                             await cur.execute(
                                 "INSERT INTO photo_sheet_conflicts (source_id,work_order_id,conflict_type,safe_detail) "
@@ -870,7 +942,7 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     failed += 1
     finally:
         await client.close()
-    return {"processed": processed, "failed": failed, "disabled": False}
+    return {"processed": processed, "failed": failed, "paused": paused, "disabled": False}
 
 
 async def process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
@@ -1201,3 +1273,15 @@ async def run_photo_sheet_maintenance_once() -> dict:
         "sync": incremental,
         "full_sync_scheduled": full_scheduled,
     }
+
+
+async def run_photo_sheet_scheduler() -> None:
+    """独立运行照片名单维护，避免第三方超时拖慢工单提醒。"""
+    while True:
+        try:
+            await run_photo_sheet_maintenance_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[PHOTO_SHEET] maintenance failed: {type(exc).__name__}")
+        await asyncio.sleep(PHOTO_SHEET_MAINTENANCE_INTERVAL_SECONDS)

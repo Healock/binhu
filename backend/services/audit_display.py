@@ -132,11 +132,13 @@ ACTION_LABELS: dict[str, str] = {
     "workflow.photo_sheet.import": "导入调照片历史名单",
     "workflow.photo_sheet.sync": "同步调照片名单",
     "workflow.photo_sheet.conflict_retry": "重试调照片名单冲突",
+    "workflow.photo_sheet.outbox_retry": "重新执行调照片名单写回",
 }
 
 TARGET_TYPE_LABELS: dict[str, str] = {
     "photo_sheet": "调照片名单",
     "photo_sheet_conflict": "调照片名单冲突",
+    "photo_sheet_outbox": "调照片名单写回任务",
     "work_log_daily_detail": "工作每日明细",
     "container": "系统日志",
     "backup": "数据库备份",

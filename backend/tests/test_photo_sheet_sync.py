@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import date, datetime
 from unittest.mock import AsyncMock, Mock, call, patch
@@ -16,6 +17,7 @@ from services.photo_sheet_sync import (
     parse_rows,
     parse_source_url,
     preview_summary,
+    outbox_retry_plan,
 )
 
 
@@ -252,6 +254,37 @@ class PhotoSheetParserTests(unittest.TestCase):
     def test_historical_g_failure_note_only_changes_result_classification(self):
         self.assertEqual(historical_result("身份证错误"), ("not_found", "腾讯历史批次完成、无平台附件"))
         self.assertEqual(historical_result("随手填写的旧备注"), ("found", "腾讯历史批次完成、无平台附件"))
+
+
+class PhotoSheetOutboxRetryTests(unittest.TestCase):
+    def test_retry_uses_exponential_backoff(self):
+        now = datetime(2026, 8, 16, 9, 0)
+
+        first = outbox_retry_plan(0, uncertain=False, now=now)
+        third = outbox_retry_plan(2, uncertain=False, now=now)
+
+        self.assertEqual(first.status, "retry")
+        self.assertEqual(first.attempt_count, 1)
+        self.assertEqual(first.next_attempt_at, datetime(2026, 8, 16, 9, 5))
+        self.assertEqual(third.next_attempt_at, datetime(2026, 8, 16, 9, 20))
+        self.assertEqual(third.error_code, "write_failed")
+
+    def test_retry_delay_is_capped_and_uncertain_code_is_preserved(self):
+        now = datetime(2026, 8, 16, 9, 0)
+
+        plan = outbox_retry_plan(8, uncertain=True, now=now)
+
+        self.assertEqual(plan.status, "retry")
+        self.assertEqual(plan.next_attempt_at, datetime(2026, 8, 16, 15, 0))
+        self.assertEqual(plan.error_code, "write_uncertain")
+
+    def test_retry_pauses_after_maximum_automatic_attempts(self):
+        plan = outbox_retry_plan(11, uncertain=False)
+
+        self.assertEqual(plan.status, "paused")
+        self.assertEqual(plan.attempt_count, 12)
+        self.assertIsNone(plan.next_attempt_at)
+        self.assertEqual(plan.error_code, "write_failed_exhausted")
 
 
 class PhotoSheetRelocationTests(unittest.IsolatedAsyncioTestCase):
@@ -535,6 +568,15 @@ class PhotoSheetMaintenanceTests(unittest.IsolatedAsyncioTestCase):
 
         launch.assert_called_once_with()
         self.assertTrue(result["full_sync_scheduled"])
+
+    async def test_photo_sheet_scheduler_has_its_own_cancellable_loop(self):
+        with patch.object(
+            photo_sheet_sync,
+            "run_photo_sheet_maintenance_once",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await photo_sheet_sync.run_photo_sheet_scheduler()
 
 
 if __name__ == "__main__":

@@ -597,6 +597,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   onChange={value => setExternalSyncStatus(value || '')}
                   options={[
                     { value: 'pending', label: '待同步' }, { value: 'retry', label: '重试中' },
+                    { value: 'paused', label: '写回已暂停' },
                     { value: 'synced', label: '已同步' }, { value: 'linked', label: '腾讯来源已关联' },
                     { value: 'not_linked', label: '不关联腾讯' },
                   ]}

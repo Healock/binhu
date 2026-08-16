@@ -1,5 +1,8 @@
 """MySQL 多数据库连接池管理（同一实例内的八个业务域数据库）。"""
 
+from contextlib import contextmanager
+import warnings
+
 import aiomysql
 from config import settings
 from services.business_time import current_business_date
@@ -36,6 +39,28 @@ DB_NAMES = {
 }
 
 OPTIONAL_DB_KEYS = {"platform", "visit", "dispatch", "registry", "workflow"}
+
+
+@contextmanager
+def suppress_expected_bootstrap_warnings():
+    """只在单线程启动建表阶段忽略明确可接受的 MySQL 幂等提示。
+
+    MySQL 会为 ``CREATE TABLE IF NOT EXISTS`` 和 ``INSERT IGNORE`` 已命中
+    的记录返回 warning，aiomysql 又会逐条写到 stderr。这里不处理未知表、
+    语法、截断或其他数据库 warning，避免为了日志干净而遮住真实故障。
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"^Table '.*' already exists$",
+            category=Warning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"^Duplicate entry '.*' for key '.*'$",
+            category=Warning,
+        )
+        yield
 
 
 async def _ensure_column(cur, table: str, column: str, definition: str) -> None:
@@ -2093,7 +2118,10 @@ db_manager = DatabaseManager()
 
 # 兼容旧代码
 async def init_db():
-    await db_manager.init_all()
+    # lifespan 中的第一个步骤，业务调度器尚未启动，因此局部 warning 过滤
+    # 不会影响运行期数据库请求。
+    with suppress_expected_bootstrap_warnings():
+        await db_manager.init_all()
 
 async def close_db():
     await db_manager.close_all()

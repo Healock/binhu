@@ -12,6 +12,7 @@ from services.permissions import WORKFLOW_CONFIG_MANAGE
 from services.photo_sheet_sync import (
     SOURCE_CODE,
     import_online,
+    launch_outbox_processing,
     load_source,
     parse_source_url,
     preview_online,
@@ -38,7 +39,14 @@ def _iso(value):
     return value.isoformat() + "Z" if value else None
 
 
-def _config_payload(source: dict) -> dict:
+async def _config_payload(cur, source: dict) -> dict:
+    await cur.execute(
+        "SELECT "
+        "COALESCE(SUM(status IN ('pending','retry')),0),"
+        "COALESCE(SUM(status='paused'),0) "
+        "FROM photo_sheet_outbox"
+    )
+    outbox_row = await cur.fetchone() or (0, 0)
     return {
         "source_code": SOURCE_CODE,
         "file_url": source["file_url"],
@@ -53,6 +61,8 @@ def _config_payload(source: dict) -> dict:
         "last_sync_at": _iso(source["last_sync_at"]),
         "last_sync_status": source["last_sync_status"],
         "last_error": source["last_error"],
+        "outbox_pending_count": int(outbox_row[0] or 0),
+        "outbox_paused_count": int(outbox_row[1] or 0),
     }
 
 
@@ -63,7 +73,8 @@ async def get_photo_sheet_config(
 ):
     del user
     async with conn.cursor() as cur:
-        return _config_payload(await load_source(cur))
+        source = await load_source(cur)
+        return await _config_payload(cur, source)
 
 
 @router.put("/config")
@@ -108,7 +119,8 @@ async def update_photo_sheet_config(
         **request_audit_fields(request),
     )
     async with conn.cursor() as cur:
-        return _config_payload(await load_source(cur))
+        source = await load_source(cur)
+        return await _config_payload(cur, source)
 
 
 @router.post("/preview")
@@ -248,11 +260,12 @@ async def list_photo_sheet_issues(
             data = [{"id": int(row[0]), "work_order_id": row[1], "physical_row": row[2],
                      "type": row[3], "safe_detail": row[4], "created_at": _iso(row[5])} for row in await cur.fetchall()]
         else:
-            await cur.execute("SELECT COUNT(*) FROM photo_sheet_outbox WHERE status IN ('pending','retry')")
+            await cur.execute("SELECT COUNT(*) FROM photo_sheet_outbox WHERE status IN ('pending','retry','paused')")
             total = int((await cur.fetchone())[0])
             await cur.execute(
                 "SELECT id,work_order_id,action,status,attempt_count,error_code,last_error,updated_at "
-                "FROM photo_sheet_outbox WHERE status IN ('pending','retry') ORDER BY id LIMIT %s OFFSET %s",
+                "FROM photo_sheet_outbox WHERE status IN ('pending','retry','paused') "
+                "ORDER BY FIELD(status,'paused','retry','pending'),id LIMIT %s OFFSET %s",
                 (page_size, offset),
             )
             data = [{"id": int(row[0]), "work_order_id": int(row[1]), "action": row[2], "status": row[3],
@@ -294,3 +307,49 @@ async def retry_photo_sheet_conflict(
         target_name=str(conflict_id), detail={}, **request_audit_fields(request),
     )
     return {"message": "已重新加入安全定位队列"}
+
+
+@router.post("/outbox/{outbox_id}/retry")
+async def retry_photo_sheet_outbox(
+    outbox_id: int,
+    request: Request,
+    user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
+    conn=Depends(get_workflow_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT work_order_id,status FROM photo_sheet_outbox WHERE id=%s FOR UPDATE",
+                (outbox_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(404, "写回任务不存在")
+            if row[1] == "done":
+                raise HTTPException(409, "该写回任务已经完成")
+            ticket_id = int(row[0])
+            await cur.execute(
+                "UPDATE photo_sheet_outbox SET status='pending',attempt_count=0,"
+                "next_attempt_at=NULL,last_error='',error_code='' WHERE id=%s",
+                (outbox_id,),
+            )
+            await cur.execute(
+                "UPDATE photo_request_details SET external_sync_status='pending' "
+                "WHERE work_order_id=%s",
+                (ticket_id,),
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "workflow.photo_sheet.outbox_retry",
+        target_type="photo_sheet_outbox",
+        target_name=str(outbox_id),
+        detail={"action": "manual_retry"},
+        **request_audit_fields(request),
+    )
+    launch_outbox_processing(ticket_id)
+    return {"message": "已恢复自动写回", "status": "pending"}

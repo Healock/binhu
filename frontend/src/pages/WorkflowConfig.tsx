@@ -193,6 +193,17 @@ export default function WorkflowConfig() {
     }
   }
 
+  const retryPhotoOutbox = async (outboxId: number) => {
+    try {
+      await workflowApi.retryPhotoSheetOutbox(outboxId)
+      message.success('已恢复自动写回')
+      await loadPhotoMonitor('outbox')
+      await load()
+    } catch (reason) {
+      message.error(apiError(reason, '写回重试失败'))
+    }
+  }
+
   const createType = async () => {
     try {
       const values = await typeForm.validateFields()
@@ -355,12 +366,23 @@ export default function WorkflowConfig() {
             <Form.Item name="write_enabled" label="写入及 G 列回写" valuePropName="checked"><Switch checkedChildren="已开启" unCheckedChildren="已关闭" /></Form.Item>
           </div>
         </Form>
-        <div className="grid gap-2 text-sm md:grid-cols-3">
+        <div className="grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">历史导入：{photoSheetConfig?.import_applied_at ? '已完成' : '未执行'}</div>
           <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">最近同步：{photoSheetConfig?.last_sync_at ? formatTime(photoSheetConfig.last_sync_at) : '尚未同步'}</div>
           <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">同步状态：{photoSheetConfig?.last_sync_status || 'disabled'}</div>
+          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">待写回：{photoSheetConfig?.outbox_pending_count || 0}</div>
+          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">已暂停：{photoSheetConfig?.outbox_paused_count || 0}</div>
         </div>
         {photoSheetConfig?.last_error && <Alert className="mt-3" type="warning" showIcon message="最近同步失败" description={photoSheetConfig.last_error} />}
+        {!!photoSheetConfig?.outbox_paused_count && (
+          <Alert
+            className="mt-3"
+            type="warning"
+            showIcon
+            message={`${photoSheetConfig.outbox_paused_count} 条腾讯写回已暂停`}
+            description="连续失败达到上限后已停止自动重试，请在“同步记录与异常 → 待写回队列”核对并手动恢复。"
+          />
+        )}
         {photoSheetPreview && (
           <Card className="mt-4" size="small" title="历史导入只读预览">
             <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
@@ -461,6 +483,9 @@ export default function WorkflowConfig() {
             ...(photoMonitorTab === 'conflict' ? [{
               title: '操作', width: 90,
               render: (_: unknown, row: any) => <Button size="small" onClick={() => void retryPhotoConflict(row.id)}>重试定位</Button>,
+            }] : photoMonitorTab === 'outbox' ? [{
+              title: '操作', width: 90,
+              render: (_: unknown, row: any) => <Button size="small" onClick={() => void retryPhotoOutbox(row.id)}>重新写回</Button>,
             }] : []),
           ]}
         />
