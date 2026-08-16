@@ -824,6 +824,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     { key: 'nation', label: '民族', children: qmfPreviewResult.person.nation || '未填写' },
                     { key: 'education', label: '文化程度', children: qmfPreviewResult.person.education || '未填写' },
                     { key: 'marriage', label: '婚姻状况', children: qmfPreviewResult.person.marital_status || '未填写' },
+                    { key: 'person-community-code', label: '人员社区编码', children: qmfPreviewResult.person.community_code || '未填写' },
                     { key: 'current-address', label: '现住址', children: qmfPreviewResult.person.current_address || '未填写', span: mobile ? 1 : 2 },
                     { key: 'household-address', label: '户籍地址', children: qmfPreviewResult.person.household_address || '未填写', span: mobile ? 1 : 2 },
                   ]}
@@ -838,6 +839,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   items={[
                     { key: 'station', label: '派出所', children: qmfPreviewResult.upstream_task.police_station || '未填写' },
                     { key: 'community', label: '社区', children: qmfPreviewResult.upstream_task.community || '未填写' },
+                    { key: 'task-community-code', label: '任务辖区编码', children: qmfPreviewResult.upstream_task.community_code || '未填写' },
                     { key: 'status', label: '上游状态', children: qmfPreviewResult.upstream_task.check_status_text || qmfPreviewResult.upstream_task.check_status || '未填写' },
                     { key: 'dispatch', label: '下发时间', children: qmfPreviewResult.upstream_task.dispatch_time || '未填写' },
                     { key: 'address', label: '任务地址', children: qmfPreviewResult.upstream_task.address || '未填写', span: mobile ? 1 : 2 },
@@ -856,7 +858,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     ['single_upstream_task', '上游任务唯一'],
                     ['station_match', '派出所一致'],
                     ['person_match', '人员资料一致'],
-                    ['jurisdiction_match', '任务辖区一致'],
+                    ['jurisdiction_match', '辖区按派出所校验'],
                     ['precheck_passed', '只读校验通过'],
                     ['photo_valid', '照片格式有效'],
                   ].map(([key, label]) => (

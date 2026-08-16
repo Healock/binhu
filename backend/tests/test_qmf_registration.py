@@ -65,7 +65,8 @@ def upstream_handler(
     *,
     task_count=1,
     person_name="测试甲",
-    person_community="community-code",
+    person_community="1234567890",
+    task_community="123456789012",
     station="滨湖新城派出所",
     photo=JPEG,
 ):
@@ -84,7 +85,7 @@ def upstream_handler(
                 "dz": "测试地址",
                 "pcsname": station,
                 "jgmc": "测试社区",
-                "xfsq": "community-code",
+                "xfsq": task_community,
                 "hcjg": "0",
                 "hcjgtext": "未核查",
                 "xfsj": "2026-08-15 09:00:00",
@@ -403,6 +404,10 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["mode"], "read_only")
         self.assertFalse(result["can_submit"])
         self.assertEqual(result["person"]["identity_number"], VALID_IDENTITY)
+        self.assertEqual(result["upstream_task"]["community_code"], "123456789012")
+        self.assertEqual(result["person"]["community_code"], "1234567890")
+        self.assertTrue(result["checks"]["jurisdiction_match"])
+        self.assertTrue(any("不同编码体系" in item for item in result["warnings"]))
         self.assertEqual(base64.b64decode(result["photo"]["data_base64"]), JPEG)
         self.assertEqual([method for method, _ in seen], ["POST", "POST", "GET", "POST"])
         allowed_suffixes = set(READ_ONLY_ENDPOINTS)
@@ -553,7 +558,6 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             (upstream_handler(task_count=0)[0], "task_not_found"),
             (upstream_handler(task_count=2)[0], "task_not_unique"),
             (upstream_handler(person_name="其他人")[0], "person_mismatch"),
-            (upstream_handler(person_community="other-community")[0], "person_jurisdiction_mismatch"),
             (upstream_handler(station="其他派出所")[0], "task_station_mismatch"),
             (upstream_handler(photo=b"not-an-image")[0], "photo_type_invalid"),
         )
