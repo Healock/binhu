@@ -409,6 +409,26 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(conflict["enabled"])
 
+        for result in ("近期返吴", "离吴", "离开不返吴", "近期反吴"):
+            with self.subTest(result=result):
+                capability = preview_capability(
+                    username="shenshenghua",
+                    parser_type="疑似未注销模型三",
+                    source_count=1,
+                    conflict=False,
+                    values={"核查结果": result, "身份证号": VALID_IDENTITY},
+                )
+                self.assertTrue(capability["enabled"])
+
+        unsupported = preview_capability(
+            username="shenshenghua",
+            parser_type="疑似未注销模型三",
+            source_count=1,
+            conflict=False,
+            values={"核查结果": "无法核实", "身份证号": VALID_IDENTITY},
+        )
+        self.assertFalse(unsupported["enabled"])
+
     async def test_route_rejects_super_admin_account_before_database_or_network(self):
         request = Request({"type": "http", "method": "POST", "path": "/api/qmf-registration/preview", "headers": []})
         with self.assertRaises(HTTPException) as raised:

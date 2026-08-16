@@ -22,8 +22,24 @@ RUN_STEPS: tuple[tuple[str, str], ...] = (
     ("verify_final", "复核模型三最终状态"),
 )
 
+LEAVE_NOT_RETURNING_STEPS: tuple[tuple[str, str], ...] = (
+    ("query_task", "查询模型三任务"),
+    ("query_community", "核对社区代码"),
+    ("complete_task", "反馈模型三注销结果"),
+    ("verify_final", "复核模型三最终状态"),
+)
 
-def initial_steps() -> list[dict[str, Any]]:
+ALL_RUN_STEPS = dict((*RUN_STEPS, *LEAVE_NOT_RETURNING_STEPS))
+WRITE_STEP_KEYS = frozenset({
+    "upload_photo", "save_local_photo", "register_person", "complete_task",
+})
+
+
+def steps_for_result(result: str) -> tuple[tuple[str, str], ...]:
+    return LEAVE_NOT_RETURNING_STEPS if result == "离开不返吴" else RUN_STEPS
+
+
+def initial_steps(result: str = "在吴") -> list[dict[str, Any]]:
     return [
         {
             "key": key,
@@ -33,7 +49,7 @@ def initial_steps() -> list[dict[str, Any]]:
             "started_at": None,
             "finished_at": None,
         }
-        for key, label in RUN_STEPS
+        for key, label in steps_for_result(result)
     ]
 
 
@@ -49,14 +65,23 @@ def parse_steps(value: Any) -> list[dict[str, Any]]:
             raw = json.loads(str(value or "[]"))
         except (TypeError, ValueError, json.JSONDecodeError):
             raw = []
-    known = {key: label for key, label in RUN_STEPS}
+    raw_keys = [
+        str(item.get("key") or "")
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    template = (
+        LEAVE_NOT_RETURNING_STEPS
+        if "query_community" in raw_keys
+        else RUN_STEPS
+    )
     result: list[dict[str, Any]] = []
     by_key = {
         str(item.get("key") or ""): item
         for item in raw
         if isinstance(item, dict)
     }
-    for key, label in RUN_STEPS:
+    for key, label in template:
         item = by_key.get(key) or {}
         result.append({
             "key": key,

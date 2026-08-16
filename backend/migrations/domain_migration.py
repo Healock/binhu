@@ -48,6 +48,7 @@ DOMAIN_TABLES: dict[str, tuple[str, str, tuple[str, ...]]] = {
             "_permission_change_log", "_notifications", "_announcements", "_announcement_reads",
             "_admin_audit_log", "_personnel_attendance_history", "_personnel_weekend_duty", "_system_config",
             "_backup_schedule", "_backup_jobs", "_work_activity_events",
+            "_qmf_registration_runs", "_administrative_areas",
         ),
     ),
     "work_logs": (

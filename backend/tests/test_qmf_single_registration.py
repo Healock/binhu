@@ -14,6 +14,8 @@ from services.qmf_registration import (
     QmfLoginContext,
     QmfPreviewError,
     QmfRegistrationClient,
+    RESULT_LEAVE_NOT_RETURNING,
+    RESULT_RECENT_RETURN,
     build_add_people_payload,
     build_fnmx_check_payload,
     build_upload_photo_payload,
@@ -160,6 +162,40 @@ def collected_context() -> QmfCollectedContext:
     )
 
 
+def leave_context() -> QmfCollectedContext:
+    task = platform_task()
+    task.update({
+        "result": RESULT_LEAVE_NOT_RETURNING,
+        "resolved_community": "虚构社区",
+        "qmf_community_code": "3205840001",
+        "destination_code": "510904",
+        "destination_address": "四川省遂宁市安居区",
+    })
+    return QmfCollectedContext(
+        platform_task=task,
+        login_context=login_context(),
+        query_data={"sfzh": VALID_IDENTITY},
+        raw_task=upstream_task_row(),
+        upstream_task={
+            "task_id": "fictional-task-id",
+            "record_id": "fictional-record-id",
+            "name": "测试人员甲",
+            "identity_number": VALID_IDENTITY,
+            "phone": "13000000000",
+            "address": "虚构现住址",
+            "police_station": "滨湖新城派出所",
+            "community": "虚构社区",
+            "community_code": "320584123456",
+            "check_status": "0",
+            "check_status_text": "未核查",
+            "dispatch_time": "2026-08-16 07:00:00",
+        },
+        raw_person=None,
+        person=None,
+        photo=None,
+    )
+
+
 def upstream_task_row() -> dict:
     return {
         "id": "fictional-record-id",
@@ -218,6 +254,100 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(feedback["xfid"], "fictional-task-id")
         for field in ("communityCode", "logoutReason", "qwdxzqh", "qwdxz"):
             self.assertEqual(feedback[field], "")
+
+    def test_recent_return_and_leave_feedback_contracts(self):
+        recent = collected_context()
+        recent.platform_task["result"] = RESULT_RECENT_RETURN
+        recent_feedback = build_fnmx_check_payload(
+            recent, device_id="fictional-device-001"
+        )
+        self.assertEqual(recent_feedback["hcjg"], "3")
+        for field in ("communityCode", "logoutReason", "qwdxzqh", "qwdxz"):
+            self.assertEqual(recent_feedback[field], "")
+
+        leave_feedback = build_fnmx_check_payload(
+            leave_context(), device_id="fictional-device-001"
+        )
+        self.assertEqual(list(leave_feedback), [
+            "xfid", "logoutReason", "hcjg", "hcczr", "sbsbh", "personID",
+            "type", "qwdxzqh", "communityCode", "qwdxz", "source",
+        ])
+        self.assertEqual(leave_feedback["hcjg"], "1")
+        self.assertEqual(leave_feedback["logoutReason"], "2")
+        self.assertEqual(leave_feedback["communityCode"], "3205840001")
+        self.assertEqual(leave_feedback["qwdxzqh"], "510904")
+        self.assertEqual(leave_feedback["qwdxz"], "四川省遂宁市安居区")
+        self.assertNotIn("四川", leave_feedback["qwdxzqh"])
+
+    async def test_leave_not_returning_executes_only_four_step_contract(self):
+        seen: list[str] = []
+        captured_feedback: dict[str, list[str]] = {}
+        captured_community_query: dict[str, list[str]] = {}
+        task_queries = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal task_queries, captured_community_query, captured_feedback
+            path = request.url.path.split("/grid_terminal_interface/", 1)[-1]
+            seen.append(path)
+            if path == "fnmx/queryYysList":
+                task_queries += 1
+                rows = [upstream_task_row()] if task_queries == 1 else []
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {"total": len(rows), "list": rows},
+                })
+            if path == "declare/queryCommunityCode":
+                captured_community_query = parse_qs(
+                    request.content.decode("utf-8"), keep_blank_values=True
+                )
+                return httpx.Response(200, json={"code": 200, "data": []})
+            if path == "fnmx/fnmxCheck":
+                captured_feedback = parse_qs(
+                    request.content.decode("utf-8"), keep_blank_values=True
+                )
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            raise AssertionError(f"leave contract reached forbidden endpoint: {path}")
+
+        async def fake_login():
+            return login_context()
+
+        step_events: list[tuple[str, str]] = []
+
+        async def step_callback(key: str, status: str, _code: str):
+            step_events.append((key, status))
+
+        result = await QmfRegistrationClient(
+            transport=httpx.MockTransport(handler),
+            login_provider=fake_login,
+            config=runtime_config(),
+        ).execute(
+            platform_task=leave_context().platform_task,
+            step_callback=step_callback,
+            before_write=lambda *_args: _noop(),
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(seen, [
+            "fnmx/queryYysList",
+            "declare/queryCommunityCode",
+            "fnmx/fnmxCheck",
+            "fnmx/queryYysList",
+        ])
+        self.assertEqual(
+            [key for key, status in step_events if status == "sending"],
+            ["query_task", "query_community", "complete_task", "verify_final"],
+        )
+        self.assertEqual(captured_feedback["qwdxzqh"], ["510904"])
+        self.assertEqual(captured_feedback["qwdxz"], ["四川省遂宁市安居区"])
+        self.assertEqual(captured_community_query, {
+            "sfzh": [VALID_IDENTITY],
+            "source": ["android"],
+        })
+        for forbidden in (
+            "queryPeopleBySfzh", "queryPeoplePhotoByJzz", "checkCk",
+            "uploadPhoto", "saveLocalPhoto", "addPeople",
+        ):
+            self.assertTrue(all(forbidden not in path for path in seen))
 
     async def test_registration_executes_exact_nine_request_sequence(self):
         seen: list[str] = []

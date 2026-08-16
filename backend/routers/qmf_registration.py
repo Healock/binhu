@@ -19,8 +19,10 @@ from deps import require_permission, require_super_admin
 from routers.mobile_tasks import _mobile_task_detail_data
 from routers.query import _writeback_enabled, update_source_fields
 from services.audit import record_admin_audit, request_audit_fields
+from services.administrative_areas import resolve_identity_area
 from services.online_source import source_row_hash
 from services.permissions import ONLINE_RAW_VIEW
+from services.qmf_community import resolve_qmf_community
 from services.qmf_config import (
     QMF_CONFIG_KEYS,
     load_qmf_config,
@@ -33,7 +35,8 @@ from services.qmf_registration import (
     MODEL_THREE_PARSER,
     QmfCollectedContext,
     QmfPreviewError,
-    SUPPORTED_RESULT,
+    RESULT_LEAVE_NOT_RETURNING,
+    normalize_qmf_result,
     normalize_identity,
     preview_configured,
     qmf_operation_busy,
@@ -43,12 +46,14 @@ from services.qmf_registration import (
     valid_identity,
 )
 from services.qmf_runs import (
+    ALL_RUN_STEPS,
     PREPARE_TTL_SECONDS,
-    RUN_STEPS,
     TENCENT_MARKER,
+    WRITE_STEP_KEYS,
     initial_steps,
     parse_steps,
     serialize_steps,
+    steps_for_result,
     utc_text,
 )
 
@@ -335,9 +340,10 @@ async def _eligible_platform_task(
     current_hash = source_row_hash(values)
     if current_hash != str(source.get("row_hash") or ""):
         raise QmfPreviewError("source_hash_conflict", "腾讯来源摘要校验失败", 409)
-    if str(values.get("核查结果") or "").strip() != SUPPORTED_RESULT:
+    result = normalize_qmf_result(values.get("核查结果"))
+    if not result:
         raise QmfPreviewError(
-            "result_not_supported", "第一版仅支持核查结果为“在吴”的任务", 422
+            "result_not_supported", "当前仅支持“在吴、近期返吴、离开不返吴”三种结果", 422
         )
     identity = normalize_identity(values.get("身份证号"))
     if not valid_identity(identity):
@@ -345,7 +351,7 @@ async def _eligible_platform_task(
     name = str(values.get("姓名") or "").strip()
     if not name:
         raise QmfPreviewError("name_missing", "任务姓名为空，不能预演", 422)
-    return ({
+    platform_task = {
         "parser_type": data.parser_type,
         "row_key": data.row_key,
         "source_id": data.source_id,
@@ -354,8 +360,44 @@ async def _eligible_platform_task(
         "phone": str(values.get("联系方式") or "").strip(),
         "address": str(values.get("地址") or "").strip(),
         "community": str(values.get("下发社区") or "").strip(),
-        "result": SUPPORTED_RESULT,
-    }, current_hash)
+        "result": result,
+    }
+    if result == RESULT_LEAVE_NOT_RETURNING:
+        async with conn.cursor() as cur:
+            area = await resolve_identity_area(cur, identity)
+            if area is None or not area.full_name:
+                raise QmfPreviewError(
+                    "destination_area_missing",
+                    "身份证前六位未找到对应户籍行政区划",
+                    409,
+                )
+            try:
+                community = await resolve_qmf_community(
+                    cur,
+                    source_community=platform_task["community"],
+                    address=platform_task["address"],
+                )
+            except ValueError as exc:
+                messages = {
+                    "no_enabled_community": "平台没有可用社区，不能反馈离开不返吴",
+                    "community_ambiguous": "任务地址同时匹配多个社区，请先完善小区管理",
+                    "community_conflict": "任务下发社区与小区地址匹配结果不一致",
+                    "community_not_found": "无法从下发社区或小区管理唯一确定社区",
+                    "community_code_missing": "对应社区尚未填写10位全民防社区代码",
+                }
+                code = str(exc)
+                raise QmfPreviewError(
+                    code, messages.get(code, "社区映射失败"), 409
+                ) from exc
+        platform_task.update({
+            "resolved_community": community.name,
+            "qmf_community_code": community.qmf_community_code,
+            # qwdxzqh is the raw six-digit identity prefix.  The Chinese
+            # administrative-division text is submitted separately as qwdxz.
+            "destination_code": identity[:6],
+            "destination_address": area.full_name,
+        })
+    return platform_task, current_hash
 
 
 _RUN_SELECT = """
@@ -375,9 +417,7 @@ def _run_payload(row: tuple[Any, ...]) -> dict[str, Any]:
     marker_status = str(row[12] or "not_started")
     steps = parse_steps(row[7])
     write_progress = any(
-        item["key"] in {
-            "upload_photo", "save_local_photo", "register_person", "complete_task"
-        }
+        item["key"] in WRITE_STEP_KEYS
         and item["status"] in {"sending", "succeeded", "uncertain"}
         for item in steps
     )
@@ -470,9 +510,7 @@ async def _create_prepared_run(
                 )
             attempted_steps = parse_steps(attempted[2])
             write_progress = any(
-                item["key"] in {
-                    "upload_photo", "save_local_photo", "register_person", "complete_task"
-                }
+                item["key"] in WRITE_STEP_KEYS
                 and item["status"] in {"sending", "succeeded", "uncertain"}
                 for item in attempted_steps
             )
@@ -517,7 +555,11 @@ async def _create_prepared_run(
                 expected_hash,
                 idempotency_key,
                 user["id"],
-                serialize_steps(initial_steps()),
+                serialize_steps(initial_steps(
+                    normalize_qmf_result(
+                        (preview.get("platform_task") or {}).get("result")
+                    )
+                )),
                 upstream_digest,
                 str(photo.get("sha256") or "")[:64],
                 str(photo.get("mime_type") or "")[:50],
@@ -535,7 +577,7 @@ async def _update_run_step(
     status: str,
     result_code: str = "",
 ) -> None:
-    if key not in {item[0] for item in RUN_STEPS}:
+    if key not in ALL_RUN_STEPS:
         raise RuntimeError("unknown qmf registration step")
     async with conn.cursor() as cur:
         await cur.execute(
@@ -976,9 +1018,7 @@ async def _execute_run_background(
         )
         current_run = await _load_run(conn, run_id, user_id=int(user["id"]))
         partial_write_succeeded = any(
-            item["key"] in {
-                "upload_photo", "save_local_photo", "register_person", "complete_task"
-            }
+            item["key"] in WRITE_STEP_KEYS
             and item["status"] == "succeeded"
             for item in current_run["steps"]
         )
@@ -1006,9 +1046,7 @@ async def _execute_run_background(
         else:
             run = await _load_run(conn, run_id, user_id=int(user["id"]))
             has_write_progress = any(
-                item["key"] in {
-                    "upload_photo", "save_local_photo", "register_person", "complete_task"
-                }
+                item["key"] in WRITE_STEP_KEYS
                 and item["status"] in {"sending", "succeeded"}
                 for item in run["steps"]
             )
@@ -1264,11 +1302,15 @@ async def prepare_qmf_registration(
             "run": _public_run(run),
             "planned_write_steps": [
                 {"key": key, "label": label, "enabled": True}
-                for key, label in RUN_STEPS
+                for key, label in steps_for_result(platform_task["result"])
             ],
             "warnings": [
                 *(result.get("warnings") or []),
-                "真实登记会依次上传照片、保存人员资料并反馈模型三；提交后不能撤销。",
+                (
+                    "真实登记只会执行一次模型三注销反馈；提交后不能撤销。"
+                    if platform_task["result"] == RESULT_LEAVE_NOT_RETURNING
+                    else "真实登记会依次上传照片、保存人员资料并反馈模型三；提交后不能撤销。"
+                ),
             ],
         }
         await record_admin_audit(
@@ -1280,11 +1322,17 @@ async def prepare_qmf_registration(
                 "run_id": run["id"],
                 "source_id": data.source_id,
                 "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
-                "photo": {
-                    "mime_type": str(result.get("photo", {}).get("mime_type") or "")[:50],
-                    "size_bytes": int(result.get("photo", {}).get("size_bytes") or 0),
-                    "sha256": str(result.get("photo", {}).get("sha256") or "")[:64],
-                },
+                **({"photo": {
+                    "mime_type": str(
+                        (result.get("photo") or {}).get("mime_type") or ""
+                    )[:50],
+                    "size_bytes": int(
+                        (result.get("photo") or {}).get("size_bytes") or 0
+                    ),
+                    "sha256": str(
+                        (result.get("photo") or {}).get("sha256") or ""
+                    )[:64],
+                }} if result.get("photo") else {}),
             },
             **request_audit_fields(request),
         )

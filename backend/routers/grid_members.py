@@ -172,6 +172,7 @@ class CommunityAliasesUpdate(BaseModel):
     police_officers: Optional[list[str]] = Field(default=None, max_length=20)
     police_officer_ids: Optional[list[int]] = Field(default=None, max_length=50)
     area_id: Optional[int] = Field(default=None, gt=0)
+    qmf_community_code: Optional[str] = Field(default=None, max_length=20)
 
     @field_validator("name")
     @classmethod
@@ -181,6 +182,16 @@ class CommunityAliasesUpdate(BaseModel):
         normalized = normalize_community(value)
         if not normalized:
             raise ValueError("社区名不能为空")
+        return normalized
+
+    @field_validator("qmf_community_code")
+    @classmethod
+    def validate_qmf_community_code(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if normalized and not re.fullmatch(r"\d{10}", normalized):
+            raise ValueError("全民防社区代码必须为 10 位数字")
         return normalized
     @field_validator("aliases")
     @classmethod
@@ -642,7 +653,7 @@ async def list_communities(
         await cur.execute(f"""
             SELECT c.id, c.name, c.police_officers,
                    COALESCE(g.grid_count, 0) AS grid_count,
-                   area.id, area.name, c.is_active
+                   area.id, area.name, c.is_active, c.qmf_community_code
             FROM _communities c
             LEFT JOIN _areas AS area ON area.id=c.area_id
             LEFT JOIN (
@@ -700,6 +711,7 @@ async def list_communities(
                 "area_id": int(row[4]) if row[4] is not None else None,
                 "area_name": str(row[5] or ""),
                 "is_active": bool(row[6]),
+                "qmf_community_code": str(row[7] or ""),
             }
             for row in rows
         ]
@@ -1197,6 +1209,12 @@ async def update_community_aliases(
                     (data.area_id, community_id),
                 )
 
+            if "qmf_community_code" in data.model_fields_set:
+                await cur.execute(
+                    "UPDATE _communities SET qmf_community_code=%s WHERE id=%s",
+                    (data.qmf_community_code or None, community_id),
+                )
+
             target_name = data.name or current["name"]
             target_normalized_name = normalize_community(target_name)
             aliases = list(data.aliases)
@@ -1400,6 +1418,7 @@ async def update_community_aliases(
         "police_officers": returned_officers,
         "matched_visit_rows": matched_rows,
         "area_id": data.area_id,
+        "qmf_community_code": data.qmf_community_code,
     }
 
 

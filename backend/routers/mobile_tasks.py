@@ -50,7 +50,7 @@ from services.qmf_registration import (
     registration_capability,
 )
 from services.qmf_config import load_qmf_config
-from services.qmf_runs import parse_steps, utc_text
+from services.qmf_runs import WRITE_STEP_KEYS, parse_steps, utc_text
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
@@ -126,13 +126,19 @@ async def _qmf_registration_state(
             if row:
                 status = str(row[3] or "")
                 marker_status = str(row[6] or "not_started")
+                steps = parse_steps(row[4])
+                write_progress = any(
+                    item["key"] in WRITE_STEP_KEYS
+                    and item["status"] in {"sending", "succeeded", "uncertain"}
+                    for item in steps
+                )
                 latest_run = {
                     "id": int(row[0]),
                     "parser_type": parser_type,
                     "source_id": int(row[1]),
                     "expected_revision": int(row[2]),
                     "status": status,
-                    "steps": parse_steps(row[4]),
+                    "steps": steps,
                     "result_code": str(row[5] or ""),
                     "photo": {"sha256": "", "mime_type": "", "size_bytes": 0},
                     "tencent_marker_status": marker_status,
@@ -144,6 +150,8 @@ async def _qmf_registration_state(
                     "created_at": utc_text(row[12]),
                     "updated_at": utc_text(row[13]),
                     "can_execute": status == "prepared",
+                    "can_reprepare": status in {"failed", "uncertain"}
+                    and not write_progress,
                     "can_retry_marker": status == "succeeded" and marker_status in {
                         "not_started", "pending", "conflict", "failed",
                     },

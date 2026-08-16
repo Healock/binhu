@@ -25,6 +25,7 @@ from services.permissions import (
 from services.domain_schema import ensure_registry_schema, ensure_workflow_schema
 from services.domain_routing import DomainRoutingCursor
 from services.qmf_runs import ensure_qmf_registration_schema
+from services.administrative_areas import ensure_administrative_area_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -502,6 +503,12 @@ async def ensure_online_editor_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await _ensure_column(cur, "_communities", "area_id", "INT DEFAULT NULL")
+    await _ensure_column(
+        cur,
+        "_communities",
+        "qmf_community_code",
+        "VARCHAR(20) DEFAULT NULL",
+    )
     await _ensure_index(
         cur,
         "_communities",
@@ -2024,6 +2031,7 @@ class DatabaseManager:
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
                 await ensure_qmf_registration_schema(cur)
+                await ensure_administrative_area_schema(cur)
                 await ensure_bootstrap_admin(cur)
 
         # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
