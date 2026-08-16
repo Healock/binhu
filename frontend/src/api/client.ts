@@ -1317,12 +1317,17 @@ export async function getMobileTaskInlineEditors(
   analysisMode = false,
 ): Promise<MobileTaskInlineEditorsData> {
   const prefix = analysisMode ? '/mobile-tasks/analysis' : '/mobile-tasks'
-  const { data } = await api.post(
-    `${prefix}/${encodeURIComponent(parserType)}/inline-editors`,
-    { row_keys: rowKeys },
-    activeRequest,
-  )
-  return data
+  const uniqueRowKeys = [...new Set(rowKeys.map(rowKey => String(rowKey).trim()).filter(Boolean))]
+  const items: MobileTaskInlineEditorsData['items'] = {}
+  for (let offset = 0; offset < uniqueRowKeys.length; offset += 50) {
+    const { data } = await api.post<MobileTaskInlineEditorsData>(
+      `${prefix}/${encodeURIComponent(parserType)}/inline-editors`,
+      { row_keys: uniqueRowKeys.slice(offset, offset + 50) },
+      activeRequest,
+    )
+    Object.assign(items, data.items)
+  }
+  return { items, analysis_mode: analysisMode }
 }
 
 export async function updateMobileTask(
