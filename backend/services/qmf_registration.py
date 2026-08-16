@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import re
 import time
@@ -30,13 +31,13 @@ ALLOWED_PLATFORM_USERNAME = "shenshenghua"
 READ_ONLY_ENDPOINTS = {
     "fnmx/queryYysList": "POST",
     "enterHouse/queryPeopleBySfzh": "POST",
-    "jzz/queryLocalPhoto": "GET",
+    "enterHouse/queryPeoplePhotoByJzz": "POST",
     "enterHouse/checkCk": "POST",
 }
 READ_ONLY_ENDPOINT_CONTEXT = {
     "fnmx/queryYysList": ("query_task", "任务查询"),
     "enterHouse/queryPeopleBySfzh": ("query_person", "人员资料查询"),
-    "jzz/queryLocalPhoto": ("query_photo", "居住证照片查询"),
+    "enterHouse/queryPeoplePhotoByJzz": ("query_photo", "居住证照片查询"),
     "enterHouse/checkCk": ("precheck", "登记前校验"),
 }
 WRITE_ENDPOINTS = {
@@ -542,10 +543,32 @@ def _business_payload(response: httpx.Response, *, expected_object: bool) -> Any
 
 
 def _photo_payload(response: httpx.Response) -> dict[str, Any]:
-    content = response.content
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type == "application/json":
+        if not response.content or len(response.content) > MAX_PHOTO_BYTES * 2:
+            raise QmfPreviewError(
+                "photo_size_invalid", "居住证照片为空或超过安全大小限制"
+            )
+        data = _business_payload(response, expected_object=False)
+        if not isinstance(data, str):
+            raise QmfPreviewError("photo_response_invalid", "居住证照片响应结构无效")
+        compact = re.sub(r"\s+", "", data)
+        max_encoded_size = ((MAX_PHOTO_BYTES + 2) // 3) * 4
+        if not compact or len(compact) > max_encoded_size:
+            raise QmfPreviewError(
+                "photo_size_invalid", "居住证照片为空或超过安全大小限制"
+            )
+        try:
+            content = base64.b64decode(compact, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise QmfPreviewError(
+                "photo_base64_invalid", "居住证照片编码校验失败"
+            ) from exc
+        content_type = ""
+    else:
+        content = response.content
     if not content or len(content) > MAX_PHOTO_BYTES:
         raise QmfPreviewError("photo_size_invalid", "居住证照片为空或超过安全大小限制")
-    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
     if content.startswith(b"\xff\xd8\xff"):
         detected = "image/jpeg"
     elif content.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -937,13 +960,21 @@ class QmfReadOnlyClient:
             )
         await self._emit_step(step_callback, "query_person", "succeeded", "success")
 
+        photo_person_id = normalize_identity(_first(raw_person, "personID"))
+        if not photo_person_id or photo_person_id != identity:
+            raise QmfPreviewError(
+                "photo_person_mismatch",
+                "全民防居住证照片人员标识与平台任务不一致",
+                409,
+            )
+
         if login_session is not None:
             login_session.ensure_available()
         await self._emit_step(step_callback, "query_photo", "sending")
         photo_response = await self._request(
             client,
-            "jzz/queryLocalPhoto",
-            params={"sfzh": identity, "timestamp": str(int(time.time() * 1000))},
+            "enterHouse/queryPeoplePhotoByJzz",
+            data={"personID": photo_person_id, "source": "android"},
         )
         photo = _photo_payload(photo_response)
         await self._emit_step(step_callback, "query_photo", "succeeded", "success")
@@ -1071,7 +1102,7 @@ class QmfReadOnlyClient:
                 timeout=timeout,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "Binhu-QMF-Readonly/0.21.1"},
+                headers={"User-Agent": "Binhu-QMF-Readonly/0.21.2"},
             ) as client:
                 context = await self._collect_context(
                     client=client,
@@ -1143,7 +1174,7 @@ class QmfRegistrationClient(QmfReadOnlyClient):
                 timeout=timeout,
                 follow_redirects=False,
                 transport=self._transport,
-                headers={"User-Agent": "Binhu-QMF-Registration/0.21.1"},
+                headers={"User-Agent": "Binhu-QMF-Registration/0.21.2"},
             ) as client:
                 context = await self._collect_context(
                     client=client,

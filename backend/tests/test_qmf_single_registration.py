@@ -25,6 +25,18 @@ JPEG = b"\xff\xd8\xff\xe0" + b"fictional-photo" + b"\xff\xd9"
 PHOTO_SHA256 = "a" * 64
 
 
+def photo_json_response(photo: bytes = JPEG):
+    return httpx.Response(
+        200,
+        json={
+            "code": 200,
+            "message": "成功",
+            "data": base64.b64encode(photo).decode("ascii"),
+        },
+        headers={"content-type": "application/json;charset=UTF-8"},
+    )
+
+
 def runtime_config() -> QmfRuntimeConfig:
     return QmfRuntimeConfig(
         preview_enabled=True,
@@ -221,8 +233,8 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 })
             if path == "enterHouse/queryPeopleBySfzh":
                 return httpx.Response(200, json={"code": 200, "data": raw_person()})
-            if path == "jzz/queryLocalPhoto":
-                return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
+            if path == "enterHouse/queryPeoplePhotoByJzz":
+                return photo_json_response()
             if path == "enterHouse/checkCk":
                 return httpx.Response(200, json={"code": 200, "data": 0})
             if path == "masses/uploadPhoto":
@@ -271,7 +283,7 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [
             "fnmx/queryYysList",
             "enterHouse/queryPeopleBySfzh",
-            "jzz/queryLocalPhoto",
+            "enterHouse/queryPeoplePhotoByJzz",
             "enterHouse/checkCk",
             "masses/uploadPhoto",
             "jzz/saveLocalPhoto",
@@ -321,8 +333,8 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 })
             if path == "enterHouse/queryPeopleBySfzh":
                 return httpx.Response(200, json={"code": 200, "data": incomplete_person})
-            if path == "jzz/queryLocalPhoto":
-                return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
+            if path == "enterHouse/queryPeoplePhotoByJzz":
+                return photo_json_response()
             if path == "enterHouse/checkCk":
                 return httpx.Response(200, json={"code": 200, "data": 0})
             raise AssertionError(f"write endpoint must not be reached: {path}")
@@ -344,7 +356,7 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [
             "fnmx/queryYysList",
             "enterHouse/queryPeopleBySfzh",
-            "jzz/queryLocalPhoto",
+            "enterHouse/queryPeoplePhotoByJzz",
             "enterHouse/checkCk",
         ])
 
@@ -367,12 +379,8 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
                         return httpx.Response(
                             200, json={"code": 200, "data": raw_person()}
                         )
-                    if path == "jzz/queryLocalPhoto":
-                        return httpx.Response(
-                            200,
-                            content=JPEG,
-                            headers={"content-type": "image/jpeg"},
-                        )
+                    if path == "enterHouse/queryPeoplePhotoByJzz":
+                        return photo_json_response()
                     if path == "enterHouse/checkCk":
                         return httpx.Response(
                             200, json={"code": 200, "data": rejected_data}
@@ -408,8 +416,8 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 })
             if path == "enterHouse/queryPeopleBySfzh":
                 return httpx.Response(200, json={"code": 200, "data": raw_person()})
-            if path == "jzz/queryLocalPhoto":
-                return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
+            if path == "enterHouse/queryPeoplePhotoByJzz":
+                return photo_json_response()
             if path == "enterHouse/checkCk":
                 return httpx.Response(200, json={"code": 200, "data": 0})
             if path == "masses/uploadPhoto":
@@ -463,12 +471,8 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
                             return httpx.Response(
                                 200, json={"code": 200, "data": raw_person()}
                             )
-                        if path == "jzz/queryLocalPhoto":
-                            return httpx.Response(
-                                200,
-                                content=JPEG,
-                                headers={"content-type": "image/jpeg"},
-                            )
+                        if path == "enterHouse/queryPeoplePhotoByJzz":
+                            return photo_json_response()
                         if path == "enterHouse/checkCk":
                             return httpx.Response(
                                 200, json={"code": 200, "data": 0}
@@ -519,10 +523,8 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 })
             if path == "enterHouse/queryPeopleBySfzh":
                 return httpx.Response(200, json={"code": 200, "data": raw_person()})
-            if path == "jzz/queryLocalPhoto":
-                return httpx.Response(
-                    200, content=JPEG, headers={"content-type": "image/jpeg"}
-                )
+            if path == "enterHouse/queryPeoplePhotoByJzz":
+                return photo_json_response()
             if path == "enterHouse/checkCk":
                 return httpx.Response(200, json={"code": 200, "data": 0})
             if path in {

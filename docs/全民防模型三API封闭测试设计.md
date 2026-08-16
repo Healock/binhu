@@ -1,6 +1,6 @@
 # 全民防“疑似未注销模型三”API 封闭测试设计
 
-> 状态：v0.21.0 已部署并完成一次单条真实登记验收；v0.21.1 开发分支正在收敛单入口并补充只读 HTTP 步骤诊断，尚未合并或部署
+> 状态：v0.21.1 已合并；v0.21.2 开发分支按 APP 按钮抓包修正居住证照片读取，尚未合并或部署
 > 最后更新：2026-08-16
 > 现行路线：优先验证旧平台 API；Redroid/Appium 仅作为历史备选方案
 
@@ -64,7 +64,7 @@ APK 使用独立的 `/grid_terminal_interface/` 接口体系，不应与旧网�
 
 1. 查询未处理和相关状态任务；
 2. 按身份证查询人员信息；
-3. 从居住证系统查询本地照片；
+3. 调用 APP“从居住证获取人像照片”按钮接口查询照片；
 4. 执行登记前检查；
 5. 上传照片正文；
 6. 保存居住证照片关联；
@@ -88,7 +88,7 @@ APK 使用独立的 `/grid_terminal_interface/` 接口体系，不应与旧网�
 |---|---|---|---|---|
 | 1 | POST | `fnmx/queryYysList` | 查询模型三任务及处理状态 | 只读 |
 | 2 | POST | `enterHouse/queryPeopleBySfzh` | 查询人员现有信息 | 只读 |
-| 3 | GET | `jzz/queryLocalPhoto` | 从居住证取得照片 | 只读 |
+| 3 | POST | `enterHouse/queryPeoplePhotoByJzz` | 从居住证取得照片 | 只读 |
 | 4 | POST | `enterHouse/checkCk` | 登记前检查 | 只读校验 |
 | 5 | POST | `masses/uploadPhoto` | 上传照片正文 | 写入 |
 | 6 | POST | `jzz/saveLocalPhoto` | 保存照片关联 | 写入 |
@@ -122,6 +122,22 @@ sfzh, source
 已验证的单条成功样本中，`checkCk` 的业务响应必须同时满足顶层
 `code=200` 且 `data` 为数值 `0`。缺失、字符串 `"0"`、布尔值或其他数值
 均按校验未通过处理，并在进入四个写接口前停止。
+
+### 5.2.1 `enterHouse/queryPeoplePhotoByJzz`
+
+2026-08-16 的同一授权人员最小抓包和 APK 静态分析确认，APP“从居住证获取人像照片”按钮不是页面加载时的自动预取 GET。按钮请求固定为：
+
+```text
+POST enterHouse/queryPeoplePhotoByJzz
+Content-Type: application/x-www-form-urlencoded
+
+personID=<本次 PersonnelInfo.personID>&source=android
+```
+
+- `personID` 必须来自本次 `queryPeopleBySfzh` 返回的完整人员对象，并与平台任务身份证再次一致；缺失或不一致时在照片请求前停止。
+- 响应必须为 HTTP 200、JSON 顶层 `code=200`，且 `data` 为照片 Base64 字符串。
+- `data` 可能包含 CR/LF 等 MIME 风格空白；解码前只允许移除空白，随后执行严格 Base64、大小和 JPEG/PNG/WebP 文件头校验。
+- 旧 `GET jzz/queryLocalPhoto?sfzh&timestamp` 属于页面自动预取。它不等同于按钮链路，不再用于登记前核对；即使单独核验旧 GET，APK 的 `timestamp` 也是按分钟变化的时间桶，而不是 13 位当前毫秒值。
 
 ### 5.3 `masses/uploadPhoto`
 
@@ -320,7 +336,7 @@ APK 的 `MACHINEUID` 行为是：
 - 最终状态和是否需要人工复核。
 
 只读 HTTP 非成功响应必须记录安全步骤代码和数值状态码，例如
-`query_photo / 500`；不得记录接口响应正文。2026-08-16 已确认一条生产失败样本在任务与人员查询成功后，由居住证照片查询返回 HTTP 500，并在任何写接口之前停止。
+`query_photo / 500`；不得记录接口响应正文。2026-08-16 已确认一条生产失败样本在任务与人员查询成功后，由旧自动预取 `GET jzz/queryLocalPhoto` 返回 HTTP 500，并在任何写接口之前停止。同日最小抓包随后确认 APP 按钮实际使用 `POST enterHouse/queryPeoplePhotoByJzz`，因此 v0.21.2 改用按钮链路；受控 PCAP、身份证和照片仍不进入仓库。
 
 禁止记录：
 
