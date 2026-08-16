@@ -347,7 +347,9 @@ export default function SystemSettings() {
     try {
       const result = await updateQmfConfig({
         preview_enabled: qmfConfig.preview_enabled,
+        registration_enabled: qmfConfig.registration_enabled,
         login_protocol_verified: qmfConfig.login_protocol_verified,
+        write_protocol_verified: qmfConfig.write_protocol_verified,
         api_base_url: qmfConfig.api_base_url,
         login_host: qmfConfig.login_host,
         login_port: qmfConfig.login_port,
@@ -363,7 +365,7 @@ export default function SystemSettings() {
       })
       setQmfConfig(result)
       setQmfPassword('')
-      setQmfMsg('全民防只读预演配置已保存')
+      setQmfMsg('全民防封闭测试配置已保存')
     } catch (error: any) {
       setQmfMsg(error?.response?.data?.detail || '全民防配置保存失败')
     } finally {
@@ -474,18 +476,22 @@ export default function SystemSettings() {
       </Panel>
 
       <Panel
-        title="全民防模型三只读预演"
-        description="仅用于单条只读核对；不会登记、反馈、上传照片或执行批量操作。"
+        title="全民防模型三封闭测试"
+        description="只向指定账号开放单条预演与人工确认登记；不提供批量、自动扫描、定时执行或自动重试。"
       >
         {!qmfConfig ? (
           <Alert type="info" showIcon message="全民防配置加载中" />
         ) : (
           <div className="flex flex-col gap-5">
             <Alert
-              type={qmfConfig.configured ? 'success' : 'warning'}
+              type={qmfConfig.registration_configured ? 'success' : qmfConfig.configured ? 'info' : 'warning'}
               showIcon
-              message={qmfConfig.configured ? '配置完整，可执行只读预演' : '配置尚未完整'}
-              description="账号密码、设备身份和接口地址只用于当前只读链路。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
+              message={qmfConfig.registration_configured
+                ? '只读预演与真实登记均已开启'
+                : qmfConfig.configured
+                  ? '只读预演可用，真实登记仍关闭'
+                  : '配置尚未完整'}
+              description="真实登记会向旧平台上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <div className="settings-field">
@@ -514,7 +520,45 @@ export default function SystemSettings() {
                   </span>
                 </div>
               </div>
+              <div className="settings-field">
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">真实登记开关</span>
+                <div className="flex min-h-9 items-center gap-3">
+                  <Switch
+                    checked={qmfConfig.registration_enabled}
+                    onChange={value => setQmfConfig(current => current ? { ...current, registration_enabled: value } : current)}
+                    disabled={savingQmf}
+                  />
+                  <span className="text-sm text-[var(--app-text-secondary)]">
+                    {qmfConfig.registration_enabled ? '已开启' : '已关闭'}
+                  </span>
+                </div>
+                <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
+                  开启后仍只允许 shenshenghua 单条执行，每条都要重新预演并二次确认。
+                </p>
+              </div>
+              <div className="settings-field">
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">写入协议已实测</span>
+                <div className="flex min-h-9 items-center gap-3">
+                  <Switch
+                    checked={qmfConfig.write_protocol_verified}
+                    onChange={value => setQmfConfig(current => current ? { ...current, write_protocol_verified: value } : current)}
+                    disabled={savingQmf}
+                  />
+                  <span className="text-sm text-[var(--app-text-secondary)]">
+                    {qmfConfig.write_protocol_verified ? '已确认' : '未确认'}
+                  </span>
+                </div>
+                <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
+                  仅在已按单条抓包与人工验收确认四个写接口合同后开启。
+                </p>
+              </div>
             </div>
+            <Alert
+              type="error"
+              showIcon
+              message="真实登记不可自动撤销"
+              description="任一步骤出现超时、断线或结果不确定时，系统会冻结该次运行，不会自动重试，也不会从头重放。请先到旧平台人工核对。"
+            />
             <div className="grid gap-4 md:grid-cols-2">
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">HTTP 接口地址</span>
@@ -616,7 +660,7 @@ export default function SystemSettings() {
                 { key: 'allowed', label: '平台允许账号', children: qmfConfig.preview_allowed_username },
                 { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
-                { key: 'cooldown', label: '预演冷却时间', children: `${qmfConfig.preview_cooldown_seconds} 秒` },
+                { key: 'cooldown', label: '单条冷却时间', children: `${qmfConfig.preview_cooldown_seconds} 秒` },
               ]}
             />
             <div className="settings-actions">

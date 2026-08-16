@@ -1,4 +1,4 @@
-"""Runtime configuration for the全民防模型三 read-only preview.
+"""Runtime configuration for the全民防模型三 preview and sealed registration.
 
 The preview originally read all values from process environment variables.  The
 settings page now persists the values in ``_system_config`` so an administrator
@@ -20,7 +20,9 @@ from config import settings
 
 QMF_CONFIG_KEYS = {
     "qmf_preview_enabled",
+    "qmf_registration_enabled",
     "qmf_login_protocol_verified",
+    "qmf_write_protocol_verified",
     "qmf_api_base_url",
     "qmf_login_host",
     "qmf_login_port",
@@ -80,7 +82,9 @@ def decrypt_secret(value: Any) -> str:
 @dataclass(frozen=True)
 class QmfRuntimeConfig:
     preview_enabled: bool
+    registration_enabled: bool
     login_protocol_verified: bool
+    write_protocol_verified: bool
     preview_allowed_username: str
     api_base_url: str
     login_host: str
@@ -116,12 +120,22 @@ class QmfRuntimeConfig:
             )
         )
 
+    @property
+    def registration_configured(self) -> bool:
+        return bool(
+            self.configured
+            and self.registration_enabled
+            and self.write_protocol_verified
+        )
+
 
 def settings_config() -> QmfRuntimeConfig:
     """Build the fallback configuration from environment settings."""
     return QmfRuntimeConfig(
         preview_enabled=bool(settings.QMF_PREVIEW_ENABLED),
+        registration_enabled=bool(settings.QMF_REGISTRATION_ENABLED),
         login_protocol_verified=bool(settings.QMF_LOGIN_PROTOCOL_VERIFIED),
+        write_protocol_verified=bool(settings.QMF_WRITE_PROTOCOL_VERIFIED),
         preview_allowed_username=str(settings.QMF_PREVIEW_ALLOWED_USERNAME or ""),
         api_base_url=str(settings.QMF_API_BASE_URL or ""),
         login_host=str(settings.QMF_LOGIN_HOST or ""),
@@ -159,8 +173,14 @@ async def load_qmf_config(conn) -> QmfRuntimeConfig:
     values = {str(row[0]): row[1] for row in rows}
     return QmfRuntimeConfig(
         preview_enabled=_as_bool(values.get("qmf_preview_enabled", fallback.preview_enabled)),
+        registration_enabled=_as_bool(
+            values.get("qmf_registration_enabled", fallback.registration_enabled)
+        ),
         login_protocol_verified=_as_bool(
             values.get("qmf_login_protocol_verified", fallback.login_protocol_verified)
+        ),
+        write_protocol_verified=_as_bool(
+            values.get("qmf_write_protocol_verified", fallback.write_protocol_verified)
         ),
         preview_allowed_username=_config_value(
             values, "qmf_preview_allowed_username", fallback.preview_allowed_username
@@ -206,7 +226,9 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
     """
     return {
         "preview_enabled": config.preview_enabled,
+        "registration_enabled": config.registration_enabled,
         "login_protocol_verified": config.login_protocol_verified,
+        "write_protocol_verified": config.write_protocol_verified,
         "preview_allowed_username": config.preview_allowed_username,
         "api_base_url": config.api_base_url,
         "login_host": config.login_host,
@@ -221,6 +243,7 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
         "session_max_seconds": config.session_max_seconds,
         "preview_cooldown_seconds": config.preview_cooldown_seconds,
         "configured": config.configured,
+        "registration_configured": config.registration_configured,
         "database_keys": sorted(stored_keys),
     }
 

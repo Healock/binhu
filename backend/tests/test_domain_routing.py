@@ -30,6 +30,14 @@ def test_domain_sql_routes_unqualified_and_legacy_qualified_tables():
     assert "`VisitData`.`t_visit_details`" in sql
 
 
+def test_qmf_registration_runs_are_stored_in_platform_domain():
+    with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
+        sql = rewrite_domain_sql(
+            "SELECT * FROM _qmf_registration_runs WHERE id=%s"
+        )
+    assert "`PlatformData`.`_qmf_registration_runs`" in sql
+
+
 def test_already_target_qualified_table_is_not_rewritten_twice():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql("SELECT * FROM `PlatformData`.`_users`")

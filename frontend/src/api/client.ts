@@ -1039,6 +1039,18 @@ export interface MobileTaskDetailData {
     enabled: boolean
     reason: string
   }
+  qmf_registration?: {
+    visible: boolean
+    enabled: boolean
+    reason: string
+    latest_run?: QmfRegistrationRun | null
+  }
+  qmf_feedback?: {
+    run_id: number
+    status: 'succeeded'
+    completed_at: string | null
+    tencent_marker_status: QmfTencentMarkerStatus
+  } | null
   sources: MobileTaskSource[]
 }
 
@@ -1100,13 +1112,82 @@ export interface QmfPreviewResult {
     data_base64: string
   }
   checks: Record<string, boolean>
-  planned_write_steps: Array<{ key: string; label: string; enabled: false }>
+  planned_write_steps: Array<{ key: string; label: string; enabled: boolean }>
+  planned_changes: Array<{ key: string; label: string; detail: string }>
   warnings: string[]
+}
+
+export type QmfRegistrationRunStatus =
+  | 'prepared'
+  | 'executing'
+  | 'succeeded'
+  | 'failed'
+  | 'uncertain'
+  | 'expired'
+  | 'superseded'
+
+export type QmfRegistrationStepStatus =
+  | 'pending'
+  | 'sending'
+  | 'succeeded'
+  | 'failed'
+  | 'uncertain'
+
+export type QmfTencentMarkerStatus =
+  | 'not_started'
+  | 'writing'
+  | 'succeeded'
+  | 'pending'
+  | 'conflict'
+  | 'failed'
+
+export interface QmfRegistrationRun {
+  id: number
+  parser_type: string
+  source_id: number
+  expected_revision: number
+  status: QmfRegistrationRunStatus
+  steps: Array<{
+    key: string
+    label: string
+    status: QmfRegistrationStepStatus
+    result_code: string
+    started_at: string | null
+    finished_at: string | null
+  }>
+  result_code: string
+  photo: {
+    sha256: string
+    mime_type: string
+    size_bytes: number
+  }
+  tencent_marker_status: QmfTencentMarkerStatus
+  tencent_marker_error: string
+  prepared_at: string | null
+  expires_at: string | null
+  execution_started_at: string | null
+  completed_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  can_execute: boolean
+  can_retry_marker: boolean
+}
+
+export interface QmfPrepareResult extends Omit<
+  QmfPreviewResult,
+  'mode' | 'can_submit' | 'planned_write_steps'
+> {
+  mode: 'prepared'
+  can_submit: true
+  planned_write_steps: Array<{ key: string; label: string; enabled: true }>
+  run: QmfRegistrationRun
 }
 
 export interface QmfConfig {
   preview_enabled: boolean
+  registration_enabled: boolean
   login_protocol_verified: boolean
+  write_protocol_verified: boolean
   preview_allowed_username: string
   api_base_url: string
   login_host: string
@@ -1121,12 +1202,15 @@ export interface QmfConfig {
   session_max_seconds: number
   preview_cooldown_seconds: number
   configured: boolean
+  registration_configured: boolean
   database_keys: string[]
 }
 
 export interface QmfConfigUpdate {
   preview_enabled: boolean
+  registration_enabled: boolean
   login_protocol_verified: boolean
+  write_protocol_verified: boolean
   api_base_url: string
   login_host: string
   login_port: number
@@ -1298,6 +1382,48 @@ export async function previewQmfRegistration(payload: {
     ...activeRequest,
     timeout: 60000,
   })
+  return data
+}
+
+export async function prepareQmfRegistration(payload: {
+  parser_type: string
+  row_key: string
+  source_id: number
+  expected_revision: number
+}): Promise<QmfPrepareResult> {
+  const { data } = await api.post('/qmf-registration/prepare', payload, {
+    ...activeRequest,
+    timeout: 60000,
+  })
+  return data
+}
+
+export async function executeQmfRegistration(
+  runId: number,
+  confirmation: string,
+): Promise<QmfRegistrationRun> {
+  const { data } = await api.post(
+    `/qmf-registration/runs/${runId}/execute`,
+    { confirmation },
+    activeRequest,
+  )
+  return data
+}
+
+export async function getQmfRegistrationRun(runId: number): Promise<QmfRegistrationRun> {
+  const { data } = await api.get(
+    `/qmf-registration/runs/${runId}`,
+    activeRequest,
+  )
+  return data
+}
+
+export async function retryQmfTencentMarker(runId: number): Promise<QmfRegistrationRun> {
+  const { data } = await api.post(
+    `/qmf-registration/runs/${runId}/retry-marker`,
+    {},
+    activeRequest,
+  )
   return data
 }
 

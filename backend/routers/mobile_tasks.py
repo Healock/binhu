@@ -43,8 +43,14 @@ from services.permissions import (
     has_permission,
 )
 from services.report_overview import SUMMARY_TYPE, get_online_overview
-from services.qmf_registration import preview_capability
+from services.qmf_registration import (
+    ALLOWED_PLATFORM_USERNAME,
+    MODEL_THREE_PARSER,
+    preview_capability,
+    registration_capability,
+)
 from services.qmf_config import load_qmf_config
+from services.qmf_runs import parse_steps, utc_text
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
@@ -76,6 +82,89 @@ AssignmentMode = Literal["single", "balanced"]
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
 MAX_BULK_ASSIGNMENT_CHUNK = 20
+
+
+async def _qmf_registration_state(
+    conn,
+    *,
+    parser_type: str,
+    sources: list[dict],
+    user: dict,
+) -> tuple[dict | None, dict | None]:
+    """Return a private resumable run plus the public successful summary.
+
+    Only the exact test account receives prepared, executing, failed or
+    uncertain details. Other task viewers can only see that the external
+    feedback succeeded and when it completed.
+    """
+    if parser_type != MODEL_THREE_PARSER or not sources:
+        return None, None
+    source_ids = [int(item["id"]) for item in sources]
+    placeholders = ",".join(["%s"] * len(source_ids))
+    latest_run = None
+    async with conn.cursor() as cur:
+        if str(user.get("username") or "") == ALLOWED_PLATFORM_USERNAME:
+            await cur.execute(
+                "UPDATE _qmf_registration_runs "
+                "SET status='expired', result_code='prepare_expired' "
+                f"WHERE parser_type=%s AND source_id IN ({placeholders}) "
+                "AND requested_by=%s AND status='prepared' "
+                "AND expires_at<=UTC_TIMESTAMP()",
+                (parser_type, *source_ids, int(user["id"])),
+            )
+            await cur.execute(
+                "SELECT id, source_id, expected_revision, status, steps_json, "
+                "result_code, tencent_marker_status, tencent_marker_error, "
+                "prepared_at, expires_at, execution_started_at, completed_at, "
+                "created_at, updated_at "
+                f"FROM _qmf_registration_runs WHERE parser_type=%s "
+                f"AND source_id IN ({placeholders}) AND requested_by=%s "
+                "ORDER BY id DESC LIMIT 1",
+                (parser_type, *source_ids, int(user["id"])),
+            )
+            row = await cur.fetchone()
+            if row:
+                status = str(row[3] or "")
+                marker_status = str(row[6] or "not_started")
+                latest_run = {
+                    "id": int(row[0]),
+                    "parser_type": parser_type,
+                    "source_id": int(row[1]),
+                    "expected_revision": int(row[2]),
+                    "status": status,
+                    "steps": parse_steps(row[4]),
+                    "result_code": str(row[5] or ""),
+                    "photo": {"sha256": "", "mime_type": "", "size_bytes": 0},
+                    "tencent_marker_status": marker_status,
+                    "tencent_marker_error": str(row[7] or ""),
+                    "prepared_at": utc_text(row[8]),
+                    "expires_at": utc_text(row[9]),
+                    "execution_started_at": utc_text(row[10]),
+                    "completed_at": utc_text(row[11]),
+                    "created_at": utc_text(row[12]),
+                    "updated_at": utc_text(row[13]),
+                    "can_execute": status == "prepared",
+                    "can_retry_marker": status == "succeeded" and marker_status in {
+                        "not_started", "pending", "conflict", "failed",
+                    },
+                }
+        await cur.execute(
+            "SELECT id, completed_at, tencent_marker_status "
+            f"FROM _qmf_registration_runs WHERE parser_type=%s "
+            f"AND source_id IN ({placeholders}) AND status='succeeded' "
+            "ORDER BY id DESC LIMIT 1",
+            (parser_type, *source_ids),
+        )
+        succeeded = await cur.fetchone()
+    feedback = None
+    if succeeded:
+        feedback = {
+            "run_id": int(succeeded[0]),
+            "status": "succeeded",
+            "completed_at": utc_text(succeeded[1]),
+            "tencent_marker_status": str(succeeded[2] or "not_started"),
+        }
+    return latest_run, feedback
 
 
 async def _task_photo_results(user: dict, parser_type: str, row_key: str) -> list[dict]:
@@ -1477,6 +1566,21 @@ async def _mobile_task_detail_data(
         values=sources[0]["values"] if len(sources) == 1 else None,
         config=qmf_config,
     )
+    qmf_registration = registration_capability(
+        username=str(user.get("username") or ""),
+        parser_type=parser_type,
+        source_count=int(parent_row[1] or 0),
+        conflict=bool(parent_row[2]),
+        values=sources[0]["values"] if len(sources) == 1 else None,
+        config=qmf_config,
+    )
+    latest_qmf_run, qmf_feedback = await _qmf_registration_state(
+        conn,
+        parser_type=parser_type,
+        sources=sources,
+        user=user,
+    )
+    qmf_registration["latest_run"] = latest_qmf_run
     return {
         "task": _task_record(
             parser_type,
@@ -1508,6 +1612,8 @@ async def _mobile_task_detail_data(
         "analysis_mode": analysis_mode,
         "photo_requests": photo_requests,
         "qmf_preview": qmf_preview,
+        "qmf_registration": qmf_registration,
+        "qmf_feedback": qmf_feedback,
         "sources": sources,
     }
 

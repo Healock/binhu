@@ -1,8 +1,7 @@
-"""全民防模型三单条只读预演客户端。
+"""全民防模型三单条预演与封闭登记客户端。
 
-本模块只暴露已通过静态分析和单条抓包确认的读取链路。任何新增上游
-路径都必须先加入精确白名单并补充无写入测试；人员登记和模型反馈接口
-故意不在客户端 API 中实现。
+只读与写入路径分别使用精确白名单。真实登记仅实现已由单条成功样本
+确认的四个写接口和固定顺序，不提供任意路径、任意正文或通用转发能力。
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
@@ -34,6 +33,34 @@ READ_ONLY_ENDPOINTS = {
     "jzz/queryLocalPhoto": "GET",
     "enterHouse/checkCk": "POST",
 }
+WRITE_ENDPOINTS = {
+    "masses/uploadPhoto": "POST",
+    "jzz/saveLocalPhoto": "POST",
+    "enterHouse/addPeople": "POST",
+    "fnmx/fnmxCheck": "POST",
+}
+PERSONNEL_INFO_FIELDS = frozenset({
+    "alias", "beizhu", "birth", "cbqk", "communityCode", "cylx",
+    "degree", "djrq", "dwjlx", "dwjlxdz", "dwlxdh", "dz", "emsdh",
+    "emsdz", "emsxm", "fby", "fwbh", "fwhh", "gender", "gxr1",
+    "gxr2", "gxr3", "gxr4", "gxrjzk1", "gxrjzk2", "gxrjzk3",
+    "gxrjzk4", "gxrq1", "gxrq2", "gxrq3", "gxrq4", "gxsfz1",
+    "gxsfz2", "gxsfz3", "gxsfz4", "gxsj", "gxxb1", "gxxb2",
+    "gxxb3", "gxxb4", "gxxm1", "gxxm2", "gxxm3", "gxxm4",
+    "height", "hjdz", "hjdzxz", "hunyin", "id", "isems", "jqjzym",
+    "jzfs", "jzlx", "jzsy", "lsrq", "name", "namepy", "nation",
+    "njzsj", "personID", "phone", "politicalStaus", "qjbh", "sbsbh",
+    "sfbljzz", "sfcb", "sflz", "sfzx", "sltj", "slyy", "szdw",
+    "wllxfs", "yfzgx", "zns",
+})
+PERSONNEL_QUERY_ONLY_FIELDS = frozenset({"alias", "qjbh", "wllxfs"})
+ADD_PEOPLE_FIELDS = frozenset(
+    (PERSONNEL_INFO_FIELDS - PERSONNEL_QUERY_ONLY_FIELDS)
+    | {
+        "canEdit", "csrq", "email", "fromPersonCheck", "isPhotoFromJzz",
+        "mArrImgs", "operateBy", "operateType", "qq", "wx",
+    }
+)
 MAX_LOGIN_RESPONSE_BYTES = 256 * 1024
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
 _IDENTITY_PATTERN = re.compile(r"^\d{17}[0-9X]$")
@@ -44,11 +71,19 @@ _IDENTITY_CHECKS = "10X98765432"
 class QmfPreviewError(RuntimeError):
     """A safe, non-sensitive error suitable for an API response and audit."""
 
-    def __init__(self, code: str, message: str, status_code: int = 502):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int = 502,
+        *,
+        uncertain: bool = False,
+    ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.uncertain = uncertain
 
 
 @dataclass(frozen=True)
@@ -102,6 +137,7 @@ class QmfLoginSession:
 
 
 _preview_active = False
+_registration_active = False
 _last_preview_started = 0.0
 
 
@@ -179,6 +215,37 @@ def preview_capability(
             "visible": True,
             "enabled": False,
             "reason": "任务身份证号格式无效，不能预演",
+        }
+    return {"visible": True, "enabled": True, "reason": ""}
+
+
+def registration_capability(
+    *,
+    username: str,
+    parser_type: str,
+    source_count: int,
+    conflict: bool,
+    values: dict[str, Any] | None,
+    config: QmfRuntimeConfig | None = None,
+) -> dict[str, Any]:
+    runtime_config = config or settings_config()
+    preview = preview_capability(
+        username=username,
+        parser_type=parser_type,
+        source_count=source_count,
+        conflict=conflict,
+        values=values,
+        config=runtime_config,
+    )
+    if not preview["visible"]:
+        return preview
+    if not preview["enabled"]:
+        return preview
+    if not runtime_config.registration_configured:
+        return {
+            "visible": True,
+            "enabled": False,
+            "reason": "全民防真实登记尚未由超级管理员开启并确认写入协议",
         }
     return {"visible": True, "enabled": True, "reason": ""}
 
@@ -533,6 +600,206 @@ def _safe_upstream_task(row: dict[str, Any]) -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class QmfCollectedContext:
+    platform_task: dict[str, Any]
+    login_context: QmfLoginContext
+    query_data: dict[str, str]
+    raw_task: dict[str, Any]
+    upstream_task: dict[str, str]
+    raw_person: dict[str, Any]
+    person: dict[str, str]
+    photo: dict[str, Any]
+
+
+StepCallback = Callable[[str, str, str], Awaitable[None]]
+BeforeWriteCallback = Callable[[QmfCollectedContext], Awaitable[None]]
+
+
+def _query_data(
+    *,
+    login_context: QmfLoginContext,
+    identity: str,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    return {
+        "pcsbm": login_context.station_code,
+        "sfzh": identity,
+        "xm": "",
+        "dz": "",
+        # APK uses the input account (WpaUserData.userID), not MID_LOCAL.MJJH.
+        "mjjh": login_context.username,
+        "hcjg": "",
+        "cljg": "0",
+        "pageSize": "10",
+        "startTime": (current.date() - timedelta(days=92)).strftime("%Y%m%d"),
+        "lxfs": "",
+        "endTime": current.strftime("%Y%m%d"),
+        "pageNum": "1",
+        "source": "android",
+    }
+
+
+def _matching_pending_tasks(
+    task_data: Any,
+    *,
+    identity: str,
+) -> tuple[int, list[dict[str, Any]]]:
+    if not isinstance(task_data, dict):
+        raise QmfPreviewError("task_response_invalid", "全民防任务响应结构无效")
+    raw_tasks = task_data.get("list")
+    if not isinstance(raw_tasks, list):
+        raise QmfPreviewError("task_response_invalid", "全民防任务响应结构无效")
+    try:
+        total_tasks = int(task_data.get("total", -1))
+    except (TypeError, ValueError) as exc:
+        raise QmfPreviewError(
+            "task_response_invalid", "全民防任务响应结构无效"
+        ) from exc
+    matching = [
+        item for item in raw_tasks
+        if isinstance(item, dict)
+        and normalize_identity(_first(item, "sfzh", "personID")) == identity
+    ]
+    return total_tasks, matching
+
+
+def _registration_photo_path(
+    *,
+    login_username: str,
+    task_community_code: str,
+    photo_sha256: str,
+) -> str:
+    # The successful APK sample constructs mArrImgs from the login account,
+    # task xfsq and the local-photo SHA-256.  It is metadata only; the image
+    # bytes have already been uploaded by masses/uploadPhoto.
+    components = (login_username, task_community_code, photo_sha256)
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]+", login_username)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", task_community_code)
+        or not re.fullmatch(r"[0-9a-f]{64}", photo_sha256)
+    ):
+        raise QmfPreviewError(
+            "photo_reference_invalid", "全民防照片引用参数无效", 409
+        )
+    return (
+        "/storage/emulated/0/.Wpa_Android_Base_WJ_Wgldpt/"
+        f"{components[0]}/{components[1]}/Ry/Temp/{components[2]}.0"
+    )
+
+
+def build_upload_photo_payload(context: QmfCollectedContext) -> dict[str, Any]:
+    identity = normalize_identity(context.person.get("identity_number"))
+    community_code = _text(context.person.get("community_code"))
+    gender = _text(context.person.get("gender"))
+    name = _text(context.person.get("name"))
+    if not all((valid_identity(identity), community_code, gender, name)):
+        raise QmfPreviewError(
+            "person_write_fields_missing", "全民防人员登记资料缺少写入必需字段", 409
+        )
+    return {
+        "csrq": identity[6:14],
+        "jmzh": identity,
+        "sfbljzz": "1",
+        "sqdm": community_code,
+        "txsj": str(context.photo.get("data_base64") or ""),
+        "xb": gender,
+        "xm": name,
+    }
+
+
+def build_add_people_payload(
+    context: QmfCollectedContext,
+    *,
+    now: datetime | None = None,
+    device_id: str,
+) -> dict[str, Any]:
+    raw_person = context.raw_person
+    if set(raw_person) != PERSONNEL_INFO_FIELDS:
+        raise QmfPreviewError(
+            "person_schema_changed", "全民防人员资料字段结构已变化，已停止登记", 409
+        )
+    payload: dict[str, Any] = {}
+    for key in PERSONNEL_INFO_FIELDS - PERSONNEL_QUERY_ONLY_FIELDS:
+        value = raw_person[key]
+        if isinstance(value, (dict, list, tuple, set)):
+            raise QmfPreviewError(
+                "person_schema_changed", "全民防人员资料字段结构已变化，已停止登记", 409
+            )
+        payload[key] = "" if value is None else value
+
+    identity = normalize_identity(payload.get("personID"))
+    if not valid_identity(identity):
+        raise QmfPreviewError("identity_invalid", "全民防人员身份证号格式无效", 409)
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    payload.update({
+        "beizhu": context.login_context.operator_name,
+        "canEdit": False,
+        "csrq": identity[6:14],
+        "djrq": current.strftime("%Y%m%d"),
+        "email": "",
+        "fromPersonCheck": True,
+        "isPhotoFromJzz": False,
+        "mArrImgs": [_registration_photo_path(
+            login_username=context.login_context.username,
+            task_community_code=context.upstream_task["community_code"],
+            photo_sha256=str(context.photo.get("sha256") or ""),
+        )],
+        "operateBy": context.login_context.username,
+        "operateType": "2",
+        "qq": "",
+        "sbsbh": device_id,
+        "sfbljzz": "1",
+        "wx": "",
+    })
+    if set(payload) != ADD_PEOPLE_FIELDS:
+        raise QmfPreviewError(
+            "person_payload_invalid", "全民防人员登记字段构造失败", 500
+        )
+    return payload
+
+
+def build_fnmx_check_payload(
+    context: QmfCollectedContext,
+    *,
+    device_id: str,
+) -> dict[str, str]:
+    return {
+        "communityCode": "",
+        "hcczr": context.login_context.username,
+        "hcjg": "2",
+        "logoutReason": "",
+        "personID": normalize_identity(context.person["identity_number"]),
+        "qwdxz": "",
+        "qwdxzqh": "",
+        "sbsbh": device_id,
+        "source": "android",
+        "type": "3",
+        "xfid": context.upstream_task["task_id"],
+    }
+
+
+def _write_business_payload(response: httpx.Response) -> Any:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise QmfPreviewError(
+            "write_response_invalid",
+            "全民防写入接口响应结构无效，结果需要人工复核",
+            uncertain=True,
+        ) from exc
+    if not isinstance(payload, dict):
+        raise QmfPreviewError(
+            "write_response_invalid",
+            "全民防写入接口响应结构无效，结果需要人工复核",
+            uncertain=True,
+        )
+    if str(payload.get("code", "")) != "200":
+        raise QmfPreviewError("write_business_error", "全民防写入接口返回业务错误")
+    return payload.get("data")
+
+
 class QmfReadOnlyClient:
     def __init__(
         self,
@@ -567,127 +834,119 @@ class QmfReadOnlyClient:
         except httpx.RequestError as exc:
             raise QmfPreviewError("upstream_unavailable", "全民防只读接口暂时不可用") from exc
 
-    async def preview(
+    async def _emit_step(
+        self,
+        callback: StepCallback | None,
+        key: str,
+        status: str,
+        result_code: str = "",
+    ) -> None:
+        if callback is not None:
+            await callback(key, status, result_code)
+
+    async def _collect_context(
         self,
         *,
+        client: httpx.AsyncClient,
+        login_session: QmfLoginSession | None,
+        login_context: QmfLoginContext,
         platform_task: dict[str, Any],
-    ) -> dict[str, Any]:
+        step_callback: StepCallback | None = None,
+    ) -> QmfCollectedContext:
         identity = normalize_identity(platform_task.get("identity_number"))
         name = _text(platform_task.get("name"))
         if not valid_identity(identity):
             raise QmfPreviewError("identity_invalid", "任务身份证号格式无效", 422)
-        login_session: QmfLoginSession | None = None
-        if self._login_provider is None:
-            login_session = await open_login_session(self._config)
-            login_context = login_session.context
-        else:
-            login_context = await self._login_provider()
-        if not isinstance(login_context, QmfLoginContext):
-            if login_session is not None:
-                await login_session.close()
-            raise QmfPreviewError("login_response_invalid", "全民防登录身份信息无效")
+        query_data = _query_data(login_context=login_context, identity=identity)
 
-        now = datetime.now(ZoneInfo("Asia/Shanghai"))
-        query_data = {
-            "pcsbm": login_context.station_code,
-            "sfzh": identity,
-            "xm": "",
-            "dz": "",
-            # APK uses WpaUserData.userID, which is the input login account;
-            # MID_LOCAL.MJJH is a separately refreshed display/work field.
-            "mjjh": login_context.username,
-            "hcjg": "",
-            "cljg": "0",
-            "pageSize": "10",
-            "startTime": (now.date() - timedelta(days=92)).strftime("%Y%m%d"),
-            "lxfs": "",
-            "endTime": now.strftime("%Y%m%d"),
-            "pageNum": "1",
-            "source": "android",
-        }
-        timeout = httpx.Timeout(self._config.timeout_seconds)
-        try:
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                follow_redirects=False,
-                transport=self._transport,
-                headers={"User-Agent": "Binhu-QMF-Readonly/0.20.7"},
-            ) as client:
-                if login_session is not None:
-                    login_session.ensure_available()
-                task_response = await self._request(
-                    client, "fnmx/queryYysList", data=query_data
-                )
-                task_data = _business_payload(task_response, expected_object=True)
-                raw_tasks = task_data.get("list")
-                if not isinstance(raw_tasks, list):
-                    raise QmfPreviewError("task_response_invalid", "全民防任务响应结构无效")
-                try:
-                    total_tasks = int(task_data.get("total", -1))
-                except (TypeError, ValueError) as exc:
-                    raise QmfPreviewError(
-                        "task_response_invalid", "全民防任务响应结构无效"
-                    ) from exc
-                matching_tasks = [
-                    item for item in raw_tasks
-                    if isinstance(item, dict)
-                    and normalize_identity(_first(item, "sfzh", "personID")) == identity
-                ]
-                if total_tasks != 1 or len(matching_tasks) != 1:
-                    code = "task_not_found" if not matching_tasks else "task_not_unique"
-                    message = "全民防未找到唯一待处理任务"
-                    raise QmfPreviewError(code, message, 409)
-                upstream_task = _safe_upstream_task(matching_tasks[0])
-                if not upstream_task["task_id"] or not upstream_task["record_id"]:
-                    raise QmfPreviewError("task_identity_missing", "全民防任务标识不完整")
-                if (
-                    upstream_task["identity_number"] != identity
-                    or _normalized_name(upstream_task["name"]) != _normalized_name(name)
-                ):
-                    raise QmfPreviewError("task_person_mismatch", "全民防任务人员与平台任务不一致", 409)
-                if not _station_matches(
-                    upstream_task["police_station"], self._config.expected_station_name
-                ):
-                    raise QmfPreviewError("task_station_mismatch", "全民防任务不属于目标派出所", 403)
+        if login_session is not None:
+            login_session.ensure_available()
+        await self._emit_step(step_callback, "query_task", "sending")
+        task_response = await self._request(
+            client, "fnmx/queryYysList", data=query_data
+        )
+        task_data = _business_payload(task_response, expected_object=True)
+        total_tasks, matching_tasks = _matching_pending_tasks(
+            task_data, identity=identity
+        )
+        if total_tasks != 1 or len(matching_tasks) != 1:
+            code = "task_not_found" if not matching_tasks else "task_not_unique"
+            raise QmfPreviewError(code, "全民防未找到唯一待处理任务", 409)
+        raw_task = matching_tasks[0]
+        upstream_task = _safe_upstream_task(raw_task)
+        if not upstream_task["task_id"] or not upstream_task["record_id"]:
+            raise QmfPreviewError("task_identity_missing", "全民防任务标识不完整")
+        if (
+            upstream_task["identity_number"] != identity
+            or _normalized_name(upstream_task["name"]) != _normalized_name(name)
+        ):
+            raise QmfPreviewError(
+                "task_person_mismatch", "全民防任务人员与平台任务不一致", 409
+            )
+        if not _station_matches(
+            upstream_task["police_station"], self._config.expected_station_name
+        ):
+            raise QmfPreviewError(
+                "task_station_mismatch", "全民防任务不属于目标派出所", 403
+            )
+        await self._emit_step(step_callback, "query_task", "succeeded", "success")
 
-                if login_session is not None:
-                    login_session.ensure_available()
-                person_response = await self._request(
-                    client,
-                    "enterHouse/queryPeopleBySfzh",
-                    data={"sfzh": identity, "source": "android"},
-                )
-                raw_person = _business_payload(person_response, expected_object=True)
-                person = _safe_person(raw_person)
-                if (
-                    person["identity_number"] != identity
-                    or _normalized_name(person["name"]) != _normalized_name(name)
-                ):
-                    raise QmfPreviewError("person_mismatch", "全民防人员登记资料与平台任务不一致", 409)
-                if login_session is not None:
-                    login_session.ensure_available()
-                photo_response = await self._request(
-                    client,
-                    "jzz/queryLocalPhoto",
-                    params={"sfzh": identity, "timestamp": str(int(time.time() * 1000))},
-                )
-                photo = _photo_payload(photo_response)
+        if login_session is not None:
+            login_session.ensure_available()
+        await self._emit_step(step_callback, "query_person", "sending")
+        person_response = await self._request(
+            client,
+            "enterHouse/queryPeopleBySfzh",
+            data={"sfzh": identity, "source": "android"},
+        )
+        raw_person = _business_payload(person_response, expected_object=True)
+        person = _safe_person(raw_person)
+        if (
+            person["identity_number"] != identity
+            or _normalized_name(person["name"]) != _normalized_name(name)
+        ):
+            raise QmfPreviewError(
+                "person_mismatch", "全民防人员登记资料与平台任务不一致", 409
+            )
+        await self._emit_step(step_callback, "query_person", "succeeded", "success")
 
-                if login_session is not None:
-                    login_session.ensure_available()
-                check_response = await self._request(
-                    client,
-                    "enterHouse/checkCk",
-                    data={"sfzh": identity, "source": "android"},
-                )
-                _business_payload(check_response, expected_object=False)
-        finally:
-            if login_session is not None:
-                await login_session.close()
+        if login_session is not None:
+            login_session.ensure_available()
+        await self._emit_step(step_callback, "query_photo", "sending")
+        photo_response = await self._request(
+            client,
+            "jzz/queryLocalPhoto",
+            params={"sfzh": identity, "timestamp": str(int(time.time() * 1000))},
+        )
+        photo = _photo_payload(photo_response)
+        await self._emit_step(step_callback, "query_photo", "succeeded", "success")
 
-        warnings = ["本页面仅用于人工核对，不会向全民防提交任何数据。"]
-        task_community_code = upstream_task["community_code"]
-        person_community_code = person["community_code"]
+        if login_session is not None:
+            login_session.ensure_available()
+        await self._emit_step(step_callback, "precheck", "sending")
+        check_response = await self._request(
+            client,
+            "enterHouse/checkCk",
+            data={"sfzh": identity, "source": "android"},
+        )
+        _business_payload(check_response, expected_object=False)
+        await self._emit_step(step_callback, "precheck", "succeeded", "success")
+        return QmfCollectedContext(
+            platform_task=platform_task,
+            login_context=login_context,
+            query_data=query_data,
+            raw_task=raw_task,
+            upstream_task=upstream_task,
+            raw_person=raw_person,
+            person=person,
+            photo=photo,
+        )
+
+    @staticmethod
+    def _preview_payload(context: QmfCollectedContext) -> dict[str, Any]:
+        warnings = ["本页面仅用于人工核对；只有完成二次确认后才会登记。"]
+        task_community_code = context.upstream_task["community_code"]
+        person_community_code = context.person["community_code"]
         if (
             task_community_code
             and person_community_code
@@ -702,20 +961,19 @@ class QmfReadOnlyClient:
                 "任务辖区编码或人员社区编码缺失，仅供人工核对；"
                 "系统已按登录机构、任务派出所、身份证号和姓名完成范围校验。"
             )
-
         return {
             "mode": "read_only",
             "can_submit": False,
-            "platform_task": platform_task,
-            "upstream_task": upstream_task,
-            "person": person,
+            "platform_task": context.platform_task,
+            "upstream_task": context.upstream_task,
+            "person": context.person,
             "operator": {
-                "username": login_context.username,
-                "name": login_context.operator_name,
-                "station_code": login_context.station_code,
-                "station_name": login_context.station_name,
+                "username": context.login_context.username,
+                "name": context.login_context.operator_name,
+                "station_code": context.login_context.station_code,
+                "station_name": context.login_context.station_name,
             },
-            "photo": photo,
+            "photo": context.photo,
             "checks": {
                 "source_revision": True,
                 "single_source": True,
@@ -724,10 +982,6 @@ class QmfReadOnlyClient:
                 "single_upstream_task": True,
                 "station_match": True,
                 "person_match": True,
-                # Captured successful workflows use different code systems for
-                # task xfsq and PersonnelInfo communityCode. Jurisdiction is
-                # enforced by the authenticated login station and the task
-                # police-station field instead of comparing unrelated codes.
                 "jurisdiction_match": True,
                 "precheck_passed": True,
                 "photo_valid": True,
@@ -738,8 +992,251 @@ class QmfReadOnlyClient:
                 {"key": "register_person", "label": "保存人员登记", "enabled": False},
                 {"key": "complete_task", "label": "完成模型三反馈", "enabled": False},
             ],
+            "planned_changes": [
+                {
+                    "key": "upload_photo",
+                    "label": "照片数据",
+                    "detail": "上传本次校验通过的居住证照片",
+                },
+                {
+                    "key": "save_local_photo",
+                    "label": "照片关联",
+                    "detail": "按已核验合同保存居住证照片关联",
+                },
+                {
+                    "key": "register_person",
+                    "label": "人员登记",
+                    "detail": (
+                        "基于完整 PersonnelInfo 保留原业务字段，并更新登记日期、"
+                        "操作人、设备标识、登记标记和备注"
+                    ),
+                },
+                {
+                    "key": "complete_task",
+                    "label": "模型三反馈",
+                    "detail": (
+                        "固定反馈为“在吴”；communityCode、logoutReason、"
+                        "qwdxzqh、qwdxz 保持空字符串"
+                    ),
+                },
+            ],
             "warnings": warnings,
         }
+
+    async def preview(
+        self,
+        *,
+        platform_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        login_session: QmfLoginSession | None = None
+        if self._login_provider is None:
+            login_session = await open_login_session(self._config)
+            login_context = login_session.context
+        else:
+            login_context = await self._login_provider()
+        if not isinstance(login_context, QmfLoginContext):
+            if login_session is not None:
+                await login_session.close()
+            raise QmfPreviewError("login_response_invalid", "全民防登录身份信息无效")
+        timeout = httpx.Timeout(self._config.timeout_seconds)
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=False,
+                transport=self._transport,
+                headers={"User-Agent": "Binhu-QMF-Readonly/0.21.0"},
+            ) as client:
+                context = await self._collect_context(
+                    client=client,
+                    login_session=login_session,
+                    login_context=login_context,
+                    platform_task=platform_task,
+                )
+        finally:
+            if login_session is not None:
+                await login_session.close()
+        return self._preview_payload(context)
+
+
+class QmfRegistrationClient(QmfReadOnlyClient):
+    async def _write_request(
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        *,
+        data: dict[str, str] | None = None,
+        json_payload: dict[str, Any] | None = None,
+        files: dict[str, tuple[None, str]] | None = None,
+    ) -> httpx.Response:
+        method = WRITE_ENDPOINTS.get(endpoint)
+        if not method:
+            raise QmfPreviewError(
+                "write_endpoint_not_allowed", "请求不在全民防写入白名单", 500
+            )
+        url = urljoin(self._config.api_base_url.rstrip("/") + "/", endpoint)
+        try:
+            response = await client.request(
+                method, url, data=data, json=json_payload, files=files
+            )
+        except httpx.RequestError as exc:
+            raise QmfPreviewError(
+                "write_result_uncertain",
+                "全民防写入请求结果无法确认，已停止后续步骤",
+                uncertain=True,
+            ) from exc
+        if not response.is_success:
+            raise QmfPreviewError(
+                "write_http_error",
+                "全民防写入接口返回 HTTP 错误，结果需要人工复核",
+                uncertain=True,
+            )
+        return response
+
+    async def execute(
+        self,
+        *,
+        platform_task: dict[str, Any],
+        step_callback: StepCallback,
+        before_write: BeforeWriteCallback,
+    ) -> dict[str, Any]:
+        login_session: QmfLoginSession | None = None
+        if self._login_provider is None:
+            login_session = await open_login_session(self._config)
+            login_context = login_session.context
+        else:
+            login_context = await self._login_provider()
+        if not isinstance(login_context, QmfLoginContext):
+            if login_session is not None:
+                await login_session.close()
+            raise QmfPreviewError("login_response_invalid", "全民防登录身份信息无效")
+
+        timeout = httpx.Timeout(self._config.timeout_seconds)
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=False,
+                transport=self._transport,
+                headers={"User-Agent": "Binhu-QMF-Registration/0.21.0"},
+            ) as client:
+                context = await self._collect_context(
+                    client=client,
+                    login_session=login_session,
+                    login_context=login_context,
+                    platform_task=platform_task,
+                    step_callback=step_callback,
+                )
+                # Construct and validate every write body before the first write.
+                upload_payload = build_upload_photo_payload(context)
+                add_people_payload = build_add_people_payload(
+                    context,
+                    device_id=self._config.source_imei,
+                )
+                fnmx_payload = build_fnmx_check_payload(
+                    context,
+                    device_id=self._config.source_imei,
+                )
+                await before_write(context)
+
+                if login_session is not None:
+                    login_session.ensure_available()
+                await self._emit_step(step_callback, "upload_photo", "sending")
+                response = await self._write_request(
+                    client,
+                    "masses/uploadPhoto",
+                    json_payload=upload_payload,
+                )
+                _write_business_payload(response)
+                await self._emit_step(
+                    step_callback, "upload_photo", "succeeded", "success"
+                )
+
+                if login_session is not None:
+                    login_session.ensure_available()
+                await self._emit_step(step_callback, "save_local_photo", "sending")
+                response = await self._write_request(
+                    client,
+                    "jzz/saveLocalPhoto",
+                    files={
+                        "idCard": (None, context.person["identity_number"]),
+                        "imageType": (None, "3"),
+                        "label": (None, "2"),
+                        "createBy": (None, context.login_context.username),
+                    },
+                )
+                _write_business_payload(response)
+                await self._emit_step(
+                    step_callback, "save_local_photo", "succeeded", "success"
+                )
+
+                if login_session is not None:
+                    login_session.ensure_available()
+                await self._emit_step(step_callback, "register_person", "sending")
+                response = await self._write_request(
+                    client,
+                    "enterHouse/addPeople",
+                    json_payload=add_people_payload,
+                )
+                _write_business_payload(response)
+                await self._emit_step(
+                    step_callback, "register_person", "succeeded", "success"
+                )
+
+                if login_session is not None:
+                    login_session.ensure_available()
+                await self._emit_step(step_callback, "complete_task", "sending")
+                response = await self._write_request(
+                    client,
+                    "fnmx/fnmxCheck",
+                    data=fnmx_payload,
+                )
+                _write_business_payload(response)
+                await self._emit_step(
+                    step_callback, "complete_task", "succeeded", "success"
+                )
+
+                if login_session is not None:
+                    login_session.ensure_available()
+                await self._emit_step(step_callback, "verify_final", "sending")
+                try:
+                    final_response = await self._request(
+                        client, "fnmx/queryYysList", data=context.query_data
+                    )
+                    final_data = _business_payload(
+                        final_response, expected_object=True
+                    )
+                except QmfPreviewError as exc:
+                    raise QmfPreviewError(
+                        "final_state_unconfirmed",
+                        "全民防最终状态尚未确认，禁止重复登记",
+                        409,
+                        uncertain=True,
+                    ) from exc
+                total, matching = _matching_pending_tasks(
+                    final_data,
+                    identity=context.person["identity_number"],
+                )
+                if total != 0 or matching:
+                    raise QmfPreviewError(
+                        "final_state_unconfirmed",
+                        "全民防最终状态尚未确认，禁止重复登记",
+                        409,
+                        uncertain=True,
+                    )
+                await self._emit_step(
+                    step_callback, "verify_final", "succeeded", "success"
+                )
+                return {
+                    "status": "succeeded",
+                    "upstream_task_id": context.upstream_task["task_id"],
+                    "photo": {
+                        "mime_type": context.photo["mime_type"],
+                        "size_bytes": context.photo["size_bytes"],
+                        "sha256": context.photo["sha256"],
+                    },
+                }
+        finally:
+            if login_session is not None:
+                await login_session.close()
 
 
 async def run_guarded_preview(
@@ -752,7 +1249,7 @@ async def run_guarded_preview(
     now = time.monotonic()
     runtime_config = config or settings_config()
     cooldown = max(1, int(runtime_config.preview_cooldown_seconds))
-    if _preview_active:
+    if _preview_active or _registration_active:
         raise QmfPreviewError("preview_busy", "已有一条全民防预演正在执行", 429)
     if _last_preview_started and now - _last_preview_started < cooldown:
         remaining = max(1, int(cooldown - (now - _last_preview_started)))
@@ -771,7 +1268,35 @@ async def run_guarded_preview(
         _preview_active = False
 
 
+async def run_guarded_registration(
+    *,
+    platform_task: dict[str, Any],
+    step_callback: StepCallback,
+    before_write: BeforeWriteCallback,
+    client: QmfRegistrationClient | None = None,
+    config: QmfRuntimeConfig | None = None,
+) -> dict[str, Any]:
+    global _registration_active
+    if _preview_active or _registration_active:
+        raise QmfPreviewError("registration_busy", "已有一条全民防任务正在执行", 429)
+    _registration_active = True
+    try:
+        runtime_config = config or settings_config()
+        return await (client or QmfRegistrationClient(config=runtime_config)).execute(
+            platform_task=platform_task,
+            step_callback=step_callback,
+            before_write=before_write,
+        )
+    finally:
+        _registration_active = False
+
+
+def qmf_operation_busy() -> bool:
+    return _preview_active or _registration_active
+
+
 def reset_preview_guard_for_tests() -> None:
-    global _preview_active, _last_preview_started
+    global _preview_active, _registration_active, _last_preview_started
     _preview_active = False
+    _registration_active = False
     _last_preview_started = 0.0

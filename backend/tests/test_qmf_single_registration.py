@@ -1,0 +1,496 @@
+import base64
+import json
+import unittest
+from datetime import datetime
+from urllib.parse import parse_qs
+
+import httpx
+
+from services.qmf_config import QmfRuntimeConfig
+from services.qmf_registration import (
+    ADD_PEOPLE_FIELDS,
+    PERSONNEL_INFO_FIELDS,
+    QmfCollectedContext,
+    QmfLoginContext,
+    QmfPreviewError,
+    QmfRegistrationClient,
+    build_add_people_payload,
+    build_fnmx_check_payload,
+    build_upload_photo_payload,
+)
+
+
+VALID_IDENTITY = "11010519491231002X"
+JPEG = b"\xff\xd8\xff\xe0" + b"fictional-photo" + b"\xff\xd9"
+PHOTO_SHA256 = "a" * 64
+
+
+def runtime_config() -> QmfRuntimeConfig:
+    return QmfRuntimeConfig(
+        preview_enabled=True,
+        registration_enabled=True,
+        login_protocol_verified=True,
+        write_protocol_verified=True,
+        preview_allowed_username="shenshenghua",
+        api_base_url="http://qmf.invalid/grid_terminal_interface/",
+        login_host="qmf.invalid",
+        login_port=25001,
+        source_username="fictional-operator",
+        source_password="fictional-password",
+        source_imei="fictional-device-001",
+        source_machine_uid="Fictional Device",
+        expected_station_code="320584710000",
+        expected_station_name="滨湖新城派出所",
+        timeout_seconds=5,
+        session_max_seconds=45,
+        preview_cooldown_seconds=45,
+    )
+
+
+def login_context() -> QmfLoginContext:
+    return QmfLoginContext(
+        username="fictional-operator",
+        operator_id="fictional-operator-id",
+        operator_name="滨湖新城派出所",
+        station_code="320584710000",
+        station_name="滨湖新城派出所",
+    )
+
+
+def raw_person() -> dict:
+    person = {field: "" for field in PERSONNEL_INFO_FIELDS}
+    person.update({
+        "id": "fictional-person-record",
+        "name": "测试人员甲",
+        "personID": VALID_IDENTITY,
+        "phone": "13000000000",
+        "dz": "虚构现住址",
+        "hjdzxz": "虚构户籍地址",
+        "gender": "女",
+        "birth": "19491231",
+        "nation": "汉族",
+        "degree": "本科",
+        "hunyin": "未婚",
+        "communityCode": "3205840001",
+        "jzlx": "1",
+        "jzfs": "1",
+        "jzsy": "1",
+        "sfzx": "1",
+        "beizhu": "旧备注",
+        "sbsbh": "旧设备",
+    })
+    return person
+
+
+def platform_task() -> dict:
+    return {
+        "parser_type": "疑似未注销模型三",
+        "row_key": "not-persisted-business-key",
+        "source_id": 9,
+        "name": "测试人员甲",
+        "identity_number": VALID_IDENTITY,
+        "phone": "13000000000",
+        "address": "虚构现住址",
+        "community": "虚构社区",
+        "result": "在吴",
+    }
+
+
+def collected_context() -> QmfCollectedContext:
+    person = raw_person()
+    return QmfCollectedContext(
+        platform_task=platform_task(),
+        login_context=login_context(),
+        query_data={"sfzh": VALID_IDENTITY},
+        raw_task={},
+        upstream_task={
+            "task_id": "fictional-task-id",
+            "record_id": "fictional-record-id",
+            "name": "测试人员甲",
+            "identity_number": VALID_IDENTITY,
+            "phone": "13000000000",
+            "address": "虚构现住址",
+            "police_station": "滨湖新城派出所",
+            "community": "虚构社区",
+            "community_code": "320584123456",
+            "check_status": "0",
+            "check_status_text": "未核查",
+            "dispatch_time": "2026-08-16 07:00:00",
+        },
+        raw_person=person,
+        person={
+            "name": "测试人员甲",
+            "identity_number": VALID_IDENTITY,
+            "phone": "13000000000",
+            "current_address": "虚构现住址",
+            "household_address": "虚构户籍地址",
+            "gender": "女",
+            "birth_date": "19491231",
+            "nation": "汉族",
+            "education": "本科",
+            "marital_status": "未婚",
+            "community_code": "3205840001",
+            "residence_type": "1",
+            "residence_method": "1",
+            "residence_reason": "1",
+            "active_status": "1",
+        },
+        photo={
+            "mime_type": "image/jpeg",
+            "size_bytes": len(JPEG),
+            "sha256": PHOTO_SHA256,
+            "data_base64": base64.b64encode(JPEG).decode("ascii"),
+        },
+    )
+
+
+def upstream_task_row() -> dict:
+    return {
+        "id": "fictional-record-id",
+        "xfid": "fictional-task-id",
+        "xm": "测试人员甲",
+        "sfzh": VALID_IDENTITY,
+        "lxfs": "13000000000",
+        "dz": "虚构现住址",
+        "pcsname": "滨湖新城派出所",
+        "jgmc": "虚构社区",
+        "xfsq": "320584123456",
+        "hcjg": "0",
+        "hcjgtext": "未核查",
+        "xfsj": "2026-08-16 07:00:00",
+    }
+
+
+class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    def test_write_payloads_follow_confirmed_contract(self):
+        context = collected_context()
+        upload = build_upload_photo_payload(context)
+        self.assertEqual(set(upload), {"csrq", "jmzh", "sfbljzz", "sqdm", "txsj", "xb", "xm"})
+        self.assertEqual(upload["jmzh"], VALID_IDENTITY)
+        self.assertEqual(base64.b64decode(upload["txsj"]), JPEG)
+
+        add_people = build_add_people_payload(
+            context,
+            device_id="fictional-device-001",
+            now=datetime(2026, 8, 16, 7, 0, 0),
+        )
+        self.assertEqual(set(add_people), ADD_PEOPLE_FIELDS)
+        self.assertEqual(add_people["beizhu"], "滨湖新城派出所")
+        self.assertEqual(add_people["operateBy"], "fictional-operator")
+        self.assertEqual(add_people["operateType"], "2")
+        self.assertEqual(add_people["sbsbh"], "fictional-device-001")
+        self.assertEqual(add_people["djrq"], "20260816")
+        self.assertEqual(
+            add_people["mArrImgs"],
+            [
+                "/storage/emulated/0/.Wpa_Android_Base_WJ_Wgldpt/"
+                f"fictional-operator/320584123456/Ry/Temp/{PHOTO_SHA256}.0"
+            ],
+        )
+
+        feedback = build_fnmx_check_payload(
+            context, device_id="fictional-device-001"
+        )
+        self.assertEqual(feedback["hcjg"], "2")
+        self.assertEqual(feedback["type"], "3")
+        self.assertEqual(feedback["source"], "android")
+        self.assertEqual(feedback["hcczr"], "fictional-operator")
+        self.assertEqual(feedback["xfid"], "fictional-task-id")
+        for field in ("communityCode", "logoutReason", "qwdxzqh", "qwdxz"):
+            self.assertEqual(feedback[field], "")
+
+    async def test_registration_executes_exact_nine_request_sequence(self):
+        seen: list[str] = []
+        captured: dict[str, object] = {}
+        task_queries = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal task_queries
+            path = request.url.path.split("/grid_terminal_interface/", 1)[-1]
+            seen.append(path)
+            if path == "fnmx/queryYysList":
+                task_queries += 1
+                rows = [upstream_task_row()] if task_queries == 1 else []
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {"total": len(rows), "list": rows},
+                })
+            if path == "enterHouse/queryPeopleBySfzh":
+                return httpx.Response(200, json={"code": 200, "data": raw_person()})
+            if path == "jzz/queryLocalPhoto":
+                return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
+            if path == "enterHouse/checkCk":
+                return httpx.Response(200, json={"code": 200, "data": 0})
+            if path == "masses/uploadPhoto":
+                captured["upload"] = json.loads(request.content)
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            if path == "jzz/saveLocalPhoto":
+                captured["multipart"] = request.content
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            if path == "enterHouse/addPeople":
+                captured["add_people"] = json.loads(request.content)
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            if path == "fnmx/fnmxCheck":
+                captured["feedback"] = parse_qs(request.content.decode("utf-8"), keep_blank_values=True)
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            raise AssertionError(f"unexpected outbound path: {path}")
+
+        async def fake_login():
+            return login_context()
+
+        step_events: list[tuple[str, str]] = []
+
+        async def step_callback(key: str, status: str, _code: str):
+            step_events.append((key, status))
+
+        before_write_seen = []
+
+        async def before_write(context: QmfCollectedContext):
+            before_write_seen.append(context.upstream_task["task_id"])
+
+        result = await QmfRegistrationClient(
+            transport=httpx.MockTransport(handler),
+            login_provider=fake_login,
+            config=runtime_config(),
+        ).execute(
+            platform_task=platform_task(),
+            step_callback=step_callback,
+            before_write=before_write,
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(before_write_seen, ["fictional-task-id"])
+        self.assertEqual(seen, [
+            "fnmx/queryYysList",
+            "enterHouse/queryPeopleBySfzh",
+            "jzz/queryLocalPhoto",
+            "enterHouse/checkCk",
+            "masses/uploadPhoto",
+            "jzz/saveLocalPhoto",
+            "enterHouse/addPeople",
+            "fnmx/fnmxCheck",
+            "fnmx/queryYysList",
+        ])
+        self.assertEqual(
+            [key for key, status in step_events if status == "sending"],
+            [
+                "query_task", "query_person", "query_photo", "precheck",
+                "upload_photo", "save_local_photo", "register_person",
+                "complete_task", "verify_final",
+            ],
+        )
+        self.assertEqual(captured["upload"]["jmzh"], VALID_IDENTITY)
+        multipart = captured["multipart"]
+        self.assertIn(b'name="idCard"', multipart)
+        self.assertIn(VALID_IDENTITY.encode("ascii"), multipart)
+        self.assertIn(b'name="imageType"', multipart)
+        self.assertIn(b"\r\n3\r\n", multipart)
+        self.assertEqual(captured["add_people"]["beizhu"], "滨湖新城派出所")
+        self.assertEqual(captured["feedback"]["communityCode"], [""])
+        self.assertEqual(captured["feedback"]["qwdxzqh"], [""])
+
+    async def test_person_schema_change_stops_before_all_write_endpoints(self):
+        seen: list[str] = []
+        incomplete_person = raw_person()
+        incomplete_person.pop("alias")
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path.split("/grid_terminal_interface/", 1)[-1]
+            seen.append(path)
+            if path == "fnmx/queryYysList":
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {"total": 1, "list": [upstream_task_row()]},
+                })
+            if path == "enterHouse/queryPeopleBySfzh":
+                return httpx.Response(200, json={"code": 200, "data": incomplete_person})
+            if path == "jzz/queryLocalPhoto":
+                return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
+            if path == "enterHouse/checkCk":
+                return httpx.Response(200, json={"code": 200, "data": 0})
+            raise AssertionError(f"write endpoint must not be reached: {path}")
+
+        async def fake_login():
+            return login_context()
+
+        with self.assertRaises(QmfPreviewError) as raised:
+            await QmfRegistrationClient(
+                transport=httpx.MockTransport(handler),
+                login_provider=fake_login,
+                config=runtime_config(),
+            ).execute(
+                platform_task=platform_task(),
+                step_callback=lambda *_args: _noop(),
+                before_write=lambda *_args: _noop(),
+            )
+        self.assertEqual(raised.exception.code, "person_schema_changed")
+        self.assertEqual(seen, [
+            "fnmx/queryYysList",
+            "enterHouse/queryPeopleBySfzh",
+            "jzz/queryLocalPhoto",
+            "enterHouse/checkCk",
+        ])
+
+    async def test_write_timeout_is_uncertain_and_does_not_continue(self):
+        seen: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path.split("/grid_terminal_interface/", 1)[-1]
+            seen.append(path)
+            if path == "fnmx/queryYysList":
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {"total": 1, "list": [upstream_task_row()]},
+                })
+            if path == "enterHouse/queryPeopleBySfzh":
+                return httpx.Response(200, json={"code": 200, "data": raw_person()})
+            if path == "jzz/queryLocalPhoto":
+                return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
+            if path == "enterHouse/checkCk":
+                return httpx.Response(200, json={"code": 200, "data": 0})
+            if path == "masses/uploadPhoto":
+                raise httpx.ReadTimeout("fictional timeout", request=request)
+            raise AssertionError(f"request after uncertain write: {path}")
+
+        async def fake_login():
+            return login_context()
+
+        with self.assertRaises(QmfPreviewError) as raised:
+            await QmfRegistrationClient(
+                transport=httpx.MockTransport(handler),
+                login_provider=fake_login,
+                config=runtime_config(),
+            ).execute(
+                platform_task=platform_task(),
+                step_callback=lambda *_args: _noop(),
+                before_write=lambda *_args: _noop(),
+            )
+        self.assertEqual(raised.exception.code, "write_result_uncertain")
+        self.assertTrue(raised.exception.uncertain)
+        self.assertEqual(seen[-1], "masses/uploadPhoto")
+
+    async def test_each_write_step_failure_stops_all_later_requests(self):
+        write_paths = [
+            "masses/uploadPhoto",
+            "jzz/saveLocalPhoto",
+            "enterHouse/addPeople",
+            "fnmx/fnmxCheck",
+        ]
+        for failed_path in write_paths:
+            for failure_mode in ("business", "timeout"):
+                with self.subTest(failed_path=failed_path, failure_mode=failure_mode):
+                    seen: list[str] = []
+                    task_queries = 0
+
+                    async def handler(request: httpx.Request) -> httpx.Response:
+                        nonlocal task_queries
+                        path = request.url.path.split(
+                            "/grid_terminal_interface/", 1
+                        )[-1]
+                        seen.append(path)
+                        if path == "fnmx/queryYysList":
+                            task_queries += 1
+                            rows = [upstream_task_row()] if task_queries == 1 else []
+                            return httpx.Response(200, json={
+                                "code": 200,
+                                "data": {"total": len(rows), "list": rows},
+                            })
+                        if path == "enterHouse/queryPeopleBySfzh":
+                            return httpx.Response(
+                                200, json={"code": 200, "data": raw_person()}
+                            )
+                        if path == "jzz/queryLocalPhoto":
+                            return httpx.Response(
+                                200,
+                                content=JPEG,
+                                headers={"content-type": "image/jpeg"},
+                            )
+                        if path == "enterHouse/checkCk":
+                            return httpx.Response(
+                                200, json={"code": 200, "data": 0}
+                            )
+                        if path == failed_path:
+                            if failure_mode == "timeout":
+                                raise httpx.ReadTimeout(
+                                    "fictional timeout", request=request
+                                )
+                            return httpx.Response(
+                                200, json={"code": 409, "message": "fictional"}
+                            )
+                        if path in write_paths:
+                            return httpx.Response(
+                                200, json={"code": 200, "data": {"ok": True}}
+                            )
+                        raise AssertionError(f"unexpected outbound path: {path}")
+
+                    async def fake_login():
+                        return login_context()
+
+                    with self.assertRaises(QmfPreviewError) as raised:
+                        await QmfRegistrationClient(
+                            transport=httpx.MockTransport(handler),
+                            login_provider=fake_login,
+                            config=runtime_config(),
+                        ).execute(
+                            platform_task=platform_task(),
+                            step_callback=lambda *_args: _noop(),
+                            before_write=lambda *_args: _noop(),
+                        )
+                    self.assertEqual(seen[-1], failed_path)
+                    self.assertEqual(
+                        raised.exception.uncertain,
+                        failure_mode == "timeout",
+                    )
+
+    async def test_final_review_must_confirm_task_left_pending_queue(self):
+        seen: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path.split("/grid_terminal_interface/", 1)[-1]
+            seen.append(path)
+            if path == "fnmx/queryYysList":
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {"total": 1, "list": [upstream_task_row()]},
+                })
+            if path == "enterHouse/queryPeopleBySfzh":
+                return httpx.Response(200, json={"code": 200, "data": raw_person()})
+            if path == "jzz/queryLocalPhoto":
+                return httpx.Response(
+                    200, content=JPEG, headers={"content-type": "image/jpeg"}
+                )
+            if path == "enterHouse/checkCk":
+                return httpx.Response(200, json={"code": 200, "data": 0})
+            if path in {
+                "masses/uploadPhoto",
+                "jzz/saveLocalPhoto",
+                "enterHouse/addPeople",
+                "fnmx/fnmxCheck",
+            }:
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            raise AssertionError(f"unexpected outbound path: {path}")
+
+        async def fake_login():
+            return login_context()
+
+        with self.assertRaises(QmfPreviewError) as raised:
+            await QmfRegistrationClient(
+                transport=httpx.MockTransport(handler),
+                login_provider=fake_login,
+                config=runtime_config(),
+            ).execute(
+                platform_task=platform_task(),
+                step_callback=lambda *_args: _noop(),
+                before_write=lambda *_args: _noop(),
+            )
+        self.assertEqual(raised.exception.code, "final_state_unconfirmed")
+        self.assertTrue(raised.exception.uncertain)
+        self.assertEqual(seen.count("fnmx/queryYysList"), 2)
+
+
+async def _noop():
+    return None
+
+
+if __name__ == "__main__":
+    unittest.main()

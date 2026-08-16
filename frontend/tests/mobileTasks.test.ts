@@ -784,7 +784,7 @@ test('mobile task choice fields disable search on mobile', () => {
   assert.equal(detailSource.includes('\n                        showSearch\n'), false)
 })
 
-test('全民防预演只从任务详情按内部来源定位发起且没有提交入口', () => {
+test('全民防预演和单条真实登记都从任务详情按内部来源定位发起', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
@@ -800,17 +800,21 @@ test('全民防预演只从任务详情按内部来源定位发起且没有提�
 
   assert.match(detailSource, /data\.qmf_preview\?\.visible/)
   assert.match(detailSource, /data\.qmf_preview\.enabled/)
+  assert.match(detailSource, /data\.qmf_registration\?\.visible/)
+  assert.match(detailSource, /data\.qmf_registration\.enabled/)
   assert.match(detailSource, /expected_revision: selectedSource\.revision/)
   assert.match(detailSource, /qmfPreviewRequestActive\.current/)
   assert.match(detailSource, /disabled=\{!data\.qmf_preview\.enabled \|\| !selectedSource\?\.source_available \|\| dirty \|\| qmfPreviewLoading\}/)
   assert.match(detailSource, /仅供人工核对，不会执行登记或反馈/)
-  assert.match(detailSource, /qmfPreviewResult\.photo\.data_base64/)
+  assert.match(detailSource, /preview\.photo\.data_base64/)
   assert.match(detailSource, /人员社区编码/)
   assert.match(detailSource, /任务辖区编码/)
   assert.match(detailSource, /辖区按派出所校验/)
   assert.match(detailSource, /后续登记步骤/)
-  assert.match(detailSource, /<Tag>未开放<\/Tag>/)
-  assert.doesNotMatch(detailSource, /全民防模型三只读预演[\s\S]*提交登记/)
+  assert.match(detailSource, /QMF_CONFIRMATION/)
+  assert.match(detailSource, /二次确认并执行真实登记/)
+  assert.match(detailSource, /仅重试腾讯完成标记/)
+  assert.doesNotMatch(detailSource, /批量登记|自动登记|定时登记/)
 
   const apiFunction = clientSource.match(
     /export async function previewQmfRegistration[\s\S]*?\r?\n}\r?\n/,
@@ -821,6 +825,9 @@ test('全民防预演只从任务详情按内部来源定位发起且没有提�
   assert.match(apiFunction, /source_id: number/)
   assert.match(apiFunction, /expected_revision: number/)
   assert.doesNotMatch(apiFunction, /identity_number/)
+  assert.match(clientSource, /api\.post\('\/qmf-registration\/prepare', payload/)
+  assert.match(clientSource, /`\/qmf-registration\/runs\/\$\{runId\}\/execute`/)
+  assert.match(clientSource, /\{ confirmation \}/)
   assert.match(styleSource, /\.qmf-preview-person[\s\S]*grid-template-columns:/)
   assert.match(styleSource, /@media \(max-width: 767px\)[\s\S]*\.qmf-preview-person[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
 })

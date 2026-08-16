@@ -49,7 +49,9 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
     async def test_database_values_override_environment_and_public_view_is_write_only(self):
         rows = [
             ("qmf_preview_enabled", "1"),
+            ("qmf_registration_enabled", "1"),
             ("qmf_login_protocol_verified", "1"),
+            ("qmf_write_protocol_verified", "1"),
             ("qmf_api_base_url", "http://qmf.example/grid_terminal_interface/"),
             ("qmf_login_host", "180.97.151.38"),
             ("qmf_login_port", "25001"),
@@ -62,6 +64,7 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
         ]
         config = await load_qmf_config(_Conn(rows))
         self.assertTrue(config.configured)
+        self.assertTrue(config.registration_configured)
         self.assertEqual(config.source_username, "source-user")
         self.assertEqual(config.source_password, "source-password")
         self.assertEqual(config.source_imei, "imei-value")
@@ -76,7 +79,9 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
     def test_unconfigured_runtime_is_closed(self):
         config = QmfRuntimeConfig(
             preview_enabled=True,
+            registration_enabled=False,
             login_protocol_verified=True,
+            write_protocol_verified=False,
             preview_allowed_username="shenshenghua",
             api_base_url="",
             login_host="",
@@ -92,3 +97,36 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
             preview_cooldown_seconds=45,
         )
         self.assertFalse(config.configured)
+        self.assertFalse(config.registration_configured)
+
+    def test_registration_requires_both_switches_and_protocol_confirmations(self):
+        base = dict(
+            preview_enabled=True,
+            registration_enabled=True,
+            login_protocol_verified=True,
+            write_protocol_verified=True,
+            preview_allowed_username="shenshenghua",
+            api_base_url="http://qmf.invalid/grid_terminal_interface/",
+            login_host="qmf.invalid",
+            login_port=25001,
+            source_username="fictional-user",
+            source_password="fictional-password",
+            source_imei="fictional-imei",
+            source_machine_uid="Fictional Device",
+            expected_station_code="320584710000",
+            expected_station_name="滨湖新城派出所",
+            timeout_seconds=15,
+            session_max_seconds=45,
+            preview_cooldown_seconds=45,
+        )
+        self.assertTrue(QmfRuntimeConfig(**base).registration_configured)
+        for disabled_field in (
+            "preview_enabled",
+            "registration_enabled",
+            "login_protocol_verified",
+            "write_protocol_verified",
+        ):
+            with self.subTest(disabled_field=disabled_field):
+                self.assertFalse(QmfRuntimeConfig(
+                    **{**base, disabled_field: False}
+                ).registration_configured)

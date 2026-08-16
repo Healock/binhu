@@ -76,7 +76,10 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.feedback.export": "导出下发反馈表",
     "mobile_tasks.bulk_assign": "批量分配核查人",
     "qmf_registration.preview": "全民防模型三只读预演",
-    "qmf_registration.config.update": "修改全民防只读预演配置",
+    "qmf_registration.config.update": "修改全民防封闭测试配置",
+    "qmf_registration.prepare": "准备全民防模型三真实登记",
+    "qmf_registration.execute": "执行全民防模型三真实登记",
+    "qmf_registration.tencent_marker.retry": "重试全民防腾讯完成标记",
     "registry.household_import.preview": "预览户号表导入",
     "registry.household_import.confirm": "确认户号表导入",
     "registry.certificate_import.preview": "预览房东责任告知书导入",
@@ -153,6 +156,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "police_dispatch_preview": "数据下发预览",
     "police_dispatch_task": "数据下发任务",
     "mobile_task": "流口核查任务",
+    "qmf_registration_run": "全民防登记运行",
     "online_source_row": "腾讯原始行",
     "spreadsheet": "在线表格配置",
     "system_config": "系统设置",
@@ -246,6 +250,14 @@ DETAIL_LABELS: dict[str, str] = {
     "success": "成功数量",
     "failed": "失败数量",
     "source_id": "来源行编号",
+    "run_id": "登记运行编号",
+    "result_code": "结果代码",
+    "duration_ms": "耗时（毫秒）",
+    "tencent_marker_status": "腾讯标记状态",
+    "photo": "照片校验摘要",
+    "mime_type": "图片类型",
+    "size_bytes": "图片大小（字节）",
+    "sha256": "图片摘要",
     "columns": "修改字段",
     "parser_type": "业务类型",
     "types": "业务类型",
@@ -356,6 +368,7 @@ TARGET_NAME_LABELS: dict[str, str] = {
     "batch": "批量配置",
     "position_mappings": "岗位默认权限组",
     "summary_types": "总汇总业务类型",
+    "qmf_closed_test": "全民防模型三封闭测试",
 }
 
 
@@ -419,7 +432,7 @@ def _format_scalar(key: str, value: Any) -> str:
     if isinstance(value, bool):
         return "是" if value else "否"
     text = str(value)
-    if key in {"row_hash", "change_digest"} and len(text) > 16:
+    if key in {"row_hash", "change_digest", "sha256"} and len(text) > 16:
         return f"{text[:12]}…"
     return VALUE_LABELS.get(text, RESULT_LABELS.get(text, text))
 

@@ -21,6 +21,7 @@ from services.permissions import (
 )
 from services.domain_schema import ensure_registry_schema, ensure_workflow_schema
 from services.domain_routing import DomainRoutingCursor
+from services.qmf_runs import ensure_qmf_registration_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -1997,6 +1998,7 @@ class DatabaseManager:
                 await ensure_online_editor_schema(cur)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
+                await ensure_qmf_registration_schema(cur)
                 await ensure_bootstrap_admin(cur)
 
         # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
