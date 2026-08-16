@@ -20,6 +20,40 @@ from services.ops_redaction import redact_text
 SYNC_DAILY_WINDOW_DAYS = 14
 
 
+async def get_photo_sheet_outbox_overview() -> dict:
+    result = {
+        "pending": 0,
+        "retry": 0,
+        "paused": 0,
+        "max_attempt_count": 0,
+        "error": None,
+    }
+    try:
+        pool = db_manager.get_pool("workflow")
+        conn = await pool.acquire()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT status,COUNT(*),COALESCE(MAX(attempt_count),0) "
+                    "FROM photo_sheet_outbox "
+                    "WHERE status IN ('pending','retry','paused') GROUP BY status"
+                )
+                rows = await cur.fetchall()
+        finally:
+            pool.release(conn)
+        for status, count, max_attempt_count in rows:
+            normalized = str(status or "")
+            if normalized in {"pending", "retry", "paused"}:
+                result[normalized] = int(count or 0)
+            result["max_attempt_count"] = max(
+                result["max_attempt_count"],
+                int(max_attempt_count or 0),
+            )
+    except Exception as exc:
+        result["error"] = redact_text(str(exc))[:200]
+    return result
+
+
 def build_daily_sync_counts(
     rows: list[tuple],
     *,
@@ -313,6 +347,7 @@ async def build_operations_overview() -> dict:
         timezone_name=timezone_name,
         daily_limit=settings.TXDOCS_DAILY_REQUEST_LIMIT,
     )
+    photo_sheet_outbox = await get_photo_sheet_outbox_overview()
 
     oauth = {"configured": bool(oauth_row), "status": "not_configured"}
     if oauth_row:
@@ -352,6 +387,7 @@ async def build_operations_overview() -> dict:
         "sync_timezone": timezone_name,
         "sync_daily_counts": sync_daily_counts,
         "txdocs_request_usage": txdocs_request_usage,
+        "photo_sheet_outbox": photo_sheet_outbox,
         "latest_backup": {
             "id": backup_row[0],
             "status": backup_row[1],

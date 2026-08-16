@@ -162,6 +162,7 @@ function OverviewTab({
     : 0
   const requestUsage = data?.txdocs_request_usage
   const quotaExhausted = Boolean(requestUsage?.today.quota_exhausted_responses)
+  const photoOutbox = data?.photo_sheet_outbox
   const requestPercent = requestUsage?.daily_limit
     ? Math.min(100, Math.round((requestUsage.today.attempts / requestUsage.daily_limit) * 100))
     : 0
@@ -174,8 +175,16 @@ function OverviewTab({
       {data?.container_error && (
         <Alert type="warning" showIcon message="容器状态暂时不可用" description={data.container_error} />
       )}
+      {!!photoOutbox?.paused && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`${photoOutbox.paused} 条调照片腾讯写回已暂停`}
+          description="连续失败达到自动重试上限，系统已停止刷写；请到工单流程配置的“同步记录与异常”中核对并手动恢复。"
+        />
+      )}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <Card>
           <Statistic title="磁盘可用空间" value={formatBytes(data?.disk.free_bytes)} />
           <Progress
@@ -213,6 +222,15 @@ function OverviewTab({
           <div className="mt-2">
             {data?.latest_backup && <StatusTag value={data.latest_backup.status} />}
             <span className="text-xs text-slate-500">{formatTime(data?.latest_backup?.finished_at)}</span>
+          </div>
+        </Card>
+        <Card>
+          <Statistic
+            title="调照片待写回"
+            value={(photoOutbox?.pending || 0) + (photoOutbox?.retry || 0)}
+          />
+          <div className="mt-2 text-xs text-slate-500">
+            重试中 {photoOutbox?.retry || 0} · 已暂停 {photoOutbox?.paused || 0}
           </div>
         </Card>
       </div>
