@@ -36,6 +36,7 @@ export default function Communities() {
   const [aliasDraft, setAliasDraft] = useState<string[]>([])
   const [officerDraft, setOfficerDraft] = useState<number[]>([])
   const [areaDraft, setAreaDraft] = useState<number>()
+  const [qmfCommunityCodeDraft, setQmfCommunityCodeDraft] = useState('')
   const [policeOptions, setPoliceOptions] = useState<Array<{ id: number; name: string }>>([])
   const [savingDetails, setSavingDetails] = useState(false)
   const [areaEditorOpen, setAreaEditorOpen] = useState(false)
@@ -99,6 +100,7 @@ export default function Communities() {
     setAliasDraft(community.aliases || [])
     setOfficerDraft(community.police_officer_ids || [])
     setAreaDraft(community.area_id || undefined)
+    setQmfCommunityCodeDraft(community.qmf_community_code || '')
   }
 
   const handleSaveDetails = async () => {
@@ -115,6 +117,7 @@ export default function Communities() {
         aliasDraft,
         officerDraft,
         areaDraft,
+        qmfCommunityCodeDraft.trim(),
       )
       const matchedText = result.matched_visit_rows > 0
         ? `，同时归类 ${result.matched_visit_rows} 条已有走访数据`
@@ -125,6 +128,7 @@ export default function Communities() {
       setAliasDraft([])
       setOfficerDraft([])
       setAreaDraft(undefined)
+      setQmfCommunityCodeDraft('')
       await fetch()
     } catch (error: any) {
       setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
@@ -189,6 +193,13 @@ export default function Communities() {
       key: 'area_name',
       width: 140,
       render: value => value ? <Tag color="blue">{value}</Tag> : <Tag color="warning">待分配</Tag>,
+    },
+    {
+      title: '全民防社区代码',
+      dataIndex: 'qmf_community_code',
+      key: 'qmf_community_code',
+      width: 170,
+      render: value => value || <Tag color="warning">待填写</Tag>,
     },
     {
       title: '社区名称',
@@ -282,6 +293,7 @@ export default function Communities() {
     ? communities.filter(community => [
       community.name,
       community.area_name,
+      community.qmf_community_code,
       ...(community.aliases || []),
       ...(community.police_officers || []),
     ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalizedKeyword))
@@ -370,6 +382,7 @@ export default function Communities() {
                     <Tag color={c.is_active ? 'success' : 'default'}>{c.is_active ? '启用' : '停用'}</Tag>
                     <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
                     <div className="mt-1 text-sm text-slate-600">片区：{c.area_name || '待分配'}</div>
+                    <div className="mt-1 text-sm text-slate-600">全民防社区代码：{c.qmf_community_code || '待填写'}</div>
                     <div className="mt-1 text-sm text-slate-600">
                       社区民警：{c.police_officers?.length > 0
                         ? c.police_officers.join('、')
@@ -414,6 +427,7 @@ export default function Communities() {
           setAliasDraft([])
           setOfficerDraft([])
           setAreaDraft(undefined)
+          setQmfCommunityCodeDraft('')
         }}
       >
         <div className="space-y-5">
@@ -426,6 +440,19 @@ export default function Communities() {
               className="w-full"
               options={areas.map(area => ({ value: area.id, label: area.name }))}
             />
+          </div>
+          <div>
+            <div className="mb-2 font-medium text-slate-700">全民防社区代码</div>
+            <Input
+              value={qmfCommunityCodeDraft}
+              onChange={event => setQmfCommunityCodeDraft(event.target.value.replace(/\D/g, '').slice(0, 10))}
+              placeholder="请输入全民防中的 10 位社区代码"
+              inputMode="numeric"
+              maxLength={10}
+            />
+            <p className="mt-2 text-sm text-slate-500">
+              “离开不返吴”反馈会使用该代码；未填写时系统会在写入前停止。
+            </p>
           </div>
           <div>
             <div className="mb-2 font-medium text-slate-700">社区正式名称</div>

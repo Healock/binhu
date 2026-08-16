@@ -26,19 +26,31 @@ from services.qmf_config import QmfRuntimeConfig, settings_config
 
 
 MODEL_THREE_PARSER = "疑似未注销模型三"
-SUPPORTED_RESULT = "在吴"
+RESULT_IN_WU = "在吴"
+RESULT_RECENT_RETURN = "近期返吴"
+RESULT_LEAVE_NOT_RETURNING = "离开不返吴"
+RESULT_ALIASES = {
+    RESULT_IN_WU: RESULT_IN_WU,
+    RESULT_RECENT_RETURN: RESULT_RECENT_RETURN,
+    "近期反吴": RESULT_RECENT_RETURN,
+    "离吴": RESULT_LEAVE_NOT_RETURNING,
+    RESULT_LEAVE_NOT_RETURNING: RESULT_LEAVE_NOT_RETURNING,
+}
+SUPPORTED_RESULT = RESULT_IN_WU  # compatibility for older imports/tests
 ALLOWED_PLATFORM_USERNAME = "shenshenghua"
 READ_ONLY_ENDPOINTS = {
     "fnmx/queryYysList": "POST",
     "enterHouse/queryPeopleBySfzh": "POST",
     "enterHouse/queryPeoplePhotoByJzz": "POST",
     "enterHouse/checkCk": "POST",
+    "declare/queryCommunityCode": "POST",
 }
 READ_ONLY_ENDPOINT_CONTEXT = {
     "fnmx/queryYysList": ("query_task", "任务查询"),
     "enterHouse/queryPeopleBySfzh": ("query_person", "人员资料查询"),
     "enterHouse/queryPeoplePhotoByJzz": ("query_photo", "居住证照片查询"),
     "enterHouse/checkCk": ("precheck", "登记前校验"),
+    "declare/queryCommunityCode": ("query_community", "社区代码核对"),
 }
 READ_ONLY_MAX_ATTEMPTS = 2
 READ_ONLY_RETRY_DELAY_SECONDS = 0.35
@@ -234,6 +246,10 @@ def preview_configured(config: QmfRuntimeConfig | None = None) -> bool:
     return (config or settings_config()).configured
 
 
+def normalize_qmf_result(value: Any) -> str:
+    return RESULT_ALIASES.get(_text(value), "")
+
+
 def preview_capability(
     *,
     username: str,
@@ -262,11 +278,11 @@ def preview_capability(
             "enabled": False,
             "reason": "该任务不是唯一有效来源，不能预演",
         }
-    if _text(values.get("核查结果")) != SUPPORTED_RESULT:
+    if not normalize_qmf_result(values.get("核查结果")):
         return {
             "visible": True,
             "enabled": False,
-            "reason": "第一版仅支持核查结果为“在吴”的任务",
+            "reason": "当前仅支持“在吴、近期返吴、离开不返吴”三种结果",
         }
     if not valid_identity(values.get("身份证号")):
         return {
@@ -790,9 +806,9 @@ class QmfCollectedContext:
     query_data: dict[str, str]
     raw_task: dict[str, Any]
     upstream_task: dict[str, str]
-    raw_person: dict[str, Any]
-    person: dict[str, Any]
-    photo: dict[str, Any]
+    raw_person: dict[str, Any] | None
+    person: dict[str, Any] | None
+    photo: dict[str, Any] | None
 
 
 StepCallback = Callable[[str, str, str], Awaitable[None]]
@@ -873,6 +889,8 @@ def _registration_photo_path(
 
 
 def build_upload_photo_payload(context: QmfCollectedContext) -> dict[str, Any]:
+    if not context.person or not context.photo:
+        raise QmfPreviewError("person_write_fields_missing", "全民防人员登记资料缺失", 409)
     identity = normalize_identity(context.person.get("identity_number"))
     community_code = _text(context.person.get("community_code"))
     gender = _text(context.person.get("gender_code"))
@@ -899,6 +917,8 @@ def build_add_people_payload(
     device_id: str,
 ) -> dict[str, Any]:
     raw_person = context.raw_person
+    if raw_person is None:
+        raise QmfPreviewError("person_write_fields_missing", "全民防人员登记资料缺失", 409)
     if set(raw_person) != PERSONNEL_INFO_FIELDS:
         raise QmfPreviewError(
             "person_schema_changed", "全民防人员资料字段结构已变化，已停止登记", 409
@@ -948,10 +968,38 @@ def build_fnmx_check_payload(
     *,
     device_id: str,
 ) -> dict[str, str]:
+    result = normalize_qmf_result(context.platform_task.get("result"))
+    if result == RESULT_LEAVE_NOT_RETURNING:
+        community_code = _text(context.platform_task.get("qmf_community_code"))
+        destination_code = _text(context.platform_task.get("destination_code"))
+        destination_address = _text(context.platform_task.get("destination_address"))
+        if (
+            not re.fullmatch(r"\d{10}", community_code)
+            or not re.fullmatch(r"\d{6}", destination_code)
+            or not destination_address
+        ):
+            raise QmfPreviewError(
+                "leave_fields_missing", "离开不返吴所需社区或去往地信息不完整", 409
+            )
+        return {
+            "xfid": context.upstream_task["task_id"],
+            "logoutReason": "2",
+            "hcjg": "1",
+            "hcczr": context.login_context.username,
+            "sbsbh": device_id,
+            "personID": normalize_identity(context.platform_task["identity_number"]),
+            "type": "3",
+            "qwdxzqh": destination_code,
+            "communityCode": community_code,
+            "qwdxz": destination_address,
+            "source": "android",
+        }
+    if not context.person:
+        raise QmfPreviewError("person_write_fields_missing", "全民防人员登记资料缺失", 409)
     return {
         "communityCode": "",
         "hcczr": context.login_context.username,
-        "hcjg": "2",
+        "hcjg": "3" if result == RESULT_RECENT_RETURN else "2",
         "logoutReason": "",
         "personID": normalize_identity(context.person["identity_number"]),
         "qwdxz": "",
@@ -1086,6 +1134,10 @@ class QmfReadOnlyClient:
             raise QmfPreviewError("identity_invalid", "任务身份证号格式无效", 422)
         query_data = _query_data(login_context=login_context, identity=identity)
 
+        result = normalize_qmf_result(platform_task.get("result"))
+        if not result:
+            raise QmfPreviewError("result_not_supported", "当前核查结果不支持全民防登记", 422)
+
         if login_session is not None:
             login_session.ensure_available()
         await self._emit_step(step_callback, "query_task", "sending")
@@ -1117,6 +1169,30 @@ class QmfReadOnlyClient:
                 "task_station_mismatch", "全民防任务不属于目标派出所", 403
             )
         await self._emit_step(step_callback, "query_task", "succeeded", "success")
+
+        if result == RESULT_LEAVE_NOT_RETURNING:
+            if login_session is not None:
+                login_session.ensure_available()
+            await self._emit_step(step_callback, "query_community", "sending")
+            community_response = await self._request(
+                client,
+                "declare/queryCommunityCode",
+                data={"sfzh": identity, "source": "android"},
+            )
+            _business_payload(community_response, expected_object=False)
+            await self._emit_step(
+                step_callback, "query_community", "succeeded", "success"
+            )
+            return QmfCollectedContext(
+                platform_task=platform_task,
+                login_context=login_context,
+                query_data=query_data,
+                raw_task=raw_task,
+                upstream_task=upstream_task,
+                raw_person=None,
+                person=None,
+                photo=None,
+            )
 
         if login_session is not None:
             login_session.ensure_available()
@@ -1179,7 +1255,49 @@ class QmfReadOnlyClient:
 
     @staticmethod
     def _preview_payload(context: QmfCollectedContext) -> dict[str, Any]:
+        result = normalize_qmf_result(context.platform_task.get("result"))
+        if result == RESULT_LEAVE_NOT_RETURNING:
+            return {
+                "mode": "read_only",
+                "can_submit": False,
+                "platform_task": context.platform_task,
+                "upstream_task": context.upstream_task,
+                "person": None,
+                "operator": {
+                    "username": context.login_context.username,
+                    "name": context.login_context.operator_name,
+                    "station_code": context.login_context.station_code,
+                    "station_name": context.login_context.station_name,
+                },
+                "photo": None,
+                "destination": {
+                    "community": context.platform_task.get("resolved_community", ""),
+                    "community_code": context.platform_task.get("qmf_community_code", ""),
+                    "area_code": context.platform_task.get("destination_code", ""),
+                    "area_name": context.platform_task.get("destination_address", ""),
+                },
+                "checks": {
+                    "source_revision": True,
+                    "single_source": True,
+                    "identity_match": True,
+                    "name_match": True,
+                    "single_upstream_task": True,
+                    "station_match": True,
+                    "community_code_valid": True,
+                    "destination_valid": True,
+                },
+                "planned_write_steps": [
+                    {"key": "complete_task", "label": "反馈模型三注销结果", "enabled": False},
+                ],
+                "planned_changes": [{
+                    "key": "complete_task",
+                    "label": "模型三反馈",
+                    "detail": "反馈为“离开不返吴”，社区取平台社区代码，去往行政区划和地址取身份证前六位对应户籍地区",
+                }],
+                "warnings": ["本结果不登记人员、不读取或上传照片；确认后只执行一次模型三注销反馈。"],
+            }
         warnings = ["本页面仅用于人工核对；只有完成二次确认后才会登记。"]
+        assert context.person is not None and context.photo is not None
         task_community_code = context.upstream_task["community_code"]
         person_community_code = context.person["community_code"]
         if (
@@ -1250,7 +1368,7 @@ class QmfReadOnlyClient:
                     "key": "complete_task",
                     "label": "模型三反馈",
                     "detail": (
-                        "固定反馈为“在吴”；communityCode、logoutReason、"
+                        f"固定反馈为“{result}”；communityCode、logoutReason、"
                         "qwdxzqh、qwdxz 保持空字符串"
                     ),
                 },
@@ -1360,61 +1478,65 @@ class QmfRegistrationClient(QmfReadOnlyClient):
                     platform_task=platform_task,
                     step_callback=step_callback,
                 )
-                # Construct and validate every write body before the first write.
-                upload_payload = build_upload_photo_payload(context)
-                add_people_payload = build_add_people_payload(
-                    context,
-                    device_id=self._config.source_imei,
-                )
                 fnmx_payload = build_fnmx_check_payload(
                     context,
                     device_id=self._config.source_imei,
                 )
+                result = normalize_qmf_result(context.platform_task.get("result"))
+                if result != RESULT_LEAVE_NOT_RETURNING:
+                    # Construct and validate every write body before the first write.
+                    upload_payload = build_upload_photo_payload(context)
+                    add_people_payload = build_add_people_payload(
+                        context,
+                        device_id=self._config.source_imei,
+                    )
                 await before_write(context)
 
-                if login_session is not None:
-                    login_session.ensure_available()
-                await self._emit_step(step_callback, "upload_photo", "sending")
-                response = await self._write_request(
-                    client,
-                    "masses/uploadPhoto",
-                    json_payload=upload_payload,
-                )
-                _write_business_payload(response)
-                await self._emit_step(
-                    step_callback, "upload_photo", "succeeded", "success"
-                )
+                if result != RESULT_LEAVE_NOT_RETURNING:
+                    assert context.person is not None
+                    if login_session is not None:
+                        login_session.ensure_available()
+                    await self._emit_step(step_callback, "upload_photo", "sending")
+                    response = await self._write_request(
+                        client,
+                        "masses/uploadPhoto",
+                        json_payload=upload_payload,
+                    )
+                    _write_business_payload(response)
+                    await self._emit_step(
+                        step_callback, "upload_photo", "succeeded", "success"
+                    )
 
-                if login_session is not None:
-                    login_session.ensure_available()
-                await self._emit_step(step_callback, "save_local_photo", "sending")
-                response = await self._write_request(
-                    client,
-                    "jzz/saveLocalPhoto",
-                    files={
-                        "idCard": (None, context.person["identity_number"]),
-                        "imageType": (None, "3"),
-                        "label": (None, "2"),
-                        "createBy": (None, context.login_context.username),
-                    },
-                )
-                _write_business_payload(response)
-                await self._emit_step(
-                    step_callback, "save_local_photo", "succeeded", "success"
-                )
+                    if login_session is not None:
+                        login_session.ensure_available()
+                    await self._emit_step(step_callback, "save_local_photo", "sending")
+                    response = await self._write_request(
+                        client,
+                        "jzz/saveLocalPhoto",
+                        files={
+                            "idCard": (None, context.person["identity_number"]),
+                            "imageType": (None, "3"),
+                            "label": (None, "2"),
+                            "createBy": (None, context.login_context.username),
+                        },
+                    )
+                    _write_business_payload(response)
+                    await self._emit_step(
+                        step_callback, "save_local_photo", "succeeded", "success"
+                    )
 
-                if login_session is not None:
-                    login_session.ensure_available()
-                await self._emit_step(step_callback, "register_person", "sending")
-                response = await self._write_request(
-                    client,
-                    "enterHouse/addPeople",
-                    json_payload=add_people_payload,
-                )
-                _write_business_payload(response)
-                await self._emit_step(
-                    step_callback, "register_person", "succeeded", "success"
-                )
+                    if login_session is not None:
+                        login_session.ensure_available()
+                    await self._emit_step(step_callback, "register_person", "sending")
+                    response = await self._write_request(
+                        client,
+                        "enterHouse/addPeople",
+                        json_payload=add_people_payload,
+                    )
+                    _write_business_payload(response)
+                    await self._emit_step(
+                        step_callback, "register_person", "succeeded", "success"
+                    )
 
                 if login_session is not None:
                     login_session.ensure_available()
@@ -1448,7 +1570,9 @@ class QmfRegistrationClient(QmfReadOnlyClient):
                     ) from exc
                 total, matching = _matching_pending_tasks(
                     final_data,
-                    identity=context.person["identity_number"],
+                    identity=normalize_identity(
+                        context.platform_task["identity_number"]
+                    ),
                 )
                 if total != 0 or matching:
                     raise QmfPreviewError(
@@ -1463,11 +1587,11 @@ class QmfRegistrationClient(QmfReadOnlyClient):
                 return {
                     "status": "succeeded",
                     "upstream_task_id": context.upstream_task["task_id"],
-                    "photo": {
+                    "photo": ({
                         "mime_type": context.photo["mime_type"],
                         "size_bytes": context.photo["size_bytes"],
                         "sha256": context.photo["sha256"],
-                    },
+                    } if context.photo else {}),
                 }
         finally:
             if login_session is not None:

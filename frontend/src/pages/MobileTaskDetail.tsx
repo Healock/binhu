@@ -943,10 +943,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               ? '登记前核对已完成，确认后将执行全民防登记'
               : qmfRun
                 ? '这里只恢复安全步骤状态，不保存或恢复人员照片正文'
-                : '正在读取全民防任务、人员资料和居住证照片'}
+                : '正在读取全民防任务和登记所需资料'}
             description={qmfPrepareResult
-              ? '请逐项核对人员、任务、操作人和照片。确认执行后会写入旧平台，提交后不能自动撤销。'
-              : '登记前核对不会执行写入；照片只存在于本次认证响应和浏览器内存。'}
+              ? (qmfPrepareResult.platform_task.result === '离开不返吴'
+                ? '请逐项核对任务、社区和去往地。确认执行后会反馈旧平台，提交后不能自动撤销。'
+                : '请逐项核对人员、任务、操作人和照片。确认执行后会写入旧平台，提交后不能自动撤销。')
+              : '登记前核对不会执行写入；如需读取照片，照片只存在于本次认证响应和浏览器内存。'}
           />
           {qmfPreviewLoading && <Skeleton active paragraph={{ rows: 8 }} />}
           {qmfPreviewError && <Alert type="error" showIcon message={qmfPreviewError} />}
@@ -955,6 +957,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             const preview = qmfPrepareResult
             return (
               <>
+                {preview.person && preview.photo && (
                 <section className="qmf-preview-section qmf-preview-person">
                   <div className="qmf-preview-photo">
                     <Image
@@ -989,6 +992,23 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     ]}
                   />
                 </section>
+                )}
+
+                {preview.destination && (
+                  <section className="qmf-preview-section">
+                    <Descriptions
+                      title="离开不返吴反馈信息"
+                      size="small"
+                      column={mobile ? 1 : 2}
+                      items={[
+                        { key: 'resolved-community', label: '平台正式社区', children: preview.destination.community || '未匹配' },
+                        { key: 'qmf-community-code', label: '全民防社区代码', children: preview.destination.community_code || '未填写' },
+                        { key: 'destination-code', label: '去往行政区划', children: preview.destination.area_code || '未识别' },
+                        { key: 'destination-address', label: '去往地址详址', children: preview.destination.area_name || '未识别', span: mobile ? 1 : 2 },
+                      ]}
+                    />
+                  </section>
+                )}
 
                 <section className="qmf-preview-section">
                   <Descriptions
@@ -1020,7 +1040,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                       ['jurisdiction_match', '辖区按派出所校验'],
                       ['precheck_passed', '登记前校验通过'],
                       ['photo_valid', '照片格式有效'],
-                    ].map(([key, label]) => (
+                      ['community_code_valid', '全民防社区代码有效'],
+                      ['destination_valid', '去往地信息有效'],
+                    ].filter(([key]) => Object.prototype.hasOwnProperty.call(preview.checks, key)).map(([key, label]) => (
                       <Tag key={key} color={preview.checks[key] ? 'success' : 'error'}>{label}</Tag>
                     ))}
                   </div>
@@ -1069,7 +1091,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           {qmfRun && (
             <section className="qmf-preview-section qmf-registration-run">
               <div className="qmf-registration-run__header">
-                <h3>九步执行状态</h3>
+                <h3>执行状态</h3>
                 <Tag color={QMF_RUN_STATUS[qmfRun.status].color}>
                   {QMF_RUN_STATUS[qmfRun.status].label}
                 </Tag>

@@ -1103,7 +1103,7 @@ export interface QmfPreviewResult {
     residence_method: string
     residence_reason: string
     active_status: string
-  }
+  } | null
   operator: {
     username: string
     name: string
@@ -1115,6 +1115,12 @@ export interface QmfPreviewResult {
     size_bytes: number
     sha256: string
     data_base64: string
+  } | null
+  destination?: {
+    community: string
+    community_code: string
+    area_code: string
+    area_name: string
   }
   checks: Record<string, boolean>
   planned_write_steps: Array<{ key: string; label: string; enabled: boolean }>
@@ -1632,6 +1638,7 @@ export interface GridCommunity {
   area_id: number | null
   area_name: string
   is_active: boolean
+  qmf_community_code: string
 }
 
 export interface CommunityArea {
@@ -1746,6 +1753,7 @@ export async function updateGridCommunityDetails(
   aliases: string[],
   policeOfficerIds: number[],
   areaId: number,
+  qmfCommunityCode: string,
 ): Promise<{
   name: string
   aliases: string[]
@@ -1757,6 +1765,7 @@ export async function updateGridCommunityDetails(
     aliases,
     police_officer_ids: policeOfficerIds,
     area_id: areaId,
+    qmf_community_code: qmfCommunityCode,
   })
   return data
 }

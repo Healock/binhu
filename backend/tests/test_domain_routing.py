@@ -38,6 +38,14 @@ def test_qmf_registration_runs_are_stored_in_platform_domain():
     assert "`PlatformData`.`_qmf_registration_runs`" in sql
 
 
+def test_administrative_areas_are_stored_in_platform_domain():
+    with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
+        sql = rewrite_domain_sql(
+            "SELECT * FROM _administrative_areas WHERE code=%s"
+        )
+    assert "`PlatformData`.`_administrative_areas`" in sql
+
+
 def test_already_target_qualified_table_is_not_rewritten_twice():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql("SELECT * FROM `PlatformData`.`_users`")

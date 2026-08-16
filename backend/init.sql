@@ -265,8 +265,28 @@ CREATE TABLE IF NOT EXISTS _communities (
     name            VARCHAR(200) NOT NULL UNIQUE,
     police_officers JSON DEFAULT NULL,
     area_id         INT DEFAULT NULL,
+    qmf_community_code VARCHAR(20) DEFAULT NULL,
     is_active       TINYINT(1) NOT NULL DEFAULT 1,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _administrative_areas (
+    source_row INT NOT NULL PRIMARY KEY,
+    code CHAR(6) NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    level VARCHAR(20) NOT NULL,
+    province VARCHAR(100) NOT NULL DEFAULT '',
+    city VARCHAR(100) NOT NULL DEFAULT '',
+    parent_code CHAR(6) NOT NULL DEFAULT '',
+    path VARCHAR(300) NOT NULL DEFAULT '',
+    full_name VARCHAR(300) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT '',
+    start_year SMALLINT DEFAULT NULL,
+    end_year SMALLINT DEFAULT NULL,
+    new_code VARCHAR(300) NOT NULL DEFAULT '',
+    source VARCHAR(50) NOT NULL DEFAULT '',
+    INDEX idx_administrative_area_code (code, status),
+    INDEX idx_administrative_area_period (code, start_year, end_year)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _areas (
