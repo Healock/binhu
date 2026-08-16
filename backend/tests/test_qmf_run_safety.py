@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import unittest
@@ -15,6 +16,7 @@ from routers.qmf_registration import (  # noqa: E402
     QmfExecuteRequest,
     QmfPreviewRequest,
     _append_tencent_marker,
+    _background_task_finished,
     _claim_run,
     _create_prepared_run,
     _execute_run_background,
@@ -91,6 +93,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         await ensure_qmf_registration_schema(cursor)
         sql_text = "\n".join(sql for sql, _params in cursor.executed)
         self.assertIn("row_key_digest CHAR(64)", sql_text)
+        self.assertIn("idx_qmf_run_row_key", sql_text)
         self.assertNotIn("row_key VARCHAR", sql_text)
         recovery = next(
             params for sql, params in cursor.executed
@@ -150,6 +153,11 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(raised.exception.code, "registration_frozen")
         self.assertFalse(any("INSERT INTO" in sql for sql, _ in cursor.executed))
+        duplicate_sql, duplicate_params = cursor.executed[0]
+        self.assertIn("row_key_digest=%s", duplicate_sql)
+        self.assertIn("upstream_task_digest=%s", duplicate_sql)
+        self.assertIn("idempotency_key=%s", duplicate_sql)
+        self.assertEqual(len(duplicate_params), 3)
 
     async def test_claim_is_serialized_and_rejects_duplicate_execution(self):
         run_row = (
@@ -185,6 +193,11 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         sql_text = "\n".join(sql for sql, _params in cursor.executed)
         self.assertIn("GET_LOCK", sql_text)
         self.assertIn("RELEASE_LOCK", sql_text)
+        self.assertIn("prior.row_key_digest=current_run.row_key_digest", sql_text)
+        self.assertIn(
+            "prior.upstream_task_digest=current_run.upstream_task_digest", sql_text
+        )
+        self.assertIn("prior.idempotency_key=current_run.idempotency_key", sql_text)
 
     async def test_only_exact_account_can_prepare_or_execute(self):
         preview_request = QmfPreviewRequest(
@@ -343,7 +356,9 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set_result.await_args.kwargs["status"], "uncertain")
 
     async def test_background_start_failure_freezes_claimed_run_locally(self):
-        cursor = _Cursor()
+        cursor = _Cursor(fetchone_values=[(
+            "executing", serialize_steps(initial_steps()), "not_started",
+        )])
         cursor.rowcount = 1
         conn = _Conn(cursor)
 
@@ -367,9 +382,105 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIs(pool.released, conn)
         self.assertTrue(any(
-            "background_start_failed" in sql for sql, _params in cursor.executed
+            params and "background_start_failed" in params
+            for _sql, params in cursor.executed
         ))
         audit.assert_awaited_once()
+
+    async def test_cancelled_background_with_write_progress_becomes_uncertain(self):
+        steps = initial_steps()
+        steps[4]["status"] = "sending"
+        cursor = _Cursor(fetchone_values=[(
+            "executing", serialize_steps(steps), "not_started",
+        )])
+        cursor.rowcount = 1
+        conn = _Conn(cursor)
+
+        class _Pool:
+            async def acquire(self):
+                return conn
+
+            def release(self, _conn):
+                return None
+
+        with (
+            patch("routers.qmf_registration.db_manager.get_pool", return_value=_Pool()),
+            patch("routers.qmf_registration.record_admin_audit", AsyncMock()),
+        ):
+            await _freeze_unstarted_background_run(
+                7,
+                user={"id": 2, "username": "shenshenghua"},
+                audit_fields={},
+                result_code="background_task_cancelled",
+            )
+        update = next(
+            (sql, params) for sql, params in cursor.executed
+            if "SET status=%s" in sql
+        )
+        self.assertEqual(update[1][0], "uncertain")
+        recovered_steps = json.loads(update[1][2])
+        self.assertEqual(recovered_steps[4]["status"], "uncertain")
+        self.assertEqual(
+            recovered_steps[4]["result_code"], "background_task_cancelled"
+        )
+
+    async def test_cancelled_tencent_marker_keeps_qmf_success_and_returns_to_pending(self):
+        cursor = _Cursor(fetchone_values=[(
+            "succeeded", serialize_steps(initial_steps()), "writing",
+        )])
+        cursor.rowcount = 1
+        conn = _Conn(cursor)
+
+        class _Pool:
+            async def acquire(self):
+                return conn
+
+            def release(self, _conn):
+                return None
+
+        audit = AsyncMock()
+        with (
+            patch("routers.qmf_registration.db_manager.get_pool", return_value=_Pool()),
+            patch("routers.qmf_registration.record_admin_audit", audit),
+        ):
+            await _freeze_unstarted_background_run(
+                7,
+                user={"id": 2, "username": "shenshenghua"},
+                audit_fields={},
+                result_code="background_task_cancelled",
+            )
+        marker_update = next(
+            (sql, params) for sql, params in cursor.executed
+            if "tencent_marker_status='pending'" in sql
+        )
+        self.assertNotIn("SET status=", marker_update[0])
+        self.assertEqual(marker_update[1][0], "background_task_cancelled")
+        self.assertEqual(audit.await_args.kwargs["result"], "succeeded")
+        self.assertEqual(
+            audit.await_args.kwargs["detail"]["tencent_marker_status"], "pending"
+        )
+
+    async def test_cancelled_task_schedules_local_freeze(self):
+        async def wait_forever():
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(wait_forever())
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        freeze = AsyncMock()
+        with patch("routers.qmf_registration._freeze_unstarted_background_run", freeze):
+            _background_task_finished(
+                task,
+                run_id=7,
+                user={"id": 2, "username": "shenshenghua"},
+                audit_fields={},
+            )
+            await asyncio.sleep(0)
+        freeze.assert_awaited_once()
+        self.assertEqual(
+            freeze.await_args.kwargs["result_code"], "background_task_cancelled"
+        )
 
     async def test_marker_bookkeeping_failure_never_downgrades_qmf_success(self):
         run = {

@@ -800,6 +800,17 @@ def _write_business_payload(response: httpx.Response) -> Any:
     return payload.get("data")
 
 
+def _precheck_payload(response: httpx.Response) -> None:
+    """Validate the exact successful checkCk contract from the verified sample."""
+    data = _business_payload(response, expected_object=False)
+    if type(data) is not int or data != 0:
+        raise QmfPreviewError(
+            "precheck_rejected",
+            "全民防登记前校验未通过，已停止登记",
+            409,
+        )
+
+
 class QmfReadOnlyClient:
     def __init__(
         self,
@@ -929,7 +940,7 @@ class QmfReadOnlyClient:
             "enterHouse/checkCk",
             data={"sfzh": identity, "source": "android"},
         )
-        _business_payload(check_response, expected_object=False)
+        _precheck_payload(check_response)
         await self._emit_step(step_callback, "precheck", "succeeded", "success")
         return QmfCollectedContext(
             platform_task=platform_task,

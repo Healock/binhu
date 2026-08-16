@@ -102,11 +102,21 @@ async def ensure_qmf_registration_schema(cur) -> None:
                 ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_qmf_run_task (parser_type, source_id, id),
             INDEX idx_qmf_run_status (status, updated_at),
+            INDEX idx_qmf_run_row_key (row_key_digest, status),
             INDEX idx_qmf_run_idempotency (idempotency_key, status),
             INDEX idx_qmf_run_upstream (upstream_task_digest, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute(
+        "SHOW INDEX FROM `_qmf_registration_runs` WHERE Key_name=%s",
+        ("idx_qmf_run_row_key",),
+    )
+    if not await cur.fetchone():
+        await cur.execute(
+            "ALTER TABLE `_qmf_registration_runs` "
+            "ADD INDEX idx_qmf_run_row_key (row_key_digest, status)"
+        )
     # Executions are intentionally not resumable.  If the process stopped while
     # a request was in flight, the external result cannot be inferred safely.
     # Persist the interrupted step as uncertain as well, otherwise the page

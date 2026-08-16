@@ -409,10 +409,11 @@ async def _create_prepared_run(
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT id, status FROM _qmf_registration_runs "
-            "WHERE (idempotency_key=%s OR upstream_task_digest=%s) "
+            "WHERE (row_key_digest=%s OR upstream_task_digest=%s "
+            "OR idempotency_key=%s) "
             "AND status IN ('executing','succeeded','uncertain','failed') "
             "ORDER BY id DESC LIMIT 1",
-            (idempotency_key, upstream_digest),
+            (row_key_digest, upstream_digest, idempotency_key),
         )
         attempted = await cur.fetchone()
         if attempted:
@@ -575,8 +576,10 @@ async def _claim_run(
                 "SELECT prior.id, prior.status "
                 "FROM _qmf_registration_runs AS current_run "
                 "JOIN _qmf_registration_runs AS prior "
-                "  ON prior.idempotency_key=current_run.idempotency_key "
-                " AND prior.id<>current_run.id "
+                "  ON prior.id<>current_run.id "
+                " AND (prior.row_key_digest=current_run.row_key_digest "
+                "      OR prior.upstream_task_digest=current_run.upstream_task_digest "
+                "      OR prior.idempotency_key=current_run.idempotency_key) "
                 "WHERE current_run.id=%s "
                 "AND prior.status IN ('executing','succeeded','uncertain','failed') "
                 "ORDER BY prior.id DESC LIMIT 1 FOR UPDATE",
@@ -984,11 +987,14 @@ async def _freeze_unstarted_background_run(
     *,
     user: dict,
     audit_fields: dict[str, str],
+    result_code: str = "background_start_failed",
 ) -> None:
-    """Freeze a claimed run if its background coroutine failed before setup.
+    """Freeze a claimed run after its background coroutine stops unexpectedly.
 
     This recovery only updates local state.  It never retries or calls an
-    external 全民防 endpoint.
+    external 全民防 endpoint.  If any write may have started, the result is
+    uncertain; otherwise it is a local failure that is still permanently
+    frozen from automatic re-execution.
     """
     pool = db_manager.get_pool("online_data")
     conn = None
@@ -997,12 +1003,63 @@ async def _freeze_unstarted_background_run(
         conn = await pool.acquire()
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE _qmf_registration_runs "
-                "SET status='failed', result_code='background_start_failed' "
-                "WHERE id=%s AND status='executing'",
+                "SELECT status, steps_json, tencent_marker_status "
+                "FROM _qmf_registration_runs WHERE id=%s",
                 (run_id,),
             )
-            changed = cur.rowcount == 1
+            row = await cur.fetchone()
+            if not row:
+                return
+            current_status = str(row[0] or "")
+            marker_status = str(row[2] or "not_started")
+            if current_status == "succeeded":
+                if marker_status != "writing":
+                    return
+                await cur.execute(
+                    "UPDATE _qmf_registration_runs "
+                    "SET tencent_marker_status='pending', tencent_marker_error=%s "
+                    "WHERE id=%s AND status='succeeded' "
+                    "AND tencent_marker_status='writing'",
+                    (result_code[:64], run_id),
+                )
+                changed = cur.rowcount == 1
+                recovered_status = "succeeded"
+                recovered_marker_status = "pending"
+                recovered_result_code = "success"
+            elif current_status != "executing":
+                return
+            else:
+                steps = parse_steps(row[1])
+                write_steps = {
+                    "upload_photo", "save_local_photo", "register_person", "complete_task"
+                }
+                has_write_progress = any(
+                    item["key"] in write_steps
+                    and item["status"] in {"sending", "succeeded"}
+                    for item in steps
+                )
+                recovered_status = "uncertain" if has_write_progress else "failed"
+                now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                for item in steps:
+                    if item["status"] != "sending":
+                        continue
+                    item["status"] = recovered_status
+                    item["result_code"] = result_code[:64]
+                    item["finished_at"] = now
+                await cur.execute(
+                    "UPDATE _qmf_registration_runs "
+                    "SET status=%s, result_code=%s, steps_json=%s "
+                    "WHERE id=%s AND status='executing'",
+                    (
+                        recovered_status,
+                        result_code[:64],
+                        serialize_steps(steps),
+                        run_id,
+                    ),
+                )
+                changed = cur.rowcount == 1
+                recovered_marker_status = marker_status
+                recovered_result_code = result_code[:64]
     except Exception:
         # Startup schema recovery will turn a surviving executing row into
         # uncertain if the database itself is currently unavailable.
@@ -1017,12 +1074,12 @@ async def _freeze_unstarted_background_run(
                 "qmf_registration.execute",
                 target_type="qmf_registration_run",
                 target_name=str(run_id),
-                result="failed",
+                result=recovered_status,
                 detail={
                     "run_id": run_id,
-                    "status": "failed",
-                    "result_code": "background_start_failed",
-                    "tencent_marker_status": "not_started",
+                    "status": recovered_status,
+                    "result_code": recovered_result_code,
+                    "tencent_marker_status": recovered_marker_status,
                 },
                 **audit_fields,
             )
@@ -1040,12 +1097,12 @@ def _background_task_finished(
     audit_fields: dict[str, str],
 ) -> None:
     _qmf_background_tasks.discard(task)
-    if task.cancelled():
-        return
+    result_code = "background_task_cancelled" if task.cancelled() else ""
     try:
-        failed = task.exception() is not None
+        failed = bool(result_code) or task.exception() is not None
     except (asyncio.CancelledError, asyncio.InvalidStateError):
-        return
+        failed = True
+        result_code = "background_task_cancelled"
     if not failed:
         return
     recovery = asyncio.create_task(
@@ -1053,6 +1110,7 @@ def _background_task_finished(
             run_id,
             user=dict(user),
             audit_fields=dict(audit_fields),
+            result_code=result_code or "background_start_failed",
         )
     )
     _qmf_background_tasks.add(recovery)
