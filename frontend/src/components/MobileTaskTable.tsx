@@ -3,7 +3,7 @@ import {
   ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import { Button, Input, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
-import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
+import { useCallback, useEffect, useRef, useState, type Key } from 'react'
 import {
   getMobileTaskInlineEditors,
   updateMobileTask,
@@ -61,55 +61,132 @@ export default function MobileTaskTable({
 }: MobileTaskTableProps) {
   const [editorItems, setEditorItems] = useState<Record<string, MobileTaskInlineEditorItem>>({})
   const [editorValues, setEditorValues] = useState<Record<string, Record<string, string>>>({})
-  const [editorsLoading, setEditorsLoading] = useState(false)
+  const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [savingRowKey, setSavingRowKey] = useState('')
-  const editorRequestId = useRef(0)
-  const rowSignature = useMemo(
-    () => rows.map(task => `${task.parser_type}:${task.row_key}`).join('|'),
-    [rows],
-  )
+  const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
+  const loadingEditorKeysRef = useRef<Set<string>>(new Set())
+  const editorElementsRef = useRef<Map<string, HTMLElement>>(new Map())
+  const editorObserverRef = useRef<IntersectionObserver | null>(null)
+  const pendingEditorKeysRef = useRef<Set<string>>(new Set())
+  const editorFlushTimerRef = useRef<number | null>(null)
+  const parserType = rows[0]?.parser_type || ''
+  const editorContext = `${analysisMode ? 'analysis' : 'tasks'}:${parserType}`
+  const editorContextRef = useRef(editorContext)
 
-  const loadEditors = useCallback(async () => {
-    const requestId = editorRequestId.current + 1
-    editorRequestId.current = requestId
-    if (!rows.length) {
-      setEditorItems({})
-      setEditorValues({})
-      setEditorsLoading(false)
-      return
-    }
-    setEditorsLoading(true)
-    setEditorItems({})
-    setEditorValues({})
+  const requestEditors = useCallback(async (rowKeys: string[], force = false) => {
+    if (!parserType) return
+    const keys = [...new Set(rowKeys)].filter(rowKey => (
+      rowKey
+      && !loadingEditorKeysRef.current.has(rowKey)
+      && (force || !editorItemsRef.current[rowKey])
+    ))
+    if (!keys.length) return
+    const requestContext = editorContext
+    keys.forEach(rowKey => loadingEditorKeysRef.current.add(rowKey))
+    setLoadingEditorKeys(new Set(loadingEditorKeysRef.current))
     try {
       const result = await getMobileTaskInlineEditors(
-        rows[0].parser_type,
-        rows.map(task => task.row_key),
+        parserType,
+        keys,
         analysisMode,
       )
-      if (requestId !== editorRequestId.current) return
+      if (requestContext !== editorContextRef.current) return
       const values: Record<string, Record<string, string>> = {}
       Object.entries(result.items).forEach(([rowKey, item]) => {
         const source = item.detail?.sources[0]
         if (source) values[rowKey] = { ...source.values }
       })
-      setEditorItems(result.items)
-      setEditorValues(values)
+      setEditorItems(current => {
+        const next = { ...current, ...result.items }
+        editorItemsRef.current = next
+        return next
+      })
+      setEditorValues(current => ({ ...current, ...values }))
     } catch (reason: any) {
-      if (requestId === editorRequestId.current) {
-        message.error(errorMessage(reason, '当前页可编辑信息读取失败'))
+      if (requestContext === editorContextRef.current) {
+        message.error({
+          key: 'mobile-task-inline-editor-load',
+          content: errorMessage(reason, '当前可见任务的可编辑信息读取失败'),
+        })
       }
     } finally {
-      if (requestId === editorRequestId.current) setEditorsLoading(false)
+      if (requestContext === editorContextRef.current) {
+        keys.forEach(rowKey => loadingEditorKeysRef.current.delete(rowKey))
+        setLoadingEditorKeys(new Set(loadingEditorKeysRef.current))
+      }
     }
-  }, [analysisMode, rowSignature])
+  }, [analysisMode, editorContext, parserType])
+
+  const queueEditorLoad = useCallback((rowKey: string) => {
+    if (
+      !rowKey
+      || editorItemsRef.current[rowKey]
+      || loadingEditorKeysRef.current.has(rowKey)
+      || pendingEditorKeysRef.current.has(rowKey)
+    ) return
+    pendingEditorKeysRef.current.add(rowKey)
+    if (editorFlushTimerRef.current !== null) return
+    editorFlushTimerRef.current = window.setTimeout(() => {
+      editorFlushTimerRef.current = null
+      const keys = [...pendingEditorKeysRef.current]
+      pendingEditorKeysRef.current.clear()
+      void requestEditors(keys)
+    }, 60)
+  }, [requestEditors])
+
+  const setEditorElement = useCallback((rowKey: string, element: HTMLElement | null) => {
+    const previous = editorElementsRef.current.get(rowKey)
+    if (previous && previous !== element) editorObserverRef.current?.unobserve(previous)
+    if (!element) {
+      editorElementsRef.current.delete(rowKey)
+      return
+    }
+    element.dataset.mobileTaskEditorRowKey = rowKey
+    editorElementsRef.current.set(rowKey, element)
+    editorObserverRef.current?.observe(element)
+  }, [])
 
   useEffect(() => {
-    void loadEditors()
-    return () => {
-      editorRequestId.current += 1
+    editorContextRef.current = editorContext
+    editorItemsRef.current = {}
+    loadingEditorKeysRef.current.clear()
+    pendingEditorKeysRef.current.clear()
+    if (editorFlushTimerRef.current !== null) {
+      window.clearTimeout(editorFlushTimerRef.current)
+      editorFlushTimerRef.current = null
     }
-  }, [loadEditors])
+    setEditorItems({})
+    setEditorValues({})
+    setLoadingEditorKeys(new Set())
+    return () => {
+      pendingEditorKeysRef.current.clear()
+      if (editorFlushTimerRef.current !== null) {
+        window.clearTimeout(editorFlushTimerRef.current)
+        editorFlushTimerRef.current = null
+      }
+    }
+  }, [editorContext])
+
+  useEffect(() => {
+    if (!parserType) return undefined
+    if (typeof IntersectionObserver === 'undefined') {
+      rows.slice(0, 20).forEach(task => queueEditorLoad(task.row_key))
+      return undefined
+    }
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return
+        const rowKey = (entry.target as HTMLElement).dataset.mobileTaskEditorRowKey
+        if (rowKey) queueEditorLoad(rowKey)
+      })
+    }, { rootMargin: '600px 0px' })
+    editorObserverRef.current = observer
+    editorElementsRef.current.forEach(element => observer.observe(element))
+    return () => {
+      observer.disconnect()
+      if (editorObserverRef.current === observer) editorObserverRef.current = null
+    }
+  }, [parserType, queueEditorLoad])
 
   const saveEditor = async (
     task: MobileTaskItem,
@@ -151,7 +228,7 @@ export default function MobileTaskTable({
     } catch (reason: any) {
       message.error(errorMessage(reason, '保存失败，请稍后重试'))
       if ([409, 502, 503].includes(Number(reason?.response?.status))) {
-        await loadEditors()
+        await requestEditors([task.row_key], true)
       }
     } finally {
       setSavingRowKey('')
@@ -188,18 +265,31 @@ export default function MobileTaskTable({
       : []
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
+    const editorLoading = loadingEditorKeys.has(task.row_key)
 
-    if (editorsLoading && !item) {
+    if (!item) {
       return (
-        <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--loading`}>
-          <div className="mobile-task-table-inline-status">正在准备本行填写项…</div>
+        <div
+          ref={element => setEditorElement(task.row_key, element)}
+          className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--loading`}
+          onClick={event => event.stopPropagation()}
+        >
+          <div className="mobile-task-table-inline-status">
+            {editorLoading ? '正在准备本行填写项…' : '滚动到本行时自动读取可编辑信息'}
+          </div>
+          {!editorLoading && (
+            <Button size="small" onClick={() => void requestEditors([task.row_key], true)}>读取本行</Button>
+          )}
         </div>
       )
     }
 
     if (!item?.available || !detail || !source) {
       return (
-        <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}>
+        <div
+          ref={element => setEditorElement(task.row_key, element)}
+          className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}
+        >
           <div className="mobile-task-table-inline-fields">
             <div className="mobile-task-table-inline-readonly"><span>现住址</span><strong>{task.summary.current_address || '未填写'}</strong></div>
             <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
@@ -225,6 +315,7 @@ export default function MobileTaskTable({
 
     return (
       <div
+        ref={element => setEditorElement(task.row_key, element)}
         className={`mobile-task-table-inline-editor ${toneClass}${dirtyCount ? ' mobile-task-table-inline-editor--dirty' : ''}`}
         onClick={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
