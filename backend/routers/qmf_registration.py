@@ -393,7 +393,11 @@ def _run_payload(row: tuple[Any, ...]) -> dict[str, Any]:
         "created_at": utc_text(row[18]),
         "updated_at": utc_text(row[19]),
         "can_execute": status == "prepared",
-        "can_reprepare": status == "failed" and not write_progress,
+        # A pre-v0.21.3 worker could persist a local pre-write interruption as
+        # ``uncertain`` even when every external write step was still pending.
+        # That state is recoverable because no external side effect could have
+        # started; once any write step has progress, it remains frozen.
+        "can_reprepare": status in {"failed", "uncertain"} and not write_progress,
         "can_retry_marker": status == "succeeded" and marker_status in {
             "not_started", "pending", "conflict", "failed",
         },
@@ -460,12 +464,12 @@ async def _create_prepared_run(
                 and item["status"] in {"sending", "succeeded", "uncertain"}
                 for item in attempted_steps
             )
-            if str(attempted[1]) == "failed" and not write_progress:
+            if str(attempted[1]) in {"failed", "uncertain"} and not write_progress:
                 await cur.execute(
                     "UPDATE _qmf_registration_runs "
                     "SET status='superseded', "
                     "result_code='manual_reprepare_after_prewrite_failure' "
-                    "WHERE id=%s AND status='failed'",
+                    "WHERE id=%s AND status IN ('failed','uncertain')",
                     (int(attempted[0]),),
                 )
             else:
