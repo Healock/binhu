@@ -41,6 +41,29 @@ export const QMF_MARKER_STATUS: Record<
   failed: { label: '腾讯标记失败，待人工重试', color: 'error' },
 }
 
+const QMF_WRITE_STEP_KEYS = new Set([
+  'upload_photo',
+  'save_local_photo',
+  'register_person',
+  'complete_task',
+])
+
+const QMF_WRITE_PROGRESS = new Set(['sending', 'succeeded', 'uncertain'])
+
+/**
+ * Keep the recovery button visible for legacy runs whose API response did not
+ * yet include the derived flag.  The step list is not trusted to authorize a
+ * write: clicking still calls prepare, and the backend rechecks the run and
+ * current source before doing anything external.
+ */
+export function qmfRunCanReprepare(run: QmfRegistrationRun | null | undefined) {
+  if (!run || !['failed', 'uncertain'].includes(run.status)) return false
+  if (run.can_reprepare) return true
+  return !run.steps.some(
+    step => QMF_WRITE_STEP_KEYS.has(step.key) && QMF_WRITE_PROGRESS.has(step.status),
+  )
+}
+
 export function qmfRunIsPolling(run: QmfRegistrationRun | null | undefined) {
   return run?.status === 'executing' || run?.tencent_marker_status === 'writing'
 }

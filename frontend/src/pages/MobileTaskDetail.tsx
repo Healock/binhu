@@ -62,6 +62,7 @@ import {
   QMF_RUN_STATUS,
   QMF_STEP_STATUS,
   canExecutePreparedQmfRun,
+  qmfRunCanReprepare,
   qmfRunIsPolling,
 } from '../utils/qmfRegistration'
 
@@ -511,6 +512,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       : []),
   ]
   const latestQmfRun = qmfRun || data.qmf_registration?.latest_run || null
+  const canReprepareQmfRun = qmfRunCanReprepare(qmfRun)
   const shouldResumeQmfRun = Boolean(
     latestQmfRun
     && ['prepared', 'executing', 'succeeded', 'failed', 'uncertain'].includes(latestQmfRun.status),
@@ -1097,11 +1099,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     type="error"
                     showIcon
                     message="登记已停止"
-                    description={qmfRun.can_reprepare
+                    description={canReprepareQmfRun
                       ? '系统确认尚未开始任何写入。你可以人工重新核对任务、人员和照片后，再生成一次新的登记准备。'
                       : '本条存在写入进度或无法安全排除外部影响，仍保持冻结，不能从头重放。'}
                   />
-                  {qmfRun.can_reprepare && (
+                  {canReprepareQmfRun && (
                     <Button type="primary" onClick={() => void openQmfRegistration()}>
                       重新核对并准备
                     </Button>
