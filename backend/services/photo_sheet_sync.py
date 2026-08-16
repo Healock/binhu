@@ -68,6 +68,36 @@ class ExistingPhotoSheetRow:
     fingerprint: str
 
 
+class PhotoSheetRowLocationError(RuntimeError):
+    """来源行无法安全、唯一定位。"""
+
+
+@dataclass(slots=True)
+class SourceRowsCache:
+    """在一次 outbox 批处理中复用同一份腾讯名单快照。"""
+
+    rows: list[dict] | None = None
+    load_error: Exception | None = None
+
+    async def load(self, client: TxDocsClient, source: dict) -> list[dict]:
+        if self.rows is not None:
+            return self.rows
+        if self.load_error is not None:
+            raise self.load_error
+        try:
+            self.rows = await client.read_all_source_rows(
+                source["file_id"], source["sheet_id"], source["header_row"], COLUMNS,
+            )
+        except Exception as exc:
+            self.load_error = exc
+            raise
+        return self.rows
+
+    def invalidate(self) -> None:
+        self.rows = None
+        self.load_error = None
+
+
 @dataclass(slots=True, frozen=True)
 class OutboxRetryPlan:
     status: str
@@ -131,6 +161,28 @@ async def _record_outbox_failure(
         ("paused" if plan.status == "paused" else "retry", ticket_id),
     )
     return plan
+
+
+async def _pause_exhausted_outbox(cur) -> int:
+    """把旧版本遗留的无限重试任务迁移为待人工处理。"""
+    await cur.execute(
+        "UPDATE photo_sheet_outbox SET status='paused',next_attempt_at=NULL,"
+        "error_code=CASE WHEN error_code='write_uncertain' "
+        "THEN 'write_uncertain_exhausted' ELSE 'write_failed_exhausted' END "
+        "WHERE status='retry' AND attempt_count>=%s",
+        (PHOTO_OUTBOX_MAX_AUTO_ATTEMPTS,),
+    )
+    paused = int(cur.rowcount or 0)
+    if paused:
+        await cur.execute(
+            "UPDATE photo_request_details detail "
+            "JOIN photo_sheet_outbox outbox ON outbox.work_order_id=detail.work_order_id "
+            "SET detail.external_sync_status='paused' "
+            "WHERE outbox.status='paused' AND outbox.attempt_count>=%s "
+            "AND detail.external_sync_status<>'synced'",
+            (PHOTO_OUTBOX_MAX_AUTO_ATTEMPTS,),
+        )
+    return paused
 
 
 def _pair_relocated_rows(
@@ -739,7 +791,14 @@ async def _ticket_values(cur, ticket_id: int) -> dict:
     }
 
 
-async def _locate_mapping(client: TxDocsClient, source: dict, cur, ticket_id: int) -> tuple[int | None, dict | None]:
+async def _locate_mapping(
+    client: TxDocsClient,
+    source: dict,
+    cur,
+    ticket_id: int,
+    *,
+    rows_cache: SourceRowsCache | None = None,
+) -> tuple[int | None, dict | None]:
     await cur.execute(
         "SELECT physical_row, row_fingerprint FROM photo_sheet_rows WHERE work_order_id=%s", (ticket_id,),
     )
@@ -751,7 +810,8 @@ async def _locate_mapping(client: TxDocsClient, source: dict, cur, ticket_id: in
             return int(mapping[0]), actual
     if not mapping:
         return None, None
-    rows = await client.read_all_source_rows(source["file_id"], source["sheet_id"], source["header_row"], COLUMNS)
+    cache = rows_cache or SourceRowsCache()
+    rows = await cache.load(client, source)
     candidates = []
     for raw in rows:
         values = {column: _text(raw["values"].get(column)) for column in COLUMNS}
@@ -805,7 +865,7 @@ async def _process_append(
             ):
                 candidates.append(raw)
         if len(candidates) > 1:
-            raise RuntimeError("发现多个相同候选行，无法安全确认写入结果")
+            raise PhotoSheetRowLocationError("发现多个相同候选行，无法安全确认写入结果")
         if candidates:
             physical_row = int(candidates[0]["physical_row"])
             verified = candidates[0]
@@ -831,10 +891,19 @@ async def _process_append(
     )
 
 
-async def _process_completed(client: TxDocsClient, source: dict, cur, ticket_id: int) -> None:
-    physical_row, actual = await _locate_mapping(client, source, cur, ticket_id)
+async def _process_completed(
+    client: TxDocsClient,
+    source: dict,
+    cur,
+    ticket_id: int,
+    *,
+    rows_cache: SourceRowsCache | None = None,
+) -> None:
+    physical_row, actual = await _locate_mapping(
+        client, source, cur, ticket_id, rows_cache=rows_cache,
+    )
     if not physical_row or not actual:
-        raise RuntimeError("无法唯一定位腾讯来源行")
+        raise PhotoSheetRowLocationError("无法唯一定位腾讯来源行")
     before = {column: _text(actual["values"].get(column)) for column in COLUMNS}
     if before["处理状态"] == COMPLETED_MARK:
         return
@@ -853,10 +922,22 @@ async def _process_completed(client: TxDocsClient, source: dict, cur, ticket_id:
 async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
     pool = db_manager.get_pool("workflow")
     async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            source = await load_source(cur)
-            if not source["write_enabled"] or not await _global_writeback_enabled():
-                return {"processed": 0, "failed": 0, "disabled": True}
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                source = await load_source(cur)
+                migrated_paused = await _pause_exhausted_outbox(cur)
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        if not source["write_enabled"] or not await _global_writeback_enabled():
+            return {
+                "processed": 0,
+                "failed": 0,
+                "paused": migrated_paused,
+                "disabled": True,
+            }
     client = await _oauth_client()
     processed = failed = 0
     try:
@@ -871,8 +952,8 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     f"{ticket_clause} ORDER BY (next_attempt_at IS NOT NULL),next_attempt_at,id LIMIT %s", params,
                 )
                 jobs = await cur.fetchall()
-            append_rows_cache: list[dict] | None = None
-            paused = 0
+            source_rows_cache = SourceRowsCache()
+            paused = migrated_paused
             for outbox_id, job_ticket_id, action, attempt_count in jobs:
                 await conn.begin()
                 try:
@@ -884,17 +965,22 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                             continue
                         if action == "append_request":
                             first_attempt = int(attempt_count or 0) == 0
-                            if not first_attempt and append_rows_cache is None:
-                                append_rows_cache = await client.read_all_source_rows(
-                                    source["file_id"], source["sheet_id"], source["header_row"], COLUMNS,
-                                )
+                            known_rows = None
+                            if not first_attempt:
+                                known_rows = await source_rows_cache.load(client, source)
                             await _process_append(
                                 client, source, cur, int(job_ticket_id),
-                                known_rows=None if first_attempt else append_rows_cache,
+                                known_rows=known_rows,
                                 first_attempt=first_attempt,
                             )
                         elif action == "mark_completed":
-                            await _process_completed(client, source, cur, int(job_ticket_id))
+                            await _process_completed(
+                                client,
+                                source,
+                                cur,
+                                int(job_ticket_id),
+                                rows_cache=source_rows_cache,
+                            )
                         else:
                             raise RuntimeError("未知照片名单写回动作")
                         await cur.execute("UPDATE photo_sheet_outbox SET status='done',last_error='',error_code='' WHERE id=%s", (outbox_id,))
@@ -902,7 +988,8 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     await conn.commit()
                     processed += 1
                 except asyncio.CancelledError:
-                    append_rows_cache = None
+                    if action == "append_request":
+                        source_rows_cache.invalidate()
                     await conn.rollback()
                     await conn.begin()
                     async with conn.cursor() as cur:
@@ -918,7 +1005,8 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
                     await conn.commit()
                     raise
                 except Exception as exc:
-                    append_rows_cache = None
+                    if action == "append_request":
+                        source_rows_cache.invalidate()
                     await conn.rollback()
                     await conn.begin()
                     async with conn.cursor() as cur:
