@@ -55,7 +55,6 @@ def runtime_config() -> QmfRuntimeConfig:
         expected_station_name="滨湖新城派出所",
         timeout_seconds=5,
         session_max_seconds=45,
-        preview_cooldown_seconds=45,
     )
 
 
@@ -137,10 +136,15 @@ def collected_context() -> QmfCollectedContext:
             "current_address": "虚构现住址",
             "household_address": "虚构户籍地址",
             "gender": "女",
+            "gender_code": "2",
             "birth_date": "19491231",
+            "birth_date_derived": False,
             "nation": "汉族",
+            "nation_code": "01",
             "education": "本科",
+            "education_code": "20",
             "marital_status": "未婚",
+            "marital_status_code": "1",
             "community_code": "3205840001",
             "residence_type": "1",
             "residence_method": "1",

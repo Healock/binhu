@@ -15,6 +15,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from routers.qmf_registration import (  # noqa: E402
     QmfExecuteRequest,
     QmfPreviewRequest,
+    _assert_source_unchanged,
     _append_tencent_marker,
     _background_task_finished,
     _claim_run,
@@ -86,6 +87,59 @@ def request(path: str) -> Request:
 
 
 class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_source_check_waits_for_transient_projection_refresh(self):
+        cursor = _Cursor(fetchone_values=[
+            (3, "a" * 64, None, None),
+            (3, "a" * 64, None, None),
+            (3, "a" * 64, 1, 0),
+        ])
+        sleep = AsyncMock()
+        with patch("routers.qmf_registration.asyncio.sleep", sleep):
+            await _assert_source_unchanged(
+                _Conn(cursor),
+                parser_type="疑似未注销模型三",
+                row_key="internal-row-key",
+                source_id=9,
+                expected_revision=3,
+                expected_hash="a" * 64,
+            )
+        self.assertEqual(sleep.await_count, 2)
+        self.assertEqual(len(cursor.executed), 3)
+        self.assertTrue(all("LEFT JOIN" in sql for sql, _ in cursor.executed))
+
+    async def test_source_check_distinguishes_missing_projection_from_missing_row(self):
+        projection_cursor = _Cursor(fetchone_values=[
+            (3, "a" * 64, None, None),
+            (3, "a" * 64, None, None),
+            (3, "a" * 64, None, None),
+        ])
+        with (
+            patch("routers.qmf_registration.asyncio.sleep", AsyncMock()),
+            self.assertRaises(QmfPreviewError) as projection_error,
+        ):
+            await _assert_source_unchanged(
+                _Conn(projection_cursor),
+                parser_type="疑似未注销模型三",
+                row_key="internal-row-key",
+                source_id=9,
+                expected_revision=3,
+                expected_hash="a" * 64,
+            )
+        self.assertEqual(
+            projection_error.exception.code, "source_projection_refreshing"
+        )
+
+        with self.assertRaises(QmfPreviewError) as missing_error:
+            await _assert_source_unchanged(
+                _Conn(_Cursor(fetchone_values=[None])),
+                parser_type="疑似未注销模型三",
+                row_key="internal-row-key",
+                source_id=9,
+                expected_revision=3,
+                expected_hash="a" * 64,
+            )
+        self.assertEqual(missing_error.exception.code, "source_missing")
+
     async def test_schema_stores_only_row_key_digest_and_recovers_sending_step(self):
         steps = initial_steps()
         steps[4]["status"] = "sending"
@@ -133,7 +187,9 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(forbidden, serialized)
 
     async def test_prior_execution_attempt_freezes_new_prepare(self):
-        cursor = _Cursor(fetchone_values=[(88, "uncertain")])
+        cursor = _Cursor(fetchone_values=[(
+            88, "uncertain", serialize_steps(initial_steps())
+        )])
         conn = _Conn(cursor)
         with self.assertRaises(QmfPreviewError) as raised:
             await _create_prepared_run(
@@ -158,6 +214,46 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("upstream_task_digest=%s", duplicate_sql)
         self.assertIn("idempotency_key=%s", duplicate_sql)
         self.assertEqual(len(duplicate_params), 3)
+
+    async def test_failed_run_before_any_write_can_be_manually_reprepared(self):
+        failed_steps = initial_steps()
+        for item in failed_steps[:4]:
+            item["status"] = "succeeded"
+        prepared_row = (
+            99, "疑似未注销模型三", 9, 3, "a" * 64, 11, "prepared",
+            serialize_steps(initial_steps()), "", "b" * 64, "image/jpeg", 123,
+            "not_started", "", None, None, None, None, None, None,
+        )
+        cursor = _Cursor(fetchone_values=[
+            (88, "failed", serialize_steps(failed_steps)),
+            prepared_row,
+        ])
+        cursor.lastrowid = 99
+        conn = _Conn(cursor)
+        run = await _create_prepared_run(
+            conn,
+            data=QmfPreviewRequest(
+                parser_type="疑似未注销模型三",
+                row_key="sensitive-business-key-used-only-in-memory",
+                source_id=9,
+                expected_revision=3,
+            ),
+            user={"id": 11},
+            expected_hash="a" * 64,
+            preview={
+                "upstream_task": {"task_id": "fictional-task"},
+                "photo": {
+                    "sha256": "b" * 64,
+                    "mime_type": "image/jpeg",
+                    "size_bytes": 123,
+                },
+            },
+        )
+        self.assertEqual(run["status"], "prepared")
+        self.assertTrue(any(
+            params == (88,) and "manual_reprepare_after_prewrite_failure" in sql
+            for sql, params in cursor.executed
+        ))
 
     async def test_claim_is_serialized_and_rejects_duplicate_execution(self):
         run_row = (
@@ -218,22 +314,12 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as execute_error:
             await execute_qmf_registration(
                 1,
-                QmfExecuteRequest(confirmation="确认登记"),
+                QmfExecuteRequest(),
                 request("/api/qmf-registration/runs/1/execute"),
                 user={"id": 1, "username": "super-admin", "role": "super_admin"},
                 conn=None,
             )
         self.assertEqual(execute_error.exception.status_code, 403)
-
-        with self.assertRaises(HTTPException) as phrase_error:
-            await execute_qmf_registration(
-                1,
-                QmfExecuteRequest(confirmation="确认"),
-                request("/api/qmf-registration/runs/1/execute"),
-                user={"id": 2, "username": "shenshenghua"},
-                conn=None,
-            )
-        self.assertEqual(phrase_error.exception.status_code, 400)
 
         with self.assertRaises(HTTPException) as get_error:
             await get_qmf_registration_run(

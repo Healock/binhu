@@ -73,6 +73,49 @@ MAX_PHOTO_BYTES = 5 * 1024 * 1024
 _IDENTITY_PATTERN = re.compile(r"^\d{17}[0-9X]$")
 _IDENTITY_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
 _IDENTITY_CHECKS = "10X98765432"
+_GENDER_LABELS = {
+    "0": "未知",
+    "1": "男",
+    "2": "女",
+    "9": "未说明",
+}
+_NATION_LABELS = {
+    "01": "汉族", "02": "蒙古族", "03": "回族", "04": "藏族",
+    "05": "维吾尔族", "06": "苗族", "07": "彝族", "08": "壮族",
+    "09": "布依族", "10": "朝鲜族", "11": "满族", "12": "侗族",
+    "13": "瑶族", "14": "白族", "15": "土家族", "16": "哈尼族",
+    "17": "哈萨克族", "18": "傣族", "19": "黎族", "20": "傈僳族",
+    "21": "佤族", "22": "畲族", "23": "高山族", "24": "拉祜族",
+    "25": "水族", "26": "东乡族", "27": "纳西族", "28": "景颇族",
+    "29": "柯尔克孜族", "30": "土族", "31": "达斡尔族", "32": "仫佬族",
+    "33": "羌族", "34": "布朗族", "35": "撒拉族", "36": "毛南族",
+    "37": "仡佬族", "38": "锡伯族", "39": "阿昌族", "40": "普米族",
+    "41": "塔吉克族", "42": "怒族", "43": "乌孜别克族", "44": "俄罗斯族",
+    "45": "鄂温克族", "46": "德昂族", "47": "保安族", "48": "裕固族",
+    "49": "京族", "50": "塔塔尔族", "51": "独龙族", "52": "鄂伦春族",
+    "53": "赫哲族", "54": "门巴族", "55": "珞巴族", "56": "基诺族",
+    "97": "其他", "98": "外国血统", "99": "未说明",
+}
+_EDUCATION_LABELS = {
+    "10": "研究生",
+    "11": "博士研究生",
+    "12": "硕士研究生",
+    "19": "研究生班",
+    "20": "大学本科",
+    "30": "大学专科",
+    "40": "中等专科",
+    "50": "技工学校",
+    "60": "高中",
+    "70": "初中",
+    "80": "小学",
+    "90": "文盲或半文盲",
+    "99": "未说明",
+}
+_MARITAL_STATUS_LABELS = {
+    "1": "未婚", "2": "已婚", "3": "丧偶", "4": "离婚", "9": "未说明",
+    "10": "未婚", "20": "已婚", "21": "初婚", "22": "再婚", "23": "复婚",
+    "30": "丧偶", "40": "离婚", "90": "未说明",
+}
 
 
 class QmfPreviewError(RuntimeError):
@@ -149,7 +192,6 @@ class QmfLoginSession:
 
 _preview_active = False
 _registration_active = False
-_last_preview_started = 0.0
 
 
 def _text(value: Any) -> str:
@@ -595,19 +637,61 @@ def _first(row: dict[str, Any], *names: str) -> str:
     return ""
 
 
-def _safe_person(person: dict[str, Any]) -> dict[str, str]:
+def _display_code(value: Any, labels: dict[str, str]) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    if text in labels:
+        return labels[text]
+    return f"代码 {text}（待确认）" if text.isdigit() else text
+
+
+def _display_birth_date(value: Any, identity: str) -> tuple[str, bool]:
+    text = _text(value)
+    compact = re.sub(r"[^0-9]", "", text)
+    if len(compact) == 8:
+        try:
+            parsed = datetime.strptime(compact, "%Y%m%d")
+        except ValueError:
+            pass
+        else:
+            return parsed.strftime("%Y-%m-%d"), False
+    if text:
+        return text, False
+    if valid_identity(identity):
+        parsed = datetime.strptime(identity[6:14], "%Y%m%d")
+        return parsed.strftime("%Y-%m-%d"), True
+    return "", False
+
+
+def _safe_person(person: dict[str, Any]) -> dict[str, Any]:
     """Project only fields required for the authenticated human comparison."""
+    identity = normalize_identity(_first(person, "personID", "sfzh"))
+    gender_code = _first(person, "gender", "xb")
+    nation_code = _first(person, "nation", "mz")
+    education_code = _first(person, "degree", "whcd")
+    marital_status_code = _first(person, "hunyin", "hyzk")
+    birth_date, birth_date_derived = _display_birth_date(
+        _first(person, "birth", "csrq"), identity
+    )
     return {
         "name": _first(person, "name", "xm"),
-        "identity_number": normalize_identity(_first(person, "personID", "sfzh")),
+        "identity_number": identity,
         "phone": _first(person, "phone", "lxfs", "wllxfs"),
         "current_address": _first(person, "dz", "address"),
         "household_address": _first(person, "hjdzxz", "hjdz"),
-        "gender": _first(person, "gender", "xb"),
-        "birth_date": _first(person, "birth", "csrq"),
-        "nation": _first(person, "nation", "mz"),
-        "education": _first(person, "degree", "whcd"),
-        "marital_status": _first(person, "hunyin", "hyzk"),
+        "gender": _display_code(gender_code, _GENDER_LABELS),
+        "gender_code": gender_code,
+        "birth_date": birth_date,
+        "birth_date_derived": birth_date_derived,
+        "nation": _display_code(nation_code, _NATION_LABELS),
+        "nation_code": nation_code,
+        "education": _display_code(education_code, _EDUCATION_LABELS),
+        "education_code": education_code,
+        "marital_status": _display_code(
+            marital_status_code, _MARITAL_STATUS_LABELS
+        ),
+        "marital_status_code": marital_status_code,
         "community_code": _first(person, "communityCode", "sqdm"),
         "residence_type": _first(person, "jzlx"),
         "residence_method": _first(person, "jzfs"),
@@ -641,7 +725,7 @@ class QmfCollectedContext:
     raw_task: dict[str, Any]
     upstream_task: dict[str, str]
     raw_person: dict[str, Any]
-    person: dict[str, str]
+    person: dict[str, Any]
     photo: dict[str, Any]
 
 
@@ -725,7 +809,7 @@ def _registration_photo_path(
 def build_upload_photo_payload(context: QmfCollectedContext) -> dict[str, Any]:
     identity = normalize_identity(context.person.get("identity_number"))
     community_code = _text(context.person.get("community_code"))
-    gender = _text(context.person.get("gender"))
+    gender = _text(context.person.get("gender_code"))
     name = _text(context.person.get("name"))
     if not all((valid_identity(identity), community_code, gender, name)):
         raise QmfPreviewError(
@@ -1303,21 +1387,11 @@ async def run_guarded_preview(
     client: QmfReadOnlyClient | None = None,
     config: QmfRuntimeConfig | None = None,
 ) -> dict[str, Any]:
-    global _preview_active, _last_preview_started
-    now = time.monotonic()
+    global _preview_active
     runtime_config = config or settings_config()
-    cooldown = max(1, int(runtime_config.preview_cooldown_seconds))
     if _preview_active or _registration_active:
         raise QmfPreviewError("preview_busy", "已有一条全民防预演正在执行", 429)
-    if _last_preview_started and now - _last_preview_started < cooldown:
-        remaining = max(1, int(cooldown - (now - _last_preview_started)))
-        raise QmfPreviewError(
-            "preview_cooldown",
-            f"请等待 {remaining} 秒后再执行下一次预演",
-            429,
-        )
     _preview_active = True
-    _last_preview_started = now
     try:
         return await (client or QmfReadOnlyClient(config=runtime_config)).preview(
             platform_task=platform_task
@@ -1354,7 +1428,6 @@ def qmf_operation_busy() -> bool:
 
 
 def reset_preview_guard_for_tests() -> None:
-    global _preview_active, _registration_active, _last_preview_started
+    global _preview_active, _registration_active
     _preview_active = False
     _registration_active = False
-    _last_preview_started = 0.0

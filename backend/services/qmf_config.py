@@ -34,7 +34,6 @@ QMF_CONFIG_KEYS = {
     "qmf_expected_station_name",
     "qmf_timeout_seconds",
     "qmf_session_max_seconds",
-    "qmf_preview_cooldown_seconds",
 }
 QMF_SECRET_KEYS = {
     "qmf_source_username",
@@ -97,7 +96,6 @@ class QmfRuntimeConfig:
     expected_station_name: str
     timeout_seconds: int
     session_max_seconds: int
-    preview_cooldown_seconds: int
 
     @property
     def configured(self) -> bool:
@@ -148,7 +146,6 @@ def settings_config() -> QmfRuntimeConfig:
         expected_station_name=str(settings.QMF_EXPECTED_STATION_NAME or ""),
         timeout_seconds=max(1, int(settings.QMF_TIMEOUT_SECONDS or 15)),
         session_max_seconds=max(1, int(settings.QMF_SESSION_MAX_SECONDS or 45)),
-        preview_cooldown_seconds=max(1, int(settings.QMF_PREVIEW_COOLDOWN_SECONDS or 45)),
     )
 
 
@@ -210,11 +207,6 @@ async def load_qmf_config(conn) -> QmfRuntimeConfig:
             fallback.session_max_seconds,
             1,
         ),
-        preview_cooldown_seconds=_as_int(
-            values.get("qmf_preview_cooldown_seconds", fallback.preview_cooldown_seconds),
-            fallback.preview_cooldown_seconds,
-            1,
-        ),
     )
 
 
@@ -241,7 +233,6 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
         "expected_station_name": config.expected_station_name,
         "timeout_seconds": config.timeout_seconds,
         "session_max_seconds": config.session_max_seconds,
-        "preview_cooldown_seconds": config.preview_cooldown_seconds,
         "configured": config.configured,
         "registration_configured": config.registration_configured,
         "database_keys": sorted(stored_keys),

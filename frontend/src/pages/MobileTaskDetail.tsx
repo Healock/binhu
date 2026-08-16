@@ -58,7 +58,6 @@ import MobilePhonePicker from '../components/MobilePhonePicker'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import {
-  QMF_CONFIRMATION,
   QMF_MARKER_STATUS,
   QMF_RUN_STATUS,
   QMF_STEP_STATUS,
@@ -110,7 +109,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [qmfPreviewLoading, setQmfPreviewLoading] = useState(false)
   const [qmfPrepareResult, setQmfPrepareResult] = useState<QmfPrepareResult | null>(null)
   const [qmfRun, setQmfRun] = useState<QmfRegistrationRun | null>(null)
-  const [qmfConfirmation, setQmfConfirmation] = useState('')
   const [qmfExecuting, setQmfExecuting] = useState(false)
   const [qmfMarkerRetrying, setQmfMarkerRetrying] = useState(false)
   const [qmfPreviewError, setQmfPreviewError] = useState('')
@@ -358,7 +356,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     setQmfPreviewLoading(true)
     setQmfPrepareResult(null)
     setQmfRun(null)
-    setQmfConfirmation('')
     setQmfPreviewError('')
     try {
       const result = await prepareQmfRegistration({
@@ -383,12 +380,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     setQmfPreviewOpen(true)
     setQmfPrepareResult(null)
     setQmfRun(latest)
-    setQmfConfirmation('')
     setQmfPreviewError('')
   }
 
   const executePreparedQmfRun = () => {
-    if (!canExecutePreparedQmfRun(qmfRun, qmfConfirmation, Boolean(qmfPrepareResult))) return
+    if (!canExecutePreparedQmfRun(qmfRun, Boolean(qmfPrepareResult))) return
     Modal.confirm({
       title: '最后确认：执行全民防登记？',
       content: '此操作会依次上传照片、保存人员资料并反馈模型三，提交后不能撤销。任何不确定结果都会冻结本次运行。',
@@ -399,7 +395,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         setQmfExecuting(true)
         setQmfPreviewError('')
         try {
-          const next = await executeQmfRegistration(qmfRun.id, qmfConfirmation)
+          const next = await executeQmfRegistration(qmfRun.id)
           setQmfRun(next)
           setData(current => current?.qmf_registration ? {
             ...current,
@@ -975,7 +971,13 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                       { key: 'identity', label: '身份证号', children: preview.person.identity_number || '未填写' },
                       { key: 'phone', label: '手机号', children: preview.person.phone || '未填写' },
                       { key: 'gender', label: '性别', children: preview.person.gender || '未填写' },
-                      { key: 'birth', label: '出生日期', children: preview.person.birth_date || '未填写' },
+                      {
+                        key: 'birth',
+                        label: '出生日期',
+                        children: preview.person.birth_date
+                          ? `${preview.person.birth_date}${preview.person.birth_date_derived ? '（由身份证号识别）' : ''}`
+                          : '未填写',
+                      },
                       { key: 'nation', label: '民族', children: preview.person.nation || '未填写' },
                       { key: 'education', label: '文化程度', children: preview.person.education || '未填写' },
                       { key: 'marriage', label: '婚姻状况', children: preview.person.marital_status || '未填写' },
@@ -1090,7 +1092,21 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 <Alert type="error" showIcon message="外部结果无法确认，本条已冻结" description="请先到全民防旧平台人工核对；系统不会自动重试，也不能从头重放。" />
               )}
               {qmfRun.status === 'failed' && (
-                <Alert type="error" showIcon message="登记已停止，本条已冻结" description="即使上游明确返回业务错误，也必须人工核对后再决定后续处置。" />
+                <div className="space-y-3">
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="登记已停止"
+                    description={qmfRun.can_reprepare
+                      ? '系统确认尚未开始任何写入。你可以人工重新核对任务、人员和照片后，再生成一次新的登记准备。'
+                      : '本条存在写入进度或无法安全排除外部影响，仍保持冻结，不能从头重放。'}
+                  />
+                  {qmfRun.can_reprepare && (
+                    <Button type="primary" onClick={() => void openQmfRegistration()}>
+                      重新核对并准备
+                    </Button>
+                  )}
+                </div>
               )}
               {qmfRun.status === 'succeeded' && (
                 <div className="flex flex-wrap items-center gap-2">
@@ -1115,20 +1131,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 message="执行前请再次核对"
                 description="执行前还会再次读取腾讯来源和全民防任务；任一内容变化都会在写入前停止。"
               />
-              <label>
-                <span>请输入“{QMF_CONFIRMATION}”</span>
-                <Input
-                  value={qmfConfirmation}
-                  onChange={event => setQmfConfirmation(event.target.value)}
-                  placeholder={QMF_CONFIRMATION}
-                  disabled={qmfExecuting}
-                />
-              </label>
               <Button
                 block
                 type="primary"
                 loading={qmfExecuting}
-                disabled={!canExecutePreparedQmfRun(qmfRun, qmfConfirmation, true)}
+                disabled={!canExecutePreparedQmfRun(qmfRun, true)}
                 onClick={executePreparedQmfRun}
               >二次确认并执行全民防登记</Button>
             </section>

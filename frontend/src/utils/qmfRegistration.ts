@@ -5,8 +5,6 @@ import type {
   QmfTencentMarkerStatus,
 } from '../api/client'
 
-export const QMF_CONFIRMATION = '确认登记'
-
 export const QMF_RUN_STATUS: Record<
   QmfRegistrationRunStatus,
   { label: string; color: string; terminal: boolean }
@@ -49,13 +47,11 @@ export function qmfRunIsPolling(run: QmfRegistrationRun | null | undefined) {
 
 export function canExecutePreparedQmfRun(
   run: QmfRegistrationRun | null | undefined,
-  confirmation: string,
   hasFreshPreview: boolean,
 ) {
   return Boolean(
     run?.status === 'prepared'
     && run.can_execute
     && hasFreshPreview
-    && confirmation.trim() === QMF_CONFIRMATION,
   )
 }

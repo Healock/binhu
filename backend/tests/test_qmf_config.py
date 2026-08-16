@@ -94,7 +94,6 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
             expected_station_name="滨湖新城派出所",
             timeout_seconds=15,
             session_max_seconds=45,
-            preview_cooldown_seconds=45,
         )
         self.assertFalse(config.configured)
         self.assertFalse(config.registration_configured)
@@ -117,7 +116,6 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
             expected_station_name="滨湖新城派出所",
             timeout_seconds=15,
             session_max_seconds=45,
-            preview_cooldown_seconds=45,
         )
         self.assertTrue(QmfRuntimeConfig(**base).registration_configured)
         for disabled_field in (

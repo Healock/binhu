@@ -1,9 +1,10 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from services.parsers.fullchain import FullChainParser
 from services.sync_engine import (
     SyncEngine,
+    finalize_source_projection,
     source_read_requires_confirmation,
     source_rows_digest,
 )
@@ -32,6 +33,21 @@ class FakeConnection:
 
     def cursor(self):
         return self.cursor_instance
+
+
+class TransactionConnection(FakeConnection):
+    def __init__(self):
+        super().__init__(0)
+        self.events = []
+
+    async def begin(self):
+        self.events.append("begin")
+
+    async def commit(self):
+        self.events.append("commit")
+
+    async def rollback(self):
+        self.events.append("rollback")
 
 
 def source_row(physical_row: int, address: str) -> dict:
@@ -126,6 +142,46 @@ class SourceReadSafetyTests(unittest.IsolatedAsyncioTestCase):
                 FullChainParser.COLUMNS,
                 FullChainParser(),
             )
+
+    async def test_final_projection_refresh_is_committed_atomically(self):
+        conn = TransactionConnection()
+        mark = AsyncMock()
+        rebuild = AsyncMock()
+        reconcile = AsyncMock()
+        with (
+            patch("services.sync_engine.mark_writebacks_synced", mark),
+            patch("services.sync_engine.rebuild_projection", rebuild),
+            patch(
+                "services.sync_engine.reconcile_police_dispatch_publications",
+                reconcile,
+            ),
+        ):
+            await finalize_source_projection(
+                conn,
+                spreadsheet={"id": 7, "parser_type": "全链条"},
+                source_columns=["身份证号"],
+            )
+        self.assertEqual(conn.events, ["begin", "commit"])
+        reconcile.assert_awaited_once()
+        mark.assert_awaited_once()
+        rebuild.assert_awaited_once()
+
+    async def test_final_projection_refresh_rolls_back_as_one_unit(self):
+        conn = TransactionConnection()
+        with (
+            patch("services.sync_engine.mark_writebacks_synced", AsyncMock()),
+            patch(
+                "services.sync_engine.rebuild_projection",
+                AsyncMock(side_effect=RuntimeError("fictional rebuild failure")),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fictional rebuild failure"):
+                await finalize_source_projection(
+                    conn,
+                    spreadsheet={"id": 7, "parser_type": "出租房屋核查"},
+                    source_columns=[],
+                )
+        self.assertEqual(conn.events, ["begin", "rollback"])
 
 
 if __name__ == "__main__":

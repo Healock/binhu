@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  QMF_CONFIRMATION,
   canExecutePreparedQmfRun,
   qmfRunIsPolling,
 } from '../src/utils/qmfRegistration.ts'
@@ -27,15 +26,15 @@ function run(status: QmfRegistrationRun['status']): QmfRegistrationRun {
     created_at: null,
     updated_at: null,
     can_execute: status === 'prepared',
+    can_reprepare: status === 'failed',
     can_retry_marker: false,
   }
 }
 
-test('真实登记必须同时具备新鲜预演、准备状态和精确确认短语', () => {
-  assert.equal(canExecutePreparedQmfRun(run('prepared'), QMF_CONFIRMATION, true), true)
-  assert.equal(canExecutePreparedQmfRun(run('prepared'), '确认', true), false)
-  assert.equal(canExecutePreparedQmfRun(run('prepared'), QMF_CONFIRMATION, false), false)
-  assert.equal(canExecutePreparedQmfRun(run('failed'), QMF_CONFIRMATION, true), false)
+test('真实登记必须同时具备新鲜预演和准备状态', () => {
+  assert.equal(canExecutePreparedQmfRun(run('prepared'), true), true)
+  assert.equal(canExecutePreparedQmfRun(run('prepared'), false), false)
+  assert.equal(canExecutePreparedQmfRun(run('failed'), true), false)
 })
 
 test('只有执行中状态需要轮询', () => {

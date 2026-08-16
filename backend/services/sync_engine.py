@@ -69,6 +69,30 @@ def source_rows_digest(parser, source_rows: list[dict]) -> str:
     return digest.hexdigest()
 
 
+async def finalize_source_projection(
+    conn,
+    *,
+    spreadsheet: dict,
+    source_columns: list[str],
+) -> None:
+    """Publish the final projection without exposing a delete/insert gap."""
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            if spreadsheet["parser_type"] == "全链条":
+                await reconcile_police_dispatch_publications(
+                    cur,
+                    spreadsheet["id"],
+                    source_columns,
+                )
+            await mark_writebacks_synced(cur, spreadsheet["id"])
+            await rebuild_projection(cur, spreadsheet["parser_type"])
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+
 def deduplicate_rows(
     parser,
     raw_rows: list[dict],
@@ -474,15 +498,15 @@ class SyncEngine:
                     archive_column_map,
                 )
 
-        async with conn.cursor() as cur:
-            if sp["parser_type"] == "全链条":
-                await reconcile_police_dispatch_publications(
-                    cur,
-                    sp["id"],
-                    source_columns,
-                )
-            await mark_writebacks_synced(cur, sp["id"])
-            await rebuild_projection(cur, sp["parser_type"])
+        # ``rebuild_projection`` replaces one parser projection with a
+        # delete-and-insert sequence.  Keep that sequence atomic: registration
+        # performs a final source/projection check immediately before its first
+        # external write and must never observe the temporary empty projection.
+        await finalize_source_projection(
+            conn,
+            spreadsheet=sp,
+            source_columns=source_columns,
+        )
 
         return len(online), report_date
 
