@@ -41,6 +41,17 @@ VALID_IDENTITY = "11010519491231002X"
 JPEG = b"\xff\xd8\xff\xe0" + b"test-photo" + b"\xff\xd9"
 
 
+def photo_json_response(photo: bytes = JPEG, *, with_whitespace: bool = False):
+    encoded = base64.b64encode(photo).decode("ascii")
+    if with_whitespace:
+        encoded = "\r\n".join(encoded[index:index + 8] for index in range(0, len(encoded), 8))
+    return httpx.Response(
+        200,
+        json={"code": 200, "message": "成功", "data": encoded},
+        headers={"content-type": "application/json;charset=UTF-8"},
+    )
+
+
 def login_context(station_name="滨湖新城派出所"):
     return QmfLoginContext(
         username="readonly-user",
@@ -69,6 +80,8 @@ def upstream_handler(
     *,
     task_count=1,
     person_name="测试甲",
+    person_id=VALID_IDENTITY,
+    person_sfzh="",
     person_community="1234567890",
     task_community="123456789012",
     station="滨湖新城派出所",
@@ -102,21 +115,25 @@ def upstream_handler(
                 "data": {"total": task_count, "list": rows},
             })
         if path.endswith("/enterHouse/queryPeopleBySfzh"):
+            person_data = {
+                "name": person_name,
+                "phone": "13000000000",
+                "dz": "测试地址",
+                "hjdzxz": "测试户籍地址",
+                "gender": "女",
+                "communityCode": person_community,
+            }
+            if person_id is not None:
+                person_data["personID"] = person_id
+            if person_sfzh:
+                person_data["sfzh"] = person_sfzh
             return httpx.Response(200, json={
                 "code": 200,
                 "message": "success",
-                "data": {
-                    "name": person_name,
-                    "personID": VALID_IDENTITY,
-                    "phone": "13000000000",
-                    "dz": "测试地址",
-                    "hjdzxz": "测试户籍地址",
-                    "gender": "女",
-                    "communityCode": person_community,
-                },
+                "data": person_data,
             })
-        if path.endswith("/jzz/queryLocalPhoto"):
-            return httpx.Response(200, content=photo, headers={"content-type": "image/jpeg"})
+        if path.endswith("/enterHouse/queryPeoplePhotoByJzz"):
+            return photo_json_response(photo)
         if path.endswith("/enterHouse/checkCk"):
             return httpx.Response(200, json={"code": 200, "message": "success", "data": 0})
         raise AssertionError(f"unexpected outbound path: {path}")
@@ -273,6 +290,55 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                     200, content=JPEG, headers={"content-type": "image/jpeg"}
                 ))
         self.assertEqual(oversized.exception.code, "photo_size_invalid")
+
+    def test_photo_validation_accepts_button_json_with_mime_base64_whitespace(self):
+        result = _photo_payload(photo_json_response(with_whitespace=True))
+        self.assertEqual(result["mime_type"], "image/jpeg")
+        self.assertEqual(base64.b64decode(result["data_base64"]), JPEG)
+
+        with self.assertRaises(QmfPreviewError) as invalid:
+            _photo_payload(httpx.Response(
+                200,
+                json={"code": 200, "message": "成功", "data": "not base64"},
+                headers={"content-type": "application/json;charset=UTF-8"},
+            ))
+        self.assertEqual(invalid.exception.code, "photo_base64_invalid")
+
+    async def test_preview_uses_verified_residence_permit_button_contract(self):
+        captured: dict[str, str] = {}
+        normal_handler, _seen = upstream_handler()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/enterHouse/queryPeoplePhotoByJzz"):
+                captured["method"] = request.method
+                captured["body"] = request.content.decode("ascii")
+                captured["content_type"] = request.headers.get("content-type", "")
+                return photo_json_response(with_whitespace=True)
+            return await normal_handler(request)
+
+        async def fake_login():
+            return login_context()
+
+        with (
+            patch(
+                "services.qmf_registration.settings.QMF_API_BASE_URL",
+                "http://source.invalid/grid_terminal_interface/",
+            ),
+            patch("services.qmf_registration.settings.QMF_TIMEOUT_SECONDS", 5),
+        ):
+            result = await QmfReadOnlyClient(
+                transport=httpx.MockTransport(handler),
+                login_provider=fake_login,
+            ).preview(platform_task=platform_task())
+
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(
+            captured["body"], f"personID={VALID_IDENTITY}&source=android"
+        )
+        self.assertTrue(captured["content_type"].startswith(
+            "application/x-www-form-urlencoded"
+        ))
+        self.assertEqual(result["photo"]["mime_type"], "image/jpeg")
 
     def test_capability_is_exact_account_only_and_requires_eligible_source(self):
         patches = (
@@ -440,8 +506,10 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["checks"]["jurisdiction_match"])
         self.assertTrue(any("不同编码体系" in item for item in result["warnings"]))
         self.assertEqual(base64.b64decode(result["photo"]["data_base64"]), JPEG)
-        self.assertEqual([method for method, _ in seen], ["POST", "POST", "GET", "POST"])
+        self.assertEqual([method for method, _ in seen], ["POST", "POST", "POST", "POST"])
         allowed_suffixes = set(READ_ONLY_ENDPOINTS)
+        self.assertIn("enterHouse/queryPeoplePhotoByJzz", allowed_suffixes)
+        self.assertNotIn("jzz/queryLocalPhoto", allowed_suffixes)
         self.assertTrue(all(any(path.endswith("/" + suffix) for suffix in allowed_suffixes) for _, path in seen))
         for forbidden in ("uploadPhoto", "saveLocalPhoto", "addPeople", "fnmxCheck"):
             self.assertTrue(all(forbidden not in path for _, path in seen))
@@ -593,7 +661,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         normal_handler, seen = upstream_handler()
 
         async def photo_error(request: httpx.Request) -> httpx.Response:
-            if request.url.path.endswith("/jzz/queryLocalPhoto"):
+            if request.url.path.endswith("/enterHouse/queryPeoplePhotoByJzz"):
                 return httpx.Response(
                     500,
                     content=b"sensitive photo backend detail",
@@ -635,6 +703,13 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             (upstream_handler(task_count=0)[0], "task_not_found"),
             (upstream_handler(task_count=2)[0], "task_not_unique"),
             (upstream_handler(person_name="其他人")[0], "person_mismatch"),
+            (
+                upstream_handler(
+                    person_id=None,
+                    person_sfzh=VALID_IDENTITY,
+                )[0],
+                "photo_person_mismatch",
+            ),
             (upstream_handler(station="其他派出所")[0], "task_station_mismatch"),
             (upstream_handler(photo=b"not-an-image")[0], "photo_type_invalid"),
         )
