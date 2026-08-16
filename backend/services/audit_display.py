@@ -125,6 +125,7 @@ ACTION_LABELS: dict[str, str] = {
     "workflow.attachment.delete": "删除工单附件",
     "workflow.photo_import.preview": "预览照片调取批次",
     "workflow.photo_import.confirm": "确认照片调取批次",
+    "workflow.photo_import.reconcile": "修复照片批次遗漏工单",
     "workflow.photo_requests.export": "导出未调照片清单",
     "workflow.photo_requests.batch_claim": "批量领取照片工单",
     "workflow.photo_sheet.config": "修改调照片名单配置",

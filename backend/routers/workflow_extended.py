@@ -122,7 +122,7 @@ async def _photo_matches(cur, identity_hmac: str, sha256: str) -> tuple[list[tup
         "FROM work_orders order_row "
         "JOIN photo_request_details detail ON detail.work_order_id=order_row.id "
         "WHERE order_row.type_code='photo_request' AND detail.identity_hmac=%s AND ("
-        "order_row.status='in_progress' OR (order_row.status='completed' "
+        "order_row.status IN ('queued','in_progress') OR (order_row.status='completed' "
         "AND order_row.completed_at>=DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) "
         "AND EXISTS (SELECT 1 FROM work_order_events batch_event "
         "WHERE batch_event.work_order_id=order_row.id AND batch_event.event_type='external_batch_complete') "
@@ -292,6 +292,10 @@ class PhotoRequestSearchPayload(PhotoRequestFilterPayload):
 class PhotoRequestBatchClaimPayload(BaseModel):
     ticket_ids: list[int] = Field(default_factory=list, max_length=2000)
     claim_all: bool = False
+
+
+class PhotoImportReconcilePayload(BaseModel):
+    confirm: bool = False
 
 
 def _photo_pending_queue(user: dict) -> str | None:
@@ -1658,6 +1662,92 @@ async def get_photo_import_detail(batch_id: int, user: dict, conn) -> dict:
     return payload
 
 
+async def _complete_photo_import_ticket(
+    cur,
+    *,
+    ticket_id: int,
+    batch_id: int,
+    batch_no: str,
+    photo_count: int,
+    actor_user_id: int,
+    event_type: str = "photo_import_complete",
+) -> bool:
+    await cur.execute(
+        "SELECT requester_user_id,status FROM work_orders WHERE id=%s FOR UPDATE",
+        (ticket_id,),
+    )
+    ticket = await cur.fetchone()
+    if not ticket or ticket[1] not in {"queued", "in_progress", "completed"}:
+        return False
+    requester_user_id, previous_status = ticket
+    note = f"照片批次 {batch_no} 已导入 {photo_count} 张照片"
+    await cur.execute(
+        "UPDATE photo_request_details SET result_status='found',result_note=%s WHERE work_order_id=%s",
+        (note, ticket_id),
+    )
+    if previous_status in {"queued", "in_progress"}:
+        await cur.execute(
+            "UPDATE work_orders SET status='completed',completed_at=UTC_TIMESTAMP(),"
+            "current_assignee_user_id=NULL,current_queue='',due_at=NULL,version_no=version_no+1 "
+            "WHERE id=%s AND status=%s",
+            (ticket_id, previous_status),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(409, "照片工单状态已经变化，请重新核对批次")
+        await cur.execute(
+            "UPDATE work_order_steps SET status='completed',decision='complete',decision_note=%s,"
+            "decided_by=%s,decided_at=UTC_TIMESTAMP(),assignee_user_id=NULL,due_at=NULL,"
+            "version_no=version_no+1 WHERE work_order_id=%s AND status IN ('queued','in_progress')",
+            (note, actor_user_id, ticket_id),
+        )
+        await cur.execute(
+            "UPDATE work_order_claims SET release_reason='照片批次完成',"
+            "released_at=UTC_TIMESTAMP() "
+            "WHERE work_order_id=%s AND released_at IS NULL",
+            (ticket_id,),
+        )
+    await cur.execute(
+        "INSERT INTO work_order_events (work_order_id,event_type,actor_user_id,from_status,to_status,detail_json) "
+        "VALUES (%s,%s,%s,%s,'completed',%s)",
+        (
+            ticket_id,
+            event_type,
+            actor_user_id,
+            previous_status,
+            json.dumps({"batch_id": batch_id, "photo_count": photo_count}),
+        ),
+    )
+    await cur.execute(
+        "UPDATE work_order_attachments SET retention_until=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 90 DAY) "
+        "WHERE work_order_id=%s AND deleted_at IS NULL",
+        (ticket_id,),
+    )
+    await cur.execute(
+        "SELECT detail.external_origin,map.physical_row FROM photo_request_details detail "
+        "LEFT JOIN photo_sheet_rows map ON map.work_order_id=detail.work_order_id "
+        "WHERE detail.work_order_id=%s",
+        (ticket_id,),
+    )
+    external = await cur.fetchone()
+    if external and external[0] in {"platform_task", "tencent"}:
+        if external[0] == "platform_task" or external[1] is not None:
+            await enqueue_outbox(cur, ticket_id, "mark_completed")
+        else:
+            await cur.execute(
+                "UPDATE photo_request_details SET external_sync_status='paused' WHERE work_order_id=%s",
+                (ticket_id,),
+            )
+    await workflow_notification(
+        cur,
+        user_ids=[int(requester_user_id)] if requester_user_id is not None else [],
+        ticket_id=ticket_id,
+        event_key=f"photo_done_{batch_id}",
+        title="照片调取完成",
+        content=f"工单 #{ticket_id} 的照片已调取完成，可以打开工单查看。",
+    )
+    return True
+
+
 @router.get("/photo-imports")
 async def list_photo_imports(
     page: int = Query(default=1, ge=1),
@@ -1701,6 +1791,204 @@ async def get_photo_import(
     if not _can_upload_photo_batch(user):
         raise HTTPException(403, "只有基础管控或超级管理员可以查看照片批次")
     return await get_photo_import_detail(batch_id, user, conn)
+
+
+async def _photo_import_reconcile_plan(cur, batch_id: int, *, lock: bool = False) -> dict:
+    await cur.execute(
+        "SELECT batch_no,status FROM photo_request_import_batches WHERE id=%s"
+        + (" FOR UPDATE" if lock else ""),
+        (batch_id,),
+    )
+    batch = await cur.fetchone()
+    if not batch:
+        raise HTTPException(404, "照片批次不存在")
+    if batch[1] not in {"completed", "partial"}:
+        raise HTTPException(409, "只有已经确认的照片批次可以核对遗漏工单")
+    await cur.execute(
+        "SELECT safe_name,identity_hmac,file_sha256,matched_ticket_ids "
+        "FROM photo_request_import_items WHERE batch_id=%s AND identity_hmac IS NOT NULL "
+        "AND match_status IN ('matched','duplicate') ORDER BY id",
+        (batch_id,),
+    )
+    items = await cur.fetchall()
+    plans: list[dict] = []
+    seen_pairs: set[tuple[int, str]] = set()
+    missing_source_files = 0
+    for safe_name, identity_hmac, file_sha256, raw_ticket_ids in items:
+        ticket_ids = [int(value) for value in _json(raw_ticket_ids, []) if int(value) > 0]
+        await cur.execute(
+            "SELECT order_row.id,detail.subject_name,detail.identity_number,order_row.status,"
+            "EXISTS (SELECT 1 FROM work_order_attachments existing_attachment "
+            "WHERE existing_attachment.work_order_id=order_row.id AND existing_attachment.sha256=%s "
+            "AND existing_attachment.deleted_at IS NULL) "
+            "FROM work_orders order_row JOIN photo_request_details detail "
+            "ON detail.work_order_id=order_row.id WHERE order_row.type_code='photo_request' "
+            "AND detail.identity_hmac=%s AND order_row.status IN ('queued','in_progress')"
+            + (" FOR UPDATE" if lock else ""),
+            (file_sha256, identity_hmac),
+        )
+        targets = await cur.fetchall()
+        if not targets:
+            continue
+        source_attachment = None
+        if any(not bool(target[4]) for target in targets) and ticket_ids:
+            placeholders = ",".join(["%s"] * len(ticket_ids))
+            await cur.execute(
+                "SELECT storage_key,original_name,mime_type,sha256,size_bytes "
+                f"FROM work_order_attachments WHERE work_order_id IN ({placeholders}) "
+                "AND sha256=%s AND deleted_at IS NULL ORDER BY id LIMIT 1",
+                tuple(ticket_ids) + (file_sha256,),
+            )
+            source_attachment = await cur.fetchone()
+        if any(not bool(target[4]) for target in targets) and not source_attachment:
+            missing_source_files += 1
+        for target in targets:
+            pair = (int(target[0]), str(file_sha256))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            if not bool(target[4]) and not source_attachment:
+                continue
+            plans.append({
+                "ticket_id": int(target[0]),
+                "subject_name": str(target[1] or ""),
+                "identity_number": str(target[2] or ""),
+                "status": str(target[3]),
+                "already_attached": bool(target[4]),
+                "safe_name": str(safe_name or ""),
+                "file_sha256": str(file_sha256),
+                "source_attachment": source_attachment,
+            })
+    await cur.execute(
+        "SELECT COUNT(DISTINCT order_row.id) FROM work_orders order_row "
+        "JOIN photo_request_details detail ON detail.work_order_id=order_row.id "
+        "JOIN photo_request_import_items item ON item.batch_id=%s "
+        "AND item.identity_hmac=detail.identity_hmac WHERE order_row.type_code='photo_request' "
+        "AND item.match_status IN ('matched','duplicate') "
+        "AND order_row.status='pending_requester'",
+        (batch_id,),
+    )
+    manual_review_tickets = int((await cur.fetchone())[0])
+    eligible_ticket_ids = {int(plan["ticket_id"]) for plan in plans}
+    return {
+        "batch_id": batch_id,
+        "batch_no": str(batch[0]),
+        "eligible_tickets": len(eligible_ticket_ids),
+        "attachment_copies": sum(not plan["already_attached"] for plan in plans),
+        "already_attached": sum(plan["already_attached"] for plan in plans),
+        "manual_review_tickets": manual_review_tickets,
+        "missing_source_files": missing_source_files,
+        "plans": plans,
+    }
+
+
+def _public_photo_reconcile_result(plan: dict, *, repaired_tickets: int = 0) -> dict:
+    return {
+        key: value
+        for key, value in plan.items()
+        if key != "plans"
+    } | {"repaired_tickets": repaired_tickets}
+
+
+@router.get("/photo-imports/{batch_id}/reconcile-preview")
+async def preview_photo_import_reconcile(
+    batch_id: int,
+    user: dict = Depends(require_photo_batch_access),
+    conn=Depends(get_workflow_db),
+):
+    if not _can_upload_photo_batch(user):
+        raise HTTPException(403, "只有基础管控或工单管理账号可以核对照片批次")
+    async with conn.cursor() as cur:
+        return _public_photo_reconcile_result(
+            await _photo_import_reconcile_plan(cur, batch_id),
+        )
+
+
+@router.post("/photo-imports/{batch_id}/reconcile")
+async def reconcile_photo_import(
+    batch_id: int,
+    data: PhotoImportReconcilePayload,
+    request: Request,
+    user: dict = Depends(require_photo_batch_access),
+    conn=Depends(get_workflow_db),
+):
+    if not data.confirm:
+        raise HTTPException(422, "请先预览并确认修复遗漏工单")
+    saved_files: list[str] = []
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            plan = await _photo_import_reconcile_plan(cur, batch_id, lock=True)
+            ticket_counts: dict[int, int] = {}
+            for item in plan["plans"]:
+                ticket_id = int(item["ticket_id"])
+                if not item["already_attached"]:
+                    source = item["source_attachment"]
+                    source_path = resolve_attachment(str(source[0]))
+                    content = source_path.read_bytes()
+                    if hashlib.sha256(content).hexdigest() != item["file_sha256"]:
+                        raise HTTPException(409, "历史照片文件校验失败，未执行修复")
+                    await cur.execute(
+                        "SELECT COUNT(*) FROM work_order_attachments "
+                        "WHERE work_order_id=%s AND deleted_at IS NULL",
+                        (ticket_id,),
+                    )
+                    if int((await cur.fetchone())[0]) >= MAX_ATTACHMENTS_PER_TICKET:
+                        raise HTTPException(409, "待修复工单附件数量已达到上限")
+                    extension = Path(str(source[1] or item["safe_name"])).suffix.lower()
+                    attachment_name = canonical_photo_filename(
+                        item["subject_name"],
+                        item["identity_number"],
+                        extension,
+                    )
+                    saved = save_attachment(ticket_id, attachment_name, content)
+                    saved_files.append(saved["storage_key"])
+                    await cur.execute(
+                        "INSERT INTO work_order_attachments "
+                        "(work_order_id,file_id,original_name,storage_key,mime_type,sha256,size_bytes,uploaded_by) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            ticket_id,
+                            saved["file_id"],
+                            attachment_name,
+                            saved["storage_key"],
+                            saved["mime_type"],
+                            saved["sha256"],
+                            saved["size_bytes"],
+                            user["id"],
+                        ),
+                    )
+                ticket_counts[ticket_id] = ticket_counts.get(ticket_id, 0) + 1
+            repaired = 0
+            for ticket_id, photo_count in ticket_counts.items():
+                repaired += int(await _complete_photo_import_ticket(
+                    cur,
+                    ticket_id=ticket_id,
+                    batch_id=batch_id,
+                    batch_no=plan["batch_no"],
+                    photo_count=photo_count,
+                    actor_user_id=int(user["id"]),
+                    event_type="photo_import_reconcile",
+                ))
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        for storage_key in saved_files:
+            remove_attachment(storage_key)
+        raise
+    await record_admin_audit(
+        user,
+        "workflow.photo_import.reconcile",
+        target_type="photo_import_batch",
+        target_name=plan["batch_no"],
+        detail={
+            "batch_id": batch_id,
+            "repaired_tickets": repaired,
+            "attachment_copies": plan["attachment_copies"],
+        },
+        **request_audit_fields(request),
+    )
+    return _public_photo_reconcile_result(plan, repaired_tickets=repaired)
 
 
 @router.post("/photo-imports/{batch_id}/confirm")
@@ -1840,56 +2128,15 @@ async def confirm_photo_import(
                 )
             completed_ticket_ids: set[int] = set()
             for ticket_id, photo_count in ticket_counts.items():
-                await cur.execute(
-                    "SELECT requester_user_id, version_no, status, current_assignee_user_id, current_queue "
-                    "FROM work_orders WHERE id=%s FOR UPDATE",
-                    (ticket_id,),
-                )
-                ticket = await cur.fetchone()
-                if not ticket or ticket[2] not in {"in_progress", "completed"}:
-                    continue
-                note = f"照片批次 {locked[1]} 已导入 {photo_count} 张照片"
-                await cur.execute(
-                    "UPDATE photo_request_details SET result_status='found', result_note=%s WHERE work_order_id=%s",
-                    (note, ticket_id),
-                )
-                if ticket[2] == "in_progress":
-                    await cur.execute(
-                        "UPDATE work_orders SET status='completed', completed_at=UTC_TIMESTAMP(), "
-                        "current_assignee_user_id=NULL, current_queue='', due_at=NULL, "
-                        "version_no=version_no+1 WHERE id=%s AND status='in_progress'",
-                        (ticket_id,),
-                    )
-                    await cur.execute(
-                        "UPDATE work_order_steps SET status='completed', decision='complete', decision_note=%s, "
-                        "decided_by=%s, decided_at=UTC_TIMESTAMP(), version_no=version_no+1 "
-                        "WHERE work_order_id=%s AND status='in_progress'",
-                        (note, user["id"], ticket_id),
-                    )
-                await cur.execute(
-                    "INSERT INTO work_order_events (work_order_id, event_type, actor_user_id, "
-                    "from_status, to_status, detail_json) VALUES (%s,'photo_import_complete',%s,%s,'completed',%s)",
-                    (ticket_id, user["id"], ticket[2],
-                     json.dumps({"batch_id": batch_id, "photo_count": photo_count})),
-                )
-                await cur.execute(
-                    "UPDATE work_order_attachments SET retention_until=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 DAY) "
-                    "WHERE work_order_id=%s AND deleted_at IS NULL",
-                    (ticket_id,),
-                )
-                await cur.execute(
-                    "SELECT external_origin FROM photo_request_details WHERE work_order_id=%s",
-                    (ticket_id,),
-                )
-                external_origin = await cur.fetchone()
-                if external_origin and external_origin[0] in {"platform_task", "tencent"}:
-                    await enqueue_outbox(cur, ticket_id, "mark_completed")
-                await workflow_notification(
-                    cur, user_ids=[ticket[0]] if ticket[0] is not None else [], ticket_id=ticket_id,
-                    event_key=f"photo_done_{batch_id}", title="照片调取完成",
-                    content=f"工单 #{ticket_id} 的照片已调取完成，可以打开工单查看。",
-                )
-                completed_ticket_ids.add(ticket_id)
+                if await _complete_photo_import_ticket(
+                    cur,
+                    ticket_id=ticket_id,
+                    batch_id=batch_id,
+                    batch_no=str(locked[1]),
+                    photo_count=photo_count,
+                    actor_user_id=int(user["id"]),
+                ):
+                    completed_ticket_ids.add(ticket_id)
             for (safe_name, legacy_safe_name, file_sha256), ticket_ids_for_item in item_success_tickets.items():
                 if ticket_ids_for_item & completed_ticket_ids:
                     await cur.execute(

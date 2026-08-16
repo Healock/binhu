@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   Alert,
   Button,
+  Modal,
   Statistic,
   Table,
   Tag,
@@ -21,6 +22,7 @@ import {
   getVisitSourceStatus,
   getVisitImportIssues,
   type PhotoImportBatch,
+  type PhotoImportReconcileResult,
   workflowApi,
   uploadStarRating,
   uploadVisitDetail,
@@ -196,6 +198,7 @@ export default function DataUploadCenter() {
   const [photoError, setPhotoError] = useState('')
   const [photoLoading, setPhotoLoading] = useState(false)
   const [photoHistory, setPhotoHistory] = useState<PhotoImportBatch[]>([])
+  const [photoReconcile, setPhotoReconcile] = useState<PhotoImportReconcileResult | null>(null)
   const [sourceDates, setSourceDates] = useState<[string, string]>(() => {
     const today = dayjs().format('YYYY-MM-DD')
     return [today, today]
@@ -333,6 +336,7 @@ export default function DataUploadCenter() {
   const beforePhotoUpload: UploadProps['beforeUpload'] = file => {
     setPhotoError('')
     setPhotoBatch(null)
+    setPhotoReconcile(null)
     setPhotoFile(null)
     setPhotoFileList([])
     if (!file.name.toLowerCase().endsWith('.zip')) {
@@ -354,6 +358,7 @@ export default function DataUploadCenter() {
     setPhotoError('')
     try {
       setPhotoBatch(await workflowApi.previewPhotoImport(photoFile))
+      setPhotoReconcile(null)
       await loadPhotoHistory()
     } catch (error: any) {
       setPhotoError(
@@ -375,6 +380,7 @@ export default function DataUploadCenter() {
     setPhotoError('')
     try {
       setPhotoBatch(await workflowApi.confirmPhotoImport(photoBatch.id))
+      setPhotoReconcile(null)
       await loadPhotoHistory()
     } catch (error: any) {
       setPhotoError(error?.response?.data?.detail || '照片批次确认失败，请刷新后重试')
@@ -386,6 +392,7 @@ export default function DataUploadCenter() {
   const handlePhotoHistoryDetail = async (batchId: number) => {
     setPhotoLoading(true)
     setPhotoError('')
+    setPhotoReconcile(null)
     try {
       setPhotoBatch(await workflowApi.photoImport(batchId))
     } catch (error: any) {
@@ -393,6 +400,42 @@ export default function DataUploadCenter() {
     } finally {
       setPhotoLoading(false)
     }
+  }
+
+  const handlePhotoReconcilePreview = async () => {
+    if (!photoBatch) return
+    setPhotoLoading(true)
+    setPhotoError('')
+    try {
+      setPhotoReconcile(await workflowApi.previewPhotoImportReconcile(photoBatch.id))
+    } catch (error: any) {
+      setPhotoError(error?.response?.data?.detail || '遗漏工单核对失败，请稍后重试')
+    } finally {
+      setPhotoLoading(false)
+    }
+  }
+
+  const handlePhotoReconcileConfirm = () => {
+    if (!photoBatch || !photoReconcile?.eligible_tickets) return
+    Modal.confirm({
+      title: '确认修复遗漏照片工单？',
+      content: `将补齐并完成 ${photoReconcile.eligible_tickets} 张工单，其中复制 ${photoReconcile.attachment_copies} 份照片附件。`,
+      okText: '确认修复',
+      cancelText: '取消',
+      onOk: async () => {
+        setPhotoLoading(true)
+        setPhotoError('')
+        try {
+          const result = await workflowApi.reconcilePhotoImport(photoBatch.id)
+          setPhotoReconcile(result)
+          await loadPhotoHistory()
+        } catch (error: any) {
+          setPhotoError(error?.response?.data?.detail || '遗漏工单修复失败，未修改批次数据')
+        } finally {
+          setPhotoLoading(false)
+        }
+      },
+    })
   }
 
   const loadIssuePage = async (page: number) => {
@@ -625,8 +668,47 @@ export default function DataUploadCenter() {
                 onClick={() => void handlePhotoConfirm()}
               >确认导入并通知</Button>
             )}
+            {photoBatch && ['completed', 'partial'].includes(photoBatch.status) && (
+              <Button
+                loading={photoLoading}
+                disabled={photoLoading}
+                onClick={() => void handlePhotoReconcilePreview()}
+              >核对遗漏工单</Button>
+            )}
           </div>
           {photoError && <Alert className="mt-3" type="error" showIcon message={photoError} />}
+          {photoReconcile && (
+            <Alert
+              className="mt-3"
+              type={photoReconcile.eligible_tickets > 0 ? 'warning' : 'success'}
+              showIcon
+              message={photoReconcile.repaired_tickets > 0
+                ? `已修复 ${photoReconcile.repaired_tickets} 张遗漏工单`
+                : photoReconcile.eligible_tickets > 0
+                  ? `发现 ${photoReconcile.eligible_tickets} 张遗漏工单`
+                  : '没有发现可自动修复的遗漏工单'}
+              description={(
+                <div className="flex flex-wrap items-center gap-3">
+                  <span>需复制附件 {photoReconcile.attachment_copies} 份</span>
+                  <span>已有附件 {photoReconcile.already_attached} 份</span>
+                  {photoReconcile.manual_review_tickets > 0 && (
+                    <span>待申请人补充 {photoReconcile.manual_review_tickets} 张，保留人工处理</span>
+                  )}
+                  {photoReconcile.missing_source_files > 0 && (
+                    <span>缺少可复制原文件 {photoReconcile.missing_source_files} 份</span>
+                  )}
+                  {photoReconcile.eligible_tickets > 0 && photoReconcile.repaired_tickets === 0 && (
+                    <Button
+                      type="primary"
+                      size="small"
+                      loading={photoLoading}
+                      onClick={handlePhotoReconcileConfirm}
+                    >确认修复</Button>
+                  )}
+                </div>
+              )}
+            />
+          )}
           {photoBatch && (
             <div className="mt-4 space-y-3">
               <Alert

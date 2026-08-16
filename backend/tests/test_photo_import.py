@@ -3,19 +3,22 @@ import io
 import os
 import unittest
 import zipfile
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from routers.workflow_extended import (
+    PhotoImportReconcilePayload,
     PhotoRequestBatchClaimPayload,
     PhotoRequestFilterPayload,
     PhotoRequestSearchPayload,
     RestoreQueuedPayload,
     _can_upload_photo_batch,
     _attachment_display_name,
+    _complete_photo_import_ticket,
+    _photo_import_reconcile_plan,
     _photo_matches,
     _photo_duplicate_all,
     _refresh_photo_import_preview,
@@ -24,6 +27,7 @@ from routers.workflow_extended import (
     batch_claim_photo_requests,
     confirm_photo_import,
     get_photo_import_detail,
+    reconcile_photo_import,
     restore_ticket_to_queue,
     router,
 )
@@ -207,6 +211,23 @@ class PhotoImportMatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row[0] for row in rows], [11, 12])
         self.assertFalse(duplicate_all)
         self.assertEqual(cursor.fetchone.await_count, 2)
+
+    async def test_match_query_includes_unclaimed_queued_tickets(self):
+        cursor = type("Cursor", (), {})()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(return_value=[
+            (21, "PHOTO-21", 201, "李四", "queued"),
+        ])
+        cursor.fetchone = AsyncMock(return_value=None)
+
+        rows, duplicate_all = await _photo_matches(cursor, "hmac", "sha")
+
+        self.assertEqual([row[0] for row in rows], [21])
+        self.assertFalse(duplicate_all)
+        self.assertIn(
+            "order_row.status IN ('queued','in_progress')",
+            cursor.execute.call_args_list[0].args[0],
+        )
 
     async def test_match_accepts_recent_external_batch_completed_ticket_without_attachment(self):
         cursor = type("Cursor", (), {})()
@@ -644,6 +665,129 @@ class PhotoImportConfirmRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(save.call_args.args[1], f"Ticket Subject_{identity}.jpg")
         conn.commit.assert_awaited_once()
         conn.rollback.assert_not_awaited()
+
+
+class PhotoImportQueuedCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_ticket_completes_without_creating_unlocatable_outbox(self):
+        class Cursor:
+            def __init__(self):
+                self.statement = ""
+                self.statements = []
+                self.rowcount = 1
+
+            async def execute(self, statement, params=()):
+                self.statement = statement
+                self.statements.append((statement, params))
+
+            async def fetchone(self):
+                if "SELECT requester_user_id,status" in self.statement:
+                    return (101, "queued")
+                if "SELECT detail.external_origin" in self.statement:
+                    return ("tencent", None)
+                return None
+
+        cursor = Cursor()
+        with patch("routers.workflow_extended.enqueue_outbox", new=AsyncMock()) as enqueue, \
+             patch("routers.workflow_extended.workflow_notification", new=AsyncMock()) as notify:
+            completed = await _complete_photo_import_ticket(
+                cursor,
+                ticket_id=21,
+                batch_id=7,
+                batch_no="PHOTO-7",
+                photo_count=1,
+                actor_user_id=9,
+            )
+
+        self.assertTrue(completed)
+        statements = [statement for statement, _ in cursor.statements]
+        self.assertTrue(any("WHERE id=%s AND status=%s" in item for item in statements))
+        self.assertTrue(any("status IN ('queued','in_progress')" in item for item in statements))
+        self.assertTrue(any("external_sync_status='paused'" in item for item in statements))
+        enqueue.assert_not_awaited()
+        notify.assert_awaited_once()
+
+    async def test_platform_created_ticket_keeps_completion_outbox_before_append_finishes(self):
+        class Cursor:
+            rowcount = 1
+
+            def __init__(self):
+                self.statement = ""
+
+            async def execute(self, statement, _params=()):
+                self.statement = statement
+
+            async def fetchone(self):
+                if "SELECT requester_user_id,status" in self.statement:
+                    return (101, "in_progress")
+                if "SELECT detail.external_origin" in self.statement:
+                    return ("platform_task", None)
+                return None
+
+        with patch("routers.workflow_extended.enqueue_outbox", new=AsyncMock(return_value=True)) as enqueue, \
+             patch("routers.workflow_extended.workflow_notification", new=AsyncMock()):
+            completed = await _complete_photo_import_ticket(
+                Cursor(),
+                ticket_id=31,
+                batch_id=8,
+                batch_no="PHOTO-8",
+                photo_count=1,
+                actor_user_id=9,
+            )
+
+        self.assertTrue(completed)
+        enqueue.assert_awaited_once_with(ANY, 31, "mark_completed")
+
+
+class PhotoImportReconcileTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reconcile_preview_finds_queued_ticket_from_confirmed_batch(self):
+        class Cursor:
+            def __init__(self):
+                self.statement = ""
+
+            async def execute(self, statement, _params=()):
+                self.statement = statement
+
+            async def fetchone(self):
+                if "SELECT batch_no,status" in self.statement:
+                    return ("PHOTO-7", "completed")
+                if "FROM work_order_attachments WHERE work_order_id IN" in self.statement:
+                    return ("900/photo.jpg", "张三_证件.jpg", "image/jpeg", "sha", 10)
+                if "COUNT(DISTINCT order_row.id)" in self.statement:
+                    return (1,)
+                return None
+
+            async def fetchall(self):
+                if "FROM photo_request_import_items" in self.statement:
+                    return [("张三_证件.jpg", "hmac", "sha", "[900]")]
+                if "order_row.status IN ('queued','in_progress')" in self.statement:
+                    return [(21, "张三", "证件", "queued", 0)]
+                return []
+
+        result = await _photo_import_reconcile_plan(Cursor(), 7)
+
+        self.assertEqual(result["eligible_tickets"], 1)
+        self.assertEqual(result["attachment_copies"], 1)
+        self.assertEqual(result["manual_review_tickets"], 1)
+        self.assertEqual(result["missing_source_files"], 0)
+
+    def test_reconcile_route_requires_post_confirmation_body(self):
+        route = next(
+            item for item in router.routes
+            if item.path == "/api/workflow/photo-imports/{batch_id}/reconcile"
+        )
+
+        self.assertEqual(route.methods, {"POST"})
+        self.assertTrue(any(param.type_ is PhotoImportReconcilePayload for param in route.dependant.body_params))
+
+    async def test_reconcile_rejects_missing_explicit_confirmation(self):
+        with self.assertRaisesRegex(Exception, "请先预览并确认"):
+            await reconcile_photo_import(
+                7,
+                PhotoImportReconcilePayload(confirm=False),
+                MagicMock(),
+                {"id": 9},
+                MagicMock(),
+            )
 
 
 if __name__ == "__main__":
