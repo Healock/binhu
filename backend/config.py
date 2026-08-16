@@ -83,9 +83,10 @@ class Settings(BaseSettings):
     VISIT_SOURCE_MAX_RECORDS: int = 100000
     VISIT_SOURCE_AUTO_CONFIRM: bool = False
 
-    # 全民防模型三 API 单条只读预演。所有敏感值仅在生产环境注入；
-    # LOGIN_PROTOCOL_VERIFIED 必须在登录及只读查询实测通过后才可开启。
+    # 全民防模型三 API 单条预演与封闭登记。所有敏感值仅在生产环境注入；
+    # 两个协议确认和对应开关必须分别完成实测后才可开启。
     QMF_PREVIEW_ENABLED: bool = False
+    QMF_REGISTRATION_ENABLED: bool = False
     QMF_PREVIEW_ALLOWED_USERNAME: str = "shenshenghua"
     QMF_API_BASE_URL: str = ""
     QMF_LOGIN_HOST: str = ""
@@ -103,6 +104,7 @@ class Settings(BaseSettings):
     QMF_SESSION_MAX_SECONDS: int = 45
     QMF_PREVIEW_COOLDOWN_SECONDS: int = 45
     QMF_LOGIN_PROTOCOL_VERIFIED: bool = False
+    QMF_WRITE_PROTOCOL_VERIFIED: bool = False
 
     # Pagination
     PAGE_SIZE_DEFAULT: int = 50

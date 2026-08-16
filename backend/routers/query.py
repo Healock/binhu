@@ -642,6 +642,7 @@ async def update_source_fields(
     allowed_columns: set[str] | None = None,
     current_values_validator=None,
     redact_audit_values: bool = False,
+    system_managed_columns: set[str] | None = None,
 ) -> dict:
     """在一把工作表锁内批量校验、写入并回读同一腾讯来源行。"""
     if parser_type not in QUERY_TYPES:
@@ -664,6 +665,11 @@ async def update_source_fields(
         column not in allowed_columns for column in normalized_changes
     ):
         raise HTTPException(400, "提交包含当前入口不允许修改的字段")
+    if system_managed_columns is not None and (
+        allowed_columns != system_managed_columns
+        or set(normalized_changes) != system_managed_columns
+    ):
+        raise RuntimeError("system-managed edit must use an exact field whitelist")
     ordered_columns = [
         column for column in parser.COLUMNS if column in normalized_changes
     ]
@@ -735,12 +741,13 @@ async def update_source_fields(
                 raise HTTPException(400, "提交值与腾讯当前值相同，无需写回")
             after = dict(current_values)
             after.update(normalized_changes)
-            try:
-                await validate_row_changes(
-                    cur, user, parser, current_values, after, ordered_columns
-                )
-            except PermissionError as exc:
-                raise HTTPException(403, str(exc)) from exc
+            if system_managed_columns is None:
+                try:
+                    await validate_row_changes(
+                        cur, user, parser, current_values, after, ordered_columns
+                    )
+                except PermissionError as exc:
+                    raise HTTPException(403, str(exc)) from exc
             if "核查人" in ordered_columns:
                 try:
                     validate_inspector_assignment(
