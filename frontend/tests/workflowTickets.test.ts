@@ -42,6 +42,17 @@ test('照片批次上传使用长超时并明确提示网关大小限制', () =>
   assert.match(pageSource, /照片 ZIP 上传或解析超时/)
 })
 
+test('历史照片批次修复必须先预览再明确确认', () => {
+  const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  const pageSource = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
+
+  assert.match(apiSource, /photo-imports\/\$\{batchId\}\/reconcile-preview/)
+  assert.match(apiSource, /photo-imports\/\$\{batchId\}\/reconcile`, \{ confirm: true \}/)
+  assert.match(pageSource, /核对遗漏工单/)
+  assert.match(pageSource, /确认修复遗漏照片工单/)
+  assert.match(pageSource, /eligible_tickets/)
+})
+
 test('调照片使用独立任务页面，通用工单中心不再混入照片待办标签', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),

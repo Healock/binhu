@@ -3047,6 +3047,17 @@ export interface PhotoImportBatch {
   items?: PhotoImportItem[]
 }
 
+export interface PhotoImportReconcileResult {
+  batch_id: number
+  batch_no: string
+  eligible_tickets: number
+  attachment_copies: number
+  already_attached: number
+  manual_review_tickets: number
+  missing_source_files: number
+  repaired_tickets: number
+}
+
 export interface PendingPhotoRequest {
   id: number
   ticket_no: string
@@ -3231,6 +3242,12 @@ export const workflowApi = {
   },
   async photoImport(batchId: number) {
     return (await api.get(`/workflow/photo-imports/${batchId}`, activeRequest)).data as PhotoImportBatch
+  },
+  async previewPhotoImportReconcile(batchId: number) {
+    return (await api.get(`/workflow/photo-imports/${batchId}/reconcile-preview`, activeRequest)).data as PhotoImportReconcileResult
+  },
+  async reconcilePhotoImport(batchId: number) {
+    return (await api.post(`/workflow/photo-imports/${batchId}/reconcile`, { confirm: true }, activeRequest)).data as PhotoImportReconcileResult
   },
   async photoSheetConfig() {
     return (await api.get('/workflow/photo-sheet/config', activeRequest)).data as PhotoSheetConfig
