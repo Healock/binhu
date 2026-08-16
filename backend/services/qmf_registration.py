@@ -40,6 +40,9 @@ READ_ONLY_ENDPOINT_CONTEXT = {
     "enterHouse/queryPeoplePhotoByJzz": ("query_photo", "居住证照片查询"),
     "enterHouse/checkCk": ("precheck", "登记前校验"),
 }
+READ_ONLY_MAX_ATTEMPTS = 2
+READ_ONLY_RETRY_DELAY_SECONDS = 0.35
+READ_ONLY_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
 WRITE_ENDPOINTS = {
     "masses/uploadPhoto": "POST",
     "jzz/saveLocalPhoto": "POST",
@@ -130,6 +133,7 @@ class QmfPreviewError(RuntimeError):
         uncertain: bool = False,
         step: str = "",
         upstream_status: int | None = None,
+        transport_error: str = "",
     ):
         super().__init__(message)
         self.code = code
@@ -138,6 +142,7 @@ class QmfPreviewError(RuntimeError):
         self.uncertain = uncertain
         self.step = step
         self.upstream_status = upstream_status
+        self.transport_error = transport_error
 
 
 @dataclass(frozen=True)
@@ -485,7 +490,41 @@ def _login_context(
     return context
 
 
-async def open_login_session(config: QmfRuntimeConfig | None = None) -> QmfLoginSession:
+def _transport_error_kind(exc: BaseException) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, httpx.ReadTimeout)):
+        return "read_timeout"
+    if isinstance(exc, httpx.WriteTimeout):
+        return "write_timeout"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, (ConnectionError, ConnectionRefusedError)):
+        return "connect_error"
+    if isinstance(exc, asyncio.IncompleteReadError):
+        return "incomplete_read"
+    if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
+        return "connection_error"
+    if isinstance(exc, httpx.RequestError):
+        return "request_error"
+    if isinstance(exc, OSError):
+        return "connection_error"
+    return "request_error"
+
+
+def _readonly_unavailable_message(transport_error: str) -> str:
+    labels = {
+        "read_timeout": "响应超时",
+        "write_timeout": "发送超时",
+        "connect_timeout": "连接超时",
+        "connect_error": "连接失败",
+        "connection_error": "连接失败",
+        "incomplete_read": "响应中断",
+        "request_error": "请求失败",
+    }
+    label = labels.get(transport_error, "请求失败")
+    return f"全民防只读接口{label}，已自动重试一次仍不可用"
+
+
+async def _open_login_session_once(config: QmfRuntimeConfig) -> QmfLoginSession:
     config = config or settings_config()
     sequence = _login_sequence()
     request_bytes = build_login_request(
@@ -550,7 +589,12 @@ async def open_login_session(config: QmfRuntimeConfig | None = None) -> QmfLogin
         )
         return session
     except (asyncio.TimeoutError, OSError, asyncio.IncompleteReadError) as exc:
-        raise QmfPreviewError("login_unavailable", "全民防登录服务暂时不可用") from exc
+        raise QmfPreviewError(
+            "login_unavailable",
+            "全民防登录服务暂时不可用",
+            step="login",
+            transport_error=_transport_error_kind(exc),
+        ) from exc
     except asyncio.LimitOverrunError as exc:
         raise QmfPreviewError("login_response_too_large", "全民防登录响应超过安全限制") from exc
     finally:
@@ -560,6 +604,28 @@ async def open_login_session(config: QmfRuntimeConfig | None = None) -> QmfLogin
                 await writer.wait_closed()
             except OSError:
                 pass
+
+
+async def open_login_session(config: QmfRuntimeConfig | None = None) -> QmfLoginSession:
+    config = config or settings_config()
+    try:
+        return await _open_login_session_once(config)
+    except QmfPreviewError as exc:
+        if exc.code != "login_unavailable":
+            raise
+        await asyncio.sleep(READ_ONLY_RETRY_DELAY_SECONDS)
+        try:
+            return await _open_login_session_once(config)
+        except QmfPreviewError as retry_exc:
+            if retry_exc.code != "login_unavailable":
+                raise
+            raise QmfPreviewError(
+                "login_unavailable",
+                "全民防登录服务暂时不可用，已自动重试一次仍不可用",
+                retry_exc.status_code,
+                step="login",
+                transport_error=retry_exc.transport_error or exc.transport_error,
+            ) from retry_exc
 
 
 async def login_readonly(config: QmfRuntimeConfig | None = None) -> QmfLoginContext:
@@ -952,21 +1018,48 @@ class QmfReadOnlyClient:
         if not method:
             raise QmfPreviewError("endpoint_not_allowed", "请求不在全民防只读白名单", 500)
         url = urljoin(self._config.api_base_url.rstrip("/") + "/", endpoint)
-        try:
-            response = await client.request(method, url, data=data, params=params)
+        step, label = READ_ONLY_ENDPOINT_CONTEXT.get(
+            endpoint, ("readonly_request", "只读")
+        )
+        for attempt in range(READ_ONLY_MAX_ATTEMPTS):
+            try:
+                response = await client.request(method, url, data=data, params=params)
+            except httpx.RequestError as exc:
+                if attempt + 1 < READ_ONLY_MAX_ATTEMPTS:
+                    await asyncio.sleep(READ_ONLY_RETRY_DELAY_SECONDS)
+                    continue
+                transport_error = _transport_error_kind(exc)
+                raise QmfPreviewError(
+                    "upstream_unavailable",
+                    _readonly_unavailable_message(transport_error),
+                    step=step,
+                    transport_error=transport_error,
+                ) from exc
             if not response.is_success:
-                step, label = READ_ONLY_ENDPOINT_CONTEXT.get(
-                    endpoint, ("readonly_request", "只读")
+                if (
+                    response.status_code in READ_ONLY_RETRYABLE_HTTP_STATUS
+                    and attempt + 1 < READ_ONLY_MAX_ATTEMPTS
+                ):
+                    await response.aclose()
+                    await asyncio.sleep(READ_ONLY_RETRY_DELAY_SECONDS)
+                    continue
+                retry_note = (
+                    "，已自动重试一次仍不可用"
+                    if response.status_code in READ_ONLY_RETRYABLE_HTTP_STATUS
+                    else ""
                 )
                 raise QmfPreviewError(
                     "upstream_http_error",
-                    f"全民防{label}接口返回 HTTP {response.status_code}",
+                    f"全民防{label}接口返回 HTTP {response.status_code}{retry_note}",
                     step=step,
                     upstream_status=response.status_code,
                 )
             return response
-        except httpx.RequestError as exc:
-            raise QmfPreviewError("upstream_unavailable", "全民防只读接口暂时不可用") from exc
+        raise QmfPreviewError(
+            "upstream_unavailable",
+            "全民防只读接口暂时不可用",
+            step=step,
+        )
 
     async def _emit_step(
         self,
