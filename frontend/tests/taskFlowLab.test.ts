@@ -6,6 +6,8 @@ import {
   defaultTaskFlowPosition,
   mergeTaskFlowInspectors,
   taskFlowLane,
+  taskFlowLaneHeight,
+  taskFlowLaneNodeId,
   taskFlowNodeId,
 } from '../src/utils/taskFlow.ts'
 
@@ -67,8 +69,17 @@ test('核查人选项跨业务汇总并排除未分配项', () => {
     { value: '甲', label: '甲', count: 5 },
     { value: '乙', label: '乙', count: 4 },
   ])
-  assert.deepEqual(defaultTaskFlowPosition('ready', 0), { x: 40, y: 80 })
-  assert.deepEqual(defaultTaskFlowPosition('waiting', 1), { x: 400, y: 276 })
+  assert.deepEqual(defaultTaskFlowPosition('ready', 0), { x: 20, y: 64 })
+  assert.deepEqual(defaultTaskFlowPosition('waiting', 1), { x: 20, y: 260 })
+  assert.equal(taskFlowLaneNodeId('exception'), 'task-flow-lane-exception')
+  assert.equal(taskFlowLaneHeight([
+    { lane: 'ready', position: { y: 64 } },
+    { lane: 'ready', position: { y: 260 } },
+    { lane: 'waiting', position: { y: 64 } },
+  ]), 560)
+  assert.equal(taskFlowLaneHeight([
+    { lane: 'exception', position: { y: 620 } },
+  ]), 810)
 })
 
 test('任务流内测入口只向超级管理员开放', () => {
@@ -88,10 +99,19 @@ test('任务流内测入口只向超级管理员开放', () => {
 test('任务流聚合现有待办、被动刷新并跳转原任务详情', () => {
   const source = readFileSync(new URL('../src/pages/TaskFlowLab.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  const workflow = readFileSync(new URL('../src/pages/WorkflowTickets.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /ReactFlowProvider/)
   assert.match(source, /MOBILE_TASK_TYPES\.map/)
   assert.match(source, /inspectors: \[inspector\]/)
+  assert.match(source, /value: 'control'/)
+  assert.match(source, /review_stage: 'waiting_analysis'/)
+  assert.match(source, /workflowApi\.pendingPhotoRequests/)
+  assert.match(source, /getPoliceDispatchWorkbench/)
+  assert.match(source, /下发数据审核/)
+  assert.match(source, /下发数据研判/)
+  assert.match(source, /下发数据发布/)
+  assert.match(source, /\/photo-tasks\?ticket=/)
   assert.match(source, /AUTO_REFRESH_MS = 30_000/)
   assert.match(source, /refreshTasks\(true\)/)
   assert.match(source, /encodeURIComponent\(task\.parser_type\)/)
@@ -100,5 +120,11 @@ test('任务流聚合现有待办、被动刷新并跳转原任务详情', () =>
   assert.match(source, /onMoveEnd=/)
   assert.match(source, /setViewport\(saved\.viewport/)
   assert.match(source, /strokeDasharray: '6 5'/)
-  assert.match(client, /options\.passive \? undefined : activeRequest/)
+  assert.match(source, /parentId: taskFlowLaneNodeId\(item\.lane\)/)
+  assert.match(source, /extent: 'parent'/)
+  assert.match(source, /const flowNodes = useMemo<FlowNode\[\]>\(\(\) => \[\.\.\.laneNodes, \.\.\.visibleNodes\]/)
+  assert.match(client, /const passiveRequest = \{ headers: \{ 'X-User-Activity': '0' \} \}/)
+  assert.match(client, /options\.passive \? passiveRequest : activeRequest/)
+  assert.match(workflow, /requestedTicketId/)
+  assert.match(workflow, /openDetail\(\{ id: requestedTicketId \}\)/)
 })

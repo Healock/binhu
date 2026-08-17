@@ -37,9 +37,26 @@ export function mergeTaskFlowInspectors(
 }
 
 export function defaultTaskFlowPosition(
-  lane: TaskFlowLane,
+  _lane: TaskFlowLane,
   laneIndex: number,
 ): { x: number; y: number } {
-  const x = lane === 'ready' ? 40 : lane === 'waiting' ? 400 : 760
-  return { x, y: 80 + laneIndex * 196 }
+  return { x: 20, y: 64 + laneIndex * 196 }
+}
+
+export function taskFlowLaneNodeId(lane: TaskFlowLane): string {
+  return `task-flow-lane-${lane}`
+}
+
+export function taskFlowLaneHeight(
+  nodes: Array<{ lane: TaskFlowLane; position: { y: number } }>,
+): number {
+  const counts: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
+  const lowest: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
+  nodes.forEach(node => {
+    counts[node.lane] += 1
+    lowest[node.lane] = Math.max(lowest[node.lane], Number(node.position.y || 0))
+  })
+  const byCount = Math.max(...Object.values(counts)) * 196 + 84
+  const byPosition = Math.max(...Object.values(lowest)) + 190
+  return Math.max(560, byCount, byPosition)
 }

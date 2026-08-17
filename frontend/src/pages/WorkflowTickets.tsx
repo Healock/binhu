@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -95,6 +95,8 @@ function saveBlob(blob: Blob, filename: string) {
 export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets' | 'photo' }) {
   const { user, systemTimezone } = useAuth()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedTicketId = Number(searchParams.get('ticket') || 0)
   const permissions = new Set(user?.permissions || [])
   const canCreate = permissions.has('workflow.ticket.create')
   const canHandle = permissions.has('workflow.ticket.handle') || permissions.has('workflow.ticket.manage')
@@ -135,6 +137,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const [createForm] = Form.useForm()
   const [actionForm] = Form.useForm()
   const listRequestId = useRef(0)
+  const openedTicketId = useRef<number | null>(null)
   const selectedCreateTypeCode = Form.useWatch('type_code', createForm)
   const selectedCreateType = types.find(item => item.code === selectedCreateTypeCode)
 
@@ -244,13 +247,29 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     }
   }
 
-  const openDetail = async (row: WorkOrderSummary) => {
+  const openDetail = useCallback(async (row: Pick<WorkOrderSummary, 'id'>) => {
     try {
       setDetail(await workflowApi.ticket(row.id))
       setDetailOpen(true)
     } catch (reason) {
       message.error(apiError(reason, '工单详情读取失败'))
     }
+  }, [])
+
+  useEffect(() => {
+    if (!Number.isInteger(requestedTicketId) || requestedTicketId <= 0) return
+    if (openedTicketId.current === requestedTicketId) return
+    openedTicketId.current = requestedTicketId
+    void openDetail({ id: requestedTicketId })
+  }, [openDetail, requestedTicketId])
+
+  const closeDetail = () => {
+    setDetailOpen(false)
+    if (!searchParams.has('ticket')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('ticket')
+    setSearchParams(next, { replace: true })
+    openedTicketId.current = null
   }
 
   const claim = async (row: WorkOrderSummary) => {
@@ -632,7 +651,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
         open={detailOpen}
         width="min(96vw, 820px)"
         title={detail?.ticket_no || '工单详情'}
-        onClose={() => setDetailOpen(false)}
+        onClose={closeDetail}
         extra={<Button icon={<ReloadOutlined />} onClick={() => void refreshDetail()}>刷新</Button>}
       >
         {detail && (
