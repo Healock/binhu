@@ -356,6 +356,168 @@
   box-shadow: 0 6px 20px rgb(15 23 42 / 0.08);
 }
 
+.task-flow-canvas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: calc(100% - 140px);
+  padding: 7px;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-surface) 94%, transparent);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.1);
+  backdrop-filter: blur(10px);
+}
+
+.task-flow-canvas-toolbar .ant-btn {
+  min-height: 30px;
+  border-radius: 8px;
+}
+
+.task-flow-deck {
+  position: relative;
+  width: 300px;
+  min-height: 176px;
+  color: var(--app-text);
+}
+
+.task-flow-deck__layers i {
+  position: absolute;
+  inset: 8px -8px -8px 8px;
+  border: 1px solid color-mix(in srgb, var(--app-primary) 30%, var(--app-border));
+  border-radius: 14px;
+  background: var(--app-surface);
+  box-shadow: 0 8px 18px rgb(15 23 42 / 0.08);
+}
+
+.task-flow-deck__layers i:last-child {
+  inset: 15px -15px -15px 15px;
+  opacity: 0.55;
+}
+
+.task-flow-deck__content {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
+  min-height: 176px;
+  padding: 14px;
+  border: 2px solid #2563eb;
+  border-radius: 14px;
+  background: var(--app-surface);
+  box-shadow: 0 12px 28px rgb(15 23 42 / 0.12);
+}
+
+.task-flow-deck--waiting .task-flow-deck__content {
+  border-color: #d97706;
+}
+
+.task-flow-deck--exception .task-flow-deck__content {
+  border-color: #dc2626;
+}
+
+.task-flow-deck__eyebrow {
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.task-flow-deck__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.task-flow-deck__headline strong {
+  color: var(--app-text-strong);
+  font-size: 30px;
+  line-height: 1;
+}
+
+.task-flow-deck__headline span {
+  color: var(--app-text-secondary);
+  font-size: 13px;
+}
+
+.task-flow-deck__categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.task-flow-deck__categories span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--app-text-secondary);
+  background: var(--app-surface-muted);
+  font-size: 11px;
+}
+
+.task-flow-deck__categories b {
+  color: var(--app-text-strong);
+}
+
+.task-flow-deck__toolbar {
+  display: flex;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.12);
+}
+
+.task-flow-workflow-node {
+  display: grid;
+  width: 248px;
+  min-height: 76px;
+  align-content: center;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, #2563eb 35%, var(--app-border));
+  border-radius: 14px;
+  color: var(--app-text);
+  background: color-mix(in srgb, #2563eb 7%, var(--app-surface));
+  box-shadow: 0 8px 22px rgb(15 23 42 / 0.08);
+}
+
+.task-flow-workflow-node.is-amber {
+  border-color: color-mix(in srgb, #d97706 38%, var(--app-border));
+  background: color-mix(in srgb, #d97706 7%, var(--app-surface));
+}
+
+.task-flow-workflow-node.is-green {
+  border-color: color-mix(in srgb, #16a34a 38%, var(--app-border));
+  background: color-mix(in srgb, #16a34a 7%, var(--app-surface));
+}
+
+.task-flow-workflow-node.is-red {
+  border-color: color-mix(in srgb, #dc2626 38%, var(--app-border));
+  background: color-mix(in srgb, #dc2626 7%, var(--app-surface));
+}
+
+.task-flow-workflow-node strong {
+  color: var(--app-text-strong);
+  font-size: 14px;
+}
+
+.task-flow-workflow-node span {
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.task-flow-workflow-node__handle {
+  width: 9px !important;
+  height: 9px !important;
+  border: 2px solid var(--app-surface) !important;
+  background: #64748b !important;
+}
+
 .task-flow-lab .react-flow__controls-button {
   border-color: var(--app-border);
   color: var(--app-text);
