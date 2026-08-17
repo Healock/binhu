@@ -167,7 +167,7 @@ def leave_context() -> QmfCollectedContext:
     task.update({
         "result": RESULT_LEAVE_NOT_RETURNING,
         "resolved_community": "虚构社区",
-        "qmf_community_code": "3205840001",
+        "qmf_community_code": "320584037C",
         "destination_code": "510904",
         "destination_address": "四川省遂宁市安居区",
     })
@@ -274,7 +274,7 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(leave_feedback["hcjg"], "1")
         self.assertEqual(leave_feedback["logoutReason"], "2")
-        self.assertEqual(leave_feedback["communityCode"], "3205840001")
+        self.assertEqual(leave_feedback["communityCode"], "320584037C")
         self.assertEqual(leave_feedback["qwdxzqh"], "510904")
         self.assertEqual(leave_feedback["qwdxz"], "四川省遂宁市安居区")
         self.assertNotIn("四川", leave_feedback["qwdxzqh"])

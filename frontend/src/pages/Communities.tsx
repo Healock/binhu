@@ -17,6 +17,7 @@ import {
   type CommunityArea,
   type GridCommunity,
 } from '../api/client'
+import { normalizeQmfCommunityCodeInput } from '../utils/qmfRegistration'
 import AppTable from '../components/AppTable'
 import { EmptyState, ListToolbar, LoadingState, PageHeader } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
@@ -445,9 +446,9 @@ export default function Communities() {
             <div className="mb-2 font-medium text-slate-700">全民防社区代码</div>
             <Input
               value={qmfCommunityCodeDraft}
-              onChange={event => setQmfCommunityCodeDraft(event.target.value.replace(/\D/g, '').slice(0, 10))}
-              placeholder="请输入全民防中的 10 位社区代码"
-              inputMode="numeric"
+              onChange={event => setQmfCommunityCodeDraft(normalizeQmfCommunityCodeInput(event.target.value))}
+              placeholder="请输入全民防中的 10 位字母/数字社区代码"
+              inputMode="text"
               maxLength={10}
             />
             <p className="mt-2 text-sm text-slate-500">

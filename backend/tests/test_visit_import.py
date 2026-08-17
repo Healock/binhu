@@ -344,6 +344,16 @@ class VisitIdentityTests(unittest.TestCase):
             normalize_community("南厍"),
         )
 
+    def test_qmf_community_code_accepts_verified_alphanumeric_format(self):
+        payload = CommunityAliasesUpdate(
+            aliases=[], qmf_community_code=" 320584037c "
+        )
+        self.assertEqual(payload.qmf_community_code, "320584037C")
+        with self.assertRaises(ValueError):
+            CommunityAliasesUpdate(
+                aliases=[], qmf_community_code="320584037-"
+            )
+
     def test_community_police_officers_trim_and_deduplicate(self):
         payload = CommunityAliasesUpdate(
             aliases=[],

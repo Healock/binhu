@@ -205,7 +205,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       if (!cancelled) setQmfLegacyStatus(result)
     }).catch(reason => {
       if (!cancelled) {
-        setQmfLegacyStatusError(detailError(reason, '旧平台反馈状态暂时无法确认'))
+        setQmfLegacyStatusError(detailError(reason, '全民防反馈状态暂时无法确认'))
       }
     }).finally(() => {
       if (!cancelled) setQmfLegacyStatusLoading(false)
@@ -559,25 +559,25 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const qmfLegacyStatusView = qmfLegacyStatus ? (() => {
     switch (qmfLegacyStatus.state) {
       case 'pending':
-        return { type: 'info' as const, message: '旧平台尚未反馈', description: '可以继续生成全民防登记准备；执行前还会再次复核。' }
+        return { type: 'info' as const, message: '全民防尚未反馈', description: '可以继续生成全民防登记准备；执行前还会再次复核。' }
       case 'not_found':
         return { type: 'info' as const, message: '管理端未查到该记录', description: '这不等于未反馈；登记准备会继续通过手机待办接口确认唯一任务。' }
       case 'completed_match':
         return {
           type: 'success' as const,
-          message: '旧平台已反馈，无需重复登记',
+          message: '全民防已反馈，无需重复登记',
           description: `${qmfLegacyStatus.result_text || '结果已确认'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''} · ${qmfLegacyStatus.origin === 'binhu_automatic' ? '由滨湖平台完成' : 'APP 手工或其他渠道完成'}`,
         }
       case 'completed_mismatch':
-        return { type: 'error' as const, message: '旧平台反馈结果与平台核查结果不一致', description: `${qmfLegacyStatus.result_text || '结果待核对'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}，请先人工核对。` }
+        return { type: 'error' as const, message: '全民防反馈结果与平台核查结果不一致', description: `${qmfLegacyStatus.result_text || '结果待核对'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}，请先人工核对。` }
       case 'ambiguous':
-        return { type: 'warning' as const, message: '旧平台存在多条匹配记录', description: '为避免误登记，当前不能继续。' }
+        return { type: 'warning' as const, message: '全民防存在多条匹配记录', description: '为避免误登记，当前不能继续。' }
       case 'station_mismatch':
-        return { type: 'warning' as const, message: '旧平台记录不属于滨湖新城派出所', description: qmfLegacyStatus.station || '请人工核对记录归属。' }
+        return { type: 'warning' as const, message: '全民防记录不属于滨湖新城派出所', description: qmfLegacyStatus.station || '请人工核对记录归属。' }
       case 'unknown_result':
-        return { type: 'warning' as const, message: '旧平台核查结果暂不支持', description: '请人工核对旧平台记录后再处理。' }
+        return { type: 'warning' as const, message: '全民防核查结果暂不支持', description: '请人工核对全民防记录后再处理。' }
       default:
-        return { type: 'warning' as const, message: '旧平台反馈状态暂时无法确认', description: qmfLegacyStatus.reason || '为避免重复登记，当前不能继续。' }
+        return { type: 'warning' as const, message: '全民防反馈状态暂时无法确认', description: qmfLegacyStatus.reason || '为避免重复登记，当前不能继续。' }
     }
   })() : null
 
@@ -692,7 +692,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 : !selectedSource?.source_available
                   ? '腾讯来源行已不存在，不能准备登记'
                   : qmfLegacyStatusLoading
-                    ? '正在复核旧平台反馈状态'
+                    ? '正在复核全民防反馈状态'
                     : qmfLegacyStatusError
                       ? qmfLegacyStatusError
                       : qmfLegacyStatus?.reason || data.qmf_registration.reason}
@@ -739,8 +739,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
 
       {mode === 'tasks' && data.qmf_registration?.visible && (
         <div className="space-y-2">
-          {qmfLegacyStatusLoading && <Alert type="info" showIcon message="正在复核旧平台反馈状态" />}
-          {qmfLegacyStatusError && <Alert type="warning" showIcon message="旧平台反馈状态暂时无法确认" description={qmfLegacyStatusError} />}
+          {qmfLegacyStatusLoading && <Alert type="info" showIcon message="正在复核全民防反馈状态" />}
+          {qmfLegacyStatusError && <Alert type="warning" showIcon message="全民防反馈状态暂时无法确认" description={qmfLegacyStatusError} />}
           {qmfLegacyStatusView && (
             <Alert
               type={qmfLegacyStatusView.type}
@@ -1032,8 +1032,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 : '正在读取全民防任务和登记所需资料'}
             description={qmfPrepareResult
               ? (qmfPrepareResult.platform_task.result === '离开不返吴'
-                ? '请逐项核对任务、社区和去往地。确认执行后会反馈旧平台，提交后不能自动撤销。'
-                : '请逐项核对人员、任务、操作人和照片。确认执行后会写入旧平台，提交后不能自动撤销。')
+                ? '请逐项核对任务、社区和去往地。确认执行后会反馈全民防，提交后不能自动撤销。'
+                : '请逐项核对人员、任务、操作人和照片。确认执行后会写入全民防，提交后不能自动撤销。')
               : '登记前核对不会执行写入；如需读取照片，照片只存在于本次认证响应和浏览器内存。'}
           />
           {qmfPreviewLoading && <Skeleton active paragraph={{ rows: 8 }} />}
@@ -1199,7 +1199,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 </p>
               )}
               {qmfRun.status === 'uncertain' && (
-                <Alert type="error" showIcon message="外部结果无法确认，本条已冻结" description="请先到全民防旧平台人工核对；系统不会自动重试，也不能从头重放。" />
+                <Alert type="error" showIcon message="外部结果无法确认，本条已冻结" description="请先到全民防人工核对；系统不会自动重试，也不能从头重放。" />
               )}
               {qmfRun.status === 'failed' && (
                 <div className="space-y-3">

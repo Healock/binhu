@@ -490,7 +490,7 @@ export default function SystemSettings() {
                 : qmfConfig.configured
                   ? '登记前核对可用，全民防登记仍关闭'
                   : '配置尚未完整'}
-              description="全民防登记会向旧平台上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
+              description="全民防登记会向全民防系统上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <div className="settings-field">
@@ -556,7 +556,7 @@ export default function SystemSettings() {
               type="warning"
               showIcon
               message="全民防登记不可自动撤销"
-              description="任一步骤出现超时、断线或结果不确定时，系统会冻结该次运行，不会自动重试，也不会从头重放。请先到旧平台人工核对。"
+              description="任一步骤出现超时、断线或结果不确定时，系统会冻结该次运行，不会自动重试，也不会从头重放。请先到全民防人工核对。"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
@@ -588,7 +588,7 @@ export default function SystemSettings() {
                 />
               </label>
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
-                <span className="settings-field__label font-medium">旧平台账号</span>
+                <span className="settings-field__label font-medium">全民防账号</span>
                 <Input
                   value={qmfConfig.source_username}
                   onChange={event => setQmfConfig(current => current ? { ...current, source_username: event.target.value } : current)}
@@ -596,7 +596,7 @@ export default function SystemSettings() {
                 />
               </label>
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
-                <span className="settings-field__label font-medium">旧平台密码</span>
+                <span className="settings-field__label font-medium">全民防密码</span>
                 <Input.Password
                   value={qmfPassword}
                   onChange={event => setQmfPassword(event.target.value)}

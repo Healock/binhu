@@ -25,6 +25,7 @@ from services.permissions import (
 from services.domain_schema import ensure_registry_schema, ensure_workflow_schema
 from services.domain_routing import DomainRoutingCursor
 from services.qmf_runs import ensure_qmf_registration_schema
+from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 
 # 数据库名称映射
@@ -545,6 +546,7 @@ async def ensure_online_editor_schema(cur) -> None:
             f"WHERE community.name IN ({placeholders})",
             (area_name, *community_names),
         )
+    await seed_default_qmf_community_codes(cur)
     for area_name, leader_name in (
         ("东片", "熊朝良"),
         ("中片", "褚寿生"),

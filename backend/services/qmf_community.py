@@ -10,6 +10,77 @@ from typing import Any
 from services.police_dispatch import normalize_community_label, normalize_lookup
 
 
+QMF_COMMUNITY_CODE_PATTERN = re.compile(r"[0-9A-Z]{10}")
+QMF_COMMUNITY_CODE_SEED_MARKER = "migration_qmf_community_codes_20260817"
+# Source confirmed on 2026-08-17: 苏州居住证平台12个社区代码.csv.
+DEFAULT_QMF_COMMUNITY_CODES = {
+    "三船港": "320584037C",
+    "冬梅": "3205840377",
+    "江城": "320584037G",
+    "长板": "3205840378",
+    "湖滨华城": "3205840376",
+    "祥泰": "320584021E",
+    "南厍": "3205840371",
+    "水秀": "3205840379",
+    "顾家荡": "320584037D",
+    "联团": "320584037F",
+    "龙河": "320584037A",
+    "阅湖": "320584037E",
+}
+
+
+def normalize_qmf_community_code(value: Any) -> str:
+    """Normalize the verified QMF option code without changing its namespace."""
+    return str(value or "").strip().upper()
+
+
+def valid_qmf_community_code(value: Any) -> bool:
+    return bool(QMF_COMMUNITY_CODE_PATTERN.fullmatch(
+        normalize_qmf_community_code(value)
+    ))
+
+
+async def seed_default_qmf_community_codes(cur) -> bool:
+    """Apply the verified defaults once without restoring later admin changes."""
+    await cur.execute("START TRANSACTION")
+    try:
+        await cur.execute(
+            """
+            SELECT config_value
+            FROM _system_config
+            WHERE config_key=%s
+            FOR UPDATE
+            """,
+            (QMF_COMMUNITY_CODE_SEED_MARKER,),
+        )
+        if await cur.fetchone():
+            await cur.execute("COMMIT")
+            return False
+
+        for community_name, community_code in DEFAULT_QMF_COMMUNITY_CODES.items():
+            await cur.execute(
+                """
+                UPDATE _communities
+                SET qmf_community_code=%s
+                WHERE name=%s
+                  AND (qmf_community_code IS NULL OR qmf_community_code='')
+                """,
+                (community_code, community_name),
+            )
+        await cur.execute(
+            """
+            INSERT INTO _system_config (config_key, config_value)
+            VALUES (%s, %s)
+            """,
+            (QMF_COMMUNITY_CODE_SEED_MARKER, "0.21.9"),
+        )
+        await cur.execute("COMMIT")
+        return True
+    except Exception:
+        await cur.execute("ROLLBACK")
+        raise
+
+
 @dataclass(frozen=True)
 class QmfCommunity:
     id: int
@@ -115,7 +186,7 @@ async def resolve_qmf_community(
         raise ValueError("community_not_found")
 
     item = communities[next(iter(resolved_ids))]
-    code = str(item["qmf_community_code"] or "")
-    if not re.fullmatch(r"\d{10}", code):
+    code = normalize_qmf_community_code(item["qmf_community_code"])
+    if not valid_qmf_community_code(code):
         raise ValueError("community_code_missing")
     return QmfCommunity(id=item["id"], name=item["name"], qmf_community_code=code)

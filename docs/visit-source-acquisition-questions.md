@@ -4,7 +4,7 @@
 
 ## 已确认
 
-- 认证：`POST /api/login`，用户名和密码按旧平台既有协议作为请求参数提交；成功响应的 `data` 是后续请求使用的 `Authorization` 值。
+- 认证：`POST /api/login`，用户名和密码按全民防既有协议作为请求参数提交；成功响应的 `data` 是后续请求使用的 `Authorization` 值。
 - 走访明细：`GET /api/enterHouse/queryEnterHouseClockInList`。
 - 新星级评分管理：`GET /api/starHouse/queryStarHouseList`。
 - 两类响应顶层均为 `code`、`data`、`message`，成功时 `code=200`，`data` 直接为记录数组。
