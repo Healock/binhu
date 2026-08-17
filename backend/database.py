@@ -8,6 +8,7 @@ from config import settings
 from services.business_time import current_business_date
 from services.permissions import (
     ALL_PERMISSIONS,
+    AUTHENTICATED_PERMISSIONS,
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_RAW_EDIT,
     ONLINE_RAW_ROW_MANAGE,
@@ -154,6 +155,17 @@ async def ensure_permission_schema(cur) -> None:
                 group["sort_order"],
             ),
         )
+    # 辖区档案查看是所有登录账号的基础能力。启动时只追加该只读权限，
+    # 不覆盖权限组已有配置，也不扩大任何管理权限。
+    await cur.execute("SELECT id, permissions FROM _permission_groups")
+    for group_id, raw_permissions in await cur.fetchall():
+        current = set(parse_permissions(raw_permissions))
+        required = current | AUTHENTICATED_PERMISSIONS
+        if required != current:
+            await cur.execute(
+                "UPDATE _permission_groups SET permissions=%s WHERE id=%s",
+                (serialize_permissions(required), int(group_id)),
+            )
     # 新权限只追加到相应预设组，不覆盖超级管理员已经调整过的其他权限。
     permission_additions = {
         "flow_post": {

@@ -6,10 +6,20 @@ from fastapi import HTTPException
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from routers.permission_groups import _normalize_mapping_values
+from routers.permission_groups import (
+    PermissionGroupPayload,
+    _normalize_mapping_values,
+    _normalize_payload,
+)
 from routers.users import _replace_custom_group_links, _resolve_groups
 from routers.grid_members import _resolve_department
-from services.permissions import DEFAULT_PERMISSION_GROUPS, POLICE_ADDRESS_MANAGE, POSITION_DEFAULT_GROUP
+from services.permissions import (
+    DEFAULT_PERMISSION_GROUPS,
+    ONLINE_SUMMARY_VIEW,
+    POLICE_ADDRESS_MANAGE,
+    POSITION_DEFAULT_GROUP,
+    REGISTRY_PROPERTY_VIEW,
+)
 from services.personnel_positions import POSITION_CATEGORIES
 
 
@@ -45,7 +55,21 @@ class MultiPermissionGroupTests(unittest.IsolatedAsyncioTestCase):
     def test_community_address_group_only_grants_scoped_address_management(self):
         group = DEFAULT_PERMISSION_GROUPS["community_address_manager"]
         self.assertEqual(group["data_scope"], "own_department")
-        self.assertEqual(group["permissions"], {POLICE_ADDRESS_MANAGE})
+        self.assertEqual(
+            group["permissions"],
+            {POLICE_ADDRESS_MANAGE, REGISTRY_PROPERTY_VIEW},
+        )
+
+    def test_custom_group_cannot_remove_authenticated_registry_view(self):
+        _, _, permissions = _normalize_payload(PermissionGroupPayload(
+            name="自定义查看组",
+            permissions=[ONLINE_SUMMARY_VIEW],
+            data_scope="own_department",
+        ))
+        self.assertEqual(
+            set(permissions),
+            {ONLINE_SUMMARY_VIEW, REGISTRY_PROPERTY_VIEW},
+        )
 
     async def test_community_police_requires_department_and_leader_uses_internal(self):
         with self.assertRaises(HTTPException):

@@ -88,6 +88,12 @@ PERMISSION_CATALOG = [
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}
 
+# 辖区档案属于所有登录账号的基础只读能力。数据范围仍由账号的
+# 权限组决定；维护、导入和问题审核继续使用各自的管理权限。
+AUTHENTICATED_PERMISSIONS = {
+    REGISTRY_PROPERTY_VIEW,
+}
+
 COMMON_VIEW_PERMISSIONS = {
     ONLINE_SUMMARY_VIEW,
     ONLINE_RAW_VIEW,
@@ -99,7 +105,7 @@ COMMON_VIEW_PERMISSIONS = {
     WORKFLOW_TICKET_CREATE,
     WORKFLOW_TICKET_VIEW,
     WORKFLOW_ATTACHMENT_VIEW,
-}
+} | AUTHENTICATED_PERMISSIONS
 
 FLOW_POST_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {ONLINE_RAW_EDIT}
 
@@ -150,7 +156,7 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "name": "本社区小区管理组",
         "description": "组长、组员维护和导出本人所属社区的小区资料",
         "data_scope": "own_department",
-        "permissions": {POLICE_ADDRESS_MANAGE},
+        "permissions": {POLICE_ADDRESS_MANAGE} | AUTHENTICATED_PERMISSIONS,
         "sort_order": 15,
     },
     "global_viewer": {

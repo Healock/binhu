@@ -21,6 +21,7 @@ from services.permissions import (
     ONLINE_SUMMARY_VIEW,
     ONLINE_TASK_MANAGE,
     QMF_REGISTRATION_EXECUTE,
+    REGISTRY_PROPERTY_VIEW,
     SYNC_TRIGGER,
     WORKFLOW_ATTACHMENT_VIEW,
     WORKFLOW_TICKET_CREATE,
@@ -156,6 +157,11 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(ONLINE_TASK_MANAGE, DEFAULT_PERMISSION_GROUPS["community_registry_viewer"]["permissions"])
         self.assertIn(QMF_REGISTRATION_EXECUTE, DEFAULT_PERMISSION_GROUPS["super_admin"]["permissions"])
         for code, group in DEFAULT_PERMISSION_GROUPS.items():
+            self.assertIn(
+                REGISTRY_PROPERTY_VIEW,
+                group["permissions"],
+                f"{code} 应具备辖区档案基础查看权限",
+            )
             if code != "super_admin":
                 self.assertNotIn(QMF_REGISTRATION_EXECUTE, group["permissions"])
 
@@ -247,9 +253,31 @@ class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_display_name_falls_back_to_linked_member(self):
         cursor = FakeCursor(user_row(display_name="", member_name="关联姓名"))
-        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+        with (
+            patch("deps.db_manager.get_pool", return_value=FakePool(cursor)),
+            patch("deps.settings.REGISTRY_FEATURE_ENABLED", True),
+        ):
             user = await get_current_user(request())
         self.assertEqual(user["display_name"], "关联姓名")
+
+    async def test_registry_view_is_added_to_existing_groups_at_runtime(self):
+        cursor = FakeCursor(
+            user_row(),
+            group_rows=[(
+                2, "flow_post", "流口岗",
+                '["online.summary.view"]', "own_department", 10,
+            )],
+        )
+        with (
+            patch("deps.db_manager.get_pool", return_value=FakePool(cursor)),
+            patch("deps.settings.REGISTRY_FEATURE_ENABLED", True),
+        ):
+            user = await get_current_user(request())
+        self.assertIn(REGISTRY_PROPERTY_VIEW, user["permissions"])
+        self.assertEqual(
+            user["permission_scopes"][REGISTRY_PROPERTY_VIEW],
+            "own_department",
+        )
 
     async def test_multiple_groups_merge_permissions_without_cross_scope(self):
         cursor = FakeCursor(
@@ -266,7 +294,10 @@ class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ],
         )
-        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+        with (
+            patch("deps.db_manager.get_pool", return_value=FakePool(cursor)),
+            patch("deps.settings.REGISTRY_FEATURE_ENABLED", True),
+        ):
             user = await get_current_user(request())
 
         self.assertEqual(
@@ -275,6 +306,10 @@ class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(user["permission_scopes"][ONLINE_SUMMARY_VIEW], "all")
         self.assertEqual(user["permission_scopes"][SYNC_TRIGGER], "own_department")
+        self.assertEqual(
+            user["permission_scopes"][REGISTRY_PROPERTY_VIEW],
+            "all",
+        )
 
     async def test_bootstrap_keeps_account_context_during_maintenance(self):
         cursor = FakeCursor(

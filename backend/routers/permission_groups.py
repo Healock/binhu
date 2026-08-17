@@ -13,6 +13,7 @@ from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.permissions import (
     ALL_PERMISSIONS,
+    AUTHENTICATED_PERMISSIONS,
     POSITION_DEFAULT_GROUP,
     catalog_payload,
     parse_permissions,
@@ -77,7 +78,9 @@ def _normalize_payload(data: PermissionGroupPayload) -> tuple[str, str, list[str
     unknown = sorted(set(data.permissions) - ALL_PERMISSIONS)
     if unknown:
         raise HTTPException(400, f"包含未知权限：{', '.join(unknown)}")
-    permissions = parse_permissions(data.permissions)
+    permissions = sorted(
+        set(parse_permissions(data.permissions)) | AUTHENTICATED_PERMISSIONS
+    )
     return name, data.data_scope, permissions
 
 
