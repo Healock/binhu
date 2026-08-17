@@ -41,6 +41,8 @@ from services.registry_import import (
     normalize_text,
 )
 from services.registry_certificate_source import fetch_certificate_rows
+from services.registry_certificate_apply import apply_certificate_batch
+from services.registry_certificate_status import certificate_status_summary
 from services.registry_certificate_jobs import (
     create_certificate_source_run,
     get_certificate_source_run,
@@ -607,11 +609,54 @@ async def get_property_detail(
         await cur.execute(
             "SELECT id, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
             "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, created_at "
-            "FROM registry_property_certificates WHERE property_id=%s ORDER BY sign_time DESC, id DESC",
+            ", source_last_seen_at, updated_at FROM registry_property_certificates "
+            "WHERE property_id=%s ORDER BY updated_at DESC, id DESC",
             (property_id,),
         )
         certificates = await cur.fetchall()
     reveal_sensitive = REGISTRY_IMPORT_MANAGE in set(user.get("permissions") or [])
+    certificate_items = [
+        {
+            "id": int(item[0]), "source_ref": item[1], "source_row": item[2],
+            "community": item[3], "address": item[4],
+            "landlord_name": item[5] if reveal_sensitive else (str(item[5] or "")[:1] + "***" if item[5] else ""),
+            "landlord_identity_number": item[6] if reveal_sensitive else "",
+            "actual_renter_name": item[7] if reveal_sensitive else (str(item[7] or "")[:1] + "***" if item[7] else ""),
+            "actual_renter_identity_number": item[8] if reveal_sensitive else "",
+            "signed_status": item[9], "sign_type": item[10], "sign_time": _iso(item[11]),
+            "document_ref": item[12], "created_at": _iso(item[13]),
+            "source_last_seen_at": _iso(item[14]), "updated_at": _iso(item[15]),
+        }
+        for item in certificates
+    ]
+    latest_certificate = certificates[0] if certificates else None
+    responsibility_identity = "未确认"
+    if latest_certificate and latest_certificate[7]:
+        role_names = {
+            str(item[4] or "")
+            for item in people
+            if item[2] == latest_certificate[7] and item[6] is None
+        }
+        is_sublessor = any("二房东" in name for name in role_names)
+        is_manager = any("管家" in name for name in role_names)
+        if is_sublessor and is_manager:
+            responsibility_identity = "既是二房东又是管家"
+        elif is_sublessor:
+            responsibility_identity = "二房东"
+        elif is_manager:
+            responsibility_identity = "管家"
+        elif latest_certificate[5] and latest_certificate[5] == latest_certificate[7]:
+            responsibility_identity = "普通房东"
+    certificate_summary = certificate_status_summary(
+        housing_type=row[7],
+        certificate_count=len(certificates),
+        landlord_name=latest_certificate[5] if latest_certificate else "",
+        actual_renter_name=latest_certificate[7] if latest_certificate else "",
+        signed_status=latest_certificate[9] if latest_certificate else "",
+        sign_type=latest_certificate[10] if latest_certificate else "",
+        updated_at=_iso(latest_certificate[14] or latest_certificate[15]) if latest_certificate else None,
+        responsibility_identity=responsibility_identity,
+    )
     return {
         "id": int(row[0]), "street": row[1], "community_id": row[2],
         "community_name": row[3], "natural_address": row[4], "building": row[5],
@@ -640,19 +685,8 @@ async def get_property_detail(
              "role_type_id": int(item[3]), "role_name": item[4], "valid_from": _iso(item[5]),
              "valid_to": _iso(item[6]), "verified": bool(item[7])} for item in organizations
         ],
-        "certificates": [
-            {
-                "id": int(item[0]), "source_ref": item[1], "source_row": item[2],
-                "community": item[3], "address": item[4],
-                "landlord_name": item[5] if reveal_sensitive else (str(item[5] or "")[:1] + "***" if item[5] else ""),
-                "landlord_identity_number": item[6] if reveal_sensitive else "",
-                "actual_renter_name": item[7] if reveal_sensitive else (str(item[7] or "")[:1] + "***" if item[7] else ""),
-                "actual_renter_identity_number": item[8] if reveal_sensitive else "",
-                "signed_status": item[9], "sign_type": item[10], "sign_time": _iso(item[11]),
-                "document_ref": item[12], "created_at": _iso(item[13]),
-            }
-            for item in certificates
-        ],
+        "certificate_summary": certificate_summary,
+        "certificates": certificate_items,
     }
 
 
@@ -2022,157 +2056,23 @@ async def confirm_certificate_import(
     user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
     conn=Depends(get_registry_db),
 ):
-    await conn.begin()
-    imported = 0
-    skipped = 0
     try:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT status FROM registry_source_batches WHERE id=%s AND source_type='certificate' FOR UPDATE", (batch_id,))
-            batch = await cur.fetchone()
-            if not batch:
-                raise HTTPException(404, "告知书导入批次不存在")
-            if str(batch[0]) == "imported":
-                await conn.rollback()
-                return {"batch_id": batch_id, "status": "imported", "imported_count": 0, "skipped_count": 0, "idempotent": True}
-            await cur.execute(
-                "SELECT id, source_ref, payload_json FROM registry_source_records WHERE batch_id=%s AND entity_type='property_certificate' ORDER BY id",
-                (batch_id,),
-            )
-            records = await cur.fetchall()
-            await cur.execute("SELECT source_ref FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
-            blocked_refs = {str(row[0]) for row in await cur.fetchall()}
-            community_cache: dict[str, tuple[int | None, str]] = {}
-            candidates: list[tuple[int, str, dict, int | None, str, str]] = []
-            for record_id, source_ref, payload_json in records:
-                if str(source_ref) in blocked_refs:
-                    skipped += 1
-                    continue
-                payload = _json(payload_json, {})
-                address = normalize_text(payload.get("address"))
-                normalized = normalize_address(address)
-                if not normalized:
-                    skipped += 1
-                    continue
-                community_name = normalize_community(payload.get("community"))
-                if community_name not in community_cache:
-                    try:
-                        community_cache[community_name] = await _canonical_community(cur, None, community_name)
-                    except HTTPException:
-                        community_cache[community_name] = (None, community_name)
-                community_id, canonical_name = community_cache[community_name]
-                candidates.append((int(record_id), str(source_ref), payload, community_id, canonical_name, normalized))
-
-            property_cache: dict[tuple[str, int | None], tuple[int, str]] = {}
-            for offset in range(0, len(candidates), REGISTRY_IMPORT_WRITE_CHUNK):
-                chunk = candidates[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
-                keys = sorted({item[5] for item in chunk if item[5]})
-                if not keys:
-                    continue
-                placeholders = ",".join(["%s"] * len(keys))
-                await cur.execute(
-                    "SELECT id, community_id, normalized_address, housing_type FROM registry_properties "
-                    f"WHERE normalized_address IN ({placeholders}) FOR UPDATE",
-                    tuple(keys),
-                )
-                for property_id, property_community_id, property_normalized, housing_type in await cur.fetchall():
-                    property_cache[(str(property_normalized), property_community_id)] = (int(property_id), str(housing_type or ""))
-
-            certificate_values: list[tuple] = []
-            certificate_links: list[tuple[int, str]] = []
-            non_rental_issues: list[tuple] = []
-            for record_id, source_ref, payload, community_id, canonical_name, normalized in candidates:
-                property_row = property_cache.get((normalized, community_id))
-                if not property_row or str(property_row[1] or "") not in {"个人出租", "单位出租"}:
-                    non_rental_issues.append((
-                        batch_id,
-                        ISSUE_CERTIFICATE_NON_RENTAL,
-                        "certificate",
-                        source_ref,
-                        normalized,
-                        json.dumps(payload, ensure_ascii=False, default=str),
-                        "告知书地址未匹配到个人出租/单位出租房屋档案",
-                    ))
-                    skipped += 1
-                    continue
-                property_id = int(property_row[0])
-                certificate_values.append((
-                    property_id,
-                    source_ref,
-                    str(payload.get("source_row") or ""),
-                    canonical_name or normalize_community(payload.get("community")),
-                    normalize_text(payload.get("address")),
-                    str(payload.get("czrxm") or payload.get("landlord_name") or ""),
-                    str(payload.get("czrzjhm") or payload.get("landlord_identity_number") or ""),
-                    str(payload.get("sjczrxm") or payload.get("actual_renter_name") or ""),
-                    str(payload.get("sjczrzjhm") or payload.get("actual_renter_identity_number") or ""),
-                    str(payload.get("isSign") or payload.get("signed_status") or ""),
-                    str(payload.get("signType") or payload.get("sign_type") or ""),
-                    _source_datetime(payload.get("signTime") or payload.get("sign_time")),
-                    str(payload.get("signurl") or payload.get("document_ref") or ""),
-                    json.dumps(payload, ensure_ascii=False, default=str),
-                    user["id"],
-                ))
-                certificate_links.append((record_id, source_ref))
-
-            await _bulk_insert_import_issues(cur, non_rental_issues)
-            await _executemany_chunked(
-                cur,
-                "INSERT IGNORE INTO registry_property_certificates "
-                "(property_id, source_type, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
-                "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, payload_json, created_by) "
-                "VALUES (%s,'certificate',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                certificate_values,
-            )
-
-            certificate_ids: dict[str, int] = {}
-            for offset in range(0, len(certificate_links), REGISTRY_IMPORT_WRITE_CHUNK):
-                chunk = certificate_links[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
-                refs = [item[1] for item in chunk]
-                placeholders = ",".join(["%s"] * len(refs))
-                await cur.execute(
-                    "SELECT id, source_ref FROM registry_property_certificates "
-                    f"WHERE source_type='certificate' AND source_ref IN ({placeholders}) ORDER BY id",
-                    tuple(refs),
-                )
-                for certificate_id, source_ref in await cur.fetchall():
-                    certificate_ids[str(source_ref)] = int(certificate_id)
-            source_links = [
-                (certificate_ids[source_ref], record_id)
-                for record_id, source_ref in certificate_links
-                if source_ref in certificate_ids
-            ]
-            if len(source_links) != len(certificate_links):
-                raise RuntimeError("告知书导入后无法重新定位已挂载记录")
-            await _executemany_chunked(
-                cur,
-                "UPDATE registry_source_records SET entity_id=%s WHERE id=%s",
-                source_links,
-            )
-            imported += len(certificate_links)
-            await cur.execute("SELECT COUNT(*) FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
-            pending_issue_count = int((await cur.fetchone())[0])
-            await cur.execute(
-                "UPDATE registry_source_batches SET status=%s, imported_count=%s WHERE id=%s",
-                ("partially_imported" if pending_issue_count else "imported", imported, batch_id),
-            )
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
-    result = {
-        "batch_id": batch_id,
-        "status": "partially_imported" if pending_issue_count else "imported",
-        "imported_count": imported,
-        "skipped_count": skipped,
-        "pending_issue_count": pending_issue_count,
-        "idempotent": False,
-    }
+        result = await apply_certificate_batch(conn, batch_id, int(user["id"]))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     await record_admin_audit(
         user,
         "registry.certificate_import.confirm",
         target_type="registry_source_batch",
         target_name=str(batch_id),
-        detail={key: result[key] for key in ("imported_count", "skipped_count", "pending_issue_count")},
+        detail={
+            key: result[key]
+            for key in (
+                "inserted_count", "updated_count", "unchanged_count",
+                "skipped_count", "pending_issue_count",
+            )
+            if key in result
+        },
         **request_audit_fields(request),
     )
     return result

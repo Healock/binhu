@@ -66,3 +66,21 @@ test('问题数据核查说明外部修正原因并显示字段和错误值', ()
   assert.doesNotMatch(pageSource, /reviewImportIssue/)
   assert.match(pageSource, /key: 'imports', label: '数据导入'/)
 })
+
+test('房屋档案突出显示责任书状态和责任关系', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /certificate_status\?: RegistryCertificateStatus/)
+  assert.match(pageSource, /全部责任书状态/)
+  assert.match(pageSource, /registry-certificate-summary--\$\{summary\.certificate_status\}/)
+  assert.match(pageSource, /实际出租人未确定/)
+  assert.match(pageSource, /责任身份/)
+  assert.match(pageSource, /最近来源读取/)
+})

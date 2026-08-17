@@ -13,6 +13,7 @@ import {
   getGridCommunities,
   registryApi,
   type RegistryCertificateSourceRun,
+  type RegistryCertificateStatus,
   type RegistryHousingCategory,
   type RegistryImportIssue,
   type RegistryOrganization,
@@ -43,6 +44,25 @@ const issueTypeLabels: Record<string, string> = {
 
 const issueTypeOptions = Object.entries(issueTypeLabels).map(([value, label]) => ({ value, label }))
 
+const certificateStatusOptions: Array<{ value: RegistryCertificateStatus; label: string }> = [
+  { value: '', label: '全部责任书状态' },
+  { value: 'normal_signed', label: '正常签署' },
+  { value: 'not_uploaded', label: '未上传告知书' },
+  { value: 'renter_needs_correction', label: '出租人待修正' },
+  { value: 'actual_renter_missing', label: '实际出租人未确定' },
+  { value: 'multiple_or_conflict', label: '多份或内容待核对' },
+  { value: 'not_applicable', label: '非出租房屋' },
+]
+
+const certificateStatusColors: Record<Exclude<RegistryCertificateStatus, ''>, string> = {
+  normal_signed: 'success',
+  not_uploaded: 'error',
+  renter_needs_correction: 'orange',
+  actual_renter_missing: 'purple',
+  multiple_or_conflict: 'volcano',
+  not_applicable: 'default',
+}
+
 function issuePayloadText(row: RegistryImportIssue, ...keys: string[]) {
   for (const key of keys) {
     const value = row.payload?.[key]
@@ -66,6 +86,7 @@ export default function RegistryManagement() {
   const [issueSourceType, setIssueSourceType] = useState<'' | 'household' | 'certificate'>('')
   const [communityId, setCommunityId] = useState<number | undefined>()
   const [housingCategory, setHousingCategory] = useState<RegistryHousingCategory>('')
+  const [certificateStatus, setCertificateStatus] = useState<RegistryCertificateStatus>('')
   const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -103,6 +124,7 @@ export default function RegistryManagement() {
           keyword: debouncedKeyword,
           community_id: communityId,
           housing_category: housingCategory,
+          certificate_status: certificateStatus,
           status: propertyStatus,
           page,
           page_size: pageSize,
@@ -173,8 +195,8 @@ export default function RegistryManagement() {
   }, [])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, propertyStatus])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, propertyStatus, page, pageSize])
+  }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, page, pageSize])
 
   const applyCertificateRun = (run: RegistryCertificateSourceRun, announce = false) => {
     const previousStatus = certificateRunRef.current?.status
@@ -409,6 +431,16 @@ export default function RegistryManagement() {
       ? <Tag color={['个人出租', '单位出租'].includes(value) ? 'blue' : value === '自购房屋' ? 'green' : 'default'}>{value}</Tag>
       : <Tag color="warning">未标注</Tag> },
     { title: '居住处所', dataIndex: 'residence_type', width: 120, render: value => value || '-' },
+    { title: '责任书', key: 'certificate_status', width: 220, render: (_, row) => (
+      <div className="registry-certificate-cell">
+        <Tag color={certificateStatusColors[row.certificate_status || 'not_uploaded']}>
+          {row.certificate_status_label || '未上传告知书'}
+        </Tag>
+        {row.certificate_status !== 'not_applicable' && (
+          <span>{row.landlord_renter_relation_label || '责任关系待确认'}</span>
+        )}
+      </div>
+    ) },
     { title: '状态', dataIndex: 'status', width: 90, render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag> },
     { title: '版本', dataIndex: 'version', width: 80 },
     { title: '操作', key: 'actions', width: 210, render: (_, row) => <Space>
@@ -485,6 +517,12 @@ export default function RegistryManagement() {
       onChange={value => setHousingCategory(value as RegistryHousingCategory)}
       options={housingCategoryOptions}
       className="w-full md:w-40"
+    />
+    <Select
+      value={certificateStatus}
+      onChange={value => setCertificateStatus(value as RegistryCertificateStatus)}
+      options={certificateStatusOptions}
+      className="w-full md:w-52"
     />
     <Select
       value={propertyStatus}
@@ -627,6 +665,7 @@ export default function RegistryManagement() {
             setKeyword('')
             setCommunityId(undefined)
             setHousingCategory('')
+            setCertificateStatus('')
             setPage(1)
           }}
           items={[
@@ -664,6 +703,8 @@ export default function RegistryManagement() {
                 </Tag>
               </div>
               <div className="registry-certificate-run__counts">
+                <span>{certificateRun.trigger_source === 'scheduled' ? '每日自动读取' : '人工读取'}</span>
+                {certificateRun.business_date && <span>业务日期 {certificateRun.business_date}</span>}
                 <span>已读取 {certificateRun.fetched_count} 条</span>
                 <span>通过范围校验 {certificateRun.accepted_count} 条</span>
                 <span>排除 {certificateRun.rejected_count} 条</span>
@@ -685,7 +726,7 @@ export default function RegistryManagement() {
               description={importPreview.status === 'preview' ? '当前仍是预览状态，确认后只导入正常数据，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
           </div>}
-        {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={listPagination} scroll={{ x: 1240 }} emptyText="当前筛选条件下没有房屋档案" />}
+        {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={listPagination} scroll={{ x: 1480 }} emptyText="当前筛选条件下没有房屋档案" />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'merges' && <AppTable rowKey="id" loading={loading} dataSource={merges} pagination={false} columns={[
@@ -769,7 +810,39 @@ export default function RegistryManagement() {
           </Space>}
           {canManage && detailKind === 'person' && <Space><Button onClick={() => openEdit('person', detail)}>编辑人员</Button><Button onClick={() => { setSelected(detail); form.resetFields(); setModal('phone') }}>添加号码</Button></Space>}
           {canManage && detailKind === 'organization' && <Space><Button onClick={() => openEdit('organization', detail)}>编辑机构</Button></Space>}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && !['identity_hmac'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'property' && detail.certificate_summary && (() => {
+            const summary = detail.certificate_summary
+            const current = detail.certificates?.[0]
+            return <section className={`registry-certificate-summary registry-certificate-summary--${summary.certificate_status}`}>
+              <div className="registry-certificate-summary__heading">
+                <div>
+                  <span className="registry-certificate-summary__eyebrow">房东责任告知书</span>
+                  <strong>{summary.certificate_status_label}</strong>
+                </div>
+                <Tag color={certificateStatusColors[summary.certificate_status as Exclude<RegistryCertificateStatus, ''>] || 'default'}>
+                  {summary.certificate_count ? `${summary.certificate_count} 份记录` : '暂无记录'}
+                </Tag>
+              </div>
+              <div className="registry-certificate-summary__grid">
+                <div><span>房东</span><strong>{current?.landlord_name || '未确定'}</strong></div>
+                <div><span>实际出租人</span><strong>{current?.actual_renter_name || '未确定'}</strong></div>
+                <div><span>责任关系</span><strong>{summary.landlord_renter_relation_label}</strong></div>
+                <div><span>责任身份</span><strong>{summary.responsibility_identity || '未确认'}</strong></div>
+              </div>
+              {summary.certificate_status !== 'normal_signed' && summary.certificate_status !== 'not_applicable' && (
+                <div className="registry-certificate-summary__action">
+                  {summary.certificate_status === 'not_uploaded' && '需要补充房东责任告知书。'}
+                  {summary.certificate_status === 'renter_needs_correction' && '告知书已经签署，但实际出租人信息需要修正。'}
+                  {summary.certificate_status === 'actual_renter_missing' && '尚未确定实际承担出租管理责任的人。'}
+                  {summary.certificate_status === 'multiple_or_conflict' && '同一房屋存在多份记录，需要先核对有效责任关系。'}
+                </div>
+              )}
+              <div className="registry-certificate-summary__updated">
+                最近来源读取：{summary.certificate_updated_at ? formatUTCTime(summary.certificate_updated_at, systemTimezone) : '暂无'}
+              </div>
+            </section>
+          })()}
+          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && !['identity_hmac', 'certificate_summary'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
           {detail.aliases && <Panel title="地址别名"><Space wrap>{detail.aliases.length ? detail.aliases.map((item: any) => <Tag key={item.id} color={item.enabled ? 'blue' : undefined}>{item.alias}{item.enabled ? '' : ' · 已停用'}{canManage && <Button type="link" size="small" onClick={async () => { await registryApi.changeAliasStatus(item.id, { status: item.enabled ? 'inactive' : 'active' }); setDetail(await registryApi.property(detail.id)) }}>{item.enabled ? '停用' : '启用'}</Button>}</Tag>) : '暂无'}</Space></Panel>}
           {detail.phones && <Panel title="联系电话" extra={canManage ? <Button size="small" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModal('phone') }}>添加号码</Button> : undefined}>
             <Space wrap>{detail.phones.length ? detail.phones.map((item: any) => <Tag key={item.id} color={item.is_primary ? 'blue' : undefined}>{item.phone}{item.is_primary ? ' · 主号码' : ''}</Tag>) : '暂无'}</Space>
@@ -779,12 +852,12 @@ export default function RegistryManagement() {
           {detail.members && <Panel title="机构经办人"><AppTable rowKey="membership_id" pagination={false} dataSource={detail.members} columns={[{ title: '姓名', dataIndex: 'person_name' }, { title: '职位', dataIndex: 'title' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }, { title: '操作', render: (_: unknown, row: any) => canManage && !row.valid_to && <Popconfirm title="结束该任职关系？" onConfirm={() => void endRelation('membership', row)}><Button type="link" size="small">结束</Button></Popconfirm> }]} /></Panel>}
           {detail.properties && <Panel title="机构关联房屋"><AppTable rowKey="relation_id" pagination={false} dataSource={detail.properties} columns={[{ title: '地址', dataIndex: 'normalized_address' }, { title: '角色', dataIndex: 'role_name' }, { title: '生效', dataIndex: 'valid_from' }, { title: '结束', dataIndex: 'valid_to' }]} /></Panel>}
           {detail.certificates && <Panel title="房东责任告知书"><AppTable rowKey="id" pagination={false} dataSource={detail.certificates} columns={[
-            { title: '来源行', dataIndex: 'source_row', width: 90 },
             { title: '房东', dataIndex: 'landlord_name', width: 130 },
             { title: '实际出租人', dataIndex: 'actual_renter_name', width: 130 },
             { title: '签署状态', dataIndex: 'signed_status', width: 110 },
             { title: '签署类型', dataIndex: 'sign_type', width: 130 },
             { title: '签署时间', dataIndex: 'sign_time', width: 180, render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
+            { title: '最近读取', dataIndex: 'source_last_seen_at', width: 180, render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
             { title: '文件', dataIndex: 'document_ref', ellipsis: true },
           ]} /></Panel>}
           {detail.versions && <Panel title="地址版本历史"><AppTable rowKey="version" pagination={false} dataSource={detail.versions} columns={[{ title: '版本', dataIndex: 'version', width: 80 }, { title: '标准化地址', dataIndex: 'normalized_address' }, { title: '变更原因', dataIndex: 'reason' }, { title: '时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) }]} /></Panel>}
