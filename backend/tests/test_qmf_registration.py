@@ -285,13 +285,6 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             patch("services.qmf_registration.settings.QMF_API_BASE_URL", ""),
         ):
             self.assertFalse(preview_configured())
-        with (
-            patch("services.qmf_registration.settings.QMF_PREVIEW_ENABLED", True),
-            patch("services.qmf_registration.settings.QMF_LOGIN_PROTOCOL_VERIFIED", True),
-            patch("services.qmf_registration.settings.QMF_PREVIEW_ALLOWED_USERNAME", "admin"),
-        ):
-            self.assertFalse(preview_configured())
-
     def test_photo_validation_accepts_supported_headers_and_rejects_unsafe_content(self):
         cases = (
             (b"\xff\xd8\xffsample", "image/jpeg"),
@@ -368,7 +361,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertEqual(result["photo"]["mime_type"], "image/jpeg")
 
-    def test_capability_is_exact_account_only_and_requires_eligible_source(self):
+    def test_capability_requires_permission_and_eligible_source(self):
         patches = (
             patch("services.qmf_registration.settings.QMF_PREVIEW_ENABLED", True),
             patch("services.qmf_registration.settings.QMF_LOGIN_PROTOCOL_VERIFIED", True),
@@ -385,23 +378,23 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(item.stop)
         eligible = {"核查结果": "在吴", "身份证号": VALID_IDENTITY}
         allowed = preview_capability(
-            username="shenshenghua",
+            allowed=True,
             parser_type="疑似未注销模型三",
             source_count=1,
             conflict=False,
             values=eligible,
         )
         self.assertTrue(allowed["enabled"])
-        super_admin = preview_capability(
-            username="admin",
+        denied = preview_capability(
+            allowed=False,
             parser_type="疑似未注销模型三",
             source_count=1,
             conflict=False,
             values=eligible,
         )
-        self.assertFalse(super_admin["visible"])
+        self.assertFalse(denied["visible"])
         conflict = preview_capability(
-            username="shenshenghua",
+            allowed=True,
             parser_type="疑似未注销模型三",
             source_count=2,
             conflict=True,
@@ -412,7 +405,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         for result in ("近期返吴", "离吴", "离开不返吴", "近期反吴"):
             with self.subTest(result=result):
                 capability = preview_capability(
-                    username="shenshenghua",
+                    allowed=True,
                     parser_type="疑似未注销模型三",
                     source_count=1,
                     conflict=False,
@@ -421,29 +414,13 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(capability["enabled"])
 
         unsupported = preview_capability(
-            username="shenshenghua",
+            allowed=True,
             parser_type="疑似未注销模型三",
             source_count=1,
             conflict=False,
             values={"核查结果": "无法核实", "身份证号": VALID_IDENTITY},
         )
         self.assertFalse(unsupported["enabled"])
-
-    async def test_route_rejects_super_admin_account_before_database_or_network(self):
-        request = Request({"type": "http", "method": "POST", "path": "/api/qmf-registration/preview", "headers": []})
-        with self.assertRaises(HTTPException) as raised:
-            await preview_qmf_registration(
-                QmfPreviewRequest(
-                    parser_type="疑似未注销模型三",
-                    row_key="row-key",
-                    source_id=1,
-                    expected_revision=1,
-                ),
-                request,
-                user={"username": "super-admin", "role": "super_admin"},
-                conn=None,
-            )
-        self.assertEqual(raised.exception.status_code, 403)
 
     async def test_preview_audit_records_only_safe_http_failure_context(self):
         request = Request({
@@ -457,7 +434,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
         with patch("routers.qmf_registration.record_admin_audit", audit):
             await _record_preview_audit(
                 request=request,
-                user={"id": 1, "username": "shenshenghua"},
+                user={"id": 1, "username": "permission-user"},
                 source_id=9,
                 result="failed",
                 started_at=time.monotonic(),
@@ -525,7 +502,7 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                     expected_revision=3,
                 ),
                 request,
-                user={"username": "shenshenghua"},
+                user={"username": "permission-user"},
                 conn=object(),
             )
         self.assertEqual(source_check.await_count, 2)

@@ -28,6 +28,7 @@ from routers.qmf_registration import (  # noqa: E402
     get_qmf_registration_run,
     prepare_qmf_registration,
     retry_qmf_tencent_marker,
+    router as qmf_router,
 )
 from routers.mobile_tasks import _qmf_registration_state  # noqa: E402
 from services.qmf_runs import (  # noqa: E402
@@ -37,6 +38,7 @@ from services.qmf_runs import (  # noqa: E402
     serialize_steps,
 )
 from services.qmf_registration import QmfPreviewError  # noqa: E402
+from services.permissions import QMF_REGISTRATION_EXECUTE  # noqa: E402
 
 
 class _Cursor:
@@ -322,7 +324,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
                 await _claim_run(
                     conn,
                     9,
-                    user={"id": 2, "username": "shenshenghua"},
+                    user={"id": 2, "username": "permission-user"},
                     config=SimpleNamespace(registration_configured=True),
                 )
         self.assertEqual(raised.exception.status_code, 409)
@@ -338,57 +340,28 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("prior.idempotency_key=current_run.idempotency_key", sql_text)
 
-    async def test_only_exact_account_can_prepare_or_execute(self):
-        preview_request = QmfPreviewRequest(
-            parser_type="疑似未注销模型三",
-            row_key="internal-row-key",
-            source_id=9,
-            expected_revision=3,
-        )
-        with self.assertRaises(HTTPException) as prepare_error:
-            await prepare_qmf_registration(
-                preview_request,
-                request("/api/qmf-registration/prepare"),
-                user={"id": 1, "username": "super-admin", "role": "super_admin"},
-                conn=None,
-            )
-        self.assertEqual(prepare_error.exception.status_code, 403)
-
-        with self.assertRaises(HTTPException) as status_error:
-            await get_qmf_legacy_status(
-                preview_request,
-                request("/api/qmf-registration/status"),
-                user={"id": 1, "username": "super-admin", "role": "super_admin"},
-                conn=None,
-            )
-        self.assertEqual(status_error.exception.status_code, 403)
-
-        with self.assertRaises(HTTPException) as execute_error:
-            await execute_qmf_registration(
-                1,
-                QmfExecuteRequest(),
-                request("/api/qmf-registration/runs/1/execute"),
-                user={"id": 1, "username": "super-admin", "role": "super_admin"},
-                conn=None,
-            )
-        self.assertEqual(execute_error.exception.status_code, 403)
-
-        with self.assertRaises(HTTPException) as get_error:
-            await get_qmf_registration_run(
-                1,
-                user={"id": 1, "username": "super-admin", "role": "super_admin"},
-                conn=None,
-            )
-        self.assertEqual(get_error.exception.status_code, 403)
-
-        with self.assertRaises(HTTPException) as retry_error:
-            await retry_qmf_tencent_marker(
-                1,
-                request("/api/qmf-registration/runs/1/retry-marker"),
-                user={"id": 1, "username": "super-admin", "role": "super_admin"},
-                conn=None,
-            )
-        self.assertEqual(retry_error.exception.status_code, 403)
+    def test_all_qmf_routes_require_the_registration_permission(self):
+        protected_paths = {
+            "/api/qmf-registration/status",
+            "/api/qmf-registration/prepare",
+            "/api/qmf-registration/runs/{run_id}/execute",
+            "/api/qmf-registration/runs/{run_id}",
+            "/api/qmf-registration/runs/{run_id}/retry-marker",
+            "/api/qmf-registration/preview",
+        }
+        routes = {
+            route.path: route
+            for route in qmf_router.routes
+            if route.path in protected_paths
+        }
+        self.assertEqual(set(routes), protected_paths)
+        for path, route in routes.items():
+            with self.subTest(path=path):
+                dependencies = {
+                    dependency.call.__name__
+                    for dependency in route.dependant.dependencies
+                }
+                self.assertIn("require_qmf_registration_execute", dependencies)
 
     async def test_tencent_marker_preserves_note_is_idempotent_and_uses_exact_field(self):
         run = {
@@ -410,7 +383,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             result = await _append_tencent_marker(
                 object(),
                 run=run,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 request_stub=request("/api/qmf-registration/background"),
                 strict_source=False,
             )
@@ -433,7 +406,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             result = await _append_tencent_marker(
                 object(),
                 run=run,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 request_stub=request("/api/qmf-registration/background"),
                 strict_source=False,
             )
@@ -487,7 +460,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _execute_run_background(
                 7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
             )
         marker.assert_not_awaited()
@@ -515,7 +488,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _freeze_unstarted_background_run(
                 7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
             )
         self.assertIs(pool.released, conn)
@@ -547,7 +520,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _freeze_unstarted_background_run(
                 7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
                 result_code="background_task_cancelled",
             )
@@ -583,7 +556,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _freeze_unstarted_background_run(
                 7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
                 result_code="background_task_cancelled",
             )
@@ -611,7 +584,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
             _background_task_finished(
                 task,
                 run_id=7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
             )
             await asyncio.sleep(0)
@@ -674,7 +647,7 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _execute_run_background(
                 7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
             )
         self.assertEqual(set_result.await_count, 1)
@@ -698,6 +671,31 @@ class QmfRunSafetyTests(unittest.IsolatedAsyncioTestCase):
         serialized = json.dumps(feedback, ensure_ascii=False)
         self.assertNotIn("steps", serialized)
         self.assertNotIn("result_code", serialized)
+
+    async def test_authorized_user_receives_own_private_run_without_username_gate(self):
+        cursor = _Cursor(fetchone_values=[
+            (
+                88, 9, 3, "prepared", serialize_steps(initial_steps()), "",
+                "not_started", "", datetime(2026, 8, 17, 7, 0, 0),
+                datetime(2026, 8, 17, 7, 10, 0), None, None,
+                datetime(2026, 8, 17, 7, 0, 0),
+                datetime(2026, 8, 17, 7, 0, 0),
+            ),
+            None,
+        ])
+        private_run, feedback = await _qmf_registration_state(
+            _Conn(cursor),
+            parser_type="疑似未注销模型三",
+            sources=[{"id": 9}],
+            user={
+                "id": 4,
+                "username": "permission-user",
+                "permissions": [QMF_REGISTRATION_EXECUTE],
+            },
+        )
+        self.assertEqual(private_run["id"], 88)
+        self.assertTrue(private_run["can_execute"])
+        self.assertIsNone(feedback)
 
 
 if __name__ == "__main__":

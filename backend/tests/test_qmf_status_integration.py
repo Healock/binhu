@@ -110,7 +110,7 @@ class QmfStatusIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     expected_revision=3,
                 ),
                 request("/api/qmf-registration/prepare"),
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 conn=object(),
             )
         self.assertEqual(events, ["legacy_status", "mobile_preview"])
@@ -157,7 +157,7 @@ class QmfStatusIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         expected_revision=3,
                     ),
                     request("/api/qmf-registration/prepare"),
-                    user={"id": 2, "username": "shenshenghua"},
+                    user={"id": 2, "username": "permission-user"},
                     conn=object(),
                 )
         self.assertEqual(raised.exception.status_code, 409)
@@ -223,7 +223,7 @@ class QmfStatusIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _execute_run_background(
                 7,
-                user={"id": 2, "username": "shenshenghua"},
+                user={"id": 2, "username": "permission-user"},
                 audit_fields={},
             )
         first_write.assert_not_awaited()

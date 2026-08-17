@@ -532,7 +532,7 @@ export default function SystemSettings() {
                   </span>
                 </div>
                 <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  开启后仍只允许 shenshenghua 单条执行，每条都会重新完成登记前核对并要求二次确认。
+                  开启后仍需具备“执行全民防单条登记”权限；当前默认仅超级管理员拥有。每条都会重新完成登记前核对并要求二次确认。
                 </p>
               </div>
               <div className="settings-field">
@@ -656,7 +656,7 @@ export default function SystemSettings() {
               colon={false}
               column={{ xs: 1, sm: 2 }}
               items={[
-                { key: 'allowed', label: '平台允许账号', children: qmfConfig.preview_allowed_username },
+                { key: 'permission', label: '执行权限', children: '由权限组配置，当前默认仅超级管理员' },
                 { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
               ]}

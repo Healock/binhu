@@ -39,12 +39,12 @@ from services.permissions import (
     ONLINE_RAW_EDIT,
     ONLINE_RAW_VIEW,
     ONLINE_TASK_MANAGE,
+    QMF_REGISTRATION_EXECUTE,
     WORKFLOW_ATTACHMENT_VIEW,
     has_permission,
 )
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.qmf_registration import (
-    ALLOWED_PLATFORM_USERNAME,
     MODEL_THREE_PARSER,
     preview_capability,
     registration_capability,
@@ -93,9 +93,9 @@ async def _qmf_registration_state(
 ) -> tuple[dict | None, dict | None]:
     """Return a private resumable run plus the public successful summary.
 
-    Only the exact test account receives prepared, executing, failed or
-    uncertain details. Other task viewers can only see that the external
-    feedback succeeded and when it completed.
+    Only users with the全民防 registration permission receive prepared,
+    executing, failed or uncertain details. Other task viewers can only see
+    that the external feedback succeeded and when it completed.
     """
     if parser_type != MODEL_THREE_PARSER or not sources:
         return None, None
@@ -103,7 +103,7 @@ async def _qmf_registration_state(
     placeholders = ",".join(["%s"] * len(source_ids))
     latest_run = None
     async with conn.cursor() as cur:
-        if str(user.get("username") or "") == ALLOWED_PLATFORM_USERNAME:
+        if has_permission(user, QMF_REGISTRATION_EXECUTE):
             await cur.execute(
                 "UPDATE _qmf_registration_runs "
                 "SET status='expired', result_code='prepare_expired' "
@@ -1566,8 +1566,9 @@ async def _mobile_task_detail_data(
         if include_photo_requests else []
     )
     qmf_config = await load_qmf_config(conn)
+    qmf_allowed = has_permission(user, QMF_REGISTRATION_EXECUTE)
     qmf_preview = preview_capability(
-        username=str(user.get("username") or ""),
+        allowed=qmf_allowed,
         parser_type=parser_type,
         source_count=int(parent_row[1] or 0),
         conflict=bool(parent_row[2]),
@@ -1575,7 +1576,7 @@ async def _mobile_task_detail_data(
         config=qmf_config,
     )
     qmf_registration = registration_capability(
-        username=str(user.get("username") or ""),
+        allowed=qmf_allowed,
         parser_type=parser_type,
         source_count=int(parent_row[1] or 0),
         conflict=bool(parent_row[2]),
