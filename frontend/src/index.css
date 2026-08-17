@@ -1000,6 +1000,56 @@
   padding-inline: 2px;
 }
 
+.qmf-scan-result-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.qmf-scan-result-filter {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--app-text-secondary);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.3;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.qmf-scan-result-filter:hover {
+  border-color: var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.qmf-scan-result-filter strong {
+  color: var(--app-text-strong);
+  font-size: 13px;
+}
+
+.qmf-scan-result-filter.is-danger strong {
+  color: var(--app-danger);
+}
+
+.qmf-scan-result-filter.is-warning strong {
+  color: var(--app-warning);
+}
+
+.qmf-scan-result-filter.is-active {
+  border-color: var(--app-primary-border);
+  color: var(--app-primary-text);
+  background: var(--app-primary-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-primary) 18%, transparent);
+}
+
+.qmf-scan-result-filter.is-active strong {
+  color: var(--app-primary);
+}
+
 .mobile-task-more-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
