@@ -24,7 +24,6 @@ import {
   DeleteOutlined,
   ExclamationCircleOutlined,
   FileSearchOutlined,
-  InfoCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
   SendOutlined,
@@ -73,21 +72,6 @@ const publishStatusOptions = [
 const statusOptions = [
   { label: '待审核', value: 'pending_review' },
   ...publishStatusOptions,
-  { label: '已完成', value: 'completed' },
-  { label: '全部', value: 'all' },
-]
-
-const statusGroups: Array<{
-  label: string
-  value: string
-  children?: typeof publishStatusOptions
-}> = [
-  { label: '待审核', value: 'pending_review' },
-  {
-    label: '待发布',
-    value: 'pending_publish',
-    children: publishStatusOptions,
-  },
   { label: '已完成', value: 'completed' },
   { label: '全部', value: 'all' },
 ]
@@ -744,6 +728,24 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     ? Object.keys(selected.raw_values || {}).filter(field => !keyBusinessHeaders.includes(field))
     : []
   const publishStatusActive = publishStatusValues.includes(status)
+  const completedCount = activeBatch
+    ? Math.max(0, activeBatch.counts.total - activeBatch.counts.pending_review - activeBatch.counts.pending_publish)
+    : 0
+  const unpublishedCount = activeBatch
+    ? Math.max(
+        0,
+        activeBatch.counts.pending_publish
+          - activeBatch.counts.retryable
+          - activeBatch.counts.needs_reconciliation
+          - activeBatch.counts.conflict,
+      )
+    : 0
+  const selectTaskFilter = (nextStatus: string, nextCategory = 'all') => {
+    leavePublishSelection()
+    setStatus(nextStatus)
+    setCategory(nextCategory)
+    setPage(1)
+  }
 
   return (
     <div className="police-dispatch-workbench mx-auto max-w-7xl space-y-4 pb-4">
@@ -797,19 +799,109 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
               percent={activeBatch.total_count ? Math.round(activeBatch.reviewed_count / activeBatch.total_count * 100) : 0}
               format={() => <span className="text-white">{activeBatch.reviewed_count}/{activeBatch.total_count}</span>}
             />
-            <div className="mt-3 grid grid-cols-4 gap-2 text-center">
-              {[
-                ['待审核', activeBatch.counts.pending_review],
-                ['待发布', activeBatch.counts.pending_publish],
-                ['重复', activeBatch.counts.duplicate],
-                ['待研判', activeBatch.counts.abnormal],
-              ].map(([label, value]) => (
-                <div key={String(label)} className="police-dispatch-workbench__metric rounded-xl px-2 py-2.5">
-                  <div className="text-lg font-semibold">{value}</div>
-                  <div className="police-dispatch-workbench__metric-label text-[11px]">{label}</div>
+            {!analysisOnly ? (
+              <div className="police-dispatch-status-filter-grid mt-3" role="tablist" aria-label="任务状态">
+                <div className="police-dispatch-status-filter-group">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={status === 'pending_review'}
+                    className={`police-dispatch-status-metric${status === 'pending_review' ? ' is-active' : ''}`}
+                    onClick={() => selectTaskFilter('pending_review')}
+                  >
+                    <span className="police-dispatch-status-metric__count">{activeBatch.counts.pending_review}</span>
+                    <span className="police-dispatch-status-metric__label">待审核</span>
+                  </button>
+                  <div className="police-dispatch-status-children police-dispatch-status-children--review">
+                    {[
+                      { label: '重复', value: 'duplicate', count: activeBatch.counts.duplicate },
+                      { label: '待研判', value: 'manual', count: activeBatch.counts.abnormal },
+                    ].map(option => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`police-dispatch-status-chip${status === 'pending_review' && category === option.value ? ' is-active' : ''}`}
+                        aria-pressed={status === 'pending_review' && category === option.value}
+                        onClick={() => selectTaskFilter('pending_review', option.value)}
+                      >
+                        <span>{option.label}</span>
+                        <strong>{option.count}</strong>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              ))}
-            </div>
+
+                <div className="police-dispatch-status-filter-group">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={publishStatusActive}
+                    className={`police-dispatch-status-metric${publishStatusActive ? ' is-active' : ''}`}
+                    onClick={() => selectTaskFilter('pending_publish')}
+                  >
+                    <span className="police-dispatch-status-metric__count">{activeBatch.counts.pending_publish}</span>
+                    <span className="police-dispatch-status-metric__label">待发布</span>
+                  </button>
+                  <div className="police-dispatch-status-children police-dispatch-status-children--publish">
+                    {publishStatusOptions.map(option => {
+                      const count = option.value === 'pending_publish'
+                        ? unpublishedCount
+                        : activeBatch.counts[option.value]
+                      const chip = (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`police-dispatch-status-chip${status === option.value ? ' is-active' : ''}`}
+                          aria-pressed={status === option.value}
+                          onClick={() => selectTaskFilter(option.value)}
+                        >
+                          <span>{option.label}</span>
+                          <strong>{count}</strong>
+                        </button>
+                      )
+                      return option.value === 'needs_reconciliation'
+                        ? <Tooltip key={option.value} title={reconciliationHint}>{chip}</Tooltip>
+                        : chip
+                    })}
+                  </div>
+                  {status === 'needs_reconciliation' && (
+                    <div className="police-dispatch-status-hint">{reconciliationHint}</div>
+                  )}
+                </div>
+
+                {[
+                  { label: '已完成', value: 'completed', count: completedCount },
+                  { label: '全部', value: 'all', count: activeBatch.counts.total },
+                ].map(option => (
+                  <div key={option.value} className="police-dispatch-status-filter-group">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={status === option.value}
+                      className={`police-dispatch-status-metric${status === option.value ? ' is-active' : ''}`}
+                      onClick={() => selectTaskFilter(option.value)}
+                    >
+                      <span className="police-dispatch-status-metric__count">{option.count}</span>
+                      <span className="police-dispatch-status-metric__label">{option.label}</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+                {[
+                  ['待审核', activeBatch.counts.pending_review],
+                  ['待发布', activeBatch.counts.pending_publish],
+                  ['重复', activeBatch.counts.duplicate],
+                  ['待研判', activeBatch.counts.abnormal],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="police-dispatch-workbench__metric rounded-lg px-2 py-2.5">
+                    <div className="text-lg font-semibold">{value}</div>
+                    <div className="police-dispatch-workbench__metric-label text-[11px]">{label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </section>
@@ -817,52 +909,6 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
       {error && <Alert type="error" showIcon message={error} />}
 
       <section className="app-card p-3 sm:p-4">
-        {!analysisOnly && (
-          <div className="space-y-2 pb-1">
-            <div className="flex flex-wrap gap-2" role="tablist" aria-label="任务状态">
-              {statusGroups.map(group => {
-                const active = group.value === 'pending_publish'
-                  ? publishStatusActive
-                  : status === group.value
-                return (
-                  <Button
-                    key={group.value}
-                    type={active ? 'primary' : 'default'}
-                    onClick={() => setStatus(group.value)}
-                  >
-                    {group.label}
-                  </Button>
-                )
-              })}
-            </div>
-            {publishStatusActive && (
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50/60 px-2.5 py-2 dark:border-blue-900/50 dark:bg-blue-950/20">
-                <span className="text-xs font-medium text-[var(--app-text-secondary)]">待发布状态</span>
-                {publishStatusOptions.map(option => {
-                  const button = (
-                    <Button
-                      key={option.value}
-                      size="small"
-                      type={status === option.value ? 'primary' : 'default'}
-                      icon={option.value === 'needs_reconciliation' ? <InfoCircleOutlined /> : undefined}
-                      onClick={() => setStatus(option.value)}
-                    >
-                      {option.label}
-                    </Button>
-                  )
-                  return option.value === 'needs_reconciliation'
-                    ? <Tooltip key={option.value} title={reconciliationHint}>{button}</Tooltip>
-                    : button
-                })}
-                {status === 'needs_reconciliation' && (
-                  <span className="text-xs text-[var(--app-text-secondary)]">
-                    {reconciliationHint}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        )}
         {analysisOnly && (
           <Alert
             type="info"
