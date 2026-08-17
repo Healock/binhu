@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-test('研判页同时承载无法核实研判和下发数据复核', () => {
+test('研判页区分已下发和未下发数据研判', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
     'utf8',
@@ -24,10 +24,14 @@ test('研判页同时承载无法核实研判和下发数据复核', () => {
   assert.match(pageSource, /mode = 'all'/)
   assert.match(pageSource, /analysisOnly \? 'pending_review'/)
   assert.match(pageSource, /analysisOnly \? 'manual'/)
-  assert.match(pageSource, /复核结果仍保存在原下发批次/)
+  assert.match(pageSource, /研判结果仍保存在原下发批次/)
   assert.match(pageSource, /SearchOutlined[\s\S]*from '@ant-design\/icons'/)
-  assert.match(analysisSource, /网格核查研判/)
-  assert.match(analysisSource, /下发数据复核/)
+  assert.match(analysisSource, /已下发数据研判/)
+  assert.match(analysisSource, /未下发数据研判/)
+  assert.match(analysisSource, /已下发数据中的研判事项/)
+  assert.doesNotMatch(analysisSource, /网格核查研判|下发数据复核/)
+  assert.match(pageSource, /analysisOnly \? '未下发数据研判'/)
+  assert.match(pageSource, /尚未下发、无法直接确定去向的数据/)
   assert.match(analysisSource, /<MobileTaskList mode="analysis" \/>/)
   assert.match(mobileTaskSource, /analysisOnly \? 'waiting_analysis'/)
   assert.match(mobileTaskSource, /review_stage:\s*reviewStage/)
@@ -35,6 +39,25 @@ test('研判页同时承载无法核实研判和下发数据复核', () => {
   assert.match(panelSource, /status=pending_review&category=all/)
   assert.match(appSource, /path="\/police-analysis"/)
   assert.match(appSource, /<AnalysisWorkbench \/>/)
+})
+
+test('下发状态筛选按待发布分组并解释待对账', () => {
+  const source = readFileSync(
+    new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(source, /const publishStatusOptions = \[/)
+  assert.match(source, /const statusGroups: Array</)
+  assert.match(source, /label: '待发布'/)
+  assert.match(source, /children: publishStatusOptions/)
+  assert.match(source, /label: '未发布'/)
+  assert.match(source, /label: '可重试'/)
+  assert.match(source, /label: '待对账'/)
+  assert.match(source, /label: '内容冲突'/)
+  assert.match(source, /const reconciliationHint = '腾讯写入结果不确定/)
+  assert.match(source, /InfoCircleOutlined/)
+  assert.match(source, /待发布状态/)
 })
 
 test('使用搜索图标的下发和小区页面显式导入图标', () => {

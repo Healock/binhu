@@ -21,7 +21,7 @@ from routers.query import _writeback_enabled, update_source_fields
 from services.audit import record_admin_audit, request_audit_fields
 from services.administrative_areas import resolve_identity_area
 from services.online_source import source_row_hash
-from services.permissions import ONLINE_RAW_VIEW
+from services.permissions import QMF_REGISTRATION_EXECUTE
 from services.qmf_community import resolve_qmf_community
 from services.qmf_config import (
     QMF_CONFIG_KEYS,
@@ -31,7 +31,6 @@ from services.qmf_config import (
     settings_config,
 )
 from services.qmf_registration import (
-    ALLOWED_PLATFORM_USERNAME,
     MODEL_THREE_PARSER,
     QmfCollectedContext,
     QmfPreviewError,
@@ -1286,12 +1285,10 @@ def _launch_registration_run(
 async def get_qmf_legacy_status(
     data: QmfPreviewRequest,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
     started_at = time.monotonic()
-    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
-        raise HTTPException(403, "当前账号不能查询全民防反馈状态")
     audit_result = "failed"
     audit_state = "unexpected_error"
     try:
@@ -1345,12 +1342,10 @@ async def get_qmf_legacy_status(
 async def prepare_qmf_registration(
     data: QmfPreviewRequest,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
     started_at = time.monotonic()
-    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
-        raise HTTPException(403, "当前账号不能使用全民防真实登记")
     try:
         runtime_config = await load_qmf_config(conn)
         if not runtime_config.registration_configured:
@@ -1513,11 +1508,9 @@ async def execute_qmf_registration(
     run_id: int,
     data: QmfExecuteRequest,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
-    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
-        raise HTTPException(403, "当前账号不能执行全民防真实登记")
     config = await load_qmf_config(conn)
     run = await _claim_run(conn, run_id, user=user, config=config)
     try:
@@ -1543,11 +1536,9 @@ async def execute_qmf_registration(
 @router.get("/runs/{run_id}")
 async def get_qmf_registration_run(
     run_id: int,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
-    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
-        raise HTTPException(403, "当前账号不能查看全民防登记记录")
     return _public_run(
         await _load_run(conn, run_id, user_id=int(user["id"]))
     )
@@ -1557,11 +1548,9 @@ async def get_qmf_registration_run(
 async def retry_qmf_tencent_marker(
     run_id: int,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
-    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
-        raise HTTPException(403, "当前账号不能重试全民防腾讯标记")
     run = await _load_run(conn, run_id, user_id=int(user["id"]))
     if run["status"] != "succeeded" or not run["can_retry_marker"]:
         raise HTTPException(409, "该运行不需要或不允许重试腾讯完成标记")
@@ -1616,12 +1605,10 @@ async def retry_qmf_tencent_marker(
 async def preview_qmf_registration(
     data: QmfPreviewRequest,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
     started_at = time.monotonic()
-    if user.get("username") != ALLOWED_PLATFORM_USERNAME:
-        raise HTTPException(403, "当前账号不能使用全民防只读预演")
     try:
         runtime_config = (
             await load_qmf_config(conn)

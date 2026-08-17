@@ -43,6 +43,7 @@ WORKFLOW_TICKET_HANDLE = "workflow.ticket.handle"
 WORKFLOW_TICKET_MANAGE = "workflow.ticket.manage"
 WORKFLOW_CONFIG_MANAGE = "workflow.config.manage"
 WORKFLOW_ATTACHMENT_VIEW = "workflow.attachment.view"
+QMF_REGISTRATION_EXECUTE = "qmf.registration.execute"
 
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
@@ -82,6 +83,7 @@ PERMISSION_CATALOG = [
     (WORKFLOW_TICKET_MANAGE, "业务操作", "管理全所工单"),
     (WORKFLOW_CONFIG_MANAGE, "平台管理", "配置和发布工单流程"),
     (WORKFLOW_ATTACHMENT_VIEW, "业务操作", "查看工单附件"),
+    (QMF_REGISTRATION_EXECUTE, "业务操作", "执行全民防单条登记"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}

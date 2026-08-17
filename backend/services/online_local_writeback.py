@@ -17,6 +17,7 @@ from services.online_source import (
     stable_json,
 )
 from services.parsers import get_parser
+from services.task_workflow import TASK_WORKFLOWS
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
 
@@ -24,6 +25,50 @@ ACTIVE_STATUSES = {"pending", "processing", "retry", "conflict"}
 PROCESSABLE_STATUSES = {"pending", "retry"}
 _PROCESS_LOCK = asyncio.Lock()
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def writeback_cell_metadata(
+    parser_type: str,
+    field: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """补齐腾讯空白结果下拉缺失的业务选项。"""
+    prepared = dict(metadata or {"type": "text"})
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    cell_type = str(prepared.get("write_type") or prepared.get("type") or "text")
+    if not workflow or field != workflow.result_field or cell_type != "select":
+        return prepared
+
+    options: list[dict[str, Any]] = []
+    known_texts: set[str] = set()
+    for option in prepared.get("write_options") or prepared.get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        option_id = str(option.get("id") or "").strip()
+        text = str(option.get("text") or "").strip()
+        if not option_id or not text or text in known_texts:
+            continue
+        normalized = dict(option)
+        normalized["id"] = option_id
+        normalized["text"] = text
+        options.append(normalized)
+        known_texts.add(text)
+
+    for text in workflow.result_options:
+        if text not in known_texts:
+            options.append({"id": text, "text": text})
+            known_texts.add(text)
+
+    prepared["write_options"] = options
+    return prepared
+
+
+def _retry_error_details(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, ValueError):
+        return "write_validation_failed", "腾讯写回参数校验未通过"
+    if isinstance(exc, TxDocsAPIError):
+        return "txdocs_api_failed", "腾讯接口暂未完成写回"
+    return "write_failed", f"腾讯写回暂未完成：{type(exc).__name__}"
 
 
 def overlay_local_values(
@@ -360,7 +405,7 @@ async def _writeback_enabled(cur) -> bool:
 
 
 async def _mark_source_retry(conn, source_id: int, exc: Exception) -> None:
-    message = f"腾讯写回暂未完成：{type(exc).__name__}"
+    error_code, message = _retry_error_details(exc)
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -368,9 +413,9 @@ async def _mark_source_retry(conn, source_id: int, exc: Exception) -> None:
                 "UPDATE _online_local_changes SET status='retry', "
                 "attempt_count=attempt_count+1, "
                 "next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE), "
-                "error_code='write_failed', last_error=%s "
+                "error_code=%s, last_error=%s "
                 "WHERE source_id=%s AND status IN ('pending','processing','retry')",
-                (message[:500], source_id),
+                (error_code, message[:500], source_id),
             )
             await cur.execute(
                 "SELECT DISTINCT audit_id FROM _online_local_changes WHERE source_id=%s",
@@ -492,7 +537,11 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
             field = change["field_name"]
             if change["remote_value"] == change["local_value"]:
                 continue
-            metadata = (raw.get("cell_meta") or {}).get(field, {"type": "text"})
+            metadata = writeback_cell_metadata(
+                source["parser_type"],
+                field,
+                (raw.get("cell_meta") or {}).get(field),
+            )
             requests.append(client.build_update_cell_request(
                 source["sheet_id"],
                 source["physical_row"],

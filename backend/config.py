@@ -87,7 +87,6 @@ class Settings(BaseSettings):
     # 两个协议确认和对应开关必须分别完成实测后才可开启。
     QMF_PREVIEW_ENABLED: bool = False
     QMF_REGISTRATION_ENABLED: bool = False
-    QMF_PREVIEW_ALLOWED_USERNAME: str = "shenshenghua"
     QMF_API_BASE_URL: str = ""
     QMF_LOGIN_HOST: str = ""
     QMF_LOGIN_PORT: int = 0

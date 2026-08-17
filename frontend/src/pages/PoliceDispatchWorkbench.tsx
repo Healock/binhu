@@ -10,11 +10,11 @@ import {
   Pagination,
   Popconfirm,
   Progress,
-  Segmented,
   Select,
   Space,
   Spin,
   Tag,
+  Tooltip,
   message,
 } from 'antd'
 import {
@@ -24,6 +24,7 @@ import {
   DeleteOutlined,
   ExclamationCircleOutlined,
   FileSearchOutlined,
+  InfoCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
   SendOutlined,
@@ -62,15 +63,37 @@ const actionLabels: Record<string, string> = {
   '': '待审核',
 }
 
-const statusOptions = [
-  { label: '待审核', value: 'pending_review' },
-  { label: '待发布', value: 'pending_publish' },
+const publishStatusOptions = [
+  { label: '未发布', value: 'pending_publish' },
   { label: '可重试', value: 'retryable' },
   { label: '待对账', value: 'needs_reconciliation' },
   { label: '内容冲突', value: 'conflict' },
+] as const
+
+const statusOptions = [
+  { label: '待审核', value: 'pending_review' },
+  ...publishStatusOptions,
   { label: '已完成', value: 'completed' },
   { label: '全部', value: 'all' },
 ]
+
+const statusGroups: Array<{
+  label: string
+  value: string
+  children?: typeof publishStatusOptions
+}> = [
+  { label: '待审核', value: 'pending_review' },
+  {
+    label: '待发布',
+    value: 'pending_publish',
+    children: publishStatusOptions,
+  },
+  { label: '已完成', value: 'completed' },
+  { label: '全部', value: 'all' },
+]
+
+const reconciliationHint = '腾讯写入结果不确定，系统会等待下一次完整同步核对，确认成功、冲突或可安全重试。'
+const publishStatusValues = publishStatusOptions.map(option => option.value)
 
 const categoryOptions = [
   { label: '全部分类', value: 'all' },
@@ -720,6 +743,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   const otherBusinessHeaders = selected
     ? Object.keys(selected.raw_values || {}).filter(field => !keyBusinessHeaders.includes(field))
     : []
+  const publishStatusActive = publishStatusValues.includes(status)
 
   return (
     <div className="police-dispatch-workbench mx-auto max-w-7xl space-y-4 pb-4">
@@ -727,7 +751,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="police-dispatch-workbench__eyebrow text-xs font-medium">内勤业务 · 共享队列</div>
-            <h1 className="mt-1 text-xl font-semibold">{analysisOnly ? '下发数据复核' : '下发任务处理'}</h1>
+            <h1 className="mt-1 text-xl font-semibold">{analysisOnly ? '未下发数据研判' : '下发任务处理'}</h1>
           </div>
           <Button className="police-dispatch-workbench__refresh" ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
         </div>
@@ -794,21 +818,56 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
 
       <section className="app-card p-3 sm:p-4">
         {!analysisOnly && (
-          <div className="overflow-x-auto pb-1">
-            <Segmented
-              block
-              className="min-w-[680px] md:min-w-0"
-              value={status}
-              options={statusOptions}
-              onChange={value => setStatus(String(value))}
-            />
+          <div className="space-y-2 pb-1">
+            <div className="flex flex-wrap gap-2" role="tablist" aria-label="任务状态">
+              {statusGroups.map(group => {
+                const active = group.value === 'pending_publish'
+                  ? publishStatusActive
+                  : status === group.value
+                return (
+                  <Button
+                    key={group.value}
+                    type={active ? 'primary' : 'default'}
+                    onClick={() => setStatus(group.value)}
+                  >
+                    {group.label}
+                  </Button>
+                )
+              })}
+            </div>
+            {publishStatusActive && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50/60 px-2.5 py-2 dark:border-blue-900/50 dark:bg-blue-950/20">
+                <span className="text-xs font-medium text-[var(--app-text-secondary)]">待发布状态</span>
+                {publishStatusOptions.map(option => {
+                  const button = (
+                    <Button
+                      key={option.value}
+                      size="small"
+                      type={status === option.value ? 'primary' : 'default'}
+                      icon={option.value === 'needs_reconciliation' ? <InfoCircleOutlined /> : undefined}
+                      onClick={() => setStatus(option.value)}
+                    >
+                      {option.label}
+                    </Button>
+                  )
+                  return option.value === 'needs_reconciliation'
+                    ? <Tooltip key={option.value} title={reconciliationHint}>{button}</Tooltip>
+                    : button
+                })}
+                {status === 'needs_reconciliation' && (
+                  <span className="text-xs text-[var(--app-text-secondary)]">
+                    {reconciliationHint}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         )}
         {analysisOnly && (
           <Alert
             type="info"
             showIcon
-            message="这里处理下发文件中无法直接确定去向的数据；复核结果仍保存在原下发批次。"
+            message="这里处理尚未下发、无法直接确定去向的数据；研判结果仍保存在原下发批次。"
           />
         )}
         <ListToolbar

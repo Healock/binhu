@@ -45,7 +45,6 @@ def runtime_config() -> QmfRuntimeConfig:
         registration_enabled=True,
         login_protocol_verified=True,
         write_protocol_verified=True,
-        preview_allowed_username="shenshenghua",
         api_base_url="http://qmf.invalid/grid_terminal_interface/",
         login_host="qmf.invalid",
         login_port=25001,
