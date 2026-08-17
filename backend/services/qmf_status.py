@@ -320,9 +320,9 @@ class QmfLegacyStatusClient:
             station=station,
             matches_platform_result=matches,
             reason=(
-                "旧平台已反馈，无需重复登记"
+                "全民防已反馈，无需重复登记"
                 if matches
-                else "旧平台反馈结果与平台核查结果不一致"
+                else "全民防反馈结果与平台核查结果不一致"
             ),
         )
 
@@ -336,32 +336,32 @@ def ensure_registration_allowed(status: QmfLegacyStatus) -> None:
     mapping = {
         STATUS_COMPLETED_MATCH: (
             "legacy_already_completed",
-            "旧平台已反馈，无需重复登记",
+            "全民防已反馈，无需重复登记",
             409,
         ),
         STATUS_COMPLETED_MISMATCH: (
             "legacy_result_mismatch",
-            "旧平台已反馈，但结果与平台核查结果不一致，请人工核对",
+            "全民防已反馈，但结果与平台核查结果不一致，请人工核对",
             409,
         ),
         STATUS_AMBIGUOUS: (
             "legacy_status_ambiguous",
-            "旧平台存在多条匹配记录，请人工核对",
+            "全民防存在多条匹配记录，请人工核对",
             409,
         ),
         STATUS_STATION_MISMATCH: (
             "legacy_station_mismatch",
-            "旧平台记录不属于目标派出所，请人工核对",
+            "全民防记录不属于目标派出所，请人工核对",
             403,
         ),
         STATUS_UNKNOWN_RESULT: (
             "legacy_result_unknown",
-            "旧平台核查结果无法识别，请人工核对",
+            "全民防核查结果无法识别，请人工核对",
             409,
         ),
         STATUS_UNAVAILABLE: (
             "legacy_status_unavailable",
-            "旧平台反馈状态暂时无法确认，已停止登记",
+            "全民防反馈状态暂时无法确认，已停止登记",
             503,
         ),
     }
@@ -369,7 +369,7 @@ def ensure_registration_allowed(status: QmfLegacyStatus) -> None:
         status.state,
         (
             "legacy_status_invalid",
-            "旧平台反馈状态无法确认，已停止登记",
+            "全民防反馈状态无法确认，已停止登记",
             503,
         ),
     )
