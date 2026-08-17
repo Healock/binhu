@@ -815,6 +815,14 @@ export default function MobileTaskList({
     setKeywordInput('')
   }
 
+  const selectQmfFeedbackResult = (state: QmfFeedbackState | 'all') => {
+    setQmfFeedbackStates(state === 'all' ? [] : [state])
+    setStatus('completed')
+    setPriority('all')
+    setReviewStage('all')
+    setPage(1)
+  }
+
   const selectPriorityCard = (nextPriority: MobileTaskPriority) => {
     setReviewStage('all')
     setStatus('all')
@@ -1092,13 +1100,31 @@ export default function MobileTaskList({
               : 100}
             status={qmfScan.status === 'failed' ? 'exception' : qmfScan.status === 'running' ? 'active' : 'normal'}
           />
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--app-text-secondary)]">
-            <span>已处理 {qmfScan.processed_count}/{qmfScan.total_count}</span>
-            <span>一致 {qmfScan.match_count}</span>
-            <span className={qmfScan.mismatch_count ? 'text-[var(--app-danger)]' : ''}>不一致 {qmfScan.mismatch_count}</span>
-            <span>未核查 {qmfScan.pending_count}</span>
-            <span>无记录 {qmfScan.not_found_count}</span>
-            <span className={qmfScan.error_count ? 'text-[var(--app-warning)]' : ''}>异常 {qmfScan.error_count}</span>
+          <div className="qmf-scan-result-filters" aria-label="全民防核对结果筛选">
+            {[
+              { state: 'all' as const, label: '已处理', count: `${qmfScan.processed_count}/${qmfScan.total_count}` },
+              { state: 'completed_match' as const, label: '一致', count: qmfScan.match_count },
+              { state: 'completed_mismatch' as const, label: '不一致', count: qmfScan.mismatch_count, tone: 'danger' },
+              { state: 'pending' as const, label: '未核查', count: qmfScan.pending_count },
+              { state: 'not_found' as const, label: '无记录', count: qmfScan.not_found_count },
+              { state: 'error' as const, label: '异常', count: qmfScan.error_count, tone: 'warning' },
+            ].map(item => {
+              const active = item.state === 'all'
+                ? status === 'completed' && qmfFeedbackStates.length === 0
+                : qmfFeedbackStates.length === 1 && qmfFeedbackStates[0] === item.state
+              return (
+                <button
+                  key={item.state}
+                  type="button"
+                  className={`qmf-scan-result-filter${active ? ' is-active' : ''}${item.tone ? ` is-${item.tone}` : ''}`}
+                  aria-pressed={active}
+                  onClick={() => selectQmfFeedbackResult(item.state)}
+                >
+                  <span>{item.label}</span>
+                  <strong>{item.count}</strong>
+                </button>
+              )
+            })}
           </div>
         </section>
       )}
