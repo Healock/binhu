@@ -53,7 +53,17 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalize_legacy_result("1", "离开不返吴(注销)"), ("completed", "离开不返吴"))
         self.assertEqual(normalize_legacy_result("2", "在吴"), ("completed", "在吴"))
         self.assertEqual(normalize_legacy_result("3", "近期反吴"), ("completed", "近期返吴"))
+        self.assertEqual(normalize_legacy_result("3", "近期返吴(不注销)"), ("completed", "近期返吴"))
         self.assertEqual(normalize_legacy_result("9", "其他"), (STATUS_UNKNOWN_RESULT, ""))
+
+    def test_management_display_text_overrides_unconfirmed_numeric_code(self):
+        self.assertEqual(normalize_legacy_result("1", "近期返吴"), ("completed", "近期返吴"))
+        self.assertEqual(normalize_legacy_result("1", "近期返吴(不注销)"), ("completed", "近期返吴"))
+        self.assertEqual(normalize_legacy_result("3", "离开不返吴"), ("completed", "离开不返吴"))
+        self.assertEqual(normalize_legacy_result("2", "未核查"), (STATUS_PENDING, ""))
+        for code in ("1", "2", "3"):
+            with self.subTest(code=code):
+                self.assertEqual(normalize_legacy_result(code, ""), (STATUS_UNKNOWN_RESULT, ""))
 
     async def test_exact_query_logs_in_and_returns_completed_match(self):
         requests = []
@@ -111,6 +121,11 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         mismatch = await query(response_row(code="2", text="在吴"))
         self.assertEqual(mismatch.state, STATUS_COMPLETED_MISMATCH)
         self.assertFalse(mismatch.matches_platform_result)
+
+        matching_recent_return = await query(response_row(code="1", text="近期返吴"))
+        self.assertEqual(matching_recent_return.state, STATUS_COMPLETED_MATCH)
+        self.assertTrue(matching_recent_return.matches_platform_result)
+        self.assertEqual(matching_recent_return.result, "近期返吴")
 
         pending = await query(response_row(code="0", text="未核查"))
         self.assertEqual(pending.state, STATUS_PENDING)

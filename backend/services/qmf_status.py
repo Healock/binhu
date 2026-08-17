@@ -105,23 +105,36 @@ def _business_payload(response: httpx.Response) -> Any:
 
 
 def normalize_legacy_result(code: Any, text: Any) -> tuple[str, str]:
-    """Return ``(state, canonical_result)`` without echoing unknown text."""
+    """Return ``(state, canonical_result)`` without echoing unknown text.
+
+    The management website and the mobile ``fnmxCheck`` write endpoint are
+    separate contracts.  Their fields share the name ``hcjg``, but the
+    management numeric values have not been proven to use the mobile write
+    enum.  Prefer the website's explicit display text and never guess a
+    completed result from an otherwise unconfirmed numeric value.
+    """
     code_text = _text(code)
     result_text = _text(text).replace(" ", "")
-    if code_text in {"", "0"} and (
-        not result_text or "未核查" in result_text or "待核查" in result_text
-    ):
+
+    if "未核查" in result_text or "待核查" in result_text:
         return STATUS_PENDING, ""
-    if code_text == "1" or any(
-        token in result_text for token in ("离开不返吴", "离吴", "注销")
-    ):
-        return "completed", RESULT_LEAVE_NOT_RETURNING
-    if code_text == "2" or result_text == RESULT_IN_WU:
-        return "completed", RESULT_IN_WU
-    if code_text == "3" or any(
+    if any(
         token in result_text for token in (RESULT_RECENT_RETURN, "近期反吴")
     ):
         return "completed", RESULT_RECENT_RETURN
+    if (
+        result_text == RESULT_IN_WU
+        or result_text.startswith(f"{RESULT_IN_WU}(")
+        or result_text.startswith(f"{RESULT_IN_WU}（")
+    ):
+        return "completed", RESULT_IN_WU
+    if (
+        any(token in result_text for token in ("离开不返吴", "离吴"))
+        or ("注销" in result_text and "不注销" not in result_text)
+    ):
+        return "completed", RESULT_LEAVE_NOT_RETURNING
+    if code_text in {"", "0"} and not result_text:
+        return STATUS_PENDING, ""
     return STATUS_UNKNOWN_RESULT, ""
 
 
