@@ -5,6 +5,8 @@ import {
   MarkerType,
   MiniMap,
   NodeResizer,
+  NodeToolbar,
+  Panel as FlowPanel,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -21,7 +23,14 @@ import {
   type Viewport,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { ExperimentOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import {
+  AppstoreOutlined,
+  CompressOutlined,
+  ExperimentOutlined,
+  PartitionOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons'
 import { Alert, Button, Empty, Input, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -55,11 +64,14 @@ const MAX_CONTROL_ANALYSIS_NODES = 60
 const MAX_CONTROL_PHOTO_NODES = 50
 const LAST_INSPECTOR_KEY = 'binhu-task-flow-lab:last-inspector'
 const LAST_VIEW_KEY = 'binhu-task-flow-lab:last-view'
-const LAYOUT_KEY_PREFIX = 'binhu-task-flow-lab:layout-v2:'
+const LAYOUT_KEY_PREFIX = 'binhu-task-flow-lab:layout-v4:'
 const LANE_WIDTH = 460
 const LANE_GAP = 28
 const LANE_MIN_WIDTH = 340
 const LANE_MIN_HEIGHT = 320
+const LANE_Y = 190
+const STACK_THRESHOLD = 6
+const MAX_DRAWN_PER_LANE = 3
 
 type TaskFlowView = 'person' | 'control'
 
@@ -94,9 +106,28 @@ type LaneNodeData = {
   resizeLane: (lane: TaskFlowLane, width: number, height: number, finished: boolean) => void
 } & Record<string, unknown>
 
+type DeckNodeData = {
+  lane: TaskFlowLane
+  count: number
+  nodeCount: number
+  categories: Array<{ label: string; count: number }>
+  toolbarVisible: boolean
+  drawOne: (lane: TaskFlowLane) => void
+  drawThree: (lane: TaskFlowLane) => void
+  collapse: (lane: TaskFlowLane) => void
+} & Record<string, unknown>
+
+type WorkflowNodeData = {
+  label: string
+  description: string
+  tone: 'blue' | 'amber' | 'green' | 'red'
+} & Record<string, unknown>
+
 type TaskNode = Node<TaskFlowNodeData, 'task'>
 type LaneNode = Node<LaneNodeData, 'lane'>
-type FlowNode = TaskNode | LaneNode
+type DeckNode = Node<DeckNodeData, 'deck'>
+type WorkflowNode = Node<WorkflowNodeData, 'workflow'>
+type FlowNode = TaskNode | LaneNode | DeckNode | WorkflowNode
 
 interface SavedTaskFlowPosition {
   x: number
@@ -109,6 +140,7 @@ interface SavedTaskFlowLayout {
   edges: Edge[]
   viewport: Viewport | null
   laneSizes: Record<TaskFlowLane, { width: number; height: number }> | null
+  drawnByLane: Record<TaskFlowLane, string[]>
 }
 
 type LaneSizes = Record<TaskFlowLane, { width: number; height: number }>
@@ -119,6 +151,10 @@ function defaultLaneSizes(height = 560): LaneSizes {
     waiting: { width: LANE_WIDTH, height },
     exception: { width: LANE_WIDTH, height },
   }
+}
+
+function emptyDrawnByLane(): Record<TaskFlowLane, string[]> {
+  return { ready: [], waiting: [], exception: [] }
 }
 
 interface LoadedTaskFlowItems {
@@ -146,9 +182,17 @@ function readSavedLayout(contextKey: string): SavedTaskFlowLayout {
       laneSizes: parsed?.laneSizes && typeof parsed.laneSizes === 'object'
         ? parsed.laneSizes
         : null,
+      drawnByLane: {
+        ready: Array.isArray(parsed?.drawnByLane?.ready) ? parsed.drawnByLane.ready : [],
+        waiting: Array.isArray(parsed?.drawnByLane?.waiting) ? parsed.drawnByLane.waiting : [],
+        exception: Array.isArray(parsed?.drawnByLane?.exception) ? parsed.drawnByLane.exception : [],
+      },
     }
   } catch {
-    return { positions: {}, edges: [], viewport: null, laneSizes: null }
+    return {
+      positions: {}, edges: [], viewport: null, laneSizes: null,
+      drawnByLane: emptyDrawnByLane(),
+    }
   }
 }
 
@@ -158,6 +202,7 @@ function saveLayout(
   edges: Edge[],
   viewport: Viewport | null = null,
   laneSizes: LaneSizes | null = null,
+  drawnByLane: Record<TaskFlowLane, string[]> | null = null,
 ) {
   if (!contextKey) return
   const positions = Object.fromEntries(nodes.map(node => [node.id, {
@@ -169,6 +214,7 @@ function saveLayout(
     edges,
     viewport,
     laneSizes,
+    drawnByLane,
   }))
 }
 
@@ -330,7 +376,51 @@ function LaneGroupNode({ data }: NodeProps<LaneNode>) {
   )
 }
 
-const NODE_TYPES = { task: memo(TaskCardNode), lane: memo(LaneGroupNode) }
+function DeckCardNode({ data }: NodeProps<DeckNode>) {
+  return (
+    <article className={`task-flow-deck task-flow-deck--${data.lane}`}>
+      <NodeToolbar isVisible={data.toolbarVisible} position={Position.Top} className="task-flow-deck__toolbar">
+        <Button size="small" onClick={() => data.drawOne(data.lane)}>抽取一项</Button>
+        <Button size="small" onClick={() => data.drawThree(data.lane)}>抽取三项</Button>
+        <Button size="small" onClick={() => data.collapse(data.lane)}>全部收起</Button>
+      </NodeToolbar>
+      <Handle type="target" position={Position.Left} className="task-flow-node__handle" />
+      <div className="task-flow-deck__layers" aria-hidden="true"><i /><i /></div>
+      <div className="task-flow-deck__content">
+        <div className="task-flow-deck__eyebrow">任务卡组</div>
+        <div className="task-flow-deck__headline">
+          <strong>{data.count}</strong>
+          <span>项待办</span>
+        </div>
+        <div className="task-flow-deck__categories">
+          {data.categories.slice(0, 4).map(category => (
+            <span key={category.label}>{category.label}<b>{category.count}</b></span>
+          ))}
+        </div>
+        <Button type="primary" block onClick={() => data.drawOne(data.lane)}>抽取下一项</Button>
+      </div>
+      <Handle type="source" position={Position.Right} className="task-flow-node__handle" />
+    </article>
+  )
+}
+
+function WorkflowGuideNode({ data }: NodeProps<WorkflowNode>) {
+  return (
+    <article className={`task-flow-workflow-node is-${data.tone}`}>
+      <Handle type="target" position={Position.Left} className="task-flow-workflow-node__handle" />
+      <strong>{data.label}</strong>
+      <span>{data.description}</span>
+      <Handle type="source" position={Position.Right} className="task-flow-workflow-node__handle" />
+    </article>
+  )
+}
+
+const NODE_TYPES = {
+  task: memo(TaskCardNode),
+  lane: memo(LaneGroupNode),
+  deck: memo(DeckCardNode),
+  workflow: memo(WorkflowGuideNode),
+}
 
 async function loadTasksForInspector(inspector: string, passive: boolean): Promise<LoadedTaskFlowItems> {
   const results = await Promise.all(MOBILE_TASK_TYPES.map(async parserType => {
@@ -390,6 +480,10 @@ function TaskFlowLabContent() {
   const [nodes, setNodes] = useState<TaskNode[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
   const [laneSizes, setLaneSizes] = useState<LaneSizes>(() => defaultLaneSizes())
+  const [drawnByLane, setDrawnByLane] = useState<Record<TaskFlowLane, string[]>>(
+    () => emptyDrawnByLane(),
+  )
+  const [selectedDeck, setSelectedDeck] = useState<TaskFlowLane | null>(null)
   const [resizeMode, setResizeMode] = useState(false)
   const [availableTotal, setAvailableTotal] = useState(0)
   const [loadedTotal, setLoadedTotal] = useState(0)
@@ -403,12 +497,14 @@ function TaskFlowLabContent() {
   const nodesRef = useRef<TaskNode[]>([])
   const edgesRef = useRef<Edge[]>([])
   const laneSizesRef = useRef<LaneSizes>(defaultLaneSizes())
+  const drawnByLaneRef = useRef<Record<TaskFlowLane, string[]>>(emptyDrawnByLane())
   const layoutContext = view === 'control' ? 'control' : selectedInspector ? `person:${selectedInspector}` : ''
   const canLoad = view === 'control' || Boolean(selectedInspector)
 
   useEffect(() => { nodesRef.current = nodes }, [nodes])
   useEffect(() => { edgesRef.current = edges }, [edges])
   useEffect(() => { laneSizesRef.current = laneSizes }, [laneSizes])
+  useEffect(() => { drawnByLaneRef.current = drawnByLane }, [drawnByLane])
   useEffect(() => { setResizeMode(false) }, [layoutContext])
   const openTask = useCallback((path: string) => navigate(path), [navigate])
 
@@ -468,9 +564,21 @@ function TaskFlowLabContent() {
       const sizeSource = contextChanged && saved.laneSizes
         ? saved.laneSizes
         : laneSizesRef.current
+      const drawnSource = contextChanged ? saved.drawnByLane : drawnByLaneRef.current
+      const nextDrawnByLane = Object.fromEntries(TASK_FLOW_LANES.map(({ key }) => [
+        key,
+        (drawnSource[key] || [])
+          .filter(id => currentIds.has(id) && nextNodes.some(node => (
+            node.id === id && node.data.item.lane === key
+          )))
+          .slice(0, MAX_DRAWN_PER_LANE),
+      ])) as Record<TaskFlowLane, string[]>
       const nextLaneSizes = Object.fromEntries(TASK_FLOW_LANES.map(({ key }) => {
-        const contentHeight = taskFlowLaneHeight(nextNodes
-          .filter(node => node.data.item.lane === key)
+        const laneTasks = nextNodes.filter(node => node.data.item.lane === key)
+        const compactTasks = laneTasks.length > STACK_THRESHOLD
+          ? laneTasks.filter(node => nextDrawnByLane[key].includes(node.id))
+          : laneTasks
+        const contentHeight = taskFlowLaneHeight(compactTasks
           .map(node => ({ lane: key, position: node.position })))
         const stored = sizeSource?.[key]
         return [key, {
@@ -483,6 +591,8 @@ function TaskFlowLabContent() {
       setNodes(nextNodes)
       setEdges(nextEdges)
       setLaneSizes(nextLaneSizes)
+      setDrawnByLane(nextDrawnByLane)
+      if (contextChanged) setSelectedDeck(null)
       setAvailableTotal(result.total)
       setLoadedTotal(result.loadedTotal)
       setError('')
@@ -530,19 +640,107 @@ function TaskFlowLabContent() {
         .some(value => String(value || '').toLowerCase().includes(normalized))
     })
   }, [debouncedKeyword, nodes])
-  const visibleIds = useMemo(() => new Set(visibleNodes.map(node => node.id)), [visibleNodes])
-  const visibleEdges = useMemo(() => edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)), [edges, visibleIds])
+  const persistDrawn = useCallback((next: Record<TaskFlowLane, string[]>) => {
+    saveLayout(
+      layoutContext,
+      nodesRef.current,
+      edgesRef.current,
+      getViewport(),
+      laneSizesRef.current,
+      next,
+    )
+  }, [getViewport, layoutContext])
+  const drawTasks = useCallback((lane: TaskFlowLane, amount: number) => {
+    const candidates = nodesRef.current.filter(node => node.data.item.lane === lane)
+    setDrawnByLane(current => {
+      const existing = current[lane].filter(id => candidates.some(node => node.id === id))
+      const capacity = Math.max(0, MAX_DRAWN_PER_LANE - existing.length)
+      const additions = candidates
+        .filter(node => !existing.includes(node.id))
+        .slice(0, Math.min(amount, capacity))
+      const laneIds = [...existing, ...additions.map(node => node.id)]
+        .slice(0, MAX_DRAWN_PER_LANE)
+      const next = { ...current, [lane]: laneIds }
+      if (additions.length) {
+        setNodes(nodeList => nodeList.map(node => {
+          const drawnIndex = laneIds.indexOf(node.id)
+          if (drawnIndex < 0 || !additions.some(item => item.id === node.id)) return node
+          return {
+            ...node,
+            position: { x: 20, y: 260 + drawnIndex * 196 },
+          }
+        }))
+      }
+      window.setTimeout(() => persistDrawn(next), 0)
+      return next
+    })
+  }, [persistDrawn])
+  const collapseLane = useCallback((lane: TaskFlowLane) => {
+    setDrawnByLane(current => {
+      const next = { ...current, [lane]: [] }
+      window.setTimeout(() => persistDrawn(next), 0)
+      return next
+    })
+  }, [persistDrawn])
+  const collapseAllDecks = useCallback(() => {
+    const next = emptyDrawnByLane()
+    setDrawnByLane(next)
+    setSelectedDeck(null)
+    window.setTimeout(() => persistDrawn(next), 0)
+  }, [persistDrawn])
   const laneCounts = useMemo(() => TASK_FLOW_LANES.map(lane => ({
     ...lane,
     count: visibleNodes.filter(node => node.data.item.lane === lane.key)
       .reduce((sum, node) => sum + node.data.item.weight, 0),
   })), [visibleNodes])
+  const nodesByLane = useMemo(() => Object.fromEntries(TASK_FLOW_LANES.map(({ key }) => [
+    key,
+    visibleNodes.filter(node => node.data.item.lane === key),
+  ])) as Record<TaskFlowLane, TaskNode[]>, [visibleNodes])
+  const stackedLanes = useMemo(() => new Set(TASK_FLOW_LANES
+    .filter(({ key }) => !debouncedKeyword.trim() && nodesByLane[key].length > STACK_THRESHOLD)
+    .map(({ key }) => key)), [debouncedKeyword, nodesByLane])
+  const displayedTaskNodes = useMemo(() => visibleNodes.filter(node => (
+    !stackedLanes.has(node.data.item.lane)
+    || drawnByLane[node.data.item.lane].includes(node.id)
+  )), [drawnByLane, stackedLanes, visibleNodes])
+  const deckNodes = useMemo<DeckNode[]>(() => TASK_FLOW_LANES.flatMap(({ key }) => {
+    if (!stackedLanes.has(key)) return []
+    const laneTasks = nodesByLane[key]
+    const categoryCounts = new Map<string, number>()
+    laneTasks.forEach(node => {
+      const category = node.data.item.category
+      categoryCounts.set(category, (categoryCounts.get(category) || 0) + node.data.item.weight)
+    })
+    return [{
+      id: `task-flow-deck-${key}`,
+      type: 'deck',
+      parentId: taskFlowLaneNodeId(key),
+      extent: 'parent',
+      position: { x: 20, y: 64 },
+      draggable: false,
+      deletable: false,
+      zIndex: 1,
+      data: {
+        lane: key,
+        count: laneTasks.reduce((sum, node) => sum + node.data.item.weight, 0),
+        nodeCount: laneTasks.length,
+        categories: [...categoryCounts.entries()]
+          .map(([label, count]) => ({ label, count }))
+          .sort((left, right) => right.count - left.count),
+        toolbarVisible: selectedDeck === key,
+        drawOne: lane => drawTasks(lane, 1),
+        drawThree: lane => drawTasks(lane, MAX_DRAWN_PER_LANE),
+        collapse: collapseLane,
+      },
+    }]
+  }), [collapseLane, drawTasks, nodesByLane, selectedDeck, stackedLanes])
   const laneMinHeights = useMemo(() => Object.fromEntries(TASK_FLOW_LANES.map(({ key }) => [
     key,
-    taskFlowLaneHeight(nodes
+    taskFlowLaneHeight(displayedTaskNodes
       .filter(node => node.data.item.lane === key)
       .map(node => ({ lane: key, position: node.position }))),
-  ])) as Record<TaskFlowLane, number>, [nodes])
+  ])) as Record<TaskFlowLane, number>, [displayedTaskNodes])
   const resizeLane = useCallback((
     lane: TaskFlowLane,
     width: number,
@@ -564,6 +762,7 @@ function TaskFlowLabContent() {
           edgesRef.current,
           getViewport(),
           next,
+          drawnByLaneRef.current,
         )
       }
       return next
@@ -575,7 +774,7 @@ function TaskFlowLabContent() {
       const size = laneSizes[lane.key]
       const node: LaneNode = {
         id: taskFlowLaneNodeId(lane.key), type: 'lane',
-        position: { x, y: 0 },
+        position: { x, y: LANE_Y },
         className: resizeMode ? 'task-flow-lane--resizing' : 'task-flow-lane--passive',
         draggable: false, selectable: false, connectable: false, deletable: false, zIndex: 0,
         style: { width: size.width, height: size.height },
@@ -593,7 +792,118 @@ function TaskFlowLabContent() {
       return node
     })
   }, [laneCounts, laneMinHeights, laneSizes, resizeLane, resizeMode])
-  const flowNodes = useMemo<FlowNode[]>(() => [...laneNodes, ...visibleNodes], [laneNodes, visibleNodes])
+  const workflowNodes = useMemo<WorkflowNode[]>(() => {
+    const definitions = view === 'control'
+      ? [
+          ['entry', '待办进入', '研判、照片和下发任务汇入', 'blue'],
+          ['work', '审核与处理', '研判、调照片、审核去向', 'amber'],
+          ['publish', '发布或回传', '发布下发数据或返回核查人', 'blue'],
+          ['done', '完成', '任务离开当前待办', 'green'],
+        ]
+      : [
+          ['entry', '收到任务', '组长分配后进入个人任务流', 'blue'],
+          ['work', '核查处理', '核实人员、地址和核查结果', 'amber'],
+          ['wait', '协作等待', '等待研判或照片等外部结果', 'red'],
+          ['done', '完成或回流', '完成核查，或协作后继续处理', 'green'],
+        ]
+    return definitions.map(([key, label, description, tone], index) => ({
+      id: `task-flow-workflow-${key}`,
+      type: 'workflow',
+      position: { x: index * 300, y: 0 },
+      draggable: false,
+      selectable: false,
+      deletable: false,
+      data: { label, description, tone: tone as WorkflowNodeData['tone'] },
+    }))
+  }, [view])
+  const systemEdges = useMemo<Edge[]>(() => {
+    const ordered = workflowNodes.map(node => node.id)
+    const result: Edge[] = ordered.slice(0, -1).map((source, index) => ({
+      id: `task-flow-system-${source}-${ordered[index + 1]}`,
+      source,
+      target: ordered[index + 1],
+      type: 'smoothstep',
+      markerEnd: { type: MarkerType.ArrowClosed },
+      selectable: false,
+      deletable: false,
+      animated: index === 0,
+      style: { strokeWidth: 2 },
+    }))
+    if (view === 'person') {
+      result.push({
+        id: 'task-flow-system-return-to-work',
+        source: 'task-flow-workflow-wait',
+        target: 'task-flow-workflow-work',
+        type: 'smoothstep',
+        label: '协作完成后继续',
+        selectable: false,
+        deletable: false,
+        style: { strokeDasharray: '4 4', strokeWidth: 1.6 },
+      })
+    }
+    return result
+  }, [view, workflowNodes])
+  const taskAttachmentEdges = useMemo<Edge[]>(() => {
+    const anchorForLane = (lane: TaskFlowLane) => view === 'control'
+      ? lane === 'exception' ? 'task-flow-workflow-publish' : 'task-flow-workflow-work'
+      : lane === 'waiting' ? 'task-flow-workflow-wait' : 'task-flow-workflow-work'
+    const deckLaneSet = new Set(deckNodes.map(node => node.data.lane))
+    const deckConnections = deckNodes.flatMap(deck => {
+      const lane = deck.data.lane
+      const taskEdges = displayedTaskNodes
+        .filter(node => node.data.item.lane === lane)
+        .map(node => ({
+          id: `task-flow-deck-edge-${deck.id}-${node.id}`,
+          source: deck.id,
+          target: node.id,
+          type: 'smoothstep',
+          markerEnd: { type: MarkerType.ArrowClosed },
+          selectable: false,
+          deletable: false,
+          style: { strokeWidth: 1.8 },
+        }))
+      return [{
+        id: `task-flow-workflow-deck-${deck.id}`,
+        source: anchorForLane(lane),
+        target: deck.id,
+        type: 'smoothstep',
+        selectable: false,
+        deletable: false,
+        style: { strokeWidth: 1.5, strokeDasharray: '5 4' },
+      }, ...taskEdges]
+    })
+    const looseTaskConnections = displayedTaskNodes
+      .filter(node => !deckLaneSet.has(node.data.item.lane))
+      .map(node => ({
+        id: `task-flow-workflow-task-${node.id}`,
+        source: anchorForLane(node.data.item.lane),
+        target: node.id,
+        type: 'smoothstep',
+        markerEnd: { type: MarkerType.ArrowClosed },
+        selectable: false,
+        deletable: false,
+        style: { strokeWidth: 1.3, strokeDasharray: '5 4' },
+      }))
+    return [...deckConnections, ...looseTaskConnections]
+  }, [deckNodes, displayedTaskNodes, view])
+  const displayedIds = useMemo(() => new Set([
+    ...displayedTaskNodes.map(node => node.id),
+    ...deckNodes.map(node => node.id),
+  ]), [deckNodes, displayedTaskNodes])
+  const visibleManualEdges = useMemo(() => edges.filter(edge => (
+    displayedIds.has(edge.source) && displayedIds.has(edge.target)
+  )), [displayedIds, edges])
+  const flowNodes = useMemo<FlowNode[]>(() => [
+    ...workflowNodes,
+    ...laneNodes,
+    ...deckNodes,
+    ...displayedTaskNodes,
+  ], [deckNodes, displayedTaskNodes, laneNodes, workflowNodes])
+  const flowEdges = useMemo(() => [
+    ...systemEdges,
+    ...taskAttachmentEdges,
+    ...visibleManualEdges,
+  ], [systemEdges, taskAttachmentEdges, visibleManualEdges])
 
   const onNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
     const taskChanges = changes.filter(change => !change.id.startsWith('task-flow-lane-')) as NodeChange<TaskNode>[]
@@ -602,14 +912,20 @@ function TaskFlowLabContent() {
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEdges(current => {
       const next = applyEdgeChanges(changes, current)
-      saveLayout(layoutContext, nodes, next, getViewport(), laneSizesRef.current)
+      saveLayout(
+        layoutContext, nodes, next, getViewport(),
+        laneSizesRef.current, drawnByLaneRef.current,
+      )
       return next
     })
   }, [getViewport, layoutContext, nodes])
   const onConnect = useCallback((connection: Connection) => {
     setEdges(current => {
       const next = addEdge({ ...connection, type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeDasharray: '6 5' } }, current)
-      saveLayout(layoutContext, nodes, next, getViewport(), laneSizesRef.current)
+      saveLayout(
+        layoutContext, nodes, next, getViewport(),
+        laneSizesRef.current, drawnByLaneRef.current,
+      )
       return next
     })
   }, [getViewport, layoutContext, nodes])
@@ -617,12 +933,30 @@ function TaskFlowLabContent() {
     const laneIndexes: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
     const next = nodes.map(node => {
       const lane = node.data.item.lane
-      const position = defaultTaskFlowPosition(lane, laneIndexes[lane])
-      laneIndexes[lane] += 1
+      const drawnIndex = drawnByLane[lane].indexOf(node.id)
+      if (stackedLanes.has(lane) && drawnIndex < 0) return node
+      const position = stackedLanes.has(lane)
+        ? { x: 20, y: 260 + drawnIndex * 196 }
+        : defaultTaskFlowPosition(lane, laneIndexes[lane])
+      if (!stackedLanes.has(lane)) laneIndexes[lane] += 1
       return { ...node, position }
     })
+    const nextSizes = Object.fromEntries(TASK_FLOW_LANES.map(({ key }) => {
+      const displayed = next.filter(node => (
+        node.data.item.lane === key
+        && (!stackedLanes.has(key) || drawnByLane[key].includes(node.id))
+      ))
+      return [key, {
+        width: laneSizesRef.current[key].width,
+        height: taskFlowLaneHeight(displayed.map(node => ({ lane: key, position: node.position }))),
+      }]
+    })) as LaneSizes
     setNodes(next)
-    saveLayout(layoutContext, next, edges, getViewport(), laneSizesRef.current)
+    setLaneSizes(nextSizes)
+    saveLayout(
+      layoutContext, next, edges, getViewport(),
+      nextSizes, drawnByLaneRef.current,
+    )
     window.setTimeout(() => fitView({ padding: 0.08, duration: 350 }), 50)
   }
   const toggleResizeMode = () => {
@@ -634,6 +968,7 @@ function TaskFlowLabContent() {
           edgesRef.current,
           getViewport(),
           laneSizesRef.current,
+          drawnByLaneRef.current,
         )
       }
       return !current
@@ -649,15 +984,6 @@ function TaskFlowLabContent() {
           <p>{view === 'control'
             ? '集中查看基础管控当前需要处理的网格研判、调照片、下发审核、研判、发布和异常任务。'
             : '选择一名核查人，平台会把其现有流口待办自动投放到沙盒。'} 节点只能在系统判定的区域内移动，虚线不会改变真实业务流程。</p>
-        </div>
-        <div className="task-flow-lab__hero-actions">
-          <Button icon={<ReloadOutlined />} loading={loadingTasks} disabled={!canLoad} onClick={() => void refreshTasks(false)}>刷新任务</Button>
-          {!mobile && (
-            <Button type={resizeMode ? 'primary' : 'default'} disabled={!canLoad} onClick={toggleResizeMode}>
-              {resizeMode ? '完成调整' : '调整区域'}
-            </Button>
-          )}
-          <Button disabled={!nodes.length} onClick={resetLayout}>自动整理</Button>
         </div>
       </section>
 
@@ -710,13 +1036,20 @@ function TaskFlowLabContent() {
         <section className="app-card task-flow-lab__canvas-shell">
           <div className="task-flow-lab__canvas">
             {loadingTasks && !nodes.length ? <div className="task-flow-lab__loading"><Skeleton active paragraph={{ rows: 6 }} /></div> : (
-              <ReactFlow<FlowNode> nodes={flowNodes} edges={visibleEdges} nodeTypes={NODE_TYPES}
+              <ReactFlow<FlowNode> nodes={flowNodes} edges={flowEdges} nodeTypes={NODE_TYPES}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
+                onNodeClick={(_, node) => {
+                  setSelectedDeck(node.type === 'deck' ? node.data.lane : null)
+                }}
+                onPaneClick={() => setSelectedDeck(null)}
                 onNodeDragStop={(_, node) => {
                   if (node.type !== 'task') return
                   const next = nodes.map(item => item.id === node.id ? { ...item, position: node.position } : item)
                   setNodes(next)
-                  saveLayout(layoutContext, next, edges, getViewport(), laneSizesRef.current)
+                  saveLayout(
+                    layoutContext, next, edges, getViewport(),
+                    laneSizesRef.current, drawnByLaneRef.current,
+                  )
                 }}
                 onMoveEnd={(_, viewport) => saveLayout(
                   layoutContext,
@@ -724,14 +1057,34 @@ function TaskFlowLabContent() {
                   edgesRef.current,
                   viewport,
                   laneSizesRef.current,
+                  drawnByLaneRef.current,
                 )}
-                onNodeDoubleClick={(_, node) => { if (node.type === 'task') openTask(node.data.item.openPath) }}
+                onNodeDoubleClick={(_, node) => {
+                  if (node.type === 'task') openTask(node.data.item.openPath)
+                  if (node.type === 'deck') drawTasks(node.data.lane, 1)
+                }}
                 nodesDeletable={false} autoPanOnNodeDrag={false} minZoom={0.2} maxZoom={1.6}
                 deleteKeyCode={['Backspace', 'Delete']}
                 proOptions={{ hideAttribution: true }}>
+                <FlowPanel position="top-left" className="task-flow-canvas-toolbar">
+                  <Button size="small" icon={<ReloadOutlined />} loading={loadingTasks}
+                    onClick={() => void refreshTasks(false)}>刷新</Button>
+                  <Button size="small" icon={<PartitionOutlined />}
+                    onClick={() => void fitView({ padding: 0.08, duration: 350 })}>流程视图</Button>
+                  <Button size="small" icon={<CompressOutlined />} onClick={resetLayout}>自动布局</Button>
+                  <Button size="small" type={resizeMode ? 'primary' : 'default'} onClick={toggleResizeMode}>
+                    {resizeMode ? '完成调整' : '调整区域'}
+                  </Button>
+                  <Button size="small" icon={<AppstoreOutlined />} onClick={collapseAllDecks}>全部收起</Button>
+                </FlowPanel>
                 <Background gap={24} size={1.2} />
                 <MiniMap pannable zoomable nodeColor={node => {
                   if (node.type === 'lane') return 'rgba(148, 163, 184, 0.16)'
+                  if (node.type === 'workflow') return '#64748b'
+                  if (node.type === 'deck') {
+                    const lane = (node.data as DeckNodeData).lane
+                    return lane === 'ready' ? '#2563eb' : lane === 'waiting' ? '#d97706' : '#dc2626'
+                  }
                   const lane = (node.data as TaskFlowNodeData).item.lane
                   return lane === 'ready' ? '#2563eb' : lane === 'waiting' ? '#d97706' : '#dc2626'
                 }} />
