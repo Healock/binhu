@@ -274,7 +274,15 @@ function TaskCard({
   )
 }
 
-export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all' | 'analysis' }) {
+export default function PoliceDispatchWorkbench({
+  mode = 'all',
+  onAnalysisCountChange,
+  manageUrl = true,
+}: {
+  mode?: 'all' | 'analysis'
+  onAnalysisCountChange?: (count: number) => void
+  manageUrl?: boolean
+}) {
   const { user } = useAuth()
   const mobile = useMobileViewport()
   const navigate = useNavigate()
@@ -356,7 +364,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         ? requested
         : result.active_batch?.id || null
       setBatchId(nextId)
-      if (nextId) {
+      if (nextId && manageUrl) {
         const next = new URLSearchParams(searchParams)
         next.set('batch', String(nextId))
         next.set('status', analysisOnly ? 'pending_review' : status)
@@ -415,6 +423,9 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   }
 
   useEffect(() => { void loadHome() }, [])
+  useEffect(() => {
+    if (analysisOnly) onAnalysisCountChange?.(total)
+  }, [analysisOnly, onAnalysisCountChange, total])
   useEffect(() => { if (batchId) void loadTasks(1) }, [batchId, status, category, appliedKeyword])
   useEffect(() => { void loadLatestPublishRun(batchId) }, [analysisOnly, batchId])
   useEffect(() => {
@@ -447,13 +458,13 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   }, [analysisOnly, batchId, status, category, appliedKeyword])
 
   useEffect(() => {
-    if (!batchId) return
+    if (!manageUrl || !batchId) return
     const next = new URLSearchParams(searchParams)
     next.set('batch', String(batchId))
     next.set('status', analysisOnly ? 'pending_review' : status)
     next.set('category', analysisOnly ? 'manual' : category)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, batchId, category, setSearchParams, status])
+  }, [analysisOnly, batchId, category, manageUrl, setSearchParams, status])
 
   const changeBatch = (value: number) => {
     leavePublishSelection()
@@ -888,16 +899,16 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
                 ))}
               </div>
             ) : (
-              <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+              <div className="mobile-task-priority-grid police-dispatch-analysis-counts" aria-label="未下发研判数量">
                 {[
-                  ['待审核', activeBatch.counts.pending_review],
-                  ['待发布', activeBatch.counts.pending_publish],
-                  ['重复', activeBatch.counts.duplicate],
-                  ['待研判', activeBatch.counts.abnormal],
-                ].map(([label, value]) => (
-                  <div key={String(label)} className="police-dispatch-workbench__metric rounded-lg px-2 py-2.5">
-                    <div className="text-lg font-semibold">{value}</div>
-                    <div className="police-dispatch-workbench__metric-label text-[11px]">{label}</div>
+                  ['待审核', activeBatch.counts.pending_review, false],
+                  ['待研判', activeBatch.counts.abnormal, true],
+                  ['重复', activeBatch.counts.duplicate, false],
+                  ['全部', activeBatch.counts.total, false],
+                ].map(([label, value, active]) => (
+                  <div key={String(label)} className={`mobile-task-priority-card${active ? ' is-active' : ''}`}>
+                    <span>{label}</span>
+                    <strong>{value}</strong>
                   </div>
                 ))}
               </div>
