@@ -172,6 +172,29 @@
   padding: 13px 14px 10px;
 }
 
+.task-flow-node__drag-handle {
+  display: inline-flex;
+  width: 24px;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin: -2px 0 0 -5px;
+  border-radius: 7px;
+  color: var(--app-text-tertiary);
+  cursor: grab;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.task-flow-node__drag-handle:hover {
+  color: var(--app-primary);
+  background: var(--app-primary-soft);
+}
+
+.task-flow-node__drag-handle:active {
+  cursor: grabbing;
+}
+
 .task-flow-node__type {
   margin-bottom: 3px;
   color: var(--app-text-secondary);
@@ -265,32 +288,12 @@
   pointer-events: none;
 }
 
-.task-flow-lab .react-flow__node-lane.task-flow-lane--resizing {
-  pointer-events: auto;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-primary) 30%, transparent),
-    0 14px 38px rgb(15 23 42 / 0.12);
-}
-
 .task-flow-group {
   width: 100%;
   height: 100%;
   border-top: 4px solid var(--app-primary);
   border-radius: 17px;
   background: color-mix(in srgb, #2563eb 2.5%, transparent);
-}
-
-.task-flow-group__resize-line {
-  border-color: var(--app-primary) !important;
-  opacity: 0.7;
-}
-
-.task-flow-group__resize-handle {
-  width: 11px !important;
-  height: 11px !important;
-  border: 2px solid var(--app-surface) !important;
-  border-radius: 3px !important;
-  background: var(--app-primary) !important;
-  box-shadow: 0 2px 7px rgb(15 23 42 / 0.2);
 }
 
 .task-flow-group--waiting {
@@ -423,21 +426,47 @@
   letter-spacing: 0.06em;
 }
 
-.task-flow-deck__headline {
+.task-flow-deck__topline {
   display: flex;
-  align-items: baseline;
-  gap: 7px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.task-flow-deck__headline strong {
+.task-flow-canvas-toolbar .ant-segmented {
+  min-height: 30px;
+  border-radius: 8px;
+}
+
+.task-flow-deck__active-title {
+  overflow: hidden;
   color: var(--app-text-strong);
-  font-size: 30px;
-  line-height: 1;
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.task-flow-deck__headline span {
+.task-flow-deck__active-meta {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
   color: var(--app-text-secondary);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.task-flow-deck__active-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-flow-deck__actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .task-flow-deck__categories {
@@ -471,51 +500,44 @@
   box-shadow: 0 8px 24px rgb(15 23 42 / 0.12);
 }
 
-.task-flow-workflow-node {
-  display: grid;
-  width: 248px;
-  min-height: 76px;
-  align-content: center;
-  gap: 4px;
-  padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, #2563eb 35%, var(--app-border));
-  border-radius: 14px;
-  color: var(--app-text);
-  background: color-mix(in srgb, #2563eb 7%, var(--app-surface));
-  box-shadow: 0 8px 22px rgb(15 23 42 / 0.08);
+.task-flow-process-strip {
+  display: flex;
+  max-width: calc(100% - 300px);
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-surface) 94%, transparent);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.09);
+  backdrop-filter: blur(10px);
 }
 
-.task-flow-workflow-node.is-amber {
-  border-color: color-mix(in srgb, #d97706 38%, var(--app-border));
-  background: color-mix(in srgb, #d97706 7%, var(--app-surface));
-}
-
-.task-flow-workflow-node.is-green {
-  border-color: color-mix(in srgb, #16a34a 38%, var(--app-border));
-  background: color-mix(in srgb, #16a34a 7%, var(--app-surface));
-}
-
-.task-flow-workflow-node.is-red {
-  border-color: color-mix(in srgb, #dc2626 38%, var(--app-border));
-  background: color-mix(in srgb, #dc2626 7%, var(--app-surface));
-}
-
-.task-flow-workflow-node strong {
-  color: var(--app-text-strong);
-  font-size: 14px;
-}
-
-.task-flow-workflow-node span {
+.task-flow-process-strip span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--app-text-secondary);
   font-size: 11px;
-  line-height: 1.45;
+  white-space: nowrap;
 }
 
-.task-flow-workflow-node__handle {
-  width: 9px !important;
-  height: 9px !important;
-  border: 2px solid var(--app-surface) !important;
-  background: #64748b !important;
+.task-flow-process-strip b {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: white;
+  background: var(--app-primary);
+  font-size: 10px;
+}
+
+.task-flow-process-strip i {
+  margin-left: 3px;
+  color: var(--app-text-tertiary);
+  font-style: normal;
 }
 
 .task-flow-lab .react-flow__controls-button {
