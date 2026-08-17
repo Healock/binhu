@@ -782,6 +782,20 @@ test('流口任务数量卡顺序固定为已研判优先、已完成沉底', ()
   assert.match(pageSource, /setReviewStage\('all'\)/)
 })
 
+test('流口任务不再提供待同步筛选入口，但保留任务级同步状态提示', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const filterOptions = pageSource.match(/const PRIORITY_OPTIONS = \[[\s\S]*?\n\]/)?.[0] ?? ''
+  const priorityCards = pageSource.match(/const PRIORITY_CARDS:[\s\S]*?\n\]/)?.[0] ?? ''
+
+  assert.doesNotMatch(filterOptions, /pending_sync|待同步/)
+  assert.doesNotMatch(priorityCards, /pending_sync|待同步/)
+  assert.match(pageSource, /task\.sync_state === 'pending'/)
+  assert.match(pageSource, />待同步<\/Tag>/)
+})
+
 test('mobile task choice fields disable search on mobile', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
