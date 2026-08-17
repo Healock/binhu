@@ -302,6 +302,24 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_certificate_run_requester (requested_by, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur,
+        "registry_certificate_source_runs",
+        "trigger_source",
+        "VARCHAR(20) NOT NULL DEFAULT 'manual' AFTER requested_by",
+    )
+    await _ensure_column(
+        cur,
+        "registry_certificate_source_runs",
+        "business_date",
+        "DATE DEFAULT NULL AFTER trigger_source",
+    )
+    await _ensure_index(
+        cur,
+        "registry_certificate_source_runs",
+        "idx_registry_certificate_run_schedule",
+        "INDEX idx_registry_certificate_run_schedule (trigger_source, business_date, status)",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_certificate_source_pages (
             run_id BIGINT NOT NULL,
@@ -396,6 +414,36 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_property_certificate_address (address_snapshot(190))
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur,
+        "registry_property_certificates",
+        "source_content_hash",
+        "CHAR(64) NOT NULL DEFAULT '' AFTER source_ref",
+    )
+    await _ensure_column(
+        cur,
+        "registry_property_certificates",
+        "source_first_seen_at",
+        "DATETIME DEFAULT NULL AFTER payload_json",
+    )
+    await _ensure_column(
+        cur,
+        "registry_property_certificates",
+        "source_last_seen_at",
+        "DATETIME DEFAULT NULL AFTER source_first_seen_at",
+    )
+    await _ensure_column(
+        cur,
+        "registry_property_certificates",
+        "source_missing_since",
+        "DATETIME DEFAULT NULL AFTER source_last_seen_at",
+    )
+    await _ensure_index(
+        cur,
+        "registry_property_certificates",
+        "idx_registry_property_certificate_seen",
+        "INDEX idx_registry_property_certificate_seen (source_last_seen_at, source_missing_since)",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_merge_history (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,

@@ -149,6 +149,129 @@ def normalize_legacy_result(code: Any, text: Any) -> tuple[str, str]:
     return STATUS_UNKNOWN_RESULT, ""
 
 
+class QmfStatusAccessError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class QmfLegacyStatusSession:
+    """Authenticated, reusable read-only management-side session."""
+
+    def __init__(self, owner: "QmfLegacyStatusClient"):
+        self._owner = owner
+        self._client: httpx.AsyncClient | None = None
+
+    async def __aenter__(self) -> "QmfLegacyStatusSession":
+        config = self._owner._config
+        if not config.configured:
+            raise QmfStatusAccessError(
+                "status_not_configured", "全民防管理端状态查询尚未配置"
+            )
+        headers = {"Accept": "application/json"}
+        if config.authorization:
+            headers["Authorization"] = config.authorization
+        self._client = httpx.AsyncClient(
+            base_url=config.base_url.rstrip("/"),
+            timeout=httpx.Timeout(config.timeout_seconds),
+            headers=headers,
+            follow_redirects=False,
+            transport=self._owner._transport,
+        )
+        try:
+            if "Authorization" not in self._client.headers:
+                response = await self._owner._send(
+                    self._client,
+                    "POST",
+                    config.login_path,
+                    params={"username": config.username, "password": config.password},
+                )
+                if response.status_code in {401, 403}:
+                    raise QmfStatusAccessError(
+                        "status_auth_failed", "全民防管理端认证失败"
+                    )
+                if not response.is_success:
+                    raise QmfStatusAccessError(
+                        "status_auth_unavailable", "全民防管理端认证暂时不可用"
+                    )
+                try:
+                    token = _business_payload(response)
+                except (ValueError, TypeError) as exc:
+                    raise QmfStatusAccessError(
+                        "status_auth_invalid", "全民防管理端认证响应无效"
+                    ) from exc
+                if not isinstance(token, str) or not token.strip():
+                    raise QmfStatusAccessError(
+                        "status_auth_invalid", "全民防管理端认证响应无效"
+                    )
+                self._client.headers["Authorization"] = token.strip()
+        except Exception:
+            await self._client.aclose()
+            self._client = None
+            raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def query(
+        self,
+        *,
+        identity: str,
+        expected_result: str,
+    ) -> QmfLegacyStatus:
+        normalized_identity = normalize_identity(identity)
+        normalized_expected = normalize_qmf_result(expected_result)
+        if not normalized_identity or not normalized_expected:
+            return QmfLegacyStatus(
+                state=STATUS_UNAVAILABLE,
+                reason="平台任务状态不完整",
+            )
+        if self._client is None:
+            raise RuntimeError("全民防管理端状态会话尚未打开")
+        try:
+            response = await self._owner._send(
+                self._client,
+                "GET",
+                "/api/masses/queryYysList",
+                params={
+                    "pageNum": "1",
+                    "pageSize": "20",
+                    "judgeType": "yys",
+                    "sfzh": normalized_identity,
+                },
+            )
+        except httpx.RequestError:
+            return QmfLegacyStatus(
+                state=STATUS_UNAVAILABLE,
+                reason="全民防管理端状态暂时无法确认",
+            )
+        if response.status_code in {401, 403}:
+            raise QmfStatusAccessError(
+                "status_query_forbidden", "全民防管理端状态查询无权限"
+            )
+        if not response.is_success:
+            return QmfLegacyStatus(
+                state=STATUS_UNAVAILABLE,
+                reason="全民防管理端状态查询暂时不可用",
+            )
+        try:
+            data = _business_payload(response)
+        except (ValueError, TypeError):
+            return QmfLegacyStatus(
+                state=STATUS_UNAVAILABLE,
+                reason="全民防管理端状态暂时无法确认",
+            )
+        return self._owner._normalize_payload(
+            data,
+            normalized_identity=normalized_identity,
+            normalized_expected=normalized_expected,
+        )
+
+
 class QmfLegacyStatusClient:
     def __init__(
         self,
@@ -158,6 +281,9 @@ class QmfLegacyStatusClient:
     ):
         self._config = config or settings_status_config()
         self._transport = transport
+
+    def session(self) -> QmfLegacyStatusSession:
+        return QmfLegacyStatusSession(self)
 
     async def _send(
         self,
@@ -190,86 +316,25 @@ class QmfLegacyStatusClient:
         identity: str,
         expected_result: str,
     ) -> QmfLegacyStatus:
-        normalized_identity = normalize_identity(identity)
-        normalized_expected = normalize_qmf_result(expected_result)
-        if not self._config.configured:
-            return QmfLegacyStatus(
-                state=STATUS_UNAVAILABLE,
-                reason="全民防管理端状态查询尚未配置",
-            )
-        if not normalized_identity or not normalized_expected:
-            return QmfLegacyStatus(
-                state=STATUS_UNAVAILABLE,
-                reason="平台任务状态不完整",
-            )
-
-        headers = {"Accept": "application/json"}
-        if self._config.authorization:
-            headers["Authorization"] = self._config.authorization
         try:
-            async with httpx.AsyncClient(
-                base_url=self._config.base_url.rstrip("/"),
-                timeout=httpx.Timeout(self._config.timeout_seconds),
-                headers=headers,
-                follow_redirects=False,
-                transport=self._transport,
-            ) as client:
-                if "Authorization" not in client.headers:
-                    login_response = await self._send(
-                        client,
-                        "POST",
-                        self._config.login_path,
-                        params={
-                            "username": self._config.username,
-                            "password": self._config.password,
-                        },
-                    )
-                    if login_response.status_code in {401, 403}:
-                        return QmfLegacyStatus(
-                            state=STATUS_UNAVAILABLE,
-                            reason="全民防管理端认证失败",
-                        )
-                    if not login_response.is_success:
-                        return QmfLegacyStatus(
-                            state=STATUS_UNAVAILABLE,
-                            reason="全民防管理端认证暂时不可用",
-                        )
-                    token = _business_payload(login_response)
-                    if not isinstance(token, str) or not token.strip():
-                        return QmfLegacyStatus(
-                            state=STATUS_UNAVAILABLE,
-                            reason="全民防管理端认证响应无效",
-                        )
-                    client.headers["Authorization"] = token.strip()
-
-                response = await self._send(
-                    client,
-                    "GET",
-                    "/api/masses/queryYysList",
-                    params={
-                        "pageNum": "1",
-                        "pageSize": "20",
-                        "judgeType": "yys",
-                        "sfzh": normalized_identity,
-                    },
+            async with self.session() as session:
+                return await session.query(
+                    identity=identity,
+                    expected_result=expected_result,
                 )
-                if response.status_code in {401, 403}:
-                    return QmfLegacyStatus(
-                        state=STATUS_UNAVAILABLE,
-                        reason="全民防管理端状态查询无权限",
-                    )
-                if not response.is_success:
-                    return QmfLegacyStatus(
-                        state=STATUS_UNAVAILABLE,
-                        reason="全民防管理端状态查询暂时不可用",
-                    )
-                data = _business_payload(response)
-        except (httpx.RequestError, ValueError, TypeError):
+        except (QmfStatusAccessError, httpx.RequestError, ValueError, TypeError):
             return QmfLegacyStatus(
                 state=STATUS_UNAVAILABLE,
                 reason="全民防管理端状态暂时无法确认",
             )
 
+    def _normalize_payload(
+        self,
+        data: Any,
+        *,
+        normalized_identity: str,
+        normalized_expected: str,
+    ) -> QmfLegacyStatus:
         if not isinstance(data, dict) or not isinstance(data.get("list"), list):
             return QmfLegacyStatus(
                 state=STATUS_UNAVAILABLE,

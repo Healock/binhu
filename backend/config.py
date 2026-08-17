@@ -82,6 +82,20 @@ class Settings(BaseSettings):
     VISIT_SOURCE_MAX_PAGES: int = 1000
     VISIT_SOURCE_MAX_RECORDS: int = 100000
     VISIT_SOURCE_AUTO_CONFIRM: bool = False
+    CERTIFICATE_SOURCE_DAILY_ENABLED: bool = False
+    CERTIFICATE_SOURCE_DAILY_TIME: str = "02:30"
+
+    @field_validator("CERTIFICATE_SOURCE_DAILY_TIME")
+    @classmethod
+    def validate_certificate_daily_time(cls, value: str) -> str:
+        normalized = value.strip()
+        parts = normalized.split(":")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            raise ValueError("告知书每日读取时间必须使用 HH:MM")
+        hour, minute = (int(part) for part in parts)
+        if hour > 23 or minute > 59:
+            raise ValueError("告知书每日读取时间超出有效范围")
+        return f"{hour:02d}:{minute:02d}"
 
     # 全民防模型三 API 单条预演与封闭登记。所有敏感值仅在生产环境注入；
     # 两个协议确认和对应开关必须分别完成实测后才可开启。
@@ -97,6 +111,8 @@ class Settings(BaseSettings):
     QMF_EXPECTED_STATION_CODE: str = "320584710000"
     QMF_EXPECTED_STATION_NAME: str = "滨湖新城派出所"
     QMF_TIMEOUT_SECONDS: int = 15
+    QMF_STATUS_SCAN_ENABLED: bool = False
+    QMF_STATUS_SCAN_TIME: str = ""
     # The observed APK sends a TCP heartbeat roughly every 60 seconds.  The
     # read-only preview does not guess that private heartbeat frame, so one
     # session must finish before this conservative deadline.

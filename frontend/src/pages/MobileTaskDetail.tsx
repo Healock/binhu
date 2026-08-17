@@ -57,6 +57,7 @@ import {
   mobileTaskSourceState,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
+import QmfFeedbackStatus from '../components/QmfFeedbackStatus'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import {
@@ -735,6 +736,18 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </div>
           )}
         />
+      )}
+
+      {data.task.qmf_status && (
+        <section className="app-card flex flex-wrap items-center justify-between gap-3 p-4">
+          <div>
+            <h2 className="font-semibold text-[var(--app-text-strong)]">全民防反馈核对</h2>
+            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+              这是后台只读扫描的最近缓存结果；执行全民防登记前仍会重新实时核对。
+            </p>
+          </div>
+          <QmfFeedbackStatus status={data.task.qmf_status} />
+        </section>
       )}
 
       {mode === 'tasks' && data.qmf_registration?.visible && (

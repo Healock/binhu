@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from config import settings
 from database import db_manager
+from services.business_time import get_business_timezone_name, resolve_timezone
+from services.registry_certificate_apply import apply_certificate_batch
 from services.registry_certificate_source import (
     CERTIFICATE_PAGE_SIZE,
+    certificate_content_hash,
+    certificate_source_ref,
     iter_certificate_pages,
 )
 from services.registry_import import classify_certificate_rows
@@ -61,6 +65,8 @@ def _public_run(row: tuple | None) -> dict[str, Any] | None:
         "finished_at": _iso(row[12]),
         "created_at": _iso(row[13]),
         "updated_at": _iso(row[14]),
+        "trigger_source": str(row[15] or "manual"),
+        "business_date": row[16].isoformat() if row[16] else None,
     }
 
 
@@ -68,6 +74,7 @@ RUN_SELECT = """
     SELECT id,status,phase,current_page,fetched_count,accepted_count,
            rejected_count,batch_id,summary_json,error_code,error_message,started_at,
            finished_at,created_at,updated_at
+           ,trigger_source,business_date
     FROM registry_certificate_source_runs
 """
 
@@ -88,7 +95,12 @@ async def get_latest_certificate_source_run() -> dict[str, Any] | None:
             return _public_run(await cur.fetchone())
 
 
-async def create_certificate_source_run(requested_by: int | None) -> tuple[dict[str, Any], bool]:
+async def create_certificate_source_run(
+    requested_by: int | None,
+    *,
+    trigger_source: str = "manual",
+    business_date: date | None = None,
+) -> tuple[dict[str, Any], bool]:
     """Create one run, or return the active run when a click is repeated."""
     pool = db_manager.get_pool("registry")
     run_id = 0
@@ -111,8 +123,9 @@ async def create_certificate_source_run(requested_by: int | None) -> tuple[dict[
                 else:
                     await cur.execute(
                         "INSERT INTO registry_certificate_source_runs "
-                        "(status,phase,requested_by) VALUES ('pending','queued',%s)",
-                        (requested_by,),
+                        "(status,phase,requested_by,trigger_source,business_date) "
+                        "VALUES ('pending','queued',%s,%s,%s)",
+                        (requested_by, trigger_source, business_date),
                     )
                     run_id = int(cur.lastrowid)
             finally:
@@ -200,13 +213,64 @@ async def recover_interrupted_certificate_source_runs() -> int:
             return int(cur.rowcount or 0)
 
 
+async def claim_due_certificate_source_run() -> int | None:
+    """Create at most one configured full-read run for each business date."""
+    if not settings.CERTIFICATE_SOURCE_DAILY_ENABLED or not settings.VISIT_SOURCE_BASE_URL:
+        return None
+    pool = db_manager.get_pool("registry")
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            timezone_name = await get_business_timezone_name(cur)
+            local_now = datetime.now(timezone.utc).astimezone(resolve_timezone(timezone_name))
+            hour, minute = (int(part) for part in settings.CERTIFICATE_SOURCE_DAILY_TIME.split(":"))
+            if (local_now.hour, local_now.minute) < (hour, minute):
+                return None
+            business_date = local_now.date()
+            await cur.execute("SELECT GET_LOCK(%s, 5)", (CERTIFICATE_SOURCE_LOCK,))
+            lock_row = await cur.fetchone()
+            if not lock_row or lock_row[0] != 1:
+                return None
+            try:
+                await cur.execute(
+                    "SELECT id FROM registry_certificate_source_runs "
+                    "WHERE trigger_source='scheduled' AND business_date=%s LIMIT 1",
+                    (business_date,),
+                )
+                if await cur.fetchone():
+                    return None
+                await cur.execute(
+                    "SELECT id FROM registry_certificate_source_runs "
+                    "WHERE status IN ('pending','running') LIMIT 1"
+                )
+                if await cur.fetchone():
+                    return None
+                await cur.execute(
+                    "INSERT INTO registry_certificate_source_runs "
+                    "(status,phase,trigger_source,business_date) "
+                    "VALUES ('pending','queued','scheduled',%s)",
+                    (business_date,),
+                )
+                return int(cur.lastrowid)
+            finally:
+                await cur.execute("SELECT RELEASE_LOCK(%s)", (CERTIFICATE_SOURCE_LOCK,))
+                await cur.fetchone()
+
+
 async def _create_preview_batch(
     conn,
     rows: list[dict[str, Any]],
     created_by: int | None,
 ) -> dict[str, Any]:
-    classified = classify_certificate_rows(rows)
-    canonical = json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    prepared: list[dict[str, Any]] = []
+    for source_row in rows:
+        row = dict(source_row)
+        row["source_ref"] = str(row.get("source_ref") or certificate_source_ref(row))
+        row["source_content_hash"] = str(
+            row.get("source_content_hash") or certificate_content_hash(row)
+        )
+        prepared.append(row)
+    classified = classify_certificate_rows(prepared)
+    canonical = json.dumps(prepared, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     file_hash = hashlib.sha256(canonical).hexdigest()
     await conn.begin()
     try:
@@ -223,7 +287,7 @@ async def _create_preview_batch(
                     "batch_id": int(existing[0]),
                     "status": str(existing[1]),
                     "idempotent": True,
-                    "total_count": len(rows),
+                    "total_count": len(prepared),
                     "normal_count": classified["normal_count"],
                     "issue_count": classified["issue_count"],
                     "problem_row_count": classified["problem_row_count"],
@@ -245,7 +309,7 @@ async def _create_preview_batch(
             source_values = [
                 (
                     batch_id,
-                    f"房东责任告知书只读接口:{row.get('source_row') or ''}"[:190],
+                    str(row.get("source_ref") or "")[:190],
                     "property_certificate",
                     json.dumps(row, ensure_ascii=False, default=str),
                 )
@@ -262,7 +326,7 @@ async def _create_preview_batch(
                     batch_id,
                     issue["issue_type"],
                     "certificate",
-                    f"房东责任告知书只读接口:{issue['source_ref']}"[:190],
+                    str(issue["source_ref"])[:190],
                     issue["entity_key"],
                     json.dumps(issue["payload"], ensure_ascii=False, default=str),
                     issue["reason"],
@@ -284,7 +348,7 @@ async def _create_preview_batch(
         "batch_id": batch_id,
         "status": "preview",
         "idempotent": False,
-        "total_count": len(rows),
+        "total_count": len(prepared),
         "normal_count": classified["normal_count"],
         "issue_count": classified["issue_count"],
         "problem_row_count": classified["problem_row_count"],
@@ -417,7 +481,7 @@ async def run_certificate_source_run(run_id: int) -> None:
 
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT requested_by FROM registry_certificate_source_runs WHERE id=%s",
+                "SELECT requested_by,trigger_source FROM registry_certificate_source_runs WHERE id=%s",
                 (run_id,),
             )
             requester = await cur.fetchone()
@@ -430,6 +494,14 @@ async def run_certificate_source_run(run_id: int) -> None:
             rows,
             int(requester[0]) if requester and requester[0] is not None else None,
         )
+        trigger_source = (
+            str(requester[1] or "manual")
+            if requester and len(requester) > 1
+            else "manual"
+        )
+        if trigger_source == "scheduled":
+            applied = await apply_certificate_batch(conn, int(result["batch_id"]), None)
+            result = {**result, "application": applied, "status": applied["status"]}
         async with conn.cursor() as cur:
             await cur.execute(
                 "DELETE FROM registry_certificate_source_pages WHERE run_id=%s",
