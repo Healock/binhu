@@ -58,7 +58,6 @@ const PRIORITY_OPTIONS = [
   { label: '全部优先级', value: 'all' },
   { label: '已研判', value: 'analyzed' },
   { label: '来源异常', value: 'source_exception' },
-  { label: '待同步', value: 'pending_sync' },
   { label: '普通待处理', value: 'ordinary' },
   { label: '等待研判', value: 'waiting_analysis' },
   { label: '已完成', value: 'completed' },
@@ -79,7 +78,6 @@ const STATE_LABELS = {
 const PRIORITY_CARDS: Array<{ key: MobileTaskPriority; label: string }> = [
   { key: 'analyzed', label: '已研判' },
   { key: 'source_exception', label: '来源异常' },
-  { key: 'pending_sync', label: '待同步' },
   { key: 'ordinary', label: '普通待处理' },
   { key: 'waiting_analysis', label: '等待研判' },
   { key: 'completed', label: '已完成' },
