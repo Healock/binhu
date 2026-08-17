@@ -257,6 +257,32 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
                 ][0]
                 self.assertEqual(cell["cellValue"], {"text": result})
 
+    def test_blank_qmf_result_select_uses_business_write_options(self):
+        metadata = writeback_cell_metadata(
+            "疑似未注销模型三",
+            "核查结果",
+            {
+                "type": "select",
+                "options": [{"id": "", "text": "", "color": None}],
+                "multiple": False,
+            },
+        )
+
+        self.assertEqual(
+            [item["text"] for item in metadata["write_options"]],
+            ["近期返吴", "离吴", "在吴"],
+        )
+        client = TxDocsClient("client", "token", "user")
+        for result in ("近期返吴", "离吴", "在吴"):
+            with self.subTest(result=result):
+                request = client.build_update_cell_request(
+                    "sheet", 8, 6, result, metadata, "核查结果"
+                )
+                cell = request["updateRangeRequest"]["gridData"]["rows"][0][
+                    "values"
+                ][0]
+                self.assertEqual(cell["cellValue"], {"text": result})
+
     def test_result_writeback_keeps_real_options_and_adds_business_fallbacks(self):
         metadata = writeback_cell_metadata(
             "出租房屋核查",
