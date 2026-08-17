@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-test('研判页同时承载无法核实研判和下发数据复核', () => {
+test('研判页区分已下发和未下发数据研判', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
     'utf8',
@@ -24,10 +24,14 @@ test('研判页同时承载无法核实研判和下发数据复核', () => {
   assert.match(pageSource, /mode = 'all'/)
   assert.match(pageSource, /analysisOnly \? 'pending_review'/)
   assert.match(pageSource, /analysisOnly \? 'manual'/)
-  assert.match(pageSource, /复核结果仍保存在原下发批次/)
+  assert.match(pageSource, /研判结果仍保存在原下发批次/)
   assert.match(pageSource, /SearchOutlined[\s\S]*from '@ant-design\/icons'/)
-  assert.match(analysisSource, /网格核查研判/)
-  assert.match(analysisSource, /下发数据复核/)
+  assert.match(analysisSource, /已下发数据研判/)
+  assert.match(analysisSource, /未下发数据研判/)
+  assert.match(analysisSource, /已下发数据中的研判事项/)
+  assert.doesNotMatch(analysisSource, /网格核查研判|下发数据复核/)
+  assert.match(pageSource, /analysisOnly \? '未下发数据研判'/)
+  assert.match(pageSource, /尚未下发、无法直接确定去向的数据/)
   assert.match(analysisSource, /<MobileTaskList mode="analysis" \/>/)
   assert.match(mobileTaskSource, /analysisOnly \? 'waiting_analysis'/)
   assert.match(mobileTaskSource, /review_stage:\s*reviewStage/)

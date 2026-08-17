@@ -12,8 +12,8 @@ export default function AnalysisWorkbench() {
   const canFlow = Boolean(user?.permissions.includes('online.task.manage'))
   const canDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
   const views = [
-    ...(canFlow ? [{ label: '网格核查研判', value: 'flow' as const }] : []),
-    ...(canDispatch ? [{ label: '下发数据复核', value: 'dispatch' as const }] : []),
+    ...(canFlow ? [{ label: '已下发数据研判', value: 'flow' as const }] : []),
+    ...(canDispatch ? [{ label: '未下发数据研判', value: 'dispatch' as const }] : []),
   ]
   const [requestedView, setView] = useState<AnalysisView>(canFlow ? 'flow' : 'dispatch')
   const view = views.some(option => option.value === requestedView)
@@ -24,7 +24,7 @@ export default function AnalysisWorkbench() {
     <div className="app-page">
       <PageHeader
         title="研判"
-        description="集中处理网格核查中无法核实的数据，以及下发文件中需要人工判断的数据。"
+        description="集中处理已下发数据中的研判事项，以及尚未下发数据的人工判断事项。"
       />
       {views.length > 1 && <section className="app-card p-3 sm:p-4">
         <Segmented
