@@ -53,12 +53,14 @@ def match_source_cache_rows(
         logical = [
             row for row in available.values()
             if row["sheet_id"] == incoming["sheet_id"]
-            and row["row_key"] == incoming["row_key"]
+            and row.get("expected_row_key", row["row_key"])
+            == incoming["row_key"]
         ]
         if logical:
             existing = min(
                 logical,
                 key=lambda row: (
+                    0 if row.get("has_local_changes") else 1,
                     abs(int(row["physical_row"]) - int(incoming["physical_row"])),
                     int(row["id"]),
                 ),
@@ -305,7 +307,7 @@ async def replace_source_cache(
                 await cur.execute(
                     f"""
                     SELECT id, source_id, audit_id, field_name, base_value,
-                           local_value, status
+                           local_value, status, row_key
                     FROM _online_local_changes
                     WHERE source_id IN ({placeholders})
                       AND status IN ('pending','processing','retry','conflict')
@@ -321,9 +323,19 @@ async def replace_source_cache(
                         "base_value": str(change[4] or ""),
                         "local_value": str(change[5] or ""),
                         "status": str(change[6]),
+                        "row_key": str(change[7]),
                     })
                 for row in existing:
-                    row["has_local_changes"] = bool(changes_by_source.get(row["id"]))
+                    changes = changes_by_source.get(row["id"], [])
+                    row["has_local_changes"] = bool(changes)
+                    pending_row_keys = {
+                        change["row_key"] for change in changes if change["row_key"]
+                    }
+                    if changes:
+                        row["expected_row_key"] = (
+                            next(iter(pending_row_keys))
+                            if len(pending_row_keys) == 1 else None
+                        )
 
             matched, incoming_only, existing_only = match_source_cache_rows(
                 existing, prepared
@@ -363,6 +375,19 @@ async def replace_source_cache(
                 )
                 for change in changes_by_source.get(old["id"], []):
                     affected_audits.add(change["audit_id"])
+                    await cur.execute(
+                        """
+                        UPDATE _online_local_changes
+                        SET parser_type=%s, spreadsheet_id=%s, sheet_id=%s,
+                            physical_row=%s, row_key=%s
+                        WHERE id=%s
+                        """,
+                        (
+                            incoming["parser_type"], incoming["spreadsheet_id"],
+                            incoming["sheet_id"], incoming["physical_row"],
+                            incoming["row_key"], change["id"],
+                        ),
+                    )
                     remote = str(incoming["values"].get(change["field_name"], "") or "")
                     if remote == change["local_value"]:
                         await cur.execute(

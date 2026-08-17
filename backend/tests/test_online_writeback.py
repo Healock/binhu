@@ -35,10 +35,13 @@ from services.online_source import (
     source_row_hash,
 )
 from services.online_local_writeback import (
+    SourceRowRelocatedError,
     _retry_error_details,
     local_sync_state,
     overlay_local_values,
     split_remote_changes,
+    validate_conflict_source_identity,
+    validate_remote_source_identity,
     writeback_cell_metadata,
 )
 from services.parsers import get_parser
@@ -320,6 +323,10 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             _retry_error_details(TxDocsAPIError("额度已用完", code="400011")),
             ("txdocs_api_failed", "腾讯接口暂未完成写回"),
         )
+        self.assertEqual(
+            _retry_error_details(SourceRowRelocatedError("moved")),
+            ("source_relocated", "腾讯来源行位置已变化，等待同步重新定位"),
+        )
 
     def test_cache_refresh_tracks_a_business_row_when_its_physical_row_moves(self):
         existing = [
@@ -356,6 +363,77 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matched, [])
         self.assertEqual(inserted, incoming)
         self.assertEqual(removed, existing)
+
+    def test_pending_business_key_repairs_a_source_id_corrupted_by_stale_row_read(self):
+        existing = [
+            {
+                "id": 7,
+                "sheet_id": "sheet",
+                "physical_row": 212,
+                "row_key": "other-person",
+                "expected_row_key": "person-a",
+                "has_local_changes": True,
+            },
+            {
+                "id": 8,
+                "sheet_id": "sheet",
+                "physical_row": 193,
+                "row_key": "person-a",
+                "has_local_changes": False,
+            },
+        ]
+        incoming = [
+            {"sheet_id": "sheet", "physical_row": 193, "row_key": "person-a"},
+            {"sheet_id": "sheet", "physical_row": 212, "row_key": "other-person"},
+        ]
+
+        matched, inserted, removed = match_source_cache_rows(existing, incoming)
+
+        self.assertEqual(
+            [
+                (old["id"], new["row_key"], new["physical_row"])
+                for old, new in matched
+            ],
+            [(7, "person-a", 193)],
+        )
+        self.assertEqual(inserted, [incoming[1]])
+        self.assertEqual(removed, [existing[1]])
+
+    def test_row_identity_change_blocks_all_field_level_merges(self):
+        parser = get_parser("全链条")
+        expected = {column: "" for column in parser.COLUMNS}
+        expected.update({
+            "下发日期": "08-17",
+            "社区": "冬梅",
+            "身份证号": "410000000000000001",
+            "电话号码": "18800000001",
+        })
+        unrelated = {**expected, "身份证号": "410000000000000002"}
+        changes = [
+            {
+                "row_key": parser.make_row_key(expected),
+                "field_name": "现住址",
+                "base_value": "",
+                "local_value": "平台地址",
+            },
+            {
+                "row_key": parser.make_row_key(expected),
+                "field_name": "核查结果",
+                "base_value": "",
+                "local_value": "移交",
+            },
+        ]
+
+        with self.assertRaises(SourceRowRelocatedError):
+            validate_remote_source_identity(parser, changes, unrelated)
+
+        validate_remote_source_identity(parser, changes, expected)
+
+    def test_platform_conflict_resolution_rejects_a_stale_source_id(self):
+        with self.assertRaisesRegex(ValueError, "等待同步重新定位"):
+            validate_conflict_source_identity("other-person", ["person-a"])
+
+        validate_conflict_source_identity("person-a", ["person-a"])
 
     def test_remote_same_field_change_conflicts_but_other_fields_can_merge(self):
         changes = [{
