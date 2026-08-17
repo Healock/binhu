@@ -46,14 +46,27 @@
 
 .task-flow-lab__toolbar {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
 }
 
+.task-flow-lab__filters {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-flow-lab__filters .ant-input-affix-wrapper {
+  min-width: 220px;
+  flex: 1 1 320px;
+}
+
 .task-flow-lab__inspector {
-  width: 100%;
+  width: min(320px, 35vw);
+  flex: 0 1 320px;
 }
 
 .task-flow-lab__summary {
@@ -107,55 +120,11 @@
   padding: 0;
 }
 
-.task-flow-lab__lane-legend {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-border);
-}
-
-.task-flow-lab__lane {
-  display: grid;
-  gap: 3px;
-  padding: 12px 16px;
-  background: var(--app-surface-muted);
-}
-
-.task-flow-lab__lane strong {
-  color: var(--app-text-strong);
-  font-size: 13px;
-}
-
-.task-flow-lab__lane span {
-  overflow: hidden;
-  color: var(--app-text-secondary);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-flow-lab__lane.is-ready {
-  box-shadow: inset 0 3px 0 #2563eb;
-}
-
-.task-flow-lab__lane.is-waiting {
-  box-shadow: inset 0 3px 0 #d97706;
-}
-
-.task-flow-lab__lane.is-exception {
-  box-shadow: inset 0 3px 0 #dc2626;
-}
-
 .task-flow-lab__canvas {
   position: relative;
   height: min(720px, calc(100vh - 260px));
   min-height: 520px;
-  background:
-    linear-gradient(90deg,
-      color-mix(in srgb, #2563eb 3%, transparent) 0 33.333%,
-      color-mix(in srgb, #d97706 3%, transparent) 33.333% 66.666%,
-      color-mix(in srgb, #dc2626 3%, transparent) 66.666% 100%);
+  background: var(--app-surface-muted);
 }
 
 .task-flow-lab__loading {
@@ -230,6 +199,15 @@
   line-height: 1.5;
 }
 
+.task-flow-node__count {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--app-primary-text);
+  background: var(--app-primary-soft);
+  font-weight: 650;
+}
+
 .task-flow-node__address {
   display: -webkit-box;
   overflow: hidden;
@@ -273,6 +251,76 @@
   height: 11px !important;
   border: 2px solid var(--app-surface) !important;
   background: var(--app-primary) !important;
+}
+
+.task-flow-lab .react-flow__node-lane {
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--app-surface) 86%, transparent);
+  box-shadow: 0 10px 34px rgb(15 23 42 / 0.07);
+}
+
+.task-flow-group {
+  width: 100%;
+  height: 100%;
+  border-top: 4px solid var(--app-primary);
+  border-radius: 17px;
+  background: color-mix(in srgb, #2563eb 2.5%, transparent);
+  pointer-events: none;
+}
+
+.task-flow-group--waiting {
+  border-top-color: #d97706;
+  background: color-mix(in srgb, #d97706 2.5%, transparent);
+}
+
+.task-flow-group--exception {
+  border-top-color: #dc2626;
+  background: color-mix(in srgb, #dc2626 2.5%, transparent);
+}
+
+.task-flow-group__header {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--app-border);
+  background: color-mix(in srgb, var(--app-surface) 92%, transparent);
+}
+
+.task-flow-group__header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.task-flow-group__header strong {
+  color: var(--app-text-strong);
+  font-size: 14px;
+}
+
+.task-flow-group__header span {
+  overflow: hidden;
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-flow-group__header b {
+  display: inline-flex;
+  min-width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  color: var(--app-text-strong);
+  background: var(--app-surface);
+  font-size: 13px;
 }
 
 .task-flow-lab .react-flow__controls,
@@ -336,12 +384,20 @@
   }
 
   .task-flow-lab__toolbar {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .task-flow-lab__summary {
-    grid-column: 1 / -1;
     justify-content: flex-start;
+  }
+
+  .task-flow-lab__filters {
+    flex-wrap: wrap;
+  }
+
+  .task-flow-lab__inspector {
+    width: min(320px, 100%);
+    flex: 1 1 260px;
   }
 }
 
@@ -353,6 +409,17 @@
 
   .task-flow-lab__toolbar {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-flow-lab__filters {
+    display: grid;
+  }
+
+  .task-flow-lab__filters .ant-segmented,
+  .task-flow-lab__filters .ant-input-affix-wrapper,
+  .task-flow-lab__inspector {
+    width: 100%;
+    min-width: 0;
   }
 
   .task-flow-lab__summary {

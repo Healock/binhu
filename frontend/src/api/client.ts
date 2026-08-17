@@ -18,6 +18,7 @@ const webClientVersion = typeof __APP_VERSION__ === 'string'
   ? __APP_VERSION__
   : '0.0.0'
 const activeRequest = { headers: { 'X-User-Activity': '1' } }
+const passiveRequest = { headers: { 'X-User-Activity': '0' } }
 let unauthorizedRedirectStarted = false
 
 export interface MaintenanceStatus {
@@ -1387,7 +1388,7 @@ export async function listMobileTasks(
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(params.parser_type)}/search`,
     mobileTaskSearchPayload(params),
-    options.passive ? undefined : activeRequest,
+    options.passive ? passiveRequest : activeRequest,
   )
   return data
 }
@@ -2434,12 +2435,17 @@ export async function deletePoliceDispatchBatch(id: number): Promise<{
   return data
 }
 
-export async function getPoliceDispatchWorkbench(): Promise<{
+export async function getPoliceDispatchWorkbench(
+  options: { passive?: boolean } = {},
+): Promise<{
   active_batch: PoliceDispatchBatch | null
   batches: PoliceDispatchBatch[]
   communities: PoliceCommunityOption[]
 }> {
-  const { data } = await api.get('/police-dispatch/workbench/home', activeRequest)
+  const { data } = await api.get(
+    '/police-dispatch/workbench/home',
+    options.passive ? passiveRequest : activeRequest,
+  )
   return data
 }
 
@@ -3362,8 +3368,12 @@ export const workflowApi = {
     source_label?: string
     page?: number
     page_size?: number
-  } = {}) {
-    return (await api.post('/workflow/photo-requests/pending/search', payload, activeRequest)).data as {
+  } = {}, options: { passive?: boolean } = {}) {
+    return (await api.post(
+      '/workflow/photo-requests/pending/search',
+      payload,
+      options.passive ? passiveRequest : activeRequest,
+    )).data as {
       data: PendingPhotoRequest[]; total: number; page: number; page_size: number
     }
   },

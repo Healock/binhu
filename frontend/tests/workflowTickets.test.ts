@@ -19,7 +19,7 @@ test('基础管控照片工作台支持只读表格、批量领取和 XLSX 导�
   assert.match(pageSource, /导出 XLSX/)
   assert.match(pageSource, /getCheckboxProps: row => \(\{ disabled: row\.status !== 'queued' \}\)/)
   assert.doesNotMatch(pageSource, /QuerySpreadsheet/)
-  assert.match(apiSource, /api\.post\('\/workflow\/photo-requests\/pending\/search', payload, activeRequest\)/)
+  assert.match(apiSource, /api\.post\([\s\S]*'\/workflow\/photo-requests\/pending\/search'[\s\S]*options\.passive \? passiveRequest : activeRequest/)
   assert.match(apiSource, /\/workflow\/photo-requests\/batch-claim/)
   assert.match(apiSource, /api\.post\('\/workflow\/photo-requests\/pending\/export', payload/)
   assert.doesNotMatch(apiSource, /api\.get\('\/workflow\/photo-requests/)
