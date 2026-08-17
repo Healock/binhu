@@ -3497,6 +3497,130 @@ button.role-dashboard-metric:hover {
   background: var(--app-surface-muted);
 }
 
+.police-dispatch-status-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 8px;
+}
+
+.police-dispatch-status-filter-group {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.police-dispatch-status-metric {
+  display: grid;
+  width: 100%;
+  min-height: 64px;
+  place-content: center;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  color: var(--app-text);
+  background: var(--app-surface-muted);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.police-dispatch-status-metric:hover {
+  border-color: var(--app-primary-border);
+  box-shadow: 0 4px 12px rgb(15 23 42 / 0.06);
+}
+
+.police-dispatch-status-metric:focus-visible,
+.police-dispatch-status-chip:focus-visible {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+}
+
+.police-dispatch-status-metric.is-active {
+  border-color: var(--app-primary);
+  color: var(--app-primary-text);
+  background: color-mix(in srgb, var(--app-primary-soft) 74%, var(--app-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-primary) 28%, transparent);
+}
+
+.police-dispatch-status-metric__count {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.police-dispatch-status-metric__label {
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.police-dispatch-status-metric.is-active .police-dispatch-status-metric__label {
+  color: var(--app-primary-text);
+}
+
+.police-dispatch-status-children {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.police-dispatch-status-children--review {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.police-dispatch-status-children--publish {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.police-dispatch-status-chip {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 30px !important;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  color: var(--app-text-secondary);
+  background: var(--app-surface);
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.police-dispatch-status-chip strong {
+  min-width: 14px;
+  color: var(--app-text-strong);
+  font-size: 11px;
+  text-align: center;
+}
+
+.police-dispatch-status-chip:hover,
+.police-dispatch-status-chip.is-active {
+  border-color: var(--app-primary-border);
+  color: var(--app-primary-text);
+  background: var(--app-primary-soft);
+}
+
+.police-dispatch-status-chip.is-active {
+  border-color: var(--app-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-primary) 22%, transparent);
+}
+
+.police-dispatch-status-chip.is-active strong {
+  color: var(--app-primary-text);
+}
+
+.police-dispatch-status-hint {
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .police-dispatch-publish-run {
   display: grid;
   gap: 8px;
@@ -4136,6 +4260,14 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
 }
 
 @media (max-width: 767px) {
+  .police-dispatch-status-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .police-dispatch-status-children--publish {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .settings-field-grid {
     grid-template-columns: minmax(0, 1fr);
   }
