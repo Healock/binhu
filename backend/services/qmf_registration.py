@@ -22,6 +22,10 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from config import settings  # kept as a compatibility patch target for tests
+from services.qmf_community import (
+    normalize_qmf_community_code,
+    valid_qmf_community_code,
+)
 from services.qmf_config import QmfRuntimeConfig, settings_config
 
 
@@ -970,11 +974,13 @@ def build_fnmx_check_payload(
 ) -> dict[str, str]:
     result = normalize_qmf_result(context.platform_task.get("result"))
     if result == RESULT_LEAVE_NOT_RETURNING:
-        community_code = _text(context.platform_task.get("qmf_community_code"))
+        community_code = normalize_qmf_community_code(
+            context.platform_task.get("qmf_community_code")
+        )
         destination_code = _text(context.platform_task.get("destination_code"))
         destination_address = _text(context.platform_task.get("destination_address"))
         if (
-            not re.fullmatch(r"\d{10}", community_code)
+            not valid_qmf_community_code(community_code)
             or not re.fullmatch(r"\d{6}", destination_code)
             or not destination_address
         ):

@@ -10,6 +10,49 @@ from typing import Any
 from services.police_dispatch import normalize_community_label, normalize_lookup
 
 
+QMF_COMMUNITY_CODE_PATTERN = re.compile(r"[0-9A-Z]{10}")
+# Source confirmed on 2026-08-17: 苏州居住证平台12个社区代码.csv.
+DEFAULT_QMF_COMMUNITY_CODES = {
+    "三船港": "320584037C",
+    "冬梅": "3205840377",
+    "江城": "320584037G",
+    "长板": "3205840378",
+    "湖滨华城": "3205840376",
+    "祥泰": "320584021E",
+    "南厍": "3205840371",
+    "水秀": "3205840379",
+    "顾家荡": "320584037D",
+    "联团": "320584037F",
+    "龙河": "320584037A",
+    "阅湖": "320584037E",
+}
+
+
+def normalize_qmf_community_code(value: Any) -> str:
+    """Normalize the verified QMF option code without changing its namespace."""
+    return str(value or "").strip().upper()
+
+
+def valid_qmf_community_code(value: Any) -> bool:
+    return bool(QMF_COMMUNITY_CODE_PATTERN.fullmatch(
+        normalize_qmf_community_code(value)
+    ))
+
+
+async def seed_default_qmf_community_codes(cur) -> None:
+    """Fill verified defaults only where an administrator has not set a code."""
+    for community_name, community_code in DEFAULT_QMF_COMMUNITY_CODES.items():
+        await cur.execute(
+            """
+            UPDATE _communities
+            SET qmf_community_code=%s
+            WHERE name=%s
+              AND (qmf_community_code IS NULL OR qmf_community_code='')
+            """,
+            (community_code, community_name),
+        )
+
+
 @dataclass(frozen=True)
 class QmfCommunity:
     id: int
@@ -115,7 +158,7 @@ async def resolve_qmf_community(
         raise ValueError("community_not_found")
 
     item = communities[next(iter(resolved_ids))]
-    code = str(item["qmf_community_code"] or "")
-    if not re.fullmatch(r"\d{10}", code):
+    code = normalize_qmf_community_code(item["qmf_community_code"])
+    if not valid_qmf_community_code(code):
         raise ValueError("community_code_missing")
     return QmfCommunity(id=item["id"], name=item["name"], qmf_community_code=code)

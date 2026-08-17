@@ -25,6 +25,10 @@ from services.personnel_positions import (
     normalize_position,
 )
 from services.privacy import mask_identity_number
+from services.qmf_community import (
+    normalize_qmf_community_code,
+    valid_qmf_community_code,
+)
 from services.member_departments import (
     get_member_departments,
     replace_member_departments,
@@ -189,9 +193,9 @@ class CommunityAliasesUpdate(BaseModel):
     def validate_qmf_community_code(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        normalized = value.strip()
-        if normalized and not re.fullmatch(r"\d{10}", normalized):
-            raise ValueError("全民防社区代码必须为 10 位数字")
+        normalized = normalize_qmf_community_code(value)
+        if normalized and not valid_qmf_community_code(normalized):
+            raise ValueError("全民防社区代码必须为 10 位大写字母或数字")
         return normalized
     @field_validator("aliases")
     @classmethod

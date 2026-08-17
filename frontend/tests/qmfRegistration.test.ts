@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   canExecutePreparedQmfRun,
+  normalizeQmfCommunityCodeInput,
   qmfLegacyStatusAllowsRegistration,
   qmfRunCanReprepare,
   qmfRunIsPolling,
@@ -32,6 +33,12 @@ function run(status: QmfRegistrationRun['status']): QmfRegistrationRun {
     can_retry_marker: false,
   }
 }
+
+test('全民防社区代码保留十位大写字母和数字', () => {
+  assert.equal(normalizeQmfCommunityCodeInput(' 320584037c '), '320584037C')
+  assert.equal(normalizeQmfCommunityCodeInput('320584037-'), '320584037')
+  assert.equal(normalizeQmfCommunityCodeInput('320584037C99'), '320584037C')
+})
 
 test('真实登记必须同时具备新鲜预演和准备状态', () => {
   assert.equal(canExecutePreparedQmfRun(run('prepared'), true), true)

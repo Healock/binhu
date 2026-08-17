@@ -1,7 +1,11 @@
 import json
 import unittest
 
-from services.qmf_community import resolve_qmf_community
+from services.qmf_community import (
+    DEFAULT_QMF_COMMUNITY_CODES,
+    resolve_qmf_community,
+    seed_default_qmf_community_codes,
+)
 
 
 class FakeCursor:
@@ -27,16 +31,49 @@ class FakeCursor:
 
 
 class QmfCommunityTests(unittest.IsolatedAsyncioTestCase):
+    def test_default_community_codes_match_verified_twelve_row_source(self):
+        self.assertEqual(len(DEFAULT_QMF_COMMUNITY_CODES), 12)
+        self.assertEqual(DEFAULT_QMF_COMMUNITY_CODES["三船港"], "320584037C")
+        self.assertEqual(DEFAULT_QMF_COMMUNITY_CODES["祥泰"], "320584021E")
+        self.assertEqual(DEFAULT_QMF_COMMUNITY_CODES["龙河"], "320584037A")
+        self.assertTrue(all(
+            len(code) == 10 and code.isalnum() and code == code.upper()
+            for code in DEFAULT_QMF_COMMUNITY_CODES.values()
+        ))
+
+    async def test_default_code_seed_only_targets_blank_values(self):
+        class SeedCursor:
+            def __init__(self):
+                self.calls = []
+
+            async def execute(self, sql, params):
+                self.calls.append((" ".join(sql.split()), params))
+
+        cursor = SeedCursor()
+        await seed_default_qmf_community_codes(cursor)
+        self.assertEqual(len(cursor.calls), 12)
+        for sql, (code, name) in cursor.calls:
+            self.assertIn("qmf_community_code IS NULL", sql)
+            self.assertIn("qmf_community_code=''", sql)
+            self.assertEqual(DEFAULT_QMF_COMMUNITY_CODES[name], code)
+
     async def test_source_community_alias_resolves_configured_code(self):
         cursor = FakeCursor(
-            communities=[(1, "冬梅社区", "3205840001")],
+            communities=[(1, "冬梅社区", "320584037C")],
             aliases=[(1, "冬梅")],
         )
         resolved = await resolve_qmf_community(
             cursor, source_community="冬梅", address="虚构地址"
         )
         self.assertEqual(resolved.name, "冬梅社区")
-        self.assertEqual(resolved.qmf_community_code, "3205840001")
+        self.assertEqual(resolved.qmf_community_code, "320584037C")
+
+    async def test_lowercase_qmf_code_is_normalized_to_uppercase(self):
+        cursor = FakeCursor(communities=[(1, "冬梅社区", "320584037c")])
+        resolved = await resolve_qmf_community(
+            cursor, source_community="冬梅社区", address=""
+        )
+        self.assertEqual(resolved.qmf_community_code, "320584037C")
 
     async def test_address_entry_resolves_when_source_community_is_empty(self):
         cursor = FakeCursor(
