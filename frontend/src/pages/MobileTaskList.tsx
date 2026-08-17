@@ -168,7 +168,15 @@ function readQmfFeedbackStates(searchParams: URLSearchParams): QmfFeedbackState[
     .filter((value): value is QmfFeedbackState => valid.has(value as QmfFeedbackState))
 }
 
-export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
+export default function MobileTaskList({
+  mode = 'tasks',
+  onAnalysisCountChange,
+  manageUrl = true,
+}: {
+  mode?: 'tasks' | 'analysis'
+  onAnalysisCountChange?: (count: number) => void
+  manageUrl?: boolean
+}) {
   const navigate = useNavigate()
   const navigationType = useNavigationType()
   const { recordActivity, user } = useAuth()
@@ -539,6 +547,10 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   useEffect(() => { void loadOptions() }, [loadOptions])
 
   useEffect(() => {
+    if (analysisOnly) onAnalysisCountChange?.(facets.total)
+  }, [analysisOnly, facets.total, onAnalysisCountChange])
+
+  useEffect(() => {
     if (bulkInspector && !bulkInspectorOptions.includes(bulkInspector)) {
       setBulkInspector(undefined)
     }
@@ -759,6 +771,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   }, [load])
 
   useEffect(() => {
+    if (!manageUrl) return
     const next = new URLSearchParams()
     next.set('type', parserType)
     next.set('scope', analysisOnly ? 'all' : scope)
@@ -772,7 +785,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, communities, inspectors, isModelThree, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, sort, status, watchCategories])
+  }, [analysisOnly, communities, inspectors, isModelThree, manageUrl, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -869,17 +882,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
             onChange={value => updateQuery(value, scope)}
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
           />
-          {analysisOnly ? (
-            <Segmented
-              className="mobile-task-scope-switch"
-              value={reviewStage}
-              options={[
-                { label: '待研判', value: 'waiting_analysis' },
-                { label: '已研判', value: 'analyzed' },
-              ]}
-              onChange={value => setReviewStage(value as MobileTaskReviewStage)}
-            />
-          ) : adminMode ? (
+          {analysisOnly || adminMode ? (
             <Tag color="blue" className="mobile-task-scope-tag">全所</Tag>
           ) : (
             <Segmented
@@ -937,27 +940,42 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           </div>
         </div>}
         extra={<>
-          {!analysisOnly && <div className="mobile-task-priority-grid" aria-label="任务快捷筛选">
-          {PRIORITY_CARDS.map(card => {
-            const count = card.key === 'all'
-              ? facets.total
-              : facets.priority_counts[card.key]
-            const active = card.key === 'all'
-              ? priority === 'all' && status === 'all'
-              : priority === card.key
-            return (
-              <button
-                key={card.key}
-                type="button"
-                className={`mobile-task-priority-card${active ? ' is-active' : ''}`}
-                onClick={() => selectPriorityCard(card.key)}
-              >
-                <span>{card.label}</span>
-                <strong>{count}</strong>
-              </button>
-            )
-          })}
-          </div>}
+          <div className={`mobile-task-priority-grid${analysisOnly ? ' mobile-task-analysis-stage-grid' : ''}`} aria-label={analysisOnly ? '研判阶段筛选' : '任务快捷筛选'}>
+            {(analysisOnly
+              ? [
+                { key: 'waiting_analysis', label: '待研判', count: facets.priority_counts.waiting_analysis },
+                { key: 'analyzed', label: '已研判', count: facets.priority_counts.analyzed },
+                { key: 'all', label: '全部', count: facets.total },
+              ]
+              : PRIORITY_CARDS.map(card => ({
+                key: card.key,
+                label: card.label,
+                count: card.key === 'all' ? facets.total : facets.priority_counts[card.key],
+              }))
+            ).map(card => {
+              const active = analysisOnly
+                ? (card.key === 'all' ? reviewStage === 'all' : reviewStage === card.key)
+                : (card.key === 'all' ? priority === 'all' && status === 'all' : priority === card.key)
+              return (
+                <button
+                  key={card.key}
+                  type="button"
+                  className={`mobile-task-priority-card${active ? ' is-active' : ''}`}
+                  onClick={() => {
+                    if (analysisOnly) {
+                      setReviewStage(card.key === 'all' ? 'all' : card.key as MobileTaskReviewStage)
+                      setPage(1)
+                    } else {
+                      selectPriorityCard(card.key as MobileTaskPriority)
+                    }
+                  }}
+                >
+                  <span>{card.label}</span>
+                  <strong>{card.count}</strong>
+                </button>
+              )
+            })}
+          </div>
 
         <div className="mobile-task-more-toggle">
           <Button type="link" onClick={() => setMoreOpen(value => !value)}>

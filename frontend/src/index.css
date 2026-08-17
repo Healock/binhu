@@ -931,6 +931,20 @@
   margin-top: 14px;
 }
 
+.analysis-workbench-switch__grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0;
+}
+
+.police-dispatch-analysis-counts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 0;
+}
+
+.mobile-task-analysis-stage-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .mobile-task-priority-card {
   display: flex;
   min-width: 0;
@@ -4879,6 +4893,14 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   }
 
   .mobile-task-priority-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mobile-task-analysis-stage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .police-dispatch-analysis-counts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
