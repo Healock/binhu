@@ -675,7 +675,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="police-dispatch-workbench__eyebrow text-xs font-medium">内勤业务 · 共享队列</div>
-            <h1 className="mt-1 text-xl font-semibold">{analysisOnly ? '下发数据复核' : '下发任务处理'}</h1>
+            <h1 className="mt-1 text-xl font-semibold">{analysisOnly ? '未下发数据研判' : '下发任务处理'}</h1>
           </div>
           <Button className="police-dispatch-workbench__refresh" ghost icon={<ReloadOutlined />} onClick={() => Promise.all([loadHome(), loadTasks(page)])}>刷新</Button>
         </div>
@@ -756,7 +756,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
           <Alert
             type="info"
             showIcon
-            message="这里处理下发文件中无法直接确定去向的数据；复核结果仍保存在原下发批次。"
+            message="这里处理尚未下发、无法直接确定去向的数据；研判结果仍保存在原下发批次。"
           />
         )}
         <ListToolbar
