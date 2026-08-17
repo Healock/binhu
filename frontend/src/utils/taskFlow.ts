@@ -55,5 +55,5 @@ export function taskFlowLaneHeight(
     lowest[node.lane] = Math.max(lowest[node.lane], Number(node.position.y || 0))
   })
   const byPosition = Math.max(...Object.values(lowest)) + 190
-  return Math.max(560, byPosition)
+  return Math.max(320, byPosition)
 }
