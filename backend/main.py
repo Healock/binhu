@@ -58,6 +58,7 @@ from services.registry_certificate_jobs import (
     recover_interrupted_certificate_source_runs,
     stop_certificate_source_tasks,
 )
+from services.registry_certificate_scheduler import run_registry_certificate_scheduler
 from services.police_dispatch_publish_jobs import (
     recover_interrupted_police_publish_runs,
     stop_police_publish_tasks,
@@ -100,6 +101,7 @@ async def lifespan(app: FastAPI):
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
     photo_sheet_scheduler_task = asyncio.create_task(run_photo_sheet_scheduler())
     online_writeback_task = asyncio.create_task(run_online_writeback_scheduler())
+    certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())
     try:
         yield
     finally:
@@ -108,6 +110,7 @@ async def lifespan(app: FastAPI):
         workflow_scheduler_task.cancel()
         photo_sheet_scheduler_task.cancel()
         online_writeback_task.cancel()
+        certificate_scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
@@ -118,6 +121,8 @@ async def lifespan(app: FastAPI):
             await photo_sheet_scheduler_task
         with suppress(asyncio.CancelledError):
             await online_writeback_task
+        with suppress(asyncio.CancelledError):
+            await certificate_scheduler_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()

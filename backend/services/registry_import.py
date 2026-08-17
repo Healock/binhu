@@ -49,7 +49,8 @@ CERTIFICATE_FIELD_LABELS = {
 }
 
 ISSUE_COMPARE_IGNORED_FIELDS = {
-    "source_row", "_source_row", "source_key", "source_sheet",
+    "source_row", "_source_row", "source_key", "source_ref",
+    "source_content_hash", "source_sheet",
     "address", "dz", "详细地址", "community", "sssq", "社区名称", "pcsname",
 }
 
@@ -205,7 +206,11 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
             issues.append({
                 "issue_type": ISSUE_CERTIFICATE_DUPLICATE,
                 "entity_key": key,
-                "source_ref": str(materialized[index].get("source_row") or ""),
+                "source_ref": str(
+                    materialized[index].get("source_ref")
+                    or materialized[index].get("source_row")
+                    or ""
+                ),
                 "payload": materialized[index],
                 "reason": "同一标准化地址存在多条告知书记录，需人工确认",
             })
@@ -213,7 +218,11 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 issues.append({
                     "issue_type": ISSUE_CERTIFICATE_CONTENT_CONFLICT,
                     "entity_key": key,
-                    "source_ref": str(materialized[index].get("source_row") or ""),
+                    "source_ref": str(
+                        materialized[index].get("source_ref")
+                        or materialized[index].get("source_row")
+                        or ""
+                    ),
                     "payload": materialized[index],
                     "reason": "同一标准化地址的告知书内容不一致，需人工判断",
                 })

@@ -2724,6 +2724,14 @@ export interface RegistryProperty {
   status: string
   version: number
   updated_at: string | null
+  certificate_status: RegistryCertificateStatus
+  certificate_status_label: string
+  certificate_count: number
+  certificate_updated_at: string | null
+  landlord_renter_relation: 'same' | 'different' | 'unknown'
+  landlord_renter_relation_label: string
+  actual_renter_status: 'confirmed' | 'unknown'
+  responsibility_identity: string
 }
 
 export interface RegistryPerson {
@@ -2765,6 +2773,9 @@ export interface RegistryImportIssue {
 }
 
 export type RegistryHousingCategory = '' | 'rental' | 'self_owned' | 'other' | 'unmarked'
+export type RegistryCertificateStatus = '' | 'normal_signed' | 'not_uploaded'
+  | 'renter_needs_correction' | 'actual_renter_missing' | 'multiple_or_conflict'
+  | 'not_applicable'
 
 export interface RegistryCertificateSourceRun {
   id: number
@@ -2792,6 +2803,8 @@ export interface RegistryCertificateSourceRun {
   finished_at: string | null
   created_at: string | null
   updated_at: string | null
+  trigger_source: 'manual' | 'scheduled'
+  business_date: string | null
   reused?: boolean
 }
 
@@ -2821,6 +2834,7 @@ export const registryApi = {
     keyword?: string
     community_id?: number
     housing_category?: RegistryHousingCategory
+    certificate_status?: RegistryCertificateStatus
     status?: '' | 'active' | 'inactive'
     page?: number
     page_size?: number

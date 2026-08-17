@@ -22,6 +22,47 @@ CERTIFICATE_ENDPOINT = "/api/address/queryHouseCertificate"
 CERTIFICATE_PAGE_SIZE = 200
 
 
+def _stable_text(value: Any) -> str:
+    return " ".join(str(value or "").replace("\u3000", " ").split())
+
+
+def certificate_source_ref(row: dict[str, Any]) -> str:
+    """Return a stable, non-sensitive identity for one upstream notice."""
+    identity_fields = (
+        ("id", row.get("id")),
+        ("document", row.get("documentid") or row.get("documentId")),
+        ("notice", row.get("dztzm")),
+    )
+    for prefix, value in identity_fields:
+        normalized = _stable_text(value)
+        if normalized:
+            digest = sha256(normalized.encode("utf-8")).hexdigest()
+            return f"certificate:{prefix}:{digest}"
+    fallback = {
+        "community": _stable_text(row.get("community") or row.get("sssq")),
+        "address": _stable_text(row.get("address") or row.get("dz")),
+        "landlord": _stable_text(row.get("czrxm") or row.get("landlord_name")),
+        "landlord_id": _stable_text(row.get("czrzjhm") or row.get("landlord_identity_number")),
+        "renter": _stable_text(row.get("sjczrxm") or row.get("actual_renter_name")),
+        "renter_id": _stable_text(row.get("sjczrzjhm") or row.get("actual_renter_identity_number")),
+    }
+    digest = sha256(
+        json.dumps(fallback, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"certificate:fallback:{digest}"
+
+
+def certificate_content_hash(row: dict[str, Any]) -> str:
+    comparable = {
+        str(key): value
+        for key, value in row.items()
+        if str(key) not in {"source_row", "source_ref", "source_content_hash"}
+    }
+    return sha256(
+        json.dumps(comparable, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
 def certificate_page_fingerprint(rows: list[dict[str, Any]]) -> str:
     return sha256(
         json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
@@ -47,6 +88,8 @@ def normalize_certificate_page(
         row["pcsname"] = settings.VISIT_SOURCE_POLICE_NAME
         row["address"] = address
         row["community"] = community
+        row["source_ref"] = certificate_source_ref(row)
+        row["source_content_hash"] = certificate_content_hash(row)
         rows.append(row)
     return rows, rejected
 
