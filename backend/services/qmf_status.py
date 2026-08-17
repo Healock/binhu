@@ -105,23 +105,47 @@ def _business_payload(response: httpx.Response) -> Any:
 
 
 def normalize_legacy_result(code: Any, text: Any) -> tuple[str, str]:
-    """Return ``(state, canonical_result)`` without echoing unknown text."""
+    """Return ``(state, canonical_result)`` without echoing unknown text.
+
+    The management endpoint exposes both a numeric result and its display
+    text.  Parse them independently so ``近期返吴(不注销)`` is never mistaken
+    for a logout merely because it contains the word ``注销``.  If both fields
+    are recognized but disagree, stop safely instead of choosing one.
+    """
     code_text = _text(code)
     result_text = _text(text).replace(" ", "")
-    if code_text in {"", "0"} and (
-        not result_text or "未核查" in result_text or "待核查" in result_text
-    ):
-        return STATUS_PENDING, ""
-    if code_text == "1" or any(
-        token in result_text for token in ("离开不返吴", "离吴", "注销")
-    ):
-        return "completed", RESULT_LEAVE_NOT_RETURNING
-    if code_text == "2" or result_text == RESULT_IN_WU:
-        return "completed", RESULT_IN_WU
-    if code_text == "3" or any(
+
+    code_result = {
+        "0": (STATUS_PENDING, ""),
+        "1": ("completed", RESULT_LEAVE_NOT_RETURNING),
+        "2": ("completed", RESULT_IN_WU),
+        "3": ("completed", RESULT_RECENT_RETURN),
+    }.get(code_text)
+    text_result: tuple[str, str] | None = None
+    if "未核查" in result_text or "待核查" in result_text:
+        text_result = (STATUS_PENDING, "")
+    elif any(
         token in result_text for token in (RESULT_RECENT_RETURN, "近期反吴")
     ):
-        return "completed", RESULT_RECENT_RETURN
+        text_result = ("completed", RESULT_RECENT_RETURN)
+    elif (
+        result_text == RESULT_IN_WU
+        or result_text.startswith(f"{RESULT_IN_WU}(")
+        or result_text.startswith(f"{RESULT_IN_WU}（")
+    ):
+        text_result = ("completed", RESULT_IN_WU)
+    elif (
+        any(token in result_text for token in ("离开不返吴", "离吴"))
+        or ("注销" in result_text and "不注销" not in result_text)
+    ):
+        text_result = ("completed", RESULT_LEAVE_NOT_RETURNING)
+
+    if code_result and text_result and code_result != text_result:
+        return STATUS_UNKNOWN_RESULT, ""
+    if text_result:
+        return text_result
+    if code_result:
+        return code_result
     return STATUS_UNKNOWN_RESULT, ""
 
 
