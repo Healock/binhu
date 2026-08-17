@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     QMF_EXPECTED_STATION_CODE: str = "320584710000"
     QMF_EXPECTED_STATION_NAME: str = "滨湖新城派出所"
     QMF_TIMEOUT_SECONDS: int = 15
+    QMF_STATUS_SCAN_ENABLED: bool = False
+    QMF_STATUS_SCAN_TIME: str = ""
     # The observed APK sends a TCP heartbeat roughly every 60 seconds.  The
     # read-only preview does not guess that private heartbeat frame, so one
     # session must finish before this conservative deadline.

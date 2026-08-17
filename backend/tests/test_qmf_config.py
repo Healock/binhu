@@ -61,6 +61,8 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
             ("qmf_source_machine_uid", encrypt_secret("machine-value")),
             ("qmf_expected_station_code", "320584710000"),
             ("qmf_expected_station_name", "滨湖新城派出所"),
+            ("qmf_status_scan_enabled", "1"),
+            ("qmf_status_scan_time", "07:00"),
         ]
         config = await load_qmf_config(_Conn(rows))
         self.assertTrue(config.configured)
@@ -69,6 +71,8 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.source_password, "source-password")
         self.assertEqual(config.source_imei, "imei-value")
         self.assertEqual(config.source_machine_uid, "machine-value")
+        self.assertTrue(config.status_scan_enabled)
+        self.assertEqual(config.status_scan_time, "07:00")
 
         public = public_config(config, {row[0] for row in rows})
         self.assertTrue(public["source_password_configured"])

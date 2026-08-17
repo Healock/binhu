@@ -355,6 +355,78 @@ CREATE TABLE IF NOT EXISTS _online_source_projection (
     INDEX idx_source_projection_tasks (parser_type, community, inspector, task_state)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _qmf_status_scan_runs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trigger_source VARCHAR(20) NOT NULL,
+    scan_mode VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'queued',
+    concurrency INT NOT NULL DEFAULT 4,
+    total_count INT NOT NULL DEFAULT 0,
+    processed_count INT NOT NULL DEFAULT 0,
+    match_count INT NOT NULL DEFAULT 0,
+    mismatch_count INT NOT NULL DEFAULT 0,
+    pending_count INT NOT NULL DEFAULT 0,
+    not_found_count INT NOT NULL DEFAULT 0,
+    error_count INT NOT NULL DEFAULT 0,
+    requested_by INT DEFAULT NULL,
+    scheduled_date DATE DEFAULT NULL,
+    error_code VARCHAR(64) NOT NULL DEFAULT '',
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_qmf_status_scan_schedule (trigger_source, scheduled_date),
+    INDEX idx_qmf_status_scan_status (status, id),
+    INDEX idx_qmf_status_scan_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _qmf_status_scan_items (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    source_id BIGINT NOT NULL,
+    expected_revision BIGINT UNSIGNED NOT NULL,
+    expected_row_hash CHAR(64) NOT NULL,
+    identity_hmac CHAR(64) NOT NULL DEFAULT '',
+    expected_result VARCHAR(30) NOT NULL DEFAULT '',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    feedback_state VARCHAR(40) NOT NULL DEFAULT '',
+    feedback_result VARCHAR(30) NOT NULL DEFAULT '',
+    checked_at VARCHAR(64) NOT NULL DEFAULT '',
+    origin VARCHAR(40) NOT NULL DEFAULT '',
+    error_code VARCHAR(64) NOT NULL DEFAULT '',
+    duration_ms INT NOT NULL DEFAULT 0,
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_qmf_status_scan_item (run_id, parser_type, row_key),
+    INDEX idx_qmf_status_scan_item_queue (run_id, status, id),
+    INDEX idx_qmf_status_scan_item_source (source_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _qmf_status_snapshots (
+    parser_type VARCHAR(50) NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    source_id BIGINT NOT NULL,
+    source_revision BIGINT UNSIGNED NOT NULL,
+    source_row_hash CHAR(64) NOT NULL,
+    identity_hmac CHAR(64) NOT NULL DEFAULT '',
+    platform_result VARCHAR(30) NOT NULL DEFAULT '',
+    feedback_state VARCHAR(40) NOT NULL DEFAULT '',
+    feedback_result VARCHAR(30) NOT NULL DEFAULT '',
+    checked_at VARCHAR(64) NOT NULL DEFAULT '',
+    origin VARCHAR(40) NOT NULL DEFAULT '',
+    error_code VARCHAR(64) NOT NULL DEFAULT '',
+    scan_run_id BIGINT NOT NULL,
+    last_scanned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (parser_type, row_key),
+    INDEX idx_qmf_status_snapshot_state (parser_type, feedback_state, last_scanned_at),
+    INDEX idx_qmf_status_snapshot_source (source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _online_source_cache_state (
     spreadsheet_id INT NOT NULL PRIMARY KEY,
     parser_type VARCHAR(50) NOT NULL,

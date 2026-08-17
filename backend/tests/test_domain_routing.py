@@ -38,6 +38,15 @@ def test_qmf_registration_runs_are_stored_in_platform_domain():
     assert "`PlatformData`.`_qmf_registration_runs`" in sql
 
 
+def test_qmf_feedback_scan_snapshots_remain_in_online_data_domain():
+    with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
+        sql = rewrite_domain_sql(
+            "SELECT * FROM _qmf_status_snapshots WHERE row_key=%s"
+        )
+    assert "PlatformData" not in sql
+    assert "_qmf_status_snapshots" in sql
+
+
 def test_administrative_areas_are_stored_in_platform_domain():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql(

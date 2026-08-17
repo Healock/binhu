@@ -342,6 +342,10 @@ export default function SystemSettings() {
 
   const handleSaveQmf = async () => {
     if (!qmfConfig) return
+    if (qmfConfig.status_scan_enabled && !/^([01]\d|2[0-3]):[0-5]\d$/.test(qmfConfig.status_scan_time)) {
+      setQmfMsg('开启每日扫描前请选择执行时间')
+      return
+    }
     setSavingQmf(true)
     setQmfMsg('')
     try {
@@ -361,6 +365,8 @@ export default function SystemSettings() {
         expected_station_name: qmfConfig.expected_station_name,
         timeout_seconds: qmfConfig.timeout_seconds,
         session_max_seconds: qmfConfig.session_max_seconds,
+        status_scan_enabled: qmfConfig.status_scan_enabled,
+        status_scan_time: qmfConfig.status_scan_time,
       })
       setQmfConfig(result)
       setQmfPassword('')
@@ -476,7 +482,7 @@ export default function SystemSettings() {
 
       <Panel
         title="全民防模型三封闭测试"
-        description="只向指定账号开放单条人工确认登记；系统会在登记前自动完成资料和照片核对，不提供批量、自动扫描、定时执行或自动重试。"
+        description="单条登记继续执行实时预检测；反馈扫描只读核对已完成模型三任务，不会修改平台、腾讯表格或全民防数据。"
       >
         {!qmfConfig ? (
           <Alert type="info" showIcon message="全民防配置加载中" />
@@ -558,6 +564,39 @@ export default function SystemSettings() {
               message="全民防登记不可自动撤销"
               description="任一步骤出现超时、断线或结果不确定时，系统会冻结该次运行，不会自动重试，也不会从头重放。请先到全民防人工核对。"
             />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="settings-field">
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">每日反馈扫描</span>
+                <div className="flex min-h-9 items-center gap-3">
+                  <Switch
+                    checked={qmfConfig.status_scan_enabled}
+                    onChange={value => setQmfConfig(current => current ? {
+                      ...current,
+                      status_scan_enabled: value,
+                    } : current)}
+                    disabled={savingQmf}
+                  />
+                  <span className="text-sm text-[var(--app-text-secondary)]">
+                    {qmfConfig.status_scan_enabled ? '已开启' : '已关闭'}
+                  </span>
+                </div>
+                <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
+                  每日只扫描新增或变化任务，以及超过 7 天未成功核对的任务；默认关闭。
+                </p>
+              </div>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">每日执行时间（Asia/Shanghai）</span>
+                <Input
+                  type="time"
+                  value={qmfConfig.status_scan_time}
+                  onChange={event => setQmfConfig(current => current ? {
+                    ...current,
+                    status_scan_time: event.target.value,
+                  } : current)}
+                  disabled={savingQmf}
+                />
+              </label>
+            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">HTTP 接口地址</span>
