@@ -37,6 +37,25 @@ test('研判页同时承载无法核实研判和下发数据复核', () => {
   assert.match(appSource, /<AnalysisWorkbench \/>/)
 })
 
+test('下发状态筛选按待发布分组并解释待对账', () => {
+  const source = readFileSync(
+    new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(source, /const publishStatusOptions = \[/)
+  assert.match(source, /const statusGroups: Array</)
+  assert.match(source, /label: '待发布'/)
+  assert.match(source, /children: publishStatusOptions/)
+  assert.match(source, /label: '未发布'/)
+  assert.match(source, /label: '可重试'/)
+  assert.match(source, /label: '待对账'/)
+  assert.match(source, /label: '内容冲突'/)
+  assert.match(source, /const reconciliationHint = '腾讯写入结果不确定/)
+  assert.match(source, /InfoCircleOutlined/)
+  assert.match(source, /待发布状态/)
+})
+
 test('使用搜索图标的下发和小区页面显式导入图标', () => {
   const dispatchSource = readFileSync(
     new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
