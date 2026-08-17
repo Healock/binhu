@@ -16,6 +16,7 @@ from services.mobile_navigation import (
     normalize_mobile_navigation_mode,
 )
 from services.permissions import (
+    AUTHENTICATED_PERMISSIONS,
     COMMUNITY_VIEW,
     NOTIFICATION_VIEW,
     PERSONNEL_BASIC_VIEW,
@@ -232,9 +233,11 @@ async def _load_current_user(
                     int(row[12]) if row[12] is not None else None
                 ),
             )
+            permissions: list[str] = []
+            permission_scopes: dict[str, str] = {}
+            data_scope = "own_department"
             if groups:
                 permissions_set: set[str] = set()
-                permission_scopes: dict[str, str] = {}
                 for group in groups:
                     for permission in group["permissions"]:
                         permissions_set.add(permission)
@@ -288,7 +291,7 @@ async def _load_current_user(
                     COMMUNITY_VIEW,
                     NOTIFICATION_VIEW,
                     PREFERENCES_MANAGE,
-                })
+                } | AUTHENTICATED_PERMISSIONS)
                 data_scope = "own_department"
                 groups = [{
                     "id": None,
@@ -300,6 +303,29 @@ async def _load_current_user(
                 permission_scopes = {
                     permission: data_scope for permission in permissions
                 }
+
+            if settings.REGISTRY_FEATURE_ENABLED:
+                authenticated_scope = (
+                    "all"
+                    if any(
+                        group.get("data_scope") == "all"
+                        for group in groups
+                    )
+                    else data_scope
+                )
+                permissions = sorted(
+                    set(permissions) | AUTHENTICATED_PERMISSIONS
+                )
+                for permission in AUTHENTICATED_PERMISSIONS:
+                    permission_scopes[permission] = authenticated_scope
+                data_scope = (
+                    "all"
+                    if all(
+                        value == "all"
+                        for value in permission_scopes.values()
+                    )
+                    else "own_department"
+                )
 
             # 维护模式由后端强制执行；超级管理员仍可登录和处理维护配置。
             # 不能只依赖前端隐藏菜单，否则已有会话仍可继续访问业务接口。
