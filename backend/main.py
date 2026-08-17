@@ -58,6 +58,10 @@ from services.registry_certificate_jobs import (
     recover_interrupted_certificate_source_runs,
     stop_certificate_source_tasks,
 )
+from services.police_dispatch_publish_jobs import (
+    recover_interrupted_police_publish_runs,
+    stop_police_publish_tasks,
+)
 
 
 @asynccontextmanager
@@ -84,6 +88,12 @@ async def lifespan(app: FastAPI):
         print(
             f"[REGISTRY_CERTIFICATE] 已保留 {interrupted_certificate_runs} 个"
             "服务重启前遗留任务的分页进度"
+        )
+    interrupted_publish_runs = await recover_interrupted_police_publish_runs()
+    if interrupted_publish_runs:
+        print(
+            f"[POLICE_DISPATCH] 已安全关闭 {interrupted_publish_runs} 个"
+            "服务重启前遗留的后台发布任务"
         )
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
@@ -114,6 +124,7 @@ async def lifespan(app: FastAPI):
         await stop_online_writeback_tasks()
         await stop_txdocs_usage_tasks()
         await stop_certificate_source_tasks()
+        await stop_police_publish_tasks()
         await close_db()
 
 

@@ -612,6 +612,14 @@ def test_publish_routes_only_expose_selected_task_publishing():
         "/api/police-dispatch/batches/{batch_id}/publish-selected",
         ("POST",),
     ) in routes
+    assert (
+        "/api/police-dispatch/batches/{batch_id}/publish-runs/latest",
+        ("GET",),
+    ) in routes
+    assert (
+        "/api/police-dispatch/publish-runs/{run_id}",
+        ("GET",),
+    ) in routes
     assert not any(path.endswith("/publish") for path, _methods in routes)
 
 
@@ -662,10 +670,8 @@ def test_publishable_selection_requires_narrower_filter_above_limit():
 def test_publish_selected_rejects_mixed_or_changed_task_ids_before_writeback(monkeypatch):
     cursor = MagicMock()
     cursor.execute = AsyncMock()
-    cursor.fetchall = AsyncMock(return_value=[(
-        9, 2, "来源", "甲", "32050020000101001X", "18800000001",
-        "地址", "2026-08-13 09:00:00", "", "{}", "社区",
-    )])
+    cursor.fetchone = AsyncMock(side_effect=[(1,), None, (1,)])
+    cursor.fetchall = AsyncMock(return_value=[(9, "18800000001")])
     conn = MagicMock()
     conn.begin = AsyncMock()
     conn.commit = AsyncMock()
@@ -694,6 +700,69 @@ def test_publish_selected_rejects_mixed_or_changed_task_ids_before_writeback(mon
     assert error.value.status_code == 409
     conn.rollback.assert_awaited_once()
     conn.commit.assert_not_awaited()
+
+
+def test_publish_selected_creates_background_run_without_waiting_for_tencent(monkeypatch):
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.executemany = AsyncMock()
+    cursor.rowcount = 2
+    cursor.fetchone = AsyncMock(side_effect=[(1,), None, None, (1,)])
+    cursor.fetchall = AsyncMock(return_value=[
+        (9, "18800000001"), (10, "18800000002"),
+    ])
+    cursor.lastrowid = 31
+    conn = MagicMock()
+    conn.begin = AsyncMock()
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    launch = MagicMock()
+    audit = AsyncMock()
+    monkeypatch.setattr("routers.police_dispatch._batch_payload", AsyncMock(return_value={}))
+    monkeypatch.setattr("routers.police_dispatch._writeback_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "routers.police_dispatch._enabled_spreadsheets",
+        AsyncMock(return_value=[{"id": 3}]),
+    )
+    monkeypatch.setattr("routers.police_dispatch.launch_police_publish_run", launch)
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    monkeypatch.setattr(
+        "routers.police_dispatch.get_business_date",
+        AsyncMock(return_value=date(2026, 8, 17)),
+    )
+    monkeypatch.setattr(
+        "routers.police_dispatch.get_police_publish_run",
+        AsyncMock(return_value={
+            "id": 31, "batch_id": 7, "status": "pending", "phase": "queued",
+            "total_count": 2, "processed_count": 0, "success_count": 0,
+            "conflict_count": 0, "reconciliation_count": 0, "retryable_count": 0,
+            "error_code": "", "error_message": "", "started_at": None,
+            "finished_at": None, "created_at": None, "updated_at": None,
+        }),
+    )
+    request = Request({
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    result = asyncio.run(publish_selected_tasks(
+        7,
+        TaskPublishSelection(task_ids=[9, 10]),
+        request,
+        user={"id": 1, "username": "operator"},
+        conn=conn,
+    ))
+
+    assert result["id"] == 31
+    assert result["status"] == "pending"
+    assert "后台" in result["message"]
+    conn.commit.assert_awaited_once()
+    conn.rollback.assert_not_awaited()
+    launch.assert_called_once()
+    inserted = cursor.executemany.await_args.args[1]
+    assert inserted == [(31, 9, 1), (31, 10, 2)]
+    assert audit.await_args.kwargs["result"] == "pending"
 
 
 def test_batch_payloads_expands_mysql_placeholders_before_execution():
@@ -1079,8 +1148,9 @@ def test_normal_sync_reconciliation_classifies_exact_conflict_and_absent_rows():
             (103, keys[2], stable_json({
                 "下发日期": "08-05", "身份证号": "C1",
                 "电话号码": "3", "姓名": "丙", "社区": "长板",
-            }), 7),
-        ],
+                }), 7),
+            ],
+        [],
     ])
     cursor.fetchone = AsyncMock(return_value=(3, 0, 2, 1))
 
@@ -1112,6 +1182,7 @@ def test_normal_sync_reconciliation_ignores_registration_status_for_old_layout()
     cursor.fetchall = AsyncMock(side_effect=[
         [(11, 20, "a" * 64, stable_json(source))],
         [(101, key, stable_json(requested), 7)],
+        [],
     ])
     cursor.fetchone = AsyncMock(return_value=(1, 0, 1, 0))
 

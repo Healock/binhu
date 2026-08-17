@@ -18,7 +18,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, Field, field_validator
 
-from database import get_db
+from database import db_manager, get_db
 from deps import require_permission, require_super_admin
 from routers.query import (
     _enabled_spreadsheets,
@@ -60,6 +60,11 @@ from services.police_dispatch import (
     dispatch_values_from_raw,
     identity_digest,
     stable_json,
+)
+from services.police_dispatch_publish_jobs import (
+    get_latest_police_publish_run,
+    get_police_publish_run,
+    launch_police_publish_run,
 )
 from services.txdocs_client import TxDocsAPIError
 from services.work_activity import (
@@ -2035,6 +2040,7 @@ async def _save_publish_result(
     error_code: str = "",
     error_message: str = "",
     cache_pending: bool = False,
+    count_attempt: bool = True,
 ) -> None:
     await cur.execute("""
         INSERT INTO _police_dispatch_publish_results (
@@ -2042,7 +2048,7 @@ async def _save_publish_result(
             business_key, request_values_json, verified_values_json,
             expected_row_hash, cache_pending, status, error_code,
             error_message, attempt_count, last_attempt_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1,
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   UTC_TIMESTAMP())
         ON DUPLICATE KEY UPDATE
             spreadsheet_id=VALUES(spreadsheet_id), sheet_id=VALUES(sheet_id),
@@ -2052,14 +2058,66 @@ async def _save_publish_result(
             expected_row_hash=VALUES(expected_row_hash),
             cache_pending=VALUES(cache_pending), status=VALUES(status),
             error_code=VALUES(error_code), error_message=VALUES(error_message),
-            attempt_count=attempt_count+1, last_attempt_at=UTC_TIMESTAMP()
+            attempt_count=attempt_count+VALUES(attempt_count),
+            last_attempt_at=UTC_TIMESTAMP()
     """, (
         task_id, spreadsheet["id"], spreadsheet["data_sheet_id"], physical_row,
         business_key, stable_json(request_values),
         stable_json(verified_values) if verified_values is not None else None,
         row_hash, 1 if cache_pending else 0, status, error_code,
-        error_message[:500],
+        error_message[:500], 1 if count_attempt else 0,
     ))
+
+
+async def _set_publish_run_phase(
+    cur,
+    run_id: int | None,
+    phase: str,
+) -> None:
+    if run_id is None:
+        return
+    await cur.execute(
+        "UPDATE _police_dispatch_publish_runs SET phase=%s WHERE id=%s",
+        (phase, run_id),
+    )
+
+
+async def _set_publish_run_item(
+    cur,
+    run_id: int | None,
+    task_id: int,
+    status: str,
+    *,
+    physical_row: int | None = None,
+    error_code: str = "",
+) -> None:
+    if run_id is None:
+        return
+    await cur.execute("""
+        UPDATE _police_dispatch_publish_run_items
+        SET status=%s,physical_row=COALESCE(%s,physical_row),error_code=%s
+        WHERE run_id=%s AND task_id=%s
+    """, (status, physical_row, error_code[:100], run_id, task_id))
+
+
+async def _refresh_publish_run_progress(cur, run_id: int | None) -> None:
+    if run_id is None:
+        return
+    await cur.execute("""
+        UPDATE _police_dispatch_publish_runs AS run SET
+            processed_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                             WHERE run_id=run.id
+                               AND status IN ('success','conflict','needs_reconciliation','retryable')),
+            success_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                           WHERE run_id=run.id AND status='success'),
+            conflict_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                            WHERE run_id=run.id AND status='conflict'),
+            reconciliation_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                                  WHERE run_id=run.id AND status='needs_reconciliation'),
+            retryable_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                             WHERE run_id=run.id AND status='retryable')
+        WHERE run.id=%s
+    """, (run_id,))
 
 
 async def _set_task_publish_state(
@@ -2138,17 +2196,23 @@ async def _mark_overwrite_uncertain(
     return True
 
 
-@router.post("/batches/{batch_id}/publish-selected")
-async def publish_selected_tasks(
+async def _execute_publish_selection(
     batch_id: int,
     data: TaskPublishSelection,
-    request: Request,
-    user: dict = Depends(require_police_dispatch),
-    conn=Depends(get_db),
+    request: Request | None,
+    user: dict,
+    conn,
+    *,
+    run_id: int | None = None,
 ):
     parser = get_parser("全链条")
     selected_ids = data.task_ids
     placeholders = ",".join(["%s"] * len(selected_ids))
+    eligible_publish_status = (
+        "task.publish_status='publishing'"
+        if run_id is not None
+        else "task.publish_status IN ('pending', 'retryable')"
+    )
     spreadsheet: dict[str, Any] | None = None
     sheet_lock_acquired = False
     await conn.begin()
@@ -2170,7 +2234,7 @@ async def publish_selected_tasks(
                 JOIN _communities AS community ON community.id=task.final_community_id
                 WHERE task.batch_id=%s AND task.id IN ({placeholders})
                   AND task.final_action='dispatch' AND task.task_status='pending_publish'
-                  AND task.publish_status IN ('pending', 'retryable')
+                  AND {eligible_publish_status}
                 ORDER BY task.source_row, task.id
                 FOR UPDATE
             """, [batch_id, *selected_ids])
@@ -2213,7 +2277,8 @@ async def publish_selected_tasks(
                     409,
                     f"有 {missing_phone_count} 条待下发任务缺少手机号，请先研判或补齐手机号",
                 )
-            if not await acquire_sheet_lock(cur, spreadsheet["id"], timeout=2):
+            lock_timeout = 30 if run_id is not None else 2
+            if not await acquire_sheet_lock(cur, spreadsheet["id"], timeout=lock_timeout):
                 raise HTTPException(409, "全链条表格正在同步或被他人编辑，请稍后重试")
             sheet_lock_acquired = True
             publish_date = await get_business_date(cur)
@@ -2231,15 +2296,22 @@ async def publish_selected_tasks(
             publish_date = (await cur.fetchone())[0]
             pending_ids = [item["id"] for item in pending]
             pending_placeholders = ",".join(["%s"] * len(pending_ids))
-            await cur.execute(f"""
-                UPDATE _police_dispatch_tasks
-                SET publish_status='publishing', task_status='pending_publish', publish_error=''
-                WHERE batch_id=%s AND id IN ({pending_placeholders})
-                  AND final_action='dispatch' AND task_status='pending_publish'
-                  AND publish_status IN ('pending', 'retryable')
-            """, [batch_id, *pending_ids])
-            if cur.rowcount != len(pending_ids):
-                raise HTTPException(409, "部分所选任务状态已经变化，请刷新后重新选择")
+            if run_id is None:
+                await cur.execute(f"""
+                    UPDATE _police_dispatch_tasks
+                    SET publish_status='publishing', task_status='pending_publish', publish_error=''
+                    WHERE batch_id=%s AND id IN ({pending_placeholders})
+                      AND final_action='dispatch' AND task_status='pending_publish'
+                      AND publish_status IN ('pending', 'retryable')
+                """, [batch_id, *pending_ids])
+                if cur.rowcount != len(pending_ids):
+                    raise HTTPException(409, "部分所选任务状态已经变化，请刷新后重新选择")
+            if run_id is not None:
+                await cur.execute("""
+                    UPDATE _police_dispatch_publish_run_items
+                    SET status='checking',error_code=''
+                    WHERE run_id=%s
+                """, (run_id,))
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -2255,6 +2327,7 @@ async def publish_selected_tasks(
     failed_count = 0
     try:
         async with conn.cursor() as cur:
+            await _set_publish_run_phase(cur, run_id, "reading_source")
             client = await _oauth_client(cur)
         source_columns = await resolve_source_columns(client, spreadsheet, parser)
         comparison_columns = _publish_comparison_columns(parser, source_columns)
@@ -2307,6 +2380,10 @@ async def publish_selected_tasks(
                             verified_values=candidate["values"], row_hash=row_hash,
                             cache_pending=True,
                         )
+                        await _set_publish_run_item(
+                            cur, run_id, task["id"], "success",
+                            physical_row=int(candidate["physical_row"]),
+                        )
                     else:
                         failed_count += 1
                         await _set_task_publish_state(
@@ -2325,10 +2402,18 @@ async def publish_selected_tasks(
                             error_code="content_conflict",
                             error_message="同主键内容不同",
                         )
+                        await _set_publish_run_item(
+                            cur, run_id, task["id"], "conflict",
+                            physical_row=int(candidate["physical_row"]),
+                            error_code="content_conflict",
+                        )
                     continue
                 existing_by_key[key] = []
                 ready.append((task, values, request_values, key))
+            await _refresh_publish_run_progress(cur, run_id)
 
+        async with conn.cursor() as cur:
+            await _set_publish_run_phase(cur, run_id, "publishing")
         for offset in range(0, len(ready), 50):
             chunk = ready[offset:offset + 50]
             start_row = next_row
@@ -2336,6 +2421,24 @@ async def publish_selected_tasks(
                 parser.source_row_values(values, source_columns)
                 for _, values, _, _ in chunk
             ]
+            async with conn.cursor() as cur:
+                for index, (task, _values, request_values, key) in enumerate(chunk):
+                    physical_row = start_row + index
+                    await _save_publish_result(
+                        cur, task_id=task["id"], spreadsheet=spreadsheet,
+                        business_key=key, request_values=request_values,
+                        status="needs_reconciliation", physical_row=physical_row,
+                        error_code="sending", error_message="腾讯写入请求正在处理",
+                    )
+                    await _set_publish_run_item(
+                        cur, run_id, task["id"], "sending",
+                        physical_row=physical_row,
+                    )
+            chunk_positions = {
+                task["id"]: start_row + index
+                for index, (task, _values, _request_values, _key) in enumerate(chunk)
+            }
+            completed_chunk_ids: set[int] = set()
             try:
                 await client.batch_update(
                     spreadsheet["file_id"],
@@ -2378,6 +2481,11 @@ async def publish_selected_tasks(
                                 status="success", physical_row=physical_row,
                                 verified_values=verified_values,
                                 row_hash=verified_hash, cache_pending=True,
+                                count_attempt=False,
+                            )
+                            await _set_publish_run_item(
+                                cur, run_id, task["id"], "success",
+                                physical_row=physical_row,
                             )
                             success_count += 1
                         else:
@@ -2396,18 +2504,29 @@ async def publish_selected_tasks(
                                 verified_values=(verified or {}).get("values"),
                                 error_code="verification_uncertain",
                                 error_message=error,
+                                count_attempt=False,
+                            )
+                            await _set_publish_run_item(
+                                cur, run_id, task["id"], "needs_reconciliation",
+                                physical_row=physical_row,
+                                error_code="verification_uncertain",
                             )
                             failed_count += 1
+                        completed_chunk_ids.add(task["id"])
+                        await _refresh_publish_run_progress(cur, run_id)
                 next_row += len(chunk)
-            except Exception as exc:
-                failed_count += len(chunk)
+            except (Exception, asyncio.CancelledError) as exc:
+                remaining_chunk = [
+                    item for item in chunk if item[0]["id"] not in completed_chunk_ids
+                ]
+                failed_count += len(remaining_chunk)
                 safe_error = "腾讯写入请求结果不确定，等待下次正常同步对账"
                 if isinstance(exc, HTTPException):
                     safe_error = str(exc.detail)[:500]
                 elif isinstance(exc, TxDocsAPIError):
                     safe_error = str(exc)[:500]
                 async with conn.cursor() as cur:
-                    for task, values, request_values, key in chunk:
+                    for task, values, request_values, key in remaining_chunk:
                         await _set_task_publish_state(
                             cur, task_id=task["id"],
                             status="needs_reconciliation",
@@ -2417,11 +2536,23 @@ async def publish_selected_tasks(
                             cur, task_id=task["id"], spreadsheet=spreadsheet,
                             business_key=key, request_values=request_values,
                             status="needs_reconciliation",
+                            physical_row=chunk_positions[task["id"]],
                             error_code="request_uncertain",
                             error_message=safe_error,
+                            count_attempt=False,
                         )
+                        await _set_publish_run_item(
+                            cur, run_id, task["id"], "needs_reconciliation",
+                            physical_row=chunk_positions[task["id"]],
+                            error_code="request_uncertain",
+                        )
+                    await _refresh_publish_run_progress(cur, run_id)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 break
         try:
+            async with conn.cursor() as cur:
+                await _set_publish_run_phase(cur, run_id, "refreshing_cache")
             await _refresh_spreadsheet(conn, client, spreadsheet)
             async with conn.cursor() as cur:
                 await cur.execute(f"""
@@ -2438,6 +2569,19 @@ async def publish_selected_tasks(
                         result.expected_row_hash=source.row_hash
                     WHERE task.batch_id=%s AND task.id IN ({pending_placeholders})
                 """, [batch_id, *pending_ids])
+                if run_id is not None:
+                    await cur.execute("""
+                        UPDATE _police_dispatch_publish_run_items AS item
+                        JOIN _police_dispatch_tasks AS task ON task.id=item.task_id
+                        SET item.status=CASE task.publish_status
+                            WHEN 'success' THEN 'success'
+                            WHEN 'conflict' THEN 'conflict'
+                            WHEN 'needs_reconciliation' THEN 'needs_reconciliation'
+                            WHEN 'retryable' THEN 'retryable'
+                            ELSE item.status END
+                        WHERE item.run_id=%s
+                    """, (run_id,))
+                    await _refresh_publish_run_progress(cur, run_id)
                 await cur.execute(f"""
                     UPDATE _police_dispatch_tasks AS task
                     JOIN _police_dispatch_publish_results AS result
@@ -2462,13 +2606,40 @@ async def publish_selected_tasks(
                 await client.close()
         finally:
             async with conn.cursor() as cur:
-                await cur.execute(f"""
-                    UPDATE _police_dispatch_tasks
-                    SET publish_status='retryable', task_status='pending_publish',
-                        publish_error='尚未向腾讯发送，可安全重试'
-                    WHERE batch_id=%s AND publish_status='publishing'
-                      AND id IN ({pending_placeholders})
-                """, [batch_id, *pending_ids])
+                if run_id is None:
+                    await cur.execute(f"""
+                        UPDATE _police_dispatch_tasks
+                        SET publish_status='retryable', task_status='pending_publish',
+                            publish_error='尚未向腾讯发送，可安全重试'
+                        WHERE batch_id=%s AND publish_status='publishing'
+                          AND id IN ({pending_placeholders})
+                    """, [batch_id, *pending_ids])
+                else:
+                    await cur.execute("""
+                        UPDATE _police_dispatch_tasks AS task
+                        JOIN _police_dispatch_publish_run_items AS item
+                          ON item.task_id=task.id AND item.run_id=%s
+                        SET task.publish_status='retryable',task.task_status='pending_publish',
+                            task.publish_error='尚未向腾讯发送，可安全重试',
+                            task.version=task.version+1,
+                            item.status='retryable',item.error_code='not_sent'
+                        WHERE task.batch_id=%s AND task.publish_status='publishing'
+                          AND item.status IN ('queued','checking')
+                    """, (run_id, batch_id))
+                    await cur.execute("""
+                        UPDATE _police_dispatch_tasks AS task
+                        JOIN _police_dispatch_publish_run_items AS item
+                          ON item.task_id=task.id AND item.run_id=%s
+                        SET task.publish_status='needs_reconciliation',
+                            task.task_status='publish_failed',
+                            task.publish_error='腾讯请求可能已经送达，等待同步对账',
+                            task.version=task.version+1,
+                            item.status='needs_reconciliation',
+                            item.error_code='request_uncertain'
+                        WHERE task.batch_id=%s AND task.publish_status='publishing'
+                          AND item.status='sending'
+                    """, (run_id, batch_id))
+                    await _refresh_publish_run_progress(cur, run_id)
                 counts = await _refresh_batch_status(cur, batch_id)
                 await cur.execute("""
                     UPDATE _police_dispatch_batches SET
@@ -2483,10 +2654,295 @@ async def publish_selected_tasks(
         target_name=str(batch_id), detail={
             "selected": len(selected_ids), "success": success_count, "failed": failed_count,
         },
-        result="partial" if failed_count else "success", **request_audit_fields(request),
+        result="partial" if failed_count else "success",
+        **(request_audit_fields(request) if request is not None else {}),
     )
     return {
         "message": "发布完成" if not failed_count else "部分任务需要等待同步对账或人工处理冲突",
         "success_count": success_count, "failed_count": failed_count,
         "counts": counts,
     }
+
+
+POLICE_PUBLISH_CREATE_LOCK = "binhu_police_dispatch_publish_create"
+
+
+async def _finish_police_publish_run(
+    cur,
+    run_id: int,
+    *,
+    status: str,
+    error_code: str = "",
+    error_message: str = "",
+) -> None:
+    await cur.execute("""
+        UPDATE _police_dispatch_tasks AS task
+        JOIN _police_dispatch_publish_run_items AS item
+          ON item.task_id=task.id AND item.run_id=%s
+        SET task.publish_status='retryable',task.task_status='pending_publish',
+            task.publish_error='尚未向腾讯发送，可安全重试',
+            task.version=task.version+1
+        WHERE task.publish_status='publishing'
+          AND item.status IN ('queued','checking')
+    """, (run_id,))
+    await cur.execute("""
+        UPDATE _police_dispatch_tasks AS task
+        JOIN _police_dispatch_publish_run_items AS item
+          ON item.task_id=task.id AND item.run_id=%s
+        SET task.publish_status='needs_reconciliation',task.task_status='publish_failed',
+            task.publish_error='腾讯请求可能已经送达，等待同步对账',
+            task.version=task.version+1
+        WHERE task.publish_status='publishing' AND item.status='sending'
+    """, (run_id,))
+    await cur.execute("""
+        UPDATE _police_dispatch_publish_run_items
+        SET status='retryable',error_code=CASE
+                WHEN error_code='' THEN 'not_sent' ELSE error_code END
+        WHERE run_id=%s AND status IN ('queued','checking')
+    """, (run_id,))
+    await _refresh_publish_run_progress(cur, run_id)
+    await cur.execute("""
+        UPDATE _police_dispatch_publish_runs
+        SET status=%s,phase='finished',error_code=%s,error_message=%s,
+            finished_at=UTC_TIMESTAMP()
+        WHERE id=%s
+    """, (status, error_code[:100], error_message[:500], run_id))
+    await cur.execute(
+        "SELECT batch_id FROM _police_dispatch_publish_runs WHERE id=%s",
+        (run_id,),
+    )
+    batch_row = await cur.fetchone()
+    if batch_row:
+        await _refresh_batch_status(cur, int(batch_row[0]))
+
+
+async def _run_police_publish_job(run_id: int) -> None:
+    pool = db_manager.get_pool("online_data")
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT batch_id,requested_by,requested_username
+                FROM _police_dispatch_publish_runs WHERE id=%s
+            """, (run_id,))
+            row = await cur.fetchone()
+            if not row:
+                return
+            batch_id = int(row[0])
+            user = {"id": int(row[1]) if row[1] is not None else None,
+                    "username": str(row[2] or "")}
+            await cur.execute("""
+                SELECT task_id FROM _police_dispatch_publish_run_items
+                WHERE run_id=%s ORDER BY item_order
+            """, (run_id,))
+            task_ids = [int(item[0]) for item in await cur.fetchall()]
+            await cur.execute("""
+                UPDATE _police_dispatch_publish_runs
+                SET status='running',phase='preparing',
+                    started_at=COALESCE(started_at,UTC_TIMESTAMP()),
+                    error_code='',error_message=''
+                WHERE id=%s AND status='pending'
+            """, (run_id,))
+        if not task_ids:
+            async with conn.cursor() as cur:
+                await _finish_police_publish_run(
+                    cur, run_id, status="failed", error_code="empty_selection",
+                    error_message="发布任务没有可处理的选中项",
+                )
+            return
+        try:
+            result = await _execute_publish_selection(
+                batch_id,
+                TaskPublishSelection(task_ids=task_ids),
+                None,
+                user,
+                conn,
+                run_id=run_id,
+            )
+        except asyncio.CancelledError:
+            async with conn.cursor() as cur:
+                await _finish_police_publish_run(
+                    cur, run_id, status="failed", error_code="service_stopping",
+                    error_message="服务停止，未发送任务可重试，可能已发送任务等待同步对账",
+                )
+            raise
+        except Exception as exc:
+            if isinstance(exc, HTTPException):
+                safe_error = str(exc.detail)[:500]
+            elif isinstance(exc, TxDocsAPIError):
+                safe_error = str(exc)[:500]
+            else:
+                safe_error = "后台发布任务执行失败，未发送任务可安全重试"
+            async with conn.cursor() as cur:
+                await _finish_police_publish_run(
+                    cur, run_id, status="failed", error_code="publish_failed",
+                    error_message=safe_error,
+                )
+            await record_admin_audit(
+                user, "police_dispatch.publish",
+                target_type="police_dispatch_publish_run", target_name=str(run_id),
+                result="failed", detail={"run_id": run_id, "batch_id": batch_id},
+            )
+            return
+        async with conn.cursor() as cur:
+            await _finish_police_publish_run(
+                cur,
+                run_id,
+                status="partial" if result["failed_count"] else "completed",
+                error_code="partial" if result["failed_count"] else "",
+                error_message=(
+                    "部分任务等待同步对账或需要处理内容冲突"
+                    if result["failed_count"] else ""
+                ),
+            )
+
+
+@router.get("/batches/{batch_id}/publish-runs/latest")
+async def latest_publish_run(
+    batch_id: int,
+    _user: dict = Depends(require_police_dispatch),
+    _conn=Depends(get_db),
+):
+    return {"data": await get_latest_police_publish_run(batch_id)}
+
+
+@router.get("/publish-runs/{run_id}")
+async def publish_run_detail(
+    run_id: int,
+    _user: dict = Depends(require_police_dispatch),
+    _conn=Depends(get_db),
+):
+    run = await get_police_publish_run(run_id)
+    if not run:
+        raise HTTPException(404, "发布任务不存在")
+    return run
+
+
+@router.post("/batches/{batch_id}/publish-selected", status_code=202)
+async def publish_selected_tasks(
+    batch_id: int,
+    data: TaskPublishSelection,
+    request: Request,
+    user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    selected_ids = data.task_ids
+    placeholders = ",".join(["%s"] * len(selected_ids))
+    run_id = 0
+    lock_acquired = False
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT GET_LOCK(%s, 5)", (POLICE_PUBLISH_CREATE_LOCK,))
+            lock_row = await cur.fetchone()
+            lock_acquired = bool(lock_row and lock_row[0] == 1)
+            if not lock_acquired:
+                raise HTTPException(409, "发布任务正在创建，请稍后重试")
+            await _batch_payload(cur, batch_id)
+            if not await _writeback_enabled(cur):
+                raise HTTPException(503, "在线回写已由超级管理员暂停")
+            spreadsheets = await _enabled_spreadsheets(cur, "全链条")
+            if len(spreadsheets) != 1:
+                raise HTTPException(409, "全链条业务没有唯一启用的腾讯来源表")
+            spreadsheet = spreadsheets[0]
+            await cur.execute("""
+                SELECT id FROM _police_dispatch_publish_runs
+                WHERE spreadsheet_id=%s AND status IN ('pending','running')
+                ORDER BY id DESC LIMIT 1
+            """, (spreadsheet["id"],))
+            active = await cur.fetchone()
+            if active:
+                raise HTTPException(
+                    409,
+                    f"已有发布任务 #{int(active[0])} 正在处理，请先查看当前进度",
+                )
+            await cur.execute(f"""
+                SELECT task.id,task.phone
+                FROM _police_dispatch_tasks AS task
+                WHERE task.batch_id=%s AND task.id IN ({placeholders})
+                  AND task.final_action='dispatch' AND task.task_status='pending_publish'
+                  AND task.publish_status IN ('pending','retryable')
+                ORDER BY task.source_row,task.id
+                FOR UPDATE
+            """, [batch_id, *selected_ids])
+            eligible = [(int(row[0]), str(row[1] or "")) for row in await cur.fetchall()]
+            if len(eligible) != len(selected_ids):
+                raise HTTPException(409, "部分所选任务已不可发布，请刷新列表后重新选择")
+            missing_phone_count = sum(not phone.strip() for _, phone in eligible)
+            if missing_phone_count:
+                raise HTTPException(
+                    409,
+                    f"有 {missing_phone_count} 条待下发任务缺少手机号，请先研判或补齐手机号",
+                )
+            await cur.execute(f"""
+                SELECT grouped.duplicate_group_key,
+                       SUM(grouped.final_action<>'duplicate_exclude') AS kept
+                FROM _police_dispatch_tasks AS grouped
+                WHERE grouped.batch_id=%s
+                  AND grouped.duplicate_group_key IN (
+                      SELECT selected.duplicate_group_key
+                      FROM _police_dispatch_tasks AS selected
+                      WHERE selected.batch_id=%s AND selected.id IN ({placeholders})
+                        AND selected.duplicate_group_key<>''
+                  )
+                GROUP BY grouped.duplicate_group_key
+                HAVING kept<>1
+                LIMIT 1
+            """, [batch_id, batch_id, *selected_ids])
+            if await cur.fetchone():
+                raise HTTPException(409, "所选任务中存在尚未正确处理的重复人员组")
+            await cur.execute("""
+                INSERT INTO _police_dispatch_publish_runs (
+                    batch_id,spreadsheet_id,status,phase,total_count,
+                    requested_by,requested_username
+                ) VALUES (%s,%s,'pending','queued',%s,%s,%s)
+            """, (
+                batch_id, spreadsheet["id"], len(selected_ids), user.get("id"),
+                str(user.get("username") or "")[:50],
+            ))
+            run_id = int(cur.lastrowid)
+            ordered_ids = [task_id for task_id, _phone in eligible]
+            await cur.executemany("""
+                INSERT INTO _police_dispatch_publish_run_items (
+                    run_id,task_id,item_order,status
+                ) VALUES (%s,%s,%s,'queued')
+            """, [
+                (run_id, task_id, index)
+                for index, task_id in enumerate(ordered_ids, start=1)
+            ])
+            publish_date = await get_business_date(cur)
+            await cur.execute("""
+                UPDATE _police_dispatch_batches
+                SET first_publish_date=COALESCE(first_publish_date,%s),
+                    publish_started_at=COALESCE(publish_started_at,UTC_TIMESTAMP()),
+                    status='publishing',last_error=''
+                WHERE id=%s
+            """, (publish_date, batch_id))
+            await cur.execute(f"""
+                UPDATE _police_dispatch_tasks
+                SET publish_status='publishing',task_status='pending_publish',publish_error=''
+                WHERE batch_id=%s AND id IN ({placeholders})
+                  AND final_action='dispatch' AND task_status='pending_publish'
+                  AND publish_status IN ('pending','retryable')
+            """, [batch_id, *selected_ids])
+            if cur.rowcount != len(selected_ids):
+                raise HTTPException(409, "部分所选任务状态已经变化，请刷新后重新选择")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        if lock_acquired:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT RELEASE_LOCK(%s)", (POLICE_PUBLISH_CREATE_LOCK,))
+                await cur.fetchone()
+    launch_police_publish_run(run_id, _run_police_publish_job)
+    await record_admin_audit(
+        user, "police_dispatch.publish", target_type="police_dispatch_publish_run",
+        target_name=str(run_id), result="pending",
+        detail={"run_id": run_id, "batch_id": batch_id, "selected": len(selected_ids)},
+        **request_audit_fields(request),
+    )
+    run = await get_police_publish_run(run_id)
+    if not run:
+        raise HTTPException(500, "发布任务创建后无法重新定位")
+    return {**run, "message": "发布任务已进入后台处理，可以离开本页面"}
