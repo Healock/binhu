@@ -63,6 +63,11 @@ from services.police_dispatch_publish_jobs import (
     recover_interrupted_police_publish_runs,
     stop_police_publish_tasks,
 )
+from services.qmf_status_scan import (
+    recover_status_scans,
+    run_status_scan_scheduler,
+    stop_status_scan_tasks,
+)
 
 
 @asynccontextmanager
@@ -96,12 +101,16 @@ async def lifespan(app: FastAPI):
             f"[POLICE_DISPATCH] 已安全关闭 {interrupted_publish_runs} 个"
             "服务重启前遗留的后台发布任务"
         )
+    recovered_qmf_scans = await recover_status_scans()
+    if recovered_qmf_scans:
+        print("[QMF_STATUS_SCAN] 已恢复服务重启前的只读扫描任务")
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
     photo_sheet_scheduler_task = asyncio.create_task(run_photo_sheet_scheduler())
     online_writeback_task = asyncio.create_task(run_online_writeback_scheduler())
     certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())
+    qmf_status_scan_scheduler_task = asyncio.create_task(run_status_scan_scheduler())
     try:
         yield
     finally:
@@ -111,6 +120,7 @@ async def lifespan(app: FastAPI):
         photo_sheet_scheduler_task.cancel()
         online_writeback_task.cancel()
         certificate_scheduler_task.cancel()
+        qmf_status_scan_scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
@@ -123,6 +133,8 @@ async def lifespan(app: FastAPI):
             await online_writeback_task
         with suppress(asyncio.CancelledError):
             await certificate_scheduler_task
+        with suppress(asyncio.CancelledError):
+            await qmf_status_scan_scheduler_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()
@@ -130,6 +142,7 @@ async def lifespan(app: FastAPI):
         await stop_txdocs_usage_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()
+        await stop_status_scan_tasks()
         await close_db()
 
 

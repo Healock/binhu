@@ -959,6 +959,26 @@ export interface MobileTaskItem {
   priority: Exclude<MobileTaskPriority, 'all'>
   watch_marks: MobileTaskWatchMark[]
   first_dispatch_at: string | null
+  qmf_status: MobileTaskQmfStatus | null
+}
+
+export type QmfFeedbackState =
+  | 'not_scanned'
+  | 'stale'
+  | 'pending'
+  | 'completed_match'
+  | 'completed_mismatch'
+  | 'not_found'
+  | 'error'
+
+export interface MobileTaskQmfStatus {
+  state: QmfFeedbackState
+  platform_result: string
+  feedback_result: string
+  checked_at: string
+  origin: 'binhu_automatic' | 'legacy_manual_or_other' | ''
+  error_code: string
+  last_scanned_at: string | null
 }
 
 export interface MobileTaskWatchMark {
@@ -982,6 +1002,7 @@ export interface MobileTaskFacets {
   total: number
   priority_counts: Record<Exclude<MobileTaskPriority, 'all'>, number>
   status_counts: Record<MobileTaskState, number>
+  qmf_feedback_counts: Record<QmfFeedbackState, number>
 }
 
 export interface MobileTaskSource {
@@ -1008,6 +1029,7 @@ export interface MobileTaskSource {
 
 export interface MobileTaskDetailData {
   task: MobileTaskItem
+  qmf_status?: MobileTaskQmfStatus | null
   workflow: {
     label: string
     result_field: string
@@ -1232,6 +1254,8 @@ export interface QmfConfig {
   expected_station_name: string
   timeout_seconds: number
   session_max_seconds: number
+  status_scan_enabled: boolean
+  status_scan_time: string
   configured: boolean
   registration_configured: boolean
   database_keys: string[]
@@ -1253,6 +1277,32 @@ export interface QmfConfigUpdate {
   expected_station_name: string
   timeout_seconds: number
   session_max_seconds: number
+  status_scan_enabled: boolean
+  status_scan_time: string
+}
+
+export type QmfStatusScanRunStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed'
+
+export interface QmfStatusScanRun {
+  id: number
+  trigger_source: 'manual' | 'scheduled'
+  scan_mode: 'full' | 'incremental'
+  status: QmfStatusScanRunStatus
+  concurrency: number
+  total_count: number
+  processed_count: number
+  match_count: number
+  mismatch_count: number
+  pending_count: number
+  not_found_count: number
+  error_count: number
+  requested_by: number | null
+  error_code: string
+  started_at: string | null
+  finished_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  failures: Array<{ code: string; count: number }>
 }
 
 export interface MobileTaskInlineEditorItem {
@@ -1284,6 +1334,7 @@ export interface MobileTaskSearchParams {
   communities?: string[]
   inspectors?: string[]
   watch_categories?: number[]
+  qmf_feedback_states?: QmfFeedbackState[]
   priority?: MobileTaskPriority
   sort?: MobileTaskSort
   keyword?: string
@@ -1299,6 +1350,7 @@ function mobileTaskSearchPayload(params: MobileTaskSearchParams) {
     communities: params.communities || [],
     inspectors: params.inspectors || [],
     watch_categories: params.watch_categories || [],
+    qmf_feedback_states: params.qmf_feedback_states || [],
     priority: params.priority || 'all',
     sort: params.sort || 'priority',
     keyword: params.keyword || '',
@@ -1323,6 +1375,7 @@ export async function listMobileTasks(params: MobileTaskSearchParams): Promise<{
     communities: string[]
     inspectors: string[]
     watch_categories: number[]
+    qmf_feedback_states: QmfFeedbackState[]
     priority: MobileTaskPriority
     sort: MobileTaskSort
     keyword_present: boolean
@@ -1477,6 +1530,23 @@ export async function getQmfConfig(): Promise<QmfConfig> {
 export async function updateQmfConfig(payload: QmfConfigUpdate): Promise<QmfConfig> {
   const { data } = await api.put('/qmf-registration/config', payload, activeRequest)
   return data
+}
+
+export async function startQmfStatusScan(): Promise<QmfStatusScanRun> {
+  const { data } = await api.post('/qmf-registration/status-scans', {}, activeRequest)
+  return data.data
+}
+
+export async function getLatestQmfStatusScan(): Promise<QmfStatusScanRun | null> {
+  const { data } = await api.get('/qmf-registration/status-scans/latest')
+  return data.data || null
+}
+
+export async function getQmfStatusScan(runId: number): Promise<QmfStatusScanRun> {
+  const { data } = await api.get(
+    `/qmf-registration/status-scans/${runId}`,
+  )
+  return data.data
 }
 
 export async function getMobileTaskInlineEditors(

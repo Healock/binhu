@@ -34,6 +34,8 @@ QMF_CONFIG_KEYS = {
     "qmf_expected_station_name",
     "qmf_timeout_seconds",
     "qmf_session_max_seconds",
+    "qmf_status_scan_enabled",
+    "qmf_status_scan_time",
 }
 QMF_SECRET_KEYS = {
     "qmf_source_username",
@@ -95,6 +97,8 @@ class QmfRuntimeConfig:
     expected_station_name: str
     timeout_seconds: int
     session_max_seconds: int
+    status_scan_enabled: bool = False
+    status_scan_time: str = ""
 
     @property
     def configured(self) -> bool:
@@ -143,6 +147,8 @@ def settings_config() -> QmfRuntimeConfig:
         expected_station_name=str(settings.QMF_EXPECTED_STATION_NAME or ""),
         timeout_seconds=max(1, int(settings.QMF_TIMEOUT_SECONDS or 15)),
         session_max_seconds=max(1, int(settings.QMF_SESSION_MAX_SECONDS or 45)),
+        status_scan_enabled=bool(settings.QMF_STATUS_SCAN_ENABLED),
+        status_scan_time=str(settings.QMF_STATUS_SCAN_TIME or "").strip(),
     )
 
 
@@ -201,6 +207,12 @@ async def load_qmf_config(conn) -> QmfRuntimeConfig:
             fallback.session_max_seconds,
             1,
         ),
+        status_scan_enabled=_as_bool(
+            values.get("qmf_status_scan_enabled", fallback.status_scan_enabled)
+        ),
+        status_scan_time=_config_value(
+            values, "qmf_status_scan_time", fallback.status_scan_time
+        ),
     )
 
 
@@ -226,6 +238,8 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
         "expected_station_name": config.expected_station_name,
         "timeout_seconds": config.timeout_seconds,
         "session_max_seconds": config.session_max_seconds,
+        "status_scan_enabled": config.status_scan_enabled,
+        "status_scan_time": config.status_scan_time,
         "configured": config.configured,
         "registration_configured": config.registration_configured,
         "database_keys": sorted(stored_keys),

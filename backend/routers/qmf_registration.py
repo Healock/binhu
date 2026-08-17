@@ -21,7 +21,7 @@ from routers.query import _writeback_enabled, update_source_fields
 from services.audit import record_admin_audit, request_audit_fields
 from services.administrative_areas import resolve_identity_area
 from services.online_source import source_row_hash
-from services.permissions import QMF_REGISTRATION_EXECUTE
+from services.permissions import ONLINE_RAW_VIEW, QMF_REGISTRATION_EXECUTE
 from services.qmf_community import resolve_qmf_community
 from services.qmf_config import (
     QMF_CONFIG_KEYS,
@@ -61,6 +61,12 @@ from services.qmf_status import (
     STATUS_COMPLETED_MATCH,
     STATUS_COMPLETED_MISMATCH,
     ensure_registration_allowed,
+)
+from services.qmf_status_scan import (
+    create_status_scan_run,
+    latest_status_scan_payload,
+    status_scan_payload,
+    valid_schedule_time,
 )
 
 
@@ -104,6 +110,8 @@ class QmfConfigUpdate(BaseModel):
     expected_station_name: str = Field(default="滨湖新城派出所", max_length=200)
     timeout_seconds: int = Field(default=15, ge=1, le=120)
     session_max_seconds: int = Field(default=45, ge=1, le=120)
+    status_scan_enabled: bool = False
+    status_scan_time: str = Field(default="", max_length=5)
 
 
 class QmfExecuteRequest(BaseModel):
@@ -150,6 +158,10 @@ async def update_qmf_config(
         raise HTTPException(400, "开启全民防真实登记前必须先开启只读预演")
     if data.registration_enabled and not data.write_protocol_verified:
         raise HTTPException(400, "开启全民防真实登记前必须确认写入协议已完成实测")
+    if data.status_scan_enabled and not valid_schedule_time(data.status_scan_time):
+        raise HTTPException(400, "开启每日扫描前请选择有效的执行时间")
+    if data.status_scan_time and not valid_schedule_time(data.status_scan_time):
+        raise HTTPException(400, "每日扫描时间格式应为 HH:mm")
 
     values: dict[str, Any] = {
         "qmf_preview_enabled": "1" if data.preview_enabled else "0",
@@ -166,6 +178,8 @@ async def update_qmf_config(
         "qmf_expected_station_name": data.expected_station_name.strip(),
         "qmf_timeout_seconds": str(data.timeout_seconds),
         "qmf_session_max_seconds": str(data.session_max_seconds),
+        "qmf_status_scan_enabled": "1" if data.status_scan_enabled else "0",
+        "qmf_status_scan_time": data.status_scan_time.strip(),
     }
     if data.source_password is not None:
         values["qmf_source_password"] = data.source_password
@@ -211,6 +225,49 @@ async def update_qmf_config(
     )
     config = await load_qmf_config(conn)
     return public_config(config, await _stored_qmf_keys(conn))
+
+
+@router.post("/status-scans", status_code=202)
+async def start_qmf_status_scan(
+    request: Request,
+    user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
+):
+    try:
+        run_id, total = await create_status_scan_run(
+            trigger_source="manual",
+            requested_by=int(user["id"]),
+        )
+    except RuntimeError as exc:
+        if str(exc) == "scan_busy":
+            raise HTTPException(409, "已有全民防反馈扫描正在运行") from exc
+        raise
+    await record_admin_audit(
+        user,
+        "qmf_status_scan.start",
+        target_type="qmf_status_scan",
+        target_name=str(run_id),
+        detail={"run_id": run_id, "target_count": total, "mode": "full"},
+        **request_audit_fields(request),
+    )
+    return {"data": await status_scan_payload(run_id)}
+
+
+@router.get("/status-scans/latest")
+async def get_latest_qmf_status_scan(
+    _user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+):
+    return {"data": await latest_status_scan_payload()}
+
+
+@router.get("/status-scans/{run_id}")
+async def get_qmf_status_scan(
+    run_id: int,
+    _user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+):
+    payload = await status_scan_payload(run_id)
+    if not payload:
+        raise HTTPException(404, "全民防反馈扫描不存在")
+    return {"data": payload}
 
 
 async def _record_preview_audit(
