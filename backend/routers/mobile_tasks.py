@@ -46,6 +46,7 @@ from services.permissions import (
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.qmf_registration import (
     MODEL_THREE_PARSER,
+    normalize_qmf_result,
     preview_capability,
     registration_capability,
 )
@@ -79,6 +80,15 @@ Priority = Literal[
 ]
 SortMode = Literal["priority", "updated_desc", "updated_asc"]
 AssignmentMode = Literal["single", "balanced"]
+QmfFeedbackState = Literal[
+    "not_scanned",
+    "stale",
+    "pending",
+    "completed_match",
+    "completed_mismatch",
+    "not_found",
+    "error",
+]
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
 MAX_BULK_ASSIGNMENT_CHUNK = 20
@@ -338,6 +348,9 @@ class TaskSearch(BaseModel):
     communities: list[str] = Field(default_factory=list, max_length=50)
     inspectors: list[str] = Field(default_factory=list, max_length=50)
     watch_categories: list[int] = Field(default_factory=list, max_length=50)
+    qmf_feedback_states: list[QmfFeedbackState] = Field(
+        default_factory=list, max_length=10
+    )
     priority: Priority = "all"
     sort: SortMode = "priority"
     keyword: str = Field(default="", max_length=100)
@@ -577,6 +590,119 @@ def _address_order(parser_type: str) -> str:
     return f"CASE WHEN {normalized}='' THEN 1 ELSE 0 END, {normalized}"
 
 
+def _qmf_feedback_state_sql() -> str:
+    raw_result = _json_field("核查结果")
+    current_result = (
+        f"CASE {raw_result} "
+        "WHEN '离吴' THEN '离开不返吴' "
+        "WHEN '近期反吴' THEN '近期返吴' "
+        f"ELSE {raw_result} END"
+    )
+    return f"""
+        COALESCE((
+            SELECT CASE
+                WHEN snapshot.error_code<>'' THEN 'error'
+                WHEN snapshot.platform_result<>{current_result}
+                  OR snapshot.last_scanned_at<DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+                  OR source.id IS NULL
+                  OR source.revision<>snapshot.source_revision
+                  OR source.row_hash<>snapshot.source_row_hash
+                THEN 'stale'
+                WHEN snapshot.feedback_state='pending' THEN 'pending'
+                WHEN snapshot.feedback_state='completed_match' THEN 'completed_match'
+                WHEN snapshot.feedback_state='completed_mismatch' THEN 'completed_mismatch'
+                WHEN snapshot.feedback_state='not_found' THEN 'not_found'
+                ELSE 'error'
+            END
+            FROM _qmf_status_snapshots AS snapshot
+            LEFT JOIN _online_source_rows AS source
+              ON source.id=snapshot.source_id
+             AND source.parser_type=snapshot.parser_type
+             AND source.row_key=snapshot.row_key
+            WHERE snapshot.parser_type=projection.parser_type
+              AND snapshot.row_key=projection.row_key
+            LIMIT 1
+        ), 'not_scanned')
+    """.strip()
+
+
+async def _qmf_status_by_rows(
+    cur,
+    parser_type: str,
+    rows: list[tuple],
+) -> dict[str, dict]:
+    if parser_type != MODEL_THREE_PARSER or not rows:
+        return {}
+    row_values = {
+        str(row[0]): json_value(row[1], {})
+        for row in rows
+    }
+    keys = list(row_values)
+    placeholders = ",".join(["%s"] * len(keys))
+    await cur.execute(
+        f"""
+        SELECT snapshot.row_key,snapshot.source_id,snapshot.source_revision,
+               snapshot.source_row_hash,snapshot.platform_result,
+               snapshot.feedback_state,snapshot.feedback_result,
+               snapshot.checked_at,snapshot.origin,snapshot.error_code,
+               snapshot.last_scanned_at,
+               source.id,source.revision,source.row_hash
+        FROM _qmf_status_snapshots AS snapshot
+        LEFT JOIN _online_source_rows AS source
+          ON source.id=snapshot.source_id
+         AND source.parser_type=snapshot.parser_type
+         AND source.row_key=snapshot.row_key
+        WHERE snapshot.parser_type=%s
+          AND snapshot.row_key IN ({placeholders})
+        """,
+        (parser_type, *keys),
+    )
+    result: dict[str, dict] = {}
+    now = datetime.utcnow()
+    for row in await cur.fetchall():
+        row_key = str(row[0])
+        platform_result = normalize_qmf_result(
+            row_values.get(row_key, {}).get("核查结果")
+        )
+        stale = (
+            str(row[4] or "") != platform_result
+            or row[11] is None
+            or int(row[12] or 0) != int(row[2] or 0)
+            or str(row[13] or "") != str(row[3] or "")
+            or not row[10]
+            or (now - row[10]).total_seconds() > 7 * 24 * 60 * 60
+        )
+        raw_state = str(row[5] or "")
+        state = (
+            "error" if str(row[9] or "")
+            else "stale" if stale
+            else raw_state if raw_state in {
+                "pending", "completed_match", "completed_mismatch", "not_found"
+            }
+            else "error"
+        )
+        result[row_key] = {
+            "state": state,
+            "platform_result": str(row[4] or ""),
+            "feedback_result": str(row[6] or ""),
+            "checked_at": str(row[7] or ""),
+            "origin": str(row[8] or ""),
+            "error_code": str(row[9] or ""),
+            "last_scanned_at": _iso_utc(row[10]),
+        }
+    for row_key, values in row_values.items():
+        result.setdefault(row_key, {
+            "state": "not_scanned",
+            "platform_result": normalize_qmf_result(values.get("核查结果")),
+            "feedback_result": "",
+            "checked_at": "",
+            "origin": "",
+            "error_code": "",
+            "last_scanned_at": None,
+        })
+    return result
+
+
 def _priority_bucket(
     parser_type: str,
     values: dict,
@@ -670,6 +796,15 @@ def _task_where(
                 f"AND watch_assignment.category_id IN ({placeholders}))"
             )
             params.extend(data.watch_categories)
+    if data.qmf_feedback_states:
+        if parser_type != MODEL_THREE_PARSER:
+            where_parts.append("1=0")
+        else:
+            placeholders = ",".join(["%s"] * len(data.qmf_feedback_states))
+            where_parts.append(
+                f"({_qmf_feedback_state_sql()}) IN ({placeholders})"
+            )
+            params.extend(data.qmf_feedback_states)
     if include_priority and data.priority != "all":
         where_parts.append(f"({_priority_case(parser_type)})=%s")
         params.append(data.priority)
@@ -844,6 +979,7 @@ def _task_record(
     watch: dict | None = None,
     photo_fetched: bool = False,
     sync_state: str = "",
+    qmf_status: dict | None = None,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
@@ -876,6 +1012,7 @@ def _task_record(
         ),
         "watch_marks": list(watch.get("watch_marks") or []),
         "first_dispatch_at": _iso_utc(watch.get("first_dispatch_at")),
+        "qmf_status": qmf_status,
     }
 
 
@@ -961,6 +1098,12 @@ def _empty_facets() -> dict:
         "total": 0,
         "priority_counts": {key: 0 for key in PRIORITY_KEYS},
         "status_counts": {key: 0 for key in ("unchecked", "checked", "completed")},
+        "qmf_feedback_counts": {
+            key: 0 for key in (
+                "not_scanned", "stale", "pending", "completed_match",
+                "completed_mismatch", "not_found", "error",
+            )
+        },
     }
 
 
@@ -994,6 +1137,23 @@ async def _task_facets(cur, parser_type: str, where_sql: str, params: list) -> d
     for state, count in await cur.fetchall():
         if str(state) in facets["status_counts"]:
             facets["status_counts"][str(state)] = int(count or 0)
+    if parser_type == MODEL_THREE_PARSER:
+        await cur.execute(
+            f"""
+            SELECT qmf_state,COUNT(*)
+            FROM (
+                SELECT {_qmf_feedback_state_sql()} AS qmf_state
+                FROM _online_source_projection AS projection
+                WHERE {where_sql} AND projection.task_state='completed'
+            ) AS qmf_rows
+            GROUP BY qmf_state
+            """,
+            params,
+        )
+        for state, count in await cur.fetchall():
+            normalized = str(state or "error")
+            if normalized in facets["qmf_feedback_counts"]:
+                facets["qmf_feedback_counts"][normalized] = int(count or 0)
     facets["total"] = sum(facets["priority_counts"].values())
     return facets
 
@@ -1108,6 +1268,7 @@ async def _list_mobile_tasks_data(
         "status": "all",
         "review_stage": "all",
         "priority": "all",
+        "qmf_feedback_states": [],
     })
     base_where, base_params = _task_where(
         context,
@@ -1135,6 +1296,7 @@ async def _list_mobile_tasks_data(
                     "communities": data.communities,
                     "inspectors": data.inspectors,
                     "watch_categories": data.watch_categories,
+                    "qmf_feedback_states": data.qmf_feedback_states,
                     "priority": data.priority,
                     "sort": data.sort,
                     "keyword_present": bool(data.keyword.strip()),
@@ -1177,6 +1339,7 @@ async def _list_mobile_tasks_data(
             [*query_params, data.page_size, (data.page - 1) * data.page_size],
         )
         rows = await cur.fetchall()
+        qmf_by_row = await _qmf_status_by_rows(cur, parser_type, rows)
         watch_by_row = await task_watch_payload(
             cur,
             parser_type,
@@ -1200,6 +1363,11 @@ async def _list_mobile_tasks_data(
                 watch_by_row.get(str(row[0])),
                 str(row[0]) in photo_fetched_rows,
                 str(row[4] or ""),
+                qmf_status=(
+                    qmf_by_row.get(str(row[0]))
+                    if str(row[5] or "") == "completed"
+                    else None
+                ),
             )
             for row in rows
         ],
@@ -1217,6 +1385,7 @@ async def _list_mobile_tasks_data(
             "communities": data.communities,
             "inspectors": data.inspectors,
             "watch_categories": data.watch_categories,
+            "qmf_feedback_states": data.qmf_feedback_states,
             "priority": data.priority,
             "sort": data.sort,
             "keyword_present": bool(data.keyword.strip()),
@@ -1442,6 +1611,11 @@ async def _mobile_task_detail_data(
         )
         watch_by_row = await task_watch_payload(cur, parser_type, [row_key]) \
             if settings.REGISTRY_FEATURE_ENABLED else {}
+        qmf_by_row = await _qmf_status_by_rows(
+            cur,
+            parser_type,
+            [(row_key, parent_row[0])],
+        )
 
         sources = []
         for (
@@ -1602,6 +1776,11 @@ async def _mobile_task_detail_data(
             watch_by_row.get(row_key),
             False,
             str(parent_row[3] or ""),
+            qmf_status=(
+                qmf_by_row.get(row_key)
+                if str(parent_row[4] or "") == "completed"
+                else None
+            ),
         ),
         "workflow": {
             "label": workflow.label,
@@ -1623,6 +1802,7 @@ async def _mobile_task_detail_data(
         "qmf_preview": qmf_preview,
         "qmf_registration": qmf_registration,
         "qmf_feedback": qmf_feedback,
+        "qmf_status": qmf_by_row.get(row_key),
         "sources": sources,
     }
 

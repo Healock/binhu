@@ -26,6 +26,7 @@ from services.permissions import (
 from services.domain_schema import ensure_registry_schema, ensure_workflow_schema
 from services.domain_routing import DomainRoutingCursor
 from services.qmf_runs import ensure_qmf_registration_schema
+from services.qmf_status_scan import ensure_qmf_status_scan_schema
 from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 
@@ -2089,6 +2090,7 @@ class DatabaseManager:
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
                 await ensure_qmf_registration_schema(cur)
+                await ensure_qmf_status_scan_schema(cur)
                 await ensure_administrative_area_schema(cur)
                 await ensure_bootstrap_admin(cur)
 

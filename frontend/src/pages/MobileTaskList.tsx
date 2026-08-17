@@ -10,10 +10,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent 
 import { useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskFilterOptions,
+  getLatestQmfStatusScan,
   bulkAssignMobileTasks,
   listMobileTasks,
   MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE,
   selectMobileTasksForAssignment,
+  startQmfStatusScan,
   type MobileTaskFacets,
   type MobileTaskFilterOption,
   type MobileTaskItem,
@@ -22,6 +24,8 @@ import {
   type MobileTaskScope,
   type MobileTaskSort,
   type MobileTaskStatus,
+  type QmfFeedbackState,
+  type QmfStatusScanRun,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { isFlowTaskElevated, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
@@ -43,8 +47,12 @@ import {
 } from '../utils/mobileTaskListState'
 import MobilePhonePicker from '../components/MobilePhonePicker'
 import MobileTaskTable from '../components/MobileTaskTable'
+import QmfFeedbackStatus, { QMF_FEEDBACK_OPTIONS } from '../components/QmfFeedbackStatus'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import useSystemTime from '../hooks/useSystemTime'
+
+const MODEL_THREE_PARSER = '疑似未注销模型三'
 
 const STATUS_OPTIONS = [
   { label: '待处理（未完成）', value: 'pending' },
@@ -95,6 +103,15 @@ const EMPTY_FACETS: MobileTaskFacets = {
     completed: 0,
   },
   status_counts: { unchecked: 0, checked: 0, completed: 0 },
+  qmf_feedback_counts: {
+    not_scanned: 0,
+    stale: 0,
+    pending: 0,
+    completed_match: 0,
+    completed_mismatch: 0,
+    not_found: 0,
+    error: 0,
+  },
 }
 
 const EMPTY_ASSIGNMENT = {
@@ -145,10 +162,17 @@ function readSort(value: string | null): MobileTaskSort {
     : 'priority'
 }
 
+function readQmfFeedbackStates(searchParams: URLSearchParams): QmfFeedbackState[] {
+  const valid = new Set(QMF_FEEDBACK_OPTIONS.map(option => option.value))
+  return readMulti(searchParams, 'qmf_state')
+    .filter((value): value is QmfFeedbackState => valid.has(value as QmfFeedbackState))
+}
+
 export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
   const navigate = useNavigate()
   const navigationType = useNavigationType()
   const { recordActivity, user } = useAuth()
+  const formatSystemTime = useSystemTime()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedType = searchParams.get('type') || MOBILE_TASK_TYPES[0]
   const parserType = MOBILE_TASK_TYPES.includes(requestedType as any)
@@ -167,9 +191,12 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     : requestedScope === 'community' ? 'community' : 'mine'
   const requestedStatus = searchParams.get('status')
   const requestedReviewStage = searchParams.get('review_stage')
+  const initialQmfFeedbackStates = readQmfFeedbackStates(searchParams)
   const [status, setStatus] = useState<MobileTaskStatus>(
     analysisOnly
       ? 'all'
+      : initialQmfFeedbackStates.length
+        ? 'completed'
       : ['pending', 'unchecked', 'checked', 'review', 'completed', 'all'].includes(requestedStatus || '')
       ? requestedStatus as MobileTaskStatus
       : 'pending',
@@ -184,6 +211,9 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
   const [inspectors, setInspectors] = useState<string[]>(readMulti(searchParams, 'inspector'))
   const [watchCategories, setWatchCategories] = useState<number[]>(readMultiNumber(searchParams, 'watch_category'))
+  const [qmfFeedbackStates, setQmfFeedbackStates] = useState<QmfFeedbackState[]>(
+    initialQmfFeedbackStates,
+  )
   const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
   const taskDisplayMode = user?.task_display_mode || 'card'
@@ -220,6 +250,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const [moreOpen, setMoreOpen] = useState(false)
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState(() => snapshotRef.current?.source_message || '')
+  const [qmfScan, setQmfScan] = useState<QmfStatusScanRun | null>(null)
+  const [qmfScanLoading, setQmfScanLoading] = useState(false)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -235,6 +267,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const listRequestId = useRef(0)
   const loadedPageRef = useRef(snapshotRef.current?.loaded_page || 1)
   const canBulkAssign = assignment.enabled
+  const isModelThree = parserType === MODEL_THREE_PARSER && !analysisOnly
+  const canStartQmfScan = Boolean(user?.permissions.includes('qmf.registration.execute'))
   const assignmentCommunity = useCallback((task: MobileTaskItem) => (
     assignment.community_aliases[String(task.community || '').trim()] || ''
   ), [assignment.community_aliases])
@@ -302,7 +336,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     setBulkInspector(undefined)
     setBulkMode('single')
     setBulkProgress(null)
-  }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories])
+  }, [parserType, scope, status, reviewStage, priority, sort, keyword, communities, inspectors, watchCategories, qmfFeedbackStates])
 
   const toggleSelected = (rowKey: string, checked: boolean) => {
     const task = rows.find(item => item.row_key === rowKey)
@@ -334,6 +368,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
         communities,
         inspectors,
         watch_categories: watchCategories,
+        qmf_feedback_states: qmfFeedbackStates,
         priority: analysisOnly ? 'all' : priority,
         sort,
         keyword: keyword || undefined,
@@ -531,6 +566,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
           communities,
           inspectors,
           watch_categories: watchCategories,
+          qmf_feedback_states: qmfFeedbackStates,
           priority: analysisOnly ? 'all' : priority,
           sort,
           keyword: keyword || undefined,
@@ -579,7 +615,63 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
       }
       if (append) loadingMoreRef.current = false
     }
-  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, reviewStage, scope, sort, status, watchCategories])
+  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, qmfFeedbackStates, reviewStage, scope, sort, status, watchCategories])
+
+  const loadQmfScan = useCallback(async (silent = true) => {
+    if (!isModelThree) {
+      setQmfScan(null)
+      return null
+    }
+    if (!silent) setQmfScanLoading(true)
+    try {
+      const result = await getLatestQmfStatusScan()
+      setQmfScan(result)
+      return result
+    } catch (reason: any) {
+      if (!silent) message.error(reason?.response?.data?.detail || '全民防反馈扫描进度读取失败')
+      return null
+    } finally {
+      if (!silent) setQmfScanLoading(false)
+    }
+  }, [isModelThree])
+
+  useEffect(() => {
+    if (!isModelThree) {
+      setQmfScan(null)
+      return undefined
+    }
+    void loadQmfScan()
+    const timer = window.setInterval(async () => {
+      const previousActive = qmfScan?.status === 'queued' || qmfScan?.status === 'running'
+      const result = await loadQmfScan()
+      const active = result?.status === 'queued' || result?.status === 'running'
+      if (previousActive && !active) await load(1, false, true)
+    }, qmfScan?.status === 'queued' || qmfScan?.status === 'running' ? 3_000 : 30_000)
+    return () => window.clearInterval(timer)
+  }, [isModelThree, load, loadQmfScan, qmfScan?.status])
+
+  const confirmStartQmfScan = () => {
+    Modal.confirm({
+      title: '全量核对全民防反馈',
+      content: '将冻结当前全部已完成模型三任务清单，并使用四路并发逐条只读核对。扫描不会修改任何业务数据。',
+      okText: '开始核对',
+      cancelText: '取消',
+      onOk: async () => {
+        setQmfScanLoading(true)
+        try {
+          const result = await startQmfStatusScan()
+          setQmfScan(result)
+          message.success(result.total_count ? `已加入 ${result.total_count} 条任务` : '当前没有需要扫描的已完成任务')
+          if (!result.total_count) await load(1, false, true)
+        } catch (reason: any) {
+          message.error(reason?.response?.data?.detail || '全民防反馈扫描启动失败')
+          throw reason
+        } finally {
+          setQmfScanLoading(false)
+        }
+      },
+    })
+  }
 
   useEffect(() => {
     const sentinel = loadMoreRef.current
@@ -676,10 +768,11 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     communities.forEach(value => next.append('community', value))
     inspectors.forEach(value => next.append('inspector', value))
     watchCategories.forEach(value => next.append('watch_category', String(value)))
+    if (isModelThree) qmfFeedbackStates.forEach(value => next.append('qmf_state', value))
     if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, communities, inspectors, parserType, priority, reviewStage, scope, setSearchParams, sort, status, watchCategories])
+  }, [analysisOnly, communities, inspectors, isModelThree, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -689,6 +782,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     setCommunities([])
     setInspectors([])
     setWatchCategories([])
+    setQmfFeedbackStates([])
     setPriority('all')
     setSort('priority')
     setStatus(analysisOnly ? 'all' : 'pending')
@@ -700,6 +794,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
     setCommunities([])
     setInspectors([])
     setWatchCategories([])
+    setQmfFeedbackStates([])
     setPriority('all')
     setSort('priority')
     setStatus(analysisOnly ? 'all' : 'pending')
@@ -720,6 +815,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
   const filtersActive = communities.length > 0
     || inspectors.length > 0
     || watchCategories.length > 0
+    || (isModelThree && qmfFeedbackStates.length > 0)
     || (!analysisOnly && priority !== 'all')
     || (!analysisOnly && status !== 'pending')
     || (!analysisOnly && reviewStage !== 'all')
@@ -914,12 +1010,80 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
               optionFilterProp="label"
               placeholder="人员标记分类"
             />
+            {isModelThree && <Select
+              mode="multiple"
+              value={qmfFeedbackStates}
+              options={QMF_FEEDBACK_OPTIONS.map(option => ({
+                value: option.value,
+                label: `${option.label}（${facets.qmf_feedback_counts[option.value] || 0}）`,
+              }))}
+              onChange={values => {
+                const next = values as QmfFeedbackState[]
+                setQmfFeedbackStates(next)
+                if (next.length) {
+                  setStatus('completed')
+                  setPriority('all')
+                  setReviewStage('all')
+                }
+              }}
+              allowClear
+              maxTagCount="responsive"
+              placeholder="全民防反馈状态"
+            />}
           </div>
           )}
         </>}
         meta={<><span>当前筛选共 {total} 条</span>{keywordInput && <button type="button" className="text-[var(--app-primary)]" onClick={() => setKeywordInput('')}>清除搜索</button>}</>}
-        actions={<Button onClick={() => void load()} loading={loading}>刷新</Button>}
+        actions={<>
+          <Button onClick={() => void load()} loading={loading}>刷新</Button>
+          {isModelThree && canStartQmfScan && (
+            <Button
+              type="primary"
+              loading={qmfScanLoading}
+              disabled={qmfScan?.status === 'queued' || qmfScan?.status === 'running'}
+              onClick={confirmStartQmfScan}
+            >
+              全量核对全民防反馈
+            </Button>
+          )}
+        </>}
       />
+
+      {isModelThree && qmfScan && (
+        <section className="app-card grid gap-3 p-4" aria-live="polite">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <strong className="text-[var(--app-text-strong)]">
+                {qmfScan.scan_mode === 'full' ? '全民防全量核对' : '全民防每日增量核对'}
+              </strong>
+              <span className="ml-2 text-xs text-[var(--app-text-secondary)]">
+                {qmfScan.status === 'queued' ? '等待开始' : qmfScan.status === 'running' ? '正在核对' : qmfScan.status === 'completed' ? '已完成' : qmfScan.status === 'partial' ? '部分完成' : '已停止'}
+              </span>
+            </div>
+            <span className="text-xs text-[var(--app-text-secondary)]">
+              {qmfScan.finished_at
+                ? `完成于 ${formatSystemTime(qmfScan.finished_at)}`
+                : qmfScan.started_at
+                  ? `开始于 ${formatSystemTime(qmfScan.started_at)}`
+                  : `创建于 ${formatSystemTime(qmfScan.created_at)}`}
+            </span>
+          </div>
+          <Progress
+            percent={qmfScan.total_count
+              ? Math.min(100, Math.round((qmfScan.processed_count / qmfScan.total_count) * 100))
+              : 100}
+            status={qmfScan.status === 'failed' ? 'exception' : qmfScan.status === 'running' ? 'active' : 'normal'}
+          />
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--app-text-secondary)]">
+            <span>已处理 {qmfScan.processed_count}/{qmfScan.total_count}</span>
+            <span>一致 {qmfScan.match_count}</span>
+            <span className={qmfScan.mismatch_count ? 'text-[var(--app-danger)]' : ''}>不一致 {qmfScan.mismatch_count}</span>
+            <span>未核查 {qmfScan.pending_count}</span>
+            <span>无记录 {qmfScan.not_found_count}</span>
+            <span className={qmfScan.error_count ? 'text-[var(--app-warning)]' : ''}>异常 {qmfScan.error_count}</span>
+          </div>
+        </section>
+      )}
 
       {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       {sourceMessage && <Alert type="warning" showIcon message={sourceMessage} />}
@@ -1071,7 +1235,8 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                     || task.conflict
                     || task.source_count > 1
                     || task.pending_sync
-                    || Boolean(task.watch_marks?.length)) && (
+                    || Boolean(task.watch_marks?.length)
+                    || Boolean(task.qmf_status)) && (
                     <div className="mobile-task-item-card__flags">
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
                       {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
@@ -1084,6 +1249,7 @@ export default function MobileTaskList({ mode = 'tasks' }: { mode?: 'tasks' | 'a
                       {task.watch_marks?.map(mark => (
                         <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
                       ))}
+                      {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
                     </div>
                   )}
                   {(primaryPhone || task.summary.identity_number || primaryAddress) && (

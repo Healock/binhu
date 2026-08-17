@@ -20,6 +20,7 @@ import {
   mobileTaskSourceTags,
   mobileTaskSurfaceTone,
 } from '../utils/mobileTasks'
+import QmfFeedbackStatus from './QmfFeedbackStatus'
 
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
@@ -531,6 +532,7 @@ export default function MobileTaskTable({
             {task.watch_marks?.map(mark => (
               <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
             ))}
+            {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
           </div>
         )
       },

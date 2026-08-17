@@ -114,6 +114,37 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
             for token in ("uploadPhoto", "saveLocalPhoto", "addPeople", "fnmxCheck")
         ))
 
+    async def test_reusable_session_logs_in_once_for_multiple_exact_queries(self):
+        requests = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path == "/api/login":
+                return httpx.Response(200, json={"code": 200, "data": "fixture-token"})
+            return httpx.Response(200, json={
+                "code": 200,
+                "data": {"total": 1, "list": [response_row()]},
+            })
+
+        client = QmfLegacyStatusClient(
+            config=status_config(),
+            transport=httpx.MockTransport(handler),
+        )
+        async with client.session() as session:
+            first = await session.query(identity=VALID_IDENTITY, expected_result="在吴")
+            second = await session.query(identity=VALID_IDENTITY, expected_result="在吴")
+
+        self.assertEqual(first.state, STATUS_COMPLETED_MATCH)
+        self.assertEqual(second.state, STATUS_COMPLETED_MATCH)
+        self.assertEqual(
+            [request.url.path for request in requests].count("/api/login"),
+            1,
+        )
+        self.assertEqual(
+            [request.url.path for request in requests].count("/api/masses/queryYysList"),
+            2,
+        )
+
     async def test_completed_mismatch_pending_and_not_found(self):
         async def query(row, total=1):
             async def handler(request: httpx.Request) -> httpx.Response:
