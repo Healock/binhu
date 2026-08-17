@@ -20,6 +20,7 @@ from services.permissions import (
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_SUMMARY_VIEW,
     ONLINE_TASK_MANAGE,
+    QMF_REGISTRATION_EXECUTE,
     SYNC_TRIGGER,
     WORKFLOW_ATTACHMENT_VIEW,
     WORKFLOW_TICKET_CREATE,
@@ -153,6 +154,10 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(WORKFLOW_TICKET_CREATE, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
         self.assertIn(WORKFLOW_TICKET_VIEW, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
         self.assertIn(ONLINE_TASK_MANAGE, DEFAULT_PERMISSION_GROUPS["community_registry_viewer"]["permissions"])
+        self.assertIn(QMF_REGISTRATION_EXECUTE, DEFAULT_PERMISSION_GROUPS["super_admin"]["permissions"])
+        for code, group in DEFAULT_PERMISSION_GROUPS.items():
+            if code != "super_admin":
+                self.assertNotIn(QMF_REGISTRATION_EXECUTE, group["permissions"])
 
     def test_own_department_requires_community_department(self):
         self.assertEqual(permitted_community({

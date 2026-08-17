@@ -1221,7 +1221,6 @@ export interface QmfConfig {
   registration_enabled: boolean
   login_protocol_verified: boolean
   write_protocol_verified: boolean
-  preview_allowed_username: string
   api_base_url: string
   login_host: string
   login_port: number

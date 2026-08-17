@@ -84,7 +84,6 @@ class QmfRuntimeConfig:
     registration_enabled: bool
     login_protocol_verified: bool
     write_protocol_verified: bool
-    preview_allowed_username: str
     api_base_url: str
     login_host: str
     login_port: int
@@ -102,7 +101,6 @@ class QmfRuntimeConfig:
         return bool(
             self.preview_enabled
             and self.login_protocol_verified
-            and self.preview_allowed_username == "shenshenghua"
             and all(
                 (
                     self.api_base_url,
@@ -134,7 +132,6 @@ def settings_config() -> QmfRuntimeConfig:
         registration_enabled=bool(settings.QMF_REGISTRATION_ENABLED),
         login_protocol_verified=bool(settings.QMF_LOGIN_PROTOCOL_VERIFIED),
         write_protocol_verified=bool(settings.QMF_WRITE_PROTOCOL_VERIFIED),
-        preview_allowed_username=str(settings.QMF_PREVIEW_ALLOWED_USERNAME or ""),
         api_base_url=str(settings.QMF_API_BASE_URL or ""),
         login_host=str(settings.QMF_LOGIN_HOST or ""),
         login_port=int(settings.QMF_LOGIN_PORT or 0),
@@ -179,9 +176,6 @@ async def load_qmf_config(conn) -> QmfRuntimeConfig:
         write_protocol_verified=_as_bool(
             values.get("qmf_write_protocol_verified", fallback.write_protocol_verified)
         ),
-        preview_allowed_username=_config_value(
-            values, "qmf_preview_allowed_username", fallback.preview_allowed_username
-        ),
         api_base_url=_config_value(values, "qmf_api_base_url", fallback.api_base_url),
         login_host=_config_value(values, "qmf_login_host", fallback.login_host),
         login_port=_as_int(values.get("qmf_login_port", fallback.login_port), fallback.login_port),
@@ -221,7 +215,6 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
         "registration_enabled": config.registration_enabled,
         "login_protocol_verified": config.login_protocol_verified,
         "write_protocol_verified": config.write_protocol_verified,
-        "preview_allowed_username": config.preview_allowed_username,
         "api_base_url": config.api_base_url,
         "login_host": config.login_host,
         "login_port": config.login_port,

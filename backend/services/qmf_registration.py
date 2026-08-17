@@ -41,7 +41,6 @@ RESULT_ALIASES = {
     RESULT_LEAVE_NOT_RETURNING: RESULT_LEAVE_NOT_RETURNING,
 }
 SUPPORTED_RESULT = RESULT_IN_WU  # compatibility for older imports/tests
-ALLOWED_PLATFORM_USERNAME = "shenshenghua"
 READ_ONLY_ENDPOINTS = {
     "fnmx/queryYysList": "POST",
     "enterHouse/queryPeopleBySfzh": "POST",
@@ -256,7 +255,7 @@ def normalize_qmf_result(value: Any) -> str:
 
 def preview_capability(
     *,
-    username: str,
+    allowed: bool,
     parser_type: str,
     source_count: int,
     conflict: bool,
@@ -264,10 +263,7 @@ def preview_capability(
     config: QmfRuntimeConfig | None = None,
 ) -> dict[str, Any]:
     """Return server-computed visibility without exposing configuration values."""
-    visible = (
-        username == ALLOWED_PLATFORM_USERNAME
-        and parser_type == MODEL_THREE_PARSER
-    )
+    visible = allowed and parser_type == MODEL_THREE_PARSER
     if not visible:
         return {"visible": False, "enabled": False, "reason": ""}
     if not preview_configured(config):
@@ -299,7 +295,7 @@ def preview_capability(
 
 def registration_capability(
     *,
-    username: str,
+    allowed: bool,
     parser_type: str,
     source_count: int,
     conflict: bool,
@@ -308,7 +304,7 @@ def registration_capability(
 ) -> dict[str, Any]:
     runtime_config = config or settings_config()
     preview = preview_capability(
-        username=username,
+        allowed=allowed,
         parser_type=parser_type,
         source_count=source_count,
         conflict=conflict,
