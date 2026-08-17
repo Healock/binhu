@@ -261,13 +261,36 @@
   box-shadow: 0 10px 34px rgb(15 23 42 / 0.07);
 }
 
+.task-flow-lab .react-flow__node-lane.task-flow-lane--passive {
+  pointer-events: none;
+}
+
+.task-flow-lab .react-flow__node-lane.task-flow-lane--resizing {
+  pointer-events: auto;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-primary) 30%, transparent),
+    0 14px 38px rgb(15 23 42 / 0.12);
+}
+
 .task-flow-group {
   width: 100%;
   height: 100%;
   border-top: 4px solid var(--app-primary);
   border-radius: 17px;
   background: color-mix(in srgb, #2563eb 2.5%, transparent);
-  pointer-events: none;
+}
+
+.task-flow-group__resize-line {
+  border-color: var(--app-primary) !important;
+  opacity: 0.7;
+}
+
+.task-flow-group__resize-handle {
+  width: 11px !important;
+  height: 11px !important;
+  border: 2px solid var(--app-surface) !important;
+  border-radius: 3px !important;
+  background: var(--app-primary) !important;
+  box-shadow: 0 2px 7px rgb(15 23 42 / 0.2);
 }
 
 .task-flow-group--waiting {
@@ -321,6 +344,7 @@
   color: var(--app-text-strong);
   background: var(--app-surface);
   font-size: 13px;
+  pointer-events: none;
 }
 
 .task-flow-lab .react-flow__controls,

@@ -50,13 +50,10 @@ export function taskFlowLaneNodeId(lane: TaskFlowLane): string {
 export function taskFlowLaneHeight(
   nodes: Array<{ lane: TaskFlowLane; position: { y: number } }>,
 ): number {
-  const counts: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
   const lowest: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
   nodes.forEach(node => {
-    counts[node.lane] += 1
     lowest[node.lane] = Math.max(lowest[node.lane], Number(node.position.y || 0))
   })
-  const byCount = Math.max(...Object.values(counts)) * 196 + 84
   const byPosition = Math.max(...Object.values(lowest)) + 190
-  return Math.max(560, byCount, byPosition)
+  return Math.max(560, byPosition)
 }
