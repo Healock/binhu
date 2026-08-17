@@ -35,9 +35,11 @@ from services.online_source import (
     source_row_hash,
 )
 from services.online_local_writeback import (
+    _retry_error_details,
     local_sync_state,
     overlay_local_values,
     split_remote_changes,
+    writeback_cell_metadata,
 )
 from services.parsers import get_parser
 from services.permissions import (
@@ -45,7 +47,7 @@ from services.permissions import (
     ONLINE_RAW_ROW_MANAGE,
     ONLINE_RAW_VIEW,
 )
-from services.txdocs_client import TxDocsClient
+from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
 
 def make_user(position, *, communities=None, view_scope="own_department", permissions=None):
@@ -222,6 +224,103 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
+    def test_blank_rental_result_select_uses_business_write_options(self):
+        metadata = writeback_cell_metadata(
+            "出租房屋核查",
+            "核查结果",
+            {
+                "type": "select",
+                "options": [{"id": "", "text": "", "color": None}],
+                "multiple": False,
+            },
+        )
+
+        self.assertEqual(
+            [item["text"] for item in metadata["write_options"]],
+            [
+                "已登记",
+                "离苏",
+                "常口",
+                "无需登记，原因写备注",
+                "移交，移交哪个社区写备注",
+                "无法核实",
+            ],
+        )
+        client = TxDocsClient("client", "token", "user")
+        for result in ("已登记", "常口"):
+            with self.subTest(result=result):
+                request = client.build_update_cell_request(
+                    "sheet", 47, 9, result, metadata, "核查结果"
+                )
+                cell = request["updateRangeRequest"]["gridData"]["rows"][0][
+                    "values"
+                ][0]
+                self.assertEqual(cell["cellValue"], {"text": result})
+
+    def test_blank_qmf_result_select_uses_business_write_options(self):
+        metadata = writeback_cell_metadata(
+            "疑似未注销模型三",
+            "核查结果",
+            {
+                "type": "select",
+                "options": [{"id": "", "text": "", "color": None}],
+                "multiple": False,
+            },
+        )
+
+        self.assertEqual(
+            [item["text"] for item in metadata["write_options"]],
+            ["近期返吴", "离吴", "在吴"],
+        )
+        client = TxDocsClient("client", "token", "user")
+        for result in ("近期返吴", "离吴", "在吴"):
+            with self.subTest(result=result):
+                request = client.build_update_cell_request(
+                    "sheet", 8, 6, result, metadata, "核查结果"
+                )
+                cell = request["updateRangeRequest"]["gridData"]["rows"][0][
+                    "values"
+                ][0]
+                self.assertEqual(cell["cellValue"], {"text": result})
+
+    def test_result_writeback_keeps_real_options_and_adds_business_fallbacks(self):
+        metadata = writeback_cell_metadata(
+            "出租房屋核查",
+            "核查结果",
+            {
+                "type": "select",
+                "options": [{"id": "result-1", "text": "已登记"}],
+            },
+        )
+
+        self.assertEqual(
+            metadata["write_options"][0],
+            {"id": "result-1", "text": "已登记"},
+        )
+        self.assertIn(
+            {"id": "常口", "text": "常口"},
+            metadata["write_options"],
+        )
+
+    def test_non_result_select_does_not_receive_result_options(self):
+        metadata = writeback_cell_metadata(
+            "出租房屋核查",
+            "核查人",
+            {"type": "select", "options": [{"id": "", "text": ""}]},
+        )
+
+        self.assertNotIn("write_options", metadata)
+
+    def test_write_validation_retry_has_safe_specific_error(self):
+        self.assertEqual(
+            _retry_error_details(ValueError("无效的下拉选项: 测试值")),
+            ("write_validation_failed", "腾讯写回参数校验未通过"),
+        )
+        self.assertEqual(
+            _retry_error_details(TxDocsAPIError("额度已用完", code="400011")),
+            ("txdocs_api_failed", "腾讯接口暂未完成写回"),
+        )
+
     def test_cache_refresh_tracks_a_business_row_when_its_physical_row_moves(self):
         existing = [
             {"id": 7, "sheet_id": "sheet", "physical_row": 10,
