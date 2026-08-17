@@ -787,6 +787,10 @@ test('流口任务不再提供待同步筛选入口，但保留任务级同步�
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
   )
+  const styles = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
   const filterOptions = pageSource.match(/const PRIORITY_OPTIONS = \[[\s\S]*?\n\]/)?.[0] ?? ''
   const priorityCards = pageSource.match(/const PRIORITY_CARDS:[\s\S]*?\n\]/)?.[0] ?? ''
 
@@ -794,6 +798,8 @@ test('流口任务不再提供待同步筛选入口，但保留任务级同步�
   assert.doesNotMatch(priorityCards, /pending_sync|待同步/)
   assert.match(pageSource, /task\.sync_state === 'pending'/)
   assert.match(pageSource, />待同步<\/Tag>/)
+  assert.match(styles, /\.mobile-task-priority-grid\s*\{[\s\S]*?repeat\(6,/)
+  assert.doesNotMatch(styles, /\.mobile-task-priority-grid\s*\{[\s\S]*?repeat\(7,/)
 })
 
 test('mobile task choice fields disable search on mobile', () => {
