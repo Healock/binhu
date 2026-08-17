@@ -56,14 +56,27 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalize_legacy_result("3", "近期返吴(不注销)"), ("completed", "近期返吴"))
         self.assertEqual(normalize_legacy_result("9", "其他"), (STATUS_UNKNOWN_RESULT, ""))
 
-    def test_management_display_text_overrides_unconfirmed_numeric_code(self):
-        self.assertEqual(normalize_legacy_result("1", "近期返吴"), ("completed", "近期返吴"))
-        self.assertEqual(normalize_legacy_result("1", "近期返吴(不注销)"), ("completed", "近期返吴"))
-        self.assertEqual(normalize_legacy_result("3", "离开不返吴"), ("completed", "离开不返吴"))
-        self.assertEqual(normalize_legacy_result("2", "未核查"), (STATUS_PENDING, ""))
-        for code in ("1", "2", "3"):
+    def test_management_code_and_display_text_are_cross_checked(self):
+        expected_by_code = {
+            "0": (STATUS_PENDING, ""),
+            "1": ("completed", "离开不返吴"),
+            "2": ("completed", "在吴"),
+            "3": ("completed", "近期返吴"),
+        }
+        for code, expected in expected_by_code.items():
             with self.subTest(code=code):
-                self.assertEqual(normalize_legacy_result(code, ""), (STATUS_UNKNOWN_RESULT, ""))
+                self.assertEqual(normalize_legacy_result(code, ""), expected)
+        for code, text in (
+            ("1", "近期返吴"),
+            ("1", "近期返吴(不注销)"),
+            ("3", "离开不返吴"),
+            ("2", "未核查"),
+        ):
+            with self.subTest(code=code, text=text):
+                self.assertEqual(
+                    normalize_legacy_result(code, text),
+                    (STATUS_UNKNOWN_RESULT, ""),
+                )
 
     async def test_exact_query_logs_in_and_returns_completed_match(self):
         requests = []
@@ -122,7 +135,7 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mismatch.state, STATUS_COMPLETED_MISMATCH)
         self.assertFalse(mismatch.matches_platform_result)
 
-        matching_recent_return = await query(response_row(code="1", text="近期返吴"))
+        matching_recent_return = await query(response_row(code="3", text="近期返吴(不注销)"))
         self.assertEqual(matching_recent_return.state, STATUS_COMPLETED_MATCH)
         self.assertTrue(matching_recent_return.matches_platform_result)
         self.assertEqual(matching_recent_return.result, "近期返吴")
