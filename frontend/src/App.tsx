@@ -43,6 +43,7 @@ import {
 } from './utils/mobileTaskRouting'
 
 const DataQuery = lazy(() => import('./pages/DataQuery'))
+const TaskFlowLab = lazy(() => import('./pages/TaskFlowLab'))
 
 function LazyPage({ children }: { children: ReactNode }) {
   return (
@@ -121,6 +122,9 @@ function App() {
               <Route path="/people" element={<Navigate to="/grid-members" replace />} />
               <Route path="/people/:userId" element={<PublicProfile />} />
               <Route path="/" element={<RoleDashboard />} />
+              <Route element={<ProtectedRoute requireRole="super_admin" />}>
+                <Route path="/task-flow-lab" element={<LazyPage><TaskFlowLab /></LazyPage>} />
+              </Route>
               <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
                 <Route path="/summary" element={<Dashboard />} />
               </Route>

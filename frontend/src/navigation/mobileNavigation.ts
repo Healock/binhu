@@ -58,6 +58,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         end: true,
       },
       {
+        id: 'task_flow_lab',
+        path: '/task-flow-lab',
+        label: '我的任务流（内测）',
+        shortLabel: '任务流',
+        icon: 'workspace',
+        roles: ['super_admin'],
+      },
+      {
         id: 'online_query',
         path: '/query',
         label: '在线数据查询',

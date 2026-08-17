@@ -1359,7 +1359,10 @@ function mobileTaskSearchPayload(params: MobileTaskSearchParams) {
   }
 }
 
-export async function listMobileTasks(params: MobileTaskSearchParams): Promise<{
+export async function listMobileTasks(
+  params: MobileTaskSearchParams,
+  options: { passive?: boolean } = {},
+): Promise<{
   data: MobileTaskItem[]
   total: number
   page: number
@@ -1384,7 +1387,7 @@ export async function listMobileTasks(params: MobileTaskSearchParams): Promise<{
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(params.parser_type)}/search`,
     mobileTaskSearchPayload(params),
-    activeRequest,
+    options.passive ? undefined : activeRequest,
   )
   return data
 }
@@ -1405,6 +1408,7 @@ export async function getMobileTaskFilterOptions(
   scope: MobileTaskScope,
   communities: string[] = [],
   reviewStage: MobileTaskReviewStage = 'all',
+  options: { passive?: boolean } = {},
 ): Promise<{
   source_ready: boolean
   communities: MobileTaskFilterOption[]
@@ -1428,7 +1432,7 @@ export async function getMobileTaskFilterOptions(
   communities.forEach(value => params.append('community', value))
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
-    { ...activeRequest, params },
+    { ...(options.passive ? {} : activeRequest), params },
   )
   return data
 }
