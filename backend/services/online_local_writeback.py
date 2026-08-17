@@ -27,6 +27,10 @@ _PROCESS_LOCK = asyncio.Lock()
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
+class SourceRowRelocatedError(RuntimeError):
+    """The cached physical row now belongs to a different business object."""
+
+
 def writeback_cell_metadata(
     parser_type: str,
     field: str,
@@ -64,6 +68,8 @@ def writeback_cell_metadata(
 
 
 def _retry_error_details(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, SourceRowRelocatedError):
+        return "source_relocated", "腾讯来源行位置已变化，等待同步重新定位"
     if isinstance(exc, ValueError):
         return "write_validation_failed", "腾讯写回参数校验未通过"
     if isinstance(exc, TxDocsAPIError):
@@ -114,6 +120,30 @@ def split_remote_changes(
     return safe, conflicts
 
 
+def validate_remote_source_identity(
+    parser,
+    changes: list[dict[str, Any]],
+    remote_values: dict[str, str],
+) -> None:
+    """Stop the whole write when the cached row now belongs to another object."""
+    expected_row_keys = {
+        str(change.get("row_key") or "") for change in changes
+        if change.get("row_key")
+    }
+    remote_row_key = parser.make_row_key(remote_values)
+    if len(expected_row_keys) != 1 or remote_row_key not in expected_row_keys:
+        raise SourceRowRelocatedError("cached physical row changed identity")
+
+
+def validate_conflict_source_identity(
+    source_row_key: str,
+    change_row_keys: list[str],
+) -> None:
+    expected_row_keys = {str(value or "") for value in change_row_keys if value}
+    if len(expected_row_keys) != 1 or source_row_key not in expected_row_keys:
+        raise ValueError("腾讯来源行位置已变化，请等待同步重新定位")
+
+
 async def load_local_changes(
     cur,
     source_ids: list[int],
@@ -124,7 +154,7 @@ async def load_local_changes(
     await cur.execute(
         f"""
         SELECT source_id, id, audit_id, field_name, base_value, local_value,
-               remote_value, status, error_code, last_error
+               remote_value, status, error_code, last_error, row_key
         FROM _online_local_changes
         WHERE source_id IN ({placeholders})
           AND status IN ('pending','processing','retry','conflict')
@@ -144,6 +174,7 @@ async def load_local_changes(
             "status": str(row[7]),
             "error_code": str(row[8] or ""),
             "last_error": str(row[9] or ""),
+            "row_key": str(row[10] or ""),
         })
     return grouped
 
@@ -307,7 +338,7 @@ async def resolve_source_conflict(
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT parser_type, physical_row FROM _online_source_rows "
+                "SELECT parser_type, physical_row, row_key FROM _online_source_rows "
                 "WHERE id=%s FOR UPDATE",
                 (source_id,),
             )
@@ -316,6 +347,7 @@ async def resolve_source_conflict(
                 raise LookupError("来源行已经变化")
             parser_type = str(row[0])
             physical_row = int(row[1])
+            source_row_key = str(row[2])
             params: list[Any] = [source_id]
             field_clause = ""
             if fields:
@@ -323,7 +355,7 @@ async def resolve_source_conflict(
                 field_clause = f" AND field_name IN ({placeholders})"
                 params.extend(fields)
             await cur.execute(
-                "SELECT id, audit_id, remote_value, error_code, field_name "
+                "SELECT id, audit_id, remote_value, error_code, field_name, row_key "
                 "FROM _online_local_changes "
                 "WHERE source_id=%s AND status='conflict'" + field_clause + " FOR UPDATE",
                 params,
@@ -337,6 +369,10 @@ async def resolve_source_conflict(
             if choice == "platform":
                 if any(str(item[3] or "") == "source_missing" for item in conflicts):
                     raise ValueError("腾讯来源行已不存在，不能再用平台值覆盖")
+                validate_conflict_source_identity(
+                    source_row_key,
+                    [str(item[5] or "") for item in conflicts],
+                )
                 await cur.execute(
                     f"UPDATE _online_local_changes SET base_value=COALESCE(remote_value,''), "
                     f"status='pending', attempt_count=0, next_attempt_at=NULL, "
@@ -523,6 +559,7 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
         ]
         if not processing:
             return 0, 0
+        validate_remote_source_identity(parser, processing, remote_values)
         safe, conflicts = split_remote_changes(remote_values, processing)
         if any(
             item["remote_value"] != item["local_value"] for item in safe
