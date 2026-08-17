@@ -13,6 +13,7 @@ DOCK_CONFIG_VERSION = 2
 GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     "workspace": (
         "dashboard",
+        "task_flow_lab",
         "online_query",
         "data_upload",
         "work_log",
@@ -44,7 +45,7 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-SUPER_ADMIN_ITEMS = {"users", "permission_groups", "operations"}
+SUPER_ADMIN_ITEMS = {"task_flow_lab", "users", "permission_groups", "operations"}
 ADMIN_ITEMS = {"data_upload", "work_log", "police_addresses"}
 
 ITEM_PERMISSIONS: dict[str, str] = {
@@ -102,6 +103,8 @@ def _item_is_accessible(
     position: str | None = None,
 ) -> bool:
     admin_access = _admin_code_access(role, permission_group_codes)
+    if item_id == "task_flow_lab":
+        return role == "super_admin"
     if item_id == "online_query":
         group_codes = {
             str(code).strip() for code in permission_group_codes or []

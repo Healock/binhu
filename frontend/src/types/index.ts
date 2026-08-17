@@ -352,6 +352,7 @@ export type MobileNavigationGroupId =
   | 'system'
 export type MobileNavigationItemId =
   | 'dashboard'
+  | 'task_flow_lab'
   | 'online_summary'
   | 'online_query'
   | 'flow_tasks'

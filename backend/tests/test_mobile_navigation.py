@@ -39,6 +39,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertNotIn("operations", member_items)
         self.assertNotIn("data_upload", member_items)
         self.assertNotIn("work_log", member_items)
+        self.assertNotIn("task_flow_lab", member_items)
         admin_items = {
             item
             for group in admin["groups"]
@@ -47,6 +48,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertIn("data_upload", admin_items)
         self.assertIn("work_log", admin_items)
         self.assertIn("flow_tasks", admin_items)
+        self.assertNotIn("task_flow_lab", admin_items)
         self.assertNotIn("users", admin_items)
         self.assertIn("users", super_items)
         # 设置是第五组，默认 Dock 最多四组；用户可在个性化设置中替换进入。
@@ -54,6 +56,32 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertIn("data_upload", super_items)
         self.assertIn("work_log", super_items)
         self.assertIn("flow_tasks", super_items)
+        self.assertIn("task_flow_lab", super_items)
+
+    def test_task_flow_lab_remains_super_admin_only_with_permission_payload(self):
+        permissions = ["online.raw.view", "online.task.manage"]
+        member = default_mobile_dock_config("member", permissions, ["admin"])
+        admin = default_mobile_dock_config("admin", permissions, ["admin"])
+        super_admin = default_mobile_dock_config(
+            "super_admin", permissions, ["super_admin"]
+        )
+
+        self.assertNotIn(
+            "task_flow_lab",
+            {item for group in member["groups"] for item in group["items"]},
+        )
+        self.assertNotIn(
+            "task_flow_lab",
+            {item for group in admin["groups"] for item in group["items"]},
+        )
+        self.assertIn(
+            "task_flow_lab",
+            {
+                item
+                for group in super_admin["groups"]
+                for item in group["items"]
+            },
+        )
 
     def test_admin_permission_group_exposes_dedicated_flow_tasks(self):
         permissions = ["online.raw.view"]
