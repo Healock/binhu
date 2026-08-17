@@ -32,6 +32,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   bulkReviewPoliceDispatchTasks,
   deletePoliceDispatchBatch,
+  getLatestPoliceDispatchPublishRun,
+  getPoliceDispatchPublishRun,
   getPoliceDispatchTask,
   getPoliceDispatchPublishableSelection,
   getPoliceDispatchWorkbench,
@@ -42,6 +44,7 @@ import {
   updatePoliceDispatchBusinessFields,
   type PoliceCommunityOption,
   type PoliceDispatchBatch,
+  type PoliceDispatchPublishRun,
   type PoliceDispatchTask,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -307,8 +310,10 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set())
   const [selectingAll, setSelectingAll] = useState(false)
   const [publishingSelected, setPublishingSelected] = useState(false)
+  const [publishRun, setPublishRun] = useState<PoliceDispatchPublishRun | null>(null)
   const [error, setError] = useState('')
   const taskRequestId = useRef(0)
+  const announcedPublishRun = useRef<number | null>(null)
 
   const isSuperAdmin = Boolean(
     user?.permission_groups?.some(group => group.code === 'super_admin')
@@ -321,6 +326,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     [batches, batchId],
   )
   const selectedCount = selectedTaskIds.size
+  const publishRunActive = publishRun?.status === 'pending' || publishRun?.status === 'running'
 
   const leavePublishSelection = () => {
     setSelectionMode(false)
@@ -387,8 +393,48 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
     }
   }
 
+  const loadLatestPublishRun = async (targetBatchId = batchId) => {
+    if (analysisOnly || !targetBatchId) {
+      setPublishRun(null)
+      return null
+    }
+    try {
+      const run = await getLatestPoliceDispatchPublishRun(targetBatchId)
+      setPublishRun(run)
+      return run
+    } catch {
+      return null
+    }
+  }
+
   useEffect(() => { void loadHome() }, [])
   useEffect(() => { if (batchId) void loadTasks(1) }, [batchId, status, category, appliedKeyword])
+  useEffect(() => { void loadLatestPublishRun(batchId) }, [analysisOnly, batchId])
+  useEffect(() => {
+    if (!publishRunActive || !publishRun) return
+    const runId = publishRun.id
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await getPoliceDispatchPublishRun(runId)
+        setPublishRun(next)
+        if (!['pending', 'running'].includes(next.status)) {
+          window.clearInterval(timer)
+          await Promise.all([loadHome(), loadTasks(page)])
+          if (announcedPublishRun.current !== next.id) {
+            announcedPublishRun.current = next.id
+            message[next.status === 'completed' ? 'success' : 'warning'](
+              next.status === 'completed'
+                ? `后台发布完成：成功 ${next.success_count} 条`
+                : `后台发布结束：成功 ${next.success_count} 条，另有 ${next.total_count - next.success_count} 条需要处理`,
+            )
+          }
+        }
+      } catch {
+        // 短暂网络失败不终止后台任务，下次轮询继续读取。
+      }
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [publishRun?.id, publishRunActive])
   useEffect(() => {
     setSelectedTaskIds(new Set())
   }, [analysisOnly, batchId, status, category, appliedKeyword])
@@ -414,6 +460,10 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
   }
 
   const enterPublishSelection = () => {
+    if (publishRunActive) {
+      message.info('当前已有后台发布任务正在处理')
+      return
+    }
     setSelectionMode(true)
     setSelectedTaskIds(new Set())
     if (!['pending_publish', 'retryable', 'all'].includes(status)) {
@@ -483,12 +533,14 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         activeBatch.id,
         [...selectedTaskIds],
       )
-      message[result.failed_count ? 'warning' : 'success'](result.message)
+      setPublishRun(result)
+      announcedPublishRun.current = null
+      message.success(result.message)
       leavePublishSelection()
-      await loadHome()
       await loadTasks(1)
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '所选任务发布失败')
+      await loadLatestPublishRun(activeBatch.id)
       await loadTasks(page)
     } finally {
       setPublishingSelected(false)
@@ -779,8 +831,9 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
                 type="primary"
                 icon={<CheckSquareOutlined />}
                 onClick={enterPublishSelection}
+                disabled={publishRunActive}
               >
-                选择发布
+                {publishRunActive ? '正在后台发布' : '选择发布'}
               </Button>
             )}
             {!analysisOnly && (
@@ -802,6 +855,43 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
         />
       </section>
 
+      {!analysisOnly && publishRun && (
+        <section className={`app-card police-dispatch-publish-run${publishRunActive ? ' is-active' : ''}`}>
+          <div className="police-dispatch-publish-run__header">
+            <div>
+              <div className="text-sm font-semibold text-[var(--app-text-strong)]">
+                {publishRunActive ? '后台发布进行中' : '最近一次发布'} · #{publishRun.id}
+              </div>
+              <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
+                {publishRunActive
+                  ? '可以离开本页面，服务器会继续处理；返回后仍可查看进度。'
+                  : publishRun.error_message || '发布任务已经结束。'}
+              </div>
+            </div>
+            <Tag color={publishRun.status === 'completed' ? 'success' : publishRunActive ? 'processing' : 'warning'}>
+              {publishRun.status === 'pending' ? '等待开始'
+                : publishRun.status === 'running' ? '处理中'
+                  : publishRun.status === 'completed' ? '已完成'
+                    : publishRun.status === 'partial' ? '部分完成' : '已停止'}
+            </Tag>
+          </div>
+          <Progress
+            className="mt-3"
+            percent={publishRun.total_count
+              ? Math.round(publishRun.processed_count / publishRun.total_count * 100)
+              : 0}
+            status={publishRun.status === 'failed' ? 'exception' : undefined}
+            format={() => `${publishRun.processed_count}/${publishRun.total_count}`}
+          />
+          <div className="police-dispatch-publish-run__counts">
+            <span>成功 <strong>{publishRun.success_count}</strong></span>
+            <span>冲突 <strong>{publishRun.conflict_count}</strong></span>
+            <span>待对账 <strong>{publishRun.reconciliation_count}</strong></span>
+            <span>可重试 <strong>{publishRun.retryable_count}</strong></span>
+          </div>
+        </section>
+      )}
+
       {!analysisOnly && selectionMode && (
         <section className="app-card mobile-task-bulk-toolbar is-sticky">
           <div className="flex flex-wrap items-center gap-2">
@@ -822,7 +912,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
               description="只发布当前明确选中的已审核任务；发布前会再次校验状态和重复人员组。"
               okText="确认发布"
               cancelText="取消"
-              disabled={!selectedCount}
+              disabled={!selectedCount || publishRunActive}
               onConfirm={publishSelection}
             >
               <Button
@@ -830,7 +920,7 @@ export default function PoliceDispatchWorkbench({ mode = 'all' }: { mode?: 'all'
                 size="small"
                 icon={<SendOutlined />}
                 loading={publishingSelected}
-                disabled={!selectedCount}
+                disabled={!selectedCount || publishRunActive}
               >
                 发布所选
               </Button>

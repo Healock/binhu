@@ -30,6 +30,7 @@ TABLE_DOMAINS: dict[str, tuple[str, str]] = {
     )},
     **{table: ("DISPATCH_DOMAIN_ACTIVE", settings.MYSQL_DISPATCH_DB) for table in (
         "_police_dispatch_batches", "_police_dispatch_tasks", "_police_dispatch_publish_results",
+        "_police_dispatch_publish_runs", "_police_dispatch_publish_run_items",
     )},
     **{table: ("DAILY_DOMAIN_ACTIVE", settings.MYSQL_DAILY_REPORT_DB) for table in (
         "_work_log_drafts", "_daily_task_ledger", "_daily_task_ledger_runs", "_daily_report_meta",

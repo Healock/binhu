@@ -158,6 +158,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "police_address_import": "小区地址导入批次",
     "police_dispatch_batch": "数据下发批次",
     "police_dispatch_preview": "数据下发预览",
+    "police_dispatch_publish_run": "数据下发后台发布任务",
     "police_dispatch_task": "数据下发任务",
     "mobile_task": "流口核查任务",
     "qmf_registration_run": "全民防登记运行",

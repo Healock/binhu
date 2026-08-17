@@ -610,6 +610,18 @@ async def reconcile_police_dispatch_publications(
     pending = await cur.fetchall()
     counts = {"success": 0, "conflict": 0, "retryable": 0}
     affected_batches: set[int] = set()
+    affected_runs: set[int] = set()
+    task_runs: dict[int, list[int]] = {}
+    pending_task_ids = [int(row[0]) for row in pending]
+    if pending_task_ids:
+        placeholders = ",".join(["%s"] * len(pending_task_ids))
+        await cur.execute(f"""
+            SELECT task_id,run_id FROM _police_dispatch_publish_run_items
+            WHERE task_id IN ({placeholders}) AND status='needs_reconciliation'
+        """, pending_task_ids)
+        for task_id, run_id in await cur.fetchall():
+            task_runs.setdefault(int(task_id), []).append(int(run_id))
+            affected_runs.add(int(run_id))
     for task_id, business_key, raw_requested, batch_id in pending:
         requested = {
             str(column): str(value or "").strip()
@@ -623,6 +635,8 @@ async def reconcile_police_dispatch_publications(
         ), None)
         affected_batches.add(int(batch_id))
         if exact:
+            run_item_status = "success"
+            run_item_error = ""
             counts["success"] += 1
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
@@ -646,6 +660,8 @@ async def reconcile_police_dispatch_publications(
                 stable_json(exact["values"]), task_id,
             ))
         elif candidates:
+            run_item_status = "conflict"
+            run_item_error = "content_conflict"
             counts["conflict"] += 1
             candidate = candidates[0]
             await cur.execute("""
@@ -671,6 +687,8 @@ async def reconcile_police_dispatch_publications(
                 stable_json(candidate["values"]), task_id,
             ))
         else:
+            run_item_status = "retryable"
+            run_item_error = "confirmed_absent"
             counts["retryable"] += 1
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
@@ -689,6 +707,37 @@ async def reconcile_police_dispatch_publications(
                     error_message='完整同步确认目标不存在', cache_pending=0
                 WHERE task_id=%s
             """, (task_id,))
+        task_run_ids = task_runs.get(int(task_id), [])
+        if task_run_ids:
+            placeholders = ",".join(["%s"] * len(task_run_ids))
+            await cur.execute(f"""
+                UPDATE _police_dispatch_publish_run_items
+                SET status=%s,error_code=%s
+                WHERE task_id=%s AND run_id IN ({placeholders})
+            """, [run_item_status, run_item_error, task_id, *task_run_ids])
+
+    for run_id in affected_runs:
+        await cur.execute("""
+            SELECT COUNT(*),
+                   SUM(status IN ('success','conflict','needs_reconciliation','retryable')),
+                   SUM(status='success'),SUM(status='conflict'),
+                   SUM(status='needs_reconciliation'),SUM(status='retryable')
+            FROM _police_dispatch_publish_run_items WHERE run_id=%s
+        """, (run_id,))
+        total, processed, success, conflict, reconciliation, retryable = await cur.fetchone()
+        run_status = "completed" if int(success or 0) == int(total or 0) else "partial"
+        await cur.execute("""
+            UPDATE _police_dispatch_publish_runs SET
+                status=%s,processed_count=%s,success_count=%s,conflict_count=%s,
+                reconciliation_count=%s,retryable_count=%s,
+                error_code=CASE WHEN %s='completed' THEN '' ELSE 'partial' END,
+                error_message=CASE WHEN %s='completed' THEN ''
+                    ELSE '同步对账后仍有任务需要重试或处理冲突' END
+            WHERE id=%s
+        """, (
+            run_status, int(processed or 0), int(success or 0), int(conflict or 0),
+            int(reconciliation or 0), int(retryable or 0), run_status, run_status, run_id,
+        ))
 
     for batch_id in affected_batches:
         await cur.execute("""

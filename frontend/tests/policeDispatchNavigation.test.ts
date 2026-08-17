@@ -100,3 +100,26 @@ test('已处理数据在任务工作台多选发布且卡片沿用流口任务�
   assert.doesNotMatch(batchSource, /整批发布/)
   assert.doesNotMatch(batchSource, /publishSelectedPoliceDispatchTasks/)
 })
+
+test('选中发布进入可离页恢复的后台任务并持续展示安全分类进度', () => {
+  const workbenchSource = readFileSync(
+    new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(workbenchSource, /getLatestPoliceDispatchPublishRun/)
+  assert.match(workbenchSource, /getPoliceDispatchPublishRun/)
+  assert.match(workbenchSource, /window\.setInterval[\s\S]*2000/)
+  assert.match(workbenchSource, /可以离开本页面，服务器会继续处理/)
+  assert.match(workbenchSource, /成功 <strong>\{publishRun\.success_count\}/)
+  assert.match(workbenchSource, /冲突 <strong>\{publishRun\.conflict_count\}/)
+  assert.match(workbenchSource, /待对账 <strong>\{publishRun\.reconciliation_count\}/)
+  assert.match(workbenchSource, /可重试 <strong>\{publishRun\.retryable_count\}/)
+  assert.match(clientSource, /api\.post\(`\/police-dispatch\/batches\/\$\{id\}\/publish-selected`/)
+  assert.match(clientSource, /publish-runs\/latest/)
+  assert.match(clientSource, /publish-runs\/\$\{runId\}/)
+})

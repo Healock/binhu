@@ -2238,6 +2238,25 @@ export interface PoliceDispatchTask {
   cache_pending: boolean
 }
 
+export interface PoliceDispatchPublishRun {
+  id: number
+  batch_id: number
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
+  phase: 'queued' | 'preparing' | 'reading_source' | 'publishing' | 'refreshing_cache' | 'finished'
+  total_count: number
+  processed_count: number
+  success_count: number
+  conflict_count: number
+  reconciliation_count: number
+  retryable_count: number
+  error_code: string
+  error_message: string
+  started_at: string | null
+  finished_at: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 export async function listPoliceAddresses(params?: {
   keyword?: string
   enabled?: boolean
@@ -2436,14 +2455,27 @@ export async function bulkReviewPoliceDispatchTasks(payload: {
 export async function publishSelectedPoliceDispatchTasks(
   id: number,
   taskIds: number[],
-): Promise<{
-  message: string
-  success_count: number
-  failed_count: number
-}> {
+): Promise<PoliceDispatchPublishRun & { message: string }> {
   const { data } = await api.post(`/police-dispatch/batches/${id}/publish-selected`, {
     task_ids: taskIds,
   })
+  return data
+}
+
+export async function getLatestPoliceDispatchPublishRun(
+  batchId: number,
+): Promise<PoliceDispatchPublishRun | null> {
+  const { data } = await api.get(
+    `/police-dispatch/batches/${batchId}/publish-runs/latest`,
+    activeRequest,
+  )
+  return data.data
+}
+
+export async function getPoliceDispatchPublishRun(
+  runId: number,
+): Promise<PoliceDispatchPublishRun> {
+  const { data } = await api.get(`/police-dispatch/publish-runs/${runId}`, activeRequest)
   return data
 }
 

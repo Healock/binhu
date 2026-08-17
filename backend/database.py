@@ -972,6 +972,50 @@ async def ensure_police_dispatch_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _police_dispatch_publish_runs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            batch_id BIGINT NOT NULL,
+            spreadsheet_id INT NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'pending',
+            phase VARCHAR(30) NOT NULL DEFAULT 'queued',
+            total_count INT NOT NULL DEFAULT 0,
+            processed_count INT NOT NULL DEFAULT 0,
+            success_count INT NOT NULL DEFAULT 0,
+            conflict_count INT NOT NULL DEFAULT 0,
+            reconciliation_count INT NOT NULL DEFAULT 0,
+            retryable_count INT NOT NULL DEFAULT 0,
+            requested_by INT DEFAULT NULL,
+            requested_username VARCHAR(50) NOT NULL DEFAULT '',
+            error_code VARCHAR(100) NOT NULL DEFAULT '',
+            error_message VARCHAR(500) NOT NULL DEFAULT '',
+            started_at DATETIME DEFAULT NULL,
+            finished_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_police_publish_run_batch (batch_id, id),
+            INDEX idx_police_publish_run_active (spreadsheet_id, status, id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _police_dispatch_publish_run_items (
+            run_id BIGINT NOT NULL,
+            task_id BIGINT NOT NULL,
+            item_order INT NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'queued',
+            physical_row INT DEFAULT NULL,
+            error_code VARCHAR(100) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (run_id, task_id),
+            INDEX idx_police_publish_run_item_status (run_id, status, item_order),
+            INDEX idx_police_publish_run_item_task (task_id, run_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
 
     for table_name, columns in {
         "_police_address_imports": {
