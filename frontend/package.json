@@ -1,13 +1,13 @@
 {
   "name": "binhu-frontend",
   "private": true,
-  "version": "0.22.7",
+  "version": "0.23.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/themeMode.test.ts tests/workLog.test.ts tests/userDisplayName.test.ts tests/authFetch.test.ts tests/queryGrid.test.ts tests/querySpreadsheet.test.ts tests/mobileTasks.test.ts tests/taskFlowLab.test.ts tests/workflowTickets.test.ts tests/policeDispatchNavigation.test.ts tests/summaryXlsx.test.ts tests/summaryTableLayout.test.ts tests/selectAlignment.test.ts tests/workProfiles.test.ts tests/roleDashboard.test.ts tests/dashboardCache.test.ts tests/workflowPhotoSheetPreview.test.ts tests/layoutSpacing.test.ts tests/systemTime.test.ts tests/registryImport.test.ts tests/qmfRegistration.test.ts tests/qmfStatusScan.test.ts",
+    "test": "node --experimental-strip-types --test tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/themeMode.test.ts tests/workLog.test.ts tests/userDisplayName.test.ts tests/authFetch.test.ts tests/queryGrid.test.ts tests/querySpreadsheet.test.ts tests/mobileTasks.test.ts tests/taskFlowLab.test.ts tests/reteTaskFlowLab.test.ts tests/workflowTickets.test.ts tests/policeDispatchNavigation.test.ts tests/summaryXlsx.test.ts tests/summaryTableLayout.test.ts tests/selectAlignment.test.ts tests/workProfiles.test.ts tests/roleDashboard.test.ts tests/dashboardCache.test.ts tests/workflowPhotoSheetPreview.test.ts tests/layoutSpacing.test.ts tests/systemTime.test.ts tests/registryImport.test.ts tests/qmfRegistration.test.ts tests/qmfStatusScan.test.ts",
     "test:totals": "node --experimental-strip-types --test tests/tableTotals.test.ts"
   },
   "dependencies": {
@@ -30,7 +30,14 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "rete": "^2.0.6",
+    "rete-area-plugin": "^2.3.2",
+    "rete-auto-arrange-plugin": "^2.0.2",
+    "rete-connection-plugin": "^2.0.5",
+    "rete-react-plugin": "^2.1.2",
+    "rete-render-utils": "^2.0.3",
     "rxjs": "^7.8.2",
+    "styled-components": "^6.5.3",
     "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
