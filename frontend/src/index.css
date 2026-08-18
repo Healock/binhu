@@ -148,6 +148,19 @@
   box-shadow: 0 12px 28px color-mix(in srgb, var(--app-primary) 18%, transparent);
 }
 
+.task-flow-node.is-stacked {
+  box-shadow: 0 10px 24px rgb(15 23 42 / 0.11);
+}
+
+.task-flow-node.is-readonly {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--app-surface) 94%, #8b5cf6 6%);
+}
+
+.task-flow-node.is-readonly .task-flow-node__footer {
+  background: color-mix(in srgb, var(--app-surface-muted) 88%, #8b5cf6 12%);
+}
+
 .task-flow-node.is-fresh {
   animation: task-flow-arrival 1.1s ease-in-out 2;
 }
@@ -549,6 +562,11 @@
 .task-flow-lab .react-flow__edge-path {
   stroke: var(--app-text-secondary);
   stroke-width: 1.6;
+}
+
+.task-flow-lab .task-flow-edge--system .react-flow__edge-path {
+  stroke: #8b5cf6;
+  stroke-width: 2.2;
 }
 
 .task-flow-lab__mobile-list {
