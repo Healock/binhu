@@ -58,6 +58,8 @@ ACTION_LABELS: dict[str, str] = {
     "sync.trigger": "触发在线数据同步",
     "sync.schedule.update": "修改自动同步计划",
     "system.config.update": "修改系统设置",
+    "task_graph.config.update": "修改个人任务图设置",
+    "task_graph.backfill": "回填个人任务依赖图",
     "user.create": "创建用户",
     "user.update": "修改用户",
     "user.delete": "删除用户",
@@ -195,6 +197,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "work_order": "工单",
     "work_order_attachment": "工单附件",
     "photo_import_batch": "照片调取批次",
+    "task_graph": "个人任务依赖图",
 }
 
 RESULT_LABELS: dict[str, str] = {

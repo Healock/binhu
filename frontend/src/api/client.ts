@@ -1047,6 +1047,8 @@ export interface MobileTaskDetailData {
   }
   writeback_enabled: boolean
   analysis_mode?: boolean
+  dependency_blocked?: boolean
+  dependency_message?: string
   photo_requests: Array<{
     ticket_id: number
     ticket_no: string
@@ -1075,6 +1077,55 @@ export interface MobileTaskDetailData {
     tencent_marker_status: QmfTencentMarkerStatus
   } | null
   sources: MobileTaskSource[]
+}
+
+export type TaskGraphNodeStatus = 'ready' | 'blocked' | 'in_progress' | 'completed' | 'cancelled' | 'source_missing' | 'archived'
+export type TaskGraphAccessMode = 'editable' | 'readonly' | 'blocked'
+
+export interface TaskGraphNode {
+  id: string
+  task_type: 'online_check' | 'analysis'
+  category: string
+  parser_type: string
+  row_key: string
+  title: string
+  community: string
+  owner: string
+  status: TaskGraphNodeStatus
+  access_mode: TaskGraphAccessMode
+  relationship: 'owned' | 'predecessor' | 'successor'
+  description: string
+  completed_at: string | null
+  archived_at: string | null
+  sync_warning: boolean
+  open_path: string
+}
+
+export interface TaskGraphEdge {
+  id: string
+  source: string
+  target: string
+  state: 'active' | 'satisfied' | 'cancelled'
+  reason_code: string
+  system: true
+  deletable: false
+}
+
+export interface TaskGraphSearchResponse {
+  enabled: boolean
+  nodes: TaskGraphNode[]
+  edges: TaskGraphEdge[]
+  facets: { total?: number; view?: string; owner?: string }
+  next_cursors: Record<string, number>
+}
+
+export interface TaskGraphPreview {
+  projection_rows: number
+  unable_to_verify: number
+  analyzed: number
+  eligible_chains: number
+  blank_inspector: number
+  unmatched_inspector: number
 }
 
 export interface QmfPreviewResult {
@@ -1617,6 +1668,52 @@ export async function updateMobileTaskAnalysis(
   const { data } = await api.patch(
     `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
     payload,
+  )
+  return data
+}
+
+export async function getTaskGraphConfig(): Promise<{ enabled: boolean; internal_only: boolean }> {
+  const { data } = await api.get('/task-graph/config', activeRequest)
+  return data
+}
+
+export async function updateTaskGraphConfig(enabled: boolean): Promise<{ enabled: boolean; internal_only: boolean }> {
+  const { data } = await api.put('/task-graph/config', { enabled }, activeRequest)
+  return data
+}
+
+export async function previewTaskGraphBackfill(): Promise<TaskGraphPreview> {
+  const { data } = await api.post('/task-graph/backfill/preview', {}, activeRequest)
+  return data
+}
+
+export async function runTaskGraphBackfill(): Promise<{ processed: number; changed: number }> {
+  const { data } = await api.post('/task-graph/backfill', {}, activeRequest)
+  return data
+}
+
+export async function getTaskGraphOptions(): Promise<{
+  inspectors: MobileTaskFilterOption[]
+  queues: Array<{ value: string; label: string }>
+}> {
+  const { data } = await api.get('/task-graph/options', activeRequest)
+  return data
+}
+
+export async function searchTaskGraph(payload: {
+  view: 'person' | 'queue'
+  person_user_id?: number
+  queue?: string
+  history?: boolean
+  task_types?: string[]
+  keyword?: string
+  cursors?: Record<string, number>
+  page_size?: number
+}, options: { passive?: boolean } = {}): Promise<TaskGraphSearchResponse> {
+  const { data } = await api.post(
+    '/task-graph/search',
+    payload,
+    options.passive ? passiveRequest : activeRequest,
   )
   return data
 }

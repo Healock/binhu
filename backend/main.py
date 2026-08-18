@@ -39,6 +39,7 @@ from routers.workflow import router as workflow_router
 from routers.workflow_extended import router as workflow_extended_router
 from routers.workflow_photo_sheet import router as workflow_photo_sheet_router
 from routers.qmf_registration import router as qmf_registration_router
+from routers.task_graph import router as task_graph_router
 from routers.maintenance import router as maintenance_router
 from routers.app_bootstrap import router as app_bootstrap_router
 from services.backup_scheduler import run_backup_scheduler
@@ -211,6 +212,7 @@ app.include_router(workflow_router, dependencies=auth_dep)
 app.include_router(workflow_extended_router, dependencies=auth_dep)
 app.include_router(workflow_photo_sheet_router, dependencies=auth_dep)
 app.include_router(qmf_registration_router, dependencies=auth_dep)
+app.include_router(task_graph_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

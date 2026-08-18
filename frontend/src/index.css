@@ -644,6 +644,20 @@
   background: var(--app-surface-muted);
 }
 
+.task-graph-toolbar__filters {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.task-graph-toolbar__filters .ant-input-affix-wrapper {
+  min-width: 220px;
+  flex: 1 1 260px;
+}
+
 .rete-task-flow-lab__canvas-shell {
   position: relative;
   overflow: hidden;
@@ -667,10 +681,19 @@
   background: var(--app-surface-muted);
 }
 
+.rete-task-flow-lab__empty {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
 .rete-task-node {
   position: relative;
   display: grid;
-  width: 250px;
+  width: 292px;
   gap: 10px;
   padding: 16px;
   border: 1px solid color-mix(in srgb, var(--rete-node-accent) 48%, var(--app-border));
@@ -679,6 +702,16 @@
   color: var(--app-text);
   background: var(--app-surface);
   box-shadow: 0 12px 32px rgb(15 23 42 / 0.11);
+}
+
+.rete-task-instance.is-readonly {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--app-surface) 94%, var(--rete-node-accent) 6%);
+}
+
+.rete-task-instance.is-completed,
+.rete-task-instance.is-cancelled {
+  opacity: 0.88;
 }
 
 .rete-task-node__socket {
@@ -725,9 +758,26 @@
 }
 
 .rete-task-node strong {
+  overflow: hidden;
   color: var(--app-text-strong);
   font-size: 18px;
   font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rete-task-instance__meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rete-task-instance__meta span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--app-text-secondary);
+  background: var(--app-surface-muted);
+  font-size: 11px;
 }
 
 .rete-task-node p {
@@ -773,6 +823,59 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--rete-node-accent) 16%, transparent);
 }
 
+.task-graph-mobile-list {
+  display: grid;
+  gap: 10px;
+}
+
+.task-graph-mobile-card {
+  display: grid;
+  width: 100%;
+  gap: 5px;
+  padding: 14px 16px;
+  border-left: 4px solid var(--app-primary);
+  color: var(--app-text);
+  text-align: left;
+}
+
+.task-graph-mobile-card.is-blocked {
+  border-left-color: #d97706;
+}
+
+.task-graph-mobile-card.is-readonly {
+  border-left-color: #8b5cf6;
+}
+
+.task-graph-mobile-card span {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.task-graph-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.task-graph-preview-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-muted);
+}
+
+.task-graph-preview-grid span {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.task-graph-preview-grid b {
+  color: var(--app-text-strong);
+  font-size: 22px;
+}
+
 .rete-task-flow-lab__notes {
   padding: 8px;
 }
@@ -786,6 +889,16 @@
 
   .rete-task-flow-lab__hero-actions .ant-btn {
     flex: 1 1 auto;
+  }
+
+  .task-graph-toolbar__filters {
+    display: grid;
+  }
+
+  .task-graph-toolbar__filters > *,
+  .task-graph-toolbar__filters .ant-input-affix-wrapper {
+    width: 100%;
+    min-width: 0;
   }
 
   .rete-task-flow-lab__canvas {

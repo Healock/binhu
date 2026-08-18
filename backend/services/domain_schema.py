@@ -582,6 +582,65 @@ async def ensure_registry_schema(cur) -> None:
 
 async def ensure_workflow_schema(cur) -> None:
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS task_graph_nodes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            node_key VARCHAR(100) NOT NULL UNIQUE,
+            task_type VARCHAR(40) NOT NULL,
+            provider VARCHAR(40) NOT NULL,
+            parser_type VARCHAR(80) NOT NULL DEFAULT '',
+            source_ref VARCHAR(190) NOT NULL,
+            owner_type VARCHAR(20) NOT NULL DEFAULT 'queue',
+            owner_ref VARCHAR(190) NOT NULL DEFAULT '',
+            status VARCHAR(30) NOT NULL DEFAULT 'ready',
+            reason_code VARCHAR(60) NOT NULL DEFAULT '',
+            completed_at DATETIME DEFAULT NULL,
+            archived_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_task_graph_source (
+                task_type, provider, parser_type, source_ref
+            ),
+            INDEX idx_task_graph_owner (owner_type, owner_ref, status),
+            INDEX idx_task_graph_archive (archived_at, updated_at),
+            INDEX idx_task_graph_source_ref (provider, parser_type, source_ref)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS task_graph_dependencies (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            predecessor_node_id BIGINT NOT NULL,
+            successor_node_id BIGINT NOT NULL,
+            state VARCHAR(20) NOT NULL DEFAULT 'active',
+            reason_code VARCHAR(60) NOT NULL,
+            created_by_event VARCHAR(60) NOT NULL DEFAULT '',
+            satisfied_at DATETIME DEFAULT NULL,
+            cancelled_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_task_graph_dependency (
+                predecessor_node_id, successor_node_id, reason_code
+            ),
+            INDEX idx_task_graph_predecessor (predecessor_node_id, state),
+            INDEX idx_task_graph_successor (successor_node_id, state)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS task_graph_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            node_id BIGINT DEFAULT NULL,
+            dependency_id BIGINT DEFAULT NULL,
+            event_type VARCHAR(60) NOT NULL,
+            actor_user_id BIGINT DEFAULT NULL,
+            detail_json JSON NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_task_graph_event_node (node_id, created_at),
+            INDEX idx_task_graph_event_dependency (dependency_id, created_at),
+            INDEX idx_task_graph_event_type (event_type, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS workflow_types (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             code VARCHAR(60) NOT NULL UNIQUE,

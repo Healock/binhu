@@ -53,6 +53,7 @@ from services.qmf_registration import (
 from services.qmf_config import load_qmf_config
 from services.qmf_runs import WRITE_STEP_KEYS, parse_steps, utc_text
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
+from services.task_graph import online_task_blocked
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
 from services.watch_matching import task_watch_payload
@@ -1564,6 +1565,7 @@ async def _mobile_task_detail_data(
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
     parser = get_parser(parser_type)
+    dependency_blocked = False
     detail_scope: FlowScope = "all" if context["admin_mode"] else "community"
     scope_where, scope_params = _scope_where(context, detail_scope)
     async with conn.cursor() as cur:
@@ -1582,6 +1584,8 @@ async def _mobile_task_detail_data(
         if not parent_row:
             raise HTTPException(404, "任务不存在或不属于当前社区")
         parent_values = json_value(parent_row[0], {})
+        if not analysis_mode:
+            dependency_blocked = await online_task_blocked(cur, parser_type, row_key)
         if analysis_mode and TASK_WORKFLOWS[parser_type].review_stage(
             parent_values
         ) not in {"waiting_analysis", "analyzed"}:
@@ -1703,6 +1707,8 @@ async def _mobile_task_detail_data(
                     field for field in editable_fields
                     if field not in analysis_fields
                 ]
+            if dependency_blocked:
+                editable_fields = []
             sources.append({
                 "id": int(source_id),
                 "physical_row": int(physical_row),
@@ -1798,6 +1804,8 @@ async def _mobile_task_detail_data(
         },
         "writeback_enabled": enabled,
         "analysis_mode": analysis_mode,
+        "dependency_blocked": dependency_blocked,
+        "dependency_message": "等待基础管控完成研判前置任务" if dependency_blocked else "",
         "photo_requests": photo_requests,
         "qmf_preview": qmf_preview,
         "qmf_registration": qmf_registration,
@@ -1987,6 +1995,15 @@ async def update_mobile_task(
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
         await _validate_assignment(cur, context, data.changes)
+        await cur.execute(
+            "SELECT row_key FROM _online_source_rows WHERE id=%s AND parser_type=%s",
+            (source_id, parser_type),
+        )
+        source_row = await cur.fetchone()
+        if not source_row:
+            raise HTTPException(404, "腾讯来源行不存在")
+        if await online_task_blocked(cur, parser_type, str(source_row[0])):
+            raise HTTPException(409, "该任务正在等待基础管控完成研判，暂时不能修改")
     return await queue_source_fields(
         parser_type=parser_type,
         source_id=source_id,
