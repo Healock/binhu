@@ -3,7 +3,7 @@ import {
   ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import { Button, Input, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
-import { useCallback, useEffect, useRef, useState, type Key } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
 import {
   getMobileTaskInlineEditors,
   updateMobileTask,
@@ -70,35 +70,54 @@ export default function MobileTaskTable({
   const editorObserverRef = useRef<IntersectionObserver | null>(null)
   const pendingEditorKeysRef = useRef<Set<string>>(new Set())
   const editorFlushTimerRef = useRef<number | null>(null)
-  const parserType = rows[0]?.parser_type || ''
-  const editorContext = `${analysisMode ? 'analysis' : 'tasks'}:${parserType}`
+  const taskByKey = useMemo(
+    () => new Map(rows.map(task => [task.task_key, task])),
+    [rows],
+  )
+  const parserTypesKey = useMemo(
+    () => [...new Set(rows.map(task => task.parser_type))].sort().join('|'),
+    [rows],
+  )
+  const editorContext = `${analysisMode ? 'analysis' : 'tasks'}:${parserTypesKey}`
   const editorContextRef = useRef(editorContext)
 
-  const requestEditors = useCallback(async (rowKeys: string[], force = false) => {
-    if (!parserType) return
-    const keys = [...new Set(rowKeys)].filter(rowKey => (
-      rowKey
-      && !loadingEditorKeysRef.current.has(rowKey)
-      && (force || !editorItemsRef.current[rowKey])
+  const requestEditors = useCallback(async (taskKeys: string[], force = false) => {
+    const keys = [...new Set(taskKeys)].filter(taskKey => (
+      taskKey
+      && !loadingEditorKeysRef.current.has(taskKey)
+      && (force || !editorItemsRef.current[taskKey])
     ))
     if (!keys.length) return
     const requestContext = editorContext
-    keys.forEach(rowKey => loadingEditorKeysRef.current.add(rowKey))
+    keys.forEach(taskKey => loadingEditorKeysRef.current.add(taskKey))
     setLoadingEditorKeys(new Set(loadingEditorKeysRef.current))
     try {
-      const result = await getMobileTaskInlineEditors(
-        parserType,
-        keys,
-        analysisMode,
+      const grouped = keys.reduce<Record<string, Array<{ taskKey: string; rowKey: string }>>>((result, taskKey) => {
+        const task = taskByKey.get(taskKey)
+        if (task) (result[task.parser_type] ||= []).push({ taskKey, rowKey: task.row_key })
+        return result
+      }, {})
+      const batches = Object.entries(grouped)
+      const results = await Promise.all(
+        batches.map(([parserType, parserTasks]) => (
+          getMobileTaskInlineEditors(parserType, parserTasks.map(task => task.rowKey), analysisMode)
+        )),
       )
       if (requestContext !== editorContextRef.current) return
       const values: Record<string, Record<string, string>> = {}
-      Object.entries(result.items).forEach(([rowKey, item]) => {
+      const items: Record<string, MobileTaskInlineEditorItem> = {}
+      batches.forEach(([, parserTasks], batchIndex) => {
+        parserTasks.forEach(task => {
+          const item = results[batchIndex].items[task.rowKey]
+          if (item) items[task.taskKey] = item
+        })
+      })
+      Object.entries(items).forEach(([taskKey, item]) => {
         const source = item.detail?.sources[0]
-        if (source) values[rowKey] = { ...source.values }
+        if (source) values[taskKey] = { ...source.values }
       })
       setEditorItems(current => {
-        const next = { ...current, ...result.items }
+        const next = { ...current, ...items }
         editorItemsRef.current = next
         return next
       })
@@ -112,20 +131,20 @@ export default function MobileTaskTable({
       }
     } finally {
       if (requestContext === editorContextRef.current) {
-        keys.forEach(rowKey => loadingEditorKeysRef.current.delete(rowKey))
+        keys.forEach(taskKey => loadingEditorKeysRef.current.delete(taskKey))
         setLoadingEditorKeys(new Set(loadingEditorKeysRef.current))
       }
     }
-  }, [analysisMode, editorContext, parserType])
+  }, [analysisMode, editorContext, taskByKey])
 
-  const queueEditorLoad = useCallback((rowKey: string) => {
+  const queueEditorLoad = useCallback((taskKey: string) => {
     if (
-      !rowKey
-      || editorItemsRef.current[rowKey]
-      || loadingEditorKeysRef.current.has(rowKey)
-      || pendingEditorKeysRef.current.has(rowKey)
+      !taskKey
+      || editorItemsRef.current[taskKey]
+      || loadingEditorKeysRef.current.has(taskKey)
+      || pendingEditorKeysRef.current.has(taskKey)
     ) return
-    pendingEditorKeysRef.current.add(rowKey)
+    pendingEditorKeysRef.current.add(taskKey)
     if (editorFlushTimerRef.current !== null) return
     editorFlushTimerRef.current = window.setTimeout(() => {
       editorFlushTimerRef.current = null
@@ -135,15 +154,15 @@ export default function MobileTaskTable({
     }, 60)
   }, [requestEditors])
 
-  const setEditorElement = useCallback((rowKey: string, element: HTMLElement | null) => {
-    const previous = editorElementsRef.current.get(rowKey)
+  const setEditorElement = useCallback((taskKey: string, element: HTMLElement | null) => {
+    const previous = editorElementsRef.current.get(taskKey)
     if (previous && previous !== element) editorObserverRef.current?.unobserve(previous)
     if (!element) {
-      editorElementsRef.current.delete(rowKey)
+      editorElementsRef.current.delete(taskKey)
       return
     }
-    element.dataset.mobileTaskEditorRowKey = rowKey
-    editorElementsRef.current.set(rowKey, element)
+    element.dataset.mobileTaskEditorRowKey = taskKey
+    editorElementsRef.current.set(taskKey, element)
     editorObserverRef.current?.observe(element)
   }, [])
 
@@ -169,9 +188,9 @@ export default function MobileTaskTable({
   }, [editorContext])
 
   useEffect(() => {
-    if (!parserType) return undefined
+    if (!parserTypesKey) return undefined
     if (typeof IntersectionObserver === 'undefined') {
-      rows.slice(0, 20).forEach(task => queueEditorLoad(task.row_key))
+      rows.slice(0, 20).forEach(task => queueEditorLoad(task.task_key))
       return undefined
     }
     const observer = new IntersectionObserver(entries => {
@@ -187,7 +206,7 @@ export default function MobileTaskTable({
       observer.disconnect()
       if (editorObserverRef.current === observer) editorObserverRef.current = null
     }
-  }, [parserType, queueEditorLoad])
+  }, [parserTypesKey, queueEditorLoad])
 
   const saveEditor = async (
     task: MobileTaskItem,
@@ -197,7 +216,7 @@ export default function MobileTaskTable({
     const detail = item.detail
     const source = detail?.sources[0]
     if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return
-    setSavingRowKey(task.row_key)
+    setSavingRowKey(task.task_key)
     try {
       const updater = analysisMode ? updateMobileTaskAnalysis : updateMobileTask
       const result = await updater(task.parser_type, source.id, {
@@ -215,7 +234,7 @@ export default function MobileTaskTable({
       )
       setEditorItems(current => ({
         ...current,
-        [task.row_key]: {
+        [task.task_key]: {
           ...item,
           detail: detail ? {
             ...detail,
@@ -223,13 +242,13 @@ export default function MobileTaskTable({
           } : detail,
         },
       }))
-      setEditorValues(current => ({ ...current, [task.row_key]: savedValues }))
+      setEditorValues(current => ({ ...current, [task.task_key]: savedValues }))
       message.success(result.message)
       await onSaved()
     } catch (reason: any) {
       message.error(errorMessage(reason, '保存失败，请稍后重试'))
       if ([409, 502, 503].includes(Number(reason?.response?.status))) {
-        await requestEditors([task.row_key], true)
+        await requestEditors([task.task_key], true)
       }
     } finally {
       setSavingRowKey('')
@@ -257,21 +276,21 @@ export default function MobileTaskTable({
   const renderExpandedRow = (task: MobileTaskItem) => {
     const surfaceTone = mobileTaskSurfaceTone(task)
     const toneClass = `mobile-task-table-inline-editor--tone-${surfaceTone}`
-    const item = editorItems[task.row_key]
+    const item = editorItems[task.task_key]
     const detail = item?.detail
     const source = detail?.sources[0]
-    const values = editorValues[task.row_key] || source?.values || {}
+    const values = editorValues[task.task_key] || source?.values || {}
     const fields = detail && source
       ? mobileTaskEditorFields(detail, source.editable_fields, values, source.values)
       : []
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
-    const editorLoading = loadingEditorKeys.has(task.row_key)
+    const editorLoading = loadingEditorKeys.has(task.task_key)
 
     if (!item) {
       return (
         <div
-          ref={element => setEditorElement(task.row_key, element)}
+          ref={element => setEditorElement(task.task_key, element)}
           className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--loading`}
           onClick={event => event.stopPropagation()}
         >
@@ -279,7 +298,7 @@ export default function MobileTaskTable({
             {editorLoading ? '正在准备本行填写项…' : '滚动到本行时自动读取可编辑信息'}
           </div>
           {!editorLoading && (
-            <Button size="small" onClick={() => void requestEditors([task.row_key], true)}>读取本行</Button>
+            <Button size="small" onClick={() => void requestEditors([task.task_key], true)}>读取本行</Button>
           )}
         </div>
       )
@@ -288,7 +307,7 @@ export default function MobileTaskTable({
     if (!item?.available || !detail || !source) {
       return (
         <div
-          ref={element => setEditorElement(task.row_key, element)}
+          ref={element => setEditorElement(task.task_key, element)}
           className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}
         >
           <div className="mobile-task-table-inline-fields">
@@ -316,7 +335,7 @@ export default function MobileTaskTable({
 
     return (
       <div
-        ref={element => setEditorElement(task.row_key, element)}
+        ref={element => setEditorElement(task.task_key, element)}
         className={`mobile-task-table-inline-editor ${toneClass}${dirtyCount ? ' mobile-task-table-inline-editor--dirty' : ''}`}
         onClick={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
@@ -345,12 +364,12 @@ export default function MobileTaskTable({
                       showSearch
                       size="small"
                       placeholder="请选择"
-                      disabled={selectionMode || savingRowKey === task.row_key}
+                      disabled={selectionMode || savingRowKey === task.task_key}
                       value={values[field] || undefined}
                       options={options}
                       onChange={value => setEditorValues(current => ({
                         ...current,
-                        [task.row_key]: { ...values, [field]: value || '' },
+                        [task.task_key]: { ...values, [field]: value || '' },
                       }))}
                       onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
@@ -358,12 +377,12 @@ export default function MobileTaskTable({
                     <Input.TextArea
                       size="small"
                       placeholder="请输入"
-                      disabled={selectionMode || savingRowKey === task.row_key}
+                      disabled={selectionMode || savingRowKey === task.task_key}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
                       onChange={event => setEditorValues(current => ({
                         ...current,
-                        [task.row_key]: { ...values, [field]: event.target.value },
+                        [task.task_key]: { ...values, [field]: event.target.value },
                       }))}
                       onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
@@ -425,7 +444,7 @@ export default function MobileTaskTable({
                 <div className="mobile-task-source-cloud mobile-task-source-cloud--table">
                   <div>
                     {sources.map(tag => (
-                      <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+                      <Tag key={`${task.task_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
                     ))}
                   </div>
                 </div>
@@ -530,7 +549,7 @@ export default function MobileTaskTable({
             {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
             {task.sync_state === 'pending' && <Tag color="blue">待同步</Tag>}
             {task.watch_marks?.map(mark => (
-              <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
+              <Tag key={`${task.task_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
             ))}
             {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
           </div>
@@ -542,7 +561,7 @@ export default function MobileTaskTable({
   return (
     <div className="app-card mobile-task-table overflow-hidden">
       <Table<MobileTaskItem>
-        rowKey="row_key"
+        rowKey="task_key"
         size="middle"
         loading={loading}
         dataSource={rows}
@@ -557,17 +576,17 @@ export default function MobileTaskTable({
           onSelect,
         } : undefined}
         expandable={{
-          expandedRowKeys: rows.map(task => task.row_key),
+          expandedRowKeys: rows.map(task => task.task_key),
           showExpandColumn: false,
           expandedRowRender: renderExpandedRow,
         }}
         pagination={false}
         onRow={task => ({
-          'data-mobile-task-row-key': task.row_key,
+          'data-mobile-task-row-key': task.task_key,
           className: [
             'mobile-task-table-primary-row',
             `mobile-task-table-primary-row--tone-${mobileTaskSurfaceTone(task)}`,
-            selectionMode && selectedRowKeys.includes(task.row_key) ? 'mobile-task-table-row-selected' : '',
+            selectionMode && selectedRowKeys.includes(task.task_key) ? 'mobile-task-table-row-selected' : '',
           ].filter(Boolean).join(' '),
           onDoubleClick: () => onOpen(task),
         })}

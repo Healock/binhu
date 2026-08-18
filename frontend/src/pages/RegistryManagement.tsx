@@ -427,8 +427,6 @@ export default function RegistryManagement() {
     { title: '社区', dataIndex: 'community_name', width: 130 },
     { title: '标准详细地址', width: 360, ellipsis: true, render: (_, row) => row.natural_address || row.normalized_address },
     { title: '户号', dataIndex: 'source_house_no', width: 150, ellipsis: true, render: value => value || '-' },
-    { title: '幢', dataIndex: 'building', width: 90 },
-    { title: '室', dataIndex: 'room', width: 90 },
     { title: '住房类型', dataIndex: 'housing_type', width: 120, render: value => value
       ? <Tag color={['个人出租', '单位出租'].includes(value) ? 'blue' : value === '自购房屋' ? 'green' : 'default'}>{value}</Tag>
       : <Tag color="warning">未标注</Tag> },
@@ -728,7 +726,7 @@ export default function RegistryManagement() {
               description={importPreview.status === 'preview' ? '当前仍是预览状态，确认后只导入正常数据，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
           </div>}
-        {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={listPagination} scroll={{ x: 1480 }} emptyText="当前筛选条件下没有房屋档案" />}
+        {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={listPagination} scroll={{ x: 1300 }} emptyText="当前筛选条件下没有房屋档案" />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'merges' && <AppTable rowKey="id" loading={loading} dataSource={merges} pagination={false} columns={[

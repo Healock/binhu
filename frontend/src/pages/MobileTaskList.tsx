@@ -9,9 +9,11 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skelet
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import {
+  getMobileTaskAnalysisFilterOptions,
   getMobileTaskFilterOptions,
   getLatestQmfStatusScan,
   bulkAssignMobileTasks,
+  listMobileTaskAnalysis,
   listMobileTasks,
   MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE,
   selectMobileTasksForAssignment,
@@ -53,6 +55,7 @@ import useDebouncedValue from '../hooks/useDebouncedValue'
 import useSystemTime from '../hooks/useSystemTime'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
+const ALL_ANALYSIS_TYPES = '__all__'
 
 const STATUS_OPTIONS = [
   { label: '待处理（未完成）', value: 'pending' },
@@ -168,6 +171,12 @@ function readQmfFeedbackStates(searchParams: URLSearchParams): QmfFeedbackState[
     .filter((value): value is QmfFeedbackState => valid.has(value as QmfFeedbackState))
 }
 
+function ensureTaskKey(task: MobileTaskItem): MobileTaskItem {
+  return task.task_key
+    ? task
+    : { ...task, task_key: `${task.parser_type}:${task.row_key}` }
+}
+
 export default function MobileTaskList({
   mode = 'tasks',
   onAnalysisCountChange,
@@ -182,10 +191,24 @@ export default function MobileTaskList({
   const { recordActivity, user } = useAuth()
   const formatSystemTime = useSystemTime()
   const [searchParams, setSearchParams] = useSearchParams()
+  const analysisOnly = mode === 'analysis'
   const requestedType = searchParams.get('type') || MOBILE_TASK_TYPES[0]
   const parserType = MOBILE_TASK_TYPES.includes(requestedType as any)
     ? requestedType
     : MOBILE_TASK_TYPES[0]
+  const [analysisParserSelection, setAnalysisParserSelection] = useState<string[]>(() => {
+    if (!analysisOnly) return []
+    const requested = readMulti(searchParams, 'type')
+    if (requested.includes(ALL_ANALYSIS_TYPES)) return [ALL_ANALYSIS_TYPES]
+    const valid = requested.filter(value => MOBILE_TASK_TYPES.includes(value as any))
+    return valid.length ? valid : [ALL_ANALYSIS_TYPES]
+  })
+  const analysisParserTypes = useMemo(
+    () => analysisParserSelection.includes(ALL_ANALYSIS_TYPES)
+      ? [...MOBILE_TASK_TYPES]
+      : analysisParserSelection,
+    [analysisParserSelection],
+  )
   const requestedScope = searchParams.get('scope')
   const adminMode = isFlowTaskElevated(
     user?.member?.position,
@@ -193,7 +216,6 @@ export default function MobileTaskList({
     user?.permission_groups?.map(group => group.code),
     user?.permissions,
   )
-  const analysisOnly = mode === 'analysis'
   const scope: MobileTaskScope = analysisOnly || adminMode
     ? 'all'
     : requestedScope === 'community' ? 'community' : 'mine'
@@ -249,7 +271,9 @@ export default function MobileTaskList({
   const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
   const [watchCategoryOptions, setWatchCategoryOptions] = useState<Array<{ value: number; label: string; color: string; alert_level: string; count: number }>>([])
   const [facets, setFacets] = useState<MobileTaskFacets>(() => snapshotRef.current?.facets || EMPTY_FACETS)
-  const [rows, setRows] = useState<MobileTaskItem[]>(() => snapshotRef.current?.rows || [])
+  const [rows, setRows] = useState<MobileTaskItem[]>(() => (
+    snapshotRef.current?.rows.map(ensureTaskKey) || []
+  ))
   const [total, setTotal] = useState(() => snapshotRef.current?.total || 0)
   const [page, setPage] = useState(() => snapshotRef.current?.page || 1)
   const [loading, setLoading] = useState(() => !snapshotRef.current)
@@ -331,7 +355,7 @@ export default function MobileTaskList({
       page,
       loaded_page: loadedPageRef.current,
       keyword: keywordInput,
-      row_key: task.row_key,
+      row_key: task.task_key,
       saved_at: Date.now(),
     })
     navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
@@ -510,12 +534,18 @@ export default function MobileTaskList({
     const requestId = ++optionsRequestId.current
     setOptionsLoading(true)
     try {
-      const result = await getMobileTaskFilterOptions(
-        parserType,
-        scope,
-        communities,
-        analysisOnly ? reviewStage : 'all',
-      )
+      const result = analysisOnly
+        ? await getMobileTaskAnalysisFilterOptions(
+          analysisParserTypes,
+          communities,
+          reviewStage,
+        )
+        : await getMobileTaskFilterOptions(
+          parserType,
+          scope,
+          communities,
+          'all',
+        )
       if (requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
       setInspectorOptions(result.inspectors)
@@ -542,7 +572,7 @@ export default function MobileTaskList({
     } finally {
       if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
-  }, [analysisOnly, communities, parserType, reviewStage, scope])
+  }, [analysisOnly, analysisParserTypes, communities, parserType, reviewStage, scope])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
 
@@ -570,16 +600,29 @@ export default function MobileTaskList({
       setError('')
     }
     try {
-      const requestPage = (requestedPage: number) => listMobileTasks({
+      const requestPage = (requestedPage: number) => analysisOnly
+        ? listMobileTaskAnalysis({
+          parser_types: analysisParserTypes,
+          scope: 'all',
+          review_stage: reviewStage,
+          communities,
+          inspectors,
+          watch_categories: watchCategories,
+          sort,
+          keyword: keyword || undefined,
+          page: requestedPage,
+          page_size: 50,
+        })
+        : listMobileTasks({
           parser_type: parserType,
-          scope: analysisOnly ? 'all' : scope,
-          status: analysisOnly ? 'all' : status,
+          scope,
+          status,
           review_stage: reviewStage,
           communities,
           inspectors,
           watch_categories: watchCategories,
           qmf_feedback_states: qmfFeedbackStates,
-          priority: analysisOnly ? 'all' : priority,
+          priority,
           sort,
           keyword: keyword || undefined,
           page: requestedPage,
@@ -627,7 +670,7 @@ export default function MobileTaskList({
       }
       if (append) loadingMoreRef.current = false
     }
-  }, [analysisOnly, communities, inspectors, keyword, parserType, priority, qmfFeedbackStates, reviewStage, scope, sort, status, watchCategories])
+  }, [analysisOnly, analysisParserTypes, communities, inspectors, keyword, parserType, priority, qmfFeedbackStates, reviewStage, scope, sort, status, watchCategories])
 
   const loadQmfScan = useCallback(async (silent = true) => {
     if (!isModelThree) {
@@ -773,7 +816,11 @@ export default function MobileTaskList({
   useEffect(() => {
     if (!manageUrl) return
     const next = new URLSearchParams()
-    next.set('type', parserType)
+    if (analysisOnly) {
+      analysisParserSelection.forEach(value => next.append('type', value))
+    } else {
+      next.set('type', parserType)
+    }
     next.set('scope', analysisOnly ? 'all' : scope)
     next.set('status', analysisOnly ? 'all' : status)
     if (analysisOnly) next.set('review_stage', reviewStage)
@@ -785,7 +832,7 @@ export default function MobileTaskList({
     if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, communities, inspectors, isModelThree, manageUrl, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, sort, status, watchCategories])
+  }, [analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -804,6 +851,7 @@ export default function MobileTaskList({
   }
 
   const clearFilters = () => {
+    if (analysisOnly) setAnalysisParserSelection([ALL_ANALYSIS_TYPES])
     setCommunities([])
     setInspectors([])
     setWatchCategories([])
@@ -813,6 +861,23 @@ export default function MobileTaskList({
     setStatus(analysisOnly ? 'all' : 'pending')
     setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
     setKeywordInput('')
+  }
+
+  const updateAnalysisParserSelection = (values: string[]) => {
+    let next = values.filter(value => (
+      value === ALL_ANALYSIS_TYPES || MOBILE_TASK_TYPES.includes(value as any)
+    ))
+    if (next.includes(ALL_ANALYSIS_TYPES)) {
+      next = analysisParserSelection.includes(ALL_ANALYSIS_TYPES) && next.length > 1
+        ? next.filter(value => value !== ALL_ANALYSIS_TYPES)
+        : [ALL_ANALYSIS_TYPES]
+    }
+    if (!next.length) next = [ALL_ANALYSIS_TYPES]
+    setAnalysisParserSelection(next)
+    setCommunities([])
+    setInspectors([])
+    setWatchCategories([])
+    setPage(1)
   }
 
   const selectQmfFeedbackResult = (state: QmfFeedbackState | 'all') => {
@@ -837,6 +902,7 @@ export default function MobileTaskList({
     || inspectors.length > 0
     || watchCategories.length > 0
     || (isModelThree && qmfFeedbackStates.length > 0)
+    || (analysisOnly && !analysisParserSelection.includes(ALL_ANALYSIS_TYPES))
     || (!analysisOnly && priority !== 'all')
     || (!analysisOnly && status !== 'pending')
     || (!analysisOnly && reviewStage !== 'all')
@@ -884,12 +950,23 @@ export default function MobileTaskList({
       <ListToolbar
         className="mobile-task-filter-card"
         filters={<div className="mobile-task-filter-grid">
-          <Select
+          {analysisOnly ? <Select
+            mode="multiple"
+            size="large"
+            value={analysisParserSelection}
+            maxTagCount="responsive"
+            optionFilterProp="label"
+            onChange={updateAnalysisParserSelection}
+            options={[
+              { value: ALL_ANALYSIS_TYPES, label: '全部数据' },
+              ...MOBILE_TASK_TYPES.map(value => ({ value, label: value })),
+            ]}
+          /> : <Select
             size="large"
             value={parserType}
             onChange={value => updateQuery(value, scope)}
             options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
-          />
+          />}
           {analysisOnly || adminMode ? (
             <Tag color="blue" className="mobile-task-scope-tag">全所</Tag>
           ) : (
@@ -1196,7 +1273,7 @@ export default function MobileTaskList({
                 loading={loading}
                 analysisMode={analysisOnly}
                 selectionMode={selectionMode}
-                selectedRowKeys={[...selectedRows]}
+                selectedRowKeys={rows.filter(task => selectedRows.has(task.row_key)).map(task => task.task_key)}
                 canSelect={canSelectTask}
                 onSelect={(task, selected) => toggleSelected(task.row_key, selected)}
                 onOpen={openTask}
@@ -1241,12 +1318,12 @@ export default function MobileTaskList({
             }
             return (
               <article
-                key={task.row_key}
+                key={task.task_key}
                 role="button"
                 tabIndex={0}
                 aria-pressed={selectionMode ? isSelected : undefined}
                 aria-disabled={selectionMode && !canSelect ? true : undefined}
-                data-mobile-task-row-key={task.row_key}
+                data-mobile-task-row-key={task.task_key}
                 className={[
                   'mobile-task-item-card',
                   `mobile-task-item-card--tone-${surfaceTone}`,
@@ -1291,7 +1368,7 @@ export default function MobileTaskList({
                       {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
                       {task.sync_state === 'pending' && <Tag color="blue">待同步</Tag>}
                       {task.watch_marks?.map(mark => (
-                        <Tag key={`${task.row_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
+                        <Tag key={`${task.task_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
                       ))}
                       {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
                     </div>
@@ -1366,7 +1443,7 @@ export default function MobileTaskList({
                     <div className="mobile-task-source-cloud mobile-task-source-cloud--card">
                       <div>
                         {sourceTags.map(tag => (
-                          <Tag key={`${task.row_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
+                          <Tag key={`${task.task_key}-${tag}`} className="mobile-task-source-cloud__tag">{tag}</Tag>
                         ))}
                       </div>
                     </div>
