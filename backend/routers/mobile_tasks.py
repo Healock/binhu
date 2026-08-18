@@ -958,14 +958,14 @@ async def _validate_assignment(
           ON community.id=department.community_id
         WHERE community.name=%s
           AND member.name=%s
-          AND member.position='组员'
+          AND member.position IN ('组长', '组员')
           AND member.status='在岗'
         LIMIT 1
         """,
         (context["community"], assignee),
     )
     if not await cur.fetchone():
-        raise HTTPException(400, "只能分配给本社区在岗组员")
+        raise HTTPException(400, "只能分配给本社区在岗组长或组员")
 
 
 def _task_record(

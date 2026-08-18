@@ -508,6 +508,21 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
             cursor.execute.await_args.args[1],
             ("长板", "组员甲"),
         )
+        self.assertIn(
+            "member.position IN ('组长', '组员')",
+            cursor.execute.await_args.args[0],
+        )
+
+        cursor.fetchone = AsyncMock(return_value=(8,))
+        await _validate_assignment(
+            cursor,
+            {"position": "组长", "community": "长板"},
+            {"核查人": "组长甲"},
+        )
+        self.assertEqual(
+            cursor.execute.await_args.args[1],
+            ("长板", "组长甲"),
+        )
 
         cursor.fetchone = AsyncMock(return_value=None)
         with self.assertRaises(HTTPException) as raised:
