@@ -47,7 +47,7 @@ const MAX_CONTROL_ANALYSIS_NODES = 60
 const MAX_CONTROL_PHOTO_NODES = 50
 const LAST_INSPECTOR_KEY = 'binhu-task-flow-lab:last-inspector'
 const LAST_VIEW_KEY = 'binhu-task-flow-lab:last-view'
-const LAYOUT_KEY_PREFIX = 'binhu-task-flow-lab:layout-v6:'
+const LAYOUT_KEY_PREFIX = 'binhu-task-flow-lab:layout-v7:'
 
 type TaskFlowView = 'person' | 'control'
 type LayoutDensity = 'compact' | 'standard' | 'comfortable'
@@ -71,6 +71,9 @@ interface TaskFlowItem {
   owner: string
   openPath: string
   weight: number
+  readOnly?: boolean
+  dependencyOf?: string
+  stackKey?: string
 }
 
 type TaskFlowNodeData = {
@@ -93,6 +96,7 @@ interface LoadedTaskFlowItems {
   items: TaskFlowItem[]
   total: number
   loadedTotal: number
+  systemEdges: Edge[]
 }
 
 function stateMeta(task: MobileTaskItem) {
@@ -126,6 +130,35 @@ function analysisTaskItem(task: MobileTaskItem): TaskFlowItem {
     description: task.summary.address || task.parser_type, owner: task.inspector || '核查人未填写',
     openPath: `/police-analysis/${encodeURIComponent(task.parser_type)}/${encodeURIComponent(task.row_key)}?scope=all`,
     weight: 1,
+  }
+}
+
+function analysisDependencyItem(task: MobileTaskItem): TaskFlowItem {
+  const dependencyOf = taskFlowNodeId(task)
+  return {
+    id: `analysis:${dependencyOf}`, lane: 'ready', category: '基础管控研判',
+    title: `研判 · ${task.summary.title || '未填写姓名'}`,
+    statusLabel: '只读协作', statusColor: 'purple',
+    community: task.community, deadline: task.summary.deadline,
+    description: '正在等待基础管控填写研判结果', owner: '基础管控',
+    openPath: `/police-analysis/${encodeURIComponent(task.parser_type)}/${encodeURIComponent(task.row_key)}?scope=all`,
+    weight: 0, readOnly: true, dependencyOf,
+  }
+}
+
+function analysisDependencyEdge(task: MobileTaskItem): Edge {
+  const dependencyOf = taskFlowNodeId(task)
+  return {
+    id: `system:analysis:${dependencyOf}`,
+    source: `analysis:${dependencyOf}`,
+    target: dependencyOf,
+    type: 'smoothstep',
+    markerEnd: { type: MarkerType.ArrowClosed },
+    className: 'task-flow-edge--system',
+    style: { stroke: '#8b5cf6', strokeWidth: 2 },
+    selectable: false,
+    deletable: false,
+    data: { system: true, label: '等待研判' },
   }
 }
 
@@ -174,21 +207,98 @@ function dispatchBatchItems(batch: PoliceDispatchBatch): TaskFlowItem[] {
   return result
 }
 
-function layoutItems(items: TaskFlowItem[], density: LayoutDensity, previous: Map<string, { x: number; y: number }>) {
+function layoutItems(items: TaskFlowItem[], density: LayoutDensity, previous: Map<string, { x: number; y: number }>, edges: Edge[] = []) {
   const layout = DENSITY_LAYOUTS[density]
-  const laneIndex: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
-  return items.map(item => {
-    if (previous.has(item.id)) return { item, position: previous.get(item.id)! }
-    const index = laneIndex[item.lane]++
-    const lane = item.lane === 'ready' ? 0 : item.lane === 'waiting' ? 1 : 2
-    return {
-      item,
-      position: {
-        x: 40 + lane * (layout.xGap * 2.2),
-        y: 80 + Math.floor(index / 2) * layout.yGap,
-      },
+  items.forEach(item => { item.stackKey = undefined })
+  const itemById = new Map(items.map(item => [item.id, item]))
+  const validEdges = edges.filter(edge => itemById.has(edge.source) && itemById.has(edge.target))
+  const connectedIds = new Set(validEdges.flatMap(edge => [edge.source, edge.target]))
+  const laneNumber = (lane: TaskFlowLane) => lane === 'ready' ? 0 : lane === 'waiting' ? 1 : 2
+  const laneSlots: Record<TaskFlowLane, number> = { ready: 0, waiting: 0, exception: 0 }
+  const laneColumnGap = layout.xGap * 3.35
+  const result = new Map<string, { x: number; y: number; zIndex: number }>()
+
+  const placeComponent = (component: TaskFlowItem[]) => {
+    const anchorLane = component[0]?.lane || 'ready'
+    const slot = laneSlots[anchorLane]++
+    const baseX = 40 + laneNumber(anchorLane) * laneColumnGap + (slot % 3) * (layout.xGap * 0.92)
+    const baseY = 80 + Math.floor(slot / 3) * layout.yGap
+    const incoming = new Map(component.map(item => [item.id, 0]))
+    const outgoing = new Map<string, string[]>()
+    validEdges.forEach(edge => {
+      if (!incoming.has(edge.source) || !incoming.has(edge.target)) return
+      incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1)
+      outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge.target])
+    })
+    const levels = new Map<string, number>()
+    const queue = component.filter(item => (incoming.get(item.id) || 0) === 0).map(item => item.id)
+    if (!queue.length) queue.push(component[0].id)
+    queue.forEach(id => levels.set(id, 0))
+    for (let index = 0; index < queue.length; index += 1) {
+      const source = queue[index]
+      ;(outgoing.get(source) || []).forEach(target => {
+        levels.set(target, Math.max(levels.get(target) || 0, (levels.get(source) || 0) + 1))
+        const nextIncoming = (incoming.get(target) || 0) - 1
+        incoming.set(target, nextIncoming)
+        if (nextIncoming <= 0) queue.push(target)
+      })
     }
+    const rows = new Map<number, number>()
+    component.forEach((item, index) => {
+      const level = levels.get(item.id) ?? index
+      const row = rows.get(level) || 0
+      rows.set(level, row + 1)
+      result.set(item.id, {
+        x: baseX + level * layout.xGap,
+        y: baseY + row * 132,
+        zIndex: 20 + index,
+      })
+    })
+  }
+
+  const visited = new Set<string>()
+  items.filter(item => connectedIds.has(item.id)).forEach(start => {
+    if (visited.has(start.id)) return
+    const component: TaskFlowItem[] = []
+    const queue = [start.id]
+    visited.add(start.id)
+    while (queue.length) {
+      const id = queue.shift()!
+      const item = itemById.get(id)
+      if (item) component.push(item)
+      validEdges.filter(edge => edge.source === id || edge.target === id).forEach(edge => {
+        const next = edge.source === id ? edge.target : edge.source
+        if (!visited.has(next)) { visited.add(next); queue.push(next) }
+      })
+    }
+    placeComponent(component)
   })
+
+  const stacks = new Map<string, TaskFlowItem[]>()
+  items.filter(item => !connectedIds.has(item.id)).forEach(item => {
+    const key = `${item.lane}:${item.category}`
+    stacks.set(key, [...(stacks.get(key) || []), item])
+  })
+  stacks.forEach(group => {
+    const anchorLane = group[0].lane
+    const slot = laneSlots[anchorLane]++
+    const baseX = 40 + laneNumber(anchorLane) * laneColumnGap + (slot % 3) * (layout.xGap * 0.92)
+    const baseY = 80 + Math.floor(slot / 3) * layout.yGap
+    if (group.length > 1) group.forEach(item => { item.stackKey = `${item.lane}:${item.category}` })
+    group.forEach((item, index) => {
+      result.set(item.id, {
+        x: baseX + index * 10,
+        y: baseY - index * 12,
+        zIndex: 100 + index,
+      })
+    })
+  })
+
+  return items.map(item => ({
+    item,
+    position: previous.has(item.id) ? previous.get(item.id)! : result.get(item.id) || { x: 40, y: 80 },
+    zIndex: result.get(item.id)?.zIndex || 1,
+  }))
 }
 
 function readLayout(contextKey: string): SavedTaskFlowLayout {
@@ -208,16 +318,17 @@ function readLayout(contextKey: string): SavedTaskFlowLayout {
 function writeLayout(contextKey: string, nodes: TaskNode[], edges: Edge[], viewport: Viewport | null, density: LayoutDensity) {
   if (!contextKey) return
   localStorage.setItem(`${LAYOUT_KEY_PREFIX}${encodeURIComponent(contextKey)}`, JSON.stringify({
-    positions: Object.fromEntries(nodes.map(node => [node.id, node.position])), edges, viewport, density,
+    positions: Object.fromEntries(nodes.map(node => [node.id, node.position])),
+    edges: edges.filter(edge => edge.data?.system !== true), viewport, density,
   }))
 }
 
 function TaskCardNode({ data, selected }: NodeProps<TaskNode>) {
   const { item, openTask } = data
   return (
-    <article className={`task-flow-node task-flow-node--${item.lane}${selected ? ' is-selected' : ''}`}>
+    <article className={`task-flow-node task-flow-node--${item.lane}${selected ? ' is-selected' : ''}${item.stackKey ? ' is-stacked' : ''}${item.readOnly ? ' is-readonly' : ''}`}>
       <NodeToolbar isVisible={data.toolbarVisible} position={Position.Top}>
-        <Button size="small" type="primary" icon={<EnterOutlined />} onClick={() => openTask(item.openPath)}>打开处理</Button>
+        <Button size="small" type="primary" icon={<EnterOutlined />} onClick={() => openTask(item.openPath)}>{item.readOnly ? '查看研判' : '打开处理'}</Button>
       </NodeToolbar>
       <Handle type="target" position={Position.Left} className="task-flow-node__handle" />
       <div className="task-flow-node__header">
@@ -235,7 +346,7 @@ function TaskCardNode({ data, selected }: NodeProps<TaskNode>) {
       </div>
       <div className="task-flow-node__footer">
         <span>{item.owner}</span>
-        <button type="button" className="task-flow-node__open nodrag nopan" onClick={event => { event.stopPropagation(); openTask(item.openPath) }}>打开处理</button>
+        <button type="button" className="task-flow-node__open nodrag nopan" onClick={event => { event.stopPropagation(); openTask(item.openPath) }}>{item.readOnly ? '查看研判' : '打开处理'}</button>
       </div>
       <Handle type="source" position={Position.Right} className="task-flow-node__handle" />
     </article>
@@ -252,7 +363,18 @@ async function loadPersonTasks(inspector: string, passive: boolean): Promise<Loa
     return { tasks: [first, ...rest].flatMap(page => page.data), total: first.total }
   }))
   const tasks = results.flatMap(result => result.tasks)
-  return { items: tasks.map(personTaskItem), total: results.reduce((sum, result) => sum + result.total, 0), loadedTotal: tasks.length }
+  const items = tasks.flatMap(task => {
+    const actual = personTaskItem(task)
+    return actual.lane === 'waiting' && (task.priority === 'waiting_analysis' || task.review_stage === 'waiting_analysis')
+      ? [analysisDependencyItem(task), actual]
+      : [actual]
+  })
+  return {
+    items,
+    systemEdges: tasks.filter(task => taskFlowLane(task) === 'waiting' && (task.priority === 'waiting_analysis' || task.review_stage === 'waiting_analysis')).map(analysisDependencyEdge),
+    total: results.reduce((sum, result) => sum + result.total, 0),
+    loadedTotal: tasks.length,
+  }
 }
 
 async function loadControlTasks(passive: boolean): Promise<LoadedTaskFlowItems> {
@@ -267,6 +389,7 @@ async function loadControlTasks(passive: boolean): Promise<LoadedTaskFlowItems> 
   const dispatchTotal = dispatchItems.reduce((sum, item) => sum + item.weight, 0)
   return {
     items: [...analysisItems, ...photoItems, ...dispatchItems],
+    systemEdges: [],
     total: analysisResults.reduce((sum, result) => sum + result.total, 0) + photoResult.total + dispatchTotal,
     loadedTotal: analysisItems.length + photoItems.length + dispatchTotal,
   }
@@ -325,14 +448,21 @@ function TaskFlowLabContent() {
       const saved = readLayout(contextKey)
       const nextDensity = saved.density || densityRef.current
       setDensity(nextDensity)
-      const previous = new Map(nodesRef.current.map(node => [node.id, node.position]))
-      const laidOut = layoutItems(result.items, nextDensity, previous)
-      const nextNodes = laidOut.map(({ item, position }) => ({
-        id: item.id, type: 'task' as const, position,
+      const previous = new Map(Object.entries(saved.positions))
+      nodesRef.current.forEach(node => previous.set(node.id, node.position))
+      const systemEdges = result.systemEdges
+      const savedUserEdges = saved.edges.filter(edge => edge.data?.system !== true)
+      const nextEdges = [...systemEdges, ...savedUserEdges.filter(edge => {
+        const ids = new Set(result.items.map(item => item.id))
+        return ids.has(edge.source) && ids.has(edge.target)
+      })]
+      const laidOut = layoutItems(result.items, nextDensity, previous, nextEdges)
+      const nextNodes = laidOut.map(({ item, position, zIndex }) => ({
+        id: item.id, type: 'task' as const, position, zIndex,
         data: { item, fresh: knownIds.current ? !knownIds.current.has(item.id) : false, toolbarVisible: selectedId === item.id, openTask },
       }))
       const ids = new Set(nextNodes.map(node => node.id))
-      setNodes(nextNodes); setEdges(saved.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)))
+      setNodes(nextNodes); setEdges(nextEdges.filter(edge => ids.has(edge.source) && ids.has(edge.target)))
       setAvailableTotal(result.total); setLoadedTotal(result.loadedTotal); setError('')
       knownIds.current = ids
       if (nextNodes.length && !saved.viewport) window.setTimeout(() => getViewport() && void fitView({ padding: 0.16, duration: 250 }), 40)
@@ -361,8 +491,8 @@ function TaskFlowLabContent() {
 
   const autoLayout = () => {
     const previous = new Map<string, { x: number; y: number }>()
-    const next = layoutItems(nodes.map(node => node.data.item), density, previous).map(({ item, position }) => ({
-      id: item.id, type: 'task' as const, position,
+    const next = layoutItems(nodes.map(node => node.data.item), density, previous, edges).map(({ item, position, zIndex }) => ({
+      id: item.id, type: 'task' as const, position, zIndex,
       data: { item, fresh: false, toolbarVisible: selectedId === item.id, openTask },
     }))
     setNodes(next)
@@ -373,7 +503,9 @@ function TaskFlowLabContent() {
   const onNodesChange = useCallback((changes: NodeChange<TaskNode>[]) => setNodes(current => applyNodeChanges(changes, current)), [])
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEdges(current => {
-      const next = applyEdgeChanges(changes, current)
+      const protectedIds = new Set(current.filter(edge => edge.data?.system === true).map(edge => edge.id))
+      const safeChanges = changes.filter(change => change.type !== 'remove' || !protectedIds.has(change.id))
+      const next = applyEdgeChanges(safeChanges, current)
       writeLayout(contextKey, nodesRef.current, next, getViewport(), densityRef.current)
       return next
     })
