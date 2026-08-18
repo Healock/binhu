@@ -44,10 +44,11 @@ import {
 
 const DataQuery = lazy(() => import('./pages/DataQuery'))
 const TaskFlowLab = lazy(() => import('./pages/TaskFlowLab'))
+const ReteTaskFlowLab = lazy(() => import('./pages/ReteTaskFlowLab'))
 
 function LazyPage({ children }: { children: ReactNode }) {
   return (
-    <Suspense fallback={<div className="app-card p-10 text-center text-[var(--app-text-secondary)]">正在加载在线工作表…</div>}>
+    <Suspense fallback={<div className="app-card p-10 text-center text-[var(--app-text-secondary)]">正在加载页面…</div>}>
       {children}
     </Suspense>
   )
@@ -124,6 +125,7 @@ function App() {
               <Route path="/" element={<RoleDashboard />} />
               <Route element={<ProtectedRoute requireRole="super_admin" />}>
                 <Route path="/task-flow-lab" element={<LazyPage><TaskFlowLab /></LazyPage>} />
+                <Route path="/task-flow-rete-lab" element={<LazyPage><ReteTaskFlowLab /></LazyPage>} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
                 <Route path="/summary" element={<Dashboard />} />

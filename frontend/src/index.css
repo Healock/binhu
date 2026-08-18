@@ -603,6 +603,196 @@
   50% { transform: translateY(-4px); box-shadow: 0 16px 34px color-mix(in srgb, var(--app-primary) 24%, transparent); }
 }
 
+.rete-task-flow-lab__hero,
+.rete-task-flow-lab__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px;
+}
+
+.rete-task-flow-lab__hero h1 {
+  margin: 5px 0 4px;
+  color: var(--app-text-strong);
+  font-size: clamp(24px, 2.4vw, 36px);
+  font-weight: 800;
+}
+
+.rete-task-flow-lab__hero p {
+  margin: 0;
+  color: var(--app-text-secondary);
+}
+
+.rete-task-flow-lab__hero-actions,
+.rete-task-flow-lab__legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rete-task-flow-lab__legend {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.rete-task-flow-lab__legend span {
+  padding: 5px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface-muted);
+}
+
+.rete-task-flow-lab__canvas-shell {
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+}
+
+.rete-task-flow-lab__canvas {
+  width: 100%;
+  height: min(70vh, 760px);
+  min-height: 560px;
+  background-color: var(--app-surface-muted);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--app-text-tertiary) 34%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.rete-task-flow-lab__loading {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  padding: 50px;
+  background: var(--app-surface-muted);
+}
+
+.rete-task-node {
+  position: relative;
+  display: grid;
+  width: 250px;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--rete-node-accent) 48%, var(--app-border));
+  border-top: 4px solid var(--rete-node-accent);
+  border-radius: 14px;
+  color: var(--app-text);
+  background: var(--app-surface);
+  box-shadow: 0 12px 32px rgb(15 23 42 / 0.11);
+}
+
+.rete-task-node__socket {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.rete-task-node__socket--input {
+  left: -11px;
+}
+
+.rete-task-node__socket--output {
+  right: -11px;
+}
+
+.rete-task-node__socket [data-testid="socket"],
+.rete-task-node__socket > * {
+  width: 18px !important;
+  height: 18px !important;
+  border: 3px solid var(--app-surface) !important;
+  background: var(--rete-node-accent) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rete-node-accent) 48%, transparent);
+}
+
+.rete-task-node--wait {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--app-surface) 94%, #8b5cf6 6%);
+}
+
+.rete-task-node__topline,
+.rete-task-node__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rete-task-node__kind {
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.rete-task-node strong {
+  color: var(--app-text-strong);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.rete-task-node p {
+  min-height: 38px;
+  margin: 0;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.rete-task-node__footer {
+  padding-top: 10px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.rete-task-node__footer b {
+  display: inline-grid;
+  min-width: 34px;
+  min-height: 28px;
+  place-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--rete-node-accent);
+  font-size: 14px;
+}
+
+.rete-task-node__open {
+  min-height: 34px;
+  border: 1px solid color-mix(in srgb, var(--rete-node-accent) 45%, var(--app-border));
+  border-radius: 9px;
+  color: var(--rete-node-accent);
+  background: color-mix(in srgb, var(--rete-node-accent) 9%, var(--app-surface));
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rete-task-node__open:hover,
+.rete-task-node__open:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rete-node-accent) 16%, transparent);
+}
+
+.rete-task-flow-lab__notes {
+  padding: 8px;
+}
+
+@media (max-width: 768px) {
+  .rete-task-flow-lab__hero,
+  .rete-task-flow-lab__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rete-task-flow-lab__hero-actions .ant-btn {
+    flex: 1 1 auto;
+  }
+
+  .rete-task-flow-lab__canvas {
+    min-height: 520px;
+  }
+}
+
 @media (max-width: 900px) {
   .task-flow-lab__hero {
     display: grid;

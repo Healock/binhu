@@ -524,6 +524,7 @@ function TaskFlowLabContent() {
     <div className="task-flow-lab mx-auto max-w-[1680px] space-y-4 pb-4">
       <section className="app-card task-flow-lab__hero">
         <div><div className="task-flow-lab__eyebrow"><ExperimentOutlined /> 超级管理员内测</div><h1>我的任务流</h1><p>任务卡可以自由拖动、连线和排列。系统只提供初始布局和状态提示，不限制你的流程组织方式。</p></div>
+        <div className="task-flow-lab__hero-actions"><Button onClick={() => navigate('/task-flow-rete-lab')}>试用 Rete.js 工作流</Button></div>
       </section>
       <section className="app-card task-flow-lab__toolbar">
         <div className="task-flow-lab__filters">
