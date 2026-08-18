@@ -46,6 +46,21 @@ def test_workbook_compatible_notice_statuses_are_explicit():
     assert certificate_status_summary(
         housing_type="个人出租",
         certificate_count=0,
+    )["certificate_status"] == "not_required"
+
+    assert certificate_status_summary(
+        housing_type="个人出租",
+        certificate_count=0,
+        source_ready=False,
+    )["certificate_status"] == "not_uploaded"
+
+    assert certificate_status_summary(
+        housing_type="个人出租",
+        certificate_count=1,
+        landlord_name="甲",
+        actual_renter_name="甲",
+        signed_status="否",
+        sign_type="",
     )["certificate_status"] == "not_uploaded"
 
     assert certificate_status_summary(
@@ -75,6 +90,16 @@ def test_multiple_notices_override_the_nominal_signature_state():
         landlord_name="甲",
         actual_renter_name="甲",
         signed_status="是",
+    )
+
+    assert summary["certificate_status"] == "multiple_or_conflict"
+
+
+def test_pending_source_issue_prevents_not_required_classification():
+    summary = certificate_status_summary(
+        housing_type="个人出租",
+        certificate_count=0,
+        certificate_issue_count=1,
     )
 
     assert summary["certificate_status"] == "multiple_or_conflict"

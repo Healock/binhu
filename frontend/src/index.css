@@ -2229,6 +2229,10 @@
   --certificate-accent: var(--app-success);
 }
 
+.registry-certificate-summary--not_required {
+  --certificate-accent: var(--app-primary);
+}
+
 .registry-certificate-summary--not_uploaded,
 .registry-certificate-summary--multiple_or_conflict {
   --certificate-accent: var(--app-danger);

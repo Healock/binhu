@@ -2807,8 +2807,10 @@ export interface RegistryProperty {
   certificate_status: RegistryCertificateStatus
   certificate_status_label: string
   certificate_count: number
+  certificate_issue_count: number
+  certificate_source_ready: boolean
   certificate_updated_at: string | null
-  landlord_renter_relation: 'same' | 'different' | 'unknown'
+  landlord_renter_relation: 'same' | 'different' | 'unknown' | 'not_required' | 'conflict'
   landlord_renter_relation_label: string
   actual_renter_status: 'confirmed' | 'unknown'
   responsibility_identity: string
@@ -2853,7 +2855,7 @@ export interface RegistryImportIssue {
 }
 
 export type RegistryHousingCategory = '' | 'rental' | 'self_owned' | 'other' | 'unmarked'
-export type RegistryCertificateStatus = '' | 'normal_signed' | 'not_uploaded'
+export type RegistryCertificateStatus = '' | 'normal_signed' | 'not_required' | 'not_uploaded'
   | 'renter_needs_correction' | 'actual_renter_missing' | 'multiple_or_conflict'
   | 'not_applicable'
 

@@ -614,6 +614,16 @@ async def get_property_detail(
             (property_id,),
         )
         certificates = await cur.fetchall()
+        await cur.execute(
+            "SELECT COUNT(*),EXISTS(SELECT 1 FROM registry_source_batches "
+            "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) "
+            "FROM registry_import_issues WHERE source_type='certificate' "
+            "AND status='pending' AND entity_key=%s",
+            (row[13],),
+        )
+        certificate_issue_row = await cur.fetchone()
+        certificate_issue_count = int(certificate_issue_row[0] or 0)
+        certificate_source_ready = bool(certificate_issue_row[1])
     reveal_sensitive = REGISTRY_IMPORT_MANAGE in set(user.get("permissions") or [])
     certificate_items = [
         {
@@ -650,6 +660,8 @@ async def get_property_detail(
     certificate_summary = certificate_status_summary(
         housing_type=row[7],
         certificate_count=len(certificates),
+        certificate_issue_count=certificate_issue_count,
+        source_ready=certificate_source_ready,
         landlord_name=latest_certificate[5] if latest_certificate else "",
         actual_renter_name=latest_certificate[7] if latest_certificate else "",
         signed_status=latest_certificate[9] if latest_certificate else "",

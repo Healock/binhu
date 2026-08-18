@@ -47,15 +47,17 @@ const issueTypeOptions = Object.entries(issueTypeLabels).map(([value, label]) =>
 const certificateStatusOptions: Array<{ value: RegistryCertificateStatus; label: string }> = [
   { value: '', label: '全部责任书状态' },
   { value: 'normal_signed', label: '正常签署' },
+  { value: 'not_required', label: '无需上传告知书' },
   { value: 'not_uploaded', label: '未上传告知书' },
   { value: 'renter_needs_correction', label: '出租人待修正' },
   { value: 'actual_renter_missing', label: '实际出租人未确定' },
-  { value: 'multiple_or_conflict', label: '多份或内容待核对' },
+  { value: 'multiple_or_conflict', label: '告知书来源待核对' },
   { value: 'not_applicable', label: '非出租房屋' },
 ]
 
 const certificateStatusColors: Record<Exclude<RegistryCertificateStatus, ''>, string> = {
   normal_signed: 'success',
+  not_required: 'blue',
   not_uploaded: 'error',
   renter_needs_correction: 'orange',
   actual_renter_missing: 'purple',
@@ -829,12 +831,12 @@ export default function RegistryManagement() {
                 <div><span>责任关系</span><strong>{summary.landlord_renter_relation_label}</strong></div>
                 <div><span>责任身份</span><strong>{summary.responsibility_identity || '未确认'}</strong></div>
               </div>
-              {summary.certificate_status !== 'normal_signed' && summary.certificate_status !== 'not_applicable' && (
+              {!['normal_signed', 'not_required', 'not_applicable'].includes(summary.certificate_status) && (
                 <div className="registry-certificate-summary__action">
                   {summary.certificate_status === 'not_uploaded' && '需要补充房东责任告知书。'}
                   {summary.certificate_status === 'renter_needs_correction' && '告知书已经签署，但实际出租人信息需要修正。'}
                   {summary.certificate_status === 'actual_renter_missing' && '尚未确定实际承担出租管理责任的人。'}
-                  {summary.certificate_status === 'multiple_or_conflict' && '同一房屋存在多份记录，需要先核对有效责任关系。'}
+                  {summary.certificate_status === 'multiple_or_conflict' && '告知书来源存在重复、内容冲突或地址匹配问题，需要先完成核对。'}
                 </div>
               )}
               <div className="registry-certificate-summary__updated">

@@ -237,6 +237,27 @@ async def test_property_search_combines_scope_keyword_community_and_housing_filt
     assert result == {"total": 12, "page": 2, "page_size": 20, "data": []}
 
 
+@pytest.mark.asyncio
+async def test_property_search_separates_not_required_from_pending_source_issues(monkeypatch):
+    async def allowed_ids(_user, _permission):
+        return None
+
+    monkeypatch.setattr(registry_router, "_allowed_community_ids", allowed_ids)
+    conn = _PropertySearchConnection()
+    await _property_search_result(
+        PropertySearch(certificate_status="not_required"),
+        {"id": 1},
+        conn,
+    )
+
+    count_sql, count_params = conn.search_cursor.calls[0]
+    assert "certificate_issues.issue_count" in count_sql
+    assert "certificate_source_state.source_ready" in count_sql
+    assert "certificate_count,0)=0" in count_sql
+    assert "issue_count,0)=0" in count_sql
+    assert count_params == ("active", "个人出租", "单位出租")
+
+
 def test_new_permissions_are_catalogued_and_defaulted():
     assert {REGISTRY_PROPERTY_VIEW, REGISTRY_PROPERTY_MANAGE, REGISTRY_WATCH_MANAGE,
             WORKFLOW_TICKET_CREATE}.issubset(ALL_PERMISSIONS)
