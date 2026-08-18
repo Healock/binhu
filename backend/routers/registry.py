@@ -63,7 +63,7 @@ class PropertySearch(BaseModel):
     community_id: int | None = None
     housing_category: Literal["", "rental", "self_owned", "other", "unmarked"] = ""
     certificate_status: Literal[
-        "", "normal_signed", "not_uploaded", "renter_needs_correction",
+        "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = ""
     status: Literal["", "active", "inactive"] = "active"
@@ -193,6 +193,8 @@ def _property_payload(row) -> dict:
     payload.update(certificate_status_summary(
         housing_type=row[7],
         certificate_count=int(row[18] or 0),
+        certificate_issue_count=int(row[24] or 0),
+        source_ready=bool(row[25]),
         landlord_name=row[19],
         actual_renter_name=row[20],
         signed_status=row[21],
@@ -237,13 +239,21 @@ async def _property_search_result(
         where.append("COALESCE(property.housing_type,'')='' ")
 
     certificate_count = "COALESCE(certificate_totals.certificate_count,0)"
+    certificate_issue_count = "COALESCE(certificate_issues.issue_count,0)"
+    certificate_source_ready = "COALESCE(certificate_source_state.source_ready,0)"
     signed = "LOWER(TRIM(COALESCE(certificate.signed_status,''))) IN ('是','已签署','已签','true','1','yes')"
     renter_present = "TRIM(COALESCE(certificate.actual_renter_name,''))<>''"
     if data.certificate_status == "not_applicable":
         where.append("property.housing_type NOT IN (%s,%s)")
         params.extend(["个人出租", "单位出租"])
     elif data.certificate_status == "multiple_or_conflict":
-        where.append(f"{certificate_count}>1")
+        where.append(f"({certificate_count}>1 OR {certificate_issue_count}>0)")
+    elif data.certificate_status == "not_required":
+        where.append(
+            "property.housing_type IN (%s,%s) AND "
+            f"{certificate_source_ready}=1 AND {certificate_count}=0 AND {certificate_issue_count}=0"
+        )
+        params.extend(["个人出租", "单位出租"])
     elif data.certificate_status == "actual_renter_missing":
         where.append(f"property.housing_type IN (%s,%s) AND {certificate_count}=1 AND NOT ({renter_present})")
         params.extend(["个人出租", "单位出租"])
@@ -257,7 +267,8 @@ async def _property_search_result(
     elif data.certificate_status == "not_uploaded":
         where.append(
             "property.housing_type IN (%s,%s) AND ("
-            f"{certificate_count}=0 OR ({certificate_count}=1 AND {renter_present} "
+            f"({certificate_source_ready}=0 AND {certificate_count}=0) OR "
+            f"({certificate_count}=1 AND {certificate_issue_count}=0 AND {renter_present} "
             f"AND NOT ({signed}) AND TRIM(COALESCE(certificate.sign_type,''))=''))"
         )
         params.extend(["个人出租", "单位出租"])
@@ -280,7 +291,14 @@ async def _property_search_result(
         "FROM registry_property_certificates GROUP BY property_id) certificate_totals "
         "ON certificate_totals.property_id=property.id "
         "LEFT JOIN registry_property_certificates certificate "
-        "ON certificate.id=certificate_totals.latest_id"
+        "ON certificate.id=certificate_totals.latest_id "
+        "LEFT JOIN (SELECT entity_key,COUNT(*) issue_count "
+        "FROM registry_import_issues WHERE source_type='certificate' AND status='pending' "
+        "GROUP BY entity_key) certificate_issues "
+        "ON certificate_issues.entity_key=property.normalized_address "
+        "CROSS JOIN (SELECT EXISTS(SELECT 1 FROM registry_source_batches "
+        "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) source_ready) "
+        "certificate_source_state"
     )
     offset = (data.page - 1) * data.page_size
     async with conn.cursor() as cur:
@@ -294,7 +312,8 @@ async def _property_search_result(
             "property.building,property.room,property.housing_type,property.residence_type,property.source_house_no,property.source_updated_at, "
             "property.source_type,property.source_ref,property.normalized_address,property.status,property.current_version,property.created_at,property.updated_at, "
             "COALESCE(certificate_totals.certificate_count,0),certificate.landlord_name,certificate.actual_renter_name,"
-            "certificate.signed_status,certificate.sign_type,certificate.updated_at "
+            "certificate.signed_status,certificate.sign_type,certificate.updated_at,"
+            "COALESCE(certificate_issues.issue_count,0),certificate_source_state.source_ready "
             f"FROM registry_properties property{joins}{clause} ORDER BY property.id DESC LIMIT %s OFFSET %s",
             tuple(params) + (data.page_size, offset),
         )
@@ -312,7 +331,7 @@ async def list_properties(
     community_id: int | None = Query(default=None),
     housing_category: Literal["", "rental", "self_owned", "other", "unmarked"] = Query(default=""),
     certificate_status: Literal[
-        "", "normal_signed", "not_uploaded", "renter_needs_correction",
+        "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = Query(default=""),
     status: Literal["", "active", "inactive"] = Query(default="active"),
