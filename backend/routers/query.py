@@ -50,6 +50,7 @@ from services.permissions import (
 )
 from services.schema_compat import get_database_column_map, quote_identifier
 from services.task_workflow import TASK_WORKFLOWS
+from services.task_graph import reconcile_online_task_graph
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 from services.work_activity import (
     ONLINE_TASK_UPDATE,
@@ -1095,6 +1096,16 @@ async def queue_source_fields(
                 changes=normalized_changes,
                 user=user,
                 audit_id=audit_id,
+            )
+            await reconcile_online_task_graph(
+                cur,
+                parser_type=parser_type,
+                row_key_before=str(source["row_key"]),
+                row_key_after=str(new_key),
+                before=current_values,
+                after=after,
+                actor_user_id=int(user.get("id")) if user.get("id") else None,
+                event_type="online_task_save",
             )
             sync_payload = await source_sync_payload(cur, source_id)
         await conn.commit()

@@ -20,7 +20,7 @@ import {
   Tag,
   message,
 } from 'antd'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getMobileTaskDetail,
@@ -100,6 +100,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const formatSystemTime = useSystemTime()
   const { recordActivity, user } = useAuth()
   const { parserType = '', rowKey = '' } = useParams()
+  const [searchParams] = useSearchParams()
+  const readonlyView = searchParams.get('readonly') === '1'
   const [data, setData] = useState<MobileTaskDetailData | null>(null)
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null)
   const [formValues, setFormValues] = useState<Record<string, string>>({})
@@ -126,8 +128,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
   )
+  const interactionLocked = readonlyView || Boolean(data?.dependency_blocked)
   const visibleEditorFields = useMemo(() => (
-    data && selectedSource
+    !interactionLocked && data && selectedSource
       ? mobileTaskEditorFields(
           data,
           selectedSource.editable_fields,
@@ -135,7 +138,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           selectedSource.values,
         )
       : []
-  ), [data, formValues, selectedSource])
+  ), [data, formValues, interactionLocked, selectedSource])
   const preservedSecondaryFeedback = useMemo(() => (
     data && selectedSource
       ? data.workflow.secondary_fields
@@ -184,7 +187,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
 
   useEffect(() => {
     if (
-      mode !== 'tasks'
+      interactionLocked
+      || mode !== 'tasks'
       || !data?.qmf_registration?.visible
       || !selectedSource?.source_available
     ) {
@@ -212,7 +216,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       if (!cancelled) setQmfLegacyStatusLoading(false)
     })
     return () => { cancelled = true }
-  }, [data?.qmf_registration?.visible, mode, parserType, rowKey, selectedSource?.id, selectedSource?.revision, selectedSource?.source_available])
+  }, [data?.qmf_registration?.visible, interactionLocked, mode, parserType, rowKey, selectedSource?.id, selectedSource?.revision, selectedSource?.source_available])
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -236,7 +240,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }
 
   const save = async () => {
-    if (!selectedSource || !dirty) return
+    if (interactionLocked || !selectedSource || !dirty) return
     setSaving(true)
     setError('')
     setSavedMessage('')
@@ -311,7 +315,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }
 
   const resolveConflict = async (field: string, choice: 'platform' | 'tencent') => {
-    if (!selectedSource || dirty) return
+    if (interactionLocked || !selectedSource || dirty) return
     const key = `${field}:${choice}`
     setResolvingConflict(key)
     setError('')
@@ -655,17 +659,18 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         )}
 
         <div className="mobile-task-detail-primary-actions">
-          <MobilePhonePicker
-            phones={phoneOptions}
-            mode="dial"
-            label={phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}
-            buttonProps={{ className: 'mobile-task-detail-pill', type: 'primary', icon: <PhoneOutlined /> }}
-            onSelect={value => void dial(value)}
-          />
+          {!interactionLocked && <MobilePhonePicker
+              phones={phoneOptions}
+              mode="dial"
+              label={phoneOptions.length > 1 ? `选择拨打（${phoneOptions.length}）` : '拨打电话'}
+              buttonProps={{ className: 'mobile-task-detail-pill', type: 'primary', icon: <PhoneOutlined /> }}
+              onSelect={value => void dial(value)}
+            />}
+          {interactionLocked && phoneOptions.length > 0 && <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>等待前置任务</Button>}
           {phoneOptions.length === 0 && (
             <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>缺少电话号码</Button>
           )}
-          {user?.permissions.includes('workflow.ticket.create') && (
+          {!interactionLocked && user?.permissions.includes('workflow.ticket.create') && (
             <Button
               className="mobile-task-detail-pill"
               icon={<CameraOutlined />}
@@ -673,7 +678,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               onClick={() => setPhotoRequestOpen(true)}
             >{identityNumber ? '调取照片' : '缺少身份证号'}</Button>
           )}
-          {mode === 'tasks' && data.qmf_registration?.visible && (
+          {!interactionLocked && mode === 'tasks' && data.qmf_registration?.visible && (
             <Button
               type="primary"
               className="mobile-task-detail-pill"
@@ -837,14 +842,14 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 />
                 <div className="mt-3 flex flex-wrap justify-end gap-2">
                   <Button
-                    disabled={dirty || item.error_code === 'source_missing'}
+                    disabled={interactionLocked || dirty || item.error_code === 'source_missing'}
                     loading={resolvingConflict === `${item.field}:platform`}
                     onClick={() => void resolveConflict(item.field, 'platform')}
                   >采用平台值</Button>
                   <Button
                     type="primary"
                     danger
-                    disabled={dirty}
+                    disabled={interactionLocked || dirty}
                     loading={resolvingConflict === `${item.field}:tencent`}
                     onClick={() => void resolveConflict(item.field, 'tencent')}
                   >采用腾讯值</Button>
@@ -900,15 +905,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
 
       {error && <Alert type="error" showIcon message={error} />}
       {savedMessage && <Alert type="success" showIcon message={savedMessage} />}
+      {readonlyView && <Alert type="info" showIcon message="当前是任务图只读协作视图" description="你可以查看任务信息和协作结果，但不能在此修改字段、处理同步冲突或发起新的业务操作。" />}
+      {data.dependency_blocked && <Alert type="warning" showIcon message="该任务正在等待前置任务" description={data.dependency_message || '等待基础管控完成研判后，原任务才能继续处理。'} />}
       {!data.writeback_enabled && <Alert type="warning" showIcon message="在线回写已暂停，当前任务只能查看" />}
 
       {selectedSource ? (
         <section className="app-card p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="font-semibold text-[var(--app-text-strong)]">{mode === 'analysis' ? '研判处理' : '核查处理'}</h2>
+              <h2 className="font-semibold text-[var(--app-text-strong)]">{readonlyView ? '任务只读详情' : data.dependency_blocked ? '等待前置任务' : mode === 'analysis' ? '研判处理' : '核查处理'}</h2>
               <p className="mt-0.5 text-xs text-[var(--app-text-secondary)]">
-                {mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : '确认所有修改后统一保存'}
+                {readonlyView ? '该任务属于依赖链中的其他负责人，仅供了解前置或后置关系' : data.dependency_blocked ? data.dependency_message : mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : '确认所有修改后统一保存'}
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">

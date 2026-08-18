@@ -120,14 +120,16 @@ class ProjectionCursor:
         self.many_rows = []
 
     async def execute(self, sql, params=None):
-        del params
         compact = " ".join(sql.split())
+        params_text = str(params)
         if compact.startswith("SELECT id, row_key, values_json"):
             self.mode = "sources"
         elif compact.startswith("SELECT source_id, field_name, local_value"):
             self.mode = "local_changes"
         elif compact.startswith("SELECT row_key_before"):
             self.mode = "pending"
+        elif "FROM _system_config" in compact and "task_graph_enabled" in params_text:
+            self.mode = "task_graph_disabled"
         else:
             self.mode = "write"
 
@@ -140,6 +142,9 @@ class ProjectionCursor:
         if self.mode == "pending":
             return list(self.pending_rows)
         return []
+
+    async def fetchone(self):
+        return None
 
     async def executemany(self, sql, rows):
         del sql

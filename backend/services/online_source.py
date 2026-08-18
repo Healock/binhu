@@ -9,6 +9,7 @@ from typing import Any
 
 from services.parsers import get_parser
 from services.task_workflow import TASK_WORKFLOWS, task_state
+from services.task_graph import reconcile_projection_task_graph
 from services.watch_matching import (
     parse_dispatch_time,
     projection_identity,
@@ -115,7 +116,7 @@ async def release_sheet_lock(cur, spreadsheet_id: int) -> None:
     await cur.fetchone()
 
 
-async def rebuild_projection(cur, parser_type: str) -> None:
+async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = True) -> None:
     parser = get_parser(parser_type)
     await cur.execute(
         "SELECT row_key, first_dispatch_at FROM _online_source_projection WHERE parser_type=%s",
@@ -245,6 +246,8 @@ async def rebuild_projection(cur, parser_type: str) -> None:
             projection_rows,
         )
     await sync_current_task_snapshots(cur, parser_type)
+    if reconcile_graph:
+        await reconcile_projection_task_graph(cur, parser_type)
 
 
 async def replace_source_cache(

@@ -305,7 +305,11 @@ async def enqueue_local_changes(
         )
         revision = int((await cur.fetchone())[0])
         await _refresh_audit_status(cur, affected_audits)
-        await rebuild_projection(cur, source["spreadsheet"]["parser_type"])
+        await rebuild_projection(
+            cur,
+            source["spreadsheet"]["parser_type"],
+            reconcile_graph=False,
+        )
     return revision
 
 
