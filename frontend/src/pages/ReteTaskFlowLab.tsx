@@ -67,6 +67,8 @@ type TaskAreaHandle = TaskArea & {
   editorInstance: NodeEditor<Schemes>
   arrangePlugin: AutoArrangePlugin<Schemes, AreaExtra>
   contextKey: string
+  currentGraphNodes: TaskGraphNode[]
+  currentGraphEdges: TaskGraphEdge[]
   setGraph: (nodes: TaskGraphNode[], edges: TaskGraphEdge[], autoArrange?: boolean) => Promise<void>
   arrangeGraph: () => Promise<void>
 }
@@ -85,6 +87,54 @@ function savePosition(contextKey: string, nodeId: string, position: { x: number;
   const positions = savedPositions(contextKey)
   positions[nodeId] = position
   localStorage.setItem(`${LAYOUT_KEY}${encodeURIComponent(contextKey)}`, JSON.stringify(positions))
+}
+
+async function layoutIndependentNodes(
+  area: TaskArea,
+  editor: NodeEditor<Schemes>,
+  graphNodes: TaskGraphNode[],
+  graphEdges: TaskGraphEdge[],
+  contextKey: string,
+  preserveSaved: boolean,
+) {
+  const connected = new Set(graphEdges.flatMap(edge => [edge.source, edge.target]))
+  const independent = graphNodes
+    .filter(task => !connected.has(task.id))
+    .sort((left, right) => left.category.localeCompare(right.category, 'zh-CN') || left.title.localeCompare(right.title, 'zh-CN'))
+  const saved = preserveSaved ? savedPositions(contextKey) : {}
+  const columns = 4
+  const columnGap = 330
+  const rowGap = 250
+  const connectedBottom = graphNodes
+    .filter(task => connected.has(task.id))
+    .reduce((bottom, task) => {
+      const view = area.nodeViews.get(task.id)
+      const position = saved[task.id] || view?.position
+      return position ? Math.max(bottom, position.y + 214) : bottom
+    }, 0)
+  const gridStartY = connectedBottom > 0 ? connectedBottom + 120 : 80
+  const occupied = new Set<string>()
+  Object.entries(saved).forEach(([nodeId, position]) => {
+    if (connected.has(nodeId)) return
+    const column = Math.round((position.x - 80) / columnGap)
+    const row = Math.round((position.y - gridStartY) / rowGap)
+    if (column >= 0 && column < columns && row >= 0) occupied.add(`${column}:${row}`)
+  })
+  let slot = 0
+  for (const task of independent) {
+    if (saved[task.id]) continue
+    const node = editor.getNode(task.id)
+    if (!node) continue
+    while (occupied.has(`${slot % columns}:${Math.floor(slot / columns)}`)) slot += 1
+    const column = slot % columns
+    const row = Math.floor(slot / columns)
+    await area.translate(node.id, {
+      x: 80 + column * columnGap,
+      y: gridStartY + row * rowGap,
+    })
+    occupied.add(`${column}:${row}`)
+    slot += 1
+  }
 }
 
 function TaskNodeCard({ data, emit }: { data: Schemes['Node']; emit: RenderEmit<Schemes> }) {
@@ -121,12 +171,17 @@ async function createEditor(container: HTMLElement, navigate: (path: string) => 
   handle.editorInstance = editor
   handle.arrangePlugin = arrange
   handle.contextKey = ''
+  handle.currentGraphNodes = []
+  handle.currentGraphEdges = []
   handle.arrangeGraph = async () => {
     localStorage.removeItem(`${LAYOUT_KEY}${encodeURIComponent(handle.contextKey)}`)
     await arrange.layout({ options: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '84', 'elk.layered.spacing.nodeNodeBetweenLayers': '110' } })
+    await layoutIndependentNodes(area, editor, handle.currentGraphNodes, handle.currentGraphEdges, handle.contextKey, false)
     await AreaExtensions.zoomAt(area, editor.getNodes(), { scale: 0.82 })
   }
   handle.setGraph = async (graphNodes, graphEdges, autoArrange = false) => {
+    handle.currentGraphNodes = graphNodes
+    handle.currentGraphEdges = graphEdges
     await editor.clear()
     const socket = new ClassicPreset.Socket('task-dependency')
     const nodes = new Map<string, TaskInstanceNode>()
@@ -142,6 +197,7 @@ async function createEditor(container: HTMLElement, navigate: (path: string) => 
       if (source && target) await editor.addConnection(new TaskDependencyConnection(source, target, edge))
     }
     await arrange.layout({ options: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '84', 'elk.layered.spacing.nodeNodeBetweenLayers': '110' } })
+    await layoutIndependentNodes(area, editor, graphNodes, graphEdges, handle.contextKey, !autoArrange)
     if (!autoArrange) {
       const positions = savedPositions(handle.contextKey)
       for (const node of editor.getNodes()) if (positions[node.id]) await area.translate(node.id, positions[node.id])
