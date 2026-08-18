@@ -22,7 +22,7 @@ import {
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import useMobileViewport from '../hooks/useMobileViewport'
 
-const LAYOUT_KEY = 'binhu-rete-task-graph-layout-v1:'
+const LAYOUT_KEY = 'binhu-rete-task-graph-layout-v2:'
 const PAGE_SIZE = 20
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -69,6 +69,7 @@ type TaskAreaHandle = TaskArea & {
   contextKey: string
   currentGraphNodes: TaskGraphNode[]
   currentGraphEdges: TaskGraphEdge[]
+  suspendPositionSave: boolean
   setGraph: (nodes: TaskGraphNode[], edges: TaskGraphEdge[], autoArrange?: boolean) => Promise<void>
   arrangeGraph: () => Promise<void>
 }
@@ -95,13 +96,12 @@ async function layoutIndependentNodes(
   graphNodes: TaskGraphNode[],
   graphEdges: TaskGraphEdge[],
   contextKey: string,
-  preserveSaved: boolean,
+  saved: Record<string, { x: number; y: number }>,
 ) {
   const connected = new Set(graphEdges.flatMap(edge => [edge.source, edge.target]))
   const independent = graphNodes
     .filter(task => !connected.has(task.id))
     .sort((left, right) => left.category.localeCompare(right.category, 'zh-CN') || left.title.localeCompare(right.title, 'zh-CN'))
-  const saved = preserveSaved ? savedPositions(contextKey) : {}
   const columns = 4
   const columnGap = 330
   const rowGap = 250
@@ -173,11 +173,17 @@ async function createEditor(container: HTMLElement, navigate: (path: string) => 
   handle.contextKey = ''
   handle.currentGraphNodes = []
   handle.currentGraphEdges = []
+  handle.suspendPositionSave = false
   handle.arrangeGraph = async () => {
     localStorage.removeItem(`${LAYOUT_KEY}${encodeURIComponent(handle.contextKey)}`)
-    await arrange.layout({ options: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '84', 'elk.layered.spacing.nodeNodeBetweenLayers': '110' } })
-    await layoutIndependentNodes(area, editor, handle.currentGraphNodes, handle.currentGraphEdges, handle.contextKey, false)
-    await AreaExtensions.zoomAt(area, editor.getNodes(), { scale: 0.82 })
+    handle.suspendPositionSave = true
+    try {
+      await arrange.layout({ options: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '84', 'elk.layered.spacing.nodeNodeBetweenLayers': '110' } })
+      await layoutIndependentNodes(area, editor, handle.currentGraphNodes, handle.currentGraphEdges, handle.contextKey, {})
+      await AreaExtensions.zoomAt(area, editor.getNodes(), { scale: 0.82 })
+    } finally {
+      handle.suspendPositionSave = false
+    }
   }
   handle.setGraph = async (graphNodes, graphEdges, autoArrange = false) => {
     handle.currentGraphNodes = graphNodes
@@ -196,18 +202,21 @@ async function createEditor(container: HTMLElement, navigate: (path: string) => 
       const target = nodes.get(edge.target)
       if (source && target) await editor.addConnection(new TaskDependencyConnection(source, target, edge))
     }
-    await arrange.layout({ options: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '84', 'elk.layered.spacing.nodeNodeBetweenLayers': '110' } })
-    await layoutIndependentNodes(area, editor, graphNodes, graphEdges, handle.contextKey, !autoArrange)
-    if (!autoArrange) {
-      const positions = savedPositions(handle.contextKey)
+    const positions = autoArrange ? {} : savedPositions(handle.contextKey)
+    handle.suspendPositionSave = true
+    try {
+      await arrange.layout({ options: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '84', 'elk.layered.spacing.nodeNodeBetweenLayers': '110' } })
+      await layoutIndependentNodes(area, editor, graphNodes, graphEdges, handle.contextKey, positions)
       for (const node of editor.getNodes()) if (positions[node.id]) await area.translate(node.id, positions[node.id])
+      if (nodes.size) await AreaExtensions.zoomAt(area, editor.getNodes(), { scale: 0.82 })
+    } finally {
+      handle.suspendPositionSave = false
     }
-    if (nodes.size) await AreaExtensions.zoomAt(area, editor.getNodes(), { scale: 0.82 })
   }
   area.addPipe(context => {
     if (context && typeof context === 'object' && 'type' in context && context.type === 'nodetranslated') {
       const data = (context as any).data
-      savePosition(handle.contextKey, String(data.id), { x: Number(data.position.x), y: Number(data.position.y) })
+      if (!handle.suspendPositionSave) savePosition(handle.contextKey, String(data.id), { x: Number(data.position.x), y: Number(data.position.y) })
     }
     return context
   })
