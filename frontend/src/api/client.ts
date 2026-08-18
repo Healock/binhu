@@ -1123,6 +1123,7 @@ export interface TaskGraphPreview {
   projection_rows: number
   unable_to_verify: number
   analyzed: number
+  historical_analysis: number
   eligible_chains: number
   blank_inspector: number
   unmatched_inspector: number

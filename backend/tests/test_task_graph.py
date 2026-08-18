@@ -159,12 +159,14 @@ class TaskGraphTests(unittest.TestCase):
             ("全链条", {"核查结果": "无法核实", "研判": "", "核查人": ""}),
             ("全链条", {"核查结果": "无法核实", "研判": "已填写", "核查人": "甲"}),
             ("全链条", {"核查结果": "已登记", "研判": "", "核查人": ""}),
+            ("全链条", {"核查结果": "已登记", "研判": "历史研判", "核查人": "甲"}),
         ]
         result = asyncio.run(task_graph_preview(PreviewCursor(rows, [("甲", 1)])))
-        self.assertEqual(result["projection_rows"], 3)
+        self.assertEqual(result["projection_rows"], 4)
         self.assertEqual(result["unable_to_verify"], 2)
         self.assertEqual(result["analyzed"], 1)
-        self.assertEqual(result["eligible_chains"], 2)
+        self.assertEqual(result["historical_analysis"], 1)
+        self.assertEqual(result["eligible_chains"], 3)
         self.assertEqual(result["blank_inspector"], 1)
         self.assertEqual(result["unmatched_inspector"], 0)
 

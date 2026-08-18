@@ -63,10 +63,11 @@ async def task_graph_enabled(cur) -> bool:
 
 
 async def set_task_graph_enabled(cur, enabled: bool) -> None:
+    value = "1" if enabled else "0"
     await cur.execute(
         "INSERT INTO _system_config (config_key, config_value) VALUES (%s,%s) "
-        "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
-        (GRAPH_ENABLED_KEY, "1" if enabled else "0"),
+        "ON DUPLICATE KEY UPDATE config_value=%s",
+        (GRAPH_ENABLED_KEY, value, value),
     )
 
 
@@ -400,7 +401,7 @@ async def reconcile_online_task_graph(
 
 
 async def task_graph_preview(cur) -> dict[str, int]:
-    counts = {"projection_rows": 0, "unable_to_verify": 0, "analyzed": 0, "eligible_chains": 0, "blank_inspector": 0, "unmatched_inspector": 0}
+    counts = {"projection_rows": 0, "unable_to_verify": 0, "analyzed": 0, "historical_analysis": 0, "eligible_chains": 0, "blank_inspector": 0, "unmatched_inspector": 0}
     inspectors: set[str] = set()
     await cur.execute("SELECT parser_type,values_json FROM _online_source_projection")
     for parser_type, raw_values in await cur.fetchall():
@@ -411,11 +412,16 @@ async def task_graph_preview(cur) -> dict[str, int]:
         values = raw_values if isinstance(raw_values, dict) else json.loads(raw_values or "{}")
         result = _text(values.get(workflow.result_field))
         analysis = any(_text(values.get(field)) for field in workflow.analysis_fields)
-        if "无法核实" in result:
+        unable = "无法核实" in result
+        eligible = unable or analysis
+        if unable:
             counts["unable_to_verify"] += 1
-            counts["eligible_chains"] += 1
             if analysis:
                 counts["analyzed"] += 1
+        elif analysis:
+            counts["historical_analysis"] += 1
+        if eligible:
+            counts["eligible_chains"] += 1
             if not _text(values.get("核查人")):
                 counts["blank_inspector"] += 1
             else:
