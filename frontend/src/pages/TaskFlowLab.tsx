@@ -45,6 +45,7 @@ const AUTO_REFRESH_MS = 30_000
 const MAX_PERSON_TASKS_PER_TYPE = 100
 const MAX_CONTROL_ANALYSIS_NODES = 60
 const MAX_CONTROL_PHOTO_NODES = 50
+const MAX_STACK_VISUAL_LAYERS = 5
 const LAST_INSPECTOR_KEY = 'binhu-task-flow-lab:last-inspector'
 const LAST_VIEW_KEY = 'binhu-task-flow-lab:last-view'
 const LAYOUT_KEY_PREFIX = 'binhu-task-flow-lab:layout-v7:'
@@ -251,7 +252,7 @@ function layoutItems(items: TaskFlowItem[], density: LayoutDensity, previous: Ma
       result.set(item.id, {
         x: baseX + level * layout.xGap,
         y: baseY + row * 132,
-        zIndex: 20 + index,
+        zIndex: 1000 + index,
       })
     })
   }
@@ -286,9 +287,10 @@ function layoutItems(items: TaskFlowItem[], density: LayoutDensity, previous: Ma
     const baseY = 80 + Math.floor(slot / 3) * layout.yGap
     if (group.length > 1) group.forEach(item => { item.stackKey = `${item.lane}:${item.category}` })
     group.forEach((item, index) => {
+      const visualLayer = Math.min(index, MAX_STACK_VISUAL_LAYERS)
       result.set(item.id, {
-        x: baseX + index * 10,
-        y: baseY - index * 12,
+        x: baseX + visualLayer * 10,
+        y: baseY - visualLayer * 12,
         zIndex: 100 + index,
       })
     })
