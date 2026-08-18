@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Input, Progress, Select, Segmented, Space, Statistic, Tag, Upload, message } from 'antd'
+import { Alert, Button, Input, Modal, Progress, Select, Segmented, Space, Statistic, Tag, Upload, message } from 'antd'
 import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
 import { ExportOutlined, InboxOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import AppTable from './AppTable'
 import { Panel } from './ui'
 import {
+  getPoliceDispatchPublishableSelection,
   listPoliceDispatchBatches,
   policeDispatchFeedbackUrl,
+  publishSelectedPoliceDispatchTasks,
   uploadPoliceDispatchBatch,
   type PoliceDispatchBatch,
 } from '../api/client'
@@ -87,7 +89,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     return false
   }
 
-  const upload = async () => {
+  const upload = async (publishReady = false) => {
     if (!file) return
     setUploading(true)
     try {
@@ -101,7 +103,42 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
         message.success('预览已生成，请核对摘要后再次点击确认导入')
         return
       }
-      message.success(result.message)
+      let publishedCount = 0
+      let publishStarted = false
+      let publishError = ''
+      if (
+        publishReady
+        && importMode === 'clean'
+        && result.status === 'success'
+        && result.batch
+      ) {
+        try {
+          const selection = await getPoliceDispatchPublishableSelection({
+            batch_id: result.batch.id,
+            status: 'pending_publish',
+            category: 'all',
+          })
+          publishedCount = selection.total
+          if (selection.task_ids.length) {
+            await publishSelectedPoliceDispatchTasks(result.batch.id, selection.task_ids)
+            publishStarted = true
+          }
+        } catch (reason: any) {
+          publishError = reason?.response?.data?.detail || '后台发布任务创建失败'
+        }
+      }
+      if (publishError) {
+        message.warning(`数据已导入，但自动发布未启动：${publishError}`)
+      } else if (publishReady && result.status === 'success' && result.batch) {
+        const reviewCount = result.batch.counts.pending_review || 0
+        message.success(
+          publishStarted
+            ? `已导入并启动发布 ${publishedCount} 条；${reviewCount} 条留待研判`
+            : `已导入；没有可直接发布的数据，${reviewCount} 条留待研判`,
+        )
+      } else {
+        message.success(result.message)
+      }
       setFile(null)
       setFileList([])
       setCleanPreview(null)
@@ -109,11 +146,11 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       await load(1)
       if (result.batch) {
         navigate(
-          result.batch.counts.pending_publish > 0
+          result.batch.counts.pending_review > 0
+            ? `/police-tasks?batch=${result.batch.id}&status=pending_review&category=manual`
+            : result.batch.counts.pending_publish > 0
             ? `/police-tasks?batch=${result.batch.id}&status=pending_publish&category=all`
-            : result.batch.counts.pending_review > 0
-              ? `/police-tasks?batch=${result.batch.id}&status=pending_review&category=all`
-              : `/police-dispatch/batches/${result.batch.id}`,
+            : `/police-dispatch/batches/${result.batch.id}`,
         )
       }
     } catch (reason: any) {
@@ -121,6 +158,23 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     } finally {
       setUploading(false)
     }
+  }
+
+  const confirmCleanImportAndPublish = () => {
+    if (!cleanPreview || !cleanPreviewToken) return
+    Modal.confirm({
+      title: '确认导入并发布可发布项？',
+      content: (
+        <div className="space-y-2 text-sm">
+          <p>本次共 {cleanPreview.row_count} 条。</p>
+          <p>其中 {cleanPreview.counts.dispatch} 条将在导入后创建后台发布任务。</p>
+          <p>{cleanPreview.counts.manual_review} 条异常数据不会发布，将保留在“未下发数据研判”。</p>
+        </div>
+      ),
+      okText: '确认导入并发布',
+      cancelText: '取消',
+      onOk: () => upload(true),
+    })
   }
 
   const latest = batches[0]
@@ -182,7 +236,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   return (
     <Panel
       title="数据下发"
-      description="这里只负责上传、预览和导入文件；审核与选择发布请前往“下发任务处理”"
+      description="已处理文件预览后可自动发布正常数据；手机号缺失等异常记录会留在“未下发数据研判”"
       padded={false}
     >
       <div className="space-y-5 p-5">
@@ -234,18 +288,34 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
             </p>
             <p className="ant-upload-hint">支持 .xls/.xlsx；身份证号、手机号和日期始终按文本保存</p>
           </Dragger>
-          <Button
-            type="primary"
-            size="large"
-            icon={<UploadOutlined />}
-            disabled={!enabled || !file}
-            loading={uploading}
-            onClick={upload}
-          >
-            {importMode === 'clean'
-              ? (cleanPreviewToken ? '确认导入并进入待发布' : '先预览已处理数据')
-              : '导入并生成审核任务'}
-          </Button>
+          {importMode === 'clean' && cleanPreviewToken ? (
+            <Space direction="vertical" size={8} className="w-full lg:w-auto">
+              <Button
+                type="primary"
+                size="large"
+                icon={<UploadOutlined />}
+                disabled={!enabled || !file}
+                loading={uploading}
+                onClick={confirmCleanImportAndPublish}
+              >
+                确认导入并发布可发布项
+              </Button>
+              <Button disabled={uploading} onClick={() => void upload(false)}>
+                仅导入，稍后发布
+              </Button>
+            </Space>
+          ) : (
+            <Button
+              type="primary"
+              size="large"
+              icon={<UploadOutlined />}
+              disabled={!enabled || !file}
+              loading={uploading}
+              onClick={() => void upload(false)}
+            >
+              {importMode === 'clean' ? '先预览已处理数据' : '导入并生成审核任务'}
+            </Button>
+          )}
         </div>
 
         {cleanPreview && (
