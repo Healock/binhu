@@ -574,7 +574,7 @@ export async function getReportTypes(): Promise<{ data: string[]; implemented: s
 }
 
 export async function recordXlsxExport(payload: {
-  export_type: 'online_summary' | 'visit_summary'
+  export_type: 'online_summary' | 'visit_summary' | 'code_summary'
   start_date: string
   end_date: string
   summary_type: string
@@ -2214,6 +2214,87 @@ export interface VisitSummaryReport {
 
 export async function getVisitCoverage(): Promise<VisitCoverage> {
   const { data } = await api.get('/visits/coverage')
+  return data
+}
+
+export type CodeSummarySource = 'peace' | 'manager'
+
+export interface CodeSummaryRow {
+  business_date: string
+  raw_count: number
+  total_people: number
+  patrol_scan_count?: number
+  dispatch_hall_scan_count?: number
+  household_hall_scan_count?: number
+  social_scan_count?: number
+  unclassified_scan_count?: number
+  active_accounts?: number
+  instruction_count: number
+  effective_warning_rate: number
+  new_registration_count?: number
+  effective_scan_rate?: number
+  excluded_identity_count: number
+  duplicate_removed_count: number
+  version?: number
+  run_id?: number
+}
+
+export interface CodeSummaryReport {
+  source: CodeSummarySource
+  start_date: string
+  end_date: string
+  columns: string[]
+  data: CodeSummaryRow[]
+  total: CodeSummaryRow
+  latest_success_at: string | null
+  latest_run: null | {
+    id: number
+    status: 'success' | 'warning' | 'failed'
+    start_date: string
+    end_date: string
+    raw_count: number
+    valid_count: number
+    excluded_count: number
+    duplicate_count: number
+    unclassified_count: number
+    error_code: string | null
+    error_message: string | null
+    finished_at: string | null
+    created_at: string | null
+  }
+}
+
+export async function fetchCodeSummaries(startDate: string, endDate: string): Promise<{
+  data: Array<{
+    source: CodeSummarySource
+    run_id: number
+    status: 'success' | 'warning' | 'failed'
+    raw_count?: number
+    valid_count?: number
+    excluded_count?: number
+    duplicate_count?: number
+    unclassified_count?: number
+    error_code?: string
+    error_message?: string
+  }>
+}> {
+  const { data } = await api.post('/code-summaries/fetch', {
+    start_date: startDate,
+    end_date: endDate,
+  }, { ...activeRequest, timeout: 180_000 })
+  return data
+}
+
+export async function getCodeSummary(
+  source: CodeSummarySource,
+  startDate: string,
+  endDate: string,
+): Promise<CodeSummaryReport> {
+  const { data } = await api.post('/code-summaries/search', {
+    source,
+    start_date: startDate,
+    end_date: endDate,
+  }, activeRequest)
   return data
 }
 

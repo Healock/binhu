@@ -25,6 +25,7 @@ from routers.notifications import router as notifications_router
 from routers.admin_ops import router as admin_ops_router
 from routers.visits import router as visits_router
 from routers.visit_sources import router as visit_sources_router
+from routers.code_summaries import router as code_summaries_router
 from routers.personnel_attendance import router as personnel_attendance_router
 from routers.work_logs import router as work_logs_router
 from routers.permission_groups import router as permission_groups_router
@@ -200,6 +201,7 @@ app.include_router(system_router, dependencies=auth_dep)
 app.include_router(notifications_router, dependencies=auth_dep)
 app.include_router(visits_router, dependencies=auth_dep)
 app.include_router(visit_sources_router, dependencies=auth_dep)
+app.include_router(code_summaries_router, dependencies=auth_dep)
 app.include_router(personnel_attendance_router, dependencies=auth_dep)
 app.include_router(work_logs_router, dependencies=auth_dep)
 app.include_router(permission_groups_router, dependencies=auth_dep)

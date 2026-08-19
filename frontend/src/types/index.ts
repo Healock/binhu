@@ -357,6 +357,7 @@ export type MobileNavigationItemId =
   | 'online_query'
   | 'flow_tasks'
   | 'visit_summary'
+  | 'code_summary'
   | 'data_upload'
   | 'work_log'
   | 'police_tasks'

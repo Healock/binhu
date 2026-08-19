@@ -79,7 +79,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '数据上传中心',
         shortLabel: '数据上传',
         icon: 'upload',
-        anyPermissions: ['visit.import', 'police.dispatch.manage'],
+        anyPermissions: ['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage'],
         roles: ['super_admin', 'admin'],
       },
       {
@@ -162,6 +162,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '走访汇总',
         shortLabel: '走访汇总',
         icon: 'visit',
+        permission: 'visit.summary.view',
+      },
+      {
+        id: 'code_summary',
+        path: '/code-summary',
+        label: '平安码/管家码汇总',
+        shortLabel: '平安码汇总',
+        icon: 'summary',
         permission: 'visit.summary.view',
       },
     ],

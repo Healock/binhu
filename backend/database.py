@@ -1860,6 +1860,66 @@ class DatabaseManager:
                         INDEX idx_visit_source_created (created_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                       COLLATE=utf8mb4_unicode_ci
+                    """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _code_summary_runs (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        source_kind VARCHAR(20) NOT NULL,
+                        trigger_source VARCHAR(20) NOT NULL DEFAULT 'manual',
+                        status VARCHAR(20) NOT NULL,
+                        requested_by INT DEFAULT NULL,
+                        requested_start_date DATE NOT NULL,
+                        requested_end_date DATE NOT NULL,
+                        source_endpoint VARCHAR(190) NOT NULL,
+                        raw_count INT NOT NULL DEFAULT 0,
+                        valid_count INT NOT NULL DEFAULT 0,
+                        excluded_count INT NOT NULL DEFAULT 0,
+                        duplicate_count INT NOT NULL DEFAULT 0,
+                        unclassified_count INT NOT NULL DEFAULT 0,
+                        source_hash CHAR(64) NOT NULL DEFAULT '',
+                        classifier_version VARCHAR(20) NOT NULL DEFAULT 'v1',
+                        summary_json JSON DEFAULT NULL,
+                        error_code VARCHAR(60) DEFAULT NULL,
+                        error_message VARCHAR(500) DEFAULT NULL,
+                        finished_at DATETIME DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_code_run_source_created (source_kind, created_at),
+                        INDEX idx_code_run_dates (requested_start_date, requested_end_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _code_daily_snapshots (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        source_kind VARCHAR(20) NOT NULL,
+                        business_date DATE NOT NULL,
+                        version_no INT UNSIGNED NOT NULL,
+                        run_id BIGINT NOT NULL,
+                        raw_count INT NOT NULL DEFAULT 0,
+                        total_people INT NOT NULL DEFAULT 0,
+                        patrol_scan_count INT NOT NULL DEFAULT 0,
+                        dispatch_hall_scan_count INT NOT NULL DEFAULT 0,
+                        household_hall_scan_count INT NOT NULL DEFAULT 0,
+                        social_scan_count INT NOT NULL DEFAULT 0,
+                        unclassified_scan_count INT NOT NULL DEFAULT 0,
+                        active_accounts INT NOT NULL DEFAULT 0,
+                        instruction_count INT NOT NULL DEFAULT 0,
+                        new_registration_count INT NOT NULL DEFAULT 0,
+                        excluded_identity_count INT NOT NULL DEFAULT 0,
+                        duplicate_removed_count INT NOT NULL DEFAULT 0,
+                        classifier_version VARCHAR(20) NOT NULL DEFAULT 'v1',
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_code_snapshot_version (
+                            source_kind, business_date, version_no
+                        ),
+                        INDEX idx_code_snapshot_latest (
+                            source_kind, business_date, version_no
+                        ),
+                        INDEX idx_code_snapshot_run (run_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
                 """)
                 for column_name, column_definition in [
                     (

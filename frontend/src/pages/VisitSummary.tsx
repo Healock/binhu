@@ -19,6 +19,7 @@ import dayjs from 'dayjs'
 import { useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
+import VisitSourcePanel from '../components/VisitSourcePanel'
 import { EmptyState, LoadingState, PageHeader, Panel } from '../components/ui'
 import {
   formatUTCTime,
@@ -359,6 +360,8 @@ export default function VisitSummary() {
         title="走访汇总"
         description="按日期查看走访、信息变动和星级评定结果"
       />
+
+      <VisitSourcePanel />
 
       <Panel
         title="数据库覆盖情况"
