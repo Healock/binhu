@@ -1483,6 +1483,28 @@ export async function selectMobileTasksForAssignment(
   return data
 }
 
+export interface MobileTaskAssignmentCandidate {
+  row_key: string
+  community: string
+  source: string
+  address: string
+}
+
+export async function getMobileTaskAssignmentWorkbench(
+  parserType: string,
+): Promise<{
+  data: MobileTaskAssignmentCandidate[]
+  total: number
+  communities: MobileTaskFilterOption[]
+  inspectors_by_community: Record<string, string[]>
+}> {
+  const { data } = await api.get(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/assignment-workbench`,
+    activeRequest,
+  )
+  return data
+}
+
 export async function getMobileTaskFilterOptions(
   parserType: string,
   scope: MobileTaskScope,
@@ -2302,6 +2324,7 @@ export interface CodeSummaryReport {
     excluded_count: number
     duplicate_count: number
     unclassified_count: number
+    invalid_time_count: number
     error_code: string | null
     error_message: string | null
     finished_at: string | null
@@ -2319,6 +2342,7 @@ export async function fetchCodeSummaries(startDate: string, endDate: string): Pr
     excluded_count?: number
     duplicate_count?: number
     unclassified_count?: number
+    invalid_time_count?: number
     error_code?: string
     error_message?: string
   }>
@@ -2395,7 +2419,10 @@ export async function previewVisitSource(payload: {
   start_date: string
   end_date: string
 }): Promise<{ data: VisitSourceRun[]; requires_confirmation: boolean }> {
-  const { data } = await api.post('/visits/sources/preview', payload, activeRequest)
+  const { data } = await api.post('/visits/sources/preview', payload, {
+    ...activeRequest,
+    timeout: 300000,
+  })
   return data
 }
 

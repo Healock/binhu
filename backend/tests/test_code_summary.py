@@ -13,6 +13,7 @@ from routers.code_summaries import (
     DateRangeRequest,
     _commit_source,
     _insert_failed_run,
+    _json_value,
     _total,
     router,
 )
@@ -216,6 +217,65 @@ def test_invalid_identity_is_excluded_without_failing_the_day():
     )
     assert result["rows"][0]["total_people"] == 0
     assert result["rows"][0]["excluded_identity_count"] == 1
+
+
+def test_invalid_source_time_is_skipped_and_reported_without_failing_valid_rows():
+    valid = {
+        "zhUserIdCard": "110101199001010015", "gjUserName": "管家甲",
+        "population": "流口已登记", "comparisonTime": "2026-08-18 08:00:00",
+        "updateDate": "2026-08-18 08:00:00", "id": "1",
+        "pcsname": "滨湖新城派出所",
+    }
+    invalid = {
+        **valid,
+        "zhUserIdCard": "110101199001010023",
+        "comparisonTime": None,
+        "id": "2",
+    }
+
+    result = aggregate_rows(
+        "manager", [valid, invalid], date(2026, 8, 18), date(2026, 8, 18)
+    )
+
+    assert result["raw_count"] == 2
+    assert result["valid_count"] == 1
+    assert result["invalid_time_count"] == 1
+    assert result["rows"][0]["total_people"] == 1
+
+
+def test_all_invalid_source_times_still_stop_the_batch():
+    row = {
+        "zhUserIdCard": "110101199001010015", "gjUserName": "管家甲",
+        "population": "流口已登记", "comparisonTime": "",
+        "updateDate": "", "id": "1", "pcsname": "滨湖新城派出所",
+    }
+
+    with pytest.raises(CodeSummaryError, match="全部不是有效时间"):
+        aggregate_rows("manager", [row], date(2026, 8, 18), date(2026, 8, 18))
+
+
+def test_code_summary_source_quality_count_is_safe_to_expose():
+    row = {
+        "zhUserIdCard": "110101199001010015", "gjUserName": "管家甲",
+        "population": "流口已登记", "comparisonTime": "2026-08-18 08:00:00",
+        "updateDate": "2026-08-18 08:00:00", "id": "1",
+        "pcsname": "滨湖新城派出所",
+    }
+    result = aggregate_rows(
+        "manager",
+        [row],
+        date(2026, 8, 18),
+        date(2026, 8, 18),
+    )
+    assert result["invalid_time_count"] == 0
+
+
+def test_run_summary_exposes_only_safe_quality_counters():
+    assert _json_value('{"invalid_time_count":1,"raw_count":25}') == {
+        "invalid_time_count": 1,
+        "raw_count": 25,
+    }
+    assert _json_value("not-json") == {}
 
 
 def test_empty_response_creates_zero_rows_for_each_requested_day():

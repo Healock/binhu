@@ -1,6 +1,7 @@
 """MySQL 多数据库连接池管理（同一实例内的八个业务域数据库）。"""
 
 from contextlib import contextmanager
+import re
 import warnings
 
 import aiomysql
@@ -73,6 +74,21 @@ async def _ensure_column(cur, table: str, column: str, definition: str) -> None:
     if not await cur.fetchone():
         await cur.execute(
             f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}"
+        )
+
+
+async def _ensure_varchar_length(
+    cur, table: str, column: str, minimum_length: int
+) -> None:
+    """Expand an existing VARCHAR without touching data or narrowing columns."""
+    await cur.execute(f"SHOW COLUMNS FROM `{table}` LIKE %s", (column,))
+    row = await cur.fetchone()
+    if not row:
+        return
+    match = re.fullmatch(r"varchar\((\d+)\)", str(row[1] or "").lower())
+    if match and int(match.group(1)) < minimum_length:
+        await cur.execute(
+            f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` VARCHAR({minimum_length})"
         )
 
 
@@ -1970,7 +1986,9 @@ class DatabaseManager:
                     ("t_suspect_return", "身份证号码"),
                 ]:
                     try:
-                        await cur.execute(f"ALTER TABLE {table} MODIFY COLUMN `{col}` VARCHAR(500)")
+                        await cur.execute(
+                            f"ALTER TABLE {table} MODIFY COLUMN `{col}` VARCHAR(500)"
+                        )
                     except Exception:
                         pass
                 # 全链条腾讯来源表新增的“登记情况”是正式业务字段。可空列保持
@@ -2166,6 +2184,9 @@ class DatabaseManager:
                     "t_fullchain_archive",
                     "登记情况",
                     "VARCHAR(500) DEFAULT NULL AFTER `地址`",
+                )
+                await _ensure_varchar_length(
+                    cur, "t_fullchain_archive", "电话号码", 500
                 )
 
         async with cls._pools["daily_report"].acquire() as conn:

@@ -156,6 +156,7 @@ def aggregate_rows(
     daily = _date_rows(start_date, end_date)
     candidates: dict[tuple[date, str], tuple[tuple, dict[str, Any]]] = {}
     valid_rows_by_date: defaultdict[date, int] = defaultdict(int)
+    invalid_time_count = 0
 
     for row in rows:
         if not isinstance(row, dict):
@@ -166,7 +167,11 @@ def aggregate_rows(
         station_values = [_text(row.get(field)) for field in meta["station_fields"]]
         if not any(_is_expected_police_station(value) for value in station_values if value):
             raise CodeSummaryError("scope_mismatch", "来源记录不属于滨湖新城派出所")
-        business_time = parse_source_datetime(row.get(meta["time"]), meta["time"])
+        try:
+            business_time = parse_source_datetime(row.get(meta["time"]), meta["time"])
+        except CodeSummaryError:
+            invalid_time_count += 1
+            continue
         business_date = business_time.date()
         if business_date < start_date or business_date > end_date:
             raise CodeSummaryError("date_out_of_range", "来源记录超出请求日期范围")
@@ -182,6 +187,9 @@ def aggregate_rows(
         existing = candidates.get(key)
         if existing is None or order_key > existing[0]:
             candidates[key] = (order_key, row)
+
+    if rows and invalid_time_count == len(rows):
+        raise CodeSummaryError("schema_changed", f"来源字段 {meta['time']} 全部不是有效时间")
 
     managers_by_date: defaultdict[date, set[str]] = defaultdict(set)
     for (business_date, _identity), (_order, row) in candidates.items():
@@ -237,11 +245,12 @@ def aggregate_rows(
         "kind": kind,
         "rows": canonical,
         "source_hash": source_hash,
-        "raw_count": sum(item["raw_count"] for item in canonical),
+        "raw_count": len(rows),
         "valid_count": sum(item["total_people"] for item in canonical),
         "excluded_count": sum(item["excluded_identity_count"] for item in canonical),
         "duplicate_count": sum(item["duplicate_removed_count"] for item in canonical),
         "unclassified_count": sum(item["unclassified_scan_count"] for item in canonical),
+        "invalid_time_count": invalid_time_count,
         "classifier_version": CLASSIFIER_VERSION,
     }
 

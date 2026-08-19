@@ -208,6 +208,14 @@ export default function CodeSummary() {
           </span>
         </div>
         {report?.latest_run?.error_message && <Alert className="mt-3" type="warning" showIcon message={report.latest_run.error_message} />}
+        {report?.latest_run?.status === 'warning' && report.latest_run.invalid_time_count > 0 && (
+          <Alert
+            className="mt-3"
+            type="warning"
+            showIcon
+            message={`${report.latest_run.invalid_time_count} 条来源记录缺少有效 comparisonTime，已跳过；其余正常数据已更新`}
+          />
+        )}
         {error && <Alert className="mt-3" type="error" showIcon message={error} />}
       </Panel>
       <Panel title={source === 'peace' ? '平安码宽表' : '管家码宽表'}>
