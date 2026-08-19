@@ -269,8 +269,9 @@ export default function MobileTaskList({
   const [bulkProgress, setBulkProgress] = useState<BulkAssignmentProgress | null>(null)
   const [selectingAll, setSelectingAll] = useState(false)
   const [selectionCommunity, setSelectionCommunity] = useState('')
-  const loadMoreRef = useRef<HTMLDivElement>(null)
   const loadingMoreRef = useRef(false)
+  const scrollLoadArmedRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
   const optionsRequestId = useRef(0)
   const listRequestId = useRef(0)
   const loadedPageRef = useRef(snapshotRef.current?.loaded_page || 1)
@@ -686,15 +687,36 @@ export default function MobileTaskList({
   }
 
   useEffect(() => {
-    const sentinel = loadMoreRef.current
-    if (!sentinel || loading || loadingMore || rows.length >= total) return undefined
-    const root = pageRootRef.current?.closest('main') || null
-    const observer = new IntersectionObserver(entries => {
-      if (!entries.some(entry => entry.isIntersecting)) return
+    const scrollContainer = pageRootRef.current?.closest('main')
+    if (!(scrollContainer instanceof HTMLElement) || loading || loadingMore || rows.length >= total) return undefined
+    lastScrollTopRef.current = scrollContainer.scrollTop
+    const armScrollLoad = () => { scrollLoadArmedRef.current = true }
+    const armWheelLoad = (event: WheelEvent) => { if (event.deltaY > 0) armScrollLoad() }
+    const armKeyLoad = (event: KeyboardEvent) => {
+      if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) armScrollLoad()
+    }
+    const handleScroll = () => {
+      const nextScrollTop = scrollContainer.scrollTop
+      const movingDown = nextScrollTop > lastScrollTopRef.current
+      lastScrollTopRef.current = nextScrollTop
+      if (!movingDown || !scrollLoadArmedRef.current || loadingMoreRef.current) return
+      const remaining = scrollContainer.scrollHeight - nextScrollTop - scrollContainer.clientHeight
+      if (remaining > 80) return
+      scrollLoadArmedRef.current = false
       void load(page + 1, true)
-    }, { root, rootMargin: '720px 0px' })
-    observer.observe(sentinel)
-    return () => observer.disconnect()
+    }
+    scrollContainer.addEventListener('wheel', armWheelLoad, { passive: true })
+    scrollContainer.addEventListener('touchstart', armScrollLoad, { passive: true })
+    scrollContainer.addEventListener('pointerdown', armScrollLoad, { passive: true })
+    scrollContainer.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('keydown', armKeyLoad)
+    return () => {
+      scrollContainer.removeEventListener('wheel', armWheelLoad)
+      scrollContainer.removeEventListener('touchstart', armScrollLoad)
+      scrollContainer.removeEventListener('pointerdown', armScrollLoad)
+      scrollContainer.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('keydown', armKeyLoad)
+    }
   }, [load, loading, loadingMore, page, rows.length, total])
 
   useEffect(() => {
@@ -1404,9 +1426,10 @@ export default function MobileTaskList({
           })}
           </div>
           {rows.length < total && (
-            <div ref={loadMoreRef} className="mobile-task-load-more min-h-11" aria-live="polite">
-              {loadingMore ? '正在加载更多任务…' : '继续下滑加载更多'}
-              <Button type="link" onClick={() => void load(page + 1, true)} loading={loadingMore}>手动加载</Button>
+            <div className="mobile-task-load-more min-h-11" aria-live="polite">
+              {loadingMore
+                ? '正在加载下一批任务…'
+                : `已加载 ${rows.length} / ${total} 条，继续向下滑到底部加载下一批`}
             </div>
           )}
         </>
