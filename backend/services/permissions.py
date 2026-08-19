@@ -178,7 +178,12 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "description": "负责人员、社区和日常业务管理",
         "data_scope": "all",
         "permissions": INTERNAL_BUSINESS_PERMISSIONS
-        | {PERSONNEL_MANAGE, COMMUNITY_MANAGE, WORKFLOW_TICKET_MANAGE},
+        | {
+            PERSONNEL_MANAGE,
+            COMMUNITY_MANAGE,
+            WORKFLOW_TICKET_MANAGE,
+            QMF_REGISTRATION_EXECUTE,
+        },
         "sort_order": 40,
     },
     "community_registry_viewer": {

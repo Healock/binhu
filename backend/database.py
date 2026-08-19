@@ -216,6 +216,7 @@ async def ensure_permission_schema(cur) -> None:
             "workflow.ticket.handle",
             "workflow.attachment.view",
             "workflow.ticket.manage",
+            QMF_REGISTRATION_EXECUTE,
         },
         "super_admin": {
             VISIT_SOURCE_MANAGE,

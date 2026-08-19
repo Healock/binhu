@@ -505,7 +505,7 @@ export default function SystemSettings() {
                   </span>
                 </div>
                 <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  开启后仍需具备“执行全民防单条登记”权限；中队长、基础管控和超级管理员默认拥有。每条都会重新完成登记前核对并要求二次确认。
+                  开启后仍需具备“执行全民防单条登记”权限；基础管控、中队长、所队领导、管理员和超级管理员默认拥有。每条都会重新完成登记前核对并要求二次确认。
                 </p>
               </div>
             </div>
@@ -646,7 +646,7 @@ export default function SystemSettings() {
               colon={false}
               column={{ xs: 1, sm: 2 }}
               items={[
-                { key: 'permission', label: '执行权限', children: '由权限组配置，中队长、基础管控和超级管理员默认拥有' },
+                { key: 'permission', label: '执行权限', children: '由权限组配置，基础管控、中队长、所队领导、管理员和超级管理员默认拥有' },
                 { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
               ]}
