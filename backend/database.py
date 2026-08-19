@@ -16,6 +16,7 @@ from services.permissions import (
     POLICE_ADDRESS_MANAGE,
     POLICE_DISPATCH_MANAGE,
     POSITION_DEFAULT_GROUP,
+    QMF_REGISTRATION_EXECUTE,
     VISIT_SOURCE_MANAGE,
     WORKFLOW_ATTACHMENT_VIEW,
     WORKFLOW_TICKET_CREATE,
@@ -198,6 +199,7 @@ async def ensure_permission_schema(cur) -> None:
             WORKFLOW_TICKET_VIEW,
             "workflow.ticket.handle",
             WORKFLOW_ATTACHMENT_VIEW,
+            QMF_REGISTRATION_EXECUTE,
         },
         "admin": {
             ONLINE_RAW_EDIT,

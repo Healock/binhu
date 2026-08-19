@@ -1292,10 +1292,7 @@ export interface QmfPrepareResult extends Omit<
 }
 
 export interface QmfConfig {
-  preview_enabled: boolean
   registration_enabled: boolean
-  login_protocol_verified: boolean
-  write_protocol_verified: boolean
   api_base_url: string
   login_host: string
   login_port: number
@@ -1315,10 +1312,7 @@ export interface QmfConfig {
 }
 
 export interface QmfConfigUpdate {
-  preview_enabled: boolean
   registration_enabled: boolean
-  login_protocol_verified: boolean
-  write_protocol_verified: boolean
   api_base_url: string
   login_host: string
   login_port: number

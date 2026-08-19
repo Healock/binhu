@@ -101,7 +101,7 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(config.configured)
         self.assertFalse(config.registration_configured)
 
-    def test_registration_requires_both_switches_and_protocol_confirmations(self):
+    def test_registration_requires_complete_connection_config_and_registration_switch(self):
         base = dict(
             preview_enabled=True,
             registration_enabled=True,
@@ -120,13 +120,17 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
             session_max_seconds=45,
         )
         self.assertTrue(QmfRuntimeConfig(**base).registration_configured)
-        for disabled_field in (
-            "preview_enabled",
-            "registration_enabled",
-            "login_protocol_verified",
-            "write_protocol_verified",
-        ):
+        for disabled_field in ("registration_enabled",):
             with self.subTest(disabled_field=disabled_field):
                 self.assertFalse(QmfRuntimeConfig(
                     **{**base, disabled_field: False}
+                ).registration_configured)
+        for ignored_field in (
+            "preview_enabled",
+            "login_protocol_verified",
+            "write_protocol_verified",
+        ):
+            with self.subTest(ignored_field=ignored_field):
+                self.assertTrue(QmfRuntimeConfig(
+                    **{**base, ignored_field: False}
                 ).registration_configured)
