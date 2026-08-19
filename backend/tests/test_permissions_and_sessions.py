@@ -154,6 +154,8 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(SYNC_TRIGGER, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
         self.assertIn(WORKFLOW_TICKET_CREATE, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
         self.assertIn(WORKFLOW_TICKET_VIEW, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
+        self.assertIn(QMF_REGISTRATION_EXECUTE, DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"])
+        self.assertNotIn(QMF_REGISTRATION_EXECUTE, DEFAULT_PERMISSION_GROUPS["admin"]["permissions"])
         self.assertIn(ONLINE_TASK_MANAGE, DEFAULT_PERMISSION_GROUPS["community_registry_viewer"]["permissions"])
         self.assertIn(QMF_REGISTRATION_EXECUTE, DEFAULT_PERMISSION_GROUPS["super_admin"]["permissions"])
         for code, group in DEFAULT_PERMISSION_GROUPS.items():
@@ -162,7 +164,7 @@ class PermissionDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 group["permissions"],
                 f"{code} 应具备辖区档案基础查看权限",
             )
-            if code != "super_admin":
+            if code not in {"internal_business", "super_admin"}:
                 self.assertNotIn(QMF_REGISTRATION_EXECUTE, group["permissions"])
 
     def test_own_department_requires_community_department(self):

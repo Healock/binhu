@@ -350,10 +350,7 @@ export default function SystemSettings() {
     setQmfMsg('')
     try {
       const result = await updateQmfConfig({
-        preview_enabled: qmfConfig.preview_enabled,
         registration_enabled: qmfConfig.registration_enabled,
-        login_protocol_verified: qmfConfig.login_protocol_verified,
-        write_protocol_verified: qmfConfig.write_protocol_verified,
         api_base_url: qmfConfig.api_base_url,
         login_host: qmfConfig.login_host,
         login_port: qmfConfig.login_port,
@@ -489,42 +486,12 @@ export default function SystemSettings() {
         ) : (
           <div className="flex flex-col gap-5">
             <Alert
-              type={qmfConfig.registration_configured ? 'success' : qmfConfig.configured ? 'info' : 'warning'}
+              type={qmfConfig.registration_configured ? 'success' : 'warning'}
               showIcon
-              message={qmfConfig.registration_configured
-                ? '登记前核对与全民防登记均已开启'
-                : qmfConfig.configured
-                  ? '登记前核对可用，全民防登记仍关闭'
-                  : '配置尚未完整'}
-              description="全民防登记会向全民防系统上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
+              message={qmfConfig.registration_configured ? '全民防登记已开启' : '配置尚未完整或登记未开启'}
+              description="每条登记都会自动完成登记前核对；全民防登记会上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
             />
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">登记前核对开关</span>
-                <div className="flex min-h-9 items-center gap-3">
-                  <Switch
-                    checked={qmfConfig.preview_enabled}
-                    onChange={value => setQmfConfig(current => current ? { ...current, preview_enabled: value } : current)}
-                    disabled={savingQmf}
-                  />
-                  <span className="text-sm text-[var(--app-text-secondary)]">
-                    {qmfConfig.preview_enabled ? '已开启' : '已关闭'}
-                  </span>
-                </div>
-              </div>
-              <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">登录协议已实测</span>
-                <div className="flex min-h-9 items-center gap-3">
-                  <Switch
-                    checked={qmfConfig.login_protocol_verified}
-                    onChange={value => setQmfConfig(current => current ? { ...current, login_protocol_verified: value } : current)}
-                    disabled={savingQmf}
-                  />
-                  <span className="text-sm text-[var(--app-text-secondary)]">
-                    {qmfConfig.login_protocol_verified ? '已确认' : '未确认'}
-                  </span>
-                </div>
-              </div>
               <div className="settings-field">
                 <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">全民防登记开关</span>
                 <div className="flex min-h-9 items-center gap-3">
@@ -538,23 +505,7 @@ export default function SystemSettings() {
                   </span>
                 </div>
                 <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  开启后仍需具备“执行全民防单条登记”权限；当前默认仅超级管理员拥有。每条都会重新完成登记前核对并要求二次确认。
-                </p>
-              </div>
-              <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">写入协议已实测</span>
-                <div className="flex min-h-9 items-center gap-3">
-                  <Switch
-                    checked={qmfConfig.write_protocol_verified}
-                    onChange={value => setQmfConfig(current => current ? { ...current, write_protocol_verified: value } : current)}
-                    disabled={savingQmf}
-                  />
-                  <span className="text-sm text-[var(--app-text-secondary)]">
-                    {qmfConfig.write_protocol_verified ? '已确认' : '未确认'}
-                  </span>
-                </div>
-                <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  仅在已按单条抓包与人工验收确认四个写接口合同后开启。
+                  开启后仍需具备“执行全民防单条登记”权限；中队长、基础管控和超级管理员默认拥有。每条都会重新完成登记前核对并要求二次确认。
                 </p>
               </div>
             </div>
@@ -695,7 +646,7 @@ export default function SystemSettings() {
               colon={false}
               column={{ xs: 1, sm: 2 }}
               items={[
-                { key: 'permission', label: '执行权限', children: '由权限组配置，当前默认仅超级管理员' },
+                { key: 'permission', label: '执行权限', children: '由权限组配置，中队长、基础管控和超级管理员默认拥有' },
                 { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
               ]}

@@ -103,9 +103,7 @@ class QmfRuntimeConfig:
     @property
     def configured(self) -> bool:
         return bool(
-            self.preview_enabled
-            and self.login_protocol_verified
-            and all(
+            all(
                 (
                     self.api_base_url,
                     self.login_host,
@@ -125,7 +123,6 @@ class QmfRuntimeConfig:
         return bool(
             self.configured
             and self.registration_enabled
-            and self.write_protocol_verified
         )
 
 

@@ -319,7 +319,7 @@ def registration_capability(
         return {
             "visible": True,
             "enabled": False,
-            "reason": "全民防真实登记尚未由超级管理员开启并确认写入协议",
+            "reason": "全民防登记尚未开启或接口配置不完整",
         }
     return {"visible": True, "enabled": True, "reason": ""}
 

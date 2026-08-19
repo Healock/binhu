@@ -36,6 +36,7 @@ from services.qmf_registration import (
     run_guarded_preview,
     valid_identity,
 )
+from services.qmf_config import QmfRuntimeConfig
 
 
 VALID_IDENTITY = "11010519491231002X"
@@ -271,20 +272,30 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
             parse_login_response(duplicate, expected_sequence="expected")
         self.assertEqual(raised.exception.code, "login_response_invalid")
 
-    def test_preview_configuration_fails_closed(self):
-        with patch("services.qmf_registration.settings.QMF_PREVIEW_ENABLED", False):
-            self.assertFalse(preview_configured())
-        with (
-            patch("services.qmf_registration.settings.QMF_PREVIEW_ENABLED", True),
-            patch("services.qmf_registration.settings.QMF_LOGIN_PROTOCOL_VERIFIED", False),
-        ):
-            self.assertFalse(preview_configured())
-        with (
-            patch("services.qmf_registration.settings.QMF_PREVIEW_ENABLED", True),
-            patch("services.qmf_registration.settings.QMF_LOGIN_PROTOCOL_VERIFIED", True),
-            patch("services.qmf_registration.settings.QMF_API_BASE_URL", ""),
-        ):
-            self.assertFalse(preview_configured())
+    def test_preview_configuration_depends_on_connection_values(self):
+        config = QmfRuntimeConfig(
+            preview_enabled=False,
+            registration_enabled=True,
+            login_protocol_verified=False,
+            write_protocol_verified=False,
+            api_base_url="http://qmf.invalid/grid_terminal_interface/",
+            login_host="qmf.invalid",
+            login_port=25001,
+            source_username="fictional-user",
+            source_password="fictional-password",
+            source_imei="fictional-imei",
+            source_machine_uid="fictional-device",
+            expected_station_code="320584710000",
+            expected_station_name="滨湖新城派出所",
+            timeout_seconds=15,
+            session_max_seconds=45,
+        )
+        self.assertTrue(config.configured)
+        self.assertTrue(config.registration_configured)
+        self.assertTrue(preview_configured(config))
+        self.assertFalse(preview_configured(QmfRuntimeConfig(
+            **{**config.__dict__, "api_base_url": ""}
+        )))
     def test_photo_validation_accepts_supported_headers_and_rejects_unsafe_content(self):
         cases = (
             (b"\xff\xd8\xffsample", "image/jpeg"),

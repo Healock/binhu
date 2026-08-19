@@ -170,7 +170,7 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "name": "内勤业务组",
         "description": "中队长和基础管控默认权限",
         "data_scope": "all",
-        "permissions": INTERNAL_BUSINESS_PERMISSIONS,
+        "permissions": INTERNAL_BUSINESS_PERMISSIONS | {QMF_REGISTRATION_EXECUTE},
         "sort_order": 30,
     },
     "admin": {

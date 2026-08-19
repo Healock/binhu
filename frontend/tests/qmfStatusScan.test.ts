@@ -47,3 +47,10 @@ test('每日扫描设置默认由后台配置并使用上海时区时间', () =>
   assert.match(settingsSource, /status_scan_enabled/)
   assert.match(settingsSource, /status_scan_time/)
 })
+
+test('全民防设置移除协议确认项并说明默认执行岗位', () => {
+  assert.doesNotMatch(settingsSource, /登录协议已实测/)
+  assert.doesNotMatch(settingsSource, /写入协议已实测/)
+  assert.doesNotMatch(settingsSource, /登记前核对与全民防登记均已开启/)
+  assert.match(settingsSource, /中队长、基础管控和超级管理员默认拥有/)
+})

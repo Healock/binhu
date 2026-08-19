@@ -95,10 +95,10 @@ class QmfPreviewRequest(BaseModel):
 class QmfConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    preview_enabled: bool = False
+    preview_enabled: bool | None = None
     registration_enabled: bool = False
-    login_protocol_verified: bool = False
-    write_protocol_verified: bool = False
+    login_protocol_verified: bool | None = None
+    write_protocol_verified: bool | None = None
     api_base_url: str = Field(default="", max_length=500)
     login_host: str = Field(default="", max_length=255)
     login_port: int = Field(default=0, ge=0, le=65535)
@@ -152,22 +152,13 @@ async def update_qmf_config(
         or data.expected_station_name.strip() != "滨湖新城派出所"
     ):
         raise HTTPException(400, "全民防只读预演目标固定为滨湖新城派出所")
-    if data.preview_enabled and not data.login_protocol_verified:
-        raise HTTPException(400, "开启全民防预演前必须确认登录协议已完成实测")
-    if data.registration_enabled and not data.preview_enabled:
-        raise HTTPException(400, "开启全民防真实登记前必须先开启只读预演")
-    if data.registration_enabled and not data.write_protocol_verified:
-        raise HTTPException(400, "开启全民防真实登记前必须确认写入协议已完成实测")
     if data.status_scan_enabled and not valid_schedule_time(data.status_scan_time):
         raise HTTPException(400, "开启每日扫描前请选择有效的执行时间")
     if data.status_scan_time and not valid_schedule_time(data.status_scan_time):
         raise HTTPException(400, "每日扫描时间格式应为 HH:mm")
 
     values: dict[str, Any] = {
-        "qmf_preview_enabled": "1" if data.preview_enabled else "0",
         "qmf_registration_enabled": "1" if data.registration_enabled else "0",
-        "qmf_login_protocol_verified": "1" if data.login_protocol_verified else "0",
-        "qmf_write_protocol_verified": "1" if data.write_protocol_verified else "0",
         "qmf_api_base_url": data.api_base_url.strip(),
         "qmf_login_host": data.login_host.strip(),
         "qmf_login_port": str(data.login_port),
@@ -184,7 +175,7 @@ async def update_qmf_config(
     if data.source_password is not None:
         values["qmf_source_password"] = data.source_password
 
-    if data.preview_enabled or data.registration_enabled:
+    if data.registration_enabled:
         password = (
             data.source_password
             if data.source_password is not None
