@@ -44,6 +44,7 @@ def _json_value(value):
 
 
 def _run_view(row: tuple) -> dict:
+    summary = _json_value(row[12])
     return {
         "id": int(row[0]),
         "source": row[1],
@@ -57,7 +58,9 @@ def _run_view(row: tuple) -> dict:
         "record_count": int(row[9] or 0),
         "valid_count": int(row[10] or 0),
         "issue_count": int(row[11] or 0),
-        "summary": _json_value(row[12]),
+        "summary": summary,
+        "issues": summary.get("issues", []),
+        "diff": summary.get("diff", {}),
         "error_code": row[13],
         "error_message": row[14],
         "confirmed_by": row[15],

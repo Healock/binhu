@@ -29,6 +29,11 @@ export default function VisitSourcePanel() {
     setStatus(value.latest_attempts)
     setCurrent(value.current_sources)
     setBusinessDate(value.business_date)
+    const recoverable = Object.values(value.latest_attempts)
+      .filter(item => item.status === 'pending_confirmation')
+    if (recoverable.length) {
+      setPreview(currentPreview => currentPreview.length ? currentPreview : recoverable)
+    }
     if (!businessDate) setDates([value.business_date, value.business_date])
   }
 
@@ -49,7 +54,14 @@ export default function VisitSourcePanel() {
       })
       setPreview(value.data)
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '自动获取预览失败，请检查来源配置')
+      const timeout = reason?.code === 'ECONNABORTED' || reason?.code === 'ETIMEDOUT'
+      setError(
+        reason?.response?.data?.detail
+        || (timeout
+          ? '来源读取时间较长，后台可能仍在生成预览，请稍后刷新状态，不要重复点击'
+          : '自动获取预览失败，当前数据未替换'),
+      )
+      await loadStatus().catch(() => undefined)
     } finally {
       setLoading(false)
     }

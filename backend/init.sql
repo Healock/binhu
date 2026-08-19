@@ -940,7 +940,7 @@ CREATE TABLE IF NOT EXISTS t_fullchain (
     来源            VARCHAR(200),
     姓名            VARCHAR(100),
     身份证号        VARCHAR(50),
-    电话号码        VARCHAR(50),
+    电话号码        VARCHAR(500),
     地址            VARCHAR(500),
     登记情况        VARCHAR(500),
     创建时间        VARCHAR(50),

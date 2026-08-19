@@ -28,6 +28,15 @@ FETCH_LOCK = "binhu_code_summary_fetch"
 MAX_RANGE_DAYS = 31
 
 
+def _json_value(value):
+    if isinstance(value, str) and value:
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value or {}
+
+
 class DateRangeRequest(BaseModel):
     start_date: date
     end_date: date
@@ -161,7 +170,11 @@ async def _commit_source(
     payload: DateRangeRequest,
     result: dict,
 ) -> tuple[int, str]:
-    status = "warning" if result["excluded_count"] or result["unclassified_count"] else "success"
+    status = "warning" if (
+        result["excluded_count"]
+        or result["unclassified_count"]
+        or result.get("invalid_time_count", 0)
+    ) else "success"
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -184,6 +197,7 @@ async def _commit_source(
                         "excluded_count": result["excluded_count"],
                         "duplicate_count": result["duplicate_count"],
                         "unclassified_count": result["unclassified_count"],
+                        "invalid_time_count": result.get("invalid_time_count", 0),
                     }, ensure_ascii=False),
                 ),
             )
@@ -275,6 +289,7 @@ async def fetch_code_summaries(
                     "excluded_count": aggregated["excluded_count"],
                     "duplicate_count": aggregated["duplicate_count"],
                     "unclassified_count": aggregated["unclassified_count"],
+                    "invalid_time_count": aggregated.get("invalid_time_count", 0),
                 })
             except CodeSummaryError as exc:
                 run_id = await _insert_failed_run(
@@ -343,7 +358,7 @@ async def search_code_summaries(
         await cur.execute(
             "SELECT id,status,requested_start_date,requested_end_date,raw_count,"
             "valid_count,excluded_count,duplicate_count,unclassified_count,"
-            "error_code,error_message,finished_at,created_at "
+            "error_code,error_message,finished_at,created_at,summary_json "
             "FROM _code_summary_runs WHERE source_kind=%s ORDER BY id DESC LIMIT 1",
             (payload.source,),
         )
@@ -356,6 +371,7 @@ async def search_code_summaries(
         )
         latest_success = await cur.fetchone()
     data = [_public_metrics(payload.source, row) for row in rows]
+    latest_summary = _json_value(latest[13]) if latest else {}
     latest_run = None if not latest else {
         "id": int(latest[0]), "status": latest[1],
         "start_date": latest[2].isoformat(), "end_date": latest[3].isoformat(),
@@ -365,6 +381,7 @@ async def search_code_summaries(
         "error_message": latest[10],
         "finished_at": latest[11].isoformat() + "Z" if latest[11] else None,
         "created_at": latest[12].isoformat() + "Z" if latest[12] else None,
+        "invalid_time_count": int(latest_summary.get("invalid_time_count") or 0),
     }
     return {
         "source": payload.source,
