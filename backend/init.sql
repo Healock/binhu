@@ -367,6 +367,7 @@ CREATE TABLE IF NOT EXISTS _qmf_status_scan_runs (
     mismatch_count INT NOT NULL DEFAULT 0,
     pending_count INT NOT NULL DEFAULT 0,
     not_found_count INT NOT NULL DEFAULT 0,
+    non_jurisdiction_count INT NOT NULL DEFAULT 0,
     error_count INT NOT NULL DEFAULT 0,
     requested_by INT DEFAULT NULL,
     scheduled_date DATE DEFAULT NULL,

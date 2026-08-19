@@ -971,6 +971,7 @@ export type QmfFeedbackState =
   | 'completed_match'
   | 'completed_mismatch'
   | 'not_found'
+  | 'non_jurisdiction'
   | 'error'
 
 export interface MobileTaskQmfStatus {
@@ -1211,6 +1212,7 @@ export type QmfLegacyStatusState =
   | 'not_found'
   | 'ambiguous'
   | 'station_mismatch'
+  | 'non_jurisdiction'
   | 'unknown_result'
   | 'unavailable'
 
@@ -1343,6 +1345,7 @@ export interface QmfStatusScanRun {
   mismatch_count: number
   pending_count: number
   not_found_count: number
+  non_jurisdiction_count: number
   error_count: number
   requested_by: number | null
   error_code: string

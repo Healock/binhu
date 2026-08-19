@@ -9,7 +9,9 @@ import type {
 export function qmfLegacyStatusAllowsRegistration(
   status: QmfLegacyStatus | null | undefined,
 ) {
-  return status?.state === 'pending' || status?.state === 'not_found'
+  return status?.state === 'pending'
+    || status?.state === 'not_found'
+    || status?.state === 'non_jurisdiction'
 }
 
 export const QMF_RUN_STATUS: Record<

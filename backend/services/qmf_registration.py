@@ -1033,6 +1033,41 @@ def _write_business_payload(response: httpx.Response) -> Any:
     return payload.get("data")
 
 
+def _non_jurisdiction_feedback(data: Any, *, require_match: bool = False) -> bool:
+    """Recognize only the explicit 全民防 non-jurisdiction business result."""
+    if not isinstance(data, dict):
+        return False
+    code_present = "hcjg" in data
+    text_present = "hcjgtext" in data
+    if not code_present and not text_present:
+        return False
+    code = _text(data.get("hcjg"))
+    text = (
+        _text(data.get("hcjgtext"))
+        .replace(" ", "")
+        .replace("　", "")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+    code_match = code == "5"
+    text_match = text in {"非本辖区", "非本辖区(无法提交)"}
+    text_supplied = bool(text)
+    if code_present and text_supplied and (not text_match or code_match != text_match):
+        raise QmfPreviewError(
+            "feedback_result_conflict",
+            "全民防反馈结果代码与文字不一致，已停止后续提交",
+            409,
+        )
+    matched = code_match or text_match
+    if require_match and not matched:
+        raise QmfPreviewError(
+            "feedback_retry_result_invalid",
+            "全民防非本辖区特殊反馈结果未确认，已停止后续步骤",
+            409,
+        )
+    return matched
+
+
 def _precheck_payload(response: httpx.Response) -> None:
     """Validate the exact successful checkCk contract from the verified sample."""
     data = _business_payload(response, expected_object=False)
@@ -1548,10 +1583,37 @@ class QmfRegistrationClient(QmfReadOnlyClient):
                     "fnmx/fnmxCheck",
                     data=fnmx_payload,
                 )
-                _write_business_payload(response)
+                feedback_data = _write_business_payload(response)
+                non_jurisdiction = _non_jurisdiction_feedback(feedback_data)
                 await self._emit_step(
-                    step_callback, "complete_task", "succeeded", "success"
+                    step_callback,
+                    "complete_task",
+                    "succeeded",
+                    "non_jurisdiction" if non_jurisdiction else "success",
                 )
+
+                if non_jurisdiction:
+                    if login_session is not None:
+                        login_session.ensure_available()
+                    await self._emit_step(
+                        step_callback,
+                        "complete_task_non_jurisdiction_retry",
+                        "sending",
+                    )
+                    retry_payload = {**fnmx_payload, "hcjg": "5"}
+                    retry_response = await self._write_request(
+                        client,
+                        "fnmx/fnmxCheck",
+                        data=retry_payload,
+                    )
+                    retry_data = _write_business_payload(retry_response)
+                    _non_jurisdiction_feedback(retry_data, require_match=True)
+                    await self._emit_step(
+                        step_callback,
+                        "complete_task_non_jurisdiction_retry",
+                        "succeeded",
+                        "success",
+                    )
 
                 if login_session is not None:
                     login_session.ensure_available()

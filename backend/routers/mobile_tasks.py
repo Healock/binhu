@@ -88,6 +88,7 @@ QmfFeedbackState = Literal[
     "completed_match",
     "completed_mismatch",
     "not_found",
+    "non_jurisdiction",
     "error",
 ]
 EMPTY_FILTER_VALUE = "__empty__"
@@ -626,6 +627,7 @@ def _qmf_feedback_state_sql() -> str:
                 WHEN snapshot.feedback_state='completed_match' THEN 'completed_match'
                 WHEN snapshot.feedback_state='completed_mismatch' THEN 'completed_mismatch'
                 WHEN snapshot.feedback_state='not_found' THEN 'not_found'
+                WHEN snapshot.feedback_state='non_jurisdiction' THEN 'non_jurisdiction'
                 ELSE 'error'
             END
             FROM _qmf_status_snapshots AS snapshot
@@ -1400,7 +1402,7 @@ def _empty_facets() -> dict:
         "qmf_feedback_counts": {
             key: 0 for key in (
                 "not_scanned", "stale", "pending", "completed_match",
-                "completed_mismatch", "not_found", "error",
+                "completed_mismatch", "not_found", "non_jurisdiction", "error",
             )
         },
     }

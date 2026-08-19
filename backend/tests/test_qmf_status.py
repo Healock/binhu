@@ -18,6 +18,7 @@ from services.qmf_status import (
     STATUS_STATION_MISMATCH,
     STATUS_UNAVAILABLE,
     STATUS_UNKNOWN_RESULT,
+    STATUS_NON_JURISDICTION,
     normalize_legacy_result,
 )
 
@@ -54,6 +55,11 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalize_legacy_result("2", "在吴"), ("completed", "在吴"))
         self.assertEqual(normalize_legacy_result("3", "近期反吴"), ("completed", "近期返吴"))
         self.assertEqual(normalize_legacy_result("3", "近期返吴(不注销)"), ("completed", "近期返吴"))
+        self.assertEqual(normalize_legacy_result("5", "非本辖区(无法提交)"), (STATUS_NON_JURISDICTION, "非本辖区（无法提交）"))
+        self.assertEqual(normalize_legacy_result("5", "非本辖区（无法提交）"), (STATUS_NON_JURISDICTION, "非本辖区（无法提交）"))
+        self.assertEqual(normalize_legacy_result("5", "非本辖区"), (STATUS_NON_JURISDICTION, "非本辖区（无法提交）"))
+        self.assertEqual(normalize_legacy_result("2", "非本辖区（无法提交）"), (STATUS_UNKNOWN_RESULT, ""))
+        self.assertEqual(normalize_legacy_result("5", "其他"), (STATUS_UNKNOWN_RESULT, ""))
         self.assertEqual(normalize_legacy_result("9", "其他"), (STATUS_UNKNOWN_RESULT, ""))
 
     def test_management_code_and_display_text_are_cross_checked(self):
