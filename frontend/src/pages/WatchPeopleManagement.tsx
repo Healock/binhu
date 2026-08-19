@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Descriptions, Drawer, Form, Input, Modal, Select, Space, Table, Tabs, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
 import { registryApi, type WatchCategory, type WatchPerson } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -145,17 +145,19 @@ export default function WatchPeopleManagement() {
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
-        <Tabs
-          activeKey={tab}
-          onChange={value => setTab(value as typeof tab)}
-          items={[{ key: 'people', label: '人员标记档案' }, { key: 'categories', label: '标记分类' }]}
-        />
-        <ListToolbar
-          filters={<Input allowClear prefix={<SearchOutlined />} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={tab === 'people' ? '搜索姓名或状态' : '搜索分类、代码或说明'} className="w-full md:w-80" />}
-          meta={<span>当前 {tab === 'people' ? visiblePeople.length : visibleCategories.length} 条</span>}
-          actions={<><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(tab === 'people' ? 'person' : 'category')}>{tab === 'people' ? '新增人员' : '新增分类'}</Button>}</>}
-        />
-        {tab === 'people' ? <Table rowKey="id" loading={loading} columns={personColumns} dataSource={visiblePeople} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} /> : <Table rowKey="id" loading={loading} columns={categoryColumns} dataSource={visibleCategories} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} />}
+        <ListContent>
+          <Tabs
+            activeKey={tab}
+            onChange={value => setTab(value as typeof tab)}
+            items={[{ key: 'people', label: '人员标记档案' }, { key: 'categories', label: '标记分类' }]}
+          />
+          <ListToolbar
+            filters={<Input allowClear prefix={<SearchOutlined />} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={tab === 'people' ? '搜索姓名或状态' : '搜索分类、代码或说明'} className="w-full md:w-80" />}
+            meta={<span>当前 {tab === 'people' ? visiblePeople.length : visibleCategories.length} 条</span>}
+            actions={<><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(tab === 'people' ? 'person' : 'category')}>{tab === 'people' ? '新增人员' : '新增分类'}</Button>}</>}
+          />
+          {tab === 'people' ? <Table rowKey="id" loading={loading} columns={personColumns} dataSource={visiblePeople} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} /> : <Table rowKey="id" loading={loading} columns={categoryColumns} dataSource={visibleCategories} pagination={{ defaultPageSize: 20, showSizeChanger: true }} scroll={{ x: 780 }} />}
+        </ListContent>
       </Panel>
 
       <Drawer open={detailOpen} width="min(94vw, 620px)" title={selectedPerson ? `${selectedPerson.name}的人员标记` : '人员标记'} onClose={() => setDetailOpen(false)}>

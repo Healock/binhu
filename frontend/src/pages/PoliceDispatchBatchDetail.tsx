@@ -4,7 +4,7 @@ import type { TableColumnsType } from 'antd'
 import { ExportOutlined, MobileOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
-import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   getPoliceDispatchBatch,
@@ -175,8 +175,8 @@ export default function PoliceDispatchBatchDetail() {
         </>
       )}
       <Panel title={`任务明细（${total}）`} description="逐条展示发布错误、待对账和内容冲突；敏感关键词通过请求体提交" padded={false}>
-        <ListToolbar
-          className="m-4"
+        <ListContent inset>
+          <ListToolbar
           filters={<>
           <Input
             allowClear
@@ -229,6 +229,7 @@ export default function PoliceDispatchBatchDetail() {
           }}
           scroll={{ x: 1450 }}
         />
+        </ListContent>
       </Panel>
     </div>
   )

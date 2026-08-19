@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
+
+function tsxFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const target = join(directory, entry.name)
+    if (entry.isDirectory()) return tsxFiles(target)
+    return entry.name.endsWith('.tsx') ? [target] : []
+  })
+}
+
+function jsxTagName(node: ts.JsxTagNameExpression) {
+  return node.getText()
+}
 
 test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   const workflowSource = readFileSync(
@@ -19,11 +34,38 @@ test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   assert.match(workflowSource, /workflow-ticket-detail__section/)
   assert.match(styles, /\.workflow-ticket-detail\s*\{[^}]*gap:\s*24px/s)
   assert.match(styles, /\.list-toolbar\s*\{[^}]*gap:\s*12px/s)
+  assert.match(styles, /\.list-content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*16px/s)
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.list-content\s*\{[^}]*gap:\s*12px/s)
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.list-toolbar__filters[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/)
 
   assert.match(settingsSource, /settings-field--counted/)
   assert.match(settingsSource, /settings-field__hint/)
   assert.match(styles, /\.settings-field--counted\s*\{[^}]*padding-bottom:\s*22px/s)
+})
+
+test('Panel 中的列表工具栏必须由统一列表内容容器承接结果区间距', () => {
+  const pagesDirectory = fileURLToPath(new URL('../src/pages/', import.meta.url))
+  const violations: string[] = []
+
+  for (const file of tsxFiles(pagesDirectory)) {
+    const sourceText = readFileSync(file, 'utf8')
+    const source = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxElement(node) && jsxTagName(node.openingElement.tagName) === 'Panel') {
+        for (const child of node.children) {
+          if (ts.isJsxSelfClosingElement(child) && jsxTagName(child.tagName) === 'ListToolbar') {
+            const { line } = source.getLineAndCharacterOfPosition(child.getStart(source))
+            violations.push(`${file}:${line + 1}`)
+          }
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+  }
+
+  assert.deepEqual(violations, [], `ListToolbar 不能直接作为 Panel 子项：\n${violations.join('\n')}`)
 })
 
 test('辖区档案连续区块由父级 gap 分隔且筛选不游离在工具栏外', () => {

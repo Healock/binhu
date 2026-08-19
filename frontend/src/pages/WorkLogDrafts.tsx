@@ -26,7 +26,7 @@ import {
   listWorkLogDrafts,
 } from '../api/client'
 import AppTable from '../components/AppTable'
-import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
 import type { WorkLogDraftSummary } from '../types'
 import useSystemTime from '../hooks/useSystemTime'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -227,7 +227,8 @@ export default function WorkLogDrafts() {
         title="全部草稿"
         description="可以按业务日期、创建人或当前编辑人查找"
       >
-        <ListToolbar
+        <ListContent>
+          <ListToolbar
           filters={<>
             <div className="flex min-w-0 items-center gap-2 md:hidden">
             <input
@@ -314,9 +315,9 @@ export default function WorkLogDrafts() {
           </>}
           meta={<span>共 {total} 份草稿</span>}
           actions={<><Button onClick={() => void loadDrafts()}>刷新</Button><Button onClick={reset}>重置</Button></>}
-        />
+          />
 
-        <div className="hidden md:block">
+          <div className="hidden md:block">
           <AppTable
             columns={columns}
             dataSource={drafts}
@@ -334,9 +335,9 @@ export default function WorkLogDrafts() {
             rowKey="id"
             scroll={{ x: 1050 }}
           />
-        </div>
+          </div>
 
-        <div className="md:hidden">
+          <div className="md:hidden">
           {loading ? (
             <Card size="small">
               <Skeleton active paragraph={{ rows: 5 }} />
@@ -403,7 +404,8 @@ export default function WorkLogDrafts() {
               />
             </div>
           )}
-        </div>
+          </div>
+        </ListContent>
       </Panel>
     </div>
   )

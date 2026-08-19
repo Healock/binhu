@@ -78,6 +78,20 @@ interface ListToolbarProps {
   className?: string
 }
 
+interface ListContentProps {
+  children: ReactNode
+  className?: string
+  inset?: boolean
+}
+
+export function ListContent({ children, className = '', inset = false }: ListContentProps) {
+  return (
+    <div className={`list-content${inset ? ' list-content--inset' : ''} ${className}`.trim()}>
+      {children}
+    </div>
+  )
+}
+
 export function ListToolbar({ filters, meta, actions, notice, extra, className = '' }: ListToolbarProps) {
   return (
     <section className={`app-card list-toolbar ${className}`.trim()}>

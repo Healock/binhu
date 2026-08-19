@@ -2511,6 +2511,20 @@
   padding: 14px;
 }
 
+.list-content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.list-content--inset {
+  padding: 20px;
+}
+
+.list-content > .ant-tabs {
+  margin-bottom: 0;
+}
+
 .list-toolbar__notice {
   min-width: 0;
 }
@@ -2774,6 +2788,14 @@
 }
 
 @media (max-width: 767px) {
+  .list-content {
+    gap: 12px;
+  }
+
+  .list-content--inset {
+    padding: 16px;
+  }
+
   .list-toolbar__filters {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
