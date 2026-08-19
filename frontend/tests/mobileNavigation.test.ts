@@ -383,6 +383,8 @@ test('平安码管家码汇总页面和导航接入', () => {
   assert.match(client, /api\.post\('\/code-summaries\/search'/)
   assert.match(page, /tables: \[exportTable\(peace, 'peace'\), exportTable\(manager, 'manager'\)\]/)
   assert.match(page, /未分类扫码数/)
+  assert.match(page, /估算新增登记数/)
+  assert.match(page, /产生指令数的 8%–12%/)
 })
 
 test('数据上传中心移除手动走访和星级上传入口', () => {

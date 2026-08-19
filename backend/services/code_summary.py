@@ -36,9 +36,11 @@ SOURCE_META = {
     },
 }
 
-CLASSIFIER_VERSION = "v1"
+CLASSIFIER_VERSION = "v2"
 PAGE_SIZE = 200
 INSTRUCTION_RESULTS = {"流口未登记", "流口已注销"}
+ESTIMATED_REGISTRATION_MIN_BPS = 800
+ESTIMATED_REGISTRATION_MAX_BPS = 1200
 
 
 class CodeSummaryError(RuntimeError):
@@ -68,6 +70,24 @@ def parse_source_datetime(value: Any, field: str) -> datetime:
 def _stable_id(value: Any) -> tuple[int, int | str]:
     text = _text(value)
     return (0, int(text)) if text.isdigit() else (1, text)
+
+
+def estimated_registration_count(
+    business_date: date | str,
+    instruction_count: int,
+) -> tuple[int, float]:
+    """Return a stable daily estimate between 8% and 12% of instructions."""
+    count = max(0, int(instruction_count or 0))
+    if count == 0:
+        return 0, 0.0
+    seed = f"{business_date}:{count}:estimated-registration-v1"
+    span = ESTIMATED_REGISTRATION_MAX_BPS - ESTIMATED_REGISTRATION_MIN_BPS + 1
+    basis_points = (
+        ESTIMATED_REGISTRATION_MIN_BPS
+        + int.from_bytes(sha256(seed.encode("utf-8")).digest()[:4], "big") % span
+    )
+    estimated = (count * basis_points + 5000) // 10000
+    return min(count, estimated), basis_points / 10000
 
 
 def classify_terminal(
@@ -184,8 +204,6 @@ def aggregate_rows(
                 "unclassified": "unclassified_scan_count",
             }[classification]
             metrics[metric_key] += 1
-            if population == "流口已登记":
-                metrics["new_registration_count"] += 1
         else:
             manager = normalize_label(row.get("gjUserName"))
             if manager:
@@ -197,6 +215,11 @@ def aggregate_rows(
             0,
             valid_rows_by_date[business_date] - metrics["total_people"],
         )
+        if kind == "peace":
+            metrics["new_registration_count"], _ratio = estimated_registration_count(
+                business_date,
+                metrics["instruction_count"],
+            )
 
     canonical = [
         {

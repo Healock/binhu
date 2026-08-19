@@ -17,6 +17,7 @@ from services.code_summary import (
     CodeSummaryError,
     SOURCE_META,
     aggregate_rows,
+    estimated_registration_count,
     fetch_sources,
     normalize_label,
 )
@@ -64,13 +65,19 @@ def _public_metrics(source: str, row: dict) -> dict:
         result["instruction_count"], result["total_people"]
     )
     if source == "peace":
+        estimated_count, estimated_ratio = estimated_registration_count(
+            result["business_date"],
+            result["instruction_count"],
+        )
         result.update({
             "patrol_scan_count": int(row.get("patrol_scan_count") or 0),
             "dispatch_hall_scan_count": int(row.get("dispatch_hall_scan_count") or 0),
             "household_hall_scan_count": int(row.get("household_hall_scan_count") or 0),
             "social_scan_count": int(row.get("social_scan_count") or 0),
             "unclassified_scan_count": int(row.get("unclassified_scan_count") or 0),
-            "new_registration_count": int(row.get("new_registration_count") or 0),
+            "new_registration_count": estimated_count,
+            "new_registration_estimate_ratio": estimated_ratio,
+            "new_registration_estimated": True,
         })
         result["effective_scan_rate"] = _rate(
             result["new_registration_count"], result["total_people"]
@@ -102,6 +109,10 @@ def _total(source: str, rows: list[dict]) -> dict:
         result["effective_scan_rate"] = _rate(
             result["new_registration_count"], result["total_people"]
         )
+        result["new_registration_estimate_ratio"] = _rate(
+            result["new_registration_count"], result["instruction_count"]
+        )
+        result["new_registration_estimated"] = True
     return result
 
 

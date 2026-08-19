@@ -43,8 +43,8 @@ function columns(source: CodeSummarySource) {
       { title: '未分类扫码数', dataIndex: 'unclassified_scan_count', key: 'unclassified_scan_count' },
       { title: '产生指令数', dataIndex: 'instruction_count', key: 'instruction_count' },
       { title: '有效预警率', dataIndex: 'effective_warning_rate', key: 'effective_warning_rate', render: percent },
-      { title: '新增登记数', dataIndex: 'new_registration_count', key: 'new_registration_count' },
-      { title: '有效扫码率', dataIndex: 'effective_scan_rate', key: 'effective_scan_rate', render: percent },
+      { title: '估算新增登记数', dataIndex: 'new_registration_count', key: 'new_registration_count' },
+      { title: '估算有效扫码率', dataIndex: 'effective_scan_rate', key: 'effective_scan_rate', render: percent },
     ]
   }
   return [
@@ -66,8 +66,8 @@ const EXPORT_COLUMNS = {
     ['巡防扫码数', 'patrol_scan_count'], ['接处警大厅扫码数', 'dispatch_hall_scan_count'],
     ['户籍大厅扫码数', 'household_hall_scan_count'], ['社会面扫码数', 'social_scan_count'],
     ['未分类扫码数', 'unclassified_scan_count'], ['产生指令数', 'instruction_count'],
-    ['有效预警率', 'effective_warning_rate'], ['新增登记数', 'new_registration_count'],
-    ['有效扫码率', 'effective_scan_rate'],
+    ['有效预警率', 'effective_warning_rate'], ['估算新增登记数', 'new_registration_count'],
+    ['估算有效扫码率', 'effective_scan_rate'],
   ],
   manager: [
     ['业务日期', 'business_date'], ['当日扫码人数', 'total_people'],
@@ -212,6 +212,7 @@ export default function CodeSummary() {
       </Panel>
       <Panel title={source === 'peace' ? '平安码宽表' : '管家码宽表'}>
         <Tabs activeKey={source} items={SOURCE_OPTIONS.map(item => ({ key: item.value, label: item.label }))} onChange={value => setSource(value as CodeSummarySource)} />
+        {source === 'peace' && <Alert className="mb-3" type="info" showIcon message="估算新增登记数按每日产生指令数的 8%–12% 稳定计算；同一天相同指令数不会因刷新发生变化。" />}
         <Spin spinning={loading}>
           {rows.length ? <Table
             rowKey={row => `${source}-${row.business_date}-${row.version || 'total'}`}
