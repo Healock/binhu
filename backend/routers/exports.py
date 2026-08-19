@@ -16,7 +16,7 @@ from services.permissions import (
 
 
 router = APIRouter(prefix="/api/exports", tags=["导出记录"])
-ExportType = Literal["online_summary", "visit_summary"]
+ExportType = Literal["online_summary", "visit_summary", "code_summary"]
 
 EXPORT_CONFIG = {
     "online_summary": {
@@ -37,6 +37,12 @@ EXPORT_CONFIG = {
         "action": "visit_summary.export",
         "target_type": "visit_summary",
         "allowed_types": {"出租房", "自购房"},
+    },
+    "code_summary": {
+        "permission": VISIT_SUMMARY_VIEW,
+        "action": "code_summary.export",
+        "target_type": "code_summary",
+        "allowed_types": {"平安码", "管家码"},
     },
 }
 

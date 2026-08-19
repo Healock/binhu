@@ -101,7 +101,7 @@ test('上级任务岗位在具备查看权限时显示流口任务入口', () =>
 test('新权限列表优先于旧角色决定 Dock 页面', () => {
   const config = defaultMobileDockConfig('member', [
     'online.summary.view',
-    'visit.import',
+    'police.dispatch.manage',
     'worklog.manage',
   ])
 
@@ -365,4 +365,31 @@ test('仪表盘固定为 Dock 第一项且旧配置会自动补齐', () => {
     items: ['dashboard'],
   })
   assert.equal(defaultMobileDockConfig('member').groups[0].items[0], 'dashboard')
+})
+
+test('平安码管家码汇总页面和导航接入', () => {
+  const page = readFileSync(new URL('../src/pages/CodeSummary.tsx', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+  const navigation = readFileSync(new URL('../src/navigation/mobileNavigation.ts', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+
+  assert.match(page, /自动获取平安码管家码数据/)
+  assert.match(page, /平安码/)
+  assert.match(page, /管家码/)
+  assert.match(page, /RangePicker/)
+  assert.match(app, /path="\/code-summary"/)
+  assert.match(navigation, /id: 'code_summary'/)
+  assert.match(client, /api\.post\('\/code-summaries\/fetch'/)
+  assert.match(client, /api\.post\('\/code-summaries\/search'/)
+  assert.match(page, /tables: \[exportTable\(peace, 'peace'\), exportTable\(manager, 'manager'\)\]/)
+  assert.match(page, /未分类扫码数/)
+})
+
+test('数据上传中心移除手动走访和星级上传入口', () => {
+  const source = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(source, /上传走访明细/)
+  assert.doesNotMatch(source, /上传星级评定/)
+  assert.match(source, /PoliceDispatchPanel/)
+  assert.match(source, /照片调取批次/)
 })

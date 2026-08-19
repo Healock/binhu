@@ -6,48 +6,22 @@ import {
   Statistic,
   Table,
   Tag,
-  Tooltip,
   Upload,
 } from 'antd'
-import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
+import type { UploadFile, UploadProps } from 'antd'
 import { InboxOutlined, UploadOutlined } from '@ant-design/icons'
-import AppTable from '../components/AppTable'
 import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
   formatUTCTime,
-  previewVisitSource,
-  confirmVisitSource,
-  getVisitSourceStatus,
-  getVisitImportIssues,
   type PhotoImportBatch,
   type PhotoImportReconcileResult,
   workflowApi,
-  uploadStarRating,
-  uploadVisitDetail,
-  type VisitImportIssue,
-  type VisitImportResult,
 } from '../api/client'
-import type { VisitSourceRun } from '../types'
-import dayjs from 'dayjs'
 
 const { Dragger } = Upload
-const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_PHOTO_ZIP_BYTES = 200 * 1024 * 1024
-const ISSUE_PAGE_SIZE = 50
-
-const statusMeta = {
-  success: { color: 'success', label: '导入成功' },
-  partial: { color: 'warning', label: '部分成功' },
-  failed: { color: 'error', label: '导入失败' },
-  duplicate: { color: 'default', label: '文件已导入' },
-} as const
-
-function DateRange({ start, end }: { start: string | null; end: string | null }) {
-  if (!start || !end) return <span className="text-slate-400">暂无数据</span>
-  return <span>{start} 至 {end}</span>
-}
 
 function selectedUploadFile(file: File & { uid: string }): UploadFile {
   return {
@@ -60,118 +34,9 @@ function selectedUploadFile(file: File & { uid: string }): UploadFile {
   }
 }
 
-function validateWorkbook(
-  file: File,
-  showError: (message: string) => void,
-): boolean {
-  if (!file.name.toLowerCase().endsWith('.xlsx')) {
-    showError('只支持 .xlsx 文件')
-    return false
-  }
-  if (file.size > MAX_FILE_BYTES) {
-    showError('XLSX 文件不能超过 20MB')
-    return false
-  }
-  return true
-}
-
-const commonIssueColumns: TableColumnsType<VisitImportIssue> = [
-  {
-    title: '类型',
-    dataIndex: 'severity',
-    width: 90,
-    render: value => (
-      <Tag color={value === 'error' ? 'error' : 'warning'}>
-        {value === 'error' ? '错误' : '提醒'}
-      </Tag>
-    ),
-  },
-  {
-    title: 'Excel 行',
-    dataIndex: 'row_number',
-    width: 100,
-    render: value => value || '-',
-  },
-  {
-    title: '原因',
-    dataIndex: 'message',
-    width: 320,
-    render: value => <span className="text-slate-700">{value}</span>,
-  },
-]
-
-const detailIssueColumns: TableColumnsType<VisitImportIssue> = [
-  ...commonIssueColumns,
-  {
-    title: '社区',
-    render: (_, item) => item.row_preview['村社区'] || '-',
-    width: 130,
-  },
-  {
-    title: '操作人',
-    render: (_, item) => item.row_preview['操作人'] || '-',
-    width: 110,
-  },
-  {
-    title: '入户时间',
-    render: (_, item) => item.row_preview['入户时间'] || '-',
-    width: 170,
-  },
-  {
-    title: '地址',
-    width: 280,
-    ellipsis: { showTitle: false },
-    render: (_, item) => (
-      <Tooltip title={item.row_preview['地址'] || '-'}>
-        <span>{item.row_preview['地址'] || '-'}</span>
-      </Tooltip>
-    ),
-  },
-  {
-    title: '操作人账号',
-    render: (_, item) => item.row_preview['操作人账号'] || '-',
-    width: 180,
-  },
-]
-
-const ratingIssueColumns: TableColumnsType<VisitImportIssue> = [
-  ...commonIssueColumns,
-  {
-    title: '社区',
-    width: 130,
-    render: (_, item) => item.row_preview['所属社区'] || '-',
-  },
-  {
-    title: '星级',
-    width: 130,
-    render: (_, item) => item.row_preview['星级'] || '-',
-  },
-  {
-    title: '得分',
-    width: 100,
-    render: (_, item) => item.row_preview['得分'] || '-',
-  },
-  {
-    title: '采集时间',
-    width: 180,
-    render: (_, item) => item.row_preview['采集时间'] || '-',
-  },
-  {
-    title: '地址',
-    width: 300,
-    ellipsis: { showTitle: false },
-    render: (_, item) => (
-      <Tooltip title={item.row_preview['地址'] || '-'}>
-        <span>{item.row_preview['地址'] || '-'}</span>
-      </Tooltip>
-    ),
-  },
-]
 
 export default function DataUploadCenter() {
   const { user, systemTimezone } = useAuth()
-  const canUpload = Boolean(user?.permissions.includes('visit.import'))
-  const canManageVisitSource = Boolean(user?.permissions.includes('visit.source.manage'))
   const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
   const canManagePhotoImport = Boolean(
     (user?.permissions.includes('workflow.ticket.handle')
@@ -179,19 +44,7 @@ export default function DataUploadCenter() {
       || user?.role === 'super_admin'
       || user?.permissions.includes('workflow.ticket.manage'),
   )
-  const canUseUploadCenter = canUpload || canManageVisitSource || canManagePoliceDispatch || canManagePhotoImport
-  const [detailFileList, setDetailFileList] = useState<UploadFile[]>([])
-  const [detailFile, setDetailFile] = useState<File | null>(null)
-  const [ratingFileList, setRatingFileList] = useState<UploadFile[]>([])
-  const [ratingFile, setRatingFile] = useState<File | null>(null)
-  const [activeImport, setActiveImport] = useState<'detail' | 'rating' | null>(null)
-  const [detailError, setDetailError] = useState('')
-  const [ratingError, setRatingError] = useState('')
-  const [result, setResult] = useState<VisitImportResult | null>(null)
-  const [issues, setIssues] = useState<VisitImportIssue[]>([])
-  const [issueTotal, setIssueTotal] = useState(0)
-  const [issuePage, setIssuePage] = useState(1)
-  const [issueLoading, setIssueLoading] = useState(false)
+  const canUseUploadCenter = canManagePoliceDispatch || canManagePhotoImport
   const [photoFileList, setPhotoFileList] = useState<UploadFile[]>([])
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoBatch, setPhotoBatch] = useState<PhotoImportBatch | null>(null)
@@ -199,16 +52,6 @@ export default function DataUploadCenter() {
   const [photoLoading, setPhotoLoading] = useState(false)
   const [photoHistory, setPhotoHistory] = useState<PhotoImportBatch[]>([])
   const [photoReconcile, setPhotoReconcile] = useState<PhotoImportReconcileResult | null>(null)
-  const [sourceDates, setSourceDates] = useState<[string, string]>(() => {
-    const today = dayjs().format('YYYY-MM-DD')
-    return [today, today]
-  })
-  const [sourcePreview, setSourcePreview] = useState<VisitSourceRun[]>([])
-  const [sourceLoading, setSourceLoading] = useState(false)
-  const [sourceError, setSourceError] = useState('')
-  const [sourceStatus, setSourceStatus] = useState<Record<string, VisitSourceRun>>({})
-  const [sourceCurrent, setSourceCurrent] = useState<Record<string, { source_type: string; finished_at: string | null }>>({})
-  const [sourceBusinessDate, setSourceBusinessDate] = useState('')
 
   const loadPhotoHistory = async () => {
     if (!canManagePhotoImport) return
@@ -220,119 +63,6 @@ export default function DataUploadCenter() {
   }
 
   useEffect(() => { void loadPhotoHistory() }, [canManagePhotoImport])
-  useEffect(() => {
-    if (canManageVisitSource) void getVisitSourceStatus().then(value => {
-      setSourceStatus(value.latest_attempts)
-      setSourceCurrent(value.current_sources)
-      setSourceBusinessDate(value.business_date)
-      setSourceDates([value.business_date, value.business_date])
-    }).catch(() => {})
-  }, [canManageVisitSource])
-
-  const handleSourcePreview = async () => {
-    setSourceLoading(true)
-    setSourceError('')
-    try {
-      const value = await previewVisitSource({ source: 'both', start_date: sourceDates[0], end_date: sourceDates[1] })
-      setSourcePreview(value.data)
-    } catch (error: any) {
-      setSourceError(error?.response?.data?.detail || '自动获取预览失败，请检查来源配置')
-    } finally {
-      setSourceLoading(false)
-    }
-  }
-
-  const handleSourceConfirm = async (strategy: 'replace' | 'keep') => {
-    const runIds = sourcePreview.filter(item => item.status === 'pending_confirmation').map(item => item.id)
-    if (!runIds.length) return
-    setSourceLoading(true)
-    setSourceError('')
-    try {
-      await confirmVisitSource({ run_ids: runIds, strategy })
-      const value = await getVisitSourceStatus()
-      setSourceStatus(value.latest_attempts)
-      setSourceCurrent(value.current_sources)
-      setSourceBusinessDate(value.business_date)
-      setSourcePreview([])
-    } catch (error: any) {
-      setSourceError(error?.response?.data?.detail || '自动获取确认失败，当前数据未替换')
-    } finally {
-      setSourceLoading(false)
-    }
-  }
-
-  const resetResult = () => {
-    setResult(null)
-    setIssues([])
-    setIssueTotal(0)
-    setIssuePage(1)
-  }
-
-  const beforeDetailUpload: UploadProps['beforeUpload'] = file => {
-    setDetailError('')
-    setDetailFile(null)
-    setDetailFileList([])
-    resetResult()
-    if (!validateWorkbook(file, setDetailError)) return Upload.LIST_IGNORE
-    setDetailFile(file)
-    setDetailFileList([selectedUploadFile(file)])
-    return false
-  }
-
-  const beforeRatingUpload: UploadProps['beforeUpload'] = file => {
-    setRatingError('')
-    setRatingFile(null)
-    setRatingFileList([])
-    resetResult()
-    if (!validateWorkbook(file, setRatingError)) return Upload.LIST_IGNORE
-    setRatingFile(file)
-    setRatingFileList([selectedUploadFile(file)])
-    return false
-  }
-
-  const applyResult = (nextResult: VisitImportResult) => {
-    setResult(nextResult)
-    setIssues(nextResult.issues.data)
-    setIssueTotal(nextResult.issues.total)
-    setIssuePage(1)
-  }
-
-  const handleDetailImport = async () => {
-    if (!detailFile) return
-    setActiveImport('detail')
-    setDetailError('')
-    try {
-      applyResult(await uploadVisitDetail(detailFile))
-    } catch (error: any) {
-      setDetailError(
-        error?.response?.data?.detail
-          || (error?.code === 'ECONNABORTED'
-            ? '导入处理超时，请稍后查看走访汇总的数据范围'
-            : '上传失败，请稍后重试'),
-      )
-    } finally {
-      setActiveImport(null)
-    }
-  }
-
-  const handleRatingImport = async () => {
-    if (!ratingFile) return
-    setActiveImport('rating')
-    setRatingError('')
-    try {
-      applyResult(await uploadStarRating(ratingFile))
-    } catch (error: any) {
-      setRatingError(
-        error?.response?.data?.detail
-          || (error?.code === 'ECONNABORTED'
-            ? '导入处理超时，请稍后查看走访汇总的数据范围'
-            : '上传失败，请稍后重试'),
-      )
-    } finally {
-      setActiveImport(null)
-    }
-  }
-
   const beforePhotoUpload: UploadProps['beforeUpload'] = file => {
     setPhotoError('')
     setPhotoBatch(null)
@@ -438,34 +168,11 @@ export default function DataUploadCenter() {
     })
   }
 
-  const loadIssuePage = async (page: number) => {
-    if (!result || (result.status === 'duplicate' && issueTotal === 0)) return
-    setIssueLoading(true)
-    try {
-      const response = await getVisitImportIssues(
-        result.batch_id,
-        page,
-        ISSUE_PAGE_SIZE,
-      )
-      setIssues(response.data)
-      setIssueTotal(response.total)
-      setIssuePage(page)
-    } catch {
-      if (result.import_type === 'rating') {
-        setRatingError('导入问题明细读取失败，请稍后重试')
-      } else {
-        setDetailError('导入问题明细读取失败，请稍后重试')
-      }
-    } finally {
-      setIssueLoading(false)
-    }
-  }
-
   return (
     <div className="app-page min-w-0">
       <PageHeader
         title="数据上传中心"
-        description="集中导入走访、星级评定和全链条下发文件，并查看各类处理结果"
+        description="集中处理全链条下发文件和照片批次，并查看处理进度"
       />
 
       {!canUseUploadCenter && (
@@ -476,159 +183,6 @@ export default function DataUploadCenter() {
           description="当前账号没有可用的数据上传权限。"
         />
       )}
-
-      {canManageVisitSource && (
-        <Panel
-          className="mb-4"
-          title="自动获取走访与星级数据"
-          description="先只读获取并预览，确认后才替换当前业务日期数据；自动获取失败不会覆盖最近成功快照。"
-        >
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-sm">
-              <span>开始日期</span>
-              <input
-                type="date"
-                value={sourceDates[0]}
-                onChange={event => setSourceDates([event.target.value, sourceDates[1]])}
-                className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              <span>结束日期</span>
-              <input
-                type="date"
-                value={sourceDates[1]}
-                onChange={event => setSourceDates([sourceDates[0], event.target.value])}
-                className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
-              />
-            </label>
-            <Button type="primary" loading={sourceLoading} onClick={() => void handleSourcePreview()}>
-              立即获取并预览
-            </Button>
-          </div>
-          {sourceError && <Alert className="mt-3" type="error" showIcon message={sourceError} />}
-          {Object.keys(sourceStatus).length > 0 && (
-            <div className="mt-3 space-y-1 text-sm text-slate-600">
-              <div>服务器业务日期：{sourceBusinessDate || '-'} · 时区：{systemTimezone}</div>
-              <div>
-                当前生效来源：{(['detail', 'rating'] as const).map(kind => {
-                  const item = sourceCurrent[kind]
-                  const label = kind === 'detail' ? '走访明细' : '星级评分'
-                  const source = item?.source_type === 'manual' ? '手动上传' : item ? '自动获取' : '暂无'
-                  return `${label}·${source}`
-                }).join('，')}
-              </div>
-              <div>最近尝试：{Object.values(sourceStatus).map(item => `${item.source_page}·${item.status}`).join('，')}</div>
-            </div>
-          )}
-          {sourcePreview.length > 0 && (
-            <div className="mt-4 space-y-3">
-              <Table
-                size="small"
-                rowKey="id"
-                pagination={false}
-                dataSource={sourcePreview}
-                columns={[
-                  { title: '来源', dataIndex: 'source_page' },
-                  { title: '状态', dataIndex: 'status', render: value => <Tag color={value === 'pending_confirmation' ? 'warning' : 'error'}>{value}</Tag> },
-                  { title: '记录数', dataIndex: 'record_count' },
-                  { title: '有效数', dataIndex: 'valid_count' },
-                  { title: '问题数', dataIndex: 'issue_count' },
-                  { title: '新增', render: (_, item) => item.diff?.inserted ?? '-' },
-                  { title: '变更', render: (_, item) => item.diff?.updated ?? '-' },
-                  { title: '删除', render: (_, item) => item.diff?.deleted ?? '-' },
-                  { title: '未匹配/歧义', render: (_, item) => item.diff ? `${item.diff.unmatched}/${item.diff.ambiguous}` : '-' },
-                  { title: '原因', dataIndex: 'error_message', ellipsis: true },
-                ]}
-              />
-              {sourcePreview.some(item => item.status === 'pending_confirmation') && (
-                <div className="flex justify-end gap-2">
-                  <Button loading={sourceLoading} onClick={() => void handleSourceConfirm('keep')}>保留旧快照</Button>
-                  <Button type="primary" loading={sourceLoading} onClick={() => void handleSourceConfirm('replace')}>确认替换当前数据</Button>
-                </div>
-              )}
-            </div>
-          )}
-        </Panel>
-      )}
-
-      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
-        <Panel
-          title="上传走访明细"
-          description="先导入走访明细；重叠日期会自动去重"
-        >
-          <Dragger
-            accept=".xlsx"
-            maxCount={1}
-            fileList={detailFileList}
-            beforeUpload={beforeDetailUpload}
-            onRemove={() => {
-              setDetailFile(null)
-              setDetailFileList([])
-              resetResult()
-            }}
-            disabled={!canUpload || activeImport !== null}
-          >
-            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-            <p className="ant-upload-text">拖入走访明细，或点击选择 XLSX</p>
-            <p className="ant-upload-hint">
-              同一网格员同日同地址取时间最晚的一条，不同网格员分别保留。
-            </p>
-          </Dragger>
-          <div className="mt-4 flex justify-end">
-            <Button
-              type="primary"
-              icon={<UploadOutlined />}
-              loading={activeImport === 'detail'}
-              disabled={!canUpload || !detailFile || activeImport !== null}
-              onClick={handleDetailImport}
-            >
-              {activeImport === 'detail' ? '正在校验并入库' : '导入走访明细'}
-            </Button>
-          </div>
-          {detailError && (
-            <Alert className="mt-4" type="error" showIcon message={detailError} />
-          )}
-        </Panel>
-
-        <Panel
-          title="上传星级评定"
-          description="按地址匹配采集时间前后 24 小时内最接近的走访"
-        >
-          <Dragger
-            accept=".xlsx"
-            maxCount={1}
-            fileList={ratingFileList}
-            beforeUpload={beforeRatingUpload}
-            onRemove={() => {
-              setRatingFile(null)
-              setRatingFileList([])
-              resetResult()
-            }}
-            disabled={!canUpload || activeImport !== null}
-          >
-            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-            <p className="ant-upload-text">拖入星级评定，或点击选择 XLSX</p>
-            <p className="ant-upload-hint">
-              星级评定必须匹配已有走访；无法判断时不会强行关联。
-            </p>
-          </Dragger>
-          <div className="mt-4 flex justify-end">
-            <Button
-              type="primary"
-              icon={<UploadOutlined />}
-              loading={activeImport === 'rating'}
-              disabled={!canUpload || !ratingFile || activeImport !== null}
-              onClick={handleRatingImport}
-            >
-              {activeImport === 'rating' ? '正在匹配并关联' : '导入星级评定'}
-            </Button>
-          </div>
-          {ratingError && (
-            <Alert className="mt-4" type="error" showIcon message={ratingError} />
-          )}
-        </Panel>
-      </div>
 
       {canManagePhotoImport && (
         <Panel
@@ -784,97 +338,6 @@ export default function DataUploadCenter() {
 
       <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
 
-      {result && (
-        <Panel
-          title="本次导入结果"
-          extra={(
-            <Tag color={statusMeta[result.status].color}>
-              {statusMeta[result.status].label}
-            </Tag>
-          )}
-        >
-          <Alert
-            className="mb-4"
-            type={result.status === 'failed'
-              ? 'error'
-              : result.status === 'partial' ? 'warning' : 'success'}
-            showIcon
-            message={result.message}
-            description={(
-              <span>
-                文件范围：
-                <DateRange start={result.file_start_date} end={result.file_end_date} />
-                {result.overlap_start_date && (
-                  <>
-                    ；与旧数据重叠：
-                    <DateRange
-                      start={result.overlap_start_date}
-                      end={result.overlap_end_date}
-                    />
-                  </>
-                )}
-                ；导入后数据库：
-                <DateRange
-                  start={result.coverage.start_date}
-                  end={result.coverage.end_date}
-                />
-              </span>
-            )}
-          />
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
-            {(result.import_type === 'rating'
-              ? [
-                  ['新增评定', result.inserted_rows],
-                  ['更新评定', result.updated_rows],
-                  ['重复未变', result.unchanged_rows],
-                  ['无法匹配', result.unmatched_rows || 0],
-                  ['匹配有歧义', result.ambiguous_rows || 0],
-                  ['未采用', result.ignored_rows],
-                  ['错误/提醒', result.error_count + result.warning_count],
-                ]
-              : [
-                  ['新增', result.inserted_rows],
-                  ['更新', result.updated_rows],
-                  ['重复未变', result.unchanged_rows],
-                  ['忽略', result.ignored_rows],
-                  ['错误', result.error_count],
-                  ['提醒', result.warning_count],
-                ]).map(([label, value]) => (
-              <div key={String(label)} className="rounded-lg border border-slate-200 p-4">
-                <Statistic title={label} value={value} suffix="条" />
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
-
-      {result && issueTotal > 0 && (
-        <Panel
-          title={`错误和提醒（${issueTotal} 条）`}
-          description={result.import_type === 'rating'
-            ? '无法匹配或存在歧义的星级评定不会强行写入走访记录'
-            : '身份证号已经遮盖；错误行未入库，提醒行不影响有效数据入库'}
-          padded={false}
-        >
-          <AppTable<VisitImportIssue>
-            columns={result.import_type === 'rating'
-              ? ratingIssueColumns
-              : detailIssueColumns}
-            dataSource={issues}
-            rowKey="id"
-            loading={issueLoading}
-            pagination={{
-              current: issuePage,
-              pageSize: ISSUE_PAGE_SIZE,
-              total: issueTotal,
-              showSizeChanger: false,
-              showTotal: total => `共 ${total} 条`,
-              onChange: loadIssuePage,
-            }}
-            scroll={{ x: 1360 }}
-          />
-        </Panel>
-      )}
     </div>
   )
 }

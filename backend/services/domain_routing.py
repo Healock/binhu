@@ -27,6 +27,7 @@ TABLE_DOMAINS: dict[str, tuple[str, str]] = {
     )},
     **{table: ("VISIT_DOMAIN_ACTIVE", settings.MYSQL_VISIT_DB) for table in (
         "_visit_import_batches", "t_visit_details", "_visit_import_issues", "_visit_source_runs",
+        "_code_summary_runs", "_code_daily_snapshots",
     )},
     **{table: ("DISPATCH_DOMAIN_ACTIVE", settings.MYSQL_DISPATCH_DB) for table in (
         "_police_dispatch_batches", "_police_dispatch_tasks", "_police_dispatch_publish_results",

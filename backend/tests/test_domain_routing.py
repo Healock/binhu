@@ -47,6 +47,16 @@ def test_qmf_feedback_scan_snapshots_remain_in_online_data_domain():
     assert "_qmf_status_snapshots" in sql
 
 
+def test_code_summary_tables_are_stored_in_visit_domain():
+    with patch.object(settings, "VISIT_DOMAIN_ACTIVE", True):
+        sql = rewrite_domain_sql(
+            "SELECT * FROM _code_summary_runs run "
+            "JOIN _code_daily_snapshots snapshot ON snapshot.run_id=run.id"
+        )
+    assert "`VisitData`.`_code_summary_runs`" in sql
+    assert "`VisitData`.`_code_daily_snapshots`" in sql
+
+
 def test_administrative_areas_are_stored_in_platform_domain():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql(

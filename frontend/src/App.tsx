@@ -16,6 +16,7 @@ import SystemSettings from './pages/SystemSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
 import OperationsCenter from './pages/OperationsCenter'
 import VisitSummary from './pages/VisitSummary'
+import CodeSummary from './pages/CodeSummary'
 import DataUploadCenter from './pages/DataUploadCenter'
 import Login from './pages/Login'
 import WorkLog from './pages/WorkLog'
@@ -141,8 +142,9 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<VisitSummary />} />
+                <Route path="/code-summary" element={<CodeSummary />} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['visit.import', 'police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage']} />}>
+              <Route element={<ProtectedRoute requireAnyPermission={['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage']} />}>
                 <Route path="/data-upload" element={<DataUploadCenter />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>
