@@ -1,4 +1,4 @@
-"""人员标记的身份证精确命中和任务快照回填。"""
+"""人员标签的身份证精确命中和任务快照回填。"""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def projection_identity(parser_type: str, values: dict, columns: list[str]) -> s
 
 
 async def sync_current_task_snapshots(cur, parser_type: str) -> None:
-    """用当前投影幂等补齐当时有效的人员标记。"""
+    """用当前投影幂等补齐当时有效的人员标签。"""
     if not settings.REGISTRY_FEATURE_ENABLED:
         return
     registry = settings.MYSQL_REGISTRY_DB.replace("`", "")

@@ -215,8 +215,8 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
       {
         id: 'watch_people',
         path: '/watch-people',
-        label: '人员标记',
-        shortLabel: '人员标记',
+        label: '人员标签',
+        shortLabel: '人员标签',
         icon: 'members',
         permission: 'registry.watch.view',
       },

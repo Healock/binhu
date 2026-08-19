@@ -74,7 +74,7 @@
 
 - `registry.property.view` 固定加入所有现有和新建权限组，未关联权限组的登录账号也保留该基础能力。
 - 组长、组员和社区民警继续只查看所属社区；拥有全所数据范围的内勤、管理员和超级管理员继续查看全所。
-- `registry.property.manage`、`registry.import.manage` 和人员标记权限没有扩大，普通账号不能借此新增、修改、删除、导入或审核档案。
+- `registry.property.manage`、`registry.import.manage` 和人员标签权限没有扩大，普通账号不能借此新增、修改、删除、导入或审核档案。
 
 > v0.21.11 将下发任务的多选发布改为持久化后台任务；全民防模型三使用独立权限 `qmf.registration.execute` 控制入口和接口。`0.25.0` 起默认授权基础管控、中队长、所队领导、管理员和超级管理员，其外部状态复核和写入安全边界不变。
 
@@ -336,7 +336,7 @@ flowchart LR
 | `daily_report` | 每日快照、任务流水、日报统计和工作日志草稿 |
 | `VisitData` | 走访导入批次、走访明细和导入异常 |
 | `DispatchData` | 全链条下发批次、下发任务和发布结果 |
-| `RegistryData` | 辖区房屋、地址、房屋相关人员、机构、人员标记和任务标记快照 |
+| `RegistryData` | 辖区房屋、地址、房屋相关人员、机构、人员标签和任务标签快照 |
 | `WorkflowData` | 工单类型、流程版本、节点、工单、评论、附件元数据和事件流水 |
 
 迁移完成后，走访和下发数据分别保存在 `VisitData`、`DispatchData`；旧表继续保留作为只读回退材料。辖区档案和工单功能分别使用 `RegistryData`、`WorkflowData`；服务器显示时间的授权维护窗口已完成开关切换，旧表和迁移备份继续保留。
@@ -1184,7 +1184,7 @@ OAuth 凭据加密仍未完成，具体见 [风险清单](known-risks.md)。异�
 
 ## 八库分域和未来业务
 
-平台数据库正在按业务域分阶段拆分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。走访、下发、小区地址、平台基础、工作日志、身份证 HMAC 回填以及 Registry/Workflow 功能切换均已在真实 MySQL 中完成；当前没有人员标记分配，因此没有历史任务快照可回填。完整边界、索引和迁移顺序见 [八库业务域与新档案规划](database-domain-plan.md)。
+平台数据库正在按业务域分阶段拆分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。走访、下发、小区地址、平台基础、工作日志、身份证 HMAC 回填以及 Registry/Workflow 功能切换均已在真实 MySQL 中完成；当前没有人员标签分配，因此没有历史任务快照可回填。完整边界、索引和迁移顺序见 [八库业务域与新档案规划](database-domain-plan.md)。
 
 _源码核对：2026-08-09；服务器窗口记录：2026-08-09_
 
@@ -1194,7 +1194,7 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 
 分域迁移由 `backend/migrations/domain_migration.py` 执行。默认是只读 dry-run，只有明确传入 `--apply` 才复制数据和写入迁移状态；旧表不会删除。`backend/services/domain_routing.py` 只对固定白名单表名做路由，且每个域有独立开关，迁移窗口前可以继续使用旧短表名。
 
-`RegistryData` 保存辖区房屋、地址版本、房屋相关人员和机构关系、人员标记及指令任务标记快照；`WorkflowData` 保存流程版本、工单、节点、事件、评论和附件元数据。身份证和手机号按当前策略明文保存并同时保存 HMAC 摘要，HMAC 密钥只存在服务器私密配置中。
+`RegistryData` 保存辖区房屋、地址版本、房屋相关人员和机构关系、人员标签及指令任务标签快照；`WorkflowData` 保存流程版本、工单、节点、事件、评论和附件元数据。身份证和手机号按当前策略明文保存并同时保存 HMAC 摘要，HMAC 密钥只存在服务器私密配置中。
 
 户号表与房东责任告知书通过 `registry_source_batches`、`registry_source_records` 先预览后确认。户号表以 Unicode NFKC 和统一标点规则生成地址键，重复来源行及未标注住房类型进入 `registry_import_issues`；“借住/其他/其它”保留为正常住房类型。正式社区归属始终通过 `_communities` 与 `_community_aliases` 解析，因此芦荡等历史名称不在导入代码中硬编码。告知书从只读接口 `/api/address/queryHouseCertificate` 分页获取，只接受配置中的滨湖新城派出所记录；后台运行状态保存在 `registry_certificate_source_runs`，失败断点的临时页保存在 `registry_certificate_source_pages`，成功生成预览后立即清理临时页。重复、内容冲突及未匹配个人出租/单位出租房屋的数据进入问题核查，正常记录挂载到 `registry_property_certificates` 并在房屋详情展示。
 

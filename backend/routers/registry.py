@@ -1,4 +1,4 @@
-"""辖区人房档案和人员标记的第一版 API。"""
+"""辖区人房档案和人员标签的第一版 API。"""
 
 from __future__ import annotations
 
@@ -102,6 +102,13 @@ class WatchAssignmentCreate(BaseModel):
     basis: str = Field(default="", max_length=1000)
 
 
+class WatchPersonSearch(BaseModel):
+    keyword: str = Field(default="", max_length=100)
+    category_ids: list[int] = Field(default_factory=list, max_length=20)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
+
+
 async def _domain_conn(name: str):
     try:
         pool = db_manager.get_pool(name)
@@ -167,6 +174,90 @@ def _person_payload(row, include_identity: bool = True) -> dict:
         "created_at": row[6].isoformat() if row[6] else None,
         "updated_at": row[7].isoformat() if row[7] else None,
     }
+
+
+async def _watch_people_result(data: WatchPersonSearch, user: dict, conn) -> dict:
+    allowed_names = _allowed_community_names(user, REGISTRY_WATCH_VIEW)
+    where = ["watch_people.status='active'"]
+    params: list[object] = []
+    if allowed_names is not None:
+        if not allowed_names:
+            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+        online_schema = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
+        placeholders = ",".join(["%s"] * len(allowed_names))
+        where.append(
+            "EXISTS (SELECT 1 FROM watch_assignments scoped_assignment "
+            "JOIN online_task_watch_snapshots scoped_snapshot "
+            "ON scoped_snapshot.assignment_id=scoped_assignment.id "
+            f"JOIN `{online_schema}`._online_source_projection scoped_projection "
+            "ON scoped_projection.parser_type=scoped_snapshot.parser_type "
+            "AND scoped_projection.row_key=scoped_snapshot.row_key "
+            "WHERE scoped_assignment.person_id=watch_people.id "
+            f"AND scoped_projection.community IN ({placeholders}))"
+        )
+        params.extend(allowed_names)
+    category_ids = list(dict.fromkeys(data.category_ids))
+    if category_ids:
+        placeholders = ",".join(["%s"] * len(category_ids))
+        where.append(
+            "EXISTS (SELECT 1 FROM watch_assignments category_assignment "
+            "WHERE category_assignment.person_id=watch_people.id "
+            f"AND category_assignment.category_id IN ({placeholders}) "
+            "AND category_assignment.status='active' "
+            "AND category_assignment.valid_from<=UTC_TIMESTAMP() "
+            "AND (category_assignment.valid_to IS NULL OR category_assignment.valid_to>=UTC_TIMESTAMP()) "
+            "AND (category_assignment.released_at IS NULL OR category_assignment.released_at>UTC_TIMESTAMP()))"
+        )
+        params.extend(category_ids)
+    keyword = data.keyword.strip()
+    if keyword:
+        normalized = normalize_identity(keyword)
+        digest, _ = hmac_digest(normalized, kind="identity")
+        if user.get("role") == "super_admin" and digest and len(normalized) in {15, 18}:
+            where.append("(watch_people.name LIKE %s OR watch_people.identity_hmac=%s)")
+            params.extend((f"%{keyword}%", digest))
+        else:
+            where.append("watch_people.name LIKE %s")
+            params.append(f"%{keyword}%")
+    clause = " WHERE " + " AND ".join(where)
+    offset = (data.page - 1) * data.page_size
+    async with conn.cursor() as cur:
+        await cur.execute(f"SELECT COUNT(*) FROM watch_people{clause}", tuple(params))
+        total = int((await cur.fetchone())[0])
+        await cur.execute(
+            "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at "
+            f"FROM watch_people{clause} ORDER BY id DESC LIMIT %s OFFSET %s",
+            tuple(params) + (data.page_size, offset),
+        )
+        rows = await cur.fetchall()
+        person_ids = [int(row[0]) for row in rows]
+        categories_by_person: dict[int, list[dict]] = {person_id: [] for person_id in person_ids}
+        if person_ids:
+            placeholders = ",".join(["%s"] * len(person_ids))
+            await cur.execute(
+                "SELECT assignment.person_id, category.id, category.code, category.name, category.color, category.alert_level "
+                "FROM watch_assignments assignment "
+                "JOIN watch_categories category ON category.id=assignment.category_id "
+                f"WHERE assignment.person_id IN ({placeholders}) "
+                "AND assignment.status='active' AND category.is_active=1 "
+                "AND assignment.valid_from<=UTC_TIMESTAMP() "
+                "AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP()) "
+                "AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP()) "
+                "ORDER BY category.sort_order, category.id",
+                tuple(person_ids),
+            )
+            for item in await cur.fetchall():
+                categories_by_person[int(item[0])].append({
+                    "id": int(item[1]), "code": str(item[2]), "name": str(item[3]),
+                    "color": str(item[4]), "alert_level": str(item[5]),
+                })
+    include_identity = user.get("role") == "super_admin"
+    data_rows = []
+    for row in rows:
+        item = _person_payload(row, include_identity)
+        item["categories"] = categories_by_person.get(int(row[0]), [])
+        data_rows.append(item)
+    return {"total": total, "page": data.page, "page_size": data.page_size, "data": data_rows}
 
 
 def _property_payload(row) -> dict:
@@ -667,7 +758,7 @@ async def create_watch_category(
         detail={"code": data.code.strip()},
         **request_audit_fields(request),
     )
-    return {"id": category_id, "message": "人员标记分类已创建"}
+    return {"id": category_id, "message": "人员标签分类已创建"}
 
 
 @router.get("/watch/people")
@@ -677,39 +768,20 @@ async def list_watch_people(
     user: dict = Depends(require_permission(REGISTRY_WATCH_VIEW)),
     conn=Depends(get_registry_db),
 ):
-    allowed_names = _allowed_community_names(user, REGISTRY_WATCH_VIEW)
-    where = ["watch_people.status='active'"]
-    params: list[object] = []
-    if allowed_names is not None:
-        if not allowed_names:
-            return {"total": 0, "page": page, "page_size": page_size, "data": []}
-        online_schema = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
-        placeholders = ",".join(["%s"] * len(allowed_names))
-        where.append(
-            "EXISTS (SELECT 1 FROM watch_assignments scoped_assignment "
-            "JOIN online_task_watch_snapshots scoped_snapshot "
-            "ON scoped_snapshot.assignment_id=scoped_assignment.id "
-            f"JOIN `{online_schema}`._online_source_projection scoped_projection "
-            "ON scoped_projection.parser_type=scoped_snapshot.parser_type "
-            "AND scoped_projection.row_key=scoped_snapshot.row_key "
-            "WHERE scoped_assignment.person_id=watch_people.id "
-            f"AND scoped_projection.community IN ({placeholders}))"
-        )
-        params.extend(allowed_names)
-    clause = " WHERE " + " AND ".join(where)
-    offset = (page - 1) * page_size
-    async with conn.cursor() as cur:
-        await cur.execute(f"SELECT COUNT(*) FROM watch_people{clause}", tuple(params))
-        total = int((await cur.fetchone())[0])
-        await cur.execute(
-            "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at "
-            f"FROM watch_people{clause} ORDER BY id DESC LIMIT %s OFFSET %s",
-            tuple(params) + (page_size, offset),
-        )
-        rows = await cur.fetchall()
-    include_identity = user.get("role") == "super_admin"
-    return {"total": total, "page": page, "page_size": page_size,
-            "data": [_person_payload(row, include_identity) for row in rows]}
+    return await _watch_people_result(
+        WatchPersonSearch(page=page, page_size=page_size),
+        user,
+        conn,
+    )
+
+
+@router.post("/watch/people/search")
+async def search_watch_people(
+    data: WatchPersonSearch,
+    user: dict = Depends(require_permission(REGISTRY_WATCH_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    return await _watch_people_result(data, user, conn)
 
 
 @router.post("/watch/people")
@@ -727,7 +799,7 @@ async def create_watch_person(
         if identity_hmac:
             await cur.execute("SELECT id FROM watch_people WHERE identity_hmac=%s", (identity_hmac,))
             if await cur.fetchone():
-                raise HTTPException(409, "该身份证号已存在人员标记档案")
+                raise HTTPException(409, "该身份证号已存在人员标签档案")
         await cur.execute(
             "INSERT INTO watch_people "
             "(name, identity_number, identity_hmac, identity_hmac_version, is_temporary, verification_status, created_by, updated_by) "
@@ -744,7 +816,7 @@ async def create_watch_person(
         detail={},
         **request_audit_fields(request),
     )
-    return {"id": person_id, "message": "人员标记档案已创建"}
+    return {"id": person_id, "message": "人员标签档案已创建"}
 
 
 @router.post("/watch/assignments")
@@ -761,7 +833,7 @@ async def create_watch_assignment(
         async with conn.cursor() as cur:
             await cur.execute("SELECT id FROM watch_people WHERE id=%s AND status='active' FOR UPDATE", (data.person_id,))
             if not await cur.fetchone():
-                raise HTTPException(404, "人员标记档案不存在")
+                raise HTTPException(404, "人员标签档案不存在")
             await cur.execute("SELECT id FROM watch_categories WHERE id=%s AND is_active=1", (data.category_id,))
             if not await cur.fetchone():
                 raise HTTPException(404, "标记分类不存在或已停用")
@@ -795,5 +867,5 @@ async def create_watch_assignment(
     return {
         "id": assignment_id,
         "backfilled_snapshots": backfilled,
-        "message": "人员标记已保存",
+        "message": "人员标签已保存",
     }

@@ -14,7 +14,7 @@ DATABASES = {
     settings.MYSQL_DAILY_REPORT_DB: "每日快照、任务流水和工作日志草稿",
     settings.MYSQL_VISIT_DB: "走访批次、明细和导入异常",
     settings.MYSQL_DISPATCH_DB: "下发批次、任务和发布结果",
-    settings.MYSQL_REGISTRY_DB: "辖区档案、小区地址、人员标记和任务标记快照",
+    settings.MYSQL_REGISTRY_DB: "辖区档案、小区地址、人员标签和任务标签快照",
     settings.MYSQL_WORKFLOW_DB: "流程配置、工单、事件和附件元数据",
 }
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]+$")

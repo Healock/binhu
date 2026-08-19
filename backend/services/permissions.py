@@ -74,8 +74,8 @@ PERMISSION_CATALOG = [
     (POLICE_ADDRESS_MANAGE, "基础资料", "管理小区地址库"),
     (REGISTRY_PROPERTY_VIEW, "基础资料", "查看辖区人房档案"),
     (REGISTRY_PROPERTY_MANAGE, "基础资料", "维护辖区人房档案"),
-    (REGISTRY_WATCH_VIEW, "基础资料", "查看人员标记"),
-    (REGISTRY_WATCH_MANAGE, "基础资料", "维护人员标记"),
+    (REGISTRY_WATCH_VIEW, "基础资料", "查看人员标签"),
+    (REGISTRY_WATCH_MANAGE, "基础资料", "维护人员标签"),
     (REGISTRY_IMPORT_MANAGE, "业务操作", "管理档案导入与待审核变更"),
     (WORKFLOW_TICKET_CREATE, "业务操作", "发起工单"),
     (WORKFLOW_TICKET_VIEW, "业务操作", "查看工单"),
@@ -136,7 +136,7 @@ INTERNAL_BUSINESS_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
     WORKFLOW_ATTACHMENT_VIEW,
 }
 
-# 社区民警需要保留日常查看能力，但辖区档案和人员标记只读，
+# 社区民警需要保留日常查看能力，但辖区档案和人员标签只读，
 # 数据范围由其关联的社区部门决定，不能复用 admin 组的全所维护权限。
 COMMUNITY_REGISTRY_VIEW_PERMISSIONS = COMMON_VIEW_PERMISSIONS | {
     ONLINE_TASK_MANAGE,
@@ -188,7 +188,7 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
     },
     "community_registry_viewer": {
         "name": "社区档案查看组",
-        "description": "社区民警只读查看所关联社区的人房档案和人员标记",
+        "description": "社区民警只读查看所关联社区的人房档案和人员标签",
         "data_scope": "own_department",
         "permissions": COMMUNITY_REGISTRY_VIEW_PERMISSIONS,
         "sort_order": 25,

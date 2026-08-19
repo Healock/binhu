@@ -1,4 +1,4 @@
-"""辖区档案、机构、变更审核、合并历史和人员标记扩展接口。"""
+"""辖区档案、机构、变更审核、合并历史和人员标签扩展接口。"""
 
 from __future__ import annotations
 
@@ -246,7 +246,7 @@ async def _watch_person_scope(cur, person_id: int, user: dict) -> None:
     if allowed_names is None:
         return
     if not allowed_names:
-        raise HTTPException(403, "无权查看该人员标记")
+        raise HTTPException(403, "无权查看该人员标签")
     online_schema = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
     placeholders = ",".join(["%s"] * len(allowed_names))
     await cur.execute(
@@ -261,7 +261,7 @@ async def _watch_person_scope(cur, person_id: int, user: dict) -> None:
         (person_id, *allowed_names),
     )
     if not await cur.fetchone():
-        raise HTTPException(403, "该人员标记无法归属到你的社区")
+        raise HTTPException(403, "该人员标签无法归属到你的社区")
 
 
 class PropertyUpdate(BaseModel):
@@ -2726,7 +2726,7 @@ async def get_watch_person_detail(
         )
         row = await cur.fetchone()
         if not row:
-            raise HTTPException(404, "人员标记档案不存在")
+            raise HTTPException(404, "人员标签档案不存在")
         await cur.execute(
             "SELECT assignment.id, category.id, category.name, category.color, category.alert_level, "
             "assignment.valid_from, assignment.valid_to, assignment.released_at, assignment.basis, "
@@ -2813,7 +2813,7 @@ async def update_watch_person(
             )
             existing = await cur.fetchone()
             if not existing:
-                raise HTTPException(404, "人员标记档案不存在")
+                raise HTTPException(404, "人员标签档案不存在")
             if _can_view_identity(user):
                 digest, version = hmac_digest(identity, kind="identity")
             else:
@@ -2823,7 +2823,7 @@ async def update_watch_person(
             if digest:
                 await cur.execute("SELECT id FROM watch_people WHERE identity_hmac=%s AND id<>%s", (digest, person_id))
                 if await cur.fetchone():
-                    raise HTTPException(409, "该身份证号已存在其他人员标记档案")
+                    raise HTTPException(409, "该身份证号已存在其他人员标签档案")
             await cur.execute(
                 "UPDATE watch_people SET name=%s, identity_number=%s, identity_hmac=%s, identity_hmac_version=%s, "
                 "verification_status=%s, status=%s, updated_by=%s WHERE id=%s",
@@ -2831,7 +2831,7 @@ async def update_watch_person(
                  data.status, user["id"], person_id),
             )
             if cur.rowcount != 1:
-                raise HTTPException(404, "人员标记档案不存在")
+                raise HTTPException(404, "人员标签档案不存在")
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -2840,7 +2840,7 @@ async def update_watch_person(
         user, "registry.watch_person.update", target_type="watch_person",
         target_name=str(person_id), detail={}, **request_audit_fields(request),
     )
-    return {"message": "人员标记档案已更新"}
+    return {"message": "人员标签档案已更新"}
 
 
 @router.put("/watch/assignments/{assignment_id}")
@@ -2863,7 +2863,7 @@ async def update_watch_assignment(
             )
             before = await cur.fetchone()
             if not before:
-                raise HTTPException(404, "人员标记不存在")
+                raise HTTPException(404, "人员标签不存在")
             await cur.execute(
                 "SELECT COALESCE(MAX(version_no),0)+1 FROM watch_assignment_versions WHERE assignment_id=%s",
                 (assignment_id,),
@@ -2895,4 +2895,4 @@ async def update_watch_assignment(
         user, "registry.watch_assignment.update", target_type="watch_assignment",
         target_name=str(assignment_id), detail={"status": data.status, "backfilled": int(backfilled)}, **request_audit_fields(request),
     )
-    return {"message": "人员标记已更新"}
+    return {"message": "人员标签已更新"}
