@@ -604,6 +604,21 @@ def _address_order(parser_type: str) -> str:
     return f"CASE WHEN {normalized}='' THEN 1 ELSE 0 END, {normalized}"
 
 
+def _assignment_candidate(
+    parser_type: str,
+    row_key: str,
+    community: str,
+    values: dict,
+) -> dict[str, str]:
+    summary = TASK_WORKFLOWS[parser_type].summary(values)
+    return {
+        "row_key": row_key,
+        "community": community,
+        "source": summary["source"] or TASK_WORKFLOWS[parser_type].label,
+        "address": summary["address"] or "未填写地址",
+    }
+
+
 def _qmf_feedback_state_sql() -> str:
     raw_result = _json_field("核查结果")
     current_result = (
@@ -1854,6 +1869,87 @@ async def select_mobile_tasks_for_assignment(
         "row_keys": [str(row_key) for row_key, _ in rows],
         "total": len(rows),
         "community": formal_community,
+    }
+
+
+@router.get("/{parser_type}/assignment-workbench")
+async def get_mobile_task_assignment_workbench(
+    parser_type: str,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """Return a lightweight, address-sorted queue of unassigned tasks."""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    async with conn.cursor() as cur:
+        if not await _writeback_enabled(cur):
+            raise HTTPException(503, "在线回写已由超级管理员暂停")
+        await cur.execute(
+            f"""
+            SELECT projection.row_key, projection.community, projection.values_json
+            FROM _online_source_projection AS projection
+            WHERE projection.parser_type=%s
+              AND {scope_where}
+              AND TRIM(COALESCE(projection.inspector, ''))=''
+              AND projection.task_state<>'completed'
+              AND projection.conflict=0
+              AND EXISTS (
+                  SELECT 1 FROM _online_source_rows AS source_row
+                  WHERE source_row.parser_type=projection.parser_type
+                    AND source_row.row_key=projection.row_key
+              )
+            ORDER BY {_address_order(parser_type)}, projection.row_key
+            LIMIT %s
+            """,
+            [parser_type, *scope_params, MAX_BULK_ASSIGNMENT_TASKS + 1],
+        )
+        rows = await cur.fetchall()
+        if len(rows) > MAX_BULK_ASSIGNMENT_TASKS:
+            raise HTTPException(
+                409,
+                f"当前未分配任务超过 {MAX_BULK_ASSIGNMENT_TASKS} 条，请先分业务或社区处理",
+            )
+        assignment_context = await inspector_option_context(
+            cur,
+            user,
+            assignment_only=True,
+        )
+
+    aliases = assignment_context["community_aliases"]
+    inspectors_by_community = assignment_context["inspectors_by_community"]
+    items: list[dict[str, str]] = []
+    for row_key, raw_community, raw_values in rows:
+        community = aliases.get(str(raw_community or "").strip(), "")
+        if not community:
+            community = str(raw_community or "").strip() or "社区未识别"
+        items.append(_assignment_candidate(
+            parser_type,
+            str(row_key),
+            community,
+            json_value(raw_values, {}),
+        ))
+    community_counts: dict[str, int] = {}
+    for item in items:
+        community_counts[item["community"]] = community_counts.get(item["community"], 0) + 1
+    return {
+        "data": items,
+        "total": len(items),
+        "communities": [
+            {"value": community, "label": community, "count": count}
+            for community, count in sorted(community_counts.items())
+        ],
+        "inspectors_by_community": {
+            community: list(inspectors_by_community.get(community) or [])
+            for community in community_counts
+        },
     }
 
 

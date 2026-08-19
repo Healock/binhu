@@ -479,30 +479,15 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /<span title=\{task\.inspector \|\| '待分配'\}>\{task\.inspector \|\| '待分配'\}<\/span>/)
   assert.equal(pageSource.includes('核查人 {task.inspector'), false)
   assert.equal(pageSource.includes('<Checkbox'), false)
-  assert.match(pageSource, /const \[selectionMode, setSelectionMode\] = useState\(false\)/)
-  assert.match(pageSource, /\{selectionMode \? '退出选择' : '选择'\}/)
-  assert.match(pageSource, /onClick=\{openOrSelectTask\}/)
-  assert.match(pageSource, /bulkMode/)
-  assert.match(pageSource, /平均分配/)
-  assert.match(pageSource, /assignment_counts/)
-  assert.match(pageSource, /selectMobileTasksForAssignment/)
-  assert.match(pageSource, /全选当前筛选/)
-  assert.match(pageSource, /row_keys: chunk/)
-  assert.match(pageSource, /MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE/)
-  assert.match(pageSource, /for \(let offset = processed; offset < rowKeys\.length;/)
-  assert.match(pageSource, /balanced_offset: bulkMode === 'balanced' \? offset/)
-  assert.match(pageSource, /balanced_total: bulkMode === 'balanced' \? rowKeys\.length/)
-  assert.match(pageSource, /点击“继续分配”会从当前分块续传/)
-  assert.match(pageSource, /<Progress/)
-  assert.match(pageSource, /跳过原因：/)
-  assert.match(pageSource, /result\.failed_details/)
-  assert.match(pageSource, /失败原因：/)
+  assert.match(pageSource, /分配数据/)
+  assert.match(pageSource, /MobileTaskAssignmentWorkbench/)
+  assert.doesNotMatch(pageSource, /const \[selectionMode, setSelectionMode\]/)
+  assert.doesNotMatch(pageSource, /selectMobileTasksForAssignment/)
+  assert.doesNotMatch(pageSource, /bulkMode/)
   assert.match(pageSource, /setInterval\(refreshVisibleList, 30_000\)/)
   assert.match(pageSource, /visibilitychange/)
   assert.doesNotMatch(pageSource, /selectAllLoaded/)
   assert.match(pageSource, /formatMobileTaskDeadline/)
-  assert.match(pageSource, /aria-pressed=\{selectionMode \? isSelected : undefined\}/)
-  assert.match(pageSource, /isSelected \? 'is-selected'/)
   assert.ok(
     pageSource.indexOf('mobile-task-analysis') < pageSource.indexOf('mobile-task-source-cloud mobile-task-source-cloud--card'),
   )
@@ -520,7 +505,6 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /\.mobile-task-item-card\s*\{[\s\S]*display:\s*flex[\s\S]*flex-direction:\s*column/)
   assert.match(styleSource, /\.mobile-task-item-card__body\s*\{[\s\S]*flex:\s*1[\s\S]*flex-direction:\s*column/)
   assert.match(styleSource, /\.mobile-task-source-cloud--card\s*\{[\s\S]*margin-top:\s*auto/)
-  assert.match(styleSource, /\.mobile-task-item-card\.is-selected[\s\S]*box-shadow:/)
   assert.match(pageSource, /mobileTaskSurfaceTone\(task\)/)
   assert.match(pageSource, /mobile-task-item-card--tone-\$\{surfaceTone\}/)
   assert.match(styleSource, /--mobile-task-panel-shadow:/)
@@ -532,8 +516,7 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(styleSource, /mobile-task-item-card--tone-unchecked[\s\S]*var\(--app-status-unchecked\)/)
   assert.match(styleSource, /mobile-task-item-card--tone-analysis-review[\s\S]*var\(--app-status-analysis-review\)/)
   assert.match(styleSource, /mobile-task-item-card--tone-completed[\s\S]*var\(--app-success\) 2%/)
-  assert.match(styleSource, /\.mobile-task-bulk-toolbar\.is-sticky[\s\S]*position:\s*sticky/)
-  assert.match(styleSource, /\.mobile-task-balanced-preview/)
+  assert.match(styleSource, /\.mobile-task-assignment-workbench\s*\{[\s\S]*height:\s*100%/)
   assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*min-width:\s*0/)
   assert.match(styleSource, /\.mobile-task-item-card__title-row h2[\s\S]*font-size:\s*20px/)
   assert.match(pageSource, /mobile-task-item-card__key-row--phone/)
@@ -674,6 +657,34 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(settingsSource, /task_display_mode: taskDisplayMode/)
   assert.match(settingsSource, /卡片视图/)
   assert.match(settingsSource, /表格视图/)
+})
+
+test('分配数据使用独立全屏工作台，只展示来源和地址', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const workbenchSource = readFileSync(
+    new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /<MobileTaskAssignmentWorkbench/)
+  assert.match(workbenchSource, /getMobileTaskAssignmentWorkbench/)
+  assert.match(workbenchSource, /按地址排序，只展示来源和地址/)
+  assert.match(workbenchSource, /全选/)
+  assert.match(workbenchSource, /平均分配剩余数据/)
+  assert.match(workbenchSource, /分配核查人/)
+  assert.match(workbenchSource, /onPointerEnter/)
+  assert.match(workbenchSource, /closable/)
+  assert.doesNotMatch(workbenchSource, /if \(saving\) return/)
+  assert.match(workbenchSource, /for \(const group of groups\)/)
+  assert.match(workbenchSource, /setCandidates\(current => current\.filter/)
+  assert.match(clientSource, /assignment-workbench/)
 })
 
 test('任务详情桌面端使用更紧凑的最大宽度', () => {
