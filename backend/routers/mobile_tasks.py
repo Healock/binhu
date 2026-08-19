@@ -359,6 +359,19 @@ class TaskSearch(BaseModel):
     page_size: int = Field(default=20, ge=1, le=50)
 
 
+class AnalysisTaskSearch(BaseModel):
+    parser_types: list[str] = Field(min_length=1, max_length=20)
+    scope: FlowScope = "all"
+    review_stage: ReviewStage = "all"
+    communities: list[str] = Field(default_factory=list, max_length=50)
+    inspectors: list[str] = Field(default_factory=list, max_length=50)
+    watch_categories: list[int] = Field(default_factory=list, max_length=50)
+    sort: SortMode = "priority"
+    keyword: str = Field(default="", max_length=100)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=50)
+
+
 class InlineEditorRequest(BaseModel):
     row_keys: list[str] = Field(min_length=1, max_length=50)
 
@@ -812,6 +825,290 @@ def _task_where(
     return " AND ".join(where_parts), params
 
 
+def _analysis_stage_condition(
+    parser_types: list[str],
+    stage: ReviewStage,
+) -> tuple[str, list[str]]:
+    conditions: list[str] = []
+    params: list[str] = []
+    stages = (stage,) if stage != "all" else ("waiting_analysis", "analyzed")
+    for parser_type in parser_types:
+        stage_conditions = [
+            _review_stage_condition(parser_type, current_stage)
+            for current_stage in stages
+        ]
+        conditions.append(
+            "(projection.parser_type=%s AND ("
+            + " OR ".join(stage_conditions)
+            + "))"
+        )
+        params.append(parser_type)
+    return "(" + " OR ".join(conditions) + ")", params
+
+
+def _analysis_task_where(
+    context: dict,
+    data: AnalysisTaskSearch,
+    *,
+    review_stage: ReviewStage | None = None,
+) -> tuple[str, list]:
+    parser_types = list(dict.fromkeys(data.parser_types))
+    type_placeholders = ",".join(["%s"] * len(parser_types))
+    scope_where, scope_params = _scope_where(context, "all")
+    where_parts = [
+        f"projection.parser_type IN ({type_placeholders})",
+        scope_where,
+    ]
+    params: list = [*parser_types, *scope_params]
+    stage_sql, stage_params = _analysis_stage_condition(
+        parser_types,
+        review_stage if review_stage is not None else data.review_stage,
+    )
+    where_parts.append(stage_sql)
+    params.extend(stage_params)
+    community_condition, community_params = _multi_filter_condition(
+        "community", data.communities
+    )
+    inspector_condition, inspector_params = _multi_filter_condition(
+        "inspector", data.inspectors
+    )
+    where_parts.extend([community_condition, inspector_condition])
+    params.extend(community_params)
+    params.extend(inspector_params)
+    if data.keyword.strip():
+        where_parts.append("projection.search_text LIKE %s")
+        params.append(f"%{data.keyword.strip()}%")
+    if data.watch_categories:
+        if not settings.REGISTRY_FEATURE_ENABLED:
+            where_parts.append("1=0")
+        else:
+            placeholders = ",".join(["%s"] * len(data.watch_categories))
+            registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+            where_parts.append(
+                f"EXISTS (SELECT 1 FROM `{registry}`.online_task_watch_snapshots watch_snapshot "
+                f"JOIN `{registry}`.watch_assignments watch_assignment "
+                "ON watch_assignment.id=watch_snapshot.assignment_id "
+                "WHERE watch_snapshot.parser_type=projection.parser_type "
+                "AND watch_snapshot.row_key=projection.row_key "
+                f"AND watch_assignment.category_id IN ({placeholders}))"
+            )
+            params.extend(data.watch_categories)
+    return " AND ".join(where_parts), params
+
+
+def _analysis_order(data: AnalysisTaskSearch) -> str:
+    parser_types = list(dict.fromkeys(data.parser_types))
+    analyzed: list[str] = []
+    waiting: list[str] = []
+    for parser_type in parser_types:
+        analyzed.append(
+            f"(projection.parser_type='{parser_type}' AND "
+            f"{_review_stage_condition(parser_type, 'analyzed')})"
+        )
+        waiting.append(
+            f"(projection.parser_type='{parser_type}' AND "
+            f"{_review_stage_condition(parser_type, 'waiting_analysis')})"
+        )
+    stage_order = (
+        "CASE WHEN " + " OR ".join(analyzed) + " THEN 0 "
+        "WHEN " + " OR ".join(waiting) + " THEN 1 ELSE 2 END"
+    )
+    if data.sort == "updated_asc":
+        return f"{stage_order}, projection.updated_at ASC, projection.row_key"
+    if data.sort == "updated_desc":
+        return f"{stage_order}, projection.updated_at DESC, projection.row_key"
+    return f"{stage_order}, projection.updated_at DESC, projection.row_key"
+
+
+async def _analysis_filter_options(
+    cur,
+    context: dict,
+    user: dict,
+    data: AnalysisTaskSearch,
+) -> dict:
+    option_data = data.model_copy(update={
+        "communities": [],
+    })
+    base_where, base_params = _analysis_task_where(
+        context,
+        option_data,
+        review_stage=data.review_stage,
+    )
+    community_condition, community_params = _multi_filter_condition(
+        "community", data.communities
+    )
+    inspector_where = f"{base_where} AND {community_condition}"
+    inspector_params = [*base_params, *community_params]
+    result = {"communities": [], "inspectors": [], "watch_categories": []}
+    for column, key, empty_label, option_where, option_params in (
+        ("community", "communities", "社区未填写", base_where, base_params),
+        ("inspector", "inspectors", "未分配核查人", inspector_where, inspector_params),
+    ):
+        await cur.execute(
+            f"""
+            SELECT projection.{column}, COUNT(*)
+            FROM _online_source_projection AS projection
+            WHERE {option_where}
+            GROUP BY projection.{column}
+            ORDER BY CASE WHEN TRIM(COALESCE(projection.{column}, ''))='' THEN 1 ELSE 0 END,
+                     projection.{column}
+            """,
+            option_params,
+        )
+        for value, count in await cur.fetchall():
+            normalized = str(value or "").strip()
+            result[key].append({
+                "value": normalized or EMPTY_FILTER_VALUE,
+                "label": normalized or empty_label,
+                "count": int(count or 0),
+            })
+    if settings.REGISTRY_FEATURE_ENABLED:
+        registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+        await cur.execute(
+            f"""
+            SELECT category.id, category.name, category.color, category.alert_level,
+                   COUNT(DISTINCT projection.row_key)
+            FROM _online_source_projection projection
+            JOIN `{registry}`.online_task_watch_snapshots snapshot
+              ON snapshot.parser_type=projection.parser_type
+             AND snapshot.row_key=projection.row_key
+            JOIN `{registry}`.watch_assignments assignment
+              ON assignment.id=snapshot.assignment_id
+            JOIN `{registry}`.watch_categories category
+              ON category.id=assignment.category_id
+            WHERE {base_where}
+            GROUP BY category.id, category.name, category.color, category.alert_level
+            ORDER BY category.sort_order, category.id
+            """,
+            base_params,
+        )
+        result["watch_categories"] = [
+            {"value": int(row[0]), "label": str(row[1]), "color": str(row[2]),
+             "alert_level": str(row[3]), "count": int(row[4] or 0)}
+            for row in await cur.fetchall()
+        ]
+    assignment_context = await inspector_option_context(
+        cur,
+        _task_capability_user(user),
+        assignment_only=True,
+    )
+    result["assignment"] = {
+        "enabled": False,
+        "community_aliases": assignment_context["community_aliases"],
+        "inspectors_by_community": assignment_context["inspectors_by_community"],
+    }
+    return result
+
+
+async def _list_analysis_tasks_data(
+    data: AnalysisTaskSearch,
+    user: dict,
+    conn,
+) -> dict:
+    parser_types = list(dict.fromkeys(data.parser_types))
+    if not parser_types or any(parser_type not in TASK_WORKFLOWS for parser_type in parser_types):
+        raise HTTPException(400, "存在尚未接入研判工作台的业务表")
+    context = await _flow_context(conn, user)
+    where_sql, query_params = _analysis_task_where(context, data)
+    base_data = data.model_copy(update={"review_stage": "all"})
+    base_where, base_params = _analysis_task_where(
+        context,
+        base_data,
+        review_stage="all",
+    )
+    async with conn.cursor() as cur:
+        ready_values = []
+        for parser_type in parser_types:
+            ready_values.append(await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type)))
+        if not all(ready_values):
+            return {
+                "data": [], "total": 0, "page": data.page, "page_size": data.page_size,
+                "source_ready": False, "message": "部分业务表来源尚未建立，请等待一次正常同步",
+                "facets": _empty_facets(), "priority_labels": PRIORITY_LABELS,
+                "filters": {"parser_types": parser_types, "scope": data.scope,
+                    "review_stage": data.review_stage, "communities": data.communities,
+                    "inspectors": data.inspectors, "watch_categories": data.watch_categories,
+                    "sort": data.sort, "keyword_present": bool(data.keyword.strip())},
+            }
+        await cur.execute(
+            f"SELECT COUNT(*) FROM _online_source_projection AS projection WHERE {where_sql}",
+            query_params,
+        )
+        total = int((await cur.fetchone())[0] or 0)
+        facets = _empty_facets()
+        await cur.execute(
+            f"SELECT COUNT(*) FROM _online_source_projection AS projection WHERE {base_where}",
+            base_params,
+        )
+        facets["total"] = int((await cur.fetchone())[0] or 0)
+        for stage, key in (("waiting_analysis", "waiting_analysis"), ("analyzed", "analyzed")):
+            stage_where, stage_params = _analysis_task_where(context, base_data, review_stage=stage)
+            await cur.execute(
+                f"SELECT COUNT(*) FROM _online_source_projection AS projection WHERE {stage_where}",
+                stage_params,
+            )
+            facets["priority_counts"][key] = int((await cur.fetchone())[0] or 0)
+        await cur.execute(
+            f"""
+            SELECT projection.task_state, COUNT(*)
+            FROM _online_source_projection AS projection
+            WHERE {base_where}
+            GROUP BY projection.task_state
+            """,
+            base_params,
+        )
+        for state, count in await cur.fetchall():
+            if str(state) in facets["status_counts"]:
+                facets["status_counts"][str(state)] = int(count or 0)
+        await cur.execute(
+            f"""
+            SELECT projection.parser_type, projection.row_key, projection.values_json,
+                   projection.source_count, projection.conflict,
+                   projection.pending_state, projection.task_state
+            FROM _online_source_projection AS projection
+            WHERE {where_sql}
+            ORDER BY {_analysis_order(data)}
+            LIMIT %s OFFSET %s
+            """,
+            [*query_params, data.page_size, (data.page - 1) * data.page_size],
+        )
+        rows = await cur.fetchall()
+        watch_by_parser: dict[str, dict[str, dict]] = {}
+        for parser_type in parser_types:
+            keys = [str(row[1]) for row in rows if str(row[0]) == parser_type]
+            watch_by_parser[parser_type] = (
+                await task_watch_payload(cur, parser_type, keys)
+                if settings.REGISTRY_FEATURE_ENABLED and keys else {}
+            )
+    photo_fetched: dict[str, set[str]] = {}
+    for parser_type in parser_types:
+        keys = [str(row[1]) for row in rows if str(row[0]) == parser_type]
+        photo_fetched[parser_type] = await _task_photo_fetched_rows(user, parser_type, keys)
+    return {
+        "data": [
+            _task_record(
+                str(row[0]), str(row[1]), json_value(row[2], {}), int(row[3] or 0),
+                bool(row[4]), bool(str(row[5] or "")), str(row[6] or ""),
+                watch_by_parser.get(str(row[0]), {}).get(str(row[1])),
+                str(row[1]) in photo_fetched.get(str(row[0]), set()),
+                str(row[5] or ""),
+            )
+            for row in rows
+        ],
+        "total": total,
+        "page": data.page,
+        "page_size": data.page_size,
+        "source_ready": True,
+        "message": "",
+        "facets": facets,
+        "priority_labels": PRIORITY_LABELS,
+        "filters": {"parser_types": parser_types, "scope": data.scope,
+            "review_stage": data.review_stage, "communities": data.communities,
+            "inspectors": data.inspectors, "watch_categories": data.watch_categories,
+            "sort": data.sort, "keyword_present": bool(data.keyword.strip())},
+    }
+
+
 async def _flow_context(conn, user: dict) -> dict:
     if is_flow_task_elevated(user):
         # online.task.manage 是流口任务工作台内的全所管理能力。
@@ -986,6 +1283,7 @@ def _task_record(
     normalized = {key: str(value or "") for key, value in values.items()}
     watch = watch or {}
     return {
+        "task_key": f"{parser_type}:{row_key}",
         "row_key": str(row_key),
         "parser_type": parser_type,
         "summary": workflow.summary(normalized),
@@ -1392,6 +1690,53 @@ async def _list_mobile_tasks_data(
             "keyword_present": bool(data.keyword.strip()),
         },
     }
+
+
+@router.get("/analysis/filter-options")
+async def get_mobile_task_analysis_filter_options(
+    parser_type: list[str] = Query(default=[]),
+    community: list[str] = Query(default=[]),
+    review_stage: ReviewStage = Query("all"),
+    user: dict = Depends(require_permission(ONLINE_TASK_MANAGE)),
+    conn=Depends(get_db),
+):
+    parser_types = list(dict.fromkeys(parser_type or list(MOBILE_TASK_TYPES)))
+    if any(value not in TASK_WORKFLOWS for value in parser_types):
+        raise HTTPException(400, "存在尚未接入研判工作台的业务表")
+    context = await _flow_context(conn, user)
+    data = AnalysisTaskSearch(
+        parser_types=parser_types,
+        review_stage=review_stage,
+        communities=community,
+    )
+    async with conn.cursor() as cur:
+        ready = all([
+            await _source_ready(cur, await _enabled_spreadsheets(cur, value))
+            for value in parser_types
+        ])
+        if not ready:
+            return {
+                "source_ready": False,
+                "communities": [],
+                "inspectors": [],
+                "watch_categories": [],
+                "assignment": {
+                    "enabled": False,
+                    "community_aliases": {},
+                    "inspectors_by_community": {},
+                },
+            }
+        options = await _analysis_filter_options(cur, context, user, data)
+    return {"source_ready": True, **options}
+
+
+@router.post("/analysis/search")
+async def search_mobile_task_analysis(
+    data: AnalysisTaskSearch,
+    user: dict = Depends(require_permission(ONLINE_TASK_MANAGE)),
+    conn=Depends(get_db),
+):
+    return await _list_analysis_tasks_data(data, user, conn)
 
 
 @router.get("/{parser_type}/filter-options")

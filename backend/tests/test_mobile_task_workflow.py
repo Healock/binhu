@@ -9,6 +9,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from fastapi import HTTPException
 
 from routers.mobile_tasks import (
+    AnalysisTaskSearch,
     MAX_BULK_ASSIGNMENT_TASKS,
     MAX_BULK_ASSIGNMENT_CHUNK,
     BulkAssignmentRequest,
@@ -16,6 +17,8 @@ from routers.mobile_tasks import (
     InlineEditorRequest,
     TaskSearch,
     _address_order,
+    _analysis_stage_condition,
+    _analysis_task_where,
     _balanced_assignment_plan,
     _bulk_assignment_result,
     _multi_filter_condition,
@@ -57,6 +60,28 @@ class FilterOptionsCursor:
 
 
 class MobileTaskWorkflowTests(unittest.TestCase):
+    def test_analysis_search_only_counts_review_stages_across_businesses(self):
+        data = AnalysisTaskSearch(
+            parser_types=["全链条", "疑似未注销模型三"],
+            review_stage="all",
+            communities=["长板"],
+        )
+        where, params = _analysis_task_where(
+            {"admin_mode": True, "community_values": None},
+            data,
+        )
+
+        self.assertIn("projection.parser_type IN (%s,%s)", where)
+        self.assertIn("projection.community IN (%s)", where)
+        self.assertIn("LIKE '%%无法核实%%'", where)
+        self.assertEqual(params[-1], "长板")
+        stage_where, stage_params = _analysis_stage_condition(
+            ["全链条"],
+            "waiting_analysis",
+        )
+        self.assertIn("projection.parser_type=%s", stage_where)
+        self.assertEqual(stage_params, ["全链条"])
+
     def test_inline_editor_request_limits_current_page(self):
         request = InlineEditorRequest(row_keys=["row-1", "row-2"])
         self.assertEqual(request.row_keys, ["row-1", "row-2"])

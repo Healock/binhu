@@ -944,6 +944,7 @@ export interface MobileTaskSummaryFields {
 }
 
 export interface MobileTaskItem {
+  task_key: string
   row_key: string
   parser_type: string
   summary: MobileTaskSummaryFields
@@ -1395,6 +1396,19 @@ export interface MobileTaskSearchParams {
   page_size?: number
 }
 
+export interface MobileTaskAnalysisSearchParams {
+  parser_types: string[]
+  scope: MobileTaskScope
+  review_stage?: MobileTaskReviewStage
+  communities?: string[]
+  inspectors?: string[]
+  watch_categories?: number[]
+  sort?: MobileTaskSort
+  keyword?: string
+  page?: number
+  page_size?: number
+}
+
 function mobileTaskSearchPayload(params: MobileTaskSearchParams) {
   return {
     scope: params.scope,
@@ -1445,6 +1459,25 @@ export async function listMobileTasks(
   return data
 }
 
+export async function listMobileTaskAnalysis(
+  params: MobileTaskAnalysisSearchParams,
+  options: { passive?: boolean } = {},
+): Promise<Awaited<ReturnType<typeof listMobileTasks>>> {
+  const { data } = await api.post('/mobile-tasks/analysis/search', {
+    parser_types: params.parser_types,
+    scope: params.scope,
+    review_stage: params.review_stage || 'all',
+    communities: params.communities || [],
+    inspectors: params.inspectors || [],
+    watch_categories: params.watch_categories || [],
+    sort: params.sort || 'priority',
+    keyword: params.keyword || '',
+    page: params.page || 1,
+    page_size: params.page_size || 20,
+  }, options.passive ? passiveRequest : activeRequest)
+  return data
+}
+
 export async function selectMobileTasksForAssignment(
   params: MobileTaskSearchParams,
 ): Promise<{ row_keys: string[]; total: number; community: string }> {
@@ -1488,6 +1521,22 @@ export async function getMobileTaskFilterOptions(
     { ...(options.passive ? {} : activeRequest), params },
   )
   return data
+}
+
+export async function getMobileTaskAnalysisFilterOptions(
+  parserTypes: string[],
+  communities: string[] = [],
+  reviewStage: MobileTaskReviewStage = 'all',
+  options: { passive?: boolean } = {},
+): ReturnType<typeof getMobileTaskFilterOptions> {
+  const params = new URLSearchParams()
+  params.set('review_stage', reviewStage)
+  parserTypes.forEach(value => params.append('parser_type', value))
+  communities.forEach(value => params.append('community', value))
+  return api.get('/mobile-tasks/analysis/filter-options', {
+    ...(options.passive ? {} : activeRequest),
+    params,
+  }).then(response => response.data)
 }
 
 export async function getMobileTaskAnalysisDetail(
