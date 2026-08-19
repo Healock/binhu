@@ -14,9 +14,14 @@ from routers.code_summaries import (
     _commit_source,
     _insert_failed_run,
     _json_value,
+    _total,
     router,
 )
-from services.code_summary import aggregate_rows, classify_terminal
+from services.code_summary import (
+    aggregate_rows,
+    classify_terminal,
+    estimated_registration_count,
+)
 from services.code_summary import CodeSummaryError
 
 
@@ -109,7 +114,7 @@ def test_peace_summary_deduplicates_by_identity_using_latest_record():
     assert day["patrol_scan_count"] == 0
     assert day["social_scan_count"] == 1
     assert day["instruction_count"] == 1
-    assert day["new_registration_count"] == 1
+    assert day["new_registration_count"] == 0
     assert day["duplicate_removed_count"] == 1
 
 
@@ -123,7 +128,7 @@ def test_latest_record_uses_numeric_id_as_final_tie_breaker():
     )
     day = result["rows"][0]
     assert day["household_hall_scan_count"] == 1
-    assert day["new_registration_count"] == 1
+    assert day["new_registration_count"] == 0
 
 
 def test_source_hash_changes_even_when_aggregate_metrics_are_equal():
@@ -141,6 +146,41 @@ def test_source_hash_changes_even_when_aggregate_metrics_are_equal():
     )
     assert first["rows"] == second["rows"]
     assert first["source_hash"] != second["source_hash"]
+
+
+def test_estimated_registration_is_stable_and_within_eight_to_twelve_percent():
+    first_count, first_ratio = estimated_registration_count("2026-08-19", 1000)
+    second_count, second_ratio = estimated_registration_count("2026-08-19", 1000)
+    assert (first_count, first_ratio) == (second_count, second_ratio)
+    assert 80 <= first_count <= 120
+    assert 0.08 <= first_ratio <= 0.12
+
+
+def test_estimated_registration_handles_zero_and_never_exceeds_instructions():
+    assert estimated_registration_count("2026-08-19", 0) == (0, 0.0)
+    count, ratio = estimated_registration_count("2026-08-19", 1)
+    assert count in {0, 1}
+    assert 0.08 <= ratio <= 0.12
+
+
+def test_peace_total_marks_registration_as_estimated_and_recalculates_ratio():
+    total = _total("peace", [
+        {
+            "raw_count": 100,
+            "total_people": 80,
+            "instruction_count": 20,
+            "new_registration_count": 2,
+        },
+        {
+            "raw_count": 200,
+            "total_people": 120,
+            "instruction_count": 30,
+            "new_registration_count": 3,
+        },
+    ])
+    assert total["new_registration_count"] == 5
+    assert total["new_registration_estimate_ratio"] == 0.1
+    assert total["new_registration_estimated"] is True
 
 
 def test_manager_summary_counts_unique_accounts_and_instruction_states():

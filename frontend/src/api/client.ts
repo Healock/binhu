@@ -2297,6 +2297,8 @@ export interface CodeSummaryRow {
   instruction_count: number
   effective_warning_rate: number
   new_registration_count?: number
+  new_registration_estimate_ratio?: number
+  new_registration_estimated?: boolean
   effective_scan_rate?: number
   excluded_identity_count: number
   duplicate_removed_count: number
