@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm,
+  Alert, Button, Descriptions, Drawer, Form, Image, Input, Modal, Popconfirm,
   Select, Space, Spin, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import { FileImageOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -111,11 +111,43 @@ export default function RegistryManagement() {
   const [detail, setDetail] = useState<any>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [certificateImageLoading, setCertificateImageLoading] = useState<number | null>(null)
+  const [certificatePreview, setCertificatePreview] = useState<{ url: string; title: string } | null>(null)
   const listRequestId = useRef(0)
   const certificateRunRef = useRef<RegistryCertificateSourceRun | null>(null)
   const [form] = Form.useForm()
   const canManage = user?.permissions?.includes('registry.property.manage')
   const canReview = user?.permissions?.includes('registry.import.manage')
+
+  useEffect(() => () => {
+    if (certificatePreview?.url) URL.revokeObjectURL(certificatePreview.url)
+  }, [certificatePreview])
+
+  const openCertificateImage = async (certificate: any) => {
+    if (!detail?.id || !certificate?.id) return
+    setCertificateImageLoading(certificate.id)
+    try {
+      const blob = await registryApi.certificateImage(detail.id, certificate.id)
+      if (!blob.type.startsWith('image/')) throw new Error('invalid image')
+      setCertificatePreview({
+        url: URL.createObjectURL(blob),
+        title: `责任告知书 · ${detail.normalized_address || detail.natural_address || ''}`,
+      })
+    } catch (reason: any) {
+      let detailMessage = reason?.response?.data?.detail
+      if (reason?.response?.data instanceof Blob) {
+        try {
+          const payload = JSON.parse(await reason.response.data.text())
+          detailMessage = payload?.detail
+        } catch {
+          detailMessage = ''
+        }
+      }
+      message.error(detailMessage || '责任告知书图片读取失败')
+    } finally {
+      setCertificateImageLoading(null)
+    }
+  }
 
   const load = async () => {
     const requestId = ++listRequestId.current
@@ -858,11 +890,34 @@ export default function RegistryManagement() {
             { title: '签署类型', dataIndex: 'sign_type', width: 130 },
             { title: '签署时间', dataIndex: 'sign_time', width: 180, render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
             { title: '最近读取', dataIndex: 'source_last_seen_at', width: 180, render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
-            { title: '文件', dataIndex: 'document_ref', ellipsis: true },
+            {
+              title: '告知书图片',
+              dataIndex: 'has_image',
+              width: 170,
+              render: (hasImage, certificate: any) => {
+                if (!hasImage) return <span className="text-[var(--app-text-secondary)]">来源未提供图片</span>
+                if (!canReview) return <span className="text-[var(--app-text-secondary)]">需档案导入权限</span>
+                return <Button type="link" icon={<FileImageOutlined />} loading={certificateImageLoading === certificate.id} onClick={() => void openCertificateImage(certificate)}>查看责任告知书</Button>
+              },
+            },
           ]} /></Panel>}
           {detail.versions && <Panel title="地址版本历史"><AppTable rowKey="version" pagination={false} dataSource={detail.versions} columns={[{ title: '版本', dataIndex: 'version', width: 80 }, { title: '标准化地址', dataIndex: 'normalized_address' }, { title: '变更原因', dataIndex: 'reason' }, { title: '时间', dataIndex: 'created_at', width: 180, render: value => formatUTCTime(value, systemTimezone) }]} /></Panel>}
         </div>}
       </Drawer>
+      <Modal
+        open={Boolean(certificatePreview)}
+        title={certificatePreview?.title || '责任告知书'}
+        width={900}
+        footer={<Button type="primary" onClick={() => setCertificatePreview(null)}>关闭</Button>}
+        onCancel={() => setCertificatePreview(null)}
+        destroyOnClose
+      >
+        {certificatePreview && (
+          <div className="flex justify-center overflow-auto bg-[var(--app-surface-muted)] p-3">
+            <Image src={certificatePreview.url} preview={false} alt="房东责任告知书" className="max-h-[70vh] object-contain" />
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

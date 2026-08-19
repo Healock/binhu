@@ -91,3 +91,22 @@ test('房屋档案突出显示责任书状态和责任关系', () => {
   assert.match(pageSource, /责任身份/)
   assert.match(pageSource, /最近来源读取/)
 })
+
+test('房屋详情按档案导入权限提供责任告知书图片预览', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /registry\/properties\/\$\{propertyId\}\/certificates\/\$\{certificateId\}\/image/)
+  assert.match(apiSource, /responseType: 'blob'/)
+  assert.match(pageSource, /查看责任告知书/)
+  assert.match(pageSource, /来源未提供图片/)
+  assert.match(pageSource, /certificateImageLoading/)
+  assert.match(pageSource, /URL\.createObjectURL\(blob\)/)
+  assert.match(pageSource, /Image src=\{certificatePreview\.url\}/)
+})
