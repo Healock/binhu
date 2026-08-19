@@ -33,8 +33,12 @@ export default function VisitSourcePanel() {
       .filter(item => item.status === 'pending_confirmation')
     if (recoverable.length) {
       setPreview(currentPreview => currentPreview.length ? currentPreview : recoverable)
+      const first = recoverable[0]
+      if (first.start_date && first.end_date) {
+        setDates([first.start_date, first.end_date])
+      }
     }
-    if (!businessDate) setDates([value.business_date, value.business_date])
+    else if (!businessDate) setDates([value.business_date, value.business_date])
   }
 
   useEffect(() => {
