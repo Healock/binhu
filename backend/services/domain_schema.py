@@ -25,6 +25,8 @@ async def _ensure_nullable_column(cur, table: str, column: str, definition: str)
 
 
 async def ensure_registry_schema(cur) -> None:
+    from services.watch_import import CORE_WATCH_CATEGORIES
+
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_properties (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -516,10 +518,15 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_watch_category_parent (parent_id, is_active)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    for code, name in [("重点人员", "重点人员"), ("五失人员", "五失人员"), ("通勤人员", "通勤人员")]:
+    for code, name, color, alert_level, sort_order in CORE_WATCH_CATEGORIES:
         await cur.execute(
-            "INSERT IGNORE INTO watch_categories (code, name) VALUES (%s, %s)",
-            (code, name),
+            "INSERT IGNORE INTO watch_categories "
+            "(code, name, color, alert_level, sort_order) VALUES (%s, %s, %s, %s, %s)",
+            (code, name, color, alert_level, sort_order),
+        )
+        await cur.execute(
+            "UPDATE watch_categories SET name=%s, sort_order=%s WHERE code=%s",
+            (name, sort_order, code),
         )
     await _ensure_column(
         cur,
