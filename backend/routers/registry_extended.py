@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from openpyxl import load_workbook
 from pydantic import BaseModel, Field
 
@@ -40,7 +41,7 @@ from services.registry_import import (
     normalize_community,
     normalize_text,
 )
-from services.registry_certificate_source import fetch_certificate_rows
+from services.registry_certificate_source import fetch_certificate_image, fetch_certificate_rows
 from services.registry_certificate_apply import apply_certificate_batch
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_certificate_jobs import (
@@ -634,7 +635,7 @@ async def get_property_detail(
             "actual_renter_name": item[7] if reveal_sensitive else (str(item[7] or "")[:1] + "***" if item[7] else ""),
             "actual_renter_identity_number": item[8] if reveal_sensitive else "",
             "signed_status": item[9], "sign_type": item[10], "sign_time": _iso(item[11]),
-            "document_ref": item[12], "created_at": _iso(item[13]),
+            "has_image": bool(str(item[12] or "").strip()), "created_at": _iso(item[13]),
             "source_last_seen_at": _iso(item[14]), "updated_at": _iso(item[15]),
         }
         for item in certificates
@@ -700,6 +701,55 @@ async def get_property_detail(
         "certificate_summary": certificate_summary,
         "certificates": certificate_items,
     }
+
+
+@router.get("/properties/{property_id}/certificates/{certificate_id}/image")
+async def get_property_certificate_image(
+    property_id: int,
+    certificate_id: int,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    async with conn.cursor() as cur:
+        await _property_scope(cur, property_id, user, REGISTRY_IMPORT_MANAGE)
+        await cur.execute(
+            "SELECT document_ref FROM registry_property_certificates "
+            "WHERE id=%s AND property_id=%s",
+            (certificate_id, property_id),
+        )
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "房东责任告知书不存在")
+    if not str(row[0] or "").strip():
+        raise HTTPException(404, "来源没有提供责任告知书图片")
+    try:
+        content, media_type, extension = await fetch_certificate_image(row[0])
+    except VisitSourceError as exc:
+        status_code = 404 if exc.code == "image_not_found" else 503 if exc.code == "image_not_configured" else 502
+        raise HTTPException(status_code, exc.message) from exc
+    await record_admin_audit(
+        user,
+        "registry.certificate_image.view",
+        target_type="registry_property_certificate",
+        target_name=str(certificate_id),
+        detail={
+            "property_id": property_id,
+            "certificate_id": certificate_id,
+            "media_type": media_type,
+            "size": len(content),
+        },
+        **request_audit_fields(request),
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="certificate-{certificate_id}.{extension}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.put("/properties/{property_id}")

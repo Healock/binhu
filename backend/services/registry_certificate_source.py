@@ -8,9 +8,11 @@ owned by the configured police station.
 from __future__ import annotations
 
 import json
+import re
 from hashlib import sha256
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -20,10 +22,80 @@ from services.visit_source import VisitSourceError, _business_payload, _items, _
 
 CERTIFICATE_ENDPOINT = "/api/address/queryHouseCertificate"
 CERTIFICATE_PAGE_SIZE = 200
+CERTIFICATE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+CERTIFICATE_IMAGE_REF = re.compile(
+    r"^\d{4}-\d{2}-\d{2}/[^/\\?#:]{1,180}\.(?:jpe?g|png)$",
+    re.IGNORECASE,
+)
 
 
 def _stable_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\u3000", " ").split())
+
+
+def normalize_certificate_image_ref(value: Any) -> str:
+    reference = str(value or "").strip()
+    if not CERTIFICATE_IMAGE_REF.fullmatch(reference):
+        raise VisitSourceError("invalid_image_reference", "告知书图片引用格式无效")
+    return reference
+
+
+def _image_type(content: bytes) -> tuple[str, str] | None:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", "jpg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", "png"
+    return None
+
+
+async def fetch_certificate_image(value: Any) -> tuple[bytes, str, str]:
+    reference = normalize_certificate_image_ref(value)
+    if not settings.CERTIFICATE_IMAGE_BASE_URL:
+        raise VisitSourceError("image_not_configured", "告知书图片来源尚未配置")
+    url = (
+        settings.CERTIFICATE_IMAGE_BASE_URL.rstrip("/")
+        + "/"
+        + quote(reference, safe="/-_.~")
+    )
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.VISIT_SOURCE_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            headers={"Accept": "image/jpeg,image/png"},
+        ) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code == 404:
+                    raise VisitSourceError("image_not_found", "来源平台中没有这张告知书图片")
+                if 300 <= response.status_code < 400:
+                    raise VisitSourceError("image_redirected", "告知书图片来源返回了异常跳转")
+                response.raise_for_status()
+                try:
+                    content_length = int(response.headers.get("content-length", "0") or 0)
+                except (TypeError, ValueError):
+                    content_length = 0
+                if content_length > CERTIFICATE_IMAGE_MAX_BYTES:
+                    raise VisitSourceError("image_too_large", "告知书图片超过大小限制")
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > CERTIFICATE_IMAGE_MAX_BYTES:
+                        raise VisitSourceError("image_too_large", "告知书图片超过大小限制")
+    except VisitSourceError:
+        raise
+    except httpx.TimeoutException as exc:
+        raise VisitSourceError("image_timeout", "告知书图片读取超时") from exc
+    except httpx.HTTPStatusError as exc:
+        raise VisitSourceError(
+            "image_http_error",
+            f"告知书图片来源返回 HTTP {exc.response.status_code}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise VisitSourceError("image_request_error", "告知书图片来源暂时无法访问") from exc
+    detected = _image_type(bytes(content))
+    if not detected:
+        raise VisitSourceError("invalid_image", "告知书图片内容格式无效")
+    media_type, extension = detected
+    return bytes(content), media_type, extension
 
 
 def certificate_source_ref(row: dict[str, Any]) -> str:

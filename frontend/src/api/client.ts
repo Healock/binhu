@@ -3150,6 +3150,12 @@ export const registryApi = {
   async property(id: number) {
     return (await api.get(`/registry/properties/${id}`, activeRequest)).data
   },
+  async certificateImage(propertyId: number, certificateId: number) {
+    return (await api.get(
+      `/registry/properties/${propertyId}/certificates/${certificateId}/image`,
+      { ...activeRequest, responseType: 'blob' },
+    )).data as Blob
+  },
   async createProperty(payload: Record<string, unknown>) {
     return (await api.post('/registry/properties', payload)).data
   },

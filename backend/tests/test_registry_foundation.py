@@ -10,6 +10,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import settings
 from routers import registry as registry_router
+from routers.registry_extended import router as registry_extended_router
 from routers.registry import PropertySearch, _property_search_result
 from routers.registry_extended import _household_import_community
 from services.permissions import (
@@ -264,3 +265,28 @@ def test_new_permissions_are_catalogued_and_defaulted():
     assert REGISTRY_PROPERTY_VIEW in DEFAULT_PERMISSION_GROUPS["internal_business"]["permissions"]
     assert WORKFLOW_TICKET_CREATE in DEFAULT_PERMISSION_GROUPS["flow_post"]["permissions"]
     assert settings.registry_hmac_key
+
+
+def test_certificate_image_route_requires_import_permission():
+    route = next(
+        item for item in registry_extended_router.routes
+        if item.path == "/api/registry/properties/{property_id}/certificates/{certificate_id}/image"
+    )
+    dependency_names = {
+        dependency.call.__name__
+        for dependency in route.dependant.dependencies
+    }
+    assert "require_registry_import_manage" in dependency_names
+
+
+def test_property_detail_keeps_basic_view_permission():
+    route = next(
+        item for item in registry_extended_router.routes
+        if item.path == "/api/registry/properties/{property_id}"
+        and "GET" in item.methods
+    )
+    dependency_names = {
+        dependency.call.__name__
+        for dependency in route.dependant.dependencies
+    }
+    assert "require_registry_property_view" in dependency_names

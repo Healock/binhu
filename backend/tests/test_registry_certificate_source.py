@@ -8,11 +8,15 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.registry_certificate_source import (
+    CERTIFICATE_IMAGE_MAX_BYTES,
     CERTIFICATE_ENDPOINT,
+    fetch_certificate_image,
     fetch_certificate_rows,
     iter_certificate_pages,
+    normalize_certificate_image_ref,
     normalize_certificate_page,
 )
+from services.visit_source import VisitSourceError
 
 
 class _Response:
@@ -51,6 +55,18 @@ class _Client:
 
 
 class RegistryCertificateSourceTests(unittest.IsolatedAsyncioTestCase):
+    def test_image_reference_is_restricted_to_source_relative_jpeg_or_png(self):
+        self.assertEqual(
+            normalize_certificate_image_ref("2026-08-19/signature_001.JPG"),
+            "2026-08-19/signature_001.JPG",
+        )
+        for value in (
+            "", "../secret.jpg", "https://example.invalid/a.jpg",
+            "2026/08/a.jpg", "2026-08-19/a.gif",
+        ):
+            with self.assertRaises(Exception):
+                normalize_certificate_image_ref(value)
+
     async def test_fetches_all_dates_and_rejects_other_police_stations(self):
         with (
             patch("services.registry_certificate_source.httpx.AsyncClient", _Client),
@@ -109,6 +125,104 @@ class RegistryCertificateSourceTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(1, len(rows))
         self.assertEqual(2, rejected)
+
+    async def test_fetches_image_with_bounded_relative_path_and_checks_magic(self):
+        class StreamResponse:
+            status_code = 200
+            headers = {"content-length": "8", "content-type": "image/jpeg"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"\xff\xd8\xff\xe0test"
+
+        class ImageClient:
+            requested_url = ""
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, method, url):
+                type(self).requested_url = f"{method} {url}"
+                return StreamResponse()
+
+        with (
+            patch("services.registry_certificate_source.httpx.AsyncClient", ImageClient),
+            patch(
+                "services.registry_certificate_source.settings.CERTIFICATE_IMAGE_BASE_URL",
+                "http://source.invalid/attachment/signatures",
+            ),
+        ):
+            content, media_type, extension = await fetch_certificate_image(
+                "2026-08-19/signature_001.JPG"
+            )
+        self.assertTrue(content.startswith(b"\xff\xd8\xff"))
+        self.assertEqual(media_type, "image/jpeg")
+        self.assertEqual(extension, "jpg")
+        self.assertEqual(
+            ImageClient.requested_url,
+            "GET http://source.invalid/attachment/signatures/2026-08-19/signature_001.JPG",
+        )
+
+    async def test_rejects_oversized_or_non_image_source_content(self):
+        class StreamResponse:
+            status_code = 200
+            headers = {"content-length": "0"}
+            content = b"not-an-image"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield self.content
+
+        class ImageClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, _url):
+                return StreamResponse()
+
+        with (
+            patch("services.registry_certificate_source.httpx.AsyncClient", ImageClient),
+            patch(
+                "services.registry_certificate_source.settings.CERTIFICATE_IMAGE_BASE_URL",
+                "http://source.invalid/attachment/signatures",
+            ),
+        ):
+            with self.assertRaisesRegex(VisitSourceError, "图片内容格式无效"):
+                await fetch_certificate_image("2026-08-19/signature_001.jpg")
+
+            StreamResponse.headers = {
+                "content-length": str(CERTIFICATE_IMAGE_MAX_BYTES + 1),
+            }
+            with self.assertRaisesRegex(VisitSourceError, "超过大小限制"):
+                await fetch_certificate_image("2026-08-19/signature_001.jpg")
 
 
 if __name__ == "__main__":

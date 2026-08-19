@@ -1195,6 +1195,8 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 
 户号表与房东责任告知书通过 `registry_source_batches`、`registry_source_records` 先预览后确认。户号表以 Unicode NFKC 和统一标点规则生成地址键，重复来源行及未标注住房类型进入 `registry_import_issues`；“借住/其他/其它”保留为正常住房类型。正式社区归属始终通过 `_communities` 与 `_community_aliases` 解析，因此芦荡等历史名称不在导入代码中硬编码。告知书从只读接口 `/api/address/queryHouseCertificate` 分页获取，只接受配置中的滨湖新城派出所记录；后台运行状态保存在 `registry_certificate_source_runs`，失败断点的临时页保存在 `registry_certificate_source_pages`，成功生成预览后立即清理临时页。重复、内容冲突及未匹配个人出租/单位出租房屋的数据进入问题核查，正常记录挂载到 `registry_property_certificates` 并在房屋详情展示。
 
+房屋详情中的责任告知书图片由后端代理读取，浏览器不接触旧平台图片主机、真实文件路径或认证信息。只有具备 `registry.import.manage` 的账号可以查看签名图片，且后端仍按房屋所属社区校验数据范围；图片引用只允许日期目录下的 JPG/PNG 相对路径，单张上限 10 MB，并按实际文件头确认格式。来源没有图片或图片服务未配置时只显示不可查看状态，不影响档案查询和责任书统计。
+
 ## v0.17.0 应用级维护模式
 
 维护状态继续保存在 `_system_config`，不新增业务表。公共接口 `GET /api/maintenance/status` 只返回是否维护、开始/结束时间、维护说明、服务器时间和系统时区，不返回账号、任务或数据库信息。
