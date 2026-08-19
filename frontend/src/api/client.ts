@@ -1483,6 +1483,28 @@ export async function selectMobileTasksForAssignment(
   return data
 }
 
+export interface MobileTaskAssignmentCandidate {
+  row_key: string
+  community: string
+  source: string
+  address: string
+}
+
+export async function getMobileTaskAssignmentWorkbench(
+  parserType: string,
+): Promise<{
+  data: MobileTaskAssignmentCandidate[]
+  total: number
+  communities: MobileTaskFilterOption[]
+  inspectors_by_community: Record<string, string[]>
+}> {
+  const { data } = await api.get(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/assignment-workbench`,
+    activeRequest,
+  )
+  return data
+}
+
 export async function getMobileTaskFilterOptions(
   parserType: string,
   scope: MobileTaskScope,

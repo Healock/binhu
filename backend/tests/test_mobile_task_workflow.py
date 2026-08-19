@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,6 +18,7 @@ from routers.mobile_tasks import (
     InlineEditorRequest,
     TaskSearch,
     _address_order,
+    _assignment_candidate,
     _analysis_stage_condition,
     _analysis_task_where,
     _balanced_assignment_plan,
@@ -441,6 +443,47 @@ class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    def test_assignment_candidate_only_exposes_source_and_address(self):
+        candidate = _assignment_candidate(
+            "全链条",
+            "row-key",
+            "长板社区",
+            {
+                "来源": "公安下发",
+                "地址": "测试路1号",
+                "现住址": "测试路2号",
+                "姓名": "测试人员",
+                "身份证号": "110101199001010015",
+                "电话号码": "13800000000",
+            },
+        )
+        self.assertEqual(
+            candidate,
+            {
+                "row_key": "row-key",
+                "community": "长板社区",
+                "source": "公安下发",
+                "address": "测试路2号",
+            },
+        )
+
+    def test_assignment_workbench_route_is_read_only_candidate_endpoint(self):
+        from routers.mobile_tasks import router
+
+        route = next(
+            item for item in router.routes
+            if item.path == "/api/mobile-tasks/{parser_type}/assignment-workbench"
+        )
+        self.assertEqual(route.methods, {"GET"})
+
+    def test_assignment_workbench_query_is_address_sorted_and_bounded(self):
+        from routers.mobile_tasks import get_mobile_task_assignment_workbench
+
+        source = inspect.getsource(get_mobile_task_assignment_workbench)
+        self.assertIn("ORDER BY {_address_order(parser_type)}", source)
+        self.assertIn("MAX_BULK_ASSIGNMENT_TASKS + 1", source)
+        self.assertEqual(MAX_BULK_ASSIGNMENT_TASKS, 2000)
+
     def test_bulk_assignment_requires_bounded_chunks(self):
         request = BulkAssignmentRequest(
             row_keys=[f"row-{index}" for index in range(MAX_BULK_ASSIGNMENT_CHUNK)],
