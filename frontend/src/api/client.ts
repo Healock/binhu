@@ -2300,6 +2300,7 @@ export interface CodeSummaryReport {
     excluded_count: number
     duplicate_count: number
     unclassified_count: number
+    invalid_time_count: number
     error_code: string | null
     error_message: string | null
     finished_at: string | null
@@ -2317,6 +2318,7 @@ export async function fetchCodeSummaries(startDate: string, endDate: string): Pr
     excluded_count?: number
     duplicate_count?: number
     unclassified_count?: number
+    invalid_time_count?: number
     error_code?: string
     error_message?: string
   }>
@@ -2393,7 +2395,10 @@ export async function previewVisitSource(payload: {
   start_date: string
   end_date: string
 }): Promise<{ data: VisitSourceRun[]; requires_confirmation: boolean }> {
-  const { data } = await api.post('/visits/sources/preview', payload, activeRequest)
+  const { data } = await api.post('/visits/sources/preview', payload, {
+    ...activeRequest,
+    timeout: 300000,
+  })
   return data
 }
 
