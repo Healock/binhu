@@ -22,7 +22,7 @@ import {
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import useMobileViewport from '../hooks/useMobileViewport'
 
-const LAYOUT_KEY = 'binhu-rete-task-graph-layout-v2:'
+const LAYOUT_KEY = 'binhu-rete-task-graph-layout-v4:'
 const PAGE_SIZE = 20
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -98,11 +98,18 @@ async function layoutIndependentNodes(
   contextKey: string,
   saved: Record<string, { x: number; y: number }>,
 ) {
+  const waitForNodeViews = async () => {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (independent.every(task => area.nodeViews.has(task.id))) return
+      await new Promise(resolve => window.setTimeout(resolve, 40))
+    }
+  }
   const connected = new Set(graphEdges.flatMap(edge => [edge.source, edge.target]))
   const independent = graphNodes
     .filter(task => !connected.has(task.id))
     .sort((left, right) => left.category.localeCompare(right.category, 'zh-CN') || left.title.localeCompare(right.title, 'zh-CN'))
-  const columns = 4
+  await waitForNodeViews()
+  const columns = Math.max(1, Math.ceil(Math.sqrt(independent.length)))
   const columnGap = 330
   const rowGap = 250
   const connectedBottom = graphNodes
@@ -113,27 +120,26 @@ async function layoutIndependentNodes(
       return position ? Math.max(bottom, position.y + 214) : bottom
     }, 0)
   const gridStartY = connectedBottom > 0 ? connectedBottom + 120 : 80
-  const occupied = new Set<string>()
-  Object.entries(saved).forEach(([nodeId, position]) => {
-    if (connected.has(nodeId)) return
-    const column = Math.round((position.x - 80) / columnGap)
-    const row = Math.round((position.y - gridStartY) / rowGap)
-    if (column >= 0 && column < columns && row >= 0) occupied.add(`${column}:${row}`)
-  })
-  let slot = 0
-  for (const task of independent) {
+  for (const [slot, task] of independent.entries()) {
     if (saved[task.id]) continue
     const node = editor.getNode(task.id)
     if (!node) continue
-    while (occupied.has(`${slot % columns}:${Math.floor(slot / columns)}`)) slot += 1
     const column = slot % columns
     const row = Math.floor(slot / columns)
-    await area.translate(node.id, {
+    const nextPosition = {
       x: 80 + column * columnGap,
       y: gridStartY + row * rowGap,
-    })
-    occupied.add(`${column}:${row}`)
-    slot += 1
+    }
+    await area.translate(node.id, nextPosition)
+    const view = area.nodeViews.get(node.id)
+    if (!view || Math.abs(view.position.x - nextPosition.x) > 1 || Math.abs(view.position.y - nextPosition.y) > 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      await area.translate(node.id, nextPosition)
+    }
+    // Rete may emit a programmatic translation after the guard is cleared;
+    // write the intended grid coordinate explicitly instead of trusting the
+    // transient event order.
+    savePosition(contextKey, node.id, nextPosition)
   }
 }
 
