@@ -23,7 +23,9 @@ SOURCE_META = {
         "identity": "idCard",
         "time": "comparisonTime",
         "update_fields": ("updateDate",),
-        "required": ("idCard", "terminal", "population", "comparisonTime"),
+        # terminal is the scan channel (WeChat/Alipay). location is the
+        # collection point used for patrol, hall and social-area metrics.
+        "required": ("idCard", "location", "population", "comparisonTime"),
         "station_fields": ("assignJgmc", "jgmc"),
     },
     "manager": {
@@ -36,11 +38,46 @@ SOURCE_META = {
     },
 }
 
-CLASSIFIER_VERSION = "v2"
+CLASSIFIER_VERSION = "v3"
 PAGE_SIZE = 200
 INSTRUCTION_RESULTS = {"流口未登记", "流口已注销"}
 ESTIMATED_REGISTRATION_MIN_BPS = 800
 ESTIMATED_REGISTRATION_MAX_BPS = 1200
+
+# High-confidence location markers. They are intentionally evaluated only
+# after the maintained place directory, so a future directory entry can
+# override a broad suffix without changing the classifier code.
+SOCIAL_LOCATION_MARKERS = (
+    "有限公司",
+    "有限责任公司",
+    "文化娱乐",
+    "餐娱馆",
+    "歌厅",
+    "ktv",
+    "酒吧",
+    "娱乐会所",
+    "休闲会所",
+    "商场",
+    "超市",
+    "酒店",
+    "宾馆",
+    "饭店",
+    "餐厅",
+    "网吧",
+    "足浴",
+    "棋牌室",
+    "洗浴",
+    "医院",
+    "学校",
+    "幼儿园",
+    "园区",
+    "市场",
+    "银行",
+    "营业厅",
+    "体育馆",
+    "影城",
+    "影院",
+)
 
 
 class CodeSummaryError(RuntimeError):
@@ -90,7 +127,7 @@ def estimated_registration_count(
     return min(count, estimated), basis_points / 10000
 
 
-def classify_terminal(
+def classify_location(
     value: Any,
     *,
     personnel_names: set[str],
@@ -102,19 +139,35 @@ def classify_terminal(
         return "dispatch_hall"
     if normalized == normalize_label("苏州湾大厦"):
         return "household_hall"
-    person_match = normalized in personnel_names
     place_match = normalized in place_names
-    if person_match and place_match:
-        return "unclassified"
-    if person_match:
-        return "patrol"
     if place_match:
         return "social"
+    # Social locations are more reliably identified by a maintained
+    # directory or an organization/venue marker than by the weak name-shape
+    # fallback used for patrol. Evaluate them before personnel matching.
+    if any(marker in normalized for marker in SOCIAL_LOCATION_MARKERS):
+        return "social"
+    if normalized in personnel_names:
+        return "patrol"
     if re.fullmatch(r"[\u4e00-\u9fff]{2}", raw):
         return "patrol"
     if re.fullmatch(r"[\u4e00-\u9fff]{6}", raw):
         return "social"
     return "unclassified"
+
+
+def classify_terminal(
+    value: Any,
+    *,
+    personnel_names: set[str],
+    place_names: set[str],
+) -> str:
+    """Backward-compatible alias for callers using the old function name."""
+    return classify_location(
+        value,
+        personnel_names=personnel_names,
+        place_names=place_names,
+    )
 
 
 def _date_rows(start_date: date, end_date: date) -> dict[date, dict[str, int]]:
@@ -199,8 +252,8 @@ def aggregate_rows(
         if population in INSTRUCTION_RESULTS:
             metrics["instruction_count"] += 1
         if kind == "peace":
-            classification = classify_terminal(
-                row.get("terminal"),
+            classification = classify_location(
+                row.get("location"),
                 personnel_names=personnel_names,
                 place_names=place_names,
             )

@@ -79,6 +79,7 @@ def _peace(identity: str, terminal: str, population: str, time: str, **extra):
     return {
         "idCard": identity,
         "terminal": terminal,
+        "location": extra.pop("location", terminal),
         "population": population,
         "comparisonTime": time,
         "updateDate": extra.pop("updateDate", time),
@@ -95,6 +96,39 @@ def test_terminal_classifier_prioritizes_halls_directories_and_shape_fallback():
     assert classify_terminal("青云小区", personnel_names=set(), place_names={"青云小区"}) == "social"
     assert classify_terminal("李四", personnel_names=set(), place_names=set()) == "patrol"
     assert classify_terminal("长板社区花园", personnel_names=set(), place_names=set()) == "social"
+    assert classify_terminal("未知窗口", personnel_names=set(), place_names=set()) == "unclassified"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "吴江醍拾贰餐娱馆",
+        "苏州吴江聚宝财文化娱乐有限公司",
+        "吴江区松陵镇聚星汇歌厅",
+        "魏玖KTV",
+        "苏州渔歌子文化娱乐有限公司",
+        "苏州泰湖荟音乐酒吧有限公司",
+    ],
+)
+def test_location_classifier_prioritizes_social_markers_before_patrol(location):
+    assert classify_terminal(
+        location, personnel_names={"吴江"}, place_names=set()
+    ) == "social"
+
+
+def test_location_classifier_prioritizes_halls_and_place_directory():
+    assert classify_terminal(
+        "滨湖所接警大厅", personnel_names=set(), place_names={"滨湖所接警大厅"}
+    ) == "dispatch_hall"
+    assert classify_terminal(
+        "苏州湾大厦", personnel_names=set(), place_names={"苏州湾大厦"}
+    ) == "household_hall"
+    assert classify_terminal(
+        "张三", personnel_names={"张三"}, place_names={"张三"}
+    ) == "social"
+
+
+def test_location_classifier_keeps_ambiguous_values_unclassified():
     assert classify_terminal("未知窗口", personnel_names=set(), place_names=set()) == "unclassified"
 
 
@@ -116,6 +150,34 @@ def test_peace_summary_deduplicates_by_identity_using_latest_record():
     assert day["instruction_count"] == 1
     assert day["new_registration_count"] == 0
     assert day["duplicate_removed_count"] == 1
+
+
+def test_peace_summary_uses_location_instead_of_scan_channel():
+    result = aggregate_rows(
+        "peace",
+        [
+            _peace(
+                "110101199001010015",
+                "微信",
+                "流口未登记",
+                "2026-08-18 08:00:00",
+                location="滨湖所接警大厅",
+            ),
+            _peace(
+                "110101199001010023",
+                "支付宝扫一扫",
+                "流口未登记",
+                "2026-08-18 08:00:00",
+                location="苏州吴江聚宝财文化娱乐有限公司",
+            ),
+        ],
+        date(2026, 8, 18),
+        date(2026, 8, 18),
+    )
+    day = result["rows"][0]
+    assert day["dispatch_hall_scan_count"] == 1
+    assert day["social_scan_count"] == 1
+    assert day["patrol_scan_count"] == 0
 
 
 def test_latest_record_uses_numeric_id_as_final_tie_breaker():
