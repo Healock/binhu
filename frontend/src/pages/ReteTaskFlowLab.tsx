@@ -148,7 +148,7 @@ function TaskNodeCard({ data, emit }: { data: Schemes['Node']; emit: RenderEmit<
   const task = node.task
   const status = STATUS_META[task.status] || { label: task.status, color: 'default' }
   const buttonLabel = task.access_mode === 'readonly' ? '只读查看' : task.access_mode === 'blocked' ? '查看等待' : '进入处理'
-  const accent = task.task_type === 'analysis' ? '#8b5cf6' : task.access_mode === 'blocked' ? '#d97706' : '#2563eb'
+  const accent = task.task_type === 'analysis' ? '#8b5cf6' : task.status === 'blocked' ? '#d97706' : '#2563eb'
   return (
     <article className={`rete-task-node rete-task-instance is-${task.access_mode} is-${task.status}`} style={{ '--rete-node-accent': accent } as CSSProperties}>
       {Object.entries(node.inputs).map(([key, input]) => input && <div key={key} className="rete-task-node__socket rete-task-node__socket--input"><ReactPresets.classic.RefSocket<Schemes> name="input-socket" emit={emit} nodeId={node.id} side="input" socketKey={key} payload={input.socket} /></div>)}
@@ -287,7 +287,7 @@ export default function ReteTaskFlowLab() {
   }
   const showPreview = async () => { try { setPreview(await previewTaskGraphBackfill()) } catch (reason: any) { message.error(reason?.response?.data?.detail || reason?.message || '只读预览失败') } }
   const canLoadMore = Object.keys(nextCursors).length > 0
-  const summary = useMemo(() => ({ editable: nodes.filter(node => node.access_mode === 'editable').length, blocked: nodes.filter(node => node.access_mode === 'blocked').length, readonly: nodes.filter(node => node.access_mode === 'readonly').length }), [nodes])
+  const summary = useMemo(() => ({ editable: nodes.filter(node => node.access_mode === 'editable').length, blocked: nodes.filter(node => node.status === 'blocked').length, readonly: nodes.filter(node => node.access_mode === 'readonly').length }), [nodes])
 
   return (
     <div className="rete-task-flow-lab mx-auto max-w-[1680px] space-y-4 pb-4">

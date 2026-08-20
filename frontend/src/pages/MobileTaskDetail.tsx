@@ -156,7 +156,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
   )
-  const interactionLocked = readonlyView || Boolean(data?.dependency_blocked)
+  const interactionLocked = readonlyView
   const visibleEditorFields = useMemo(() => (
     !interactionLocked && data && selectedSource
       ? mobileTaskEditorFields(
@@ -301,19 +301,30 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         result.values,
         selectedSource.cell_meta,
       )
+      const savedResult = savedValues[data.workflow.result_field] || ''
+      const savedAnalysis = firstValue(savedValues, data.workflow.analysis_fields)
+      const savedReviewStage = savedResult.includes('无法核实')
+        ? (savedAnalysis ? 'analyzed' : 'waiting_analysis')
+        : ''
+      const dependencyStillPending = savedReviewStage === 'waiting_analysis'
       setData(current => current ? {
         ...current,
+        dependency_blocked: mode === 'tasks'
+          ? dependencyStillPending
+          : current.dependency_blocked,
+        dependency_message: mode === 'tasks' && !dependencyStillPending
+          ? ''
+          : current.dependency_message,
         task: {
           ...current.task,
           pending_sync: true,
           sync_state: result.sync_state,
-          review_stage: mode === 'analysis'
-            ? (firstValue(savedValues, current.workflow.analysis_fields) ? 'analyzed' : 'waiting_analysis')
-            : current.task.review_stage,
-          summary: mode === 'analysis' ? {
+          review_stage: savedReviewStage,
+          summary: {
             ...current.task.summary,
-            analysis: firstValue(savedValues, current.workflow.analysis_fields),
-          } : current.task.summary,
+            result: savedResult,
+            analysis: savedAnalysis,
+          },
         },
         sources: current.sources.map(source => source.id === selectedSource.id ? {
           ...source,
@@ -340,9 +351,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             current.workflow.secondary_fields,
             savedValues,
           ),
-          review_stage: mode === 'analysis'
-            ? (firstValue(savedValues, current.workflow.analysis_fields) ? 'analyzed' : 'waiting_analysis')
-            : source.review_stage,
+          review_stage: savedReviewStage,
         } : source),
       } : current)
       setFormValues(savedValues)
@@ -714,7 +723,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               buttonProps={{ className: 'mobile-task-detail-pill', type: 'primary', icon: <PhoneOutlined /> }}
               onSelect={value => void dial(value)}
             />}
-          {interactionLocked && phoneOptions.length > 0 && <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>等待前置任务</Button>}
+          {interactionLocked && phoneOptions.length > 0 && <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>只读模式</Button>}
           {phoneOptions.length === 0 && (
             <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>缺少电话号码</Button>
           )}
@@ -954,16 +963,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       {error && <Alert type="error" showIcon message={error} />}
       {savedMessage && <Alert type="success" showIcon message={savedMessage} />}
       {readonlyView && <Alert type="info" showIcon message="当前是任务图只读协作视图" description="你可以查看任务信息和协作结果，但不能在此修改字段、处理同步冲突或发起新的业务操作。" />}
-      {data.dependency_blocked && <Alert type="warning" showIcon message="该任务正在等待前置任务" description={data.dependency_message || '等待基础管控完成研判后，原任务才能继续处理。'} />}
+      {data.dependency_blocked && <Alert type="warning" showIcon message="该任务已进入研判队列" description={data.dependency_message || '网格员仍可继续核查；如已能核实，请直接修改并保存新的核查结果。'} />}
       {!data.writeback_enabled && <Alert type="warning" showIcon message="在线回写已暂停，当前任务只能查看" />}
 
       {selectedSource ? (
         <section className="app-card p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="font-semibold text-[var(--app-text-strong)]">{readonlyView ? '任务只读详情' : data.dependency_blocked ? '等待前置任务' : mode === 'analysis' ? '研判处理' : '核查处理'}</h2>
+              <h2 className="font-semibold text-[var(--app-text-strong)]">{readonlyView ? '任务只读详情' : mode === 'analysis' ? '研判处理' : '核查处理'}</h2>
               <p className="mt-0.5 text-xs text-[var(--app-text-secondary)]">
-                {readonlyView ? '该任务属于依赖链中的其他负责人，仅供了解前置或后置关系' : data.dependency_blocked ? data.dependency_message : mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : '确认所有修改后统一保存'}
+                {readonlyView ? '该任务属于依赖链中的其他负责人，仅供了解前置或后置关系' : mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : data.dependency_blocked ? '基础管控可同时研判；重新核实后可直接修改结果并保存' : '确认所有修改后统一保存'}
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">
