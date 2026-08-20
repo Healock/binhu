@@ -4,6 +4,90 @@
   navigation: auto;
 }
 
+.online-presence-indicator {
+  position: fixed;
+  z-index: 36;
+  top: 14px;
+  right: 22px;
+  display: inline-flex;
+  min-width: 66px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  padding: 0 12px;
+  color: var(--app-text-secondary);
+  background: color-mix(in srgb, var(--app-surface) 96%, transparent);
+  box-shadow: var(--app-shadow-sm);
+  backdrop-filter: blur(10px);
+}
+
+.online-presence-indicator.is-clickable {
+  cursor: pointer;
+}
+
+.online-presence-indicator.is-clickable:hover {
+  border-color: var(--app-primary-border);
+  color: var(--app-text-strong);
+  box-shadow: var(--app-shadow-md);
+}
+
+.online-presence-indicator:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.online-presence-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+}
+
+.online-presence-dot.is-online {
+  background: var(--app-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-success) 18%, transparent);
+}
+
+.online-presence-dot.is-offline {
+  background: var(--app-text-tertiary);
+}
+
+.online-presence-popover {
+  width: min(360px, calc(100vw - 40px));
+}
+
+.online-presence-users {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.online-presence-users .ant-list-item-meta-description {
+  color: var(--app-text-secondary);
+}
+
+@media (min-width: 768px) {
+  .app-content {
+    padding-top: 72px;
+  }
+}
+
+@media (max-width: 767px) {
+  .online-presence-indicator {
+    z-index: 39;
+    top: 10px;
+    right: 54px;
+    min-width: 52px;
+    height: 34px;
+    gap: 5px;
+    border-color: transparent;
+    padding: 0 8px;
+    box-shadow: none;
+  }
+}
+
 .mobile-task-assignment-workbench {
   position: relative;
   display: flex;

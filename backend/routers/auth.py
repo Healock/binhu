@@ -160,6 +160,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 (session_id, user_id),
             )
             await cur.execute(
+                "DELETE FROM _user_presence_clients WHERE user_id=%s AND session_id<>%s",
+                (user_id, session_id),
+            )
+            await cur.execute(
                 "DELETE FROM _sessions WHERE user_id=%s "
                 "AND expires_at<=UTC_TIMESTAMP() AND session_id<>%s",
                 (user_id, session_id),
@@ -213,6 +217,10 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
                     "UPDATE _users SET active_session_id=NULL "
                     "WHERE id=%s AND active_session_id=%s",
                     (user["id"], session_id),
+                )
+                await cur.execute(
+                    "DELETE FROM _user_presence_clients WHERE session_id=%s",
+                    (session_id,),
                 )
                 await cur.execute("DELETE FROM _sessions WHERE session_id = %s", (session_id,))
         finally:

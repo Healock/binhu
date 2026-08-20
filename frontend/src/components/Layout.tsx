@@ -20,6 +20,7 @@ import MobileDock from './MobileDock'
 import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
+import OnlinePresenceIndicator from './OnlinePresenceIndicator'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 
 export default function Layout() {
@@ -138,16 +139,18 @@ export default function Layout() {
             <button
               type="button"
               aria-label="打开账号菜单"
-              className="ml-auto mr-11 flex items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+              className="ml-auto mr-16 flex items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
             >
               <Avatar size={24} src={user.avatar_url || undefined} icon={<UserOutlined />}>
                 {getUserDisplayName(user).slice(0, 1)}
               </Avatar>
-              {getUserDisplayName(user)}
+              <span className="hidden sm:inline">{getUserDisplayName(user)}</span>
             </button>
           </Popover>
         )}
       </header>
+
+      <OnlinePresenceIndicator />
 
       {sidebarOpen && (
         <button

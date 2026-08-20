@@ -27,6 +27,7 @@ PERSONNEL_MANAGE = "personnel.manage"
 COMMUNITY_MANAGE = "community.manage"
 USER_MANAGE = "user.manage"
 PERMISSION_MANAGE = "permission.manage"
+PRESENCE_DETAIL_VIEW = "presence.detail.view"
 ANNOUNCEMENT_MANAGE = "announcement.manage"
 SYSTEM_MANAGE = "system.manage"
 OPS_MANAGE = "ops.manage"
@@ -67,6 +68,7 @@ PERMISSION_CATALOG = [
     (COMMUNITY_MANAGE, "人员操作", "添加、编辑和删除社区"),
     (USER_MANAGE, "平台管理", "管理用户账号"),
     (PERMISSION_MANAGE, "平台管理", "管理权限组和岗位映射"),
+    (PRESENCE_DETAIL_VIEW, "在线状态", "查看在线用户详细名单"),
     (ANNOUNCEMENT_MANAGE, "平台管理", "发布和删除公告"),
     (SYSTEM_MANAGE, "平台管理", "管理数据源、OAuth 和系统设置"),
     (OPS_MANAGE, "平台管理", "使用运维中心"),
@@ -183,6 +185,7 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
             COMMUNITY_MANAGE,
             WORKFLOW_TICKET_MANAGE,
             QMF_REGISTRATION_EXECUTE,
+            PRESENCE_DETAIL_VIEW,
         },
         "sort_order": 40,
     },
@@ -192,6 +195,13 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
         "data_scope": "own_department",
         "permissions": COMMUNITY_REGISTRY_VIEW_PERMISSIONS,
         "sort_order": 25,
+    },
+    "presence_detail_viewer": {
+        "name": "在线名单查看组",
+        "description": "片长、中队长和社区民警查看全所在线用户详情",
+        "data_scope": "all",
+        "permissions": {PRESENCE_DETAIL_VIEW} | AUTHENTICATED_PERMISSIONS,
+        "sort_order": 26,
     },
     "super_admin": {
         "name": "超级管理员",

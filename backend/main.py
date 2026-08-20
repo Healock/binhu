@@ -71,6 +71,8 @@ from services.qmf_status_scan import (
     run_status_scan_scheduler,
     stop_status_scan_tasks,
 )
+from services.presence import run_presence_cleanup_scheduler
+from routers.presence import router as presence_router
 
 
 @asynccontextmanager
@@ -114,6 +116,7 @@ async def lifespan(app: FastAPI):
     online_writeback_task = asyncio.create_task(run_online_writeback_scheduler())
     certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())
     qmf_status_scan_scheduler_task = asyncio.create_task(run_status_scan_scheduler())
+    presence_cleanup_task = asyncio.create_task(run_presence_cleanup_scheduler())
     try:
         yield
     finally:
@@ -124,6 +127,7 @@ async def lifespan(app: FastAPI):
         online_writeback_task.cancel()
         certificate_scheduler_task.cancel()
         qmf_status_scan_scheduler_task.cancel()
+        presence_cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
@@ -138,6 +142,8 @@ async def lifespan(app: FastAPI):
             await certificate_scheduler_task
         with suppress(asyncio.CancelledError):
             await qmf_status_scan_scheduler_task
+        with suppress(asyncio.CancelledError):
+            await presence_cleanup_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()
@@ -186,6 +192,7 @@ async def health_check():
 
 # auth 路由（login 端点无需鉴权，logout/me 需要鉴权在路由内处理）
 app.include_router(auth_router)
+app.include_router(presence_router)
 app.include_router(maintenance_router)
 app.include_router(app_bootstrap_router)
 

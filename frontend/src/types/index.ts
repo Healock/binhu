@@ -307,6 +307,7 @@ export type PermissionCode =
   | 'worklog.manage' | 'attendance.manage' | 'personnel.manage'
   | 'community.manage' | 'user.manage' | 'permission.manage'
   | 'announcement.manage' | 'system.manage' | 'ops.manage'
+  | 'presence.detail.view'
   | 'police.dispatch.manage' | 'police.address.manage'
   | 'registry.property.view' | 'registry.property.manage'
   | 'registry.watch.view' | 'registry.watch.manage' | 'registry.import.manage'
@@ -435,6 +436,27 @@ export interface User extends UserPreferences {
   }
   created_at?: string
   updated_at?: string
+}
+
+export interface PresenceUser {
+  id: number
+  display_name: string
+  avatar_url: string | null
+  position: string
+  department: string | null
+  last_seen_at: string | null
+}
+
+export interface PresenceHeartbeatResponse {
+  online_count: number
+  server_time: string
+  online_window_seconds: number
+}
+
+export interface PresenceUsersResponse {
+  online_count: number
+  online_window_seconds: number
+  users: PresenceUser[]
 }
 
 export interface WorkContributionDay {

@@ -195,7 +195,7 @@ async def _load_current_user(
             expires_at: datetime = row[21]
             server_time: datetime = row[22]
             if expires_at <= server_time:
-                raise _auth_error("session_expired", "登录有效期已结束")
+                raise _auth_error("session_expired", "登录已到期，请重新登录")
 
             await cur.execute(
                 "SELECT config_key, config_value FROM _system_config "
@@ -213,7 +213,7 @@ async def _load_current_user(
             if (server_time - last_activity_at).total_seconds() >= idle_minutes * 60:
                 raise _auth_error(
                     "session_idle_timeout",
-                    "长时间未操作，请重新登录",
+                    "登录已到期，请重新登录",
                 )
 
             if request.headers.get("X-User-Activity") == "1":
