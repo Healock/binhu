@@ -26,6 +26,8 @@ test('全民防反馈扫描接口和七类安全状态已接入', () => {
 
 test('模型三列表同时展示扫描进度、筛选和卡片表格状态', () => {
   assert.match(listSource, /全量核对全民防反馈/)
+  assert.match(listSource, /import \{[^}]*Modal[^}]*\} from 'antd'/s)
+  assert.match(listSource, /Modal\.confirm\(/)
   assert.match(listSource, /qmf_feedback_states: qmfFeedbackStates/)
   assert.match(listSource, /<Progress/)
   assert.match(listSource, /<QmfFeedbackStatus status=\{task\.qmf_status\}/)
