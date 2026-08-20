@@ -30,7 +30,7 @@ export default function PersonalizationSettings() {
     groups: [],
   })
   const [themeMode, setThemeMode] = useState<ThemeMode>('light')
-  const [taskDisplayMode, setTaskDisplayMode] = useState<TaskDisplayMode>('card')
+  const [taskDisplayMode, setTaskDisplayMode] = useState<TaskDisplayMode>('table')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -39,7 +39,7 @@ export default function PersonalizationSettings() {
     setColumnMode(user.report_column_mode || 'three')
     setNavigationMode(user.mobile_navigation_mode || 'dock')
     setThemeMode(user.theme_mode || 'light')
-    setTaskDisplayMode(user.task_display_mode || 'card')
+    setTaskDisplayMode(user.task_display_mode || 'table')
     setDockConfig(normalizeMobileDockConfig(
       user.mobile_dock_config || defaultMobileDockConfig(
         user.role,

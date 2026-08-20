@@ -47,7 +47,7 @@ export default function ContributionCalendar({
             '--rhm-text-color': 'var(--app-text-secondary)',
             '--rhm-rect-hover-stroke': 'var(--app-text-strong)',
           } as React.CSSProperties}
-          rectProps={{ rx: 2, ry: 2 }}
+          rectProps={{ rx: 3, ry: 3 }}
           rectRender={(props, value) => (
             <rect
               {...props}

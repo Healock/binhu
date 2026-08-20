@@ -1,3 +1,4 @@
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -72,6 +73,28 @@ def sample_detailed_table():
 
 
 class ReportColumnModeTests(unittest.IsolatedAsyncioTestCase):
+    def test_task_list_defaults_existing_and_new_accounts_to_table(self):
+        database_source = (
+            Path(__file__).resolve().parents[1] / "database.py"
+        ).read_text(encoding="utf-8")
+        init_source = (
+            Path(__file__).resolve().parents[1] / "init.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "task_display_mode VARCHAR(10) NOT NULL DEFAULT 'table'",
+            database_source,
+        )
+        self.assertIn("desktop_task_table_default_migrated", database_source)
+        self.assertIn(
+            "UPDATE _users SET task_display_mode='table'",
+            database_source,
+        )
+        self.assertRegex(
+            init_source,
+            r"task_display_mode\s+VARCHAR\(10\) NOT NULL DEFAULT 'table'",
+        )
+
     def test_two_column_mode_merges_unfinished_work(self):
         source = sample_report()
 

@@ -2277,7 +2277,7 @@ class DatabaseManager:
                         password_hash VARCHAR(255) NOT NULL,
                         role ENUM('super_admin','admin','leader','member') NOT NULL DEFAULT 'member',
                         table_display_mode VARCHAR(10) NOT NULL DEFAULT 'table',
-                        task_display_mode VARCHAR(10) NOT NULL DEFAULT 'card',
+                        task_display_mode VARCHAR(10) NOT NULL DEFAULT 'table',
                         report_column_mode VARCHAR(10) NOT NULL DEFAULT 'three',
                         mobile_navigation_mode VARCHAR(10) NOT NULL DEFAULT 'dock',
                         mobile_dock_config JSON DEFAULT NULL,
@@ -2301,7 +2301,7 @@ class DatabaseManager:
                     ),
                     (
                         "task_display_mode",
-                        "VARCHAR(10) NOT NULL DEFAULT 'card'",
+                        "VARCHAR(10) NOT NULL DEFAULT 'table'",
                     ),
                     (
                         "report_column_mode",
@@ -2349,6 +2349,23 @@ class DatabaseManager:
                             f"ALTER TABLE _users "
                             f"ADD COLUMN `{column_name}` {column_definition}"
                         )
+                await cur.execute(
+                    "SELECT config_value FROM _system_config "
+                    "WHERE config_key='desktop_task_table_default_migrated'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _users MODIFY COLUMN task_display_mode "
+                        "VARCHAR(10) NOT NULL DEFAULT 'table'"
+                    )
+                    await cur.execute(
+                        "UPDATE _users SET task_display_mode='table' "
+                        "WHERE task_display_mode='card'"
+                    )
+                    await cur.execute(
+                        "INSERT INTO _system_config (config_key, config_value) "
+                        "VALUES ('desktop_task_table_default_migrated', '1')"
+                    )
                 # Session 表
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _sessions (

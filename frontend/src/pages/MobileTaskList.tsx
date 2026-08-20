@@ -222,7 +222,7 @@ export default function MobileTaskList({
   )
   const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
-  const taskDisplayMode = user?.task_display_mode || 'card'
+  const taskDisplayMode = user?.task_display_mode || 'table'
   const restorationRef = useRef<MobileTaskListRestoration | null | undefined>(undefined)
   const snapshotRef = useRef<ReturnType<typeof readMobileTaskListSnapshot> | undefined>(undefined)
   if (restorationRef.current === undefined) {

@@ -1,7 +1,7 @@
 {
   "name": "binhu-frontend",
   "private": true,
-  "version": "0.25.10",
+  "version": "0.25.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -31,6 +31,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "recharts": "^3.10.1",
     "rete": "^2.0.6",
     "rete-area-plugin": "^2.3.2",
     "rete-auto-arrange-plugin": "^2.0.2",
