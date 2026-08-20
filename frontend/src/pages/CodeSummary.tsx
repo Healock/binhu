@@ -356,6 +356,9 @@ export default function CodeSummary() {
         {error && <Alert type="error" showIcon message={error} />}
         {source === 'peace' && (
           <Panel title="位置分类核查" className="mt-3" extra={canManageLocations ? <Button size="small" loading={locationSaving} onClick={async () => { try { await recomputeCodeSummaryLocations(startDate, endDate); await Promise.all([load(), loadLocations()]); message.success('已重新计算当前汇总') } catch (reason: any) { message.error(apiErrorMessage(reason, '重新计算失败')) } }}>重新计算汇总</Button> : undefined}>
+            {Boolean(report?.latest_run?.unclassified_count) && !locationLoading && locationReport?.total === 0 && (
+              <Alert className="mb-3" type="info" showIcon message="旧快照没有保存逐位置明细，请重新获取当前日期范围后再进行分类核查。" />
+            )}
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span>当前区间未分类记录：{locationReport?.unclassified_count ?? report.latest_run.unclassified_count} 条</span>
               <Input.Search allowClear placeholder="搜索位置" style={{ width: 240 }} value={locationKeyword} onChange={event => { setLocationKeyword(event.target.value); setLocationPage(1) }} onSearch={() => { setLocationPage(1); void loadLocations() }} />
