@@ -400,3 +400,14 @@ test('数据上传中心移除手动走访和星级上传入口', () => {
   assert.match(source, /PoliceDispatchPanel/)
   assert.match(source, /照片调取批次/)
 })
+
+test('在线人数按钮再次点击会关闭当前弹层', () => {
+  const source = readFileSync(
+    new URL('../src/components/OnlinePresenceIndicator.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(source, /onClick=\{mobile && canViewDetails \? \(\) => setOpen\(current => !current\) : undefined\}/)
+  assert.match(source, /<Popover[\s\S]*onOpenChange=\{setOpen\}[\s\S]*trigger="click"/)
+  assert.doesNotMatch(source, /onClick=\{\(\) => canViewDetails && setOpen\(true\)\}/)
+})

@@ -139,7 +139,7 @@ export default function OnlinePresenceIndicator() {
     <button
       type="button"
       className={`online-presence-indicator ${canViewDetails ? 'is-clickable' : ''}`}
-      onClick={() => canViewDetails && setOpen(true)}
+      onClick={mobile && canViewDetails ? () => setOpen(current => !current) : undefined}
       aria-label={canViewDetails ? '查看在线用户' : `当前在线 ${onlineCount ?? 0} 人`}
       disabled={!canViewDetails}
     >
