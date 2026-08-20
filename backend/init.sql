@@ -736,7 +736,7 @@ CREATE TABLE IF NOT EXISTS _users (
     active_desktop_session_id VARCHAR(64) DEFAULT NULL,
     active_mobile_session_id VARCHAR(64) DEFAULT NULL,
     table_display_mode       VARCHAR(10) NOT NULL DEFAULT 'table',
-    task_display_mode        VARCHAR(10) NOT NULL DEFAULT 'card',
+    task_display_mode        VARCHAR(10) NOT NULL DEFAULT 'table',
     report_column_mode       VARCHAR(10) NOT NULL DEFAULT 'three',
     mobile_navigation_mode   VARCHAR(10) NOT NULL DEFAULT 'dock',
     mobile_dock_config       JSON DEFAULT NULL,

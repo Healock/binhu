@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import {
   Alert,
   Button,
@@ -22,6 +22,9 @@ import {
 
 const { Dragger } = Upload
 const MAX_PHOTO_ZIP_BYTES = 200 * 1024 * 1024
+const MonoWaterfallChart = lazy(
+  () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoWaterfallChart })),
+)
 
 function selectedUploadFile(file: File & { uid: string }): UploadFile {
   return {
@@ -284,6 +287,18 @@ export default function DataUploadCenter() {
                   </div>
                 ))}
               </div>
+              <Suspense fallback={null}>
+                <MonoWaterfallChart
+                  label="照片批次结果分解"
+                  data={[
+                    { label: '可匹配', value: photoBatch.matched_files, color: 'var(--mono-chart-completed)' },
+                    { label: '未匹配', value: photoBatch.unmatched_files, color: 'var(--mono-chart-unable)' },
+                    { label: '冲突', value: photoBatch.conflict_files, color: 'var(--mono-chart-primary)' },
+                    { label: '重复', value: photoBatch.duplicate_files, color: 'var(--mono-chart-muted)' },
+                    { label: '失败', value: photoBatch.failed_files, color: 'var(--mono-chart-danger)' },
+                  ]}
+                />
+              </Suspense>
               {(photoBatch.items?.length || 0) > 0 && (
                 <Table
                   size="small"

@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Alert,
   Button,
   Progress,
   Skeleton,
   Tag,
-  Tooltip,
 } from 'antd'
 import {
   BellOutlined,
@@ -32,6 +31,19 @@ import {
   writeRoleDashboardCache,
 } from '../utils/dashboardCache'
 import { formatDashboardIdentityContext } from '../utils/dashboardIdentity'
+
+const MonoRoundedStackedBarChart = lazy(
+  () => import('../components/charts/MonoRoundedStackedBarChart'),
+)
+const MonoKpiSparkline = lazy(
+  () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoKpiSparkline })),
+)
+const MonoBulletChart = lazy(
+  () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoBulletChart })),
+)
+const MonoDonutChart = lazy(
+  () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoDonutChart })),
+)
 
 const percent = (value: unknown) => `${(Number(value || 0) * 100).toFixed(0)}%`
 const metric = (value: unknown, fallback = '0') => (
@@ -105,7 +117,6 @@ function ContributionPanel({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
   const [hiddenWorkspaceOpen, setHiddenWorkspaceOpen] = useState(false)
   const secretClicks = useRef({ count: 0, lastAt: 0 })
-  const maximum = Math.max(...data.contribution.days.map(item => item.count), 1)
   const handleSecretClick = () => {
     const now = Date.now()
     const clicks = secretClicks.current
@@ -129,19 +140,12 @@ function ContributionPanel({ data }: { data: RoleDashboardData }) {
           <DashboardCard label="活跃天数" value={data.contribution.active_days} hint="天" tone="blue" />
           <DashboardCard label="连续工作" value={data.contribution.longest_streak} hint="天" tone="green" />
         </MetricGrid>
-        <div className="role-dashboard-activity" aria-label="近 7 日个人工作量">
-          {data.contribution.days.map(item => (
-            <Tooltip key={item.date} title={`${item.date}：${item.count} 次`}>
-              <div className="role-dashboard-activity__day">
-                <span
-                  className="role-dashboard-activity__bar"
-                  style={{ height: `${Math.max(8, Math.round(item.count / maximum * 64))}px` }}
-                />
-                <span>{item.date.slice(5)}</span>
-              </div>
-            </Tooltip>
-          ))}
-        </div>
+        <Suspense fallback={<div className="mono-business-chart mono-business-chart--sparkline"><Skeleton active paragraph={{ rows: 2 }} /></div>}>
+          <MonoKpiSparkline
+            label="近 7 日实际工作量"
+            data={data.contribution.days.map(item => ({ label: item.date.slice(5), value: item.count }))}
+          />
+        </Suspense>
       </Panel>
       <HiddenWorkspaceOverlay open={hiddenWorkspaceOpen} onClose={() => setHiddenWorkspaceOpen(false)} />
     </>
@@ -214,36 +218,31 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
         <DashboardCard label="当前无法核实" value={metric(week.unable_to_verify)} tone="amber" />
         <DashboardCard label="完成率" value={percent(week.completion_rate)} tone="purple" />
       </MetricGrid>
+      <Suspense fallback={null}>
+        <MonoBulletChart
+          label="在线核查完成目标"
+          actual={Number(week.completed_tasks || 0)}
+          target={Number(week.total_tasks || 0)}
+          color="var(--mono-chart-completed)"
+        />
+      </Suspense>
       {overview.community_breakdown.length > 0 && (
-        <div className="role-dashboard-community-chart" aria-label="社区核查完成情况">
-          <div className="role-dashboard-community-chart__legend">
-            <span><i className="is-completed" />已完成</span>
-            <span><i className="is-unable" />无法核实</span>
-            <span><i className="is-pending" />其他待完成</span>
-          </div>
-          <div className="role-dashboard-community-chart__rows">
-            {overview.community_breakdown.map(item => {
+        <Suspense fallback={<div className="mono-rounded-stacked-bar"><Skeleton active paragraph={{ rows: 8 }} /></div>}>
+          <MonoRoundedStackedBarChart
+            ariaLabel="12 个社区在线核查完成情况"
+            data={overview.community_breakdown.map(item => {
               const total = Math.max(item.total, 0)
               const unable = Math.min(Math.max(item.unable_to_verify, 0), Math.max(item.pending, 0))
-              const otherPending = Math.max(item.pending - unable, 0)
-              const segmentWidth = (value: number) => total > 0 ? `${value / total * 100}%` : '0%'
-              return (
-                <div key={item.community} className="role-dashboard-community-chart__row">
-                  <strong title={item.community}>{item.community}</strong>
-                  <div
-                    className={`role-dashboard-community-chart__bar${total === 0 ? ' is-empty' : ''}`}
-                    aria-label={`${item.community}：已完成 ${item.completed}，无法核实 ${unable}，其他待完成 ${otherPending}`}
-                  >
-                    <span className="is-completed" style={{ width: segmentWidth(item.completed) }} />
-                    <span className="is-unable" style={{ width: segmentWidth(unable) }} />
-                    <span className="is-pending" style={{ width: segmentWidth(otherPending) }} />
-                  </div>
-                  <span>{item.completed}/{total}</span>
-                </div>
-              )
+              return {
+                label: item.community,
+                completed: Math.max(item.completed, 0),
+                unable,
+                pending: Math.max(item.pending - unable, 0),
+                total,
+              }
             })}
-          </div>
-        </div>
+          />
+        </Suspense>
       )}
     </Panel>
   )
@@ -272,6 +271,14 @@ function VisitOverview({ data }: { data: RoleDashboardData }) {
         <DashboardCard label="近 7 日变动" value={changes} tone="green" onClick={() => navigate(route)} />
         <DashboardCard label="数据待补" value={unrated} tone={unrated ? 'amber' : 'slate'} onClick={() => navigate(route)} />
       </MetricGrid>
+      <Suspense fallback={null}>
+        <MonoBulletChart
+          label="近 7 日星级采集完整度"
+          actual={Math.max(0, weekVisits - unrated)}
+          target={weekVisits}
+          color="var(--mono-chart-primary)"
+        />
+      </Suspense>
     </Panel>
   )
 }
@@ -305,6 +312,17 @@ function DispatchOverview({ data }: { data: RoleDashboardData }) {
           ))}
         </div>
       )}
+      <Suspense fallback={null}>
+        <MonoDonutChart
+          label="当前批次状态分布"
+          centerValue={batch.counts.pending_review + batch.counts.pending_publish}
+          data={[
+            { label: '待审核', value: batch.counts.pending_review, color: 'var(--mono-chart-unable)' },
+            { label: '待发布', value: batch.counts.pending_publish, color: 'var(--mono-chart-primary)' },
+            { label: '已发布', value: batch.counts.published, color: 'var(--mono-chart-completed)' },
+          ]}
+        />
+      </Suspense>
     </Panel>
   )
 }

@@ -408,7 +408,7 @@ async def _load_current_user(
                 "role": row[2],
                 "table_display_mode": row[3] or "table",
                 "task_display_mode": (
-                    row[26] if len(row) > 26 and row[26] else "card"
+                    row[26] if len(row) > 26 and row[26] else "table"
                 ),
                 "report_column_mode": row[4] or "three",
                 "mobile_navigation_mode": normalize_mobile_navigation_mode(

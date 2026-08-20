@@ -12,6 +12,7 @@ import {
   Select,
   Space,
   Statistic,
+  Skeleton,
   Switch,
   Table,
   Tabs,
@@ -32,7 +33,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import {
   downloadBackup,
   downloadDiagnostics,
@@ -56,6 +57,10 @@ import type {
 } from '../types'
 import { ListToolbar, Panel } from '../components/ui'
 import useSystemTime from '../hooks/useSystemTime'
+
+const MonoTrendChart = lazy(
+  () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoTrendChart })),
+)
 
 
 const STATUS_COLORS: Record<string, string> = {
@@ -275,6 +280,24 @@ function OverviewTab({
           status={quotaExhausted ? 'exception' : requestPercent >= 85 ? 'active' : 'normal'}
           format={() => `${requestUsage?.today.attempts ?? 0} / ${requestUsage?.daily_limit ?? 0}`}
         />
+        {!!requestUsage?.daily.length && (
+          <Suspense fallback={<div className="mono-business-chart"><Skeleton active paragraph={{ rows: 4 }} /></div>}>
+            <MonoTrendChart
+              label="腾讯接口近日报文趋势"
+              data={requestUsage.daily.map(item => ({
+                label: item.business_date.slice(5),
+                attempts: item.attempts,
+                success: item.success,
+                failure: item.failure,
+              }))}
+              series={[
+                { key: 'attempts', label: '请求尝试', color: 'var(--mono-chart-primary)' },
+                { key: 'success', label: '成功', color: 'var(--mono-chart-completed)' },
+                { key: 'failure', label: '失败', color: 'var(--mono-chart-danger)' },
+              ]}
+            />
+          </Suspense>
+        )}
         <Table
           size="small"
           rowKey="business_date"
@@ -324,6 +347,24 @@ function OverviewTab({
         title="腾讯同步任务次数"
         description={`按${data?.sync_timezone || '系统'}时区统计最近 14 个业务日；一次任务通常包含多次接口请求`}
       >
+        {!!data?.sync_daily_counts.length && (
+          <Suspense fallback={<div className="mono-business-chart"><Skeleton active paragraph={{ rows: 4 }} /></div>}>
+            <MonoTrendChart
+              label="同步任务近 14 日趋势"
+              data={data.sync_daily_counts.map(item => ({
+                label: item.business_date.slice(5),
+                total: item.total,
+                success: item.success,
+                failed: item.failed + item.partial + item.unfinished,
+              }))}
+              series={[
+                { key: 'total', label: '总次数', color: 'var(--mono-chart-primary)' },
+                { key: 'success', label: '成功', color: 'var(--mono-chart-completed)' },
+                { key: 'failed', label: '异常/未完成', color: 'var(--mono-chart-unable)' },
+              ]}
+            />
+          </Suspense>
+        )}
         <Table
           size="small"
           rowKey="business_date"

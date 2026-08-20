@@ -234,7 +234,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
             "display_name": display_name,
             "role": role,
             "table_display_mode": table_display_mode or "table",
-            "task_display_mode": task_display_mode or "card",
+            "task_display_mode": task_display_mode or "table",
             "report_column_mode": report_column_mode or "three",
             "mobile_navigation_mode": normalize_mobile_navigation_mode(
                 mobile_navigation_mode,

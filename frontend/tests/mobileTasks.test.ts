@@ -569,7 +569,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
     tableSource.indexOf('const queueEditorLoad'),
   )
 
-  assert.match(pageSource, /user\?\.task_display_mode \|\| 'card'/)
+  assert.match(pageSource, /user\?\.task_display_mode \|\| 'table'/)
   assert.match(pageSource, /<MobileTaskTable/)
   assert.match(pageSource, /className="hidden md:block"/)
   assert.match(pageSource, /taskDisplayMode === 'table' \? ' mobile-task-list--table-fallback' : ''/)
@@ -654,6 +654,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(styleSource, /mobile-task-table-inline-editor--dirty/)
   assert.match(styleSource, /mobile-task-table-row-selected \+ \.ant-table-expanded-row[\s\S]*border-color: var\(--app-primary\)/)
   assert.match(settingsSource, /流口任务展示/)
+  assert.match(settingsSource, /useState<TaskDisplayMode>\('table'\)/)
   assert.match(settingsSource, /task_display_mode: taskDisplayMode/)
   assert.match(settingsSource, /卡片视图/)
   assert.match(settingsSource, /表格视图/)
