@@ -2348,6 +2348,51 @@ export interface CodeSummaryReport {
   }
 }
 
+export type CodeSummaryLocationClassification =
+  | 'social' | 'patrol' | 'dispatch_hall' | 'household_hall' | 'ignored' | 'other' | 'unclassified'
+
+export interface CodeSummaryLocationRow {
+  location_key: string
+  display_name: string
+  record_count: number
+  last_seen_date: string | null
+  classification: CodeSummaryLocationClassification
+}
+
+export interface CodeSummaryLocationReport {
+  source: CodeSummarySource
+  start_date: string
+  end_date: string
+  data: CodeSummaryLocationRow[]
+  total: number
+  record_count: number
+  unclassified_count: number
+  classifications: Record<string, string>
+}
+
+export async function searchCodeSummaryLocations(payload: {
+  source: CodeSummarySource
+  start_date: string
+  end_date: string
+  keyword?: string
+  status?: 'all' | 'unclassified' | 'classified'
+  page?: number
+  page_size?: number
+}): Promise<CodeSummaryLocationReport> {
+  return (await api.post('/code-summaries/locations/search', payload, activeRequest)).data
+}
+
+export async function saveCodeSummaryLocationClassifications(payload: {
+  source: CodeSummarySource
+  items: Array<{ location_key: string; display_name: string; classification: Exclude<CodeSummaryLocationClassification, 'unclassified'> }>
+}): Promise<{ updated: number; message: string }> {
+  return (await api.post('/code-summaries/locations/classifications', payload, activeRequest)).data
+}
+
+export async function recomputeCodeSummaryLocations(start_date: string, end_date: string): Promise<{ updated_days: number; message: string }> {
+  return (await api.post('/code-summaries/locations/recompute', { start_date, end_date }, activeRequest)).data
+}
+
 export async function fetchCodeSummaries(startDate: string, endDate: string): Promise<{
   run: ExternalAcquisitionRun
   reused: boolean

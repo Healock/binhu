@@ -7,7 +7,7 @@ from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from database import get_db
 from deps import require_permission
@@ -21,7 +21,7 @@ from services.code_summary import (
     fetch_sources,
     normalize_label,
 )
-from services.permissions import VISIT_SOURCE_MANAGE, VISIT_SUMMARY_VIEW
+from services.permissions import CODE_SUMMARY_MANAGE, VISIT_SOURCE_MANAGE, VISIT_SUMMARY_VIEW
 from services.external_acquisition_jobs import create_job
 from database import db_manager
 
@@ -55,6 +55,103 @@ class DateRangeRequest(BaseModel):
 
 class SummarySearchRequest(DateRangeRequest):
     source: Literal["peace", "manager"]
+
+
+LOCATION_CLASSIFICATIONS = {
+    "social": "社会面",
+    "patrol": "巡防",
+    "dispatch_hall": "接警大厅",
+    "household_hall": "户政大厅",
+    "ignored": "忽略/无效位置",
+    "other": "其他",
+}
+
+
+class LocationSearchRequest(DateRangeRequest):
+    source: Literal["peace", "manager"] = "peace"
+    keyword: str = Field(default="", max_length=255)
+    status: Literal["all", "unclassified", "classified"] = "all"
+    page: int = 1
+    page_size: int = 20
+
+    @model_validator(mode="after")
+    def validate_page(self):
+        self.page = max(1, self.page)
+        self.page_size = min(100, max(1, self.page_size))
+        return self
+
+
+class LocationClassificationItem(BaseModel):
+    location_key: str = Field(max_length=255)
+    display_name: str = Field(max_length=255)
+    classification: Literal[
+        "social", "patrol", "dispatch_hall", "household_hall", "ignored", "other"
+    ]
+
+
+class LocationClassificationsRequest(BaseModel):
+    source: Literal["peace", "manager"] = "peace"
+    items: list[LocationClassificationItem]
+
+    @model_validator(mode="after")
+    def validate_items(self):
+        if not self.items or len(self.items) > 100:
+            raise ValueError("每次最多标记100个位置")
+        return self
+
+
+async def _location_rows(conn, payload: LocationSearchRequest):
+    keyword = normalize_label(payload.keyword)
+    offset = (payload.page - 1) * payload.page_size
+    params: list[object] = [payload.source, payload.start_date, payload.end_date]
+    conditions = [
+        "c.source_kind=%s", "c.business_date BETWEEN %s AND %s",
+        "s.version_no=(SELECT MAX(s2.version_no) FROM _code_daily_snapshots s2 "
+        "WHERE s2.source_kind=s.source_kind AND s2.business_date=s.business_date)",
+    ]
+    if keyword:
+        conditions.append("c.location_key LIKE %s")
+        params.append(f"%{keyword}%")
+    if payload.status == "unclassified":
+        conditions.append("COALESCE(label.classification,c.classification)='unclassified'")
+    elif payload.status == "classified":
+        conditions.append("COALESCE(label.classification,c.classification)<>'unclassified'")
+    where = " AND ".join(conditions)
+    base = (
+        "FROM _code_summary_location_counts c "
+        "JOIN _code_daily_snapshots s ON s.run_id=c.run_id AND s.business_date=c.business_date "
+        "LEFT JOIN _code_summary_location_labels label ON label.source_kind=c.source_kind "
+        "AND label.location_key=c.location_key AND label.enabled=1 WHERE " + where
+    )
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT c.location_key,MAX(c.display_name),SUM(c.row_count),MAX(c.business_date),"
+            "COALESCE(MAX(label.classification),MAX(c.classification),'unclassified') " + base +
+            " GROUP BY c.location_key ORDER BY SUM(c.row_count) DESC,c.location_key LIMIT %s OFFSET %s",
+            (*params, payload.page_size, offset),
+        )
+        rows = await cur.fetchall()
+        await cur.execute("SELECT COUNT(*) FROM (SELECT c.location_key " + base + " GROUP BY c.location_key) x", tuple(params))
+        total = int((await cur.fetchone())[0] or 0)
+        await cur.execute("SELECT COALESCE(SUM(c.row_count),0) " + base, tuple(params))
+        record_count = int((await cur.fetchone())[0] or 0)
+        await cur.execute(
+            "SELECT COALESCE(SUM(c.row_count),0) FROM _code_summary_location_counts c "
+            "JOIN _code_daily_snapshots s ON s.run_id=c.run_id AND s.business_date=c.business_date "
+            "LEFT JOIN _code_summary_location_labels label ON label.source_kind=c.source_kind "
+            "AND label.location_key=c.location_key AND label.enabled=1 "
+            "WHERE c.source_kind=%s AND c.business_date BETWEEN %s AND %s "
+            "AND s.version_no=(SELECT MAX(s2.version_no) FROM _code_daily_snapshots s2 "
+            "WHERE s2.source_kind=s.source_kind AND s2.business_date=s.business_date) "
+            "AND COALESCE(label.classification,c.classification)='unclassified'",
+            (payload.source, payload.start_date, payload.end_date),
+        )
+        unclassified_count = int((await cur.fetchone())[0] or 0)
+    return [
+        {"location_key": row[0], "display_name": row[1], "record_count": int(row[2] or 0),
+         "last_seen_date": row[3].isoformat() if row[3] else None, "classification": row[4]}
+        for row in rows
+    ], total, record_count, unclassified_count
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -140,6 +237,16 @@ async def _directories(conn) -> tuple[set[str], set[str]]:
     return personnel, places
 
 
+async def _manual_location_labels(conn, source: str = "peace") -> dict[str, str]:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT location_key,classification FROM _code_summary_location_labels "
+            "WHERE source_kind=%s AND enabled=1",
+            (source,),
+        )
+        return {str(row[0]): str(row[1]) for row in await cur.fetchall()}
+
+
 async def _insert_failed_run(
     conn,
     *,
@@ -205,6 +312,15 @@ async def _commit_source(
                 ),
             )
             run_id = int(cur.lastrowid)
+            if source == "peace":
+                for item in result.get("location_counts", []):
+                    await cur.execute(
+                        "INSERT INTO _code_summary_location_counts "
+                        "(run_id,source_kind,business_date,location_key,display_name,classification,row_count) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                        "ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),classification=VALUES(classification),row_count=VALUES(row_count)",
+                        (run_id, source, date.fromisoformat(item["date"]), item["location_key"], item["display_name"], item["classification"], item["row_count"]),
+                    )
             for item in result["rows"]:
                 business_date = date.fromisoformat(item["date"])
                 await cur.execute(
@@ -256,6 +372,7 @@ async def fetch_code_summaries(
             try:
                 await job.update(phase="fetching", total=2, message="正在读取平安码和管家码来源")
                 personnel, places = await _directories(work_conn)
+                manual_labels = await _manual_location_labels(work_conn, "peace")
                 try:
                     fetched = await fetch_sources(payload.start_date, payload.end_date)
                 except CodeSummaryError as exc:
@@ -284,6 +401,7 @@ async def fetch_code_summaries(
                                 payload.end_date,
                                 personnel_names=personnel,
                                 place_names=places,
+                                manual_labels=manual_labels,
                                 new_registration_counts=(
                                     registration_counts if source == "peace" else None
                                 ),
@@ -374,7 +492,10 @@ async def search_code_summaries(
         "start_date": latest[2].isoformat(), "end_date": latest[3].isoformat(),
         "raw_count": int(latest[4] or 0), "valid_count": int(latest[5] or 0),
         "excluded_count": int(latest[6] or 0), "duplicate_count": int(latest[7] or 0),
-        "unclassified_count": int(latest[8] or 0), "error_code": latest[9],
+        "unclassified_count": (
+            sum(int(row.get("unclassified_scan_count") or 0) for row in data)
+            if payload.source == "peace" else int(latest[8] or 0)
+        ), "error_code": latest[9],
         "error_message": latest[10],
         "finished_at": latest[11].isoformat() + "Z" if latest[11] else None,
         "created_at": latest[12].isoformat() + "Z" if latest[12] else None,
@@ -401,3 +522,109 @@ async def search_code_summaries(
             else None
         ),
     }
+
+
+@router.post("/locations/search")
+async def search_code_summary_locations(
+    payload: LocationSearchRequest,
+    _user: dict = Depends(require_permission(VISIT_SUMMARY_VIEW)),
+    conn=Depends(get_db),
+):
+    if payload.source != "peace":
+        return {"data": [], "total": 0, "record_count": 0, "unclassified_count": 0,
+                "classifications": LOCATION_CLASSIFICATIONS}
+    rows, total, record_count, unclassified_count = await _location_rows(conn, payload)
+    return {
+        "source": payload.source,
+        "start_date": payload.start_date.isoformat(),
+        "end_date": payload.end_date.isoformat(),
+        "data": rows,
+        "total": total,
+        "record_count": record_count,
+        "unclassified_count": unclassified_count,
+        "classifications": LOCATION_CLASSIFICATIONS,
+    }
+
+
+@router.post("/locations/classifications")
+async def save_code_summary_location_classifications(
+    payload: LocationClassificationsRequest,
+    request: Request,
+    user: dict = Depends(require_permission(CODE_SUMMARY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            for item in payload.items:
+                location_key = "__empty__" if item.location_key == "__empty__" else normalize_label(item.location_key)
+                if not location_key:
+                    raise HTTPException(422, "位置标识不能为空")
+                await cur.execute(
+                    "INSERT INTO _code_summary_location_labels "
+                    "(source_kind,location_key,display_name,classification,enabled,created_by,updated_by) "
+                    "VALUES (%s,%s,%s,%s,1,%s,%s) "
+                    "ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),classification=VALUES(classification),enabled=1,updated_by=VALUES(updated_by)",
+                    (payload.source, location_key, item.display_name[:255], item.classification, int(user["id"]), int(user["id"])),
+                )
+        await conn.commit()
+    except HTTPException:
+        await conn.rollback()
+        raise
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user, "code_summary.location_classify", target_type="code_summary_location",
+        target_name=str(len(payload.items)), result="success",
+        detail={"source": payload.source, "count": len(payload.items),
+                "classifications": sorted({item.classification for item in payload.items})},
+        **request_audit_fields(request),
+    )
+    return {"updated": len(payload.items), "message": "位置分类已保存"}
+
+
+@router.post("/locations/recompute")
+async def recompute_code_summary_locations(
+    payload: DateRangeRequest,
+    request: Request,
+    user: dict = Depends(require_permission(CODE_SUMMARY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    changed = 0
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT c.business_date,c.location_key,SUM(c.row_count),COALESCE(MAX(label.classification),MAX(c.classification),'unclassified') "
+                "FROM _code_summary_location_counts c "
+                "JOIN _code_daily_snapshots s ON s.run_id=c.run_id AND s.business_date=c.business_date "
+                "LEFT JOIN _code_summary_location_labels label ON label.source_kind=c.source_kind "
+                "AND label.location_key=c.location_key AND label.enabled=1 "
+                "WHERE c.source_kind='peace' AND c.business_date BETWEEN %s AND %s "
+                "AND s.version_no=(SELECT MAX(s2.version_no) FROM _code_daily_snapshots s2 WHERE s2.source_kind='peace' AND s2.business_date=c.business_date) "
+                "GROUP BY c.business_date,c.location_key, label.classification",
+                (payload.start_date, payload.end_date),
+            )
+            grouped: dict[date, dict[str, int]] = {}
+            for business_date, _key, count, classification in await cur.fetchall():
+                metrics = grouped.setdefault(business_date, {"patrol": 0, "dispatch_hall": 0, "household_hall": 0, "social": 0, "unclassified": 0})
+                if classification in metrics:
+                    metrics[classification] += int(count or 0)
+            for business_date, metrics in grouped.items():
+                await cur.execute(
+                    "UPDATE _code_daily_snapshots SET patrol_scan_count=%s,dispatch_hall_scan_count=%s,household_hall_scan_count=%s,social_scan_count=%s,unclassified_scan_count=%s,classifier_version=%s "
+                    "WHERE source_kind='peace' AND business_date=%s AND version_no=(SELECT max_version FROM (SELECT MAX(version_no) AS max_version FROM _code_daily_snapshots WHERE source_kind='peace' AND business_date=%s) latest)",
+                    (metrics["patrol"], metrics["dispatch_hall"], metrics["household_hall"], metrics["social"], metrics["unclassified"], CLASSIFIER_VERSION, business_date, business_date),
+                )
+                changed += cur.rowcount or 0
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user, "code_summary.location_recompute", target_type="code_summary", target_name="peace",
+        result="success", detail={"start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat(), "days": changed},
+        **request_audit_fields(request),
+    )
+    return {"updated_days": changed, "message": "位置分类汇总已重新计算"}

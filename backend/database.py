@@ -10,6 +10,7 @@ from services.business_time import current_business_date
 from services.permissions import (
     ALL_PERMISSIONS,
     AUTHENTICATED_PERMISSIONS,
+    CODE_SUMMARY_MANAGE,
     DEFAULT_PERMISSION_GROUPS,
     ONLINE_RAW_EDIT,
     ONLINE_RAW_ROW_MANAGE,
@@ -207,6 +208,7 @@ async def ensure_permission_schema(cur) -> None:
             POLICE_ADDRESS_MANAGE,
             POLICE_DISPATCH_MANAGE,
             VISIT_SOURCE_MANAGE,
+            CODE_SUMMARY_MANAGE,
             "registry.property.view",
             "registry.property.manage",
             "registry.watch.view",
@@ -225,6 +227,7 @@ async def ensure_permission_schema(cur) -> None:
             POLICE_ADDRESS_MANAGE,
             POLICE_DISPATCH_MANAGE,
             VISIT_SOURCE_MANAGE,
+            CODE_SUMMARY_MANAGE,
             "registry.property.view",
             "registry.property.manage",
             "registry.watch.view",
@@ -238,6 +241,7 @@ async def ensure_permission_schema(cur) -> None:
         },
         "super_admin": {
             VISIT_SOURCE_MANAGE,
+            CODE_SUMMARY_MANAGE,
         },
         "community_registry_viewer": {
             ONLINE_TASK_MANAGE,
@@ -2004,6 +2008,38 @@ class DatabaseManager:
                         INDEX idx_code_snapshot_run (run_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                       COLLATE=utf8mb4_unicode_ci
+                    """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _code_summary_location_labels (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        source_kind VARCHAR(20) NOT NULL,
+                        location_key VARCHAR(255) NOT NULL,
+                        display_name VARCHAR(255) NOT NULL DEFAULT '',
+                        classification VARCHAR(30) NOT NULL,
+                        enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        created_by INT DEFAULT NULL,
+                        updated_by INT DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_code_location_label (source_kind, location_key),
+                        INDEX idx_code_location_label_class (source_kind, classification, enabled)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _code_summary_location_counts (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        run_id BIGINT NOT NULL,
+                        source_kind VARCHAR(20) NOT NULL,
+                        business_date DATE NOT NULL,
+                        location_key VARCHAR(255) NOT NULL,
+                        display_name VARCHAR(255) NOT NULL DEFAULT '',
+                        classification VARCHAR(30) NOT NULL DEFAULT 'unclassified',
+                        row_count INT NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_code_location_count (run_id, business_date, location_key),
+                        INDEX idx_code_location_count_range (source_kind, business_date, location_key),
+                        INDEX idx_code_location_count_run (run_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)
                 for column_name, column_definition in [
                     (

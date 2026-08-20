@@ -941,6 +941,36 @@ CREATE TABLE IF NOT EXISTS _code_daily_snapshots (
     INDEX idx_code_snapshot_run (run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _code_summary_location_labels (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source_kind VARCHAR(20) NOT NULL,
+    location_key VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NOT NULL DEFAULT '',
+    classification VARCHAR(30) NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    created_by INT DEFAULT NULL,
+    updated_by INT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_code_location_label (source_kind, location_key),
+    INDEX idx_code_location_label_class (source_kind, classification, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _code_summary_location_counts (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT NOT NULL,
+    source_kind VARCHAR(20) NOT NULL,
+    business_date DATE NOT NULL,
+    location_key VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NOT NULL DEFAULT '',
+    classification VARCHAR(30) NOT NULL DEFAULT 'unclassified',
+    row_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_code_location_count (run_id, business_date, location_key),
+    INDEX idx_code_location_count_range (source_kind, business_date, location_key),
+    INDEX idx_code_location_count_run (run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 1. 全链条（15列业务数据，兼容旧版14列腾讯来源表）
 CREATE TABLE IF NOT EXISTS t_fullchain (
     id              INT AUTO_INCREMENT PRIMARY KEY,
