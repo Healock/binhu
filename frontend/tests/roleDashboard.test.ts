@@ -30,6 +30,20 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
   assert.match(source, /今日尚无同步快照/)
 })
 
+test('实际工作次数连续点击十次打开无路由隐藏工作区', () => {
+  const dashboard = read('../src/pages/RoleDashboard.tsx')
+  const overlay = read('../src/components/HiddenWorkspaceOverlay.tsx')
+  const app = read('../src/App.tsx')
+  assert.match(dashboard, /onClick,\s*onHintClick,/)
+  assert.match(dashboard, /onHintClick=\{handleSecretClick\}/)
+  assert.match(dashboard, /clicks\.count >= 10/)
+  assert.match(dashboard, /now - clicks\.lastAt > 2500/)
+  assert.match(dashboard, /<HiddenWorkspaceOverlay open=\{hiddenWorkspaceOpen\}/)
+  assert.match(overlay, /createPortal\([\s\S]*document\.body/)
+  assert.match(overlay, /event\.key === 'Escape'/)
+  assert.doesNotMatch(app, /path="\/hidden/)
+})
+
 test('仪表盘使用双列瀑布流并在手机端回到单列', () => {
   const styles = read('../src/index.css')
   assert.match(styles, /\.role-dashboard-sections\s*\{[\s\S]*columns: 2;/)
