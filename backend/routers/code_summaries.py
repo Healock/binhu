@@ -17,7 +17,7 @@ from services.code_summary import (
     CodeSummaryError,
     SOURCE_META,
     aggregate_rows,
-    estimated_registration_count,
+    count_fullchain_registrations,
     fetch_sources,
     normalize_label,
 )
@@ -74,19 +74,13 @@ def _public_metrics(source: str, row: dict) -> dict:
         result["instruction_count"], result["total_people"]
     )
     if source == "peace":
-        estimated_count, estimated_ratio = estimated_registration_count(
-            result["business_date"],
-            result["instruction_count"],
-        )
         result.update({
             "patrol_scan_count": int(row.get("patrol_scan_count") or 0),
             "dispatch_hall_scan_count": int(row.get("dispatch_hall_scan_count") or 0),
             "household_hall_scan_count": int(row.get("household_hall_scan_count") or 0),
             "social_scan_count": int(row.get("social_scan_count") or 0),
             "unclassified_scan_count": int(row.get("unclassified_scan_count") or 0),
-            "new_registration_count": estimated_count,
-            "new_registration_estimate_ratio": estimated_ratio,
-            "new_registration_estimated": True,
+            "new_registration_count": int(row.get("new_registration_count") or 0),
         })
         result["effective_scan_rate"] = _rate(
             result["new_registration_count"], result["total_people"]
@@ -118,10 +112,6 @@ def _total(source: str, rows: list[dict]) -> dict:
         result["effective_scan_rate"] = _rate(
             result["new_registration_count"], result["total_people"]
         )
-        result["new_registration_estimate_ratio"] = _rate(
-            result["new_registration_count"], result["instruction_count"]
-        )
-        result["new_registration_estimated"] = True
     return result
 
 
@@ -265,6 +255,14 @@ async def fetch_code_summaries(
             fetched = await fetch_sources(payload.start_date, payload.end_date)
         except CodeSummaryError as exc:
             fetched = {source: {"error": exc} for source in ("peace", "manager")}
+        registration_counts: dict[date, int] = {}
+        if not fetched["peace"].get("error"):
+            try:
+                registration_counts = await count_fullchain_registrations(
+                    conn, payload.start_date, payload.end_date
+                )
+            except CodeSummaryError as exc:
+                fetched["peace"] = {"error": exc}
         for source in ("peace", "manager"):
             source_result = fetched[source]
             if source_result.get("error"):
@@ -285,6 +283,7 @@ async def fetch_code_summaries(
                     payload.end_date,
                     personnel_names=personnel,
                     place_names=places,
+                    new_registration_counts=registration_counts if source == "peace" else None,
                 )
                 run_id, status = await _commit_source(
                     conn,
@@ -381,6 +380,17 @@ async def search_code_summaries(
             (payload.source,),
         )
         latest_success = await cur.fetchone()
+    if payload.source == "peace":
+        try:
+            registration_counts = await count_fullchain_registrations(
+                conn, payload.start_date, payload.end_date
+            )
+        except CodeSummaryError as exc:
+            raise HTTPException(503, exc.message) from exc
+        for row in rows:
+            row["new_registration_count"] = registration_counts.get(
+                date.fromisoformat(row["business_date"]), 0
+            )
     data = [_public_metrics(payload.source, row) for row in rows]
     latest_summary = _json_value(latest[13]) if latest else {}
     latest_run = None if not latest else {
