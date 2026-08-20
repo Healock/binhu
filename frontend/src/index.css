@@ -4747,16 +4747,11 @@ button.role-dashboard-metric:hover {
 }
 
 .role-dashboard-metric__hint--secret {
+  display: inline-block;
   width: fit-content;
-  min-width: 0;
-  min-height: 0;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-  cursor: default;
-  font: inherit;
-  line-height: inherit;
+  cursor: inherit;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .hidden-workspace-overlay {
