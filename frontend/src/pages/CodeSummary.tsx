@@ -4,6 +4,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import { PageHeader, Panel } from '../components/ui'
+import ExternalDataPanel from '../components/ExternalDataPanel'
 import { useAuth } from '../context/AuthContext'
 import {
   fetchCodeSummaries,
@@ -191,41 +192,47 @@ export default function CodeSummary() {
   return (
     <div className="app-page min-w-0">
       <PageHeader title="平安码/管家码汇总" description="按日期查看平安码和管家码去重后的扫码、指令和登记指标" />
-      <Panel
-        title="数据获取"
+      <ExternalDataPanel
+        title="平安码与管家码数据获取"
         description="来源数据只在服务器端读取；获取失败不会覆盖已保存的每日快照。"
-        extra={canFetch ? <div className="flex flex-wrap gap-2"><Button icon={<ReloadOutlined />} loading={fetching} onClick={() => void handleFetch()}>自动获取平安码管家码数据</Button><Button onClick={() => void handleExport()}>导出 XLSX</Button></div> : <Button onClick={() => void handleExport()}>导出 XLSX</Button>}
+        actions={canFetch ? <><Button type="primary" icon={<ReloadOutlined />} loading={fetching} onClick={() => void handleFetch()}>自动获取平安码管家码数据</Button><Button onClick={() => void handleExport()}>导出 XLSX</Button></> : <Button onClick={() => void handleExport()}>导出 XLSX</Button>}
+        controls={<label><span>业务日期范围</span><RangePicker
+          value={range}
+          allowClear={false}
+          onChange={value => {
+            if (value?.[0] && value[1]) setRange([value[0], value[1]])
+          }}
+        /></label>}
+        stats={[
+          { label: '系统时区', value: systemTimezone },
+          {
+            label: '最近获取',
+            value: <Tag color={!report?.latest_run ? 'default' : report.latest_run.status === 'failed' ? 'error' : report.latest_run.status === 'warning' ? 'warning' : 'success'}>
+              {report?.latest_run
+                ? report.latest_run.status === 'success' ? '成功' : report.latest_run.status === 'warning' ? '有质量提醒' : '失败'
+                : '尚未获取'}
+            </Tag>,
+          },
+          { label: '最近成功', value: report?.latest_success_at ? formatUTCTime(report.latest_success_at, systemTimezone) : '暂无' },
+          { label: '当前区间', value: `${startDate} 至 ${endDate}` },
+        ]}
+        progress={fetchJob && (fetchJob.status === 'queued' || fetchJob.status === 'running') ? {
+          label: '后台获取任务',
+          status: fetchJob.status === 'queued' ? '等待执行' : '执行中',
+          detail: `${fetchJob.message || fetchJob.phase}${fetchJob.total ? ` · ${fetchJob.current}/${fetchJob.total}` : ''}`,
+          percent: fetchJob.progress ?? 0,
+        } : undefined}
       >
-        <div className="flex flex-wrap items-center gap-3">
-          <RangePicker
-            value={range}
-            allowClear={false}
-            onChange={value => {
-              if (value?.[0] && value[1]) setRange([value[0], value[1]])
-            }}
-          />
-          <span className="text-sm text-[var(--app-text-secondary)]">系统时区：{systemTimezone}</span>
-          <Tag color={report?.latest_run?.status === 'failed' ? 'error' : report?.latest_run?.status === 'warning' ? 'warning' : 'default'}>
-            {report?.latest_run
-              ? `最近获取：${report.latest_run.status === 'success' ? '成功' : report.latest_run.status === 'warning' ? '有质量提醒' : '失败'}`
-              : '尚未获取'}
-          </Tag>
-          <span className="text-sm text-[var(--app-text-secondary)]">
-            最近成功：{report?.latest_success_at ? formatUTCTime(report.latest_success_at, systemTimezone) : '暂无'}
-          </span>
-          {fetchJob && (fetchJob.status === 'queued' || fetchJob.status === 'running') && <span className="text-sm text-[var(--app-text-secondary)]">后台获取：{fetchJob.message || fetchJob.phase} · {fetchJob.total ? `${fetchJob.current}/${fetchJob.total}` : '处理中'}{fetchJob.progress != null ? ` · ${fetchJob.progress}%` : ''}</span>}
-        </div>
-        {report?.latest_run?.error_message && <Alert className="mt-3" type="warning" showIcon message={report.latest_run.error_message} />}
+        {report?.latest_run?.error_message && <Alert type="warning" showIcon message={report.latest_run.error_message} />}
         {report?.latest_run?.status === 'warning' && report.latest_run.invalid_time_count > 0 && (
           <Alert
-            className="mt-3"
             type="warning"
             showIcon
             message={`${report.latest_run.invalid_time_count} 条来源记录缺少有效 comparisonTime，已跳过；其余正常数据已更新`}
           />
         )}
-        {error && <Alert className="mt-3" type="error" showIcon message={error} />}
-      </Panel>
+        {error && <Alert type="error" showIcon message={error} />}
+      </ExternalDataPanel>
       <Panel title={source === 'peace' ? '平安码宽表' : '管家码宽表'}>
         <Tabs activeKey={source} items={SOURCE_OPTIONS.map(item => ({ key: item.value, label: item.label }))} onChange={value => setSource(value as CodeSummarySource)} />
         {source === 'peace' && <Alert className="mb-3" type="info" showIcon message="新增登记数按全链条创建时间和核查结果实时统计；当天数据可能随核查进度变化。" />}

@@ -6,6 +6,7 @@ import {
 import type { TableColumnsType } from 'antd'
 import { FileImageOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
+import ExternalDataPanel from '../components/ExternalDataPanel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
@@ -622,11 +623,6 @@ export default function RegistryManagement() {
     showIcon
     message="这里展示来源数据中需要在居住证系统修正的房屋"
     description="平台不会直接修改居住证系统。请根据“问题字段与错误值”和原因，到居住证系统更新正确内容；再次导入最新数据后即可重新核对。"
-  /> : tab === 'imports' ? <Alert
-    type="info"
-    showIcon
-    message="数据导入"
-    description="户号表用于补充房屋档案，房东责任告知书只会挂载到已存在的出租房。预览不会修改正式房屋档案。"
   /> : undefined
 
   const certificateRunActive = Boolean(certificateRun && ['pending', 'running'].includes(certificateRun.status))
@@ -711,12 +707,12 @@ export default function RegistryManagement() {
           ]}
         />
         <div className="registry-management__content">
-          <ListToolbar
+          {tab !== 'imports' && <ListToolbar
             filters={toolbarFilters}
             notice={toolbarNotice}
-            meta={<span>{tab === 'imports' ? (importPreview ? `本次预览 ${importPreview.total_count} 条` : '尚未开始预览') : `当前筛选共 ${total} 条`}</span>}
+            meta={<span>当前筛选共 {total} 条</span>}
             actions={toolbarActions}
-          />
+          />}
           {tab === 'issues' && <AppTable
             rowKey="id"
             loading={loading}
@@ -726,38 +722,44 @@ export default function RegistryManagement() {
             columns={issueColumns}
             emptyText="当前筛选条件下没有问题房屋"
           />}
-          {tab === 'imports' && <div className="registry-import-result">
-            {certificateRun && <div className={`registry-certificate-run registry-certificate-run--${certificateRun.status}`}>
-              <div className="registry-certificate-run__heading">
-                <span>{certificateRunActive && <Spin size="small" />}{certificatePhaseLabel}</span>
-                <Tag color={certificateRun.status === 'completed' ? 'success' : certificateRun.status === 'failed' ? 'error' : 'processing'}>
-                  {certificateRun.status === 'completed' ? '已完成' : certificateRun.status === 'failed' ? '已中断' : '执行中'}
-                </Tag>
-              </div>
-              <div className="registry-certificate-run__counts">
-                <span>{certificateRun.trigger_source === 'scheduled' ? '每日自动读取' : '人工读取'}</span>
-                {certificateRun.business_date && <span>业务日期 {certificateRun.business_date}</span>}
-                <span>已读取 {certificateRun.fetched_count} 条</span>
-                <span>通过范围校验 {certificateRun.accepted_count} 条</span>
-                <span>排除 {certificateRun.rejected_count} 条</span>
-                {certificateRun.current_page > 0 && <span>已保存至第 {certificateRun.current_page} 页</span>}
-              </div>
-              {certificateRun.status === 'failed' && <Alert
-                type="warning"
-                showIcon
-                message={certificateRun.error_message || '读取中断，已保存当前进度'}
-                description={certificateRun.error_code === 'source_changed'
-                  ? '断点位置的数据已经变化，为避免页码错位，需要从第一页重新读取。'
-                  : '可以点击“继续读取”从已保存分页继续；如来源数据已经大幅调整，也可以选择重新读取。'}
-              />}
-              {certificateRunActive && <div className="registry-certificate-run__hint">可以离开本页面，任务会在服务器继续执行；回来后会自动恢复进度显示。</div>}
-            </div>}
+          {tab === 'imports' && <ExternalDataPanel
+            embedded
+            title="房屋档案外部数据"
+            description="户号表用于补充房屋档案，房东责任告知书只挂载到已存在的出租房；预览不会修改正式档案。"
+            actions={toolbarActions}
+            stats={[
+              { label: '本次预览', value: importPreview ? `${importPreview.total_count} 条` : '尚未开始' },
+              { label: '来源', value: importPreview?.source_type === 'certificate' ? '房东责任告知书' : importPreview ? '户号表' : '等待选择' },
+              { label: '读取方式', value: certificateRun?.trigger_source === 'scheduled' ? '每日自动读取' : certificateRun ? '人工读取' : '尚无任务' },
+              { label: '已读取', value: `${certificateRun?.fetched_count || 0} 条` },
+              { label: '范围校验通过', value: `${certificateRun?.accepted_count || 0} 条`, hint: `排除 ${certificateRun?.rejected_count || 0} 条` },
+            ]}
+            progress={certificateRun ? {
+              label: <span className="flex items-center gap-2">{certificateRunActive && <Spin size="small" />}{certificatePhaseLabel}</span>,
+              status: <Tag color={certificateRun.status === 'completed' ? 'success' : certificateRun.status === 'failed' ? 'error' : 'processing'}>
+                {certificateRun.status === 'completed' ? '已完成' : certificateRun.status === 'failed' ? '已中断' : '执行中'}
+              </Tag>,
+              detail: <>
+                {certificateRun.business_date ? `业务日期 ${certificateRun.business_date}` : '等待业务日期'}
+                {certificateRun.current_page > 0 && <> · 已保存至第 {certificateRun.current_page} 页</>}
+                {certificateRunActive && <> · 可以离开本页面，任务会在服务器继续执行</>}
+              </>,
+            } : undefined}
+          >
+            {certificateRun?.status === 'failed' && <Alert
+              type="warning"
+              showIcon
+              message={certificateRun.error_message || '读取中断，已保存当前进度'}
+              description={certificateRun.error_code === 'source_changed'
+                ? '断点位置的数据已经变化，为避免页码错位，需要从第一页重新读取。'
+                : '可以点击“继续读取”从已保存分页继续；如来源数据已经大幅调整，也可以选择重新读取。'}
+            />}
             {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
               ? `告知书共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可尝试挂载；${importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}
               description={importPreview.status === 'preview' ? '当前仍是预览状态，确认后只导入正常数据，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
-          </div>}
+          </ExternalDataPanel>}
         {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={listPagination} scroll={{ x: 1300 }} emptyText="当前筛选条件下没有房屋档案" />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}

@@ -160,3 +160,29 @@ test('下发导入工作台提供原始与已处理数据模式', () => {
   assert.match(panelSource, /\/police-tasks\?batch=/)
   assert.match(clientSource, /form\.append\('import_mode', importMode\)/)
 })
+
+test('外部数据获取入口使用统一面板结构', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/ExternalDataPanel.tsx', import.meta.url),
+    'utf8',
+  )
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  const consumers = [
+    '../src/pages/CodeSummary.tsx',
+    '../src/components/VisitSourcePanel.tsx',
+    '../src/components/SyncPanel.tsx',
+    '../src/pages/RegistryManagement.tsx',
+    '../src/pages/WorkflowConfig.tsx',
+  ].map(path => readFileSync(new URL(path, import.meta.url), 'utf8'))
+
+  assert.match(componentSource, /function ExternalDataPanel/)
+  assert.match(componentSource, /ExternalDataStatus/)
+  assert.match(componentSource, /ExternalDataProgress/)
+  for (const source of consumers) assert.match(source, /<ExternalDataPanel/)
+
+  assert.match(styles, /\.external-data-panel__controls\s*\{/)
+  assert.match(styles, /\.external-data-panel__stats\s*\{/)
+  assert.match(styles, /\.external-data-panel__progress[\s\S]*color-mix/)
+  assert.match(styles, /\.external-data-panel--embedded\s*\{/)
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.external-data-panel__stats[\s\S]*?repeat\(2, minmax\(0, 1fr\)\)/)
+})
