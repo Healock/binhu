@@ -24,6 +24,7 @@ import {
 } from '../api/client'
 import { Panel } from '../components/ui'
 import HiddenWorkspaceOverlay from '../components/HiddenWorkspaceOverlay'
+import CompletionCelebration from '../components/CompletionCelebration'
 import { useAuth } from '../context/AuthContext'
 import {
   DASHBOARD_CACHE_FRESH_MS,
@@ -199,6 +200,7 @@ function FlowTasks({ data }: { data: RoleDashboardData }) {
 
 function OnlineOverview({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
+  const [celebrating, setCelebrating] = useState(false)
   const overview = data.online_overview
   if (!overview) return null
   const week = overview.week || {}
@@ -209,6 +211,9 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
     scope: taskScope,
     status,
   }))
+  const totalTasks = Number(week.total_tasks || 0)
+  const completedTasks = Number(week.completed_tasks || 0)
+  const isComplete = totalTasks > 0 && completedTasks >= totalTasks
   return (
     <Panel title="在线核查态势" description={`${overview.scope_label} · ${data.period.start_date} 至 ${data.period.end_date}`} extra={<Button type="link" onClick={() => navigate(buildUrl('/summary', { start: data.period.start_date, end: data.period.end_date, scope: 'responsibility' }))}>查看完整汇总</Button>}>
       <MetricGrid>
@@ -216,7 +221,12 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
         <DashboardCard label="待完成" value={metric(week.pending_tasks)} tone="red" onClick={() => go('pending')} />
         <DashboardCard label="已完成" value={metric(week.completed_tasks)} tone="green" onClick={() => go('completed')} />
         <DashboardCard label="当前无法核实" value={metric(week.unable_to_verify)} tone="amber" />
-        <DashboardCard label="完成率" value={percent(week.completion_rate)} tone="purple" />
+        <DashboardCard
+          label="完成率"
+          value={percent(week.completion_rate)}
+          tone="purple"
+          onClick={isComplete ? () => setCelebrating(true) : undefined}
+        />
       </MetricGrid>
       <Suspense fallback={null}>
         <MonoBulletChart
@@ -226,6 +236,7 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
           color="var(--mono-chart-completed)"
         />
       </Suspense>
+      <CompletionCelebration open={celebrating} onClose={() => setCelebrating(false)} />
       {overview.community_breakdown.length > 0 && (
         <Suspense fallback={<div className="mono-rounded-stacked-bar"><Skeleton active paragraph={{ rows: 8 }} /></div>}>
           <MonoRoundedStackedBarChart
