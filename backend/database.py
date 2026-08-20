@@ -16,6 +16,7 @@ from services.permissions import (
     ONLINE_TASK_MANAGE,
     POLICE_ADDRESS_MANAGE,
     POLICE_DISPATCH_MANAGE,
+    PRESENCE_DETAIL_VIEW,
     POSITION_DEFAULT_GROUP,
     QMF_REGISTRATION_EXECUTE,
     VISIT_SOURCE_MANAGE,
@@ -233,6 +234,7 @@ async def ensure_permission_schema(cur) -> None:
             "workflow.attachment.view",
             "workflow.ticket.manage",
             QMF_REGISTRATION_EXECUTE,
+            PRESENCE_DETAIL_VIEW,
         },
         "super_admin": {
             VISIT_SOURCE_MANAGE,
@@ -242,6 +244,9 @@ async def ensure_permission_schema(cur) -> None:
             WORKFLOW_TICKET_CREATE,
             WORKFLOW_TICKET_VIEW,
             WORKFLOW_ATTACHMENT_VIEW,
+        },
+        "presence_detail_viewer": {
+            PRESENCE_DETAIL_VIEW,
         },
     }
     for code, additions in permission_additions.items():
@@ -323,6 +328,18 @@ async def ensure_permission_schema(cur) -> None:
             (position, permission_group_id, updated_by)
         SELECT position, permission_group_id, updated_by
         FROM _position_permission_groups
+    """)
+    await cur.execute("""
+        INSERT IGNORE INTO _position_permission_group_links
+            (position, permission_group_id)
+        SELECT position_name.position, permission_group.id
+        FROM (
+            SELECT '片长' AS position
+            UNION ALL SELECT '中队长'
+            UNION ALL SELECT '社区民警'
+        ) AS position_name
+        JOIN _permission_groups AS permission_group
+          ON permission_group.code='presence_detail_viewer'
     """)
     await cur.execute("""
         INSERT IGNORE INTO _position_permission_group_links
@@ -2190,6 +2207,19 @@ class DatabaseManager:
                         INDEX idx_expires (expires_at),
                         INDEX idx_session_user_activity (user_id, last_activity_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """)
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS _user_presence_clients (
+                        client_id VARCHAR(64) PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        session_id VARCHAR(64) NOT NULL,
+                        last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_presence_last_seen (last_seen_at),
+                        INDEX idx_presence_user (user_id),
+                        INDEX idx_presence_session (session_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                      COLLATE=utf8mb4_unicode_ci
                 """)
                 await ensure_permission_schema(cur)
                 await ensure_online_editor_schema(cur)

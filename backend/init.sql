@@ -758,6 +758,17 @@ CREATE TABLE IF NOT EXISTS _sessions (
     INDEX idx_session_user_activity (user_id, last_activity_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _user_presence_clients (
+    client_id        VARCHAR(64) PRIMARY KEY,
+    user_id          INT NOT NULL,
+    session_id       VARCHAR(64) NOT NULL,
+    last_seen_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_presence_last_seen (last_seen_at),
+    INDEX idx_presence_user (user_id),
+    INDEX idx_presence_session (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _visit_import_batches (
     id                 BIGINT AUTO_INCREMENT PRIMARY KEY,
     import_type        VARCHAR(20) NOT NULL DEFAULT 'detail',

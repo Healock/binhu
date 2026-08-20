@@ -23,7 +23,9 @@ SOURCE_META = {
         "identity": "idCard",
         "time": "comparisonTime",
         "update_fields": ("updateDate",),
-        "required": ("idCard", "terminal", "population", "comparisonTime"),
+        # terminal is the scan channel (WeChat/Alipay). location is the
+        # collection point used for patrol, hall and social-area metrics.
+        "required": ("idCard", "location", "population", "comparisonTime"),
         "station_fields": ("assignJgmc", "jgmc"),
     },
     "manager": {
@@ -36,11 +38,44 @@ SOURCE_META = {
     },
 }
 
-CLASSIFIER_VERSION = "v2"
+CLASSIFIER_VERSION = "v3"
 PAGE_SIZE = 200
 INSTRUCTION_RESULTS = {"流口未登记", "流口已注销"}
-ESTIMATED_REGISTRATION_MIN_BPS = 800
-ESTIMATED_REGISTRATION_MAX_BPS = 1200
+
+# High-confidence location markers. They are intentionally evaluated only
+# after the maintained place directory, so a future directory entry can
+# override a broad suffix without changing the classifier code.
+SOCIAL_LOCATION_MARKERS = (
+    "有限公司",
+    "有限责任公司",
+    "文化娱乐",
+    "餐娱馆",
+    "歌厅",
+    "ktv",
+    "酒吧",
+    "娱乐会所",
+    "休闲会所",
+    "商场",
+    "超市",
+    "酒店",
+    "宾馆",
+    "饭店",
+    "餐厅",
+    "网吧",
+    "足浴",
+    "棋牌室",
+    "洗浴",
+    "医院",
+    "学校",
+    "幼儿园",
+    "园区",
+    "市场",
+    "银行",
+    "营业厅",
+    "体育馆",
+    "影城",
+    "影院",
+)
 
 
 class CodeSummaryError(RuntimeError):
@@ -72,25 +107,7 @@ def _stable_id(value: Any) -> tuple[int, int | str]:
     return (0, int(text)) if text.isdigit() else (1, text)
 
 
-def estimated_registration_count(
-    business_date: date | str,
-    instruction_count: int,
-) -> tuple[int, float]:
-    """Return a stable daily estimate between 8% and 12% of instructions."""
-    count = max(0, int(instruction_count or 0))
-    if count == 0:
-        return 0, 0.0
-    seed = f"{business_date}:{count}:estimated-registration-v1"
-    span = ESTIMATED_REGISTRATION_MAX_BPS - ESTIMATED_REGISTRATION_MIN_BPS + 1
-    basis_points = (
-        ESTIMATED_REGISTRATION_MIN_BPS
-        + int.from_bytes(sha256(seed.encode("utf-8")).digest()[:4], "big") % span
-    )
-    estimated = (count * basis_points + 5000) // 10000
-    return min(count, estimated), basis_points / 10000
-
-
-def classify_terminal(
+def classify_location(
     value: Any,
     *,
     personnel_names: set[str],
@@ -102,19 +119,35 @@ def classify_terminal(
         return "dispatch_hall"
     if normalized == normalize_label("苏州湾大厦"):
         return "household_hall"
-    person_match = normalized in personnel_names
     place_match = normalized in place_names
-    if person_match and place_match:
-        return "unclassified"
-    if person_match:
-        return "patrol"
     if place_match:
         return "social"
+    # Social locations are more reliably identified by a maintained
+    # directory or an organization/venue marker than by the weak name-shape
+    # fallback used for patrol. Evaluate them before personnel matching.
+    if any(marker in normalized for marker in SOCIAL_LOCATION_MARKERS):
+        return "social"
+    if normalized in personnel_names:
+        return "patrol"
     if re.fullmatch(r"[\u4e00-\u9fff]{2}", raw):
         return "patrol"
     if re.fullmatch(r"[\u4e00-\u9fff]{6}", raw):
         return "social"
     return "unclassified"
+
+
+def classify_terminal(
+    value: Any,
+    *,
+    personnel_names: set[str],
+    place_names: set[str],
+) -> str:
+    """Backward-compatible alias for callers using the old function name."""
+    return classify_location(
+        value,
+        personnel_names=personnel_names,
+        place_names=place_names,
+    )
 
 
 def _date_rows(start_date: date, end_date: date) -> dict[date, dict[str, int]]:
@@ -147,12 +180,14 @@ def aggregate_rows(
     *,
     personnel_names: set[str] | None = None,
     place_names: set[str] | None = None,
+    new_registration_counts: dict[date, int] | None = None,
 ) -> dict[str, Any]:
     if kind not in SOURCE_META:
         raise CodeSummaryError("invalid_source", "不支持的码数据来源")
     meta = SOURCE_META[kind]
     personnel_names = personnel_names or set()
     place_names = place_names or set()
+    new_registration_counts = new_registration_counts or {}
     daily = _date_rows(start_date, end_date)
     candidates: dict[tuple[date, str], tuple[tuple, dict[str, Any]]] = {}
     valid_rows_by_date: defaultdict[date, int] = defaultdict(int)
@@ -199,8 +234,8 @@ def aggregate_rows(
         if population in INSTRUCTION_RESULTS:
             metrics["instruction_count"] += 1
         if kind == "peace":
-            classification = classify_terminal(
-                row.get("terminal"),
+            classification = classify_location(
+                row.get("location"),
                 personnel_names=personnel_names,
                 place_names=place_names,
             )
@@ -224,9 +259,8 @@ def aggregate_rows(
             valid_rows_by_date[business_date] - metrics["total_people"],
         )
         if kind == "peace":
-            metrics["new_registration_count"], _ratio = estimated_registration_count(
-                business_date,
-                metrics["instruction_count"],
+            metrics["new_registration_count"] = max(
+                0, int(new_registration_counts.get(business_date, 0) or 0)
             )
 
     canonical = [
@@ -253,6 +287,56 @@ def aggregate_rows(
         "invalid_time_count": invalid_time_count,
         "classifier_version": CLASSIFIER_VERSION,
     }
+
+
+def _created_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = _text(value).replace("T", " ").removesuffix("Z")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+
+
+async def count_fullchain_registrations(
+    conn,
+    start_date: date,
+    end_date: date,
+) -> dict[date, int]:
+    """Count current full-chain rows marked 已登记 by their 创建时间 date."""
+    counts: dict[date, int] = {}
+    current = start_date
+    while current <= end_date:
+        counts[current] = 0
+        current += timedelta(days=1)
+
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT `创建时间` FROM t_fullchain "
+                "WHERE TRIM(COALESCE(`核查结果`,''))=%s "
+                "AND LEFT(TRIM(COALESCE(`创建时间`,'')),10)>=%s "
+                "AND LEFT(TRIM(COALESCE(`创建时间`,'')),10)<=%s",
+                ("已登记", start_date.isoformat(), end_date.isoformat()),
+            )
+            rows = await cur.fetchall()
+    except Exception as exc:
+        raise CodeSummaryError("fullchain_query_failed", "全链条新增登记数据暂时无法读取") from exc
+
+    for row in rows:
+        value = row[0] if isinstance(row, (tuple, list)) else row.get("创建时间")
+        business_date = _created_date(value)
+        if business_date in counts:
+            counts[business_date] += 1
+    return counts
 
 
 async def _authenticate(client: httpx.AsyncClient) -> None:

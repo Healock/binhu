@@ -65,6 +65,7 @@ from services.qmf_status import (
 from services.qmf_status_scan import (
     create_status_scan_run,
     latest_status_scan_payload,
+    persist_realtime_qmf_status,
     status_scan_payload,
     valid_schedule_time,
 )
@@ -1047,6 +1048,16 @@ async def _execute_run_background(
                 platform_task=platform_task,
                 source_id=run["source_id"],
             )
+            await persist_realtime_qmf_status(
+                conn,
+                parser_type=platform_task["parser_type"],
+                row_key=platform_task["row_key"],
+                source_id=run["source_id"],
+                source_revision=run["expected_revision"],
+                source_row_hash=run["_expected_row_hash"],
+                platform_result=platform_task["result"],
+                status=legacy_status,
+            )
             ensure_registration_allowed(legacy_status)
             await _assert_source_unchanged(
                 conn,
@@ -1371,6 +1382,16 @@ async def get_qmf_legacy_status(
             platform_task=platform_task,
             source_id=data.source_id,
         )
+        await persist_realtime_qmf_status(
+            conn,
+            parser_type=platform_task["parser_type"],
+            row_key=platform_task["row_key"],
+            source_id=data.source_id,
+            source_revision=data.expected_revision,
+            source_row_hash=current_hash,
+            platform_result=platform_task["result"],
+            status=status,
+        )
         audit_state = status.state
         audit_result = "success" if status.state != "unavailable" else "failed"
         return JSONResponse(
@@ -1439,6 +1460,16 @@ async def prepare_qmf_registration(
             conn,
             platform_task=platform_task,
             source_id=data.source_id,
+        )
+        await persist_realtime_qmf_status(
+            conn,
+            parser_type=platform_task["parser_type"],
+            row_key=platform_task["row_key"],
+            source_id=data.source_id,
+            source_revision=data.expected_revision,
+            source_row_hash=current_hash,
+            platform_result=platform_task["result"],
+            status=legacy_status,
         )
         ensure_registration_allowed(legacy_status)
         result = await run_guarded_preview(

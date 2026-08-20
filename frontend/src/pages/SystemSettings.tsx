@@ -277,7 +277,7 @@ export default function SystemSettings() {
     setIdleMsg('')
     try {
       await updateSystemConfig({ session_idle_minutes: String(idleMinutes) })
-      setIdleMsg('空闲退出时间已保存，并立即对现有登录生效')
+      setIdleMsg('无操作自动下线时间已保存，并立即对现有登录生效')
     } catch (error: any) {
       setIdleMsg(error?.response?.data?.detail || '保存失败')
     } finally {
@@ -806,12 +806,12 @@ export default function SystemSettings() {
 
       <Panel
         title="登录安全"
-        description="连续一段时间没有页面跳转、查询或保存操作后，需要重新登录"
+        description="连续一段时间没有点击、触摸、键盘、滚轮或页面跳转操作后自动下线"
       >
         <div className="flex flex-col gap-4">
           <div className="settings-field">
             <label className="settings-field__label text-sm font-medium text-slate-700">
-              空闲退出时间
+              无操作自动下线时间
             </label>
             <InputNumber
               min={5}

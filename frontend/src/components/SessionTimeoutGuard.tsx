@@ -9,6 +9,8 @@ export default function SessionTimeoutGuard() {
   const navigate = useNavigate()
   const [remaining, setRemaining] = useState<number | null>(null)
   const initialRoute = useRef(true)
+  const lastActivityReportAt = useRef(0)
+  const reportingActivity = useRef(false)
 
   const deadlineInfo = useMemo(() => {
     if (!user?.session_policy) return null
@@ -21,12 +23,12 @@ export default function SessionTimeoutGuard() {
       ? {
           deadline: idleDeadline,
           code: 'session_idle_timeout',
-          message: '长时间未操作，请重新登录',
+          message: '登录已到期，请重新登录',
         }
       : {
           deadline: absoluteDeadline,
           code: 'session_expired',
-          message: '登录有效期已结束，请重新登录',
+          message: '登录已到期，请重新登录',
         }
   }, [user])
   const serverOffset = useMemo(() => (
@@ -35,13 +37,34 @@ export default function SessionTimeoutGuard() {
       : 0
   ), [user])
 
+  const reportRealActivity = (force = false) => {
+    if (!user || reportingActivity.current) return
+    const now = Date.now()
+    if (!force && now - lastActivityReportAt.current < 60_000) return
+    lastActivityReportAt.current = now
+    reportingActivity.current = true
+    recordActivity()
+      .catch(() => {})
+      .finally(() => { reportingActivity.current = false })
+  }
+
+  useEffect(() => {
+    if (!user) return
+    const onActivity = () => reportRealActivity()
+    const events: Array<keyof WindowEventMap> = ['click', 'touchstart', 'keydown', 'wheel']
+    events.forEach(eventName => window.addEventListener(eventName, onActivity, { passive: true }))
+    return () => {
+      events.forEach(eventName => window.removeEventListener(eventName, onActivity))
+    }
+  }, [user])
+
   useEffect(() => {
     if (!user) return
     if (initialRoute.current) {
       initialRoute.current = false
       return
     }
-    recordActivity().catch(() => {})
+    reportRealActivity()
   }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -81,6 +104,7 @@ export default function SessionTimeoutGuard() {
   }, [deadlineInfo, navigate, logout, serverOffset, user])
 
   const continueUsing = async () => {
+    lastActivityReportAt.current = Date.now()
     await recordActivity()
     setRemaining(null)
   }
@@ -93,17 +117,17 @@ export default function SessionTimeoutGuard() {
   return (
     <Modal
       open={remaining !== null}
-      title="即将自动退出"
+      title="即将自动下线"
       closable={false}
       maskClosable={false}
-      okText="继续使用"
-      cancelText="退出登录"
+      okText="继续在线"
+      cancelText="立即下线"
       onOk={continueUsing}
       onCancel={exit}
     >
       <p>
-        已接近空闲时限，{remaining ?? 0} 秒后将返回登录页。
-        点击“继续使用”可重新计时。
+        已接近无操作时限，{remaining ?? 0} 秒后将自动下线。
+        点击“继续在线”可重新计时。
       </p>
     </Modal>
   )

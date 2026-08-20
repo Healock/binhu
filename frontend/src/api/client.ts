@@ -7,6 +7,7 @@ import type {
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
   PublicProfile, PublicProfileSummary,
   VisitSourceRun,
+  PresenceHeartbeatResponse, PresenceUsersResponse,
 } from '../types'
 
 const api = axios.create({
@@ -176,6 +177,20 @@ export async function getAppBootstrap(): Promise<AppBootstrapSummary> {
 export async function recordSessionActivity(): Promise<User> {
   const { data } = await api.post('/auth/activity')
   return data.user
+}
+
+export async function sendPresenceHeartbeat(clientId: string): Promise<PresenceHeartbeatResponse> {
+  const { data } = await api.post(
+    '/presence/heartbeat',
+    { client_id: clientId },
+    { headers: { 'X-User-Activity': '0' } },
+  )
+  return data
+}
+
+export async function getPresenceUsers(): Promise<PresenceUsersResponse> {
+  const { data } = await api.get('/presence/users')
+  return data
 }
 
 export async function changeOwnPassword(
@@ -2300,8 +2315,6 @@ export interface CodeSummaryRow {
   instruction_count: number
   effective_warning_rate: number
   new_registration_count?: number
-  new_registration_estimate_ratio?: number
-  new_registration_estimated?: boolean
   effective_scan_rate?: number
   excluded_identity_count: number
   duplicate_removed_count: number

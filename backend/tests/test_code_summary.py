@@ -20,7 +20,7 @@ from routers.code_summaries import (
 from services.code_summary import (
     aggregate_rows,
     classify_terminal,
-    estimated_registration_count,
+    count_fullchain_registrations,
 )
 from services.code_summary import CodeSummaryError
 
@@ -30,6 +30,7 @@ class FakeCursor:
         self.connection = connection
         self.lastrowid = 0
         self.result = None
+        self.results = []
 
     async def __aenter__(self):
         return self
@@ -39,9 +40,14 @@ class FakeCursor:
 
     async def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
+        self.connection.executed_sql.append(normalized)
         if normalized.startswith("INSERT INTO _code_summary_runs"):
             self.connection.next_run_id += 1
             self.lastrowid = self.connection.next_run_id
+        elif normalized.startswith("SELECT `创建时间` FROM t_fullchain"):
+            if self.connection.fullchain_query_error:
+                raise RuntimeError("database unavailable")
+            self.results = [(value,) for value in self.connection.fullchain_created_times]
         elif normalized.startswith("SELECT COALESCE(MAX(version_no),0)"):
             self.result = (self.connection.versions.get((params[0], params[1]), 0),)
         elif normalized.startswith("INSERT INTO _code_daily_snapshots"):
@@ -52,6 +58,9 @@ class FakeCursor:
     async def fetchone(self):
         return self.result
 
+    async def fetchall(self):
+        return self.results
+
 
 class FakeConnection:
     def __init__(self):
@@ -61,6 +70,9 @@ class FakeConnection:
         self.begin_count = 0
         self.commit_count = 0
         self.rollback_count = 0
+        self.fullchain_created_times = []
+        self.fullchain_query_error = False
+        self.executed_sql = []
 
     def cursor(self):
         return FakeCursor(self)
@@ -79,6 +91,7 @@ def _peace(identity: str, terminal: str, population: str, time: str, **extra):
     return {
         "idCard": identity,
         "terminal": terminal,
+        "location": extra.pop("location", terminal),
         "population": population,
         "comparisonTime": time,
         "updateDate": extra.pop("updateDate", time),
@@ -95,6 +108,39 @@ def test_terminal_classifier_prioritizes_halls_directories_and_shape_fallback():
     assert classify_terminal("青云小区", personnel_names=set(), place_names={"青云小区"}) == "social"
     assert classify_terminal("李四", personnel_names=set(), place_names=set()) == "patrol"
     assert classify_terminal("长板社区花园", personnel_names=set(), place_names=set()) == "social"
+    assert classify_terminal("未知窗口", personnel_names=set(), place_names=set()) == "unclassified"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "吴江醍拾贰餐娱馆",
+        "苏州吴江聚宝财文化娱乐有限公司",
+        "吴江区松陵镇聚星汇歌厅",
+        "魏玖KTV",
+        "苏州渔歌子文化娱乐有限公司",
+        "苏州泰湖荟音乐酒吧有限公司",
+    ],
+)
+def test_location_classifier_prioritizes_social_markers_before_patrol(location):
+    assert classify_terminal(
+        location, personnel_names={"吴江"}, place_names=set()
+    ) == "social"
+
+
+def test_location_classifier_prioritizes_halls_and_place_directory():
+    assert classify_terminal(
+        "滨湖所接警大厅", personnel_names=set(), place_names={"滨湖所接警大厅"}
+    ) == "dispatch_hall"
+    assert classify_terminal(
+        "苏州湾大厦", personnel_names=set(), place_names={"苏州湾大厦"}
+    ) == "household_hall"
+    assert classify_terminal(
+        "张三", personnel_names={"张三"}, place_names={"张三"}
+    ) == "social"
+
+
+def test_location_classifier_keeps_ambiguous_values_unclassified():
     assert classify_terminal("未知窗口", personnel_names=set(), place_names=set()) == "unclassified"
 
 
@@ -116,6 +162,34 @@ def test_peace_summary_deduplicates_by_identity_using_latest_record():
     assert day["instruction_count"] == 1
     assert day["new_registration_count"] == 0
     assert day["duplicate_removed_count"] == 1
+
+
+def test_peace_summary_uses_location_instead_of_scan_channel():
+    result = aggregate_rows(
+        "peace",
+        [
+            _peace(
+                "110101199001010015",
+                "微信",
+                "流口未登记",
+                "2026-08-18 08:00:00",
+                location="滨湖所接警大厅",
+            ),
+            _peace(
+                "110101199001010023",
+                "支付宝扫一扫",
+                "流口未登记",
+                "2026-08-18 08:00:00",
+                location="苏州吴江聚宝财文化娱乐有限公司",
+            ),
+        ],
+        date(2026, 8, 18),
+        date(2026, 8, 18),
+    )
+    day = result["rows"][0]
+    assert day["dispatch_hall_scan_count"] == 1
+    assert day["social_scan_count"] == 1
+    assert day["patrol_scan_count"] == 0
 
 
 def test_latest_record_uses_numeric_id_as_final_tie_breaker():
@@ -148,22 +222,17 @@ def test_source_hash_changes_even_when_aggregate_metrics_are_equal():
     assert first["source_hash"] != second["source_hash"]
 
 
-def test_estimated_registration_is_stable_and_within_eight_to_twelve_percent():
-    first_count, first_ratio = estimated_registration_count("2026-08-19", 1000)
-    second_count, second_ratio = estimated_registration_count("2026-08-19", 1000)
-    assert (first_count, first_ratio) == (second_count, second_ratio)
-    assert 80 <= first_count <= 120
-    assert 0.08 <= first_ratio <= 0.12
+def test_peace_summary_uses_fullchain_registration_counts_when_supplied():
+    result = aggregate_rows(
+        "peace",
+        [_peace("110101199001010015", "张三", "流口未登记", "2026-08-18 08:00:00")],
+        date(2026, 8, 18), date(2026, 8, 18),
+        new_registration_counts={date(2026, 8, 18): 7},
+    )
+    assert result["rows"][0]["new_registration_count"] == 7
 
 
-def test_estimated_registration_handles_zero_and_never_exceeds_instructions():
-    assert estimated_registration_count("2026-08-19", 0) == (0, 0.0)
-    count, ratio = estimated_registration_count("2026-08-19", 1)
-    assert count in {0, 1}
-    assert 0.08 <= ratio <= 0.12
-
-
-def test_peace_total_marks_registration_as_estimated_and_recalculates_ratio():
+def test_peace_total_recalculates_registration_rate_without_estimate_fields():
     total = _total("peace", [
         {
             "raw_count": 100,
@@ -179,8 +248,40 @@ def test_peace_total_marks_registration_as_estimated_and_recalculates_ratio():
         },
     ])
     assert total["new_registration_count"] == 5
-    assert total["new_registration_estimate_ratio"] == 0.1
-    assert total["new_registration_estimated"] is True
+    assert total["effective_scan_rate"] == 0.025
+    assert "new_registration_estimate_ratio" not in total
+    assert "new_registration_estimated" not in total
+
+
+@pytest.mark.asyncio
+async def test_fullchain_registration_count_uses_created_date_and_only_safe_fields():
+    connection = FakeConnection()
+    connection.fullchain_created_times = [
+        "2026-08-18 08:00:00",
+        "2026-08-18T09:00:00Z",
+        "2026-08-19 10:00:00",
+        "not-a-date",
+    ]
+    counts = await count_fullchain_registrations(
+        connection, date(2026, 8, 18), date(2026, 8, 18)
+    )
+    assert counts == {date(2026, 8, 18): 2}
+    sql = next(item for item in connection.executed_sql if "t_fullchain" in item)
+    assert "SELECT `创建时间`" in sql
+    assert "核查结果" in sql
+    assert "创建时间" in sql
+    assert "身份证" not in sql
+    assert "手机号" not in sql
+
+
+@pytest.mark.asyncio
+async def test_fullchain_registration_count_failure_is_safe():
+    connection = FakeConnection()
+    connection.fullchain_query_error = True
+    with pytest.raises(CodeSummaryError, match="暂时无法读取"):
+        await count_fullchain_registrations(
+            connection, date(2026, 8, 18), date(2026, 8, 18)
+        )
 
 
 def test_manager_summary_counts_unique_accounts_and_instruction_states():
