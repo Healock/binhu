@@ -26,6 +26,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
+import ExternalDataPanel from '../components/ExternalDataPanel'
 import { PageHeader, Panel } from '../components/ui'
 import { getExternalAcquisitionRun, workflowApi, type PhotoSheetConfig, type PhotoSheetPreview, type WorkflowType } from '../api/client'
 import useSystemTime from '../hooks/useSystemTime'
@@ -353,22 +354,16 @@ export default function WorkflowConfig() {
         )}
       />
       {error && <Alert type="error" showIcon message={error} />}
-      <Panel>
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">调照片名单</h2>
-            <p className="mt-1 text-sm text-[var(--app-text-secondary)]">
-              先保存腾讯表格地址并执行只读预览。历史导入与读写开关相互独立，部署后默认关闭，不会自动触碰历史数据。
-            </p>
-          </div>
-          <Space wrap>
-            <Button loading={photoSheetLoading} onClick={() => void previewPhotoSheet()}>只读预览</Button>
-            <Button loading={photoSheetLoading} onClick={() => void syncPhotoSheet()} disabled={!photoSheetConfig?.read_enabled}>立即同步</Button>
-            <Button onClick={openPhotoMonitor}>同步记录与异常</Button>
-            <Button type="primary" loading={photoSheetLoading} onClick={() => void savePhotoSheet()}>保存配置</Button>
-          </Space>
-        </div>
-        <Form form={photoSheetForm} layout="vertical">
+      <ExternalDataPanel
+        title="调照片名单"
+        description="先保存腾讯表格地址并执行只读预览；历史导入与读写开关相互独立，不会自动触碰历史数据。"
+        actions={<>
+          <Button loading={photoSheetLoading} onClick={() => void previewPhotoSheet()}>只读预览</Button>
+          <Button loading={photoSheetLoading} onClick={() => void syncPhotoSheet()} disabled={!photoSheetConfig?.read_enabled}>立即同步</Button>
+          <Button onClick={openPhotoMonitor}>同步记录与异常</Button>
+          <Button type="primary" loading={photoSheetLoading} onClick={() => void savePhotoSheet()}>保存配置</Button>
+        </>}
+        controls={<Form form={photoSheetForm} layout="vertical" className="w-full">
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_140px_160px_160px]">
             <Form.Item name="file_url" label="腾讯表格地址" rules={[{ required: true, message: '请填写腾讯表格地址' }]}>
               <Input placeholder="https://docs.qq.com/sheet/...?...tab=..." />
@@ -377,18 +372,18 @@ export default function WorkflowConfig() {
             <Form.Item name="read_enabled" label="读取新申请" valuePropName="checked"><Switch checkedChildren="已开启" unCheckedChildren="已关闭" /></Form.Item>
             <Form.Item name="write_enabled" label="写入及 G 列回写" valuePropName="checked"><Switch checkedChildren="已开启" unCheckedChildren="已关闭" /></Form.Item>
           </div>
-        </Form>
-        <div className="grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-5">
-          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">历史导入：{photoSheetConfig?.import_applied_at ? '已完成' : '未执行'}</div>
-          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">最近同步：{photoSheetConfig?.last_sync_at ? formatTime(photoSheetConfig.last_sync_at) : '尚未同步'}</div>
-          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">同步状态：{photoSheetConfig?.last_sync_status || 'disabled'}</div>
-          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">待写回：{photoSheetConfig?.outbox_pending_count || 0}</div>
-          <div className="rounded-lg bg-[var(--app-surface-muted)] p-3">已暂停：{photoSheetConfig?.outbox_paused_count || 0}</div>
-        </div>
-        {photoSheetConfig?.last_error && <Alert className="mt-3" type="warning" showIcon message="最近同步失败" description={photoSheetConfig.last_error} />}
+        </Form>}
+        stats={[
+          { label: '历史导入', value: photoSheetConfig?.import_applied_at ? '已完成' : '未执行' },
+          { label: '最近同步', value: photoSheetConfig?.last_sync_at ? formatTime(photoSheetConfig.last_sync_at) : '尚未同步' },
+          { label: '同步状态', value: photoSheetConfig?.last_sync_status || 'disabled' },
+          { label: '待写回', value: `${photoSheetConfig?.outbox_pending_count || 0} 条` },
+          { label: '已暂停', value: `${photoSheetConfig?.outbox_paused_count || 0} 条` },
+        ]}
+      >
+        {photoSheetConfig?.last_error && <Alert type="warning" showIcon message="最近同步失败" description={photoSheetConfig.last_error} />}
         {!!photoSheetConfig?.outbox_paused_count && (
           <Alert
-            className="mt-3"
             type="warning"
             showIcon
             message={`${photoSheetConfig.outbox_paused_count} 条腾讯写回已暂停`}
@@ -396,7 +391,8 @@ export default function WorkflowConfig() {
           />
         )}
         {photoSheetPreview && (
-          <Card className="mt-4" size="small" title="历史导入只读预览">
+          <section className="external-data-panel__detail">
+            <h3 className="m-0 text-sm font-semibold text-[var(--app-text-strong)]">历史导入只读预览</h3>
             <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
               <div>申请行：<strong>{photoSheetPreview.requests}</strong></div>
               <div>批次边界：<strong>{photoSheetPreview.markers}</strong></div>
@@ -421,9 +417,9 @@ export default function WorkflowConfig() {
                 {photoSheetConfig?.import_applied_at ? '历史名单已导入' : '确认正式导入'}
               </Button>
             </div>
-          </Card>
+          </section>
         )}
-      </Panel>
+      </ExternalDataPanel>
       <Panel>
         <Table
           rowKey="id"

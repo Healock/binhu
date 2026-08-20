@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Progress, Tag, Tooltip } from 'antd'
+import { Alert, Button, Tag, Tooltip } from 'antd'
 import {
   ClockCircleOutlined,
   DatabaseOutlined,
@@ -12,6 +12,7 @@ import {
   getRemainingTime,
   getServerOffset,
 } from '../utils/countdown'
+import ExternalDataPanel from './ExternalDataPanel'
 
 interface Props {
   syncing: boolean
@@ -96,23 +97,14 @@ export default function SyncPanel({
   }
 
   return (
-    <section className="app-card">
-      <div className="app-toolbar items-start justify-between gap-3 py-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="app-card__title">数据同步</h2>
-            <Tag color={currentStatus.color}>{currentStatus.label}</Tag>
-            {status?.task_id ? <Tag>{sourceLabel}</Tag> : null}
-          </div>
-          <p className="app-card__description mt-1">
-            {syncing
-              ? status?.current_item || phaseLabel[status?.phase || 'queued']
-              : schedule?.enabled
-                ? `自动同步每 ${intervalLabel(schedule.interval_minutes)}执行一次`
-                : '自动同步已关闭'}
-          </p>
-        </div>
-
+    <ExternalDataPanel
+      title="数据同步"
+      description={syncing
+        ? status?.current_item || phaseLabel[status?.phase || 'queued']
+        : schedule?.enabled
+          ? `自动同步每 ${intervalLabel(schedule.interval_minutes)}执行一次`
+          : '自动同步已关闭'}
+      actions={(
         <Tooltip
           title={!canManualSync ? '仅管理员和超级管理员可以手动同步' : undefined}
         >
@@ -127,89 +119,48 @@ export default function SyncPanel({
             {buttonLabel}
           </Button>
         </Tooltip>
-      </div>
-
-      <div className="grid gap-2 border-t border-slate-100 px-4 py-3 text-sm sm:grid-cols-3">
-        <div className="min-w-0">
-          <div className="text-xs text-slate-400">下一次自动同步</div>
-          <div className="mt-1 flex items-center gap-1.5 font-medium text-slate-700">
-            <ClockCircleOutlined />
-            {schedule?.enabled && countdown ? countdown : '已关闭'}
-          </div>
-          {schedule?.next_run_at && schedule.enabled && (
-            <div className="mt-0.5 truncate text-xs text-slate-400">
-              {formatUTCTime(schedule.next_run_at, timezone)}
-            </div>
-          )}
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs text-slate-400">最近成功</div>
-          <div className="mt-1 truncate font-medium text-slate-700">
-            {status?.last_success_at
-              ? formatUTCTime(status.last_success_at, timezone)
-              : '还没有成功记录'}
-          </div>
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs text-slate-400">最近任务数据量</div>
-          <div className="mt-1 flex items-center gap-1.5 font-medium text-slate-700">
-            <DatabaseOutlined />
-            {status?.processed_rows || 0} 条
-          </div>
-        </div>
-      </div>
-
-      {syncing && status && (
-        <div className="border-t border-slate-100 px-5 py-3">
-          <div className="mb-1.5 flex flex-wrap justify-between gap-2 text-xs text-slate-500">
-            <span>{phaseLabel[status.phase] || '正在处理'}</span>
-            <span>
-              步骤 {status.completed_steps}/{status.total_steps || '?'}
-            </span>
-          </div>
-          <Progress
-            percent={progress}
-            showInfo={false}
-            size="small"
-            status="active"
-          />
-        </div>
       )}
+      stats={[
+        {
+          label: '当前状态',
+          value: <span className="flex flex-wrap items-center gap-2"><Tag color={currentStatus.color}>{currentStatus.label}</Tag>{status?.task_id ? <Tag>{sourceLabel}</Tag> : null}</span>,
+        },
+        {
+          label: '下一次自动同步',
+          value: <span className="flex items-center gap-1.5"><ClockCircleOutlined />{schedule?.enabled && countdown ? countdown : '已关闭'}</span>,
+          hint: schedule?.next_run_at && schedule.enabled ? formatUTCTime(schedule.next_run_at, timezone) : undefined,
+        },
+        {
+          label: '最近成功',
+          value: status?.last_success_at ? formatUTCTime(status.last_success_at, timezone) : '还没有成功记录',
+        },
+        {
+          label: '最近任务数据量',
+          value: <span className="flex items-center gap-1.5"><DatabaseOutlined />{status?.processed_rows || 0} 条</span>,
+        },
+      ]}
+      progress={syncing && status ? {
+        label: phaseLabel[status.phase] || '正在处理',
+        status: `步骤 ${status.completed_steps}/${status.total_steps || '?'}`,
+        detail: status.current_item,
+        percent: progress,
+      } : undefined}
+    >
 
       {taskError && (
-        <div className="border-t border-slate-100 px-4 py-2.5">
-          <Alert
-            type={status?.status === 'partial' ? 'warning' : 'error'}
-            showIcon
-            message={
-              status?.status === 'partial'
-                ? '部分数据同步失败，总汇总表未更新'
-                : '同步失败'
-            }
-            description={taskError}
-          />
-        </div>
+        <Alert
+          type={status?.status === 'partial' ? 'warning' : 'error'}
+          showIcon
+          message={status?.status === 'partial' ? '部分数据同步失败，总汇总表未更新' : '同步失败'}
+          description={taskError}
+        />
       )}
       {statusError && (
-        <div className="border-t border-slate-100 px-4 py-2.5">
-          <Alert
-            type="warning"
-            showIcon
-            message="同步状态暂时不可用"
-            description={statusError}
-          />
-        </div>
+        <Alert type="warning" showIcon message="同步状态暂时不可用" description={statusError} />
       )}
       {actionError && (
-        <div className="border-t border-slate-100 px-4 py-2.5">
-          <Alert
-            type="warning"
-            showIcon
-            message="未能发起同步"
-            description={actionError}
-          />
-        </div>
+        <Alert type="warning" showIcon message="未能发起同步" description={actionError} />
       )}
-    </section>
+    </ExternalDataPanel>
   )
 }

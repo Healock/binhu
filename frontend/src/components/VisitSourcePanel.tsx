@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Table, Tag } from 'antd'
+import { Alert, Button, DatePicker, Table, Tag } from 'antd'
 import dayjs from 'dayjs'
 import {
   confirmVisitSource,
@@ -10,7 +10,9 @@ import {
 import type { VisitSourceRun } from '../types'
 import type { ExternalAcquisitionRun } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { Panel } from './ui'
+import ExternalDataPanel from './ExternalDataPanel'
+
+const { RangePicker } = DatePicker
 
 
 export default function VisitSourcePanel() {
@@ -102,52 +104,42 @@ export default function VisitSourcePanel() {
     }
   }
 
+  const currentSources = (['detail', 'rating'] as const).map(kind => {
+    const item = current[kind]
+    const label = kind === 'detail' ? '走访明细' : '星级评分'
+    const source = item?.source_type === 'manual' ? '手动上传' : item ? '自动获取' : '暂无'
+    return `${label} · ${source}`
+  }).join('，')
+  const latestAttempts = Object.values(status).map(item => `${item.source_page} · ${item.status}`).join('，') || '暂无'
+
   return (
-    <Panel
+    <ExternalDataPanel
       title="自动获取走访与星级数据"
       description="先只读获取并预览，确认后才替换当前业务日期数据；失败不会覆盖最近成功快照。"
+      actions={<Button type="primary" loading={loading} onClick={() => void handlePreview()}>立即获取并预览</Button>}
+      controls={<label><span>业务日期范围</span><RangePicker
+        value={[dayjs(dates[0]), dayjs(dates[1])]}
+        allowClear={false}
+        onChange={value => {
+          if (value?.[0] && value[1]) setDates([value[0].format('YYYY-MM-DD'), value[1].format('YYYY-MM-DD')])
+        }}
+      /></label>}
+      stats={[
+        { label: '服务器业务日期', value: businessDate || '-' },
+        { label: '系统时区', value: systemTimezone },
+        { label: '当前生效来源', value: currentSources },
+        { label: '最近尝试', value: latestAttempts },
+      ]}
+      progress={job && (job.status === 'queued' || job.status === 'running') ? {
+        label: '后台预览任务',
+        status: job.status === 'queued' ? '等待执行' : '执行中',
+        detail: `${job.message || job.phase}${job.total ? ` · ${job.current}/${job.total}` : ''}`,
+        percent: job.progress ?? 0,
+      } : undefined}
     >
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          <span>开始日期</span>
-          <input
-            type="date"
-            value={dates[0]}
-            onChange={event => setDates([event.target.value, dates[1]])}
-            className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          <span>结束日期</span>
-          <input
-            type="date"
-            value={dates[1]}
-            onChange={event => setDates([dates[0], event.target.value])}
-            className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
-          />
-        </label>
-      <Button type="primary" loading={loading} onClick={() => void handlePreview()}>
-          立即获取并预览
-        </Button>
-      </div>
-      {job && (job.status === 'queued' || job.status === 'running') && <div className="mt-3 text-sm text-[var(--app-text-secondary)]">后台任务：{job.message || job.phase} · {job.total ? `${job.current}/${job.total}` : '处理中'}{job.progress != null ? ` · ${job.progress}%` : ''}</div>}
-      {error && <Alert className="mt-3" type="error" showIcon message={error} />}
-      {Object.keys(status).length > 0 && (
-        <div className="mt-3 space-y-1 text-sm text-[var(--app-text-secondary)]">
-          <div>服务器业务日期：{businessDate || '-'} · 时区：{systemTimezone}</div>
-          <div>
-            当前生效来源：{(['detail', 'rating'] as const).map(kind => {
-              const item = current[kind]
-              const label = kind === 'detail' ? '走访明细' : '星级评分'
-              const source = item?.source_type === 'manual' ? '手动上传' : item ? '自动获取' : '暂无'
-              return `${label}·${source}`
-            }).join('，')}
-          </div>
-          <div>最近尝试：{Object.values(status).map(item => `${item.source_page}·${item.status}`).join('，')}</div>
-        </div>
-      )}
+      {error && <Alert type="error" showIcon message={error} />}
       {preview.length > 0 && (
-        <div className="mt-4 space-y-3">
+        <div className="external-data-panel__detail">
           <Table
             size="small"
             rowKey="id"
@@ -174,6 +166,6 @@ export default function VisitSourcePanel() {
           )}
         </div>
       )}
-    </Panel>
+    </ExternalDataPanel>
   )
 }
