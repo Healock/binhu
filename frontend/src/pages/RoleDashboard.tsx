@@ -198,33 +198,51 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
   const overview = data.online_overview
   if (!overview) return null
   const week = overview.week || {}
-  const go = (category: string) => navigate(buildUrl('/summary', {
-    start: data.period.start_date,
-    end: data.period.end_date,
-    type: '总汇总表',
-    category,
-    scope: 'responsibility',
+  const taskScope = data.identity.position === '组员'
+    ? 'mine'
+    : data.identity.position === '组长' ? 'community' : 'all'
+  const go = (status: 'pending' | 'completed') => navigate(buildUrl('/tasks', {
+    scope: taskScope,
+    status,
   }))
   return (
     <Panel title="在线核查态势" description={`${overview.scope_label} · ${data.period.start_date} 至 ${data.period.end_date}`} extra={<Button type="link" onClick={() => navigate(buildUrl('/summary', { start: data.period.start_date, end: data.period.end_date, scope: 'responsibility' }))}>查看完整汇总</Button>}>
       <MetricGrid>
         <DashboardCard label="任务总数" value={metric(week.total_tasks)} tone="blue" />
         <DashboardCard label="待完成" value={metric(week.pending_tasks)} tone="red" onClick={() => go('pending')} />
-        <DashboardCard label="最终完成" value={metric(week.completed_tasks)} tone="green" onClick={() => go('completed')} />
+        <DashboardCard label="已完成" value={metric(week.completed_tasks)} tone="green" onClick={() => go('completed')} />
         <DashboardCard label="当前无法核实" value={metric(week.unable_to_verify)} tone="amber" />
         <DashboardCard label="完成率" value={percent(week.completion_rate)} tone="purple" />
       </MetricGrid>
       {overview.community_breakdown.length > 0 && (
-        <div className="role-dashboard-community-list">
-          {overview.community_breakdown.slice(0, 8).map(item => (
-            <div key={item.community} className="role-dashboard-community">
-              <div className="flex items-center justify-between gap-3">
-                <strong>{item.community}</strong>
-                <span>{item.completed}/{item.total}</span>
-              </div>
-              <Progress percent={Math.round(item.completion_rate * 100)} showInfo={false} size="small" />
-            </div>
-          ))}
+        <div className="role-dashboard-community-chart" aria-label="社区核查完成情况">
+          <div className="role-dashboard-community-chart__legend">
+            <span><i className="is-completed" />已完成</span>
+            <span><i className="is-unable" />无法核实</span>
+            <span><i className="is-pending" />其他待完成</span>
+          </div>
+          <div className="role-dashboard-community-chart__rows">
+            {overview.community_breakdown.map(item => {
+              const total = Math.max(item.total, 0)
+              const unable = Math.min(Math.max(item.unable_to_verify, 0), Math.max(item.pending, 0))
+              const otherPending = Math.max(item.pending - unable, 0)
+              const segmentWidth = (value: number) => total > 0 ? `${value / total * 100}%` : '0%'
+              return (
+                <div key={item.community} className="role-dashboard-community-chart__row">
+                  <strong title={item.community}>{item.community}</strong>
+                  <div
+                    className={`role-dashboard-community-chart__bar${total === 0 ? ' is-empty' : ''}`}
+                    aria-label={`${item.community}：已完成 ${item.completed}，无法核实 ${unable}，其他待完成 ${otherPending}`}
+                  >
+                    <span className="is-completed" style={{ width: segmentWidth(item.completed) }} />
+                    <span className="is-unable" style={{ width: segmentWidth(unable) }} />
+                    <span className="is-pending" style={{ width: segmentWidth(otherPending) }} />
+                  </div>
+                  <span>{item.completed}/{total}</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </Panel>

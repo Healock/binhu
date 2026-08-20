@@ -5,6 +5,7 @@ import {
   ClockCircleOutlined,
   FileTextOutlined,
   ApartmentOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { PageHeader } from './ui'
@@ -19,6 +20,7 @@ export default function SettingsLayout() {
     { path: '/settings/oauth', label: '腾讯文档 OAuth', icon: <ApiOutlined />, superOnly: true },
     { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, superOnly: true },
     { path: '/settings/workflow', label: '工单流程配置', icon: <ApartmentOutlined />, superOnly: true },
+    { path: '/settings/account-security', label: '账号与安全', icon: <SafetyCertificateOutlined />, superOnly: false },
     { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
   ]
 

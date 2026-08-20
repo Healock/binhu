@@ -1,17 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Alert, Avatar, Button, Descriptions, Form, Input, Select, Skeleton, Tag, Upload, message } from 'antd'
-import { LockOutlined, UploadOutlined, UserOutlined } from '@ant-design/icons'
+import { Alert, Avatar, Button, Descriptions, Select, Skeleton, Tag, Upload, message } from 'antd'
+import { UploadOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, type PublicProfile } from '../types'
 import { getPublicProfile, uploadAvatar } from '../api/client'
 import { PageHeader, Panel } from '../components/ui'
 import ContributionCalendar from '../components/ContributionCalendar'
-
-interface PasswordFormValues {
-  currentPassword: string
-  newPassword: string
-  confirmPassword: string
-}
 
 function errorMessage(error: any): string {
   const detail = error?.response?.data?.detail
@@ -21,8 +15,7 @@ function errorMessage(error: any): string {
 }
 
 export default function Profile() {
-  const { user, changePassword, refreshUser } = useAuth()
-  const [form] = Form.useForm<PasswordFormValues>()
+  const { user, refreshUser } = useAuth()
   const [year, setYear] = useState(new Date().getFullYear())
   const [publicProfile, setPublicProfile] = useState<PublicProfile | null>(null)
   const [contributionLoading, setContributionLoading] = useState(true)
@@ -40,16 +33,6 @@ export default function Profile() {
 
   if (!user) return null
 
-  const submitPassword = async (values: PasswordFormValues) => {
-    try {
-      await changePassword(values.currentPassword, values.newPassword)
-      form.resetFields()
-      message.success('密码已修改')
-    } catch (error) {
-      message.error(errorMessage(error))
-    }
-  }
-
   const handleAvatarUpload = async (file: File) => {
     try {
       await uploadAvatar(file)
@@ -65,7 +48,7 @@ export default function Profile() {
     <div className="app-page">
       <PageHeader
         title="个人中心"
-        description="查看当前账号资料并管理自己的登录密码"
+        description="查看当前账号资料和个人工作贡献"
       />
       <Panel
         title="我的工作贡献"
@@ -96,7 +79,7 @@ export default function Profile() {
           <Alert type="warning" showIcon message="工作贡献暂时无法加载" />
         )}
       </Panel>
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div>
         <Panel
           title="账号资料"
           description="姓名用于平台显示，用户名只用于登录。"
@@ -149,70 +132,6 @@ export default function Profile() {
           />
         </Panel>
 
-        <Panel title="修改密码" description="修改后请使用新密码登录。">
-          {user.password_is_temporary && (
-            <Alert
-              className="mb-5"
-              type="warning"
-              showIcon
-              message="当前账号仍在使用临时密码，建议尽快修改。"
-            />
-          )}
-          <Form<PasswordFormValues>
-            form={form}
-            layout="vertical"
-            requiredMark={false}
-            onFinish={submitPassword}
-          >
-            <Form.Item
-              label="当前密码"
-              name="currentPassword"
-              rules={[{ required: true, message: '请输入当前密码' }]}
-            >
-              <Input.Password
-                prefix={<UserOutlined />}
-                autoComplete="current-password"
-              />
-            </Form.Item>
-            <Form.Item
-              label="新密码"
-              name="newPassword"
-              rules={[
-                { required: true, message: '请输入新密码' },
-                { min: 8, message: '新密码至少 8 个字符' },
-              ]}
-            >
-              <Input.Password
-                prefix={<LockOutlined />}
-                autoComplete="new-password"
-              />
-            </Form.Item>
-            <Form.Item
-              label="确认新密码"
-              name="confirmPassword"
-              dependencies={['newPassword']}
-              rules={[
-                { required: true, message: '请再次输入新密码' },
-                ({ getFieldValue }) => ({
-                  validator(_, value) {
-                    if (!value || getFieldValue('newPassword') === value) {
-                      return Promise.resolve()
-                    }
-                    return Promise.reject(new Error('两次输入的新密码不一致'))
-                  },
-                }),
-              ]}
-            >
-              <Input.Password
-                prefix={<LockOutlined />}
-                autoComplete="new-password"
-              />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" icon={<LockOutlined />}>
-              保存新密码
-            </Button>
-          </Form>
-        </Panel>
       </div>
     </div>
   )

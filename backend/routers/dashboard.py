@@ -254,6 +254,12 @@ def _community_breakdown(report: dict, communities: list[str] | None) -> list[di
     if communities is not None:
         accepted = set(communities)
         rows = [row for row in rows if str(row.get("社区") or "").strip() in accepted]
+        indexed = {
+            str(row.get("社区") or "").strip(): row
+            for row in rows
+            if str(row.get("社区") or "").strip()
+        }
+        rows = [indexed.get(name, {"社区": name}) for name in communities]
     result = []
     for row in rows:
         total = _count(row.get("数据总数"))
@@ -267,6 +273,17 @@ def _community_breakdown(report: dict, communities: list[str] | None) -> list[di
             "completion_rate": _ratio(completed, total),
         })
     return sorted(result, key=lambda item: (-item["pending"], item["community"]))
+
+
+async def _active_community_names(cur) -> list[str]:
+    await cur.execute(
+        "SELECT name FROM _communities WHERE is_active=1 ORDER BY name"
+    )
+    return [
+        str(row[0]).strip()
+        for row in await cur.fetchall()
+        if str(row[0]).strip()
+    ]
 
 
 async def _load_online_overview(
@@ -293,7 +310,10 @@ async def _load_online_overview(
         communities, inspector=inspector,
     )
     report = await get_summary_range(start_date.isoformat(), business_date.isoformat())
-    breakdown = [] if inspector else _community_breakdown(report, communities)
+    breakdown_communities = communities
+    if not inspector and communities is None:
+        breakdown_communities = await _active_community_names(cur)
+    breakdown = [] if inspector else _community_breakdown(report, breakdown_communities)
     if inspector:
         accepted_communities = set(communities or [])
         unable = sum(

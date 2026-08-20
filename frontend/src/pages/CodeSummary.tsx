@@ -360,7 +360,7 @@ export default function CodeSummary() {
               <Alert className="mb-3" type="info" showIcon message="旧快照没有保存逐位置明细，请重新获取当前日期范围后再进行分类核查。" />
             )}
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <span>当前区间未分类记录：{locationReport?.unclassified_count ?? report.latest_run.unclassified_count} 条</span>
+              <span>当前区间未分类记录：{locationReport?.unclassified_count ?? report?.latest_run?.unclassified_count ?? 0} 条</span>
               <Input.Search allowClear placeholder="搜索位置" style={{ width: 240 }} value={locationKeyword} onChange={event => { setLocationKeyword(event.target.value); setLocationPage(1) }} onSearch={() => { setLocationPage(1); void loadLocations() }} />
               <Select value={locationStatus} onChange={value => { setLocationStatus(value); setLocationPage(1) }} options={[{ value: 'unclassified', label: '仅未分类' }, { value: 'classified', label: '已分类' }, { value: 'all', label: '全部位置' }]} />
             </div>
