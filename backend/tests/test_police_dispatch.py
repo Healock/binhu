@@ -158,6 +158,16 @@ def test_address_scope_maps_formal_community_names_and_admin_sees_all():
         _assert_address_scope(10, [6])
 
 
+def test_address_create_accepts_construction_dormitory_type():
+    payload = AddressCreate(
+        name="滨湖工地宿舍",
+        detail_address="示例路1号",
+        address_type="construction_dormitory",
+        community_id=6,
+    )
+    assert payload.address_type == "construction_dormitory"
+
+
 def test_address_filter_applies_keyword_and_enabled_without_broadening_scope():
     rows = [
         {"name": "甲小区", "detail_address": "一号路", "community_name": "冬梅", "aliases": ["甲"], "enabled": True},

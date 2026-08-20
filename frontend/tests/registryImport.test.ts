@@ -52,6 +52,27 @@ test('房屋档案和问题核查使用正文搜索并提供完整筛选', () =>
   assert.match(pageSource, /pagination=\{listPagination\}/)
 })
 
+test('小区管理支持工地宿舍类型，辖区档案按社区提交筛选', () => {
+  const addressPageSource = readFileSync(
+    new URL('../src/pages/PoliceAddressManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const registryPageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(addressPageSource, /construction_dormitory/)
+  assert.match(addressPageSource, /工地宿舍/)
+  assert.match(apiSource, /address_type: 'community' \| 'apartment' \| 'construction_dormitory' \| 'other'/)
+  assert.match(registryPageSource, /全部社区/)
+  assert.match(registryPageSource, /community_id: communityId/)
+})
+
 test('问题数据核查说明外部修正原因并显示字段和错误值', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),

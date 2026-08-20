@@ -146,7 +146,11 @@ export default function PoliceAddressManagement() {
     { title: '正式社区', dataIndex: 'community_name', width: 130 },
     {
       title: '类型', dataIndex: 'address_type', width: 100,
-      render: value => value === 'apartment' ? '公寓' : value === 'community' ? '居民小区' : '其他',
+      render: value => value === 'apartment'
+        ? '公寓'
+        : value === 'construction_dormitory'
+          ? '工地宿舍'
+          : value === 'community' ? '居民小区' : '其他',
     },
     { title: '详细地址', dataIndex: 'detail_address', width: 320, ellipsis: true },
     { title: '模式', dataIndex: 'pattern', width: 150, ellipsis: true },
@@ -190,7 +194,7 @@ export default function PoliceAddressManagement() {
     <div className="app-page min-w-0">
       <PageHeader
         title="小区管理"
-        description="维护居民小区、公寓、别名和正式社区；公寓只参与社区匹配，不会自动判定为无需登记"
+        description="维护居民小区、工地宿舍、公寓、别名和正式社区；公寓和工地宿舍只参与社区匹配，不会自动判定为无需登记"
       />
       {error && <Alert type="error" showIcon message={error} />}
 
@@ -247,6 +251,7 @@ export default function PoliceAddressManagement() {
               <Select options={[
                 { value: 'community', label: '居民小区' },
                 { value: 'apartment', label: '公寓' },
+                { value: 'construction_dormitory', label: '工地宿舍' },
                 { value: 'other', label: '其他' },
               ]} />
             </Form.Item>

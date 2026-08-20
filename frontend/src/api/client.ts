@@ -2501,7 +2501,7 @@ export interface PoliceAddressEntry {
   id: number
   name: string
   detail_address: string
-  address_type: 'community' | 'apartment' | 'other'
+  address_type: 'community' | 'apartment' | 'construction_dormitory' | 'other'
   pattern: string
   community_id: number
   community_name: string

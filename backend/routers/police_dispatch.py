@@ -80,7 +80,7 @@ router = APIRouter(prefix="/api/police-dispatch", tags=["全链条下发"])
 class AddressCreate(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     detail_address: str = Field(default="", max_length=1000)
-    address_type: Literal["community", "apartment", "other"] = "community"
+    address_type: Literal["community", "apartment", "construction_dormitory", "other"] = "community"
     pattern: str = Field(default="", max_length=200)
     community_id: int
     aliases: list[str] = Field(default_factory=list, max_length=50)
@@ -518,7 +518,12 @@ async def export_addresses(
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1677FF")
         cell.alignment = Alignment(horizontal="center", vertical="center")
-    type_labels = {"community": "居民小区", "apartment": "公寓", "other": "其他"}
+    type_labels = {
+        "community": "居民小区",
+        "apartment": "公寓",
+        "construction_dormitory": "工地宿舍",
+        "other": "其他",
+    }
     for item in rows:
         sheet.append([
             item["name"], item["community_name"],
