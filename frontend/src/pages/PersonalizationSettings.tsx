@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, List, Popconfirm, Segmented, Tag, message } from 'antd'
+import { Alert, Button, Segmented } from 'antd'
 import {
   DesktopOutlined,
   MoonOutlined,
@@ -12,13 +12,6 @@ import {
   defaultMobileDockConfig,
   normalizeMobileDockConfig,
 } from '../navigation/mobileNavigation'
-import {
-  getAuthSessions,
-  revokeAllAuthSessions,
-  revokeAuthSession,
-  revokeOtherAuthSessions,
-  type AuthSessionItem,
-} from '../api/client'
 import type {
   MobileDockConfig,
   MobileNavigationMode,
@@ -40,19 +33,6 @@ export default function PersonalizationSettings() {
   const [taskDisplayMode, setTaskDisplayMode] = useState<TaskDisplayMode>('card')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
-  const [sessions, setSessions] = useState<AuthSessionItem[]>([])
-  const [sessionsLoading, setSessionsLoading] = useState(false)
-
-  const loadSessions = async () => {
-    setSessionsLoading(true)
-    try {
-      setSessions(await getAuthSessions())
-    } catch {
-      setSessions([])
-    } finally {
-      setSessionsLoading(false)
-    }
-  }
 
   useEffect(() => {
     if (!user) return
@@ -73,15 +53,6 @@ export default function PersonalizationSettings() {
       user.member?.position,
     ))
   }, [user])
-
-  useEffect(() => {
-    loadSessions().catch(() => {})
-  }, [])
-
-  const formatSessionTime = (value: string | null) => {
-    if (!value) return '未知'
-    return new Date(value).toLocaleString('zh-CN', { hour12: false })
-  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -179,86 +150,6 @@ export default function PersonalizationSettings() {
           <p className="text-sm text-slate-500">
             电脑端始终使用左侧栏；这里仅控制手机端导航。
           </p>
-        </div>
-
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className="text-sm font-medium text-slate-800">登录设备</div>
-              <p className="mt-1 text-sm text-slate-500">
-                同一账号最多保留一台电脑和一台手机；设备标识只保存在当前浏览器中。
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="small" onClick={() => loadSessions()} loading={sessionsLoading}>刷新</Button>
-              <Popconfirm
-                title="退出其他设备？"
-                description="当前设备会继续保持登录。"
-                onConfirm={async () => {
-                  try {
-                    await revokeOtherAuthSessions()
-                    message.success('其他设备已退出')
-                    await loadSessions()
-                  } catch {
-                    message.error('退出其他设备失败')
-                  }
-                }}
-              >
-                <Button size="small">退出其他设备</Button>
-              </Popconfirm>
-              <Popconfirm
-                title="退出全部设备？"
-                description="当前设备也会退出，需要重新登录。"
-                onConfirm={async () => {
-                  try {
-                    await revokeAllAuthSessions()
-                    window.location.href = '/login'
-                  } catch {
-                    message.error('退出全部设备失败')
-                  }
-                }}
-              >
-                <Button size="small" danger>退出全部设备</Button>
-              </Popconfirm>
-            </div>
-          </div>
-          <List
-            loading={sessionsLoading}
-            className="rounded-xl border border-slate-200"
-            dataSource={sessions}
-            locale={{ emptyText: '暂无有效登录设备' }}
-            renderItem={item => (
-              <List.Item
-                actions={item.current ? [<Tag color="blue" key="current">当前设备</Tag>] : [
-                  <Popconfirm
-                    key="revoke"
-                    title="退出这个设备？"
-                    onConfirm={async () => {
-                      try {
-                        await revokeAuthSession(item.management_id)
-                        message.success('设备已退出')
-                        await loadSessions()
-                      } catch {
-                        message.error('退出设备失败')
-                      }
-                    }}
-                  >
-                    <Button type="link" danger size="small">退出</Button>
-                  </Popconfirm>,
-                ]}
-              >
-                <List.Item.Meta
-                  title={(
-                    <span className="inline-flex items-center gap-2">
-                      {item.device_type === 'mobile' ? '手机端' : '电脑端'}
-                      <Tag>{item.user_agent_family}</Tag>
-                    </span>
-                  )}
-                  description={`最近活动：${formatSessionTime(item.last_activity_at)} · 到期：${formatSessionTime(item.expires_at)}`}
-                />
-              </List.Item>
-            )}
-          />
         </div>
 
         {navigationMode === 'dock' && user && (

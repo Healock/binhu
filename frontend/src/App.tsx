@@ -14,6 +14,7 @@ import SpreadsheetSettings from './pages/SpreadsheetSettings'
 import OAuthSettings from './pages/OAuthSettings'
 import SystemSettings from './pages/SystemSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
+import AccountSecuritySettings from './pages/AccountSecuritySettings'
 import OperationsCenter from './pages/OperationsCenter'
 import VisitSummary from './pages/VisitSummary'
 import CodeSummary from './pages/CodeSummary'
@@ -197,6 +198,7 @@ function App() {
 
               <Route path="/settings" element={<SettingsLayout />}>
                 <Route index element={<Navigate to="/settings/personalization" replace />} />
+                <Route path="account-security" element={<AccountSecuritySettings />} />
                 <Route path="personalization" element={<PersonalizationSettings />} />
                 <Route element={<ProtectedRoute requirePermission="system.manage" />}>
                   <Route path="spreadsheets" element={<SpreadsheetSettings />} />

@@ -1,4 +1,8 @@
+import os
 import unittest
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.dashboard_scope import (
     dashboard_communities,
@@ -6,6 +10,7 @@ from services.dashboard_scope import (
     responsibility_label,
     role_responsibility_communities,
 )
+from routers.dashboard import _community_breakdown
 from services.data_scope import filter_report_payload
 
 
@@ -45,6 +50,28 @@ def user(position="", *, communities=None, scope="all", member=True):
 
 
 class DashboardScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_community_breakdown_keeps_zero_count_scoped_communities(self):
+        report = {
+            "community": {
+                "data": [
+                    {
+                        "社区": "长板社区",
+                        "数据总数": 10,
+                        "已完成": 6,
+                        "无法见底数": 2,
+                    },
+                ],
+            },
+        }
+        result = _community_breakdown(
+            report,
+            ["长板社区", "冬梅社区"],
+        )
+        self.assertEqual({item["community"] for item in result}, {"长板社区", "冬梅社区"})
+        winter = next(item for item in result if item["community"] == "冬梅社区")
+        self.assertEqual(winter["total"], 0)
+        self.assertEqual(winter["completed"], 0)
+
     async def test_role_responsibility_covers_station_area_and_active_community(self):
         cursor = ScopeCursor({
             "areas": [("长板社区",), ("龙河社区",)],

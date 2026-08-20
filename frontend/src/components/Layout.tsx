@@ -270,9 +270,9 @@ export default function Layout() {
               type="warning"
               showIcon
               message="当前账号仍在使用临时密码"
-              description="请进入个人中心修改密码。系统不会强制修改，但会持续提醒。"
+              description="请进入账号与安全修改密码。系统不会强制修改，但会持续提醒。"
               action={<Button size="small" onClick={() => {
-                if (confirmPendingNavigation()) navigate('/profile')
+                if (confirmPendingNavigation()) navigate('/settings/account-security')
               }}>前往修改</Button>}
             />
           )}

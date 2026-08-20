@@ -28,6 +28,35 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
   assert.match(source, /category: 'carryover'/)
   assert.match(source, /status=review/)
   assert.match(source, /今日尚无同步快照/)
+  assert.match(source, /buildUrl\('\/tasks',[\s\S]*status,/)
+  assert.doesNotMatch(source, /label="最终完成"/)
+  assert.match(source, /label="已完成"/)
+  assert.match(source, /role-dashboard-community-chart/)
+  assert.match(source, /overview\.community_breakdown\.map/)
+  assert.doesNotMatch(source, /community_breakdown\.slice/)
+})
+
+test('登录设备和修改密码统一进入账号与安全设置', () => {
+  const app = read('../src/App.tsx')
+  const settings = read('../src/components/SettingsLayout.tsx')
+  const security = read('../src/pages/AccountSecuritySettings.tsx')
+  const personalization = read('../src/pages/PersonalizationSettings.tsx')
+  const profile = read('../src/pages/Profile.tsx')
+  const layout = read('../src/components/Layout.tsx')
+
+  assert.match(app, /path="account-security" element=\{<AccountSecuritySettings \/>\}/)
+  assert.match(settings, /\/settings\/account-security'[\s\S]*账号与安全/)
+  assert.match(security, /title="修改密码"|>修改密码</)
+  assert.match(security, />登录设备</)
+  assert.doesNotMatch(personalization, /登录设备/)
+  assert.doesNotMatch(profile, /title="修改密码"/)
+  assert.match(layout, /navigate\('\/settings\/account-security'\)/)
+})
+
+test('平安码汇总允许最近获取记录为空', () => {
+  const source = read('../src/pages/CodeSummary.tsx')
+  assert.match(source, /report\?\.latest_run\?\.unclassified_count \?\? 0/)
+  assert.doesNotMatch(source, /locationReport\?\.unclassified_count \?\? report\.latest_run\.unclassified_count/)
 })
 
 test('实际工作次数连续点击十次打开无路由隐藏工作区', () => {
