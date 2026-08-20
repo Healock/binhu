@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Alert,
   Button,
@@ -24,6 +24,7 @@ import {
   type RoleDashboardData,
 } from '../api/client'
 import { Panel } from '../components/ui'
+import HiddenWorkspaceOverlay from '../components/HiddenWorkspaceOverlay'
 import { useAuth } from '../context/AuthContext'
 import {
   DASHBOARD_CACHE_FRESH_MS,
@@ -52,12 +53,14 @@ function DashboardCard({
   hint,
   tone = 'blue',
   onClick,
+  onHintClick,
 }: {
   label: string
   value: string | number
   hint?: string
   tone?: 'blue' | 'green' | 'amber' | 'red' | 'purple' | 'slate'
   onClick?: () => void
+  onHintClick?: () => void
 }) {
   const content = (
     <>
@@ -67,7 +70,19 @@ function DashboardCard({
       <span className="role-dashboard-metric__body">
         <span className="role-dashboard-metric__label">{label}</span>
         <strong className="role-dashboard-metric__value">{value}</strong>
-        {hint && <span className="role-dashboard-metric__hint">{hint}</span>}
+        {hint && (onHintClick ? (
+          <button
+            type="button"
+            className="role-dashboard-metric__hint role-dashboard-metric__hint--secret"
+            aria-label={`${label}${hint}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              onHintClick()
+            }}
+          >
+            {hint}
+          </button>
+        ) : <span className="role-dashboard-metric__hint">{hint}</span>)}
       </span>
       {onClick && <RightOutlined className="role-dashboard-metric__arrow" />}
     </>
@@ -90,32 +105,48 @@ function SnapshotHint({ available }: { available: boolean }) {
 
 function ContributionPanel({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
+  const [hiddenWorkspaceOpen, setHiddenWorkspaceOpen] = useState(false)
+  const secretClicks = useRef({ count: 0, lastAt: 0 })
   const maximum = Math.max(...data.contribution.days.map(item => item.count), 1)
+  const handleSecretClick = () => {
+    const now = Date.now()
+    const clicks = secretClicks.current
+    if (now - clicks.lastAt > 2500) clicks.count = 0
+    clicks.count += 1
+    clicks.lastAt = now
+    if (clicks.count >= 10) {
+      clicks.count = 0
+      setHiddenWorkspaceOpen(true)
+    }
+  }
   return (
-    <Panel
-      title="近 7 日个人贡献"
-      description="只统计平台记录的实际工作，不包含浏览、查询等普通操作"
-      extra={<Button type="link" onClick={() => navigate(`/people/${data.contribution.profile_user_id}`, { state: { returnTo: '/', returnLabel: '返回仪表盘' } })}>完整个人资料</Button>}
-    >
-      <MetricGrid>
-        <DashboardCard label="实际工作" value={data.contribution.total} hint="次" tone="purple" />
-        <DashboardCard label="活跃天数" value={data.contribution.active_days} hint="天" tone="blue" />
-        <DashboardCard label="连续工作" value={data.contribution.longest_streak} hint="天" tone="green" />
-      </MetricGrid>
-      <div className="role-dashboard-activity" aria-label="近 7 日个人工作量">
-        {data.contribution.days.map(item => (
-          <Tooltip key={item.date} title={`${item.date}：${item.count} 次`}>
-            <div className="role-dashboard-activity__day">
-              <span
-                className="role-dashboard-activity__bar"
-                style={{ height: `${Math.max(8, Math.round(item.count / maximum * 64))}px` }}
-              />
-              <span>{item.date.slice(5)}</span>
-            </div>
-          </Tooltip>
-        ))}
-      </div>
-    </Panel>
+    <>
+      <Panel
+        title="近 7 日个人贡献"
+        description="只统计平台记录的实际工作，不包含浏览、查询等普通操作"
+        extra={<Button type="link" onClick={() => navigate(`/people/${data.contribution.profile_user_id}`, { state: { returnTo: '/', returnLabel: '返回仪表盘' } })}>完整个人资料</Button>}
+      >
+        <MetricGrid>
+          <DashboardCard label="实际工作" value={data.contribution.total} hint="次" tone="purple" onHintClick={handleSecretClick} />
+          <DashboardCard label="活跃天数" value={data.contribution.active_days} hint="天" tone="blue" />
+          <DashboardCard label="连续工作" value={data.contribution.longest_streak} hint="天" tone="green" />
+        </MetricGrid>
+        <div className="role-dashboard-activity" aria-label="近 7 日个人工作量">
+          {data.contribution.days.map(item => (
+            <Tooltip key={item.date} title={`${item.date}：${item.count} 次`}>
+              <div className="role-dashboard-activity__day">
+                <span
+                  className="role-dashboard-activity__bar"
+                  style={{ height: `${Math.max(8, Math.round(item.count / maximum * 64))}px` }}
+                />
+                <span>{item.date.slice(5)}</span>
+              </div>
+            </Tooltip>
+          ))}
+        </div>
+      </Panel>
+      <HiddenWorkspaceOverlay open={hiddenWorkspaceOpen} onClose={() => setHiddenWorkspaceOpen(false)} />
+    </>
   )
 }
 
