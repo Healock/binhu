@@ -461,6 +461,14 @@ async def ensure_permission_schema(cur) -> None:
             "active_session_id",
             "VARCHAR(64) DEFAULT NULL AFTER password_is_temporary",
         ),
+        (
+            "active_desktop_session_id",
+            "VARCHAR(64) DEFAULT NULL AFTER active_session_id",
+        ),
+        (
+            "active_mobile_session_id",
+            "VARCHAR(64) DEFAULT NULL AFTER active_desktop_session_id",
+        ),
         ("avatar_storage_key", "VARCHAR(500) DEFAULT NULL"),
         ("avatar_mime", "VARCHAR(100) DEFAULT NULL"),
     ]:
@@ -482,6 +490,18 @@ async def ensure_permission_schema(cur) -> None:
         "_users",
         "idx_users_active_session",
         "INDEX idx_users_active_session (active_session_id)",
+    )
+    await _ensure_index(
+        cur,
+        "_users",
+        "idx_users_active_desktop_session",
+        "INDEX idx_users_active_desktop_session (active_desktop_session_id)",
+    )
+    await _ensure_index(
+        cur,
+        "_users",
+        "idx_users_active_mobile_session",
+        "INDEX idx_users_active_mobile_session (active_mobile_session_id)",
     )
     await cur.execute("""
         UPDATE _users AS user
@@ -511,6 +531,48 @@ async def ensure_permission_schema(cur) -> None:
         "last_activity_at",
         "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER created_at",
     )
+    await _ensure_column(
+        cur,
+        "_sessions",
+        "management_id",
+        "CHAR(36) DEFAULT NULL AFTER session_id",
+    )
+    await _ensure_column(
+        cur,
+        "_sessions",
+        "device_type",
+        "VARCHAR(10) DEFAULT NULL AFTER user_id",
+    )
+    await _ensure_column(
+        cur,
+        "_sessions",
+        "device_id_hash",
+        "CHAR(64) DEFAULT NULL AFTER device_type",
+    )
+    await _ensure_column(
+        cur,
+        "_sessions",
+        "client_platform",
+        "VARCHAR(20) DEFAULT NULL AFTER device_id_hash",
+    )
+    await _ensure_column(
+        cur,
+        "_sessions",
+        "user_agent_family",
+        "VARCHAR(40) DEFAULT NULL AFTER client_platform",
+    )
+    await _ensure_index(
+        cur,
+        "_sessions",
+        "uk_sessions_management_id",
+        "UNIQUE INDEX uk_sessions_management_id (management_id)",
+    )
+    await _ensure_index(
+        cur,
+        "_sessions",
+        "idx_sessions_user_device",
+        "INDEX idx_sessions_user_device (user_id, device_type, expires_at)",
+    )
     await _ensure_index(
         cur,
         "_sessions",
@@ -536,6 +598,24 @@ async def ensure_permission_schema(cur) -> None:
         SET user.active_session_id=latest.session_id
         WHERE user.active_session_id IS NULL
           AND latest.session_id IS NOT NULL
+    """)
+    # 旧版唯一会话平滑迁移为电脑端槽位；新字段已存在时重复执行无副作用。
+    await cur.execute("""
+        UPDATE _sessions
+        SET management_id=COALESCE(management_id, UUID()),
+            device_type=COALESCE(device_type, 'desktop'),
+            client_platform=COALESCE(client_platform, 'web'),
+            user_agent_family=COALESCE(user_agent_family, '其他浏览器')
+        WHERE management_id IS NULL OR device_type IS NULL
+    """)
+    await cur.execute("""
+        UPDATE _users
+        SET active_desktop_session_id=COALESCE(
+                active_desktop_session_id,
+                active_session_id
+            )
+        WHERE active_desktop_session_id IS NULL
+          AND active_session_id IS NOT NULL
     """)
     await cur.execute(
         "INSERT IGNORE INTO _system_config (config_key, config_value) "
@@ -2202,6 +2282,9 @@ class DatabaseManager:
                         mobile_navigation_mode VARCHAR(10) NOT NULL DEFAULT 'dock',
                         mobile_dock_config JSON DEFAULT NULL,
                         theme_mode VARCHAR(10) NOT NULL DEFAULT 'light',
+                        active_session_id VARCHAR(64) DEFAULT NULL,
+                        active_desktop_session_id VARCHAR(64) DEFAULT NULL,
+                        active_mobile_session_id VARCHAR(64) DEFAULT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -2244,6 +2327,18 @@ class DatabaseManager:
                         "avatar_mime",
                         "VARCHAR(100) DEFAULT NULL",
                     ),
+                    (
+                        "active_session_id",
+                        "VARCHAR(64) DEFAULT NULL",
+                    ),
+                    (
+                        "active_desktop_session_id",
+                        "VARCHAR(64) DEFAULT NULL",
+                    ),
+                    (
+                        "active_mobile_session_id",
+                        "VARCHAR(64) DEFAULT NULL",
+                    ),
                 ]:
                     await cur.execute(
                         "SHOW COLUMNS FROM _users LIKE %s",
@@ -2258,12 +2353,18 @@ class DatabaseManager:
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _sessions (
                         session_id VARCHAR(64) PRIMARY KEY,
+                        management_id CHAR(36) UNIQUE,
                         user_id INT NOT NULL,
+                        device_type VARCHAR(10) DEFAULT NULL,
+                        device_id_hash CHAR(64) DEFAULT NULL,
+                        client_platform VARCHAR(20) DEFAULT NULL,
+                        user_agent_family VARCHAR(40) DEFAULT NULL,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         last_activity_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         expires_at DATETIME NOT NULL,
                         INDEX idx_user (user_id),
                         INDEX idx_expires (expires_at),
+                        INDEX idx_sessions_user_device (user_id, device_type, expires_at),
                         INDEX idx_session_user_activity (user_id, last_activity_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """)

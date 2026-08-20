@@ -10,12 +10,12 @@ const CLIENT_STORAGE_KEY = 'binhu_presence_client_id'
 const HEARTBEAT_INTERVAL_MS = 30_000
 
 function getClientId(): string {
-  const existing = window.sessionStorage.getItem(CLIENT_STORAGE_KEY)
+  const existing = window.localStorage.getItem(CLIENT_STORAGE_KEY)
   if (existing) return existing
   const generated = typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `presence-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  window.sessionStorage.setItem(CLIENT_STORAGE_KEY, generated)
+  window.localStorage.setItem(CLIENT_STORAGE_KEY, generated)
   return generated
 }
 

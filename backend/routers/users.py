@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from database import db_manager
 from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
+from services.session_management import invalidate_all_sessions
 
 
 router = APIRouter(prefix="/api/users", tags=["用户管理"])
@@ -471,6 +472,15 @@ async def update_user(
                 assignment_mode,
                 group_ids,
             )
+            if fields & {
+                "member_id",
+                "assignment_mode",
+                "permission_group_id",
+                "permission_group_ids",
+                "password",
+                "password_is_temporary",
+            }:
+                await invalidate_all_sessions(cur, int(user_id))
             await cur.execute(
                 "INSERT INTO _permission_change_log "
                 "(action, target_type, target_id, detail, changed_by) "
@@ -540,7 +550,7 @@ async def delete_user(
                     409,
                     "该账号已关联人员，请到人员管理联动删除",
                 )
-            await cur.execute("DELETE FROM _sessions WHERE user_id=%s", (user_id,))
+            await invalidate_all_sessions(cur, int(user_id))
             await cur.execute("DELETE FROM _notifications WHERE user_id=%s", (user_id,))
             await cur.execute(
                 "DELETE FROM _announcement_reads WHERE user_id=%s",

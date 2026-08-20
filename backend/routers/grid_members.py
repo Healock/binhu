@@ -47,6 +47,10 @@ from services.permissions import (
     PERSONNEL_SENSITIVE_VIEW,
     has_permission,
 )
+from services.session_management import (
+    invalidate_all_sessions,
+    invalidate_all_sessions_for_users,
+)
 
 router = APIRouter(prefix="/api/grid-members", tags=["人员管理"])
 
@@ -361,6 +365,14 @@ async def _refresh_inherited_account_group(cur, member_id: int) -> None:
         "WHERE user.member_id=%s",
         (member_id,),
     )
+    await cur.execute(
+        "SELECT id FROM _users WHERE member_id=%s "
+        "AND group_assignment_mode='inherited' FOR UPDATE",
+        (member_id,),
+    )
+    account_ids = [int(item[0]) for item in await cur.fetchall()]
+    for account_id in account_ids:
+        await invalidate_all_sessions(cur, account_id)
     await cur.execute(
         """
         UPDATE _users AS user
@@ -1547,13 +1559,13 @@ async def _set_account_inherited_for_member(
         "DELETE FROM _user_permission_group_links WHERE user_id=%s",
         (account_id,),
     )
+    await invalidate_all_sessions(cur, int(account_id))
     await cur.execute(
         """
         UPDATE _users
         SET member_id=%s, display_name=%s,
             group_assignment_mode='inherited',
-            permission_group_id=%s, role=%s,
-            active_session_id=NULL
+            permission_group_id=%s, role=%s
         WHERE id=%s
         """,
         (
@@ -1629,13 +1641,9 @@ async def _reassign_member_account(
         raise HTTPException(409, "账号关联的人员状态已经变化，请刷新后重试")
 
     affected_account_ids = [current_account_id, target_account_id]
+    await invalidate_all_sessions_for_users(cur, affected_account_ids)
     await cur.execute(
-        "UPDATE _users SET member_id=NULL, active_session_id=NULL "
-        "WHERE id IN (%s, %s)",
-        affected_account_ids,
-    )
-    await cur.execute(
-        "DELETE FROM _sessions WHERE user_id IN (%s, %s)",
+        "UPDATE _users SET member_id=NULL WHERE id IN (%s, %s)",
         affected_account_ids,
     )
 
@@ -1656,7 +1664,9 @@ async def _reassign_member_account(
             """
             UPDATE _users
             SET group_assignment_mode='custom', permission_group_id=NULL,
-                role='member', active_session_id=NULL
+                role='member', active_session_id=NULL,
+                active_desktop_session_id=NULL,
+                active_mobile_session_id=NULL
             WHERE id=%s AND member_id IS NULL
             """,
             (current_account_id,),
@@ -2064,7 +2074,7 @@ async def delete_member(
             if account_id == int(user["id"]):
                 raise HTTPException(400, "不能删除自己关联的人员和账号")
             if account_id is not None:
-                await cur.execute("DELETE FROM _sessions WHERE user_id=%s", (account_id,))
+                await invalidate_all_sessions(cur, account_id)
                 await cur.execute("DELETE FROM _notifications WHERE user_id=%s", (account_id,))
                 await cur.execute(
                     "DELETE FROM _announcement_reads WHERE user_id=%s",

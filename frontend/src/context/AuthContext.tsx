@@ -9,6 +9,7 @@ import {
 } from '../api/client'
 import type { User, UserPreferences } from '../types'
 import { clearRoleDashboardCaches } from '../utils/dashboardCache'
+import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
 
 interface AuthContextValue {
   user: User | null
@@ -64,7 +65,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({
+        username,
+        password,
+        device_type: detectClientDeviceType(),
+        device_id: getDeviceId(),
+      }),
     }, { handleUnauthorized: false, markActivity: false })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))

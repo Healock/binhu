@@ -19,6 +19,7 @@ from services.permissions import (
     parse_permissions,
     serialize_permissions,
 )
+from services.session_management import invalidate_all_sessions
 
 
 router = APIRouter(prefix="/api/permission-groups", tags=["权限组管理"])
@@ -296,6 +297,21 @@ async def update_group(
             if "Duplicate" in str(exc):
                 raise HTTPException(400, "权限组名称已存在") from exc
             raise
+        await cur.execute(
+            """SELECT DISTINCT account.id
+               FROM _users AS account
+               LEFT JOIN _user_permission_group_links AS direct
+                 ON direct.user_id=account.id
+                AND direct.permission_group_id=%s
+               LEFT JOIN _grid_members AS member ON member.id=account.member_id
+               LEFT JOIN _position_permission_group_links AS inherited
+                 ON inherited.position=member.position
+                AND inherited.permission_group_id=%s
+               WHERE direct.user_id IS NOT NULL OR inherited.position IS NOT NULL""",
+            (group_id, group_id),
+        )
+        for affected_user_id_row in await cur.fetchall():
+            await invalidate_all_sessions(cur, int(affected_user_id_row[0]))
         affected_users = (await _effective_group_user_counts(cur)).get(
             group_id,
             0,
@@ -448,7 +464,17 @@ async def update_position_mappings(
                     """,
                     (primary_group_id, legacy_role, position),
                 )
-                affected_users += max(cur.rowcount, 0)
+                updated_count = max(cur.rowcount, 0)
+                await cur.execute(
+                    "SELECT account.id FROM _users AS account "
+                    "JOIN _grid_members AS member ON member.id=account.member_id "
+                    "WHERE account.group_assignment_mode='inherited' "
+                    "AND member.position=%s",
+                    (position,),
+                )
+                for affected_user_id_row in await cur.fetchall():
+                    await invalidate_all_sessions(cur, int(affected_user_id_row[0]))
+                affected_users += updated_count
             await _record_change(
                 cur, "update", "position_mapping", "all",
                 {"mappings": normalized}, user["id"],

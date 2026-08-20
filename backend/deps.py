@@ -30,6 +30,7 @@ from services.theme_preferences import normalize_theme_mode
 from services.member_departments import get_member_departments
 from services.maintenance import enforce_maintenance, is_super_admin_user
 from services.dashboard_scope import is_admin_account
+from services.session_devices import infer_device_type, hash_device_id
 
 
 FEATURE_PERMISSION_GATES = {
@@ -167,7 +168,9 @@ async def _load_current_user(
                        session.created_at, session.last_activity_at,
                        session.expires_at, UTC_TIMESTAMP(),
                        user.display_name, user.avatar_storage_key, user.avatar_mime,
-                       user.task_display_mode
+                       user.task_display_mode,
+                       session.device_type, session.management_id,
+                       session.client_platform, session.user_agent_family
                 FROM _sessions AS session
                 JOIN _users AS user ON user.id=session.user_id
                 LEFT JOIN _grid_members AS member ON member.id=user.member_id
@@ -184,7 +187,37 @@ async def _load_current_user(
                 raise _auth_error("session_expired", "登录会话已失效")
 
             active_session_id = row[11]
-            if active_session_id and active_session_id != session_id:
+            session_device_type = str(row[27] or "").strip().lower() if len(row) > 27 else ""
+            if session_device_type not in {"desktop", "mobile"}:
+                session_device_type = infer_device_type(
+                    platform_header=request.headers.get("X-Binhu-Client-Platform"),
+                    user_agent=request.headers.get("User-Agent"),
+                    mobile_hint=request.headers.get("Sec-CH-UA-Mobile"),
+                )
+                await cur.execute(
+                    "UPDATE _sessions SET device_type=%s, device_id_hash=COALESCE(device_id_hash, %s) "
+                    "WHERE session_id=%s",
+                    (
+                        session_device_type,
+                        hash_device_id(request.headers.get("X-Binhu-Device-Id")),
+                        session_id,
+                    ),
+                )
+            if settings.MULTI_DEVICE_SESSION_ENABLED and len(row) > 27:
+                await cur.execute(
+                    "SELECT active_desktop_session_id, active_mobile_session_id "
+                    "FROM _users WHERE id=%s",
+                    (row[0],),
+                )
+                active_slots = await cur.fetchone() or (None, None)
+                expected_session_id = (
+                    active_slots[1]
+                    if session_device_type == "mobile"
+                    else active_slots[0]
+                )
+            else:
+                expected_session_id = active_session_id
+            if expected_session_id != session_id:
                 raise _auth_error(
                     "session_replaced",
                     "账号已在另一台设备登录",
@@ -419,6 +452,16 @@ async def _load_current_user(
                     "last_activity_at": last_activity_at.isoformat() + "Z",
                     "absolute_expires_at": expires_at.isoformat() + "Z",
                     "server_time": server_time.isoformat() + "Z",
+                },
+                "session_device": {
+                    "type": session_device_type,
+                    "management_id": row[28] if len(row) > 28 else None,
+                    "client_platform": (
+                        row[29] if len(row) > 29 and row[29] else session_device_type
+                    ),
+                    "user_agent_family": (
+                        row[30] if len(row) > 30 and row[30] else "其他浏览器"
+                    ),
                 },
             }
     finally:

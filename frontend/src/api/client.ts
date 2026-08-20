@@ -9,6 +9,7 @@ import type {
   VisitSourceRun,
   PresenceHeartbeatResponse, PresenceUsersResponse,
 } from '../types'
+import { getClientDeviceHeaders } from '../utils/device.ts'
 
 const api = axios.create({
   baseURL: '/api',
@@ -36,6 +37,29 @@ export interface MaintenanceStatus {
 export interface AppBootstrapSummary {
   server_version: string
   timezone: string
+}
+
+export interface LoginSessionSummary {
+  management_id: string
+  device_type: 'desktop' | 'mobile'
+}
+
+export interface LoginResponse {
+  message: string
+  session_refresh_required?: boolean
+  session?: LoginSessionSummary
+  user: User
+}
+
+export interface AuthSessionItem {
+  management_id: string
+  device_type: 'desktop' | 'mobile'
+  client_platform: string
+  user_agent_family: string
+  created_at: string | null
+  last_activity_at: string | null
+  expires_at: string | null
+  current: boolean
 }
 
 export function resetUnauthorizedRedirectForTests(): void {
@@ -90,7 +114,11 @@ export async function fetchWithAuth(
 ): Promise<Response> {
   const headers = new Headers(init.headers)
   if (!headers.has('X-Binhu-Client-Platform')) {
-    headers.set('X-Binhu-Client-Platform', 'web')
+    const deviceHeaders = getClientDeviceHeaders()
+    headers.set('X-Binhu-Client-Platform', deviceHeaders['X-Binhu-Client-Platform'])
+  }
+  if (!headers.has('X-Binhu-Device-Id')) {
+    headers.set('X-Binhu-Device-Id', getClientDeviceHeaders()['X-Binhu-Device-Id'])
   }
   if (!headers.has('X-Binhu-Client-Version')) {
     headers.set('X-Binhu-Client-Version', webClientVersion)
@@ -125,7 +153,9 @@ export async function fetchWithAuth(
 }
 
 api.interceptors.request.use((config) => {
-  config.headers.set('X-Binhu-Client-Platform', 'web')
+  const deviceHeaders = getClientDeviceHeaders()
+  config.headers.set('X-Binhu-Client-Platform', deviceHeaders['X-Binhu-Client-Platform'])
+  config.headers.set('X-Binhu-Device-Id', deviceHeaders['X-Binhu-Device-Id'])
   config.headers.set('X-Binhu-Client-Version', webClientVersion)
   const method = (config.method || 'get').toLowerCase()
   if (
@@ -153,6 +183,26 @@ api.interceptors.response.use(
 export async function getCurrentUser(): Promise<User> {
   const { data } = await api.get('/auth/me')
   return data.user
+}
+
+export async function getAuthSessions(): Promise<AuthSessionItem[]> {
+  const { data } = await api.get('/auth/sessions')
+  return data.sessions || []
+}
+
+export async function revokeAuthSession(managementId: string): Promise<void> {
+  await api.delete(`/auth/sessions/${encodeURIComponent(managementId)}`)
+}
+
+export async function revokeOtherAuthSessions(): Promise<number> {
+  const { data } = await api.post('/auth/sessions/revoke-others')
+  return Number(data.revoked || 0)
+}
+
+export async function revokeAllAuthSessions(): Promise<void> {
+  await api.post('/auth/sessions/revoke-all', undefined, {
+    headers: { 'X-User-Activity': '1' },
+  })
 }
 
 export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> {
