@@ -12,6 +12,7 @@ import {
   formatUTCTime,
   getCodeSummary,
   getExternalAcquisitionRun,
+  getLatestExternalAcquisitionRun,
   recordXlsxExport,
   type CodeSummaryReport,
   type CodeSummaryRow,
@@ -20,6 +21,23 @@ import {
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 
 const { RangePicker } = DatePicker
+const MAX_CODE_SUMMARY_DAYS = 31
+
+function rangeDays(start: string, end: string) {
+  return dayjs(end).diff(dayjs(start), 'day') + 1
+}
+
+function apiErrorMessage(reason: any, fallback: string) {
+  const detail = reason?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map(item => typeof item?.msg === 'string' ? item.msg : '')
+      .filter(Boolean)
+    if (messages.length) return messages.join('；')
+  }
+  return fallback
+}
 
 const SOURCE_OPTIONS = [
   { label: '平安码', value: 'peace' as const },
@@ -111,18 +129,58 @@ export default function CodeSummary() {
   const endDate = range[1].format('YYYY-MM-DD')
 
   const load = useCallback(async () => {
+    if (rangeDays(startDate, endDate) > MAX_CODE_SUMMARY_DAYS) {
+      setReport(null)
+      setError(`单次最多查询 ${MAX_CODE_SUMMARY_DAYS} 天，请拆分日期范围后再读取`)
+      return
+    }
     setLoading(true)
     setError('')
     try {
       setReport(await getCodeSummary(source, startDate, endDate))
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '码数据汇总读取失败')
+      setError(apiErrorMessage(reason, '码数据汇总读取失败'))
     } finally {
       setLoading(false)
     }
   }, [endDate, source, startDate])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    let active = true
+    let timer: number | undefined
+    const resume = async () => {
+      try {
+        const latest = await getLatestExternalAcquisitionRun('code_summary_fetch')
+        if (!active || !latest) return
+        setFetchJob(latest)
+        if (latest.status === 'queued' || latest.status === 'running') {
+          const poll = async () => {
+            try {
+              const current = await getExternalAcquisitionRun(latest.id)
+              if (!active) return
+              setFetchJob(current)
+              if (current.status === 'queued' || current.status === 'running') {
+                timer = window.setTimeout(() => void poll(), 1500)
+              } else {
+                await load()
+              }
+            } catch {
+              // 页面恢复时的进度查询失败不覆盖已有快照。
+            }
+          }
+          timer = window.setTimeout(() => void poll(), 0)
+        }
+      } catch {
+        // 无法恢复进度时仍可正常查看已保存快照。
+      }
+    }
+    void resume()
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [load])
   useEffect(() => {
     const next = new URLSearchParams()
     next.set('start', startDate)
@@ -132,6 +190,10 @@ export default function CodeSummary() {
   }, [endDate, setSearchParams, source, startDate])
 
   const handleFetch = async () => {
+    if (rangeDays(startDate, endDate) > MAX_CODE_SUMMARY_DAYS) {
+      setError(`单次最多获取 ${MAX_CODE_SUMMARY_DAYS} 天，请拆分日期范围后再获取`)
+      return
+    }
     setFetching(true)
     setError('')
     try {
@@ -151,16 +213,20 @@ export default function CodeSummary() {
         else if (warning.length) message.info('数据已更新，但存在质量提醒')
         else if (current.status === 'success') message.success('平安码、管家码数据已更新')
         await load()
+        setFetching(false)
       }
       void poll()
     } catch (reason: any) {
-      setError(reason?.response?.data?.detail || '码数据获取失败，旧快照未改变')
-    } finally {
       setFetching(false)
+      setError(apiErrorMessage(reason, '码数据获取失败，旧快照未改变'))
     }
   }
 
   const handleExport = async () => {
+    if (rangeDays(startDate, endDate) > MAX_CODE_SUMMARY_DAYS) {
+      message.warning(`单次最多导出 ${MAX_CODE_SUMMARY_DAYS} 天，请拆分日期范围后再导出`)
+      return
+    }
     try {
       const [peace, manager] = await Promise.all([
         getCodeSummary('peace', startDate, endDate),
@@ -182,7 +248,7 @@ export default function CodeSummary() {
       })
       message.success('已导出当前码数据汇总')
     } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '导出失败，请稍后重试')
+      message.error(apiErrorMessage(reason, '导出失败，请稍后重试'))
     }
   }
 
@@ -229,6 +295,17 @@ export default function CodeSummary() {
             type="warning"
             showIcon
             message={`${report.latest_run.invalid_time_count} 条来源记录缺少有效 comparisonTime，已跳过；其余正常数据已更新`}
+          />
+        )}
+        {report?.latest_run?.status === 'warning' && (
+          <Alert
+            type="info"
+            showIcon
+            message={`质量提醒：${[
+              report.latest_run.excluded_count ? `${report.latest_run.excluded_count} 条身份信息无法识别` : '',
+              report.latest_run.unclassified_count ? `${report.latest_run.unclassified_count} 条位置无法分类` : '',
+              report.latest_run.invalid_time_count ? `${report.latest_run.invalid_time_count} 条时间无效已跳过` : '',
+            ].filter(Boolean).join('；') || '来源数据存在非阻断质量问题，已保留可用数据'}`}
           />
         )}
         {error && <Alert type="error" showIcon message={error} />}

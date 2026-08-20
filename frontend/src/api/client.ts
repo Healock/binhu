@@ -2380,6 +2380,13 @@ export async function getExternalAcquisitionRun(runId: number): Promise<External
   return (await api.get(`/external-acquisition/runs/${runId}`, activeRequest)).data
 }
 
+export async function getLatestExternalAcquisitionRun(kind: string): Promise<ExternalAcquisitionRun | null> {
+  return (await api.get('/external-acquisition/latest', {
+    ...activeRequest,
+    params: { kind },
+  })).data.data || null
+}
+
 export async function getCodeSummary(
   source: CodeSummarySource,
   startDate: string,
