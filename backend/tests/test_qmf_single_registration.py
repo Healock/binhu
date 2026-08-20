@@ -451,6 +451,72 @@ class QmfSingleRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["feedback"]["communityCode"], [""])
         self.assertEqual(captured["feedback"]["qwdxzqh"], [""])
 
+    async def test_non_jurisdiction_feedback_retries_once_with_hcjg_five(self):
+        seen: list[str] = []
+        feedbacks: list[dict[str, list[str]]] = []
+        task_queries = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal task_queries
+            path = request.url.path.split("/grid_terminal_interface/", 1)[-1]
+            seen.append(path)
+            if path == "fnmx/queryYysList":
+                task_queries += 1
+                rows = [upstream_task_row()] if task_queries == 1 else []
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {"total": len(rows), "list": rows},
+                })
+            if path == "enterHouse/queryPeopleBySfzh":
+                return httpx.Response(200, json={"code": 200, "data": raw_person()})
+            if path == "enterHouse/queryPeoplePhotoByJzz":
+                return photo_json_response()
+            if path == "enterHouse/checkCk":
+                return httpx.Response(200, json={"code": 200, "data": 0})
+            if path == "masses/uploadPhoto":
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            if path == "jzz/saveLocalPhoto":
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            if path == "enterHouse/addPeople":
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            if path == "fnmx/fnmxCheck":
+                feedbacks.append(parse_qs(request.content.decode("utf-8"), keep_blank_values=True))
+                if len(feedbacks) == 1:
+                    return httpx.Response(200, json={
+                        "code": 200,
+                        "data": {"hcjg": 5, "hcjgtext": "非本辖区(无法提交)"},
+                    })
+                return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+            raise AssertionError(f"unexpected outbound path: {path}")
+
+        async def fake_login():
+            return login_context()
+
+        events: list[tuple[str, str, str]] = []
+
+        async def step_callback(key: str, status: str, code: str):
+            events.append((key, status, code))
+
+        result = await QmfRegistrationClient(
+            transport=httpx.MockTransport(handler),
+            login_provider=fake_login,
+            config=runtime_config(),
+        ).execute(
+            platform_task=platform_task(),
+            step_callback=step_callback,
+            before_write=lambda *_args: _noop(),
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(seen.count("fnmx/fnmxCheck"), 2)
+        self.assertEqual(feedbacks[0]["hcjg"], ["2"])
+        self.assertEqual(feedbacks[1]["hcjg"], ["5"])
+        self.assertEqual(
+            [key for key, status, _code in events
+             if status == "sending" and key.startswith("complete_task")],
+            ["complete_task", "complete_task_non_jurisdiction_retry"],
+        )
+
     async def test_person_schema_change_stops_before_all_write_endpoints(self):
         seen: list[str] = []
         incomplete_person = raw_person()

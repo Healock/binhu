@@ -98,7 +98,7 @@
 - 生产服务由 `binhu-backend`、`binhu-mysql` 和 `binhu-ops-agent` 三个容器组成。后端只监听服务器本机，公网统一经过 nginx HTTPS。
 - `binhu-backend` 单独配置 `119.29.29.29` 和 `223.5.5.5` 两个 DNS 上游，避免腾讯文档同步依赖单一运营商 DNS；不修改服务器系统 DNS。部署后用容器内解析检查确认 `docs.qq.com` 可解析。
 - 所有登录用户访问 `/` 先进入仪表盘；在线数据汇总使用 `/summary`；电脑端 `/query` 为 Univer 在线工作表，手机端按岗位转入相应任务工作台。
-- 数据库使用同一个 MySQL 实例，目标域划分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。截至 2026-08-08，走访、下发、小区地址和平台基础域已完成迁移并切换；日报、辖区档案/人员标记新功能和工单域仍按维护窗口推进。本地开发电脑没有项目 MySQL 或 Docker 运行环境。
+- 数据库使用同一个 MySQL 实例，目标域划分为 `PlatformData`、`OnlineData`、`OnlineDataArchive`、`daily_report`、`VisitData`、`DispatchData`、`RegistryData` 和 `WorkflowData`。截至 2026-08-08，走访、下发、小区地址和平台基础域已完成迁移并切换；日报、辖区档案/人员标签新功能和工单域仍按维护窗口推进。本地开发电脑没有项目 MySQL 或 Docker 运行环境。
 - 2026-08-06 完成一次容量整理：磁盘使用率从 96% 降至 83%，保留当前版和上一版后端镜像，数据库卷、每日备份、发布源码留档及自动发布记录均未删除。
 - GitHub 旧的已合并功能分支已经清理，目前远端只保留 `main`。`main` 尚未启用 GitHub 分支保护，因此仍必须人为坚持“功能分支 → PR → CI → 合并”的流程。
 - 生产业务已经运行在物理服务器；旧云的平台容器和 HTTPS 透明代理均已于 2026年8月9日退役。旧云只保留原数据库、卷、程序和历史备份作为人工回退材料，WireGuard 与异地备份接收能力也已停用；主机 Nginx 继续服务旧云上与本平台无关的站点。
@@ -1044,7 +1044,7 @@ GitHub 自动发布在正式切换同日迁移。新服务器复用现有专用�
 
 责任告知书图片预览另使用服务器私密配置 `BINHU_CERTIFICATE_IMAGE_BASE_URL` 指向旧平台的只读签名图片目录。不要把旧平台图片主机或文件路径写入前端、普通日志或公开文档。房屋详情按钮只对 `registry.import.manage` 显示；后端再次校验房屋社区范围、图片相对路径和 JPG/PNG 文件头，单张图片上限 10 MB，读取失败不会改变档案或来源数据。
 
-正式迁移按 [八库业务域与新档案规划](database-domain-plan.md) 分阶段执行。2026-08-08 已完成走访、下发、小区地址、平台基础、工作日志和身份证 HMAC 回填；人员标记快照因当前没有标记分配而无可回填记录，Registry/Workflow 新功能仍待后续维护窗口。旧表全部保留，未执行长期双写或删除。
+正式迁移按 [八库业务域与新档案规划](database-domain-plan.md) 分阶段执行。2026-08-08 已完成走访、下发、小区地址、平台基础、工作日志和身份证 HMAC 回填；人员标签快照因当前没有标签分配而无可回填记录，Registry/Workflow 新功能仍待后续维护窗口。旧表全部保留，未执行长期双写或删除。
 
 _最后核对：2026-08-11_
 
@@ -1102,7 +1102,7 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - 执行 `migrate --domain work_logs --apply` 和 `verify --domain work_logs`：`OnlineData._work_log_drafts` 与 `daily_report._work_log_drafts` 均为 3 行，字段结构和主键边界一致，验证结果为 `consistent=true`。
 - 迁移后八库备份已完成并校验：`/backup/binhu/migration/0.16.0-worklogs-migrated-20260808T163528Z.sql.gz`，SHA-256 为 `6f36ed8dbaa9a6f5c361103e79127411f86d3454e3e68468a0a81f54b18822c9`。
 - 已保存环境回退副本 `/srv/binhu/.env.worklogs-pre-switch-20260808T163552Z`，随后启用 `BINHU_DAILY_DOMAIN_ACTIVE=true` 并重建后端、运维代理。应用实际将 `_work_log_drafts` 路由到 `daily_report._work_log_drafts`。
-- 已恢复 `new-production`、5 分钟同步、02:00 每日备份/保留 7 天和在线回写；同步任务 `3429` 已成功完成。当前 `REGISTRY_FEATURE_ENABLED=false`、`WORKFLOW_FEATURE_ENABLED=false`，新档案、人员标记和工单功能仍关闭。
+- 已恢复 `new-production`、5 分钟同步、02:00 每日备份/保留 7 天和在线回写；同步任务 `3429` 已成功完成。当前 `REGISTRY_FEATURE_ENABLED=false`、`WORKFLOW_FEATURE_ENABLED=false`，新档案、人员标签和工单功能仍关闭。
 - 三个生产容器正常，健康接口返回 `0.16.0`，近期后端和运维代理错误日志为空。旧 `OnlineData._work_log_drafts` 保留，不删除、不长期双写。
 
 ### 2026-08-08 身份 HMAC 与任务标记快照回填结果
@@ -1118,7 +1118,7 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 - 按项目管理人明确授权，服务器保持现有系统时间，不执行回拨；本次操作的逻辑迁移窗口记录为服务器显示的 `2026-08-09`，不代表修改了系统时钟。
 - 维护期间先切换 `new-maintenance`，关闭同步计划、每日备份计划和在线回写；创建并校验八库备份后，启用 `BINHU_REGISTRY_FEATURE_ENABLED=true` 与 `BINHU_WORKFLOW_FEATURE_ENABLED=true`，重建 `binhu-backend`、`binhu-ops-agent`，再恢复 `new-production`。
-- 生产验收：健康接口返回 `0.16.0`；三个容器正常；RegistryData 26 张表、WorkflowData 14 张表；辖区档案、人员标记、任务快照和工单均为 0 行；照片调取流程 1 个已发布版本/1 个基础管控处理节点，请假流程保持未发布。
+- 生产验收：健康接口返回 `0.16.0`；三个容器正常；RegistryData 26 张表、WorkflowData 14 张表；辖区档案、人员标签、任务快照和工单均为 0 行；照片调取流程 1 个已发布版本/1 个基础管控处理节点，请假流程保持未发布。
 - 权限核验：社区民警使用 `community_registry_viewer` 且仅有 `own_department` 只读档案权限；内勤岗位可维护全所档案和处理工单；超级管理员拥有 `workflow.config.manage`；功能权限没有因开关开启而扩大。
 - 备份副本：`/backup/binhu/migration/0.16.0-registry-workflow-pre-switch-20260808T192125Z.sql.gz`；SHA-256 为 `c942942ea0af8768f9fbdb25e3c3c389e22fe373ccb90d7a8a9c629882c9fc68`。同名 manifest 和附件归档一并保留；附件目录为空。
 - 恢复后同步计划为 5 分钟、每日备份为 02:00/保留 7 天，在线回写维持切换前的关闭状态；最近同步任务 `3459` 成功，后端与运维代理近期错误计数为 0。旧表、旧备份和迁移副本均未删除。

@@ -23,6 +23,7 @@ import VisitSourcePanel from '../components/VisitSourcePanel'
 import { EmptyState, LoadingState, PageHeader, Panel } from '../components/ui'
 import {
   formatUTCTime,
+  formatDateInTimezone,
   getVisitCoverage,
   getVisitSummary,
   recordXlsxExport,
@@ -257,14 +258,16 @@ export default function VisitSummary() {
       const nextCoverage = await getVisitCoverage()
       setCoverage(nextCoverage)
       if (!rangeInitialized.current) {
-        const fallbackDate = dayjs().format('YYYY-MM-DD')
+        // 默认只看系统业务时区的当天；覆盖范围仅用于提示可用日期，
+        // 不应把首次打开页面的查询范围扩展成整段历史数据。
+        const fallbackDate = formatDateInTimezone(new Date(), systemTimezone)
         const initialRange: [string, string] = [
-          nextCoverage.start_date || fallbackDate,
-          nextCoverage.end_date || fallbackDate,
+          fallbackDate,
+          fallbackDate,
         ]
         rangeInitialized.current = true
         setSummaryRange(initialRange)
-        await loadSummary(initialRange, 'rental')
+        await loadSummary(initialRange, initialCategory)
       } else if (initialRange) {
         await loadSummary(initialRange, initialCategory)
       }
@@ -273,7 +276,7 @@ export default function VisitSummary() {
     } finally {
       setCoverageLoading(false)
     }
-  }, [initialCategory, initialEnd, initialStart, loadSummary])
+  }, [initialCategory, initialEnd, initialStart, loadSummary, systemTimezone])
 
   useEffect(() => {
     loadCoverage()

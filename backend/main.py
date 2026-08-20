@@ -36,6 +36,7 @@ from routers.dashboard import router as dashboard_router
 from routers.exports import router as exports_router
 from routers.registry import router as registry_router
 from routers.registry_extended import router as registry_extended_router
+from routers.watch_import import router as watch_import_router
 from routers.workflow import router as workflow_router
 from routers.workflow_extended import router as workflow_extended_router
 from routers.workflow_photo_sheet import router as workflow_photo_sheet_router
@@ -210,6 +211,7 @@ app.include_router(dashboard_router, dependencies=auth_dep)
 app.include_router(exports_router, dependencies=auth_dep)
 app.include_router(registry_router, dependencies=auth_dep)
 app.include_router(registry_extended_router, dependencies=auth_dep)
+app.include_router(watch_import_router, dependencies=auth_dep)
 app.include_router(workflow_router, dependencies=auth_dep)
 app.include_router(workflow_extended_router, dependencies=auth_dep)
 app.include_router(workflow_photo_sheet_router, dependencies=auth_dep)

@@ -971,6 +971,7 @@ export type QmfFeedbackState =
   | 'completed_match'
   | 'completed_mismatch'
   | 'not_found'
+  | 'non_jurisdiction'
   | 'error'
 
 export interface MobileTaskQmfStatus {
@@ -1211,6 +1212,7 @@ export type QmfLegacyStatusState =
   | 'not_found'
   | 'ambiguous'
   | 'station_mismatch'
+  | 'non_jurisdiction'
   | 'unknown_result'
   | 'unavailable'
 
@@ -1343,6 +1345,7 @@ export interface QmfStatusScanRun {
   mismatch_count: number
   pending_count: number
   not_found_count: number
+  non_jurisdiction_count: number
   error_count: number
   requested_by: number | null
   error_code: string
@@ -3160,6 +3163,44 @@ export interface WatchPerson {
   verification_status: string
   status: string
   created_at: string | null
+  categories: Array<Pick<WatchCategory, 'id' | 'code' | 'name' | 'color' | 'alert_level'>>
+}
+
+export interface WatchImportPreview {
+  batch_id: number
+  status: 'preview' | 'imported'
+  idempotent: boolean
+  file_count: number
+  category_code: string
+  total_rows: number
+  valid_rows: number
+  unique_people: number
+  duplicate_rows: number
+  missing_identity_count: number
+  invalid_identity_count: number
+  missing_name_count: number
+  name_conflict_groups: number
+  phone_conflict_groups: number
+  existing_name_conflict_count: number
+  inactive_people_count: number
+  blocking_count: number
+  existing_people: number
+  new_people: number
+  existing_assignments: number
+  new_assignments: number
+  can_confirm: boolean
+}
+
+export interface WatchImportResult {
+  batch_id: number
+  status: 'imported'
+  idempotent: boolean
+  unique_people?: number
+  created_people?: number
+  reused_people?: number
+  created_assignments?: number
+  existing_assignments?: number
+  created_phones?: number
 }
 
 export const registryApi = {
@@ -3362,6 +3403,32 @@ export const registryApi = {
     return (await api.get('/registry/watch/people', { ...activeRequest, params })).data as {
       data: WatchPerson[]; total: number; page: number; page_size: number
     }
+  },
+  async searchWatchPeople(payload: {
+    keyword?: string
+    category_ids?: number[]
+    page?: number
+    page_size?: number
+  } = {}) {
+    return (await api.post('/registry/watch/people/search', payload, activeRequest)).data as {
+      data: WatchPerson[]; total: number; page: number; page_size: number
+    }
+  },
+  async previewWatchImport(files: File[], categoryCode: string) {
+    const form = new FormData()
+    files.forEach(file => form.append('files', file))
+    form.append('category_code', categoryCode)
+    return (await api.post('/registry/watch/imports/preview', form, {
+      ...activeRequest,
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300_000,
+    })).data as WatchImportPreview
+  },
+  async confirmWatchImport(batchId: number) {
+    return (await api.post(`/registry/watch/imports/${batchId}/confirm`, {}, {
+      ...activeRequest,
+      timeout: 300_000,
+    })).data as WatchImportResult
   },
   async watchPerson(id: number) {
     return (await api.get(`/registry/watch/people/${id}`, activeRequest)).data

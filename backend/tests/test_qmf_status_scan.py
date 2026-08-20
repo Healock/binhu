@@ -41,6 +41,9 @@ class _Cursor:
     async def fetchall(self):
         return self.rows
 
+    async def fetchone(self):
+        return self.rows[0] if self.rows else None
+
 
 class _Connection:
     def __init__(self, cursor):

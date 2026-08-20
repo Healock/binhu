@@ -30,6 +30,7 @@ STATUS_NOT_FOUND = "not_found"
 STATUS_AMBIGUOUS = "ambiguous"
 STATUS_STATION_MISMATCH = "station_mismatch"
 STATUS_UNKNOWN_RESULT = "unknown_result"
+STATUS_NON_JURISDICTION = "non_jurisdiction"
 STATUS_UNAVAILABLE = "unavailable"
 
 _RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
@@ -94,6 +95,23 @@ def _normalized_station(value: Any) -> str:
     return "".join(_text(value).split())
 
 
+def _normalized_result_text(value: Any) -> str:
+    return (
+        _text(value)
+        .replace(" ", "")
+        .replace("　", "")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+
+
+def _non_jurisdiction_result(value: Any) -> bool:
+    return _normalized_result_text(value) in {
+        "非本辖区",
+        "非本辖区(无法提交)",
+    }
+
+
 def _business_payload(response: httpx.Response) -> Any:
     try:
         payload = response.json()
@@ -113,16 +131,19 @@ def normalize_legacy_result(code: Any, text: Any) -> tuple[str, str]:
     are recognized but disagree, stop safely instead of choosing one.
     """
     code_text = _text(code)
-    result_text = _text(text).replace(" ", "")
+    result_text = _normalized_result_text(text)
 
     code_result = {
         "0": (STATUS_PENDING, ""),
         "1": ("completed", RESULT_LEAVE_NOT_RETURNING),
         "2": ("completed", RESULT_IN_WU),
         "3": ("completed", RESULT_RECENT_RETURN),
+        "5": (STATUS_NON_JURISDICTION, "非本辖区（无法提交）"),
     }.get(code_text)
     text_result: tuple[str, str] | None = None
-    if "未核查" in result_text or "待核查" in result_text:
+    if _non_jurisdiction_result(result_text):
+        text_result = (STATUS_NON_JURISDICTION, "非本辖区（无法提交）")
+    elif "未核查" in result_text or "待核查" in result_text:
         text_result = (STATUS_PENDING, "")
     elif any(
         token in result_text for token in (RESULT_RECENT_RETURN, "近期反吴")
@@ -140,7 +161,9 @@ def normalize_legacy_result(code: Any, text: Any) -> tuple[str, str]:
     ):
         text_result = ("completed", RESULT_LEAVE_NOT_RETURNING)
 
-    if code_result and text_result and code_result != text_result:
+    # A non-empty, unrecognized display value is still evidence that the two
+    # fields disagree; never silently prefer the numeric code in that case.
+    if code_result and result_text and (text_result is None or code_result != text_result):
         return STATUS_UNKNOWN_RESULT, ""
     if text_result:
         return text_result
@@ -392,6 +415,16 @@ class QmfLegacyStatusClient:
                 station=station,
                 matches_platform_result=None,
             )
+        if result_state == STATUS_NON_JURISDICTION:
+            return QmfLegacyStatus(
+                state=STATUS_NON_JURISDICTION,
+                result="非本辖区（无法提交）",
+                result_text="非本辖区（无法提交）",
+                checked_at=checked_at,
+                station=station,
+                matches_platform_result=None,
+                reason="全民防返回非本辖区，可重新提交特殊反馈",
+            )
         if result_state == STATUS_UNKNOWN_RESULT:
             return QmfLegacyStatus(
                 state=STATUS_UNKNOWN_RESULT,
@@ -420,7 +453,7 @@ def ensure_registration_allowed(status: QmfLegacyStatus) -> None:
     """Raise a safe pre-write error unless another interface must continue."""
     from services.qmf_registration import QmfPreviewError
 
-    if status.state in {STATUS_PENDING, STATUS_NOT_FOUND}:
+    if status.state in {STATUS_PENDING, STATUS_NOT_FOUND, STATUS_NON_JURISDICTION}:
         return
     mapping = {
         STATUS_COMPLETED_MATCH: (
@@ -446,6 +479,11 @@ def ensure_registration_allowed(status: QmfLegacyStatus) -> None:
         STATUS_UNKNOWN_RESULT: (
             "legacy_result_unknown",
             "全民防核查结果无法识别，请人工核对",
+            409,
+        ),
+        STATUS_NON_JURISDICTION: (
+            "legacy_non_jurisdiction",
+            "全民防返回非本辖区，可重新提交特殊反馈",
             409,
         ),
         STATUS_UNAVAILABLE: (

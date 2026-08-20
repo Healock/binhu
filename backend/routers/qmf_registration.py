@@ -675,9 +675,11 @@ async def _update_run_step(
             raise RuntimeError("qmf registration run missing")
         steps = parse_steps(row[0])
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        found = False
         for item in steps:
             if item["key"] != key:
                 continue
+            found = True
             item["status"] = status
             item["result_code"] = result_code[:64]
             if status == "sending" and not item.get("started_at"):
@@ -685,6 +687,15 @@ async def _update_run_step(
             if status in {"succeeded", "failed", "uncertain"}:
                 item["finished_at"] = now
             break
+        if not found:
+            steps.append({
+                "key": key,
+                "label": ALL_RUN_STEPS[key],
+                "status": status,
+                "result_code": result_code[:64],
+                "started_at": now if status == "sending" else None,
+                "finished_at": now if status in {"succeeded", "failed", "uncertain"} else None,
+            })
         await cur.execute(
             "UPDATE _qmf_registration_runs SET steps_json=%s WHERE id=%s",
             (serialize_steps(steps), run_id),
@@ -1223,7 +1234,8 @@ async def _freeze_unstarted_background_run(
             else:
                 steps = parse_steps(row[1])
                 write_steps = {
-                    "upload_photo", "save_local_photo", "register_person", "complete_task"
+                    "upload_photo", "save_local_photo", "register_person", "complete_task",
+                    "complete_task_non_jurisdiction_retry"
                 }
                 has_write_progress = any(
                     item["key"] in write_steps
