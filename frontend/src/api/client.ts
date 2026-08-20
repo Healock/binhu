@@ -2336,25 +2336,35 @@ export interface CodeSummaryReport {
 }
 
 export async function fetchCodeSummaries(startDate: string, endDate: string): Promise<{
-  data: Array<{
-    source: CodeSummarySource
-    run_id: number
-    status: 'success' | 'warning' | 'failed'
-    raw_count?: number
-    valid_count?: number
-    excluded_count?: number
-    duplicate_count?: number
-    unclassified_count?: number
-    invalid_time_count?: number
-    error_code?: string
-    error_message?: string
-  }>
+  run: ExternalAcquisitionRun
+  reused: boolean
 }> {
   const { data } = await api.post('/code-summaries/fetch', {
     start_date: startDate,
     end_date: endDate,
   }, { ...activeRequest, timeout: 180_000 })
   return data
+}
+
+export interface ExternalAcquisitionRun {
+  id: number
+  kind: string
+  status: 'queued' | 'running' | 'success' | 'warning' | 'failed' | 'interrupted'
+  phase: string
+  current: number
+  total: number | null
+  progress: number | null
+  message: string
+  result?: Record<string, any>
+  error_code?: string | null
+  error_message?: string | null
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export async function getExternalAcquisitionRun(runId: number): Promise<ExternalAcquisitionRun> {
+  return (await api.get(`/external-acquisition/runs/${runId}`, activeRequest)).data
 }
 
 export async function getCodeSummary(
@@ -2421,7 +2431,7 @@ export async function previewVisitSource(payload: {
   source: 'detail' | 'rating' | 'both'
   start_date: string
   end_date: string
-}): Promise<{ data: VisitSourceRun[]; requires_confirmation: boolean }> {
+}): Promise<{ run: ExternalAcquisitionRun; reused: boolean }> {
   const { data } = await api.post('/visits/sources/preview', payload, {
     ...activeRequest,
     timeout: 300000,

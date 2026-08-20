@@ -5,8 +5,10 @@ import {
   confirmVisitSource,
   getVisitSourceStatus,
   previewVisitSource,
+  getExternalAcquisitionRun,
 } from '../api/client'
 import type { VisitSourceRun } from '../types'
+import type { ExternalAcquisitionRun } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { Panel } from './ui'
 
@@ -22,6 +24,7 @@ export default function VisitSourcePanel() {
   const [status, setStatus] = useState<Record<string, VisitSourceRun>>({})
   const [current, setCurrent] = useState<Record<string, { source_type: string; finished_at: string | null }>>({})
   const [businessDate, setBusinessDate] = useState('')
+  const [job, setJob] = useState<ExternalAcquisitionRun | null>(null)
 
   const loadStatus = async () => {
     if (!canManage) return
@@ -56,7 +59,19 @@ export default function VisitSourcePanel() {
         start_date: dates[0],
         end_date: dates[1],
       })
-      setPreview(value.data)
+      setJob(value.run)
+      const poll = async (runId: number): Promise<void> => {
+        const current = await getExternalAcquisitionRun(runId)
+        setJob(current)
+        if (current.status === 'queued' || current.status === 'running') {
+          window.setTimeout(() => void poll(runId), 1500)
+          return
+        }
+        const result = current.result?.data
+        if (Array.isArray(result)) setPreview(result)
+        await loadStatus()
+      }
+      void poll(value.run.id)
     } catch (reason: any) {
       const timeout = reason?.code === 'ECONNABORTED' || reason?.code === 'ETIMEDOUT'
       setError(
@@ -111,10 +126,11 @@ export default function VisitSourcePanel() {
             className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1"
           />
         </label>
-        <Button type="primary" loading={loading} onClick={() => void handlePreview()}>
+      <Button type="primary" loading={loading} onClick={() => void handlePreview()}>
           立即获取并预览
         </Button>
       </div>
+      {job && (job.status === 'queued' || job.status === 'running') && <div className="mt-3 text-sm text-[var(--app-text-secondary)]">后台任务：{job.message || job.phase} · {job.total ? `${job.current}/${job.total}` : '处理中'}{job.progress != null ? ` · ${job.progress}%` : ''}</div>}
       {error && <Alert className="mt-3" type="error" showIcon message={error} />}
       {Object.keys(status).length > 0 && (
         <div className="mt-3 space-y-1 text-sm text-[var(--app-text-secondary)]">

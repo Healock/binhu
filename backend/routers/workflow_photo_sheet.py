@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from deps import require_permission
+from database import db_manager
 from routers.workflow import get_workflow_db
 from services.audit import record_admin_audit, request_audit_fields
 from services.permissions import WORKFLOW_CONFIG_MANAGE
@@ -19,6 +20,7 @@ from services.photo_sheet_sync import (
     process_outbox_once,
     sync_online_once,
 )
+from services.external_acquisition_jobs import create_job
 
 
 router = APIRouter(prefix="/api/workflow/photo-sheet", tags=["调照片名单"])
@@ -123,27 +125,22 @@ async def update_photo_sheet_config(
         return await _config_payload(cur, source)
 
 
-@router.post("/preview")
+@router.post("/preview", status_code=202)
 async def preview_photo_sheet(
     request: Request,
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
     conn=Depends(get_workflow_db),
 ):
-    try:
-        async with conn.cursor() as cur:
-            result = await preview_online(cur)
-    except Exception as exc:
-        raise HTTPException(502, str(exc)) from exc
-    await record_admin_audit(
-        user, "workflow.photo_sheet.preview", target_type="photo_sheet", target_name=SOURCE_CODE,
-        detail={key: result[key] for key in (
-            "rows_read", "requests", "markers", "historical_completed",
-            "pending_after_last_marker", "issue_count", "duplicate_groups",
-            "blocking_issue_count", "warning_count", "excel_date_converted_count",
-            "pending_blocking_count", "pending_warning_count",
-        )}, **request_audit_fields(request),
-    )
-    return result
+    async def runner(job):
+        pool = db_manager.get_pool("workflow")
+        async with pool.acquire() as work_conn:
+            async with work_conn.cursor() as cur:
+                await job.update(phase="reading", message="正在读取调照片名单")
+                result = await preview_online(cur)
+        await record_admin_audit(user, "workflow.photo_sheet.preview", target_type="photo_sheet", target_name=SOURCE_CODE, detail={key: result[key] for key in ("rows_read", "requests", "markers", "historical_completed", "pending_after_last_marker", "issue_count", "duplicate_groups", "blocking_issue_count", "warning_count", "excel_date_converted_count", "pending_blocking_count", "pending_warning_count")}, **request_audit_fields(request))
+        return {"preview": result, "message": "调照片名单预览完成"}
+    job, reused = await create_job("photo_sheet_preview", int(user["id"]), {}, runner, dedupe_key="current")
+    return {"run": job, "reused": reused}
 
 
 @router.post("/import")
@@ -175,28 +172,21 @@ async def apply_photo_sheet_import(
     return result
 
 
-@router.post("/sync")
+@router.post("/sync", status_code=202)
 async def run_photo_sheet_sync(
     request: Request,
     full: bool = Query(default=False),
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
 ):
-    try:
+    async def runner(job):
+        await job.update(phase="outbox", message="正在处理待写回队列")
         outbox_result = await process_outbox_once()
+        await job.update(phase="syncing", message="正在同步腾讯调照片名单")
         sync_result = await sync_online_once(full=full, actor_user_id=int(user["id"]))
-    except Exception as exc:
-        raise HTTPException(502, str(exc)) from exc
-    await record_admin_audit(
-        user, "workflow.photo_sheet.sync", target_type="photo_sheet", target_name=SOURCE_CODE,
-        detail={
-            "full": full,
-            "created_tickets": sync_result.get("created_tickets", 0),
-            "completed_tickets": sync_result.get("completed_tickets", 0),
-            "outbox_processed": outbox_result.get("processed", 0),
-            "outbox_failed": outbox_result.get("failed", 0),
-        }, **request_audit_fields(request),
-    )
-    return {"sync": sync_result, "outbox": outbox_result}
+        await record_admin_audit(user, "workflow.photo_sheet.sync", target_type="photo_sheet", target_name=SOURCE_CODE, detail={"full": full, "created_tickets": sync_result.get("created_tickets", 0), "completed_tickets": sync_result.get("completed_tickets", 0), "outbox_processed": outbox_result.get("processed", 0), "outbox_failed": outbox_result.get("failed", 0)}, **request_audit_fields(request))
+        return {"sync": sync_result, "outbox": outbox_result, "message": "调照片名单同步完成"}
+    job, reused = await create_job("photo_sheet_sync", int(user["id"]), {"full": full}, runner, dedupe_key=f"{int(full)}")
+    return {"run": job, "reused": reused}
 
 
 @router.get("/runs")

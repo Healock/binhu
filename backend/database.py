@@ -830,6 +830,31 @@ async def ensure_online_editor_schema(cur) -> None:
         "last_error='服务重启后等待重新同步' "
         "WHERE status='processing'"
     )
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _external_acquisition_runs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            kind VARCHAR(50) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'queued',
+            phase VARCHAR(50) NOT NULL DEFAULT 'queued',
+            current_count INT DEFAULT 0,
+            total_count INT DEFAULT NULL,
+            progress_message VARCHAR(500) NOT NULL DEFAULT '',
+            requested_by BIGINT DEFAULT NULL,
+            payload_json JSON DEFAULT NULL,
+            result_json JSON DEFAULT NULL,
+            dedupe_key VARCHAR(190) DEFAULT NULL,
+            error_code VARCHAR(60) DEFAULT NULL,
+            error_message VARCHAR(500) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at DATETIME DEFAULT NULL,
+            finished_at DATETIME DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_external_runs_kind_created (kind, created_at),
+            INDEX idx_external_runs_status (status, created_at),
+            INDEX idx_external_runs_dedupe (kind, dedupe_key, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
 
 
 async def ensure_police_dispatch_schema(cur) -> None:

@@ -19,6 +19,8 @@ from services.visit_import import (
     VisitWorkbookError,
 )
 from services.visit_source import VisitSourceError, commit_rows, fetch_rows, preview_diff, safe_payload
+from services.external_acquisition_jobs import create_job
+from database import db_manager
 
 router = APIRouter(prefix="/api/visits/sources", tags=["走访来源获取"])
 
@@ -110,7 +112,7 @@ async def _insert_run(conn, user_id: int, source: str, start_date: date, end_dat
         return int(cur.lastrowid)
 
 
-@router.post("/preview")
+@router.post("/preview", status_code=202)
 async def preview_source(
     payload: SourcePreviewRequest,
     request: Request,
@@ -119,65 +121,34 @@ async def preview_source(
 ):
     if payload.start_date > payload.end_date:
         raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
-    sources = ["detail", "rating"] if payload.source == "both" else [payload.source]
-    async with conn.cursor() as cur:
-        timezone_name = await get_business_timezone_name(cur)
-    data = []
-    projected_detail_rows = None
-    for source in sources:
-        try:
-            result = await fetch_rows(source, payload.start_date, payload.end_date)
-            result["status"] = "pending_confirmation"
-            result["source_page"] = "走访明细" if source == "detail" else "新星级评分管理"
-            result["diff"] = await preview_diff(
-                conn,
-                kind=source,
-                rows=result["rows"],
-                timezone_name=timezone_name,
-                projected_detail_rows=(
-                    projected_detail_rows if source == "rating" else None
-                ),
-            )
-            if source == "detail":
-                projected_detail_rows = result["rows"]
-        except (VisitSourceError, VisitWorkbookError) as exc:
-            error_code = exc.code if isinstance(exc, VisitSourceError) else "schema_changed"
-            result = {
-                "status": "failed",
-                "source_page": "走访明细" if source == "detail" else "新星级评分管理",
-                "error_code": error_code,
-                "error_message": str(exc),
-                "record_count": 0,
-                "valid_count": 0,
-                "issue_count": 1,
-                "issues": [str(exc)],
-                "rows": [],
-            }
-        run_id = await _insert_run(conn, int(user["id"]), source, payload.start_date, payload.end_date, result)
-        data.append({
-            "id": run_id,
-            "source": source,
-            "status": result["status"],
-            "source_page": result["source_page"],
-            "record_count": result.get("record_count", 0),
-            "valid_count": result.get("valid_count", 0),
-            "issue_count": result.get("issue_count", 0),
-            "response_business_date": result.get("response_business_date"),
-            "issues": result.get("issues", []),
-            "diff": result.get("diff", {}),
-            "error_code": result.get("error_code"),
-            "error_message": result.get("error_message"),
-        })
-    await record_admin_audit(
-        user,
-        "visit_source.preview",
-        target_type="visit_source",
-        target_name=payload.source,
-        result="success" if all(item["status"] != "failed" for item in data) else "failed",
-        detail={"run_ids": [item["id"] for item in data]},
-        **request_audit_fields(request),
-    )
-    return {"data": data, "requires_confirmation": any(item["status"] == "pending_confirmation" for item in data)}
+    async def runner(job):
+        pool = db_manager.get_pool("online_data")
+        async with pool.acquire() as work_conn:
+            sources = ["detail", "rating"] if payload.source == "both" else [payload.source]
+            async with work_conn.cursor() as cur:
+                timezone_name = await get_business_timezone_name(cur)
+            data = []
+            projected_detail_rows = None
+            await job.update(phase="fetching", total=len(sources), message="正在读取外部来源")
+            for index, source in enumerate(sources, 1):
+                try:
+                    result = await fetch_rows(source, payload.start_date, payload.end_date)
+                    result["status"] = "pending_confirmation"
+                    result["source_page"] = "走访明细" if source == "detail" else "新星级评分管理"
+                    result["diff"] = await preview_diff(work_conn, kind=source, rows=result["rows"], timezone_name=timezone_name, projected_detail_rows=projected_detail_rows if source == "rating" else None)
+                    if source == "detail":
+                        projected_detail_rows = result["rows"]
+                except (VisitSourceError, VisitWorkbookError) as exc:
+                    error_code = exc.code if isinstance(exc, VisitSourceError) else "schema_changed"
+                    result = {"status": "failed", "source_page": "走访明细" if source == "detail" else "新星级评分管理", "error_code": error_code, "error_message": str(exc), "record_count": 0, "valid_count": 0, "issue_count": 1, "issues": [str(exc)], "rows": []}
+                run_id = await _insert_run(work_conn, int(user["id"]), source, payload.start_date, payload.end_date, result)
+                data.append({"id": run_id, "source": source, "status": result["status"], "source_page": result["source_page"], "record_count": result.get("record_count", 0), "valid_count": result.get("valid_count", 0), "issue_count": result.get("issue_count", 0), "response_business_date": result.get("response_business_date"), "issues": result.get("issues", []), "diff": result.get("diff", {}), "error_code": result.get("error_code"), "error_message": result.get("error_message")})
+                await job.update(phase="fetching", current=index, total=len(sources), message=f"已完成 {index}/{len(sources)} 个来源")
+        await record_admin_audit(user, "visit_source.preview", target_type="visit_source", target_name=payload.source, result="success" if all(item["status"] != "failed" for item in data) else "failed", detail={"run_ids": [item["id"] for item in data]}, **request_audit_fields(request))
+        return {"data": data, "requires_confirmation": any(item["status"] == "pending_confirmation" for item in data), "message": "预览已生成"}
+
+    job, reused = await create_job("visit_source_preview", int(user["id"]), {"source": payload.source, "start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat()}, runner, dedupe_key=f"{payload.source}:{payload.start_date}:{payload.end_date}")
+    return {"run": job, "reused": reused}
 
 
 @router.post("/confirm")

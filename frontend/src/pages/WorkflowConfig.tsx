@@ -27,7 +27,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import { PageHeader, Panel } from '../components/ui'
-import { workflowApi, type PhotoSheetConfig, type PhotoSheetPreview, type WorkflowType } from '../api/client'
+import { getExternalAcquisitionRun, workflowApi, type PhotoSheetConfig, type PhotoSheetPreview, type WorkflowType } from '../api/client'
 import useSystemTime from '../hooks/useSystemTime'
 
 function apiError(reason: any, fallback: string) {
@@ -116,8 +116,14 @@ export default function WorkflowConfig() {
     try {
       setPhotoSheetLoading(true)
       const result = await workflowApi.previewPhotoSheet()
-      setPhotoSheetPreview(result)
-      message.success('只读预览完成，未修改腾讯表格或工单')
+      const poll = async (): Promise<void> => {
+        const current = await getExternalAcquisitionRun(result.run.id)
+        if (current.status === 'queued' || current.status === 'running') { window.setTimeout(() => void poll(), 1500); return }
+        if (current.status !== 'success') throw new Error(current.error_message || '只读预览失败')
+        setPhotoSheetPreview(current.result?.preview as PhotoSheetPreview)
+        message.success('只读预览完成，未修改腾讯表格或工单')
+      }
+      void poll()
     } catch (reason) {
       message.error(apiError(reason, '只读预览失败'))
     } finally {
@@ -152,9 +158,15 @@ export default function WorkflowConfig() {
   const syncPhotoSheet = async () => {
     try {
       setPhotoSheetLoading(true)
-      await workflowApi.syncPhotoSheet(true)
-      message.success('照片名单已完成一次完整同步')
-      await load()
+      const result = await workflowApi.syncPhotoSheet(true)
+      const poll = async (): Promise<void> => {
+        const current = await getExternalAcquisitionRun(result.run.id)
+        if (current.status === 'queued' || current.status === 'running') { window.setTimeout(() => void poll(), 1500); return }
+        if (current.status !== 'success') throw new Error(current.error_message || '立即同步失败')
+        message.success('照片名单已完成一次完整同步')
+        await load()
+      }
+      void poll()
     } catch (reason) {
       message.error(apiError(reason, '立即同步失败'))
     } finally {
