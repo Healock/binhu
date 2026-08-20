@@ -254,15 +254,6 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'settings',
       },
       {
-        id: 'workflow_config',
-        path: '/settings/workflow',
-        label: '工单流程配置',
-        shortLabel: '流程配置',
-        icon: 'worklog',
-        permission: 'workflow.config.manage',
-        roles: ['super_admin'],
-      },
-      {
         id: 'operations',
         path: '/operations',
         label: '运维中心',

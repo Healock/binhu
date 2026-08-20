@@ -777,7 +777,7 @@ function BackupsTab() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="operations-backups-content">
       <Alert
         type="warning"
         showIcon
