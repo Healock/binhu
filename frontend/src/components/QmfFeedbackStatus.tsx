@@ -12,6 +12,7 @@ export const QMF_FEEDBACK_OPTIONS: Array<{
   { value: 'completed_match', label: '反馈一致' },
   { value: 'completed_mismatch', label: '反馈不一致' },
   { value: 'not_found', label: '全民防无记录' },
+  { value: 'non_jurisdiction', label: '非本辖区，需重新提交' },
   { value: 'error', label: '核对异常' },
 ]
 
@@ -22,6 +23,7 @@ const STATUS_META: Record<QmfFeedbackState, { label: string; color?: string }> =
   completed_match: { label: '反馈一致', color: 'green' },
   completed_mismatch: { label: '反馈不一致', color: 'red' },
   not_found: { label: '全民防无记录', color: 'gold' },
+  non_jurisdiction: { label: '非本辖区，需重新提交', color: 'purple' },
   error: { label: '核对异常', color: 'orange' },
 }
 
@@ -73,6 +75,7 @@ export default function QmfFeedbackStatus({
     status?.checked_at ? `全民防核查时间：${status.checked_at}` : '',
     status?.last_scanned_at ? `平台核对时间：${formatTime(status.last_scanned_at)}` : '',
     origin ? `反馈来源：${origin}` : '',
+    normalized === 'non_jurisdiction' ? '处理建议：已识别为非本辖区结果，可重新提交特殊反馈' : '',
     error ? `异常原因：${error}` : '',
   ].filter(Boolean)
 

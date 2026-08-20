@@ -567,6 +567,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         return { type: 'info' as const, message: '全民防尚未反馈', description: '可以继续生成全民防登记准备；执行前还会再次复核。' }
       case 'not_found':
         return { type: 'info' as const, message: '管理端未查到该记录', description: '这不等于未反馈；登记准备会继续通过手机待办接口确认唯一任务。' }
+      case 'non_jurisdiction':
+        return {
+          type: 'warning' as const,
+          message: '全民防返回非本辖区，请重新提交结果',
+          description: `${qmfLegacyStatus.result_text || '非本辖区（无法提交）'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}；准备后将只新增一次特殊反馈。`,
+        }
       case 'completed_match':
         return {
           type: 'success' as const,

@@ -110,6 +110,7 @@ const EMPTY_FACETS: MobileTaskFacets = {
     completed_match: 0,
     completed_mismatch: 0,
     not_found: 0,
+    non_jurisdiction: 0,
     error: 0,
   },
 }
@@ -967,6 +968,7 @@ export default function MobileTaskList({
               { state: 'completed_mismatch' as const, label: '不一致', count: qmfScan.mismatch_count, tone: 'danger' },
               { state: 'pending' as const, label: '未核查', count: qmfScan.pending_count },
               { state: 'not_found' as const, label: '无记录', count: qmfScan.not_found_count },
+              { state: 'non_jurisdiction' as const, label: '非本辖区', count: qmfScan.non_jurisdiction_count },
               { state: 'error' as const, label: '异常', count: qmfScan.error_count, tone: 'warning' },
             ].map(item => {
               const active = item.state === 'all'

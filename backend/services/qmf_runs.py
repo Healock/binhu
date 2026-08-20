@@ -30,8 +30,10 @@ LEAVE_NOT_RETURNING_STEPS: tuple[tuple[str, str], ...] = (
 )
 
 ALL_RUN_STEPS = dict((*RUN_STEPS, *LEAVE_NOT_RETURNING_STEPS))
+ALL_RUN_STEPS["complete_task_non_jurisdiction_retry"] = "重新提交非本辖区反馈"
 WRITE_STEP_KEYS = frozenset({
     "upload_photo", "save_local_photo", "register_person", "complete_task",
+    "complete_task_non_jurisdiction_retry",
 })
 
 
@@ -91,6 +93,28 @@ def parse_steps(value: Any) -> list[dict[str, Any]]:
             "started_at": item.get("started_at"),
             "finished_at": item.get("finished_at"),
         })
+    template_keys = {item[0] for item in template}
+    extras = []
+    for key, label in ALL_RUN_STEPS.items():
+        if key in by_key and key not in template_keys:
+            item = by_key[key]
+            extras.append({
+                "key": key,
+                "label": label,
+                "status": str(item.get("status") or "pending"),
+                "result_code": str(item.get("result_code") or "")[:64],
+                "started_at": item.get("started_at"),
+                "finished_at": item.get("finished_at"),
+            })
+    # Special feedback retries belong immediately after the first feedback
+    # step, so the persisted and displayed sequence matches execution order.
+    if extras:
+        insert_at = next(
+            (index + 1 for index, item in enumerate(result)
+             if item["key"] == "complete_task"),
+            len(result),
+        )
+        result[insert_at:insert_at] = extras
     return result
 
 

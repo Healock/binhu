@@ -23,6 +23,7 @@ from services.qmf_status import (
     QmfStatusAccessError,
     STATUS_COMPLETED_MATCH,
     STATUS_COMPLETED_MISMATCH,
+    STATUS_NON_JURISDICTION,
     STATUS_UNAVAILABLE,
 )
 
@@ -75,6 +76,8 @@ def _state_bucket(state: str) -> str:
         return "pending_count"
     if state == "not_found":
         return "not_found_count"
+    if state == STATUS_NON_JURISDICTION:
+        return "non_jurisdiction_count"
     return "error_count"
 
 
@@ -92,6 +95,7 @@ async def ensure_qmf_status_scan_schema(cur) -> None:
             mismatch_count INT NOT NULL DEFAULT 0,
             pending_count INT NOT NULL DEFAULT 0,
             not_found_count INT NOT NULL DEFAULT 0,
+            non_jurisdiction_count INT NOT NULL DEFAULT 0,
             error_count INT NOT NULL DEFAULT 0,
             requested_by INT DEFAULT NULL,
             scheduled_date DATE DEFAULT NULL,
@@ -138,6 +142,16 @@ async def ensure_qmf_status_scan_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute(
+        "SHOW COLUMNS FROM `_qmf_status_scan_runs` WHERE Field=%s",
+        ("non_jurisdiction_count",),
+    )
+    if not await cur.fetchone():
+        await cur.execute(
+            "ALTER TABLE `_qmf_status_scan_runs` "
+            "ADD COLUMN non_jurisdiction_count INT NOT NULL DEFAULT 0 "
+            "AFTER not_found_count"
+        )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _qmf_status_snapshots (
             parser_type VARCHAR(50) NOT NULL,
@@ -420,6 +434,7 @@ async def _finish_item(
     accepted_states = {
         STATUS_COMPLETED_MATCH,
         STATUS_COMPLETED_MISMATCH,
+        STATUS_NON_JURISDICTION,
         "pending",
         "not_found",
     }
@@ -675,7 +690,7 @@ async def status_scan_payload(run_id: int) -> dict[str, Any] | None:
                 """
                 SELECT id,trigger_source,scan_mode,status,concurrency,total_count,
                        processed_count,match_count,mismatch_count,pending_count,
-                       not_found_count,error_count,requested_by,error_code,
+                       not_found_count,non_jurisdiction_count,error_count,requested_by,error_code,
                        started_at,finished_at,created_at,updated_at
                 FROM _qmf_status_scan_runs WHERE id=%s
                 """,
@@ -706,13 +721,14 @@ async def status_scan_payload(run_id: int) -> dict[str, Any] | None:
         "mismatch_count": int(row[8]),
         "pending_count": int(row[9]),
         "not_found_count": int(row[10]),
-        "error_count": int(row[11]),
-        "requested_by": int(row[12]) if row[12] is not None else None,
-        "error_code": str(row[13] or ""),
-        "started_at": _utc_text(row[14]),
-        "finished_at": _utc_text(row[15]),
-        "created_at": _utc_text(row[16]),
-        "updated_at": _utc_text(row[17]),
+        "non_jurisdiction_count": int(row[11]),
+        "error_count": int(row[12]),
+        "requested_by": int(row[13]) if row[13] is not None else None,
+        "error_code": str(row[14] or ""),
+        "started_at": _utc_text(row[15]),
+        "finished_at": _utc_text(row[16]),
+        "created_at": _utc_text(row[17]),
+        "updated_at": _utc_text(row[18]),
         "failures": failures,
     }
 
