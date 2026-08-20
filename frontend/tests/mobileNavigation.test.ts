@@ -411,3 +411,17 @@ test('在线人数按钮再次点击会关闭当前弹层', () => {
   assert.match(source, /<Popover[\s\S]*onOpenChange=\{setOpen\}[\s\S]*trigger="click"/)
   assert.doesNotMatch(source, /onClick=\{\(\) => canViewDetails && setOpen\(true\)\}/)
 })
+
+test('工单流程配置只从设置页进入，不再出现在主侧边栏导航', () => {
+  const navigation = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+  const settings = readFileSync(
+    new URL('../src/components/SettingsLayout.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.doesNotMatch(navigation, /id: 'workflow_config'/)
+  assert.match(settings, /path: '\/settings\/workflow', label: '工单流程配置'/)
+})

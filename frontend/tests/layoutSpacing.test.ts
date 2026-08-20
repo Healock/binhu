@@ -43,6 +43,18 @@ test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   assert.match(styles, /\.settings-field--counted\s*\{[^}]*padding-bottom:\s*22px/s)
 })
 
+test('运维备份提示和设置面板使用稳定的父级区块间距', () => {
+  const operationsSource = readFileSync(
+    new URL('../src/pages/OperationsCenter.tsx', import.meta.url),
+    'utf8',
+  )
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(operationsSource, /<div className="operations-backups-content">[\s\S]*<Alert[\s\S]*每日自动备份/)
+  assert.match(styles, /\.operations-backups-content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px/s)
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.operations-backups-content\s*\{[^}]*gap:\s*12px/s)
+})
+
 test('Panel 中的列表工具栏必须由统一列表内容容器承接结果区间距', () => {
   const pagesDirectory = fileURLToPath(new URL('../src/pages/', import.meta.url))
   const violations: string[] = []

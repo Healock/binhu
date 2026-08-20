@@ -15,6 +15,24 @@
   min-width: 0;
 }
 
+/*
+ * Bordered business blocks must be separated by their parent layout rather
+ * than Tailwind's margin-based `space-y-*`. Ant Design normalizes margins on
+ * Alert/Card-like components, and logical margins can otherwise collapse or
+ * be overridden, leaving adjacent blocks visually stuck together.
+ */
+.operations-backups-content {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+@media (max-width: 767px) {
+  .operations-backups-content {
+    gap: 12px;
+  }
+}
+
 .online-presence-indicator {
   position: fixed;
   z-index: 36;
