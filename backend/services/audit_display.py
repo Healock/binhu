@@ -321,6 +321,7 @@ DETAIL_LABELS: dict[str, str] = {
 VALUE_LABELS: dict[str, str] = {
     "apartment": "公寓",
     "community": "居民小区",
+    "construction_dormitory": "工地宿舍",
     "existing": "关联已有账号",
     "create": "同时创建账号",
     "inherited": "继承岗位默认权限组",
