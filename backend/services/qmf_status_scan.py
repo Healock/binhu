@@ -419,6 +419,89 @@ async def _origin_for_item(item: dict[str, Any], state: str) -> str:
             return "binhu_automatic" if await cur.fetchone() else "legacy_manual_or_other"
 
 
+async def persist_realtime_qmf_status(
+    conn,
+    *,
+    parser_type: str,
+    row_key: str,
+    source_id: int,
+    source_revision: int,
+    source_row_hash: str,
+    platform_result: str,
+    status: QmfLegacyStatus,
+) -> None:
+    """Refresh the task snapshot after a successful single-item live check.
+
+    The live status endpoint is not a scan batch, so it uses ``scan_run_id=0``
+    while retaining the same privacy-safe snapshot shape.  Unavailable,
+    ambiguous, and other unsafe responses are deliberately not written over a
+    previous cache value; the caller still displays the live error separately.
+    """
+    if parser_type != MODEL_THREE_PARSER:
+        return
+    # Route-level tests and lightweight callers may not provide a database
+    # connection.  The live response is still returned to the caller; only
+    # the optional cache refresh is skipped in that case.
+    if conn is None or not hasattr(conn, "cursor"):
+        return
+    accepted_states = {
+        STATUS_COMPLETED_MATCH,
+        STATUS_COMPLETED_MISMATCH,
+        STATUS_NON_JURISDICTION,
+        "pending",
+        "not_found",
+    }
+    if status.state not in accepted_states:
+        return
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COALESCE(identity_hmac, '') FROM _online_source_projection "
+            "WHERE parser_type=%s AND row_key=%s LIMIT 1",
+            (parser_type, row_key),
+        )
+        identity_row = await cur.fetchone()
+        identity_hmac = str(identity_row[0] or "") if identity_row else ""
+        origin = (
+            status.origin
+            if status.state in {STATUS_COMPLETED_MATCH, STATUS_COMPLETED_MISMATCH}
+            else ""
+        )
+        await cur.execute(
+            """
+            INSERT INTO _qmf_status_snapshots (
+                parser_type,row_key,source_id,source_revision,
+                source_row_hash,identity_hmac,platform_result,
+                feedback_state,feedback_result,checked_at,origin,
+                error_code,scan_run_id,last_scanned_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'',0,UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE
+                source_id=VALUES(source_id),
+                source_revision=VALUES(source_revision),
+                source_row_hash=VALUES(source_row_hash),
+                identity_hmac=VALUES(identity_hmac),
+                platform_result=VALUES(platform_result),
+                feedback_state=VALUES(feedback_state),
+                feedback_result=VALUES(feedback_result),
+                checked_at=VALUES(checked_at),
+                origin=VALUES(origin),error_code='',
+                scan_run_id=0,last_scanned_at=UTC_TIMESTAMP()
+            """,
+            (
+                parser_type,
+                row_key,
+                int(source_id),
+                int(source_revision),
+                str(source_row_hash or "")[:64],
+                identity_hmac[:64],
+                normalize_qmf_result(platform_result),
+                status.state,
+                status.result,
+                status.checked_at,
+                origin,
+            ),
+        )
+
+
 async def _finish_item(
     run_id: int,
     item: dict[str, Any],

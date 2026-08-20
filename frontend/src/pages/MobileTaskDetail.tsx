@@ -35,6 +35,7 @@ import {
   updateMobileTaskAnalysis,
   workflowApi,
   type MobileTaskDetailData,
+  type MobileTaskQmfStatus,
   type MobileTaskSource,
   type QmfLegacyStatus,
   type QmfPrepareResult,
@@ -92,6 +93,33 @@ function firstValue(values: Record<string, string>, fields: string[]) {
 function detailError(reason: any, fallback: string) {
   const detail = reason?.response?.data?.detail
   return typeof detail === 'object' ? detail?.message || fallback : detail || reason?.message || fallback
+}
+
+function realtimeQmfSnapshot(
+  result: QmfLegacyStatus,
+  platformResult: string,
+  previous: MobileTaskQmfStatus | null | undefined,
+): MobileTaskQmfStatus | null {
+  const stateMap: Partial<Record<QmfLegacyStatus['state'], MobileTaskQmfStatus['state']>> = {
+    pending: 'pending',
+    completed_match: 'completed_match',
+    completed_mismatch: 'completed_mismatch',
+    not_found: 'not_found',
+    non_jurisdiction: 'non_jurisdiction',
+  }
+  const state = stateMap[result.state]
+  if (!state) return null
+  return {
+    state,
+    platform_result: platformResult,
+    feedback_result: result.result || result.result_text || '',
+    checked_at: result.checked_at || '',
+    origin: ['completed_match', 'completed_mismatch'].includes(result.state)
+      ? (result.origin || previous?.origin || '')
+      : '',
+    error_code: '',
+    last_scanned_at: new Date().toISOString(),
+  }
 }
 
 export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 'analysis' }) {
@@ -207,7 +235,21 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       source_id: selectedSource.id,
       expected_revision: selectedSource.revision,
     }).then(result => {
-      if (!cancelled) setQmfLegacyStatus(result)
+      if (!cancelled) {
+        setQmfLegacyStatus(result)
+        const snapshot = realtimeQmfSnapshot(
+          result,
+          data?.task.summary.result || '',
+          data?.task.qmf_status,
+        )
+        if (snapshot) {
+          setData(current => current ? {
+            ...current,
+            task: { ...current.task, qmf_status: snapshot },
+            qmf_status: snapshot,
+          } : current)
+        }
+      }
     }).catch(reason => {
       if (!cancelled) {
         setQmfLegacyStatusError(detailError(reason, '全民防反馈状态暂时无法确认'))
