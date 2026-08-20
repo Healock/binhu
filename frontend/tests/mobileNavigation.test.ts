@@ -213,6 +213,37 @@ test('工单中心移入工作台，研判和调照片归入任务处理', () =>
   assert.equal(tasks?.items.some(item => item.id === 'photo_tasks'), true)
 })
 
+test('侧边栏使用 Tabler 业务图标并通过 currentColor 适配主题', () => {
+  const navigation = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+  const icon = readFileSync(
+    new URL('../src/components/NavigationIcon.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(icon, /from '@tabler\/icons-react'/)
+  assert.doesNotMatch(icon, /from '@ant-design\/icons'/)
+  assert.match(icon, /data_query: IconDatabaseSearch/)
+  assert.match(icon, /ticket_center: IconTicket/)
+  assert.match(icon, /analysis: IconBrain/)
+  assert.match(icon, /photo: IconPhotoSearch/)
+  assert.match(icon, /registry: IconHomeSearch/)
+  assert.match(icon, /permissions: IconShieldLock/)
+  assert.match(icon, /size="1em"/)
+  assert.match(icon, /stroke=\{1\.8\}/)
+  assert.match(navigation, /id: 'police_analysis'[\s\S]*?icon: 'analysis'/)
+  assert.match(navigation, /id: 'photo_tasks'[\s\S]*?icon: 'photo'/)
+  assert.match(navigation, /id: 'online_summary'[\s\S]*?icon: 'summary'/)
+  assert.match(navigation, /id: 'code_summary'[\s\S]*?icon: 'code_summary'/)
+  assert.match(navigation, /id: 'communities'[\s\S]*?icon: 'communities'/)
+  assert.match(navigation, /id: 'police_addresses'[\s\S]*?icon: 'neighborhoods'/)
+  assert.match(navigation, /id: 'registry'[\s\S]*?icon: 'registry'/)
+  assert.match(navigation, /id: 'users'[\s\S]*?icon: 'users'/)
+  assert.match(navigation, /id: 'permission_groups'[\s\S]*?icon: 'permissions'/)
+})
+
 test('调照片独立入口受处理权限和岗位共同限制', () => {
   const regular = accessibleNavigationGroups(
     'member',
