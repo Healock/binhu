@@ -11,12 +11,17 @@ from zoneinfo import ZoneInfo
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from services.qmf_status import QmfLegacyStatus, STATUS_COMPLETED_MATCH
+from services.qmf_status import (
+    QmfLegacyStatus,
+    STATUS_COMPLETED_MATCH,
+    STATUS_UNAVAILABLE,
+)
 from services.qmf_status_scan import (
     SCAN_CONCURRENCY,
     create_status_scan_run,
     ensure_qmf_status_scan_schema,
     maybe_launch_scheduled_scan,
+    persist_realtime_qmf_status,
     run_status_scan,
     valid_schedule_time,
 )
@@ -124,6 +129,46 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
             "identity_number", "phone", "address", "photo_base64", "station"
         ):
             self.assertNotIn(forbidden, sql)
+
+    async def test_realtime_check_refreshes_safe_snapshot(self):
+        cursor = _Cursor([("c" * 64,)])
+        await persist_realtime_qmf_status(
+            _Connection(cursor),
+            parser_type="疑似未注销模型三",
+            row_key="a" * 32,
+            source_id=21,
+            source_revision=4,
+            source_row_hash="b" * 64,
+            platform_result="近期返吴",
+            status=QmfLegacyStatus(
+                state=STATUS_COMPLETED_MATCH,
+                result="近期返吴",
+                checked_at="2026-08-20 16:19:46",
+                origin="legacy_manual_or_other",
+            ),
+        )
+
+        sql = " ".join(statement for statement, _params in cursor.statements)
+        self.assertIn("INSERT INTO _qmf_status_snapshots", sql)
+        self.assertIn("scan_run_id=0", sql)
+        insert_params = cursor.statements[-1][1]
+        self.assertEqual(insert_params[6], "近期返吴")
+        self.assertEqual(insert_params[7], STATUS_COMPLETED_MATCH)
+        self.assertEqual(insert_params[10], "legacy_manual_or_other")
+
+    async def test_realtime_unavailable_does_not_replace_snapshot(self):
+        cursor = _Cursor()
+        await persist_realtime_qmf_status(
+            _Connection(cursor),
+            parser_type="疑似未注销模型三",
+            row_key="a" * 32,
+            source_id=21,
+            source_revision=4,
+            source_row_hash="b" * 64,
+            platform_result="近期返吴",
+            status=QmfLegacyStatus(state=STATUS_UNAVAILABLE),
+        )
+        self.assertEqual(cursor.statements, [])
 
     async def test_daily_scan_waits_for_configured_shanghai_time(self):
         cursor = _Cursor()

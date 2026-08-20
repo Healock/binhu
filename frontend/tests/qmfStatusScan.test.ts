@@ -7,6 +7,7 @@ const listSource = readFileSync(new URL('../src/pages/MobileTaskList.tsx', impor
 const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
 const statusSource = readFileSync(new URL('../src/components/QmfFeedbackStatus.tsx', import.meta.url), 'utf8')
 const settingsSource = readFileSync(new URL('../src/pages/SystemSettings.tsx', import.meta.url), 'utf8')
+const detailSource = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
 
 test('全民防反馈扫描接口和七类安全状态已接入', () => {
   assert.match(apiSource, /post\('\/qmf-registration\/status-scans'/)
@@ -55,4 +56,12 @@ test('全民防设置移除协议确认项并说明默认执行岗位', () => {
   assert.doesNotMatch(settingsSource, /写入协议已实测/)
   assert.doesNotMatch(settingsSource, /登记前核对与全民防登记均已开启/)
   assert.match(settingsSource, /基础管控、中队长、所队领导、管理员和超级管理员默认拥有/)
+})
+
+test('任务详情实时复核后立即替换旧的全民防缓存状态', () => {
+  assert.match(detailSource, /function realtimeQmfSnapshot/)
+  assert.match(detailSource, /completed_match: 'completed_match'/)
+  assert.match(detailSource, /completed_mismatch: 'completed_mismatch'/)
+  assert.match(detailSource, /task: \{ \.\.\.current\.task, qmf_status: snapshot \}/)
+  assert.match(detailSource, /qmf_status: snapshot/)
 })
