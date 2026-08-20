@@ -26,6 +26,13 @@ from services.maintenance import (
     maintenance_status,
 )
 from services.workflow_support import detect_attachment_mime
+from services.session_devices import (
+    hash_device_id,
+    infer_device_type,
+    public_session_fingerprint,
+    user_agent_family,
+)
+from services.session_management import invalidate_all_sessions, invalidate_session
 
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
@@ -54,6 +61,8 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 class LoginRequest(BaseModel):
     username: str
     password: str
+    device_type: str | None = None
+    device_id: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -76,6 +85,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
+        await conn.begin()
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, username, password_hash, role, "
@@ -106,6 +116,16 @@ async def login(req: LoginRequest, request: Request, response: Response):
             ) = row
             if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+            device_type = infer_device_type(
+                requested=req.device_type,
+                platform_header=request.headers.get("X-Binhu-Client-Platform"),
+                user_agent=request.headers.get("User-Agent"),
+                mobile_hint=request.headers.get("Sec-CH-UA-Mobile"),
+            )
+            device_id_hash = hash_device_id(req.device_id)
+            client_platform = device_type
+            ua_family = user_agent_family(request.headers.get("User-Agent"))
 
             # 登录阶段也必须拦截普通账号，避免维护期间创建新会话。
             await cur.execute(
@@ -142,7 +162,6 @@ async def login(req: LoginRequest, request: Request, response: Response):
                     headers={"Retry-After": "300"},
                 )
 
-            await conn.begin()
             await cur.execute(
                 "SELECT id FROM _users WHERE id=%s FOR UPDATE",
                 (user_id,),
@@ -150,18 +169,43 @@ async def login(req: LoginRequest, request: Request, response: Response):
             session_id = create_session(user_id)
             expires_at = datetime.utcnow() + timedelta(hours=settings.SESSION_EXPIRE_HOURS)
             await cur.execute(
+                "SELECT active_desktop_session_id, active_mobile_session_id, "
+                "active_session_id FROM _users WHERE id=%s FOR UPDATE",
+                (user_id,),
+            )
+            active_slots = await cur.fetchone() or (None, None, None)
+            slot_column = (
+                "active_mobile_session_id"
+                if device_type == "mobile"
+                else "active_desktop_session_id"
+            )
+            if settings.MULTI_DEVICE_SESSION_ENABLED:
+                previous_session = active_slots[1 if device_type == "mobile" else 0]
+            else:
+                previous_session = active_slots[2]
+            if previous_session and previous_session != session_id:
+                await invalidate_session(cur, str(previous_session))
+            management_id = str(uuid.uuid4())
+            await cur.execute(
                 "INSERT INTO _sessions "
-                "(session_id, user_id, last_activity_at, expires_at) "
-                "VALUES (%s, %s, UTC_TIMESTAMP(), %s)",
-                (session_id, user_id, expires_at),
+                "(session_id, management_id, user_id, device_type, device_id_hash, "
+                "client_platform, user_agent_family, last_activity_at, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(), %s)",
+                (
+                    session_id,
+                    management_id,
+                    user_id,
+                    device_type,
+                    device_id_hash,
+                    client_platform,
+                    ua_family,
+                    expires_at,
+                ),
             )
             await cur.execute(
-                "UPDATE _users SET active_session_id=%s WHERE id=%s",
-                (session_id, user_id),
-            )
-            await cur.execute(
-                "DELETE FROM _user_presence_clients WHERE user_id=%s AND session_id<>%s",
-                (user_id, session_id),
+                f"UPDATE _users SET {slot_column}=%s, "
+                "active_session_id=%s WHERE id=%s",
+                (session_id, session_id, user_id),
             )
             await cur.execute(
                 "DELETE FROM _sessions WHERE user_id=%s "
@@ -180,6 +224,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
     return {
         "message": "登录成功",
         "session_refresh_required": True,
+        "session": {
+            "management_id": management_id,
+            "device_type": device_type,
+        },
         "user": {
             "id": user_id,
             "username": username,
@@ -212,17 +260,13 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
         pool = db_manager.get_pool("online_data")
         conn = await pool.acquire()
         try:
+            await conn.begin()
             async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE _users SET active_session_id=NULL "
-                    "WHERE id=%s AND active_session_id=%s",
-                    (user["id"], session_id),
-                )
-                await cur.execute(
-                    "DELETE FROM _user_presence_clients WHERE session_id=%s",
-                    (session_id,),
-                )
-                await cur.execute("DELETE FROM _sessions WHERE session_id = %s", (session_id,))
+                await invalidate_session(cur, session_id)
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
         finally:
             pool.release(conn)
 
@@ -235,6 +279,137 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
         samesite=cookie_cfg["samesite"],
     )
     return {"message": "已退出"}
+
+
+@router.get("/sessions")
+async def list_sessions(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """列出当前账号的有效登录设备，不返回认证会话值。"""
+    current_session_id = request.cookies.get(settings.SESSION_COOKIE_NAME)
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """SELECT management_id, session_id, device_type,
+                          client_platform, user_agent_family, created_at,
+                          last_activity_at, expires_at
+                   FROM _sessions
+                   WHERE user_id=%s AND expires_at>UTC_TIMESTAMP()
+                   ORDER BY last_activity_at DESC, created_at DESC""",
+                (user["id"],),
+            )
+            rows = await cur.fetchall()
+    finally:
+        pool.release(conn)
+
+    def iso(value):
+        return value.isoformat() + "Z" if value else None
+
+    return {
+        "sessions": [
+            {
+                "management_id": row[0],
+                "device_type": row[2] or "desktop",
+                "client_platform": row[3] or row[2] or "desktop",
+                "user_agent_family": row[4] or "其他浏览器",
+                "created_at": iso(row[5]),
+                "last_activity_at": iso(row[6]),
+                "expires_at": iso(row[7]),
+                "current": bool(current_session_id and row[1] == current_session_id),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.delete("/sessions/{management_id}")
+async def revoke_session(
+    management_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    current_session_id = request.cookies.get(settings.SESSION_COOKIE_NAME)
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT session_id FROM _sessions WHERE management_id=%s AND user_id=%s FOR UPDATE",
+                (management_id, user["id"]),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="登录设备不存在或已退出")
+            if current_session_id and row[0] == current_session_id:
+                raise HTTPException(status_code=400, detail="当前设备请使用退出登录")
+            await invalidate_session(cur, str(row[0]))
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        pool.release(conn)
+    return {"message": "设备已退出"}
+
+
+@router.post("/sessions/revoke-others")
+async def revoke_other_sessions(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    current_session_id = request.cookies.get(settings.SESSION_COOKIE_NAME)
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT session_id FROM _sessions WHERE user_id=%s AND session_id<>%s",
+                (user["id"], current_session_id or ""),
+            )
+            session_ids = [str(row[0]) for row in await cur.fetchall()]
+            for session_id in session_ids:
+                await invalidate_session(cur, session_id)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        pool.release(conn)
+    return {"message": "其他设备已退出", "revoked": len(session_ids)}
+
+
+@router.post("/sessions/revoke-all")
+async def revoke_all_sessions(
+    request: Request,
+    response: Response,
+    user: dict = Depends(get_current_user),
+):
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await invalidate_all_sessions(cur, int(user["id"]))
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        pool.release(conn)
+    cookie_cfg = get_session_cookie_config()
+    response.delete_cookie(
+        cookie_cfg["key"],
+        path=cookie_cfg["path"],
+        secure=cookie_cfg["secure"],
+        httponly=cookie_cfg["httponly"],
+        samesite=cookie_cfg["samesite"],
+    )
+    return {"message": "全部设备已退出"}
 
 
 @router.get("/me")
@@ -344,6 +519,7 @@ async def change_password(
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
+        await conn.begin()
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT password_hash FROM _users WHERE id=%s",
@@ -362,6 +538,11 @@ async def change_password(
                 "password_is_temporary=0 WHERE id=%s",
                 (password_hash, user["id"]),
             )
+            await invalidate_all_sessions(cur, int(user["id"]))
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     finally:
         pool.release(conn)
     await record_admin_audit(

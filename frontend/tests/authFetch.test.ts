@@ -131,7 +131,8 @@ test('authenticated writes carry the user-activity marker', async () => {
     value: async (_input: unknown, init: RequestInit) => {
       const headers = new Headers(init.headers)
       assert.equal(headers.get('X-User-Activity'), '1')
-      assert.equal(headers.get('X-Binhu-Client-Platform'), 'web')
+      assert.match(headers.get('X-Binhu-Client-Platform') || '', /^(desktop|mobile)$/)
+      assert.match(headers.get('X-Binhu-Device-Id') || '', /^[A-Za-z0-9._:-]{16,128}$/)
       assert.equal(headers.get('X-Binhu-Client-Version'), '0.0.0')
       return new Response(null, { status: 204 })
     },

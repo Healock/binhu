@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     SESSION_EXPIRE_HOURS: int = 24
     SESSION_COOKIE_SECURE: bool = False
     SESSION_COOKIE_SAMESITE: str = "lax"
+    # 允许同一账号分别保留一个电脑端和一个手机端会话；可通过环境变量
+    # 暂时关闭以便灰度回退到旧的单会话行为。
+    MULTI_DEVICE_SESSION_ENABLED: bool = False
     CORS_ALLOWED_ORIGINS: str = ""
 
     # Fresh databases only: bootstrap one administrator without a built-in password.

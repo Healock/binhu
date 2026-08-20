@@ -43,7 +43,6 @@ async def _presence_summary(cur) -> tuple[int, datetime]:
           AND session.expires_at>UTC_TIMESTAMP()
           AND TIMESTAMPDIFF(SECOND, session.last_activity_at, UTC_TIMESTAMP())
               < COALESCE(NULLIF(CAST(idle_config.config_value AS UNSIGNED), 0), 30) * 60
-          AND user.active_session_id=presence.session_id
         """,
         (ONLINE_WINDOW_SECONDS,),
     )
@@ -116,7 +115,6 @@ async def presence_users(
                   AND session.expires_at>UTC_TIMESTAMP()
                   AND TIMESTAMPDIFF(SECOND, session.last_activity_at, UTC_TIMESTAMP())
                       < COALESCE(NULLIF(CAST(idle_config.config_value AS UNSIGNED), 0), 30) * 60
-                  AND user.active_session_id=presence.session_id
                 GROUP BY user.id, user.display_name, member.name,
                          user.avatar_storage_key, member.name, member.position,
                          department.name, community.name

@@ -733,6 +733,8 @@ CREATE TABLE IF NOT EXISTS _users (
     group_assignment_mode    VARCHAR(20) NOT NULL DEFAULT 'inherited',
     password_is_temporary    TINYINT(1) NOT NULL DEFAULT 0,
     active_session_id        VARCHAR(64) DEFAULT NULL,
+    active_desktop_session_id VARCHAR(64) DEFAULT NULL,
+    active_mobile_session_id VARCHAR(64) DEFAULT NULL,
     table_display_mode       VARCHAR(10) NOT NULL DEFAULT 'table',
     task_display_mode        VARCHAR(10) NOT NULL DEFAULT 'card',
     report_column_mode       VARCHAR(10) NOT NULL DEFAULT 'three',
@@ -744,17 +746,25 @@ CREATE TABLE IF NOT EXISTS _users (
                              ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_users_member (member_id),
     INDEX idx_users_permission_group (permission_group_id),
-    INDEX idx_users_active_session (active_session_id)
+    INDEX idx_users_active_session (active_session_id),
+    INDEX idx_users_active_desktop_session (active_desktop_session_id),
+    INDEX idx_users_active_mobile_session (active_mobile_session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _sessions (
     session_id       VARCHAR(64) PRIMARY KEY,
+    management_id     CHAR(36) UNIQUE,
     user_id          INT NOT NULL,
+    device_type      VARCHAR(10) DEFAULT NULL,
+    device_id_hash   CHAR(64) DEFAULT NULL,
+    client_platform  VARCHAR(20) DEFAULT NULL,
+    user_agent_family VARCHAR(40) DEFAULT NULL,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_activity_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     expires_at       DATETIME NOT NULL,
     INDEX idx_user (user_id),
     INDEX idx_expires (expires_at),
+    INDEX idx_sessions_user_device (user_id, device_type, expires_at),
     INDEX idx_session_user_activity (user_id, last_activity_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
