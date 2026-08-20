@@ -13,7 +13,7 @@ from routers.workflow_photo_sheet import retry_photo_sheet_outbox, run_photo_she
 
 
 @pytest.mark.asyncio
-async def test_manual_sync_flushes_outbox_before_full_read():
+async def test_manual_sync_returns_background_run_and_preserves_order():
     order: list[str] = []
 
     async def outbox_once():
@@ -44,6 +44,10 @@ async def test_manual_sync_flushes_outbox_before_full_read():
             "routers.workflow_photo_sheet.record_admin_audit",
             new=AsyncMock(),
         ),
+        patch(
+            "routers.workflow_photo_sheet.create_job",
+            new=AsyncMock(return_value=({"id": 12, "status": "queued"}, False)),
+        ) as create_job,
     ):
         result = await run_photo_sheet_sync(
             request=request,
@@ -51,8 +55,8 @@ async def test_manual_sync_flushes_outbox_before_full_read():
             user={"id": 7, "username": "synthetic-admin"},
         )
 
-    assert order == ["outbox", "full"]
-    assert result["outbox"]["processed"] == 1
+    assert result["run"]["id"] == 12
+    assert create_job.await_count == 1
 
 
 class _CursorContext:

@@ -22,6 +22,8 @@ from services.code_summary import (
     normalize_label,
 )
 from services.permissions import VISIT_SOURCE_MANAGE, VISIT_SUMMARY_VIEW
+from services.external_acquisition_jobs import create_job
+from database import db_manager
 
 
 router = APIRouter(prefix="/api/code-summaries", tags=["平安码与管家码汇总"])
@@ -236,97 +238,71 @@ async def _commit_source(
         raise
 
 
-@router.post("/fetch")
+@router.post("/fetch", status_code=202)
 async def fetch_code_summaries(
     payload: DateRangeRequest,
     request: Request,
     user: dict = Depends(require_permission(VISIT_SOURCE_MANAGE)),
     conn=Depends(get_db),
 ):
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT GET_LOCK(%s, 0)", (FETCH_LOCK,))
-        lock_row = await cur.fetchone()
-    if not lock_row or lock_row[0] != 1:
-        raise HTTPException(409, "当前已有平安码或管家码数据正在获取")
-    results = []
-    try:
-        personnel, places = await _directories(conn)
-        try:
-            fetched = await fetch_sources(payload.start_date, payload.end_date)
-        except CodeSummaryError as exc:
-            fetched = {source: {"error": exc} for source in ("peace", "manager")}
-        registration_counts: dict[date, int] = {}
-        if not fetched["peace"].get("error"):
+    async def runner(job):
+        pool = db_manager.get_pool("online_data")
+        async with pool.acquire() as work_conn:
+            async with work_conn.cursor() as cur:
+                await cur.execute("SELECT GET_LOCK(%s, 0)", (FETCH_LOCK,))
+                lock_row = await cur.fetchone()
+            if not lock_row or lock_row[0] != 1:
+                raise HTTPException(409, "当前已有平安码或管家码数据正在获取")
             try:
-                registration_counts = await count_fullchain_registrations(
-                    conn, payload.start_date, payload.end_date
-                )
-            except CodeSummaryError as exc:
-                fetched["peace"] = {"error": exc}
-        for source in ("peace", "manager"):
-            source_result = fetched[source]
-            if source_result.get("error"):
-                error = source_result["error"]
-                run_id = await _insert_failed_run(
-                    conn, source=source, user_id=int(user["id"]), payload=payload, error=error
-                )
-                results.append({
-                    "source": source, "run_id": run_id, "status": "failed",
-                    "error_code": error.code, "error_message": error.message,
-                })
-                continue
-            try:
-                aggregated = aggregate_rows(
-                    source,
-                    source_result["rows"],
-                    payload.start_date,
-                    payload.end_date,
-                    personnel_names=personnel,
-                    place_names=places,
-                    new_registration_counts=registration_counts if source == "peace" else None,
-                )
-                run_id, status = await _commit_source(
-                    conn,
-                    source=source,
-                    user_id=int(user["id"]),
-                    payload=payload,
-                    result=aggregated,
-                )
-                results.append({
-                    "source": source, "run_id": run_id, "status": status,
-                    "raw_count": aggregated["raw_count"],
-                    "valid_count": aggregated["valid_count"],
-                    "excluded_count": aggregated["excluded_count"],
-                    "duplicate_count": aggregated["duplicate_count"],
-                    "unclassified_count": aggregated["unclassified_count"],
-                    "invalid_time_count": aggregated.get("invalid_time_count", 0),
-                })
-            except CodeSummaryError as exc:
-                run_id = await _insert_failed_run(
-                    conn, source=source, user_id=int(user["id"]), payload=payload, error=exc
-                )
-                results.append({
-                    "source": source, "run_id": run_id, "status": "failed",
-                    "error_code": exc.code, "error_message": exc.message,
-                })
-        await record_admin_audit(
-            user,
-            "code_summary.fetch",
-            target_type="code_summary",
-            target_name=f"{payload.start_date} 至 {payload.end_date}",
-            result="success" if all(item["status"] != "failed" for item in results) else "partial",
-            detail={
-                "start_date": payload.start_date.isoformat(),
-                "end_date": payload.end_date.isoformat(),
-                "runs": [{"source": item["source"], "run_id": item["run_id"], "status": item["status"]} for item in results],
-            },
-            **request_audit_fields(request),
-        )
-        return {"data": results}
-    finally:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT RELEASE_LOCK(%s)", (FETCH_LOCK,))
-            await cur.fetchone()
+                await job.update(phase="fetching", total=2, message="正在读取平安码和管家码来源")
+                personnel, places = await _directories(work_conn)
+                try:
+                    fetched = await fetch_sources(payload.start_date, payload.end_date)
+                except CodeSummaryError as exc:
+                    fetched = {source: {"error": exc} for source in ("peace", "manager")}
+                registration_counts: dict[date, int] = {}
+                if not fetched["peace"].get("error"):
+                    try:
+                        registration_counts = await count_fullchain_registrations(
+                            work_conn, payload.start_date, payload.end_date
+                        )
+                    except CodeSummaryError as exc:
+                        fetched["peace"] = {"error": exc}
+                results = []
+                for index, source in enumerate(("peace", "manager"), 1):
+                    source_result = fetched[source]
+                    if source_result.get("error"):
+                        error = source_result["error"]
+                        run_id = await _insert_failed_run(work_conn, source=source, user_id=int(user["id"]), payload=payload, error=error)
+                        results.append({"source": source, "run_id": run_id, "status": "failed", "error_code": error.code, "error_message": error.message})
+                    else:
+                        try:
+                            aggregated = aggregate_rows(
+                                source,
+                                source_result["rows"],
+                                payload.start_date,
+                                payload.end_date,
+                                personnel_names=personnel,
+                                place_names=places,
+                                new_registration_counts=(
+                                    registration_counts if source == "peace" else None
+                                ),
+                            )
+                            run_id, status = await _commit_source(work_conn, source=source, user_id=int(user["id"]), payload=payload, result=aggregated)
+                            results.append({"source": source, "run_id": run_id, "status": status, "raw_count": aggregated["raw_count"], "valid_count": aggregated["valid_count"], "excluded_count": aggregated["excluded_count"], "duplicate_count": aggregated["duplicate_count"], "unclassified_count": aggregated["unclassified_count"], "invalid_time_count": aggregated.get("invalid_time_count", 0)})
+                        except CodeSummaryError as exc:
+                            run_id = await _insert_failed_run(work_conn, source=source, user_id=int(user["id"]), payload=payload, error=exc)
+                            results.append({"source": source, "run_id": run_id, "status": "failed", "error_code": exc.code, "error_message": exc.message})
+                    await job.update(phase="processing", current=index, total=2, message=f"已完成 {index}/2 个来源")
+                await record_admin_audit(user, "code_summary.fetch", target_type="code_summary", target_name=f"{payload.start_date} 至 {payload.end_date}", result="success" if all(item["status"] != "failed" for item in results) else "partial", detail={"start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat(), "runs": [{"source": item["source"], "run_id": item["run_id"], "status": item["status"]} for item in results]}, **request_audit_fields(request))
+                return {"results": results, "message": "平安码、管家码获取完成"}
+            finally:
+                async with work_conn.cursor() as cur:
+                    await cur.execute("SELECT RELEASE_LOCK(%s)", (FETCH_LOCK,))
+                    await cur.fetchone()
+
+    job, reused = await create_job("code_summary_fetch", int(user["id"]), {"start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat()}, runner, dedupe_key=f"{payload.start_date}:{payload.end_date}")
+    return {"run": job, "reused": reused}
 
 
 @router.post("/search")

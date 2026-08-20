@@ -4,6 +4,17 @@
   navigation: auto;
 }
 
+.watch-person-detail {
+  display: grid;
+  gap: 16px;
+}
+
+.watch-person-detail__section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .online-presence-indicator {
   position: fixed;
   z-index: 36;

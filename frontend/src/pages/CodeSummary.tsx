@@ -10,6 +10,7 @@ import {
   formatDateInTimezone,
   formatUTCTime,
   getCodeSummary,
+  getExternalAcquisitionRun,
   recordXlsxExport,
   type CodeSummaryReport,
   type CodeSummaryRow,
@@ -101,6 +102,7 @@ export default function CodeSummary() {
   const [report, setReport] = useState<CodeSummaryReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [fetching, setFetching] = useState(false)
+  const [fetchJob, setFetchJob] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
   const [error, setError] = useState('')
   const canFetch = Boolean(user?.permissions.includes('visit.source.manage'))
 
@@ -133,19 +135,23 @@ export default function CodeSummary() {
     setError('')
     try {
       const result = await fetchCodeSummaries(startDate, endDate)
-      const failed = result.data.filter(item => item.status === 'failed')
-      const warning = result.data.filter(item => item.status === 'warning')
-      if (failed.length) {
-        const failedNames = failed.map(item => item.source === 'peace' ? '平安码' : '管家码').join('、')
-        const succeededNames = result.data
-          .filter(item => item.status !== 'failed')
-          .map(item => item.source === 'peace' ? '平安码' : '管家码')
-          .join('、')
-        message.warning(`${succeededNames ? `${succeededNames}已更新；` : ''}${failedNames}获取失败，旧快照已保留`)
+      setFetchJob(result.run)
+      const poll = async (): Promise<void> => {
+        const current = await getExternalAcquisitionRun(result.run.id)
+        setFetchJob(current)
+        if (current.status === 'queued' || current.status === 'running') {
+          window.setTimeout(() => void poll(), 1500)
+          return
+        }
+        const items = current.result?.results || []
+        const failed = items.filter((item: any) => item.status === 'failed')
+        const warning = items.filter((item: any) => item.status === 'warning')
+        if (failed.length) message.warning('部分来源获取失败，旧快照已保留')
+        else if (warning.length) message.info('数据已更新，但存在质量提醒')
+        else if (current.status === 'success') message.success('平安码、管家码数据已更新')
+        await load()
       }
-      else if (warning.length) message.info('数据已更新，但存在未分类或无效身份证质量提醒')
-      else message.success('平安码、管家码数据已更新')
-      await load()
+      void poll()
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '码数据获取失败，旧快照未改变')
     } finally {
@@ -207,6 +213,7 @@ export default function CodeSummary() {
           <span className="text-sm text-[var(--app-text-secondary)]">
             最近成功：{report?.latest_success_at ? formatUTCTime(report.latest_success_at, systemTimezone) : '暂无'}
           </span>
+          {fetchJob && (fetchJob.status === 'queued' || fetchJob.status === 'running') && <span className="text-sm text-[var(--app-text-secondary)]">后台获取：{fetchJob.message || fetchJob.phase} · {fetchJob.total ? `${fetchJob.current}/${fetchJob.total}` : '处理中'}{fetchJob.progress != null ? ` · ${fetchJob.progress}%` : ''}</span>}
         </div>
         {report?.latest_run?.error_message && <Alert className="mt-3" type="warning" showIcon message={report.latest_run.error_message} />}
         {report?.latest_run?.status === 'warning' && report.latest_run.invalid_time_count > 0 && (

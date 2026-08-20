@@ -71,6 +71,8 @@ from services.qmf_status_scan import (
     run_status_scan_scheduler,
     stop_status_scan_tasks,
 )
+from services.external_acquisition_jobs import recover_interrupted_jobs, stop_external_acquisition_tasks
+from routers.external_acquisition import router as external_acquisition_router
 from services.presence import run_presence_cleanup_scheduler
 from routers.presence import router as presence_router
 
@@ -109,6 +111,9 @@ async def lifespan(app: FastAPI):
     recovered_qmf_scans = await recover_status_scans()
     if recovered_qmf_scans:
         print("[QMF_STATUS_SCAN] 已恢复服务重启前的只读扫描任务")
+    recovered_external_jobs = await recover_interrupted_jobs()
+    if recovered_external_jobs:
+        print(f"[EXTERNAL] 已关闭 {recovered_external_jobs} 个外部获取遗留任务")
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
@@ -152,6 +157,7 @@ async def lifespan(app: FastAPI):
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()
         await stop_status_scan_tasks()
+        await stop_external_acquisition_tasks()
         await close_db()
 
 
@@ -224,6 +230,7 @@ app.include_router(workflow_extended_router, dependencies=auth_dep)
 app.include_router(workflow_photo_sheet_router, dependencies=auth_dep)
 app.include_router(qmf_registration_router, dependencies=auth_dep)
 app.include_router(task_graph_router, dependencies=auth_dep)
+app.include_router(external_acquisition_router, dependencies=auth_dep)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

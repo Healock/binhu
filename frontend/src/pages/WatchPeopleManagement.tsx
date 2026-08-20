@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Form, Input, Modal, Select, Space,
+  Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, Modal, Select, Space,
   Table, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType, UploadFile } from 'antd'
@@ -14,6 +14,7 @@ import {
   type WatchPerson,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import dayjs from 'dayjs'
 
 const CORE_CATEGORY_CODES = ['通勤人员', '五失人员', '重点人员', '精障人员']
 
@@ -96,7 +97,7 @@ export default function WatchPeopleManagement() {
     form.resetFields()
     if (kind === 'person') form.setFieldsValue({ verification_status: 'unverified', is_temporary: false })
     if (kind === 'category') form.setFieldsValue({ color: '#1677ff', alert_level: 'normal', is_active: true })
-    if (kind === 'assignment') form.setFieldsValue({ status: 'active' })
+    if (kind === 'assignment') form.setFieldsValue({ status: 'active', valid_from: dayjs() })
     setModal(kind)
   }
 
@@ -124,14 +125,17 @@ export default function WatchPeopleManagement() {
     setSelectedAssignment(row)
     form.resetFields()
     form.setFieldsValue({
-      category_id: row.category_id, valid_from: row.valid_from, valid_to: row.valid_to,
-      released_at: row.released_at, basis: row.basis, status: row.status,
+      category_id: row.category_id, valid_from: row.valid_from ? dayjs(row.valid_from) : null, valid_to: row.valid_to ? dayjs(row.valid_to) : null,
+      released_at: row.released_at ? dayjs(row.released_at) : null, basis: row.basis, status: row.status,
     })
     setModal('assignment')
   }
 
   const save = async () => {
     const values = await form.validateFields()
+    for (const field of ['valid_from', 'valid_to', 'released_at']) {
+      if (values[field]?.format) values[field] = values[field].format('YYYY-MM-DD HH:mm:ss')
+    }
     try {
       if (modal === 'person') {
         if (selectedPerson) await registryApi.updateWatchPerson(selectedPerson.id, values)
@@ -341,14 +345,14 @@ export default function WatchPeopleManagement() {
       </Panel>
 
       <Drawer open={detailOpen} width="min(94vw, 620px)" title={selectedPerson ? `${selectedPerson.name}的人员标签` : '人员标签'} onClose={() => setDetailOpen(false)}>
-        {personDetail && <div className="space-y-4">
-          <Descriptions bordered size="small" column={1} items={[
+        {personDetail && <div className="watch-person-detail">
+          <section className="watch-person-detail__section"><Descriptions bordered size="small" column={1} items={[
             { key: 'name', label: '姓名', children: personDetail.name },
             ...(user?.role === 'super_admin' ? [{ key: 'identity', label: '身份证号', children: personDetail.identity_number || '未登记' }] : []),
             { key: 'status', label: '状态', children: personDetail.status },
             { key: 'verify', label: '核实状态', children: personDetail.verification_status },
-          ]} />
-          <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">标签历史</h3>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('assignment')}>新增标签</Button>}</div>
+          ]} /></section>
+          <section className="watch-person-detail__section"><div className="flex items-center justify-between gap-3"><h3 className="font-semibold">标签历史</h3>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('assignment')}>新增标签</Button>}</div>
           <Table rowKey="id" size="small" pagination={false} dataSource={personDetail.assignments || []} columns={[
             { title: '分类', dataIndex: 'category_name', render: (value, row) => <Tag color={row.color}>{value}</Tag> },
             { title: '生效时间', dataIndex: 'valid_from' },
@@ -356,7 +360,7 @@ export default function WatchPeopleManagement() {
             { title: '状态', dataIndex: 'status' },
             { title: '依据', dataIndex: 'basis', ellipsis: true },
             { title: '操作', width: 110, render: (_: unknown, row: any) => canManage && <Button type="link" size="small" onClick={() => openEditAssignment(row)}>编辑/解除</Button> },
-          ]} />
+          ]} /></section>
         </div>}
       </Drawer>
 
@@ -378,9 +382,9 @@ export default function WatchPeopleManagement() {
           </>}
           {modal === 'assignment' && <>
             <Form.Item name="category_id" label="标签分类" rules={[{ required: true, message: '请选择分类' }]}><Select options={categoryOptions} /></Form.Item>
-            <Form.Item name="valid_from" label="生效时间" rules={[{ required: true, message: '请输入生效时间' }]}><Input placeholder="YYYY-MM-DD HH:mm:ss" /></Form.Item>
-            <Form.Item name="valid_to" label="结束时间"><Input placeholder="可留空" /></Form.Item>
-            {selectedAssignment && <Form.Item name="released_at" label="解除时间"><Input placeholder="可留空" /></Form.Item>}
+            <Form.Item name="valid_from" label="生效时间" rules={[{ required: true, message: '请选择生效时间' }]}><DatePicker showTime format="YYYY-MM-DD HH:mm:ss" className="w-full" /></Form.Item>
+            <Form.Item name="valid_to" label="结束时间"><DatePicker showTime format="YYYY-MM-DD HH:mm:ss" className="w-full" /></Form.Item>
+            {selectedAssignment && <Form.Item name="released_at" label="解除时间"><DatePicker showTime format="YYYY-MM-DD HH:mm:ss" className="w-full" /></Form.Item>}
             {selectedAssignment && <Form.Item name="status" label="状态"><Select options={[{ value: 'active', label: '有效' }, { value: 'released', label: '已解除' }, { value: 'inactive', label: '停用' }]} /></Form.Item>}
             <Form.Item name="basis" label="依据"><Input.TextArea rows={3} /></Form.Item>
           </>}

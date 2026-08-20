@@ -25,4 +25,3 @@ async def run_presence_cleanup_scheduler() -> None:
         with suppress(Exception):
             await cleanup_presence_clients()
         await asyncio.sleep(3600)
-
