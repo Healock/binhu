@@ -9,16 +9,29 @@ import type {
 export type NavigationIconName =
   | 'dashboard'
   | 'workspace'
+  | 'task_flow'
+  | 'data_query'
+  | 'data_upload'
+  | 'file_generation'
+  | 'ticket_center'
+  | 'tasks'
+  | 'online_check'
+  | 'dispatch'
+  | 'analysis'
+  | 'photo'
   | 'resources'
   | 'system'
   | 'summary'
-  | 'query'
   | 'visit'
-  | 'upload'
+  | 'code_summary'
   | 'worklog'
   | 'members'
   | 'communities'
+  | 'neighborhoods'
+  | 'registry'
+  | 'tags'
   | 'users'
+  | 'permissions'
   | 'settings'
   | 'operations'
 
@@ -62,7 +75,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/task-flow-lab',
         label: '我的任务流（内测）',
         shortLabel: '任务流',
-        icon: 'workspace',
+        icon: 'task_flow',
         roles: ['super_admin'],
       },
       {
@@ -70,7 +83,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/query',
         label: '在线数据查询',
         shortLabel: '在线查询',
-        icon: 'query',
+        icon: 'data_query',
         permission: 'online.raw.view',
       },
       {
@@ -78,7 +91,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/data-upload',
         label: '数据上传中心',
         shortLabel: '数据上传',
-        icon: 'upload',
+        icon: 'data_upload',
         anyPermissions: ['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage'],
         roles: ['super_admin', 'admin'],
       },
@@ -87,7 +100,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/work-log',
         label: '文件生成',
         shortLabel: '文件生成',
-        icon: 'worklog',
+        icon: 'file_generation',
         permission: 'worklog.manage',
         roles: ['super_admin', 'admin'],
       },
@@ -96,7 +109,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/workflow',
         label: '工单中心',
         shortLabel: '工单',
-        icon: 'worklog',
+        icon: 'ticket_center',
         permission: 'workflow.ticket.view',
       },
     ],
@@ -105,14 +118,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
     id: 'tasks',
     label: '任务处理',
     dockLabel: '任务',
-    icon: 'query',
+    icon: 'tasks',
     items: [
       {
         id: 'flow_tasks',
         path: '/tasks/home',
         label: '流口指令核查',
         shortLabel: '指令核查',
-        icon: 'query',
+        icon: 'online_check',
         permission: 'online.raw.view',
       },
       {
@@ -120,7 +133,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/police-tasks',
         label: '下发任务处理',
         shortLabel: '任务下发',
-        icon: 'worklog',
+        icon: 'dispatch',
         permission: 'police.dispatch.manage',
       },
       {
@@ -128,7 +141,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/police-analysis',
         label: '研判',
         shortLabel: '研判',
-        icon: 'worklog',
+        icon: 'analysis',
         anyPermissions: ['online.task.manage', 'police.dispatch.manage'],
       },
       {
@@ -136,7 +149,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/photo-tasks',
         label: '调照片',
         shortLabel: '调照片',
-        icon: 'worklog',
+        icon: 'photo',
         anyPermissions: ['workflow.ticket.handle', 'workflow.ticket.manage'],
       },
     ],
@@ -169,7 +182,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/code-summary',
         label: '平安码/管家码汇总',
         shortLabel: '平安码汇总',
-        icon: 'summary',
+        icon: 'code_summary',
         permission: 'visit.summary.view',
       },
     ],
@@ -201,7 +214,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/police-addresses',
         label: '小区管理',
         shortLabel: '小区管理',
-        icon: 'communities',
+        icon: 'neighborhoods',
         permission: 'police.address.manage',
       },
       {
@@ -209,7 +222,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/registry',
         label: '辖区档案',
         shortLabel: '辖区档案',
-        icon: 'resources',
+        icon: 'registry',
         permission: 'registry.property.view',
       },
       {
@@ -217,7 +230,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/watch-people',
         label: '人员标签',
         shortLabel: '人员标签',
-        icon: 'members',
+        icon: 'tags',
         permission: 'registry.watch.view',
       },
       {
@@ -234,7 +247,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/permission-groups',
         label: '权限组管理',
         shortLabel: '权限组',
-        icon: 'users',
+        icon: 'permissions',
         permission: 'permission.manage',
         roles: ['super_admin'],
       },
