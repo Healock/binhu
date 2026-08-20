@@ -32,10 +32,16 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
 
 test('实际工作次数连续点击十次打开无路由隐藏工作区', () => {
   const dashboard = read('../src/pages/RoleDashboard.tsx')
+  const styles = read('../src/index.css')
   const overlay = read('../src/components/HiddenWorkspaceOverlay.tsx')
   const app = read('../src/App.tsx')
   assert.match(dashboard, /onClick,\s*onHintClick,/)
   assert.match(dashboard, /onHintClick=\{handleSecretClick\}/)
+  assert.match(dashboard, /<span\s+className="role-dashboard-metric__hint role-dashboard-metric__hint--secret"/)
+  assert.doesNotMatch(dashboard, /<button[\s\S]*role-dashboard-metric__hint--secret/)
+  assert.match(styles, /\.role-dashboard-metric__label,\s*\.role-dashboard-metric__hint\s*\{[\s\S]*font-size: 12px;/)
+  assert.match(styles, /\.role-dashboard-metric__hint--secret\s*\{[\s\S]*cursor: inherit;/)
+  assert.doesNotMatch(styles, /\.role-dashboard-metric__hint--secret\s*\{[\s\S]*?font:\s*inherit;/)
   assert.match(dashboard, /clicks\.count >= 10/)
   assert.match(dashboard, /now - clicks\.lastAt > 2500/)
   assert.match(dashboard, /<HiddenWorkspaceOverlay open=\{hiddenWorkspaceOpen\}/)

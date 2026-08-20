@@ -71,17 +71,15 @@ function DashboardCard({
         <span className="role-dashboard-metric__label">{label}</span>
         <strong className="role-dashboard-metric__value">{value}</strong>
         {hint && (onHintClick ? (
-          <button
-            type="button"
+          <span
             className="role-dashboard-metric__hint role-dashboard-metric__hint--secret"
-            aria-label={`${label}${hint}`}
             onClick={(event) => {
               event.stopPropagation()
               onHintClick()
             }}
           >
             {hint}
-          </button>
+          </span>
         ) : <span className="role-dashboard-metric__hint">{hint}</span>)}
       </span>
       {onClick && <RightOutlined className="role-dashboard-metric__arrow" />}
