@@ -388,6 +388,8 @@ test('平安码管家码汇总页面和导航接入', () => {
   assert.match(page, /缺少有效 comparisonTime/)
   assert.match(client, /visits\/sources\/preview'[\s\S]*timeout:\s*300000/)
   assert.match(page, /invalid_time_count/)
+  assert.match(page, /if \(!includeTotal\) return report\.data/)
+  assert.match(page, /summaryRows\(report, startDate !== endDate\)/)
 })
 
 test('数据上传中心移除手动走访和星级上传入口', () => {

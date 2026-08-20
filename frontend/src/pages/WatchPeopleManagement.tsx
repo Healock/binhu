@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import type { TableColumnsType, UploadFile } from 'antd'
 import { InboxOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
-import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   registryApi,
@@ -273,7 +273,8 @@ export default function WatchPeopleManagement() {
           }}
           items={[{ key: 'people', label: '人员标签库' }, { key: 'categories', label: '标签分类' }]}
         />
-        <ListToolbar
+        <ListContent>
+          <ListToolbar
           notice={tab === 'people' ? <Alert
             type="info"
             showIcon
@@ -309,8 +310,8 @@ export default function WatchPeopleManagement() {
               {tab === 'people' ? '新增人员' : '新增分类'}
             </Button>}
           </>}
-        />
-        {tab === 'people' ? <Table
+          />
+          {tab === 'people' ? <Table
           rowKey="id"
           loading={loading}
           columns={personColumns}
@@ -328,14 +329,15 @@ export default function WatchPeopleManagement() {
             },
           }}
           scroll={{ x: 900 }}
-        /> : <Table
+          /> : <Table
           rowKey="id"
           loading={loading}
           columns={categoryColumns}
           dataSource={visibleCategories}
           pagination={{ defaultPageSize: 20, showSizeChanger: true }}
           scroll={{ x: 780 }}
-        />}
+          />}
+        </ListContent>
       </Panel>
 
       <Drawer open={detailOpen} width="min(94vw, 620px)" title={selectedPerson ? `${selectedPerson.name}的人员标签` : '人员标签'} onClose={() => setDetailOpen(false)}>

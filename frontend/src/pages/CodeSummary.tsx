@@ -55,8 +55,9 @@ function columns(source: CodeSummarySource) {
   ]
 }
 
-function summaryRows(report: CodeSummaryReport | null): CodeSummaryRow[] {
+function summaryRows(report: CodeSummaryReport | null, includeTotal: boolean): CodeSummaryRow[] {
   if (!report) return []
+  if (!includeTotal) return report.data
   return [...report.data, { ...report.total, business_date: '总计' }]
 }
 
@@ -179,7 +180,7 @@ export default function CodeSummary() {
   }
 
   const tableColumns = useMemo(() => columns(source), [source])
-  const rows = summaryRows(report)
+  const rows = summaryRows(report, startDate !== endDate)
 
   return (
     <div className="app-page min-w-0">

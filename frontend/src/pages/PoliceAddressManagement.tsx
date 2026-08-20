@@ -21,7 +21,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
-import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   createPoliceAddress,
@@ -195,6 +195,7 @@ export default function PoliceAddressManagement() {
       {error && <Alert type="error" showIcon message={error} />}
 
       <Panel title="地址记录" padded={false}>
+        <ListContent inset>
           <ListToolbar
             filters={<Input
             allowClear
@@ -216,6 +217,7 @@ export default function PoliceAddressManagement() {
           pagination={{ defaultPageSize: 20, showSizeChanger: true }}
           scroll={{ x: 1400 }}
         />
+        </ListContent>
       </Panel>
 
       <Modal
