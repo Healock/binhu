@@ -144,6 +144,32 @@ def test_location_classifier_keeps_ambiguous_values_unclassified():
     assert classify_terminal("未知窗口", personnel_names=set(), place_names=set()) == "unclassified"
 
 
+def test_location_classifier_prioritizes_exact_manual_label():
+    assert classify_terminal(
+        "测试巡防点",
+        personnel_names=set(),
+        place_names={"测试巡防点"},
+        manual_labels={"测试巡防点": "patrol"},
+    ) == "patrol"
+
+
+def test_peace_summary_exposes_deduplicated_location_counts_without_identity():
+    rows = [
+        _peace("110101199001010015", "微信", "常口", "2026-08-18 08:00:00", location="未知窗口", id="1"),
+        _peace("110101199001010015", "微信", "常口", "2026-08-18 09:00:00", location="测试巡防点", id="2"),
+        _peace("110101199001010023", "微信", "常口", "2026-08-18 10:00:00", location="测试巡防点", id="3"),
+    ]
+    result = aggregate_rows(
+        "peace", rows, date(2026, 8, 18), date(2026, 8, 18),
+        manual_labels={"测试巡防点": "patrol"},
+    )
+    assert result["location_counts"] == [{
+        "date": "2026-08-18", "location_key": "测试巡防点",
+        "display_name": "测试巡防点", "classification": "patrol", "row_count": 2,
+    }]
+    assert "110101199001010015" not in str(result["location_counts"])
+
+
 def test_peace_summary_deduplicates_by_identity_using_latest_record():
     rows = [
         _peace("110101199001010015", "张三", "流口未登记", "2026-08-18 08:00:00", id="1"),
@@ -400,6 +426,9 @@ def test_routes_use_separate_view_and_fetch_permissions():
     }
     assert "require_visit_source_manage" in dependencies["/api/code-summaries/fetch"]
     assert "require_visit_summary_view" in dependencies["/api/code-summaries/search"]
+    assert "require_visit_summary_view" in dependencies["/api/code-summaries/locations/search"]
+    assert "require_code_summary_manage" in dependencies["/api/code-summaries/locations/classifications"]
+    assert "require_code_summary_manage" in dependencies["/api/code-summaries/locations/recompute"]
 
 
 @pytest.mark.asyncio

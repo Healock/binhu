@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, DatePicker, Empty, Spin, Table, Tabs, Tag, message } from 'antd'
+import { Alert, Button, DatePicker, Empty, Input, Select, Spin, Table, Tabs, Tag, message } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
@@ -13,10 +13,14 @@ import {
   getCodeSummary,
   getExternalAcquisitionRun,
   getLatestExternalAcquisitionRun,
+  recomputeCodeSummaryLocations,
   recordXlsxExport,
+  saveCodeSummaryLocationClassifications,
+  searchCodeSummaryLocations,
   type CodeSummaryReport,
   type CodeSummaryRow,
   type CodeSummarySource,
+  type CodeSummaryLocationReport,
 } from '../api/client'
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 
@@ -123,7 +127,14 @@ export default function CodeSummary() {
   const [fetching, setFetching] = useState(false)
   const [fetchJob, setFetchJob] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
   const [error, setError] = useState('')
+  const [locationReport, setLocationReport] = useState<CodeSummaryLocationReport | null>(null)
+  const [locationLoading, setLocationLoading] = useState(false)
+  const [locationKeyword, setLocationKeyword] = useState('')
+  const [locationStatus, setLocationStatus] = useState<'all' | 'unclassified' | 'classified'>('unclassified')
+  const [locationPage, setLocationPage] = useState(1)
+  const [locationSaving, setLocationSaving] = useState(false)
   const canFetch = Boolean(user?.permissions.includes('visit.source.manage'))
+  const canManageLocations = Boolean(user?.permissions.includes('code.summary.manage'))
 
   const startDate = range[0].format('YYYY-MM-DD')
   const endDate = range[1].format('YYYY-MM-DD')
@@ -146,6 +157,21 @@ export default function CodeSummary() {
   }, [endDate, source, startDate])
 
   useEffect(() => { void load() }, [load])
+  const loadLocations = useCallback(async () => {
+    if (source !== 'peace') return
+    setLocationLoading(true)
+    try {
+      setLocationReport(await searchCodeSummaryLocations({
+        source, start_date: startDate, end_date: endDate,
+        keyword: locationKeyword, status: locationStatus, page: locationPage, page_size: 20,
+      }))
+    } catch (reason: any) {
+      setError(apiErrorMessage(reason, '位置分类数据读取失败'))
+    } finally {
+      setLocationLoading(false)
+    }
+  }, [endDate, locationKeyword, locationPage, locationStatus, source, startDate])
+  useEffect(() => { void loadLocations() }, [loadLocations])
   useEffect(() => {
     let active = true
     let timer: number | undefined
@@ -254,6 +280,25 @@ export default function CodeSummary() {
 
   const tableColumns = useMemo(() => columns(source), [source])
   const rows = summaryRows(report, startDate !== endDate)
+  const locationColumns = [
+    { title: '采集位置', dataIndex: 'display_name', key: 'display_name', ellipsis: true },
+    { title: '出现次数', dataIndex: 'record_count', key: 'record_count', width: 100 },
+    { title: '最近日期', dataIndex: 'last_seen_date', key: 'last_seen_date', width: 120 },
+    { title: '当前分类', dataIndex: 'classification', key: 'classification', width: 170,
+      render: (value: string, row: any) => canManageLocations ? <Select
+        size="small" value={value === 'unclassified' ? undefined : value} placeholder="选择分类" style={{ width: 145 }}
+        options={[['social', '社会面'], ['patrol', '巡防'], ['dispatch_hall', '接警大厅'], ['household_hall', '户政大厅'], ['ignored', '忽略/无效位置'], ['other', '其他']].map(([v, label]) => ({ value: v, label }))}
+        onChange={async next => {
+          setLocationSaving(true)
+          try {
+            await saveCodeSummaryLocationClassifications({ source: 'peace', items: [{ location_key: row.location_key, display_name: row.display_name, classification: next }] })
+            await recomputeCodeSummaryLocations(startDate, endDate)
+            await Promise.all([load(), loadLocations()])
+            message.success('位置分类已保存')
+          } catch (reason: any) { message.error(apiErrorMessage(reason, '位置分类保存失败')) }
+          finally { setLocationSaving(false) }
+        }} /> : (value === 'unclassified' ? '未分类' : ({ social: '社会面', patrol: '巡防', dispatch_hall: '接警大厅', household_hall: '户政大厅', ignored: '忽略/无效位置', other: '其他' } as any)[value] || value) },
+  ]
 
   return (
     <div className="app-page min-w-0">
@@ -309,6 +354,22 @@ export default function CodeSummary() {
           />
         )}
         {error && <Alert type="error" showIcon message={error} />}
+        {source === 'peace' && (
+          <Panel title="位置分类核查" className="mt-3" extra={canManageLocations ? <Button size="small" loading={locationSaving} onClick={async () => { try { await recomputeCodeSummaryLocations(startDate, endDate); await Promise.all([load(), loadLocations()]); message.success('已重新计算当前汇总') } catch (reason: any) { message.error(apiErrorMessage(reason, '重新计算失败')) } }}>重新计算汇总</Button> : undefined}>
+            {Boolean(report?.latest_run?.unclassified_count) && !locationLoading && locationReport?.total === 0 && (
+              <Alert className="mb-3" type="info" showIcon message="旧快照没有保存逐位置明细，请重新获取当前日期范围后再进行分类核查。" />
+            )}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span>当前区间未分类记录：{locationReport?.unclassified_count ?? report.latest_run.unclassified_count} 条</span>
+              <Input.Search allowClear placeholder="搜索位置" style={{ width: 240 }} value={locationKeyword} onChange={event => { setLocationKeyword(event.target.value); setLocationPage(1) }} onSearch={() => { setLocationPage(1); void loadLocations() }} />
+              <Select value={locationStatus} onChange={value => { setLocationStatus(value); setLocationPage(1) }} options={[{ value: 'unclassified', label: '仅未分类' }, { value: 'classified', label: '已分类' }, { value: 'all', label: '全部位置' }]} />
+            </div>
+            <Spin spinning={locationLoading}>
+              <Table size="small" rowKey="location_key" columns={locationColumns as any} dataSource={locationReport?.data || []} pagination={{ current: locationPage, pageSize: 20, total: locationReport?.total || 0, showSizeChanger: false, onChange: page => setLocationPage(page) }} scroll={{ x: 650 }} />
+            </Spin>
+            {!canManageLocations && <div className="mt-2 text-xs text-slate-500">当前账号只有查看权限；管理员可在此维护位置分类。</div>}
+          </Panel>
+        )}
       </ExternalDataPanel>
       <Panel title={source === 'peace' ? '平安码宽表' : '管家码宽表'}>
         <Tabs activeKey={source} items={SOURCE_OPTIONS.map(item => ({ key: item.value, label: item.label }))} onChange={value => setSource(value as CodeSummarySource)} />

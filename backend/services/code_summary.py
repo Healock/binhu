@@ -38,7 +38,7 @@ SOURCE_META = {
     },
 }
 
-CLASSIFIER_VERSION = "v3"
+CLASSIFIER_VERSION = "v4"
 PAGE_SIZE = 200
 INSTRUCTION_RESULTS = {"流口未登记", "流口已注销"}
 
@@ -112,9 +112,13 @@ def classify_location(
     *,
     personnel_names: set[str],
     place_names: set[str],
+    manual_labels: dict[str, str] | None = None,
 ) -> str:
     raw = _text(value)
     normalized = normalize_label(raw)
+    manual_key = normalized or "__empty__"
+    if manual_labels and manual_key in manual_labels:
+        return manual_labels[manual_key]
     if normalized == normalize_label("滨湖所接警大厅"):
         return "dispatch_hall"
     if normalized == normalize_label("苏州湾大厦"):
@@ -141,12 +145,14 @@ def classify_terminal(
     *,
     personnel_names: set[str],
     place_names: set[str],
+    manual_labels: dict[str, str] | None = None,
 ) -> str:
     """Backward-compatible alias for callers using the old function name."""
     return classify_location(
         value,
         personnel_names=personnel_names,
         place_names=place_names,
+        manual_labels=manual_labels,
     )
 
 
@@ -180,6 +186,7 @@ def aggregate_rows(
     *,
     personnel_names: set[str] | None = None,
     place_names: set[str] | None = None,
+    manual_labels: dict[str, str] | None = None,
     new_registration_counts: dict[date, int] | None = None,
 ) -> dict[str, Any]:
     if kind not in SOURCE_META:
@@ -187,6 +194,7 @@ def aggregate_rows(
     meta = SOURCE_META[kind]
     personnel_names = personnel_names or set()
     place_names = place_names or set()
+    manual_labels = manual_labels or {}
     new_registration_counts = new_registration_counts or {}
     daily = _date_rows(start_date, end_date)
     candidates: dict[tuple[date, str], tuple[tuple, dict[str, Any]]] = {}
@@ -227,6 +235,9 @@ def aggregate_rows(
         raise CodeSummaryError("schema_changed", f"来源字段 {meta['time']} 全部不是有效时间")
 
     managers_by_date: defaultdict[date, set[str]] = defaultdict(set)
+    location_counts: defaultdict[tuple[date, str], dict[str, Any]] = defaultdict(
+        lambda: {"display_name": "", "row_count": 0}
+    )
     for (business_date, _identity), (_order, row) in candidates.items():
         metrics = daily[business_date]
         metrics["total_people"] += 1
@@ -238,6 +249,7 @@ def aggregate_rows(
                 row.get("location"),
                 personnel_names=personnel_names,
                 place_names=place_names,
+                manual_labels=manual_labels,
             )
             metric_key = {
                 "patrol": "patrol_scan_count",
@@ -245,8 +257,15 @@ def aggregate_rows(
                 "household_hall": "household_hall_scan_count",
                 "social": "social_scan_count",
                 "unclassified": "unclassified_scan_count",
-            }[classification]
-            metrics[metric_key] += 1
+            }.get(classification)
+            if metric_key:
+                metrics[metric_key] += 1
+            raw_location = _text(row.get("location"))
+            location_key = normalize_label(raw_location) or "__empty__"
+            item = location_counts[(business_date, location_key)]
+            item["display_name"] = raw_location or "（未填写）"
+            item["classification"] = classification
+            item["row_count"] += 1
         else:
             manager = normalize_label(row.get("gjUserName"))
             if manager:
@@ -286,6 +305,18 @@ def aggregate_rows(
         "unclassified_count": sum(item["unclassified_scan_count"] for item in canonical),
         "invalid_time_count": invalid_time_count,
         "classifier_version": CLASSIFIER_VERSION,
+        "location_counts": [
+            {
+                "date": business_date.isoformat(),
+                "location_key": location_key,
+                "display_name": values["display_name"],
+                "classification": values["classification"],
+                "row_count": values["row_count"],
+            }
+            for (business_date, location_key), values in sorted(
+                location_counts.items(), key=lambda item: (item[0][0], item[0][1])
+            )
+        ],
     }
 
 

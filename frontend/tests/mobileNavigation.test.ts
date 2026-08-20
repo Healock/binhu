@@ -421,6 +421,12 @@ test('平安码管家码汇总页面和导航接入', () => {
   assert.match(page, /invalid_time_count/)
   assert.match(page, /if \(!includeTotal\) return report\.data/)
   assert.match(page, /summaryRows\(report, startDate !== endDate\)/)
+  assert.match(page, /位置分类核查/)
+  assert.match(page, /仅未分类/)
+  assert.match(page, /code\.summary\.manage/)
+  assert.match(client, /api\.post\('\/code-summaries\/locations\/search'/)
+  assert.match(client, /api\.post\('\/code-summaries\/locations\/classifications'/)
+  assert.match(client, /api\.post\('\/code-summaries\/locations\/recompute'/)
 })
 
 test('数据上传中心移除手动走访和星级上传入口', () => {
