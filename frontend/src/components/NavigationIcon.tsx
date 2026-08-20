@@ -48,6 +48,7 @@ const ICONS = {
   summary: IconChartBar,
   visit: IconWalk,
   code_summary: IconQrcode,
+  worklog: IconSettingsAutomation,
   members: IconUsers,
   communities: IconBuildingCommunity,
   neighborhoods: IconBuildings,
@@ -56,7 +57,6 @@ const ICONS = {
   users: IconUserCog,
   permissions: IconShieldLock,
   settings: IconSettings,
-  workflow_config: IconSettingsAutomation,
   operations: IconServerCog,
 } satisfies Record<NavigationIconName, TablerIcon>
 

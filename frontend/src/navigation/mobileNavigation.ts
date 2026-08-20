@@ -24,6 +24,7 @@ export type NavigationIconName =
   | 'summary'
   | 'visit'
   | 'code_summary'
+  | 'worklog'
   | 'members'
   | 'communities'
   | 'neighborhoods'
@@ -32,7 +33,6 @@ export type NavigationIconName =
   | 'users'
   | 'permissions'
   | 'settings'
-  | 'workflow_config'
   | 'operations'
 
 export interface NavigationItemDefinition {
@@ -271,7 +271,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         path: '/settings/workflow',
         label: '工单流程配置',
         shortLabel: '流程配置',
-        icon: 'workflow_config',
+        icon: 'worklog',
         permission: 'workflow.config.manage',
         roles: ['super_admin'],
       },
