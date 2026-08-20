@@ -15,6 +15,7 @@ from services.sync_engine import SyncEngine
 
 SYNC_TRIGGER_LOCK = "binhu_sync_trigger"
 TERMINAL_STATUSES = {"success", "completed", "partial", "failed"}
+DEFAULT_SYNC_INTERVAL_MINUTES = 10
 _background_tasks: set[asyncio.Task] = set()
 
 
@@ -362,7 +363,7 @@ async def get_schedule() -> dict:
             server_time = (await cur.fetchone())[0]
         return {
             "enabled": bool(row[0]) if row else True,
-            "interval_minutes": row[1] if row else 5,
+            "interval_minutes": row[1] if row else DEFAULT_SYNC_INTERVAL_MINUTES,
             "next_run_at": _iso_utc(row[2]) if row else None,
             "server_time": _iso_utc(server_time),
         }

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from pathlib import Path
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -82,10 +83,10 @@ class FakePool:
 
 
 class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
-    def test_schedule_defaults_to_enabled_every_five_minutes(self):
+    def test_schedule_defaults_to_enabled_every_ten_minutes(self):
         schedule = SyncScheduleStatus()
         self.assertTrue(schedule.enabled)
-        self.assertEqual(schedule.interval_minutes, 5)
+        self.assertEqual(schedule.interval_minutes, 10)
 
     async def test_manual_sync_permission_allows_only_admin_roles(self):
         for role in ("admin", "super_admin"):
@@ -115,6 +116,16 @@ class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
                     enabled=True,
                     interval_minutes=invalid,
                 )
+
+    def test_existing_schedule_is_migrated_to_ten_minutes_only_once(self):
+        database_source = (
+            Path(__file__).resolve().parents[1] / "database.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("sync_interval_10m_migrated", database_source)
+        self.assertIn("SET interval_minutes=10", database_source)
+        self.assertIn("INTERVAL 10 MINUTE", database_source)
+        self.assertIn("INSERT IGNORE INTO _system_config", database_source)
 
     async def test_due_schedule_is_claimed_only_once(self):
         now = datetime(2026, 7, 27, 8, 0, 0)

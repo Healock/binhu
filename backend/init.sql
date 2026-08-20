@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS _sync_log (
 CREATE TABLE IF NOT EXISTS _sync_schedule (
     id                TINYINT NOT NULL PRIMARY KEY,
     enabled           TINYINT(1) NOT NULL DEFAULT 1,
-    interval_minutes  INT NOT NULL DEFAULT 5,
+    interval_minutes  INT NOT NULL DEFAULT 10,
     next_run_at       DATETIME DEFAULT NULL,
     last_triggered_at DATETIME DEFAULT NULL,
     updated_by        INT DEFAULT NULL,
@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS _sync_schedule (
 INSERT IGNORE INTO _sync_schedule (
     id, enabled, interval_minutes, next_run_at
 ) VALUES (
-    1, 1, 5, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE)
+    1, 1, 10, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)
 );
 
 CREATE TABLE IF NOT EXISTS _notifications (

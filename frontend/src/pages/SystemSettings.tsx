@@ -45,6 +45,7 @@ const TIMEZONES = [
 ]
 
 const INTERVAL_OPTIONS = [
+  { value: 10, label: '每 10 分钟' },
   { value: 5, label: '每 5 分钟' },
   { value: 15, label: '每 15 分钟' },
   { value: 30, label: '每 30 分钟' },
@@ -109,13 +110,13 @@ export default function SystemSettings() {
   const [timezone, setTimezone] = useState('Asia/Shanghai')
   const [schedule, setSchedule] = useState<SyncSchedule>({
     enabled: true,
-    interval_minutes: 5,
+    interval_minutes: 10,
     next_run_at: null,
     server_time: null,
   })
   const [enabled, setEnabled] = useState(true)
-  const [interval, setIntervalValue] = useState(5)
-  const [intervalChoice, setIntervalChoice] = useState<number | 'custom'>(5)
+  const [interval, setIntervalValue] = useState(10)
+  const [intervalChoice, setIntervalChoice] = useState<number | 'custom'>(10)
   const [loading, setLoading] = useState(true)
   const [savingTimezone, setSavingTimezone] = useState(false)
   const [savingSchedule, setSavingSchedule] = useState(false)
