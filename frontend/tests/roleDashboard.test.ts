@@ -76,6 +76,13 @@ test('任务与汇总页面从 URL 恢复并同步筛选', () => {
   assert.match(visits, /searchParams\.get\('start'\)/)
 })
 
+test('走访汇总无日期参数时默认查询系统当天', () => {
+  const visits = read('../src/pages/VisitSummary.tsx')
+  assert.match(visits, /formatDateInTimezone\(new Date\(\), systemTimezone\)/)
+  assert.match(visits, /const initialRange: \[string, string\] = \[\s*fallbackDate,\s*fallbackDate,\s*\]/)
+  assert.doesNotMatch(visits, /nextCoverage\.start_date \|\| fallbackDate/)
+})
+
 test('启用分页数量切换的客户端表格不再写死受控页大小', () => {
   const operations = read('../src/pages/OperationsCenter.tsx')
   const addresses = read('../src/pages/PoliceAddressManagement.tsx')
