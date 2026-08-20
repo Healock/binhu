@@ -123,6 +123,18 @@ test('仪表盘使用双列瀑布流并在手机端回到单列', () => {
   assert.match(styles, /\.role-dashboard-sections\s*\{\s*columns: 1;/)
 })
 
+test('完成率达到100%时才允许点击触发全屏庆祝', () => {
+  const dashboard = read('../src/pages/RoleDashboard.tsx')
+  const celebration = read('../src/components/CompletionCelebration.tsx')
+  const styles = read('../src/index.css')
+  assert.match(dashboard, /totalTasks > 0 && completedTasks >= totalTasks/)
+  assert.match(dashboard, /onClick={isComplete \? \(\) => setCelebrating\(true\) : undefined}/)
+  assert.match(dashboard, /<CompletionCelebration open={celebrating}/)
+  assert.match(celebration, /createPortal\([\s\S]*document\.body/)
+  assert.match(styles, /\.completion-celebration\s*\{[\s\S]*pointer-events: none;/)
+  assert.match(styles, /prefers-reduced-motion/)
+})
+
 test('手机 Dock 不再单列首页且顶部品牌返回仪表盘', () => {
   const dock = read('../src/components/MobileDock.tsx')
   const layout = read('../src/components/Layout.tsx')
