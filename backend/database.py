@@ -1483,7 +1483,7 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS _sync_schedule (
                         id TINYINT NOT NULL PRIMARY KEY,
                         enabled TINYINT(1) NOT NULL DEFAULT 1,
-                        interval_minutes INT NOT NULL DEFAULT 5,
+                        interval_minutes INT NOT NULL DEFAULT 10,
                         next_run_at DATETIME DEFAULT NULL,
                         last_triggered_at DATETIME DEFAULT NULL,
                         updated_by INT DEFAULT NULL,
@@ -1493,7 +1493,30 @@ class DatabaseManager:
                 await cur.execute(
                     "INSERT IGNORE INTO _sync_schedule "
                     "(id, enabled, interval_minutes, next_run_at) "
-                    "VALUES (1, 1, 5, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE))"
+                    "VALUES (1, 1, 10, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))"
+                )
+                await cur.execute(
+                    """
+                    UPDATE _sync_schedule
+                    SET interval_minutes=10,
+                        next_run_at=CASE
+                            WHEN enabled=1 THEN DATE_ADD(
+                                UTC_TIMESTAMP(), INTERVAL 10 MINUTE
+                            )
+                            ELSE NULL
+                        END
+                    WHERE id=1
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM _system_config
+                          WHERE config_key='sync_interval_10m_migrated'
+                      )
+                    """
+                )
+                await cur.execute(
+                    "INSERT IGNORE INTO _system_config "
+                    "(config_key, config_value) "
+                    "VALUES ('sync_interval_10m_migrated', '1')"
                 )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _notifications (

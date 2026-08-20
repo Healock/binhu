@@ -6,7 +6,7 @@ from typing import Optional
 
 class SyncScheduleStatus(BaseModel):
     enabled: bool = True
-    interval_minutes: int = 5
+    interval_minutes: int = 10
     next_run_at: Optional[str] = None
     server_time: Optional[str] = None
 
