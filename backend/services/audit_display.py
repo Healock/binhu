@@ -41,6 +41,7 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.delete": "删除下发批次",
     "police_dispatch.business_fields.update": "修改下发任务字段",
     "police_dispatch.review": "审核下发任务",
+    "police_dispatch.duplicate.resolve": "选择下发重复记录",
     "police_dispatch.bulk_review": "批量审核下发任务",
     "police_dispatch.conflict.adopt_tencent": "采用腾讯表格内容",
     "police_dispatch.conflict.overwrite_tencent": "用平台内容覆盖腾讯表格",

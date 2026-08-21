@@ -117,6 +117,10 @@ test('已处理数据在任务工作台多选发布且卡片沿用流口任务�
     new URL('../src/pages/PoliceDispatchBatchDetail.tsx', import.meta.url),
     'utf8',
   )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
 
   assert.match(workbenchSource, /选择发布/)
   assert.match(workbenchSource, /全选当前筛选/)
@@ -124,6 +128,11 @@ test('已处理数据在任务工作台多选发布且卡片沿用流口任务�
   assert.match(workbenchSource, /发布所选/)
   assert.match(workbenchSource, /getPoliceDispatchPublishableSelection/)
   assert.match(workbenchSource, /publishSelectedPoliceDispatchTasks/)
+  assert.match(workbenchSource, /resolvePoliceDispatchDuplicateGroup/)
+  assert.match(workbenchSource, /保留此条/)
+  assert.match(workbenchSource, /其余记录会同时标记为重复排除/)
+  assert.match(workbenchSource, /pendingResolvedDuplicateId/)
+  assert.match(clientSource, /resolve-duplicate/)
   assert.match(workbenchSource, /selectionMode \? 'is-selection-mode'/)
   assert.match(workbenchSource, /selected \? 'is-selected'/)
   assert.match(workbenchSource, /该条已经审核，无需逐条保存/)

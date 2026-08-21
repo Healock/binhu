@@ -39,6 +39,7 @@ import {
   getPoliceDispatchWorkbench,
   listPoliceDispatchTasks,
   publishSelectedPoliceDispatchTasks,
+  resolvePoliceDispatchDuplicateGroup,
   resolvePoliceDispatchConflict,
   reviewPoliceDispatchTask,
   updatePoliceDispatchBusinessFields,
@@ -320,6 +321,7 @@ export default function PoliceDispatchWorkbench({
   const [reviewNote, setReviewNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [fieldSaving, setFieldSaving] = useState(false)
+  const [resolvingDuplicateId, setResolvingDuplicateId] = useState<number | null>(null)
   const [deletingBatch, setDeletingBatch] = useState(false)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set())
@@ -329,6 +331,7 @@ export default function PoliceDispatchWorkbench({
   const [error, setError] = useState('')
   const taskRequestId = useRef(0)
   const announcedPublishRun = useRef<number | null>(null)
+  const pendingResolvedDuplicateId = useRef<number | null>(null)
 
   const isSuperAdmin = Boolean(
     user?.permission_groups?.some(group => group.code === 'super_admin')
@@ -454,7 +457,9 @@ export default function PoliceDispatchWorkbench({
     return () => window.clearInterval(timer)
   }, [publishRun?.id, publishRunActive])
   useEffect(() => {
-    setSelectedTaskIds(new Set())
+    const resolvedTaskId = pendingResolvedDuplicateId.current
+    pendingResolvedDuplicateId.current = null
+    setSelectedTaskIds(resolvedTaskId ? new Set([resolvedTaskId]) : new Set())
   }, [analysisOnly, batchId, status, category, appliedKeyword])
 
   useEffect(() => {
@@ -679,6 +684,39 @@ export default function PoliceDispatchWorkbench({
       }
     } finally {
       setSaving(false)
+    }
+  }
+
+  const keepDuplicateTask = async (keepTaskId: number) => {
+    if (duplicates.length < 2 || resolvingDuplicateId) return
+    setResolvingDuplicateId(keepTaskId)
+    try {
+      const result = await resolvePoliceDispatchDuplicateGroup(keepTaskId, {
+        tasks: duplicates.map(item => ({ id: item.id, version: item.version })),
+        review_note: '重复组人工选择保留项',
+      })
+      message.success(`${result.message}；保留项已选中，可直接发布`)
+      setSelected(null)
+      setSelectionMode(true)
+      if (!['pending_publish', 'retryable', 'all'].includes(status)) {
+        pendingResolvedDuplicateId.current = result.keep_task_id
+        setStatus('pending_publish')
+        setPage(1)
+        await loadHome()
+      } else {
+        setSelectedTaskIds(new Set([result.keep_task_id]))
+        await Promise.all([loadHome(), loadTasks(1)])
+      }
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '重复任务处理失败')
+      const refreshed = await getPoliceDispatchTask(keepTaskId).catch(() => null)
+      if (refreshed) {
+        setSelected(refreshed.task)
+        setDuplicates(refreshed.duplicates)
+        setDuplicateDifferences(refreshed.duplicate_differences || [])
+      }
+    } finally {
+      setResolvingDuplicateId(null)
     }
   }
 
@@ -1217,16 +1255,29 @@ export default function PoliceDispatchWorkbench({
                   <div className="mt-1 text-xs text-orange-700">下面只展示真正不同的字段；请确认保留一条，其余选择“重复排除”。</div>
                   <div className="mt-3 space-y-2">
                     {duplicateDifferences.map(item => (
-                      <button
-                        type="button"
+                      <div
                         key={item.task_id}
                         className={`w-full rounded-xl border p-3 text-left text-xs ${item.task_id === selected.id ? 'border-orange-500 bg-white' : 'border-orange-200 bg-orange-50/60'}`}
-                        onClick={() => {
-                          const target = duplicates.find(row => row.id === item.task_id)
-                          if (target && target.id !== selected.id) void openTask(target)
-                        }}
                       >
-                        <div className="font-medium">Excel 第 {item.source_row} 行</div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium">Excel 第 {item.source_row} 行</div>
+                          <Popconfirm
+                            title={`保留 Excel 第 ${item.source_row} 行？`}
+                            description="该条将保留为待发布任务，同一身份证号的其余记录会同时标记为重复排除。"
+                            okText="保留此条"
+                            cancelText="取消"
+                            onConfirm={() => void keepDuplicateTask(item.task_id)}
+                          >
+                            <Button
+                              size="small"
+                              type={item.task_id === selected.id ? 'primary' : 'default'}
+                              loading={resolvingDuplicateId === item.task_id}
+                              disabled={resolvingDuplicateId !== null}
+                            >
+                              保留此条
+                            </Button>
+                          </Popconfirm>
+                        </div>
                         <div className="mt-2 space-y-1.5">
                           {item.fields.map(field => (
                             <div key={field.field} className="grid grid-cols-[88px_minmax(0,1fr)] gap-2">
@@ -1235,7 +1286,7 @@ export default function PoliceDispatchWorkbench({
                             </div>
                           ))}
                         </div>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 </section>

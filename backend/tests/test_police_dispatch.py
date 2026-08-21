@@ -34,6 +34,7 @@ from services.police_dispatch import (
 )
 from routers.police_dispatch import (
     AddressCreate,
+    DuplicateGroupResolution,
     TaskBusinessFieldsUpdate,
     TaskPublishSelection,
     TaskReview,
@@ -56,6 +57,7 @@ from routers.police_dispatch import (
     list_tasks,
     publishable_task_selection,
     publish_selected_tasks,
+    resolve_duplicate_group,
     require_police_access,
     update_task_business_fields,
     _address_scope_community_ids,
@@ -1048,6 +1050,100 @@ def test_unique_task_cannot_be_excluded_as_duplicate():
         ))
 
     assert error.value.status_code == 400
+
+
+def test_duplicate_resolution_keeps_one_and_excludes_the_rest(monkeypatch):
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchone = AsyncMock(return_value=(7, "duplicate-key"))
+    cursor.fetchall = AsyncMock(return_value=[
+        (11, 3, None, 1),
+        (12, 5, 2, 2),
+    ])
+    conn = MagicMock()
+    conn.begin = AsyncMock()
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    review = AsyncMock(return_value=7)
+    refresh = AsyncMock(return_value={})
+    audit = AsyncMock(return_value=91)
+    activity = AsyncMock()
+    monkeypatch.setattr("routers.police_dispatch._review_one", review)
+    monkeypatch.setattr("routers.police_dispatch._refresh_batch_status", refresh)
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    monkeypatch.setattr("routers.police_dispatch.record_work_activity", activity)
+    request = Request({
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    result = asyncio.run(resolve_duplicate_group(
+        keep_task_id=11,
+        data=DuplicateGroupResolution(tasks=[
+            {"id": 11, "version": 3},
+            {"id": 12, "version": 5},
+        ]),
+        request=request,
+        user={"id": 8, "username": "reviewer"},
+        conn=conn,
+    ))
+
+    assert result == {
+        "message": "已保留 1 条并排除 1 条重复任务",
+        "keep_task_id": 11,
+        "excluded_count": 1,
+    }
+    assert review.await_count == 2
+    keep_review = review.await_args_list[0].args[2]
+    excluded_review = review.await_args_list[1].args[2]
+    assert keep_review.final_action == "dispatch"
+    assert keep_review.final_community_id == 1
+    assert excluded_review.final_action == "duplicate_exclude"
+    refresh.assert_awaited_once_with(cursor, 7)
+    conn.commit.assert_awaited_once()
+    conn.rollback.assert_not_awaited()
+    assert audit.await_args.kwargs["detail"] == {
+        "keep_task_id": 11,
+        "excluded_count": 1,
+        "group_size": 2,
+    }
+
+
+def test_duplicate_resolution_rejects_stale_or_incomplete_group(monkeypatch):
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchone = AsyncMock(return_value=(7, "duplicate-key"))
+    cursor.fetchall = AsyncMock(return_value=[
+        (11, 3, None, 1),
+        (12, 6, 2, 2),
+    ])
+    conn = MagicMock()
+    conn.begin = AsyncMock()
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    monkeypatch.setattr("routers.police_dispatch._review_one", AsyncMock())
+    request = Request({
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(resolve_duplicate_group(
+            keep_task_id=11,
+            data=DuplicateGroupResolution(tasks=[
+                {"id": 11, "version": 3},
+                {"id": 12, "version": 5},
+            ]),
+            request=request,
+            user={"id": 8},
+            conn=conn,
+        ))
+
+    assert error.value.status_code == 409
+    conn.rollback.assert_awaited_once()
+    conn.commit.assert_not_awaited()
 
 
 def test_missing_phone_cannot_be_reviewed_for_dispatch():
