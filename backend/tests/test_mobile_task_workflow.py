@@ -163,6 +163,9 @@ class MobileTaskWorkflowTests(unittest.TestCase):
 
     def test_fullchain_result_choices_include_pending_registration(self):
         self.assertIn("待登记", TASK_WORKFLOWS["全链条"].result_options)
+        self.assertIn("移交（所内）", TASK_WORKFLOWS["全链条"].result_options)
+        self.assertIn("移交（所外）", TASK_WORKFLOWS["全链条"].result_options)
+        self.assertIn("移交", TASK_WORKFLOWS["全链条"].result_options)
 
     def test_suspect_return_uses_feedback_as_result(self):
         self.assertEqual(

@@ -31,6 +31,7 @@ from routers.work_logs import router as work_logs_router
 from routers.permission_groups import router as permission_groups_router
 from routers.mobile_tasks import router as mobile_tasks_router
 from routers.police_dispatch import router as police_dispatch_router
+from routers.fullchain_archive import router as fullchain_archive_router
 from routers.profiles import router as profiles_router
 from routers.dashboard import router as dashboard_router
 from routers.exports import router as exports_router
@@ -65,6 +66,10 @@ from services.registry_certificate_scheduler import run_registry_certificate_sch
 from services.police_dispatch_publish_jobs import (
     recover_interrupted_police_publish_runs,
     stop_police_publish_tasks,
+)
+from services.fullchain_archive_jobs import (
+    recover_interrupted_fullchain_exports,
+    stop_fullchain_archive_tasks,
 )
 from services.qmf_status_scan import (
     recover_status_scans,
@@ -108,6 +113,9 @@ async def lifespan(app: FastAPI):
             f"[POLICE_DISPATCH] 已安全关闭 {interrupted_publish_runs} 个"
             "服务重启前遗留的后台发布任务"
         )
+    interrupted_archive_exports = await recover_interrupted_fullchain_exports()
+    if interrupted_archive_exports:
+        print(f"[FULLCHAIN_ARCHIVE] 已冻结 {interrupted_archive_exports} 个服务重启前遗留归档任务")
     recovered_qmf_scans = await recover_status_scans()
     if recovered_qmf_scans:
         print("[QMF_STATUS_SCAN] 已恢复服务重启前的只读扫描任务")
@@ -156,6 +164,7 @@ async def lifespan(app: FastAPI):
         await stop_txdocs_usage_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()
+        await stop_fullchain_archive_tasks()
         await stop_status_scan_tasks()
         await stop_external_acquisition_tasks()
         await close_db()
@@ -210,6 +219,7 @@ app.include_router(stats_router, dependencies=auth_dep)
 app.include_router(query_router, dependencies=auth_dep)
 app.include_router(mobile_tasks_router, dependencies=auth_dep)
 app.include_router(police_dispatch_router, dependencies=auth_dep)
+app.include_router(fullchain_archive_router, dependencies=auth_dep)
 app.include_router(grid_members_router, dependencies=auth_dep)
 app.include_router(system_router, dependencies=auth_dep)
 app.include_router(notifications_router, dependencies=auth_dep)

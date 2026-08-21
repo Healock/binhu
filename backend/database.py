@@ -1174,6 +1174,85 @@ async def ensure_police_dispatch_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _fullchain_police_raw_uploads (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            file_name VARCHAR(255) NOT NULL DEFAULT '',
+            file_sha256 CHAR(64) NOT NULL,
+            sheet_name VARCHAR(255) NOT NULL DEFAULT '',
+            row_count INT NOT NULL DEFAULT 0,
+            invalid_count INT NOT NULL DEFAULT 0,
+            duplicate_count INT NOT NULL DEFAULT 0,
+            storage_key VARCHAR(500) NOT NULL DEFAULT '',
+            status VARCHAR(20) NOT NULL DEFAULT 'confirmed',
+            uploaded_by INT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_fullchain_raw_upload_sha (file_sha256),
+            INDEX idx_fullchain_raw_upload_time (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _fullchain_police_raw_identities (
+            upload_id BIGINT NOT NULL,
+            identity_hmac CHAR(64) NOT NULL,
+            PRIMARY KEY (upload_id, identity_hmac),
+            INDEX idx_fullchain_raw_identity (identity_hmac, upload_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_column(cur, "_fullchain_police_raw_uploads", "storage_key", "VARCHAR(500) NOT NULL DEFAULT ''")
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _fullchain_archive_reviews (
+            parser_type VARCHAR(50) NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            decision VARCHAR(30) NOT NULL,
+            note VARCHAR(500) NOT NULL DEFAULT '',
+            decided_by INT DEFAULT NULL,
+            decided_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (parser_type, row_key)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _fullchain_archive_exports (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            export_no VARCHAR(40) NOT NULL UNIQUE,
+            status VARCHAR(30) NOT NULL DEFAULT 'queued',
+            phase VARCHAR(30) NOT NULL DEFAULT 'queued',
+            file_name VARCHAR(255) NOT NULL DEFAULT '',
+            storage_key VARCHAR(500) NOT NULL DEFAULT '',
+            file_sha256 CHAR(64) NOT NULL DEFAULT '',
+            total_count INT NOT NULL DEFAULT 0,
+            success_count INT NOT NULL DEFAULT 0,
+            conflict_count INT NOT NULL DEFAULT 0,
+            error_count INT NOT NULL DEFAULT 0,
+            categories_json JSON NOT NULL,
+            requested_by INT DEFAULT NULL,
+            error_message VARCHAR(500) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at DATETIME DEFAULT NULL,
+            finished_at DATETIME DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_fullchain_archive_export_time (created_at),
+            INDEX idx_fullchain_archive_export_status (status, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _fullchain_archive_export_items (
+            export_id BIGINT NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            source_id BIGINT NOT NULL,
+            spreadsheet_id INT NOT NULL,
+            sheet_id VARCHAR(100) NOT NULL,
+            physical_row INT NOT NULL,
+            expected_revision BIGINT NOT NULL,
+            expected_row_hash CHAR(64) NOT NULL,
+            category VARCHAR(40) NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'queued',
+            error_code VARCHAR(100) NOT NULL DEFAULT '',
+            PRIMARY KEY (export_id, source_id),
+            INDEX idx_fullchain_archive_item_status (export_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
 
     for table_name, columns in {
         "_police_address_imports": {

@@ -2941,6 +2941,148 @@ export function policeDispatchFeedbackUrl(id: number): string {
   return `/api/police-dispatch/batches/${id}/feedback.xlsx`
 }
 
+export function apiErrorMessage(reason: unknown, fallback: string): string {
+  const error = reason as {
+    message?: unknown
+    response?: { data?: { detail?: unknown } }
+  }
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map(item => (
+        item && typeof item === 'object' && typeof (item as { msg?: unknown }).msg === 'string'
+          ? (item as { msg: string }).msg
+          : ''
+      ))
+      .filter(Boolean)
+    if (messages.length) return messages.join('；')
+  }
+  if (detail && typeof detail === 'object') {
+    const message = (detail as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return typeof error?.message === 'string' && error.message.trim()
+    ? error.message
+    : fallback
+}
+
+export interface FullchainArchiveCandidate {
+  source_id: number
+  row_key: string
+  revision: number
+  name: string
+  identity: string
+  phone: string
+  address: string
+  source: string
+  result: string
+  deadline: string
+  stage: 'direct' | 'review' | 'registered'
+  category: string
+  eligible: boolean
+  reason: string
+  decision: string
+  review_note: string
+  source_count: number
+  conflict: boolean
+}
+
+export interface FullchainArchiveExport {
+  id: number
+  export_no: string
+  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed'
+  phase: string
+  file_name: string
+  total_count: number
+  success_count: number
+  conflict_count: number
+  error_count: number
+  categories: Record<string, number>
+  error_message: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  updated_at: string
+  items: Array<{
+    source_id: number
+    category: string
+    status: 'queued' | 'success' | 'conflict' | 'error'
+    error_code: string
+  }>
+}
+
+export async function previewFullchainPoliceRaw(file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/police-dispatch/fullchain-archive/police-raw/preview', form, { timeout: 300000 })
+  return data as {
+    filename: string
+    file_sha256: string
+    sheet_name: string
+    row_count: number
+    invalid_count: number
+    duplicate_count: number
+    preview: Array<{ row: string; name: string; identity: string; result: string }>
+    preview_token: string
+  }
+}
+
+export async function confirmFullchainPoliceRaw(file: File, previewToken: string) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('preview_token', previewToken)
+  const { data } = await api.post('/police-dispatch/fullchain-archive/police-raw/confirm', form, { timeout: 300000 })
+  return data as { id: number; message: string; row_count: number }
+}
+
+export async function listFullchainPoliceRawUploads() {
+  const { data } = await api.get('/police-dispatch/fullchain-archive/police-raw/uploads')
+  return data as { data: Array<{ id: number; file_name: string; row_count: number; invalid_count: number; duplicate_count: number; status: string; created_at: string }> }
+}
+
+export function fullchainPoliceRawDownloadUrl(id: number) {
+  return `/api/police-dispatch/fullchain-archive/police-raw/uploads/${id}/download`
+}
+
+export async function searchFullchainArchiveCandidates(params: {
+  stages?: Array<'direct' | 'review' | 'registered'>
+  keyword?: string
+  page?: number
+  page_size?: number
+}) {
+  const { data } = await api.post('/police-dispatch/fullchain-archive/candidates/search', params, activeRequest)
+  return data as { data: FullchainArchiveCandidate[]; total: number; page: number; page_size: number; counts: Record<string, number> }
+}
+
+export async function saveFullchainArchiveReview(payload: {
+  row_key: string
+  decision: 'transfer_internal' | 'transfer_external' | 'keep' | 'archive'
+  note?: string
+}) {
+  const { data } = await api.post('/police-dispatch/fullchain-archive/reviews', payload)
+  return data as { message: string }
+}
+
+export async function previewFullchainArchiveExport(sourceIds: number[]) {
+  const { data } = await api.post('/police-dispatch/fullchain-archive/exports/preview', sourceIds)
+  return data as { total: number; categories: Record<string, number>; rows: Array<{ source_id: number; name: string; result: string; category: string; reason: string }>; preview_token: string }
+}
+
+export async function createFullchainArchiveExport(sourceIds: number[], previewToken: string) {
+  const { data } = await api.post('/police-dispatch/fullchain-archive/exports', { source_ids: sourceIds, preview_token: previewToken })
+  return data as { message: string; export: FullchainArchiveExport }
+}
+
+export async function listFullchainArchiveExports() {
+  const { data } = await api.get('/police-dispatch/fullchain-archive/exports', passiveRequest)
+  return data as { data: FullchainArchiveExport[] }
+}
+
+export function fullchainArchiveDownloadUrl(id: number) {
+  return `/api/police-dispatch/fullchain-archive/exports/${id}/download`
+}
+
 // ---- System Config ----
 export async function getSystemConfig(): Promise<Record<string, string>> {
   const { data } = await api.get('/system/config')

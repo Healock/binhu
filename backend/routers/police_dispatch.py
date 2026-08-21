@@ -216,6 +216,7 @@ def _clean_preview_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 ALLOWED_POLICE_POSITIONS = {"基础管控", "中队长"}
+FULLCHAIN_ARCHIVE_POSITIONS = ALLOWED_POLICE_POSITIONS | {"所队领导"}
 
 
 def _permission_group_codes(user: dict) -> set[str]:
@@ -260,6 +261,34 @@ def require_police_access(permission: str) -> Callable:
 
 
 require_police_dispatch = require_police_access(POLICE_DISPATCH_MANAGE)
+
+
+def require_fullchain_archive_access() -> Callable:
+    """归档面板允许内勤岗位，以及管理员/超级管理员显式进入。"""
+    base_dependency = require_permission(POLICE_DISPATCH_MANAGE)
+
+    async def dependency(user: dict = Depends(base_dependency)) -> dict:
+        permission_scope = (user.get("permission_scopes") or {}).get(
+            POLICE_DISPATCH_MANAGE,
+            user.get("data_scope"),
+        )
+        if permission_scope != "all":
+            raise HTTPException(403, "全链条归档必须使用全所数据范围")
+        group_codes = _permission_group_codes(user)
+        if group_codes.intersection({"admin", "super_admin"}) or user.get("role") in {
+            "admin", "super_admin",
+        }:
+            return user
+        member = user.get("member") or {}
+        if str(member.get("position") or "") in FULLCHAIN_ARCHIVE_POSITIONS:
+            return user
+        raise HTTPException(403, "全链条归档仅向基础管控、中队长、所队领导和系统管理员开放")
+
+    dependency.__name__ = "require_fullchain_archive_manage"
+    return dependency
+
+
+require_fullchain_archive = require_fullchain_archive_access()
 
 
 def require_police_address_access() -> Callable:
