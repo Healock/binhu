@@ -1565,6 +1565,7 @@ export async function getMobileTaskAssignmentWorkbench(
   total: number
   communities: MobileTaskFilterOption[]
   inspectors_by_community: Record<string, string[]>
+  inspector_counts_by_community: Record<string, Record<string, number>>
 }> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/assignment-workbench`,

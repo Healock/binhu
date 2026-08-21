@@ -680,12 +680,21 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
   assert.match(workbenchSource, /全选/)
   assert.match(workbenchSource, /平均分配剩余数据/)
   assert.match(workbenchSource, /分配核查人/)
+  assert.match(workbenchSource, /已分配 \$\{inspectorCounts\[community\]\?\.\[value\] \|\| 0\} 条/)
+  assert.match(workbenchSource, /mobile-task-assignment-workbench__scroll/)
   assert.match(workbenchSource, /onPointerEnter/)
   assert.match(workbenchSource, /closable/)
   assert.doesNotMatch(workbenchSource, /if \(saving\) return/)
   assert.match(workbenchSource, /for \(const group of groups\)/)
   assert.match(workbenchSource, /setCandidates\(current => current\.filter/)
   assert.match(clientSource, /assignment-workbench/)
+  assert.match(clientSource, /inspector_counts_by_community/)
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(styleSource, /mobile-task-assignment-workbench__scroll[\s\S]*overflow-y: auto/)
+  assert.match(styleSource, /mobile-task-assignment-workbench[\s\S]*overflow: hidden/)
 })
 
 test('任务详情桌面端使用更紧凑的最大宽度', () => {

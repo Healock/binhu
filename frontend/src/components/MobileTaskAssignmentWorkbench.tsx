@@ -31,6 +31,7 @@ export default function MobileTaskAssignmentWorkbench({
   const [candidates, setCandidates] = useState<MobileTaskAssignmentCandidate[]>([])
   const [communities, setCommunities] = useState<Array<{ value: string; label: string; count: number }>>([])
   const [inspectors, setInspectors] = useState<Record<string, string[]>>({})
+  const [inspectorCounts, setInspectorCounts] = useState<Record<string, Record<string, number>>>({})
   const [community, setCommunity] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -50,6 +51,7 @@ export default function MobileTaskAssignmentWorkbench({
       setCandidates(result.data)
       setCommunities(result.communities)
       setInspectors(result.inspectors_by_community)
+      setInspectorCounts(result.inspector_counts_by_community || {})
       setCommunity(current => (
         current && result.communities.some(item => item.value === current)
           ? current
@@ -292,9 +294,10 @@ export default function MobileTaskAssignmentWorkbench({
           </div>
         )}
 
-        <Spin spinning={loading || saving}>
-          {visible.length ? (
-            <div className="mobile-task-assignment-grid" onContextMenu={event => event.preventDefault()}>
+        <div className="mobile-task-assignment-workbench__scroll">
+          <Spin spinning={loading || saving}>
+            {visible.length ? (
+              <div className="mobile-task-assignment-grid" onContextMenu={event => event.preventDefault()}>
               {visible.map(item => {
                 const checked = selected.has(item.row_key)
                 const canAssign = inspectorOptions.length > 0
@@ -335,11 +338,12 @@ export default function MobileTaskAssignmentWorkbench({
                   </button>
                 )
               })}
-            </div>
-          ) : (
-            <Empty description={community ? `${community}已没有未分配数据` : '当前没有未分配数据'} />
-          )}
-        </Spin>
+              </div>
+            ) : (
+              <Empty description={community ? `${community}已没有未分配数据` : '当前没有未分配数据'} />
+            )}
+          </Spin>
+        </div>
 
         {selectedInCommunity.length > 0 && (
           <footer className="mobile-task-assignment-workbench__footer">
@@ -366,7 +370,10 @@ export default function MobileTaskAssignmentWorkbench({
           optionFilterProp="label"
           placeholder="请选择本社区在岗核查人"
           value={inspector}
-          options={inspectorOptions.map(value => ({ value, label: value }))}
+          options={inspectorOptions.map(value => ({
+            value,
+            label: `${value} · 已分配 ${inspectorCounts[community]?.[value] || 0} 条`,
+          }))}
           onChange={setInspector}
         />
       </Modal>

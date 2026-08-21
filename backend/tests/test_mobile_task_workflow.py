@@ -482,6 +482,8 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         source = inspect.getsource(get_mobile_task_assignment_workbench)
         self.assertIn("ORDER BY {_address_order(parser_type)}", source)
         self.assertIn("MAX_BULK_ASSIGNMENT_TASKS + 1", source)
+        self.assertIn("GROUP BY projection.community, projection.inspector", source)
+        self.assertIn('"inspector_counts_by_community"', source)
         self.assertEqual(MAX_BULK_ASSIGNMENT_TASKS, 2000)
 
     def test_bulk_assignment_requires_bounded_chunks(self):

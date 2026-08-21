@@ -1924,6 +1924,25 @@ async def get_mobile_task_assignment_workbench(
             user,
             assignment_only=True,
         )
+        await cur.execute(
+            f"""
+            SELECT projection.community, projection.inspector, COUNT(*)
+            FROM _online_source_projection AS projection
+            WHERE projection.parser_type=%s
+              AND {scope_where}
+              AND TRIM(COALESCE(projection.inspector, ''))<>''
+              AND projection.task_state<>'completed'
+              AND projection.conflict=0
+              AND EXISTS (
+                  SELECT 1 FROM _online_source_rows AS source_row
+                  WHERE source_row.parser_type=projection.parser_type
+                    AND source_row.row_key=projection.row_key
+              )
+            GROUP BY projection.community, projection.inspector
+            """,
+            [parser_type, *scope_params],
+        )
+        assigned_count_rows = await cur.fetchall()
 
     aliases = assignment_context["community_aliases"]
     inspectors_by_community = assignment_context["inspectors_by_community"]
@@ -1941,6 +1960,15 @@ async def get_mobile_task_assignment_workbench(
     community_counts: dict[str, int] = {}
     for item in items:
         community_counts[item["community"]] = community_counts.get(item["community"], 0) + 1
+    inspector_counts_by_community: dict[str, dict[str, int]] = {}
+    for raw_community, raw_inspector, count in assigned_count_rows:
+        formal_community = aliases.get(str(raw_community or "").strip(), "")
+        if not formal_community:
+            formal_community = str(raw_community or "").strip() or "社区未识别"
+        inspector_name = str(raw_inspector or "").strip()
+        if not inspector_name:
+            continue
+        inspector_counts_by_community.setdefault(formal_community, {})[inspector_name] = int(count or 0)
     return {
         "data": items,
         "total": len(items),
@@ -1950,6 +1978,13 @@ async def get_mobile_task_assignment_workbench(
         ],
         "inspectors_by_community": {
             community: list(inspectors_by_community.get(community) or [])
+            for community in community_counts
+        },
+        "inspector_counts_by_community": {
+            community: {
+                inspector: inspector_counts_by_community.get(community, {}).get(inspector, 0)
+                for inspector in inspectors_by_community.get(community) or []
+            }
             for community in community_counts
         },
     }
