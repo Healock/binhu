@@ -1042,7 +1042,10 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [item["text"] for item in metadata["核查结果"]["options"]],
-            ["已登记", "无法核实", "待登记", "移交", "无需登记", "离苏"],
+            [
+                "已登记", "无法核实", "待登记", "移交（所内）",
+                "移交（所外）", "移交", "无需登记", "离苏",
+            ],
         )
         self.assertEqual(
             metadata["核查结果"]["write_options"],
@@ -1050,6 +1053,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
                 {"id": "result-1", "text": "已登记"},
                 {"id": "result-2", "text": "无法核实"},
                 {"id": "待登记", "text": "待登记"},
+                {"id": "移交（所内）", "text": "移交（所内）"},
+                {"id": "移交（所外）", "text": "移交（所外）"},
                 {"id": "移交", "text": "移交"},
                 {"id": "无需登记", "text": "无需登记"},
                 {"id": "离苏", "text": "离苏"},

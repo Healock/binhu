@@ -147,6 +147,8 @@ class Settings(BaseSettings):
     WORKFLOW_ATTACHMENT_DIR: str = "../workflow-attachments"
     WORKFLOW_PHOTO_IMPORT_DIR: str = "../workflow-photo-imports"
     USER_AVATAR_DIR: str = "../user-avatars"
+    FULLCHAIN_ARCHIVE_DIR: str = "../fullchain-archives"
+    FULLCHAIN_ARCHIVE_MAX_ROWS: int = 5000
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 
     @property

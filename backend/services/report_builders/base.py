@@ -18,6 +18,8 @@ class BaseReportBuilder:
     result_column: str = "核查结果"
     result_category_keywords = (
         "无法核实",
+        "移交（所内）",
+        "移交（所外）",
         "移交",
         "已登记",
         "待登记",

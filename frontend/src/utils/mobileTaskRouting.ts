@@ -7,6 +7,7 @@ export const FLOW_TASK_ELEVATED_POSITIONS = new Set([
   '所队领导',
 ])
 export const POLICE_DISPATCH_TASK_POSITIONS = new Set(['基础管控', '中队长'])
+export const FULLCHAIN_ARCHIVE_POSITIONS = new Set(['基础管控', '中队长', '所队领导'])
 
 export const MOBILE_TASK_TYPES = [
   '全链条',
@@ -75,4 +76,21 @@ export function shouldUsePoliceDispatchWorkbench(
   isMobile: boolean,
 ): boolean {
   return isMobile && isPoliceDispatchTaskPosition(position)
+}
+
+export function canManageFullchainArchive(
+  position?: string | null,
+  role?: string | null,
+  permissionGroupCodes: string[] = [],
+  permissions: string[] = [],
+  permissionScope?: string | null,
+  dataScope?: string | null,
+): boolean {
+  const scope = permissionScope || dataScope
+  return permissions.includes('police.dispatch.manage')
+    && scope === 'all'
+    && (
+      FULLCHAIN_ARCHIVE_POSITIONS.has(String(position || '').trim())
+      || isFlowTaskAdmin(role, permissionGroupCodes)
+    )
 }

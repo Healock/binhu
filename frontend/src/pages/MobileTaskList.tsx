@@ -26,7 +26,7 @@ import {
   type QmfStatusScanRun,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { isFlowTaskElevated, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
+import { canManageFullchainArchive, isFlowTaskElevated, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
 import {
   formatMobileTaskDeadline,
   mobileTaskCanLaunchTelephone,
@@ -47,6 +47,7 @@ import MobilePhonePicker from '../components/MobilePhonePicker'
 import MobileTaskTable from '../components/MobileTaskTable'
 import MobileTaskAssignmentWorkbench from '../components/MobileTaskAssignmentWorkbench'
 import QmfFeedbackStatus, { QMF_FEEDBACK_OPTIONS } from '../components/QmfFeedbackStatus'
+import FullchainArchivePanel from '../components/FullchainArchivePanel'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import useSystemTime from '../hooks/useSystemTime'
@@ -270,6 +271,18 @@ export default function MobileTaskList({
   const canBulkAssign = assignment.enabled
   const isModelThree = parserType === MODEL_THREE_PARSER && !analysisOnly
   const canStartQmfScan = Boolean(user?.permissions.includes('qmf.registration.execute'))
+  const canUseFullchainArchive = Boolean(
+    !analysisOnly
+      && parserType === '全链条'
+      && canManageFullchainArchive(
+        user?.member?.position,
+        user?.role,
+        user?.permission_groups?.map(group => group.code),
+        user?.permissions,
+        user?.permission_scopes?.['police.dispatch.manage'],
+        user?.data_scope,
+      ),
+  )
 
   const openTask = useCallback((task: MobileTaskItem) => {
     const scrollContainer = pageRootRef.current?.closest('main')
@@ -990,6 +1003,8 @@ export default function MobileTaskList({
           </div>
         </section>
       )}
+
+      {canUseFullchainArchive && <FullchainArchivePanel />}
 
       {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       {sourceMessage && <Alert type="warning" showIcon message={sourceMessage} />}
