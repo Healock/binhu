@@ -126,6 +126,7 @@
   gap: 12px;
   padding: 16px 20px 0;
   background: var(--app-bg);
+  overflow: hidden;
 }
 
 .mobile-task-assignment-workbench__toolbar {
@@ -157,16 +158,19 @@
   gap: 8px;
 }
 
-.mobile-task-assignment-workbench > .ant-spin-nested-loading {
+.mobile-task-assignment-workbench__scroll {
   min-height: 0;
   flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 92px;
+  scrollbar-gutter: stable;
 }
 
-.mobile-task-assignment-workbench > .ant-spin-nested-loading > .ant-spin-container {
-  height: 100%;
-  min-height: 0;
-  overflow: auto;
-  padding-bottom: 92px;
+.mobile-task-assignment-workbench__scroll > .ant-spin-nested-loading,
+.mobile-task-assignment-workbench__scroll > .ant-spin-nested-loading > .ant-spin-container {
+  min-height: 100%;
 }
 
 .mobile-task-assignment-grid {
