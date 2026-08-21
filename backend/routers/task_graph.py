@@ -77,7 +77,7 @@ def task_graph_access(
         and owner_type == "user"
         and owner_ref == selected_owner_ref
     ):
-        return ("blocked" if status == "blocked" else "editable", "owned")
+        return "editable", "owned"
     if task_type == "analysis" and not history and view == "queue" and status in {"ready", "blocked"}:
         return "editable", "owned"
     return "readonly", "predecessor" if task_type == "analysis" else "successor"
@@ -364,7 +364,7 @@ async def search_task_graph(
                     "blocked" if review_stage == "waiting_analysis" else "completed" if _text(task_state) == "completed" else "ready"
                 )
                 relationship = "owned"
-                access = "editable" if data.view == "person" and _text(inspector) == projection_owner and status != "blocked" else "blocked" if status == "blocked" and data.view == "person" else "readonly"
+                access = "editable" if data.view == "person" and _text(inspector) == projection_owner else "readonly"
                 node_rows[task_key] = _row_node(
                     task_type="online_check",
                     parser_type=parser_type,
@@ -434,7 +434,7 @@ async def search_task_graph(
                         values=values,
                         owner_ref=_text(inspector),
                         status=status,
-                        access_mode="blocked" if status == "blocked" else "editable" if data.view == "person" else "readonly",
+                        access_mode="editable" if data.view == "person" else "readonly",
                         relationship="owned" if data.view == "person" else "successor",
                         sync_warning=bool(_text(pending_state)),
                     )

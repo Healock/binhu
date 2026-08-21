@@ -132,6 +132,10 @@ class TaskGraphTests(unittest.TestCase):
             task_type="online_check", status="ready", view="person", history=False,
             owner_type="user", owner_ref="18", selected_owner_ref="18",
         )
+        waiting_person = task_graph_access(
+            task_type="online_check", status="blocked", view="person", history=False,
+            owner_type="user", owner_ref="18", selected_owner_ref="18",
+        )
         queue = task_graph_access(
             task_type="online_check", status="ready", view="queue", history=False,
             owner_type="user", owner_ref="18", selected_owner_ref="基础管控",
@@ -149,6 +153,7 @@ class TaskGraphTests(unittest.TestCase):
             owner_type="user", owner_ref="18", selected_owner_ref="18",
         )
         self.assertEqual(person, ("editable", "owned"))
+        self.assertEqual(waiting_person, ("editable", "owned"))
         self.assertEqual(queue, ("readonly", "successor"))
         self.assertEqual(analysis_person, ("readonly", "predecessor"))
         self.assertEqual(analysis_queue, ("editable", "owned"))
@@ -187,7 +192,10 @@ class TaskGraphTests(unittest.TestCase):
         self.assertLess(query.index("await reconcile_online_task_graph("), query.index("await conn.commit()", query.index("async def queue_source_fields")))
         self.assertIn("await reconcile_projection_task_graph(cur, parser_type)", source)
         self.assertIn("dependency_blocked", mobile)
-        self.assertIn("await online_task_blocked(cur, parser_type, str(source_row[0]))", mobile)
+        self.assertNotIn("if dependency_blocked:\n                editable_fields = []", mobile)
+        update_route = mobile[mobile.index("async def update_mobile_task("):mobile.index("@router.post(\"/{parser_type}/source-rows/{source_id}/resolve-sync-conflict\")")]
+        self.assertNotIn("online_task_blocked", update_route)
+        self.assertIn("网格员仍可继续核查并修改结果", mobile)
 
 
 if __name__ == "__main__":
