@@ -131,6 +131,11 @@ class TaskPublishSelection(BaseModel):
         return list(dict.fromkeys(value))
 
 
+class DuplicateGroupResolution(BaseModel):
+    tasks: list[dict[str, int]] = Field(min_length=2, max_length=100)
+    review_note: str = Field(default="", max_length=1000)
+
+
 class TaskBusinessFieldsUpdate(BaseModel):
     expected_version: int = Field(gt=0)
     fields: dict[str, str] = Field(default_factory=dict, max_length=200)
@@ -1639,6 +1644,105 @@ async def review_task(
         event_key=f"admin-audit:{audit_id}",
     )
     return {"message": "审核结果已保存", "version": data.expected_version + 1}
+
+
+@router.post("/tasks/{keep_task_id}/resolve-duplicate")
+async def resolve_duplicate_group(
+    keep_task_id: int,
+    data: DuplicateGroupResolution,
+    request: Request,
+    user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    versions = {
+        int(item.get("id") or 0): int(item.get("version") or 0)
+        for item in data.tasks
+    }
+    if len(versions) != len(data.tasks) or any(
+        task_id <= 0 or version <= 0 for task_id, version in versions.items()
+    ):
+        raise HTTPException(400, "重复任务版本列表无效")
+    if keep_task_id not in versions:
+        raise HTTPException(400, "保留任务不在当前重复组中")
+
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT batch_id, duplicate_group_key
+                FROM _police_dispatch_tasks
+                WHERE id=%s FOR UPDATE
+            """, (keep_task_id,))
+            anchor = await cur.fetchone()
+            if not anchor:
+                raise HTTPException(404, "任务不存在")
+            batch_id = int(anchor[0])
+            duplicate_group_key = str(anchor[1] or "")
+            if not duplicate_group_key:
+                raise HTTPException(400, "该任务不属于重复人员组")
+
+            await cur.execute("""
+                SELECT id, version, final_community_id, suggested_community_id
+                FROM _police_dispatch_tasks
+                WHERE batch_id=%s AND duplicate_group_key=%s
+                ORDER BY id FOR UPDATE
+            """, (batch_id, duplicate_group_key))
+            group_rows = await cur.fetchall()
+            group_ids = {int(row[0]) for row in group_rows}
+            if len(group_rows) < 2 or group_ids != set(versions):
+                raise HTTPException(409, "重复组已经变化，请刷新后重新选择")
+            if any(int(row[1]) != versions[int(row[0])] for row in group_rows):
+                raise HTTPException(409, "重复任务已被其他人修改，请刷新后重试")
+
+            keep_row = next(row for row in group_rows if int(row[0]) == keep_task_id)
+            community_id = (
+                int(keep_row[2]) if keep_row[2]
+                else int(keep_row[3]) if keep_row[3]
+                else None
+            )
+            await _review_one(cur, keep_task_id, TaskReview(
+                expected_version=versions[keep_task_id],
+                final_action="dispatch",
+                final_community_id=community_id,
+                review_note=data.review_note,
+            ), user)
+            for row in group_rows:
+                task_id = int(row[0])
+                if task_id == keep_task_id:
+                    continue
+                await _review_one(cur, task_id, TaskReview(
+                    expected_version=versions[task_id],
+                    final_action="duplicate_exclude",
+                    review_note=data.review_note,
+                ), user)
+            await _refresh_batch_status(cur, batch_id)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    excluded_count = len(group_rows) - 1
+    audit_id = await record_admin_audit(
+        user, "police_dispatch.duplicate.resolve",
+        target_type="police_dispatch_batch", target_name=str(batch_id),
+        detail={
+            "keep_task_id": keep_task_id,
+            "excluded_count": excluded_count,
+            "group_size": len(group_rows),
+        },
+        **request_audit_fields(request),
+    )
+    await record_work_activity(
+        user,
+        POLICE_DISPATCH_REVIEW,
+        event_key=f"admin-audit:{audit_id}",
+        units=len(group_rows),
+    )
+    return {
+        "message": f"已保留 1 条并排除 {excluded_count} 条重复任务",
+        "keep_task_id": keep_task_id,
+        "excluded_count": excluded_count,
+    }
 
 
 @router.post("/tasks/bulk-review")

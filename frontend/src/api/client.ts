@@ -2900,6 +2900,20 @@ export async function reviewPoliceDispatchTask(
   await api.patch(`/police-dispatch/tasks/${id}`, payload)
 }
 
+export async function resolvePoliceDispatchDuplicateGroup(
+  keepTaskId: number,
+  payload: {
+    tasks: Array<{ id: number; version: number }>
+    review_note?: string
+  },
+): Promise<{ message: string; keep_task_id: number; excluded_count: number }> {
+  const { data } = await api.post(
+    `/police-dispatch/tasks/${keepTaskId}/resolve-duplicate`,
+    payload,
+  )
+  return data
+}
+
 export async function bulkReviewPoliceDispatchTasks(payload: {
   tasks: Array<{ id: number; version: number }>
   mode: 'accept_suggestion' | 'set_action'
