@@ -51,8 +51,12 @@ $arguments = @(
     '--packVersion', $version,
     '--packDir', $packRoot,
     '--mainExe', $MainExecutable,
-    '--packAuthors', '滨湖新城派出所',
-    '--packTitle', '滨湖智慧平台',
+    # Velopack uses packTitle when naming temporary execution stubs. Keep the
+    # packaging identity ASCII so zstd can open its dictionary on Windows;
+    # the visible product name remains Chinese in the Electron/Tauri metadata
+    # and the Win7 bootstrap installer.
+    '--packAuthors', 'Binhu Police Station',
+    '--packTitle', 'BinhuDesktop',
     '--icon', $icon,
     '--outputDir', $outputRoot,
     '--channel', 'stable',

@@ -16,6 +16,11 @@ export interface DesktopUpdateState {
   error: string | null
 }
 
+export interface DesktopUpgradeInfo {
+  currentVersion: string
+  upgradedFrom: string | null
+}
+
 export interface DesktopBridge {
   openOffline: () => Promise<void>
   minimize: () => Promise<void>
@@ -23,6 +28,8 @@ export interface DesktopBridge {
   isMaximized: () => Promise<boolean>
   close: () => Promise<void>
   getUpdateStatus: () => Promise<DesktopUpdateState>
+  getUpgradeInfo: () => Promise<DesktopUpgradeInfo | null>
+  acknowledgeUpgrade: () => Promise<DesktopUpgradeInfo | null>
   checkForUpdates: () => Promise<DesktopUpdateState>
   downloadUpdate: () => Promise<DesktopUpdateState>
   restartAndApply: () => Promise<DesktopUpdateState>
@@ -59,6 +66,8 @@ export function resolveDesktopBridge(): DesktopBridge | null {
     isMaximized: () => invoke<boolean>('window_is_maximized'),
     close: () => invoke<void>('window_close'),
     getUpdateStatus: () => invoke<DesktopUpdateState>('get_update_status'),
+    getUpgradeInfo: () => invoke<DesktopUpgradeInfo>('get_upgrade_info'),
+    acknowledgeUpgrade: () => invoke<DesktopUpgradeInfo>('acknowledge_upgrade'),
     checkForUpdates: () => invoke<DesktopUpdateState>('check_for_updates'),
     downloadUpdate: () => invoke<DesktopUpdateState>('download_update'),
     restartAndApply: () => invoke<DesktopUpdateState>('restart_and_apply'),

@@ -1,4 +1,6 @@
 use std::{
+    fs,
+    path::PathBuf,
     sync::{mpsc, Mutex},
     thread,
     time::Duration,
@@ -27,6 +29,19 @@ struct DesktopUpdateState {
     error: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopUpgradeInfo {
+    current_version: String,
+    upgraded_from: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct UpgradeStateFile {
+    last_started_version: Option<String>,
+    pending_from: Option<String>,
+}
+
 impl Default for DesktopUpdateState {
     fn default() -> Self {
         Self {
@@ -46,19 +61,90 @@ enum PendingUpdate {
     Downloaded(VelopackAsset),
 }
 
-#[derive(Default)]
 struct UpdateRuntime {
     state: DesktopUpdateState,
     manager: Option<UpdateManager>,
     pending: Option<PendingUpdate>,
+    upgrade_info: DesktopUpgradeInfo,
 }
 
 struct UpdateRuntimeState(Mutex<UpdateRuntime>);
 
 impl Default for UpdateRuntimeState {
     fn default() -> Self {
-        Self(Mutex::new(UpdateRuntime::default()))
+        Self(Mutex::new(UpdateRuntime {
+            state: DesktopUpdateState::default(),
+            manager: None,
+            pending: None,
+            upgrade_info: DesktopUpgradeInfo {
+                current_version: env!("CARGO_PKG_VERSION").into(),
+                upgraded_from: None,
+            },
+        }))
     }
+}
+
+fn upgrade_state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|root| root.join("upgrade-state.json"))
+}
+
+fn write_upgrade_state(app: &tauri::AppHandle, state: &UpgradeStateFile) {
+    let Some(path) = upgrade_state_path(app) else {
+        return;
+    };
+    let temporary = path.with_extension("json.partial");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(content) = serde_json::to_vec(state) {
+        if fs::write(&temporary, content).is_ok() {
+            let _ = fs::rename(temporary, path);
+        }
+    }
+}
+
+fn read_upgrade_state(app: &tauri::AppHandle) -> UpgradeStateFile {
+    upgrade_state_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+fn initialize_upgrade_info(app: &tauri::AppHandle) {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let state = read_upgrade_state(app);
+    let upgraded_from = state
+        .pending_from
+        .filter(|value| value != &current)
+        .or_else(|| state.last_started_version.filter(|value| value != &current));
+    write_upgrade_state(
+        app,
+        &UpgradeStateFile {
+            last_started_version: Some(current.clone()),
+            pending_from: upgraded_from.clone(),
+        },
+    );
+    let managed = app.state::<UpdateRuntimeState>();
+    if let Ok(mut runtime) = managed.0.lock() {
+        runtime.upgrade_info = DesktopUpgradeInfo {
+            current_version: current,
+            upgraded_from,
+        };
+    };
+}
+
+fn mark_pending_upgrade(app: &tauri::AppHandle) {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    write_upgrade_state(
+        app,
+        &UpgradeStateFile {
+            last_started_version: Some(current.clone()),
+            pending_from: Some(current),
+        },
+    );
 }
 
 fn create_update_manager() -> Result<UpdateManager, String> {
@@ -358,6 +444,7 @@ async fn restart_and_apply(app: tauri::AppHandle) -> DesktopUpdateState {
         runtime.state.state = "applying".into();
         runtime.state.error = None;
     });
+    mark_pending_upgrade(&app);
     let result = tauri::async_runtime::spawn_blocking(move || match pending {
         PendingUpdate::Remote(update) => {
             manager.wait_exit_then_apply_updates(update, false, true, Vec::<String>::new())
@@ -386,12 +473,47 @@ async fn restart_and_apply(app: tauri::AppHandle) -> DesktopUpdateState {
     current_update_state(&app)
 }
 
+#[tauri::command]
+fn get_upgrade_info(app: tauri::AppHandle) -> DesktopUpgradeInfo {
+    let managed = app.state::<UpdateRuntimeState>();
+    let info = match managed.0.lock() {
+        Ok(runtime) => runtime.upgrade_info.clone(),
+        Err(poisoned) => poisoned.into_inner().upgrade_info.clone(),
+    };
+    info
+}
+
+#[tauri::command]
+fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    write_upgrade_state(
+        &app,
+        &UpgradeStateFile {
+            last_started_version: Some(current.clone()),
+            pending_from: None,
+        },
+    );
+    let managed = app.state::<UpdateRuntimeState>();
+    let info = match managed.0.lock() {
+        Ok(mut runtime) => {
+            runtime.upgrade_info = DesktopUpgradeInfo {
+                current_version: current,
+                upgraded_from: None,
+            };
+            runtime.upgrade_info.clone()
+        }
+        Err(poisoned) => poisoned.into_inner().upgrade_info.clone(),
+    };
+    info
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(UpdateRuntimeState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            initialize_upgrade_info(&handle);
             thread::spawn(move || {
                 thread::sleep(INITIAL_CHECK_DELAY);
                 loop {
@@ -410,6 +532,8 @@ pub fn run() {
             window_is_maximized,
             window_close,
             get_update_status,
+            get_upgrade_info,
+            acknowledge_upgrade,
             check_for_updates,
             download_update,
             restart_and_apply

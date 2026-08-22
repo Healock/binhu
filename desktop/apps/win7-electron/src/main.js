@@ -12,6 +12,46 @@ const shellUi = path.join(root, 'apps', 'shell-ui')
 const config = require(configPath)
 const smokeTest = process.argv.includes('--smoke-test')
 let updateController = null
+let upgradeInfo = null
+
+function upgradeStatePath() {
+  return path.join(app.getPath('userData'), 'upgrade-state.json')
+}
+
+function loadUpgradeInfo() {
+  const currentVersion = config.appVersion
+  let state = {}
+  try {
+    state = JSON.parse(fs.readFileSync(upgradeStatePath(), 'utf8'))
+  } catch (_error) {
+    state = {}
+  }
+  const previousVersion = typeof state.lastStartedVersion === 'string' ? state.lastStartedVersion : null
+  const pendingFrom = typeof state.pendingFrom === 'string' ? state.pendingFrom : null
+  const upgradedFrom = pendingFrom && pendingFrom !== currentVersion
+    ? pendingFrom
+    : (!pendingFrom && previousVersion && previousVersion !== currentVersion ? previousVersion : null)
+  upgradeInfo = { currentVersion, upgradedFrom }
+  writeUpgradeState({ lastStartedVersion: currentVersion, pendingFrom: upgradedFrom || pendingFrom || null })
+}
+
+function writeUpgradeState(state) {
+  const destination = upgradeStatePath()
+  const temporary = `${destination}.partial`
+  try {
+    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    fs.writeFileSync(temporary, JSON.stringify(state), 'utf8')
+    fs.renameSync(temporary, destination)
+  } catch (_error) {
+    try { fs.unlinkSync(temporary) } catch (_ignored) {}
+  }
+}
+
+function acknowledgeUpgrade() {
+  if (!upgradeInfo) return
+  upgradeInfo = { ...upgradeInfo, upgradedFrom: null }
+  writeUpgradeState({ lastStartedVersion: config.appVersion, pendingFrom: null })
+}
 
 // Windows 7 has no DirectComposition implementation. Keep ANGLE/GPU rendering
 // enabled while preventing Chromium from probing unsupported DComp interfaces.
@@ -121,12 +161,15 @@ ipcMain.handle('desktop:window-close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close()
 })
 ipcMain.handle('desktop:get-update-status', () => updateController?.snapshot() || null)
+ipcMain.handle('desktop:get-upgrade-info', () => upgradeInfo)
+ipcMain.handle('desktop:acknowledge-upgrade', () => { acknowledgeUpgrade(); return upgradeInfo })
 ipcMain.handle('desktop:check-for-updates', () => updateController?.checkForUpdates())
 ipcMain.handle('desktop:download-update', () => updateController?.downloadUpdate())
 ipcMain.handle('desktop:restart-and-apply', () => updateController?.restartAndApply())
 
 app.whenReady().then(() => {
   protocol.handle('binhu', handleLocalAsset)
+  loadUpgradeInfo()
   updateController = new ElectronUpdateController({
     currentVersion: config.appVersion,
     enabled: app.isPackaged && !smokeTest,
@@ -135,6 +178,10 @@ app.whenReady().then(() => {
         window.webContents.send('desktop:update-state', state)
       }
     },
+    beforeApply: (fromVersion) => writeUpgradeState({
+      lastStartedVersion: config.appVersion,
+      pendingFrom: fromVersion,
+    }),
     quit: () => app.quit(),
   })
   createMainWindow()

@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import AppThemeProvider from './components/AppThemeProvider'
 import DesktopTitleBar from './components/DesktopTitleBar'
 import MandatoryUpdateGate from './components/MandatoryUpdateGate'
+import VersionUpdatedGate from './components/VersionUpdatedGate'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 import SettingsLayout from './components/SettingsLayout'
@@ -122,6 +123,7 @@ function App() {
         <div className={isDesktop ? 'desktop-window-shell' : undefined}>
           <DesktopTitleBar />
           <MandatoryUpdateGate />
+          <VersionUpdatedGate />
           <div className={isDesktop ? 'desktop-app-content' : undefined}>
             <Routes>
           {/* 登录页不套 Layout */}
