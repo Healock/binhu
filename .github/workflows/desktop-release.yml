@@ -94,7 +94,14 @@ jobs:
             tag="v$version"
             if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
               git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag"
-              test "$(git rev-list -n 1 "$tag")" = "$commit"
+              tag_commit="$(git rev-list -n 1 "$tag")"
+              if [ "$tag_commit" != "$commit" ]; then
+                if ! git diff --quiet "$tag_commit" HEAD -- VERSION frontend desktop; then
+                  echo "existing $tag points to an earlier commit with release-surface changes" >&2
+                  exit 1
+                fi
+                echo "existing $tag already published; current changes do not affect the release surface"
+              fi
               publish=false
             fi
           fi
