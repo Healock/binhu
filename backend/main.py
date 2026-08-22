@@ -5,7 +5,6 @@ import asyncio
 from contextlib import suppress
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -13,6 +12,7 @@ from app_version import APP_VERSION
 from config import settings
 from database import init_db, close_db
 from deps import get_current_user
+from http_security import add_cors_middleware
 from routers.spreadsheets import router as spreadsheets_router
 from routers.sync import router as sync_router
 from routers.stats import router as stats_router
@@ -179,22 +179,8 @@ app = FastAPI(
 
 app.add_middleware(ClientCompatibilityMiddleware)
 
-# 生产环境由 Nginx 同源代理，不需要 CORS。确有外部调用时必须显式列出来源。
-if settings.cors_allowed_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_allowed_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Accept",
-            "Authorization",
-            "Content-Type",
-            "X-User-Activity",
-            "X-Binhu-Client-Platform",
-            "X-Binhu-Client-Version",
-        ],
-    )
+# 网页继续走 Nginx 同源代理；桌面客户端来源必须由显式白名单逐项放行。
+add_cors_middleware(app, settings.cors_allowed_origins)
 
 # 健康检查（无需鉴权）
 @app.get("/api/health")

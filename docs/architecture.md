@@ -2,6 +2,14 @@
 
 > 当前基线（v0.22.5）：任务流改为自由画布，任务卡不再被固定父节点或卡组限制，用户可以自由拖动、连线和排列。
 
+## v0.25.14 桌面客户端跨来源认证
+
+- Windows 桌面客户端继续加载安装包内的前端资源，只把 API、认证和业务数据请求发送到生产 HTTPS API。网页端仍通过 Nginx 同源访问 `/api`。
+- 后端仅对白名单中的 `http://tauri.localhost`、`https://tauri.localhost` 和 `binhu://app` 开启带凭据 CORS；预检允许既有客户端头及 `X-Binhu-Device-Id`，不接受通配来源。
+- 生产会话 Cookie 使用 `HttpOnly + Secure + SameSite=None + Path=/`。`SameSite=None` 与未启用 `Secure` 的组合会在配置加载时拒绝启动，避免跨来源 Cookie 被错误降级。
+- 桌面来源和设备请求头只用于跨域边界、客户端分类及设备管理，不能替代 HttpOnly Cookie、账号认证、权限或业务数据范围校验。
+- 同一账号的一台电脑端与一台手机端会话继续由现有双端会话模型管理；本次不改变登录协议、会话表结构或设备管理接口。
+
 ## v0.22.5 任务流自由画布
 
 - 任务卡是独立的 React Flow 节点，不设置 `parentId` 或 `extent`，整张卡可以自由拖动；按钮和连接端口使用 `nodrag/nopan`，不会阻断拖动。
