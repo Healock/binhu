@@ -33,6 +33,7 @@ jobs:
       commit: ${{ steps.gate.outputs.commit }}
       win7_full: ${{ steps.gate.outputs.win7_full }}
       win10_full: ${{ steps.gate.outputs.win10_full }}
+      previous_version: ${{ steps.gate.outputs.previous_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,6 +109,7 @@ jobs:
           {
             echo "publish=$publish"; echo "version=$version"; echo "commit=$commit"
             echo "win7_full=$win7_full"; echo "win10_full=$win10_full"
+            echo "previous_version=$win7_version"
           } >> "$GITHUB_OUTPUT"
 
   frontend:
@@ -146,6 +148,8 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.BINHU_UPDATE_KNOWN_HOSTS }}
           WIN7_FULL: ${{ needs.prepare.outputs.win7_full }}
           WIN10_FULL: ${{ needs.prepare.outputs.win10_full }}
+          PREVIOUS_VERSION: ${{ needs.prepare.outputs.previous_version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           install -d -m 700 "$RUNNER_TEMP/binhu-update-ssh" .build/previous
@@ -156,13 +160,30 @@ jobs:
             local platform="$1" filename="$2"
             test -n "$filename"
             [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._+\-]{0,199}-full\.nupkg$ ]]
-            ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
+            local destination=".build/previous/$filename"
+            local temporary="$destination.partial"
+            if ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
               -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
               -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p "$BINHU_UPDATE_PORT" \
               "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" "fetch $platform $filename" \
-              > ".build/previous/$filename"
-            test -s ".build/previous/$filename"
+              > "$temporary"; then
+              mv "$temporary" "$destination"
+            else
+              rm -f "$temporary"
+              echo "restricted fetch is unavailable; using the audited v$PREVIOUS_VERSION release asset"
+              test -n "$PREVIOUS_VERSION"
+              local fallback=".build/fallback/$platform"
+              local checksums="$platform-checksums.sha256"
+              mkdir -p "$fallback"
+              gh release download "v$PREVIOUS_VERSION" --dir "$fallback" \
+                --pattern "$filename" --pattern "$checksums"
+              grep -F " $filename" "$fallback/$checksums" > "$fallback/selected.sha256"
+              test -s "$fallback/selected.sha256"
+              (cd "$fallback" && sha256sum -c selected.sha256)
+              mv "$fallback/$filename" "$destination"
+            fi
+            test -s "$destination"
           }
           fetch win7-x64 "$WIN7_FULL"
           fetch win10-x64 "$WIN10_FULL"
