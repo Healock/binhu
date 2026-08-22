@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate_release_notes import normalize_prs, summarize_body
-from validate_pr_body import validate_body
+from validate_pr_body import REQUIRED_HEADINGS, validate_body
 
 
 class ReleaseNotesTests(unittest.TestCase):
@@ -47,6 +47,10 @@ class ReleaseNotesTests(unittest.TestCase):
         errors = validate_body("## 修改范围\\n- bad")
         self.assertTrue(any("字面量" in error for error in errors))
         self.assertTrue(any("PR 摘要" in error for error in errors))
+
+    def test_pr_body_allows_literal_newline_term_inside_valid_template(self):
+        body = "\n\n".join(REQUIRED_HEADINGS) + "\n\n说明文字可以讨论 `\\n` 本身。"
+        self.assertEqual(validate_body(body), [])
 
 
 if __name__ == "__main__":

@@ -25,10 +25,14 @@ REQUIRED_HEADINGS = (
 
 def validate_body(body: str) -> list[str]:
     errors: list[str] = []
-    if "\\n" in body:
+    heading_lines = {
+        heading: bool(re.search(rf"(?m)^{re.escape(heading)}\s*$", body))
+        for heading in REQUIRED_HEADINGS
+    }
+    if "\\n" in body and sum(heading_lines.values()) < len(REQUIRED_HEADINGS) // 2:
         errors.append("PR 正文包含字面量 \\n，请提交真正的换行符。")
-    for heading in REQUIRED_HEADINGS:
-        if heading not in body:
+    for heading, present in heading_lines.items():
+        if not present:
             errors.append(f"缺少模板章节：{heading}")
     if re.search(r"问题\s*[1-3]：\s*$", body, flags=re.MULTILINE):
         errors.append("仍保留模板中的问题占位项，请填写实际问题。")
