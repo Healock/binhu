@@ -2,6 +2,8 @@ import { lazy, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppThemeProvider from './components/AppThemeProvider'
+import DesktopTitleBar from './components/DesktopTitleBar'
+import MandatoryUpdateGate from './components/MandatoryUpdateGate'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/Layout'
 import SettingsLayout from './components/SettingsLayout'
@@ -20,6 +22,7 @@ import VisitSummary from './pages/VisitSummary'
 import CodeSummary from './pages/CodeSummary'
 import DataUploadCenter from './pages/DataUploadCenter'
 import Login from './pages/Login'
+import OfflineMode from './pages/OfflineMode'
 import WorkLog from './pages/WorkLog'
 import WorkLogDrafts from './pages/WorkLogDrafts'
 import PermissionGroups from './pages/PermissionGroups'
@@ -111,12 +114,19 @@ function PhotoTaskEntry() {
 }
 
 function App() {
+  const isDesktop = import.meta.env.VITE_DESKTOP_MODE === 'true'
+
   return (
     <AuthProvider>
       <AppThemeProvider>
-        <Routes>
+        <div className={isDesktop ? 'desktop-window-shell' : undefined}>
+          <DesktopTitleBar />
+          <MandatoryUpdateGate />
+          <div className={isDesktop ? 'desktop-app-content' : undefined}>
+            <Routes>
           {/* 登录页不套 Layout */}
           <Route path="/login" element={<Login />} />
+          <Route path="/offline" element={<OfflineMode />} />
 
           {/* 其他页面需要登录 */}
           <Route element={<ProtectedRoute />}>
@@ -213,7 +223,9 @@ function App() {
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            </Routes>
+          </div>
+        </div>
       </AppThemeProvider>
     </AuthProvider>
   )

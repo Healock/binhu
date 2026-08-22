@@ -75,7 +75,12 @@ export default function Login() {
       await login(username.trim(), password)
       navigate('/', { replace: true })
     } catch (err: any) {
-      setError(err.message || '登录失败')
+      const message = err?.message || '登录失败'
+      setError(
+        /failed to fetch|network error/i.test(message)
+          ? '无法连接平台服务，请检查网络或服务器桌面访问配置'
+          : message,
+      )
     } finally {
       setLoading(false)
     }
@@ -196,6 +201,14 @@ export default function Login() {
                   block
                 >
                   登录
+                </Button>
+                <Button
+                  id="offline-mode-button"
+                  size="large"
+                  block
+                  onClick={() => navigate('/offline')}
+                >
+                  离线模式
                 </Button>
               </div>
             </form>

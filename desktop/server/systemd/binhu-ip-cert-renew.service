@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the short-lived Binhu update IP certificate
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/binhu-renew-ip-certificate

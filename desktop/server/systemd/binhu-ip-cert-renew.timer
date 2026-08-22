@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the Binhu update IP certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 00,12:17:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=binhu-ip-cert-renew.service
+
+[Install]
+WantedBy=timers.target

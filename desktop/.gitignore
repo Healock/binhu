@@ -1,0 +1,8 @@
+node_modules/
+apps/win7-electron/runtime/*
+!apps/win7-electron/runtime/README.md
+apps/win10-tauri/src-tauri/target/
+apps/win10-tauri/node_modules/
+.build/
+.temp/
+.tooling/

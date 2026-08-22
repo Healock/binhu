@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "appName": "滨湖智慧平台",
+  "appVersion": "0.25.15",
+  "serverUrl": "https://www.h332a0a4b.nyat.app:48726",
+  "apiBaseUrl": "https://www.h332a0a4b.nyat.app:48726/api",
+  "initialRoute": "/login",
+  "targets": {
+    "win7": {
+      "shell": "electron",
+      "runtimeProvider": "official-electron-with-vxkex",
+      "runtimeChannel": "36.0.0",
+      "runtimeExecutable": "electron.exe",
+      "packageId": "com.bhzh.binhu.win7.x64",
+      "runtimeId": "win7-x64",
+      "updateUrl": "https://47.100.44.36/updates/win7-x64/",
+      "minimumWindows": "Windows 7 SP1 x64"
+    },
+    "win10-plus": {
+      "shell": "tauri",
+      "runtimeProvider": "system-webview2",
+      "packageId": "com.bhzh.binhu.win10.x64",
+      "runtimeId": "win10-x64",
+      "updateUrl": "https://47.100.44.36/updates/win10-x64/",
+      "minimumWindows": "Windows 10 1803"
+    }
+  }
+}

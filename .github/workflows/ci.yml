@@ -38,6 +38,8 @@ jobs:
         working-directory: backend
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
+      - name: Run desktop update gateway tests
+        run: python -m unittest discover -s desktop/server/tests
       - name: Compile Python sources
         run: |
           python -m compileall -q .

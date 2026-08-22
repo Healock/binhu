@@ -1,0 +1,247 @@
+name: Desktop release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-stable-release
+  cancel-in-progress: false
+
+env:
+  BINHU_UPDATE_HOST: 47.100.44.36
+  BINHU_UPDATE_PORT: "51234"
+  BINHU_UPDATE_USER: binhu-update-publish
+  ELECTRON_ARCHIVE_URL: https://github.com/electron/electron/releases/download/v36.0.0/electron-v36.0.0-win32-x64.zip
+  ELECTRON_ARCHIVE_SHA256: 3690467f4cb67752cdad90962bb3bee252dafcbfb12834d853e36d97117cd5b2
+  VXKEX_URL: https://github.com/i486/VxKex/releases/download/Version1.2.1.2229/KexSetup_Release_1_2_1_2229.exe
+  VXKEX_SHA256: 7db81065591ab62f2086af84ff5cbf0d021589715024ba893e22a74f6c8708cd
+
+jobs:
+  prepare:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: desktop-production
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+      version: ${{ steps.gate.outputs.version }}
+      commit: ${{ steps.gate.outputs.commit }}
+      win7_full: ${{ steps.gate.outputs.win7_full }}
+      win10_full: ${{ steps.gate.outputs.win10_full }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Verify main commit and synchronized versions
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python desktop/scripts/sync_versions.py --check
+      - name: Prepare restricted SSH identity
+        env:
+          UPDATE_KEY: ${{ secrets.BINHU_UPDATE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_UPDATE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-update-ssh"
+          printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/binhu-update-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-update-ssh/key" "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/binhu-update-ssh/key" >/dev/null
+          ssh-keygen -lf "$RUNNER_TEMP/binhu-update-ssh/known_hosts" | grep -F 'SHA256:YlKDIaF4ugAEz52NpFCAxmBxTeYfWoCxhND9pPJRYCw'
+      - name: Apply release version gate
+        id: gate
+        run: |
+          set -Eeuo pipefail
+          status="$(ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
+            -p "$BINHU_UPDATE_PORT" "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" status)"
+          printf '%s\n' "$status"
+          version="$(tr -d '\r\n' < VERSION)"
+          commit="$(git rev-parse HEAD)"
+          win7_version="$(printf '%s\n' "$status" | awk -F= '$1=="WIN7_X64_VERSION"{print $2}')"
+          win10_version="$(printf '%s\n' "$status" | awk -F= '$1=="WIN10_X64_VERSION"{print $2}')"
+          win7_commit="$(printf '%s\n' "$status" | awk -F= '$1=="WIN7_X64_COMMIT"{print $2}')"
+          win10_commit="$(printf '%s\n' "$status" | awk -F= '$1=="WIN10_X64_COMMIT"{print $2}')"
+          win7_full="$(printf '%s\n' "$status" | awk -F= '$1=="WIN7_X64_FULL_PACKAGE"{print $2}')"
+          win10_full="$(printf '%s\n' "$status" | awk -F= '$1=="WIN10_X64_FULL_PACKAGE"{print $2}')"
+          python - "$version" "$win7_version" "$win10_version" <<'PY'
+          import re, sys
+          incoming, win7, win10 = sys.argv[1:]
+          parse = lambda value: tuple(map(int, value.split('.'))) if re.fullmatch(r'\d+\.\d+\.\d+', value) else None
+          target = parse(incoming)
+          if target is None: raise SystemExit('invalid repository VERSION')
+          if bool(win7) != bool(win10) or (win7 and win7 != win10): raise SystemExit('server platform versions are inconsistent')
+          if not win7 and incoming != '0.25.15': raise SystemExit('an empty server must start at baseline 0.25.15')
+          if win7 and target < parse(win7): raise SystemExit('VERSION would downgrade the desktop release')
+          PY
+          publish=true
+          if [ -n "$win7_version" ] && [ "$version" = "$win7_version" ]; then
+            publish=false
+            if [ "$win7_commit" != "$win10_commit" ]; then
+              echo 'server commit state is inconsistent' >&2; exit 1
+            fi
+            if ! git diff --quiet "$win7_commit" HEAD -- VERSION frontend desktop; then
+              echo 'frontend or desktop changed without increasing VERSION' >&2; exit 1
+            fi
+          fi
+          {
+            echo "publish=$publish"; echo "version=$version"; echo "commit=$commit"
+            echo "win7_full=$win7_full"; echo "win10_full=$win10_full"
+          } >> "$GITHUB_OUTPUT"
+
+  frontend:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ needs.prepare.outputs.commit }}" }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test && npm run build -- --mode desktop
+        working-directory: frontend
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-frontend-${{ needs.prepare.outputs.commit }}
+          path: frontend/dist
+          if-no-files-found: error
+
+  build:
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [win7-x64, win10-x64]
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ needs.prepare.outputs.commit }}" }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            desktop/apps/win10-tauri/package-lock.json
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: desktop-frontend-${{ needs.prepare.outputs.commit }}
+          path: frontend/dist
+      - name: Install desktop dependencies and copy local frontend
+        shell: pwsh
+        run: |
+          $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
+          npm.cmd ci --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & desktop/scripts/build-local-frontend.ps1 -SkipBuild -FrontendDist frontend/dist
+      - name: Download pinned Win7 prerequisites
+        if: matrix.target == 'win7-x64'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          curl.exe -L --fail --retry 3 -o release/electron-v36.0.0-win32-x64.zip $env:ELECTRON_ARCHIVE_URL
+          curl.exe -L --fail --retry 3 -o release/KexSetup_Release_1_2_1_2229.exe $env:VXKEX_URL
+          if ((Get-FileHash release/electron-v36.0.0-win32-x64.zip -Algorithm SHA256).Hash.ToLower() -ne $env:ELECTRON_ARCHIVE_SHA256) { throw 'Electron hash mismatch' }
+          if ((Get-FileHash release/KexSetup_Release_1_2_1_2229.exe -Algorithm SHA256).Hash.ToLower() -ne $env:VXKEX_SHA256) { throw 'VxKex hash mismatch' }
+          choco install innosetup -y --no-progress
+      - name: Download previous full package
+        if: needs.prepare.outputs.version != '0.25.15'
+        shell: pwsh
+        env:
+          PREVIOUS_FULL: ${{ matrix.target == 'win7-x64' && needs.prepare.outputs.win7_full || needs.prepare.outputs.win10_full }}
+        run: |
+          if (-not $env:PREVIOUS_FULL) { throw 'Previous full package is required after 0.25.15.' }
+          New-Item -ItemType Directory -Force .build/previous | Out-Null
+          $destination = Join-Path .build/previous $env:PREVIOUS_FULL
+          curl.exe -L --fail --retry 3 -o $destination "https://$env:BINHU_UPDATE_HOST/updates/${{ matrix.target }}/$env:PREVIOUS_FULL"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Velopack release
+        shell: pwsh
+        run: |
+          $previous = Get-ChildItem .build/previous -Filter '*-full.nupkg' -File -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          if ('${{ matrix.target }}' -eq 'win7-x64') {
+            & desktop/scripts/build-win7-velopack.ps1 -WorkspaceRoot $PWD -PreviousFullPackage $previous
+          } else {
+            npm.cmd ci --prefix desktop/apps/win10-tauri
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & desktop/scripts/build-win10-velopack.ps1 -WorkspaceRoot $PWD -PreviousFullPackage $previous
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-${{ matrix.target }}-${{ needs.prepare.outputs.version }}
+          path: artifacts/updates/${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: desktop-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ needs.prepare.outputs.commit }}" }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: desktop-*-x64-${{ needs.prepare.outputs.version }}
+          path: release-input
+          merge-multiple: false
+      - name: Normalize artifacts and create transfer bundle
+        run: |
+          set -Eeuo pipefail
+          mkdir -p release-input/combined/win7-x64 release-input/combined/win10-x64
+          cp -a release-input/desktop-win7-x64-${{ needs.prepare.outputs.version }}/. release-input/combined/win7-x64/
+          cp -a release-input/desktop-win10-x64-${{ needs.prepare.outputs.version }}/. release-input/combined/win10-x64/
+          python desktop/server/build_release_bundle.py --input release-input/combined \
+            --version '${{ needs.prepare.outputs.version }}' --commit '${{ needs.prepare.outputs.commit }}' \
+            --output release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz
+          sha256sum release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256
+      - name: Publish through fixed SSH gateway
+        env:
+          UPDATE_KEY: ${{ secrets.BINHU_UPDATE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_UPDATE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-update-ssh"
+          printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/binhu-update-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-update-ssh/key" "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          bundle=release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz
+          size=$(wc -c < "$bundle")
+          hash=$(sha256sum "$bundle" | awk '{print $1}')
+          ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p "$BINHU_UPDATE_PORT" \
+            "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" \
+            "publish ${{ needs.prepare.outputs.version }} ${{ needs.prepare.outputs.commit }} $size $hash" < "$bundle"
+      - name: Create audit GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag="v${{ needs.prepare.outputs.version }}"
+          test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
+          gh release create "$tag" --target '${{ needs.prepare.outputs.commit }}' \
+            --title "滨湖桌面客户端 ${{ needs.prepare.outputs.version }}" \
+            --notes "Win7 Electron/VxKex 与 Win10/11 Tauri 稳定频道。客户端更新源为 47.100.44.36，本 Release 仅用于审计和备用归档。签名状态：signed=false。" \
+            release-input/combined/win7-x64/* release-input/combined/win10-x64/* \
+            release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz \
+            release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256
