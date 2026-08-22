@@ -27,7 +27,8 @@ foreach ($path in @(
 
 $electronMain = Get-Content (Join-Path $root 'apps\win7-electron\src\main.js') -Raw
 if (-not $electronMain.StartsWith("const { VelopackApp } = require('velopack')") -or
-    $electronMain.IndexOf("VelopackApp.build().setAutoApplyOnStartup(false).run()") -gt $electronMain.IndexOf("require('electron')")) {
+    $electronMain.IndexOf('VelopackApp.build()') -gt $electronMain.IndexOf("require('electron')") -or
+    $electronMain.IndexOf('setAutoApplyOnStartup(false)') -gt $electronMain.IndexOf("require('electron')")) {
     throw 'Electron must initialize Velopack before Electron startup.'
 }
 if ($electronMain -notmatch 'contextIsolation:\s*true' -or $electronMain -notmatch 'nodeIntegration:\s*false') {
@@ -50,7 +51,7 @@ foreach ($command in @('desktop_config', 'open_online', 'open_offline')) {
 }
 $tauriMain = Get-Content (Join-Path $root 'apps\win10-tauri\src-tauri\src\main.rs') -Raw
 if ($tauriMain.IndexOf('velopack::VelopackApp::build()') -lt 0 -or
-    $tauriMain.IndexOf('velopack::VelopackApp::build()') -gt $tauriMain.IndexOf('binhu_win10_tauri_lib::run()')) {
+    $tauriMain.IndexOf('velopack::VelopackApp::build()') -gt $tauriMain.IndexOf('binhu_win10_tauri_lib::run(')) {
     throw 'Tauri must initialize Velopack before starting the application.'
 }
 $tauriConfig = Get-Content (Join-Path $root 'apps\win10-tauri\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json

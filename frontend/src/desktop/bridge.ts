@@ -19,6 +19,7 @@ export interface DesktopUpdateState {
 export interface DesktopUpgradeInfo {
   currentVersion: string
   upgradedFrom: string | null
+  upgradeDetected?: boolean
 }
 
 export interface DesktopBridge {
