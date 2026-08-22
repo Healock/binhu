@@ -350,7 +350,9 @@ def main(argv: list[str] | None = None, stdin: BinaryIO | None = None) -> int:
         if actual_hash != expected_hash:
             bundle.unlink(missing_ok=True)
             raise PublishError("bundle SHA-256 mismatch")
-        lock_path = root / "publish.lock"
+        # Keep the lock in the publisher-owned state directory. The update
+        # root itself is intentionally not writable by the restricted account.
+        lock_path = root / "state" / "publish.lock"
         with lock_path.open("a+b") as lock:
             if fcntl is not None:
                 fcntl.flock(lock, fcntl.LOCK_EX)

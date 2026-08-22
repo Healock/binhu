@@ -90,6 +90,8 @@ class GatewayTests(unittest.TestCase):
             self.assertTrue((self.root / "public" / platform / "releases.stable.json").is_file())
             state = json.loads((self.root / "state" / f"{platform}.json").read_text())
             self.assertEqual(state["version"], "0.25.15")
+        self.assertTrue((self.root / "state" / "publish.lock").is_file())
+        self.assertFalse((self.root / "publish.lock").exists())
 
     def test_rejects_bad_upload_hash(self):
         self.assertEqual(self.run_publish(self.bundle(), declared_hash="0" * 64), 1)
