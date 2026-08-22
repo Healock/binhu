@@ -218,6 +218,24 @@ def status(root: Path) -> None:
         print(f"{prefix}_FULL_PACKAGE={current.get('fullPackage', '')}")
 
 
+def fetch_full_package(root: Path, platform: str, filename: str, output: BinaryIO) -> None:
+    """Stream only the currently published full package for one platform."""
+    if platform not in PLATFORMS:
+        raise PublishError("invalid fetch platform")
+    if not FILE_RE.fullmatch(filename) or not filename.endswith("-full.nupkg"):
+        raise PublishError("only a valid full package may be fetched")
+    current = read_state(root, platform)
+    if not current.get("version") or current.get("fullPackage") != filename:
+        raise PublishError("requested package is not the current full package")
+    package = root / "public" / platform / filename
+    if not package.is_file():
+        raise PublishError("current full package is unavailable")
+    with package.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            output.write(chunk)
+    output.flush()
+
+
 def archive_old_releases(root: Path, platform: str) -> None:
     history_root = root / "state" / "history" / platform
     entries = []
@@ -330,7 +348,11 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
     return True
 
 
-def main(argv: list[str] | None = None, stdin: BinaryIO | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    stdin: BinaryIO | None = None,
+    stdout: BinaryIO | None = None,
+) -> int:
     root = root_path()
     for path in (root / "incoming", root / "public", root / "archive", root / "state"):
         path.mkdir(parents=True, exist_ok=True)
@@ -340,8 +362,11 @@ def main(argv: list[str] | None = None, stdin: BinaryIO | None = None) -> int:
         if parts == ["status"]:
             status(root)
             return 0
+        if len(parts) == 3 and parts[0] == "fetch":
+            fetch_full_package(root, parts[1], parts[2], stdout or sys.stdout.buffer)
+            return 0
         if len(parts) != 5 or parts[0] != "publish":
-            raise PublishError("only status and publish are allowed")
+            raise PublishError("only status, fetch and publish are allowed")
         version, commit, size_text, expected_hash = parts[1:]
         if not size_text.isdigit() or not HASH_RE.fullmatch(expected_hash):
             raise PublishError("invalid publish metadata")

@@ -133,9 +133,48 @@ jobs:
           path: frontend/dist
           if-no-files-found: error
 
+  baseline:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.version != '0.25.15'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: desktop-production
+    steps:
+      - name: Fetch previous full packages through restricted gateway
+        env:
+          UPDATE_KEY: ${{ secrets.BINHU_UPDATE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_UPDATE_KNOWN_HOSTS }}
+          WIN7_FULL: ${{ needs.prepare.outputs.win7_full }}
+          WIN10_FULL: ${{ needs.prepare.outputs.win10_full }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-update-ssh" .build/previous
+          printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/binhu-update-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-update-ssh/key" "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          fetch() {
+            local platform="$1" filename="$2"
+            test -n "$filename"
+            [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._+\-]{0,199}-full\.nupkg$ ]]
+            ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
+              -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p "$BINHU_UPDATE_PORT" \
+              "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" "fetch $platform $filename" \
+              > ".build/previous/$filename"
+            test -s ".build/previous/$filename"
+          }
+          fetch win7-x64 "$WIN7_FULL"
+          fetch win10-x64 "$WIN10_FULL"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-baseline-${{ needs.prepare.outputs.commit }}
+          path: .build/previous
+          if-no-files-found: error
+
   build:
-    needs: [prepare, frontend]
-    if: needs.prepare.outputs.publish == 'true'
+    needs: [prepare, frontend, baseline]
+    if: ${{ always() && needs.prepare.outputs.publish == 'true' && (needs.baseline.result == 'success' || needs.baseline.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -156,6 +195,11 @@ jobs:
         with:
           name: desktop-frontend-${{ needs.prepare.outputs.commit }}
           path: frontend/dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: needs.prepare.outputs.version != '0.25.15'
+        with:
+          name: desktop-baseline-${{ needs.prepare.outputs.commit }}
+          path: .build/previous
       - name: Install desktop dependencies and copy local frontend
         shell: pwsh
         run: |
@@ -180,41 +224,9 @@ jobs:
           PREVIOUS_FULL: ${{ matrix.target == 'win7-x64' && needs.prepare.outputs.win7_full || needs.prepare.outputs.win10_full }}
         run: |
           if (-not $env:PREVIOUS_FULL) { throw 'Previous full package is required after 0.25.15.' }
-          New-Item -ItemType Directory -Force .build/previous | Out-Null
           $destination = Join-Path .build/previous $env:PREVIOUS_FULL
-          # The update gateway may close a long-lived TLS GET from a hosted
-          # runner before sending the first byte.  Download the baseline in
-          # bounded HTTP Range requests instead.  Each chunk is independently
-          # retried and size-checked, then appended to the destination; the
-          # gateway advertises byte ranges and Velopack validates the package
-          # contents before producing a delta.
-          $url = "https://$env:BINHU_UPDATE_HOST/updates/${{ matrix.target }}/$env:PREVIOUS_FULL"
-          $headerFile = Join-Path .build/previous "$env:PREVIOUS_FULL.headers"
-          curl.exe --http1.1 -sSIL --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 120 -D $headerFile -o NUL $url
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $lengthMatch = Select-String -Path $headerFile -Pattern '^Content-Length:\s*(\d+)' | Select-Object -Last 1
-          if (-not $lengthMatch) { throw 'Previous full package length is missing.' }
-          $totalBytes = [int64]$lengthMatch.Matches[0].Groups[1].Value
-          if ($totalBytes -le 0) { throw 'Previous full package length is invalid.' }
-          if (Test-Path $destination) { Remove-Item -Force $destination }
-          $chunkBytes = 8MB
-          for ($start = [int64]0; $start -lt $totalBytes; $start += $chunkBytes) {
-            $end = [Math]::Min($totalBytes - 1, $start + $chunkBytes - 1)
-            $chunk = "$destination.$start.part"
-            $range = "$start-$end"
-            curl.exe --http1.1 -L --fail --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 300 --range $range -o $chunk $url
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $expected = $end - $start + 1
-            $actual = (Get-Item $chunk).Length
-            if ($actual -ne $expected) { throw "Range $range returned $actual bytes; expected $expected." }
-            $out = [IO.File]::Open($destination, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
-            try {
-              $input = [IO.File]::OpenRead($chunk)
-              try { $input.CopyTo($out) } finally { $input.Dispose() }
-            } finally { $out.Dispose() }
-            Remove-Item -Force $chunk
-          }
-          if ((Get-Item $destination).Length -ne $totalBytes) { throw 'Previous full package size mismatch after assembly.' }
+          if (-not (Test-Path -LiteralPath $destination)) { throw "Baseline package is missing: $destination" }
+          if ((Get-Item -LiteralPath $destination).Length -le 0) { throw 'Baseline package is empty.' }
       - name: Build Velopack release
         shell: pwsh
         run: |

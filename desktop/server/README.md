@@ -45,14 +45,20 @@ The gateway accepts only:
 
 ```text
 status
+fetch <win7-x64|win10-x64> <current-full-package.nupkg>
 publish <version> <40-char-commit> <byte-length> <sha256>
 ```
 
-Upload bodies are validated for length, SHA-256, SemVer, commit ID, safe paths,
-allowed names and Velopack feed/package consistency. Files are installed before
-`releases.stable.json` is replaced atomically. Version `0.25.15` must be
-full-only; later versions must contain a current delta. The latest five release
-sets remain public and older files move to `/srv/binhu-updates/archive`.
+`fetch` is read-only and can return only the full package named by the current
+platform state. It cannot read arbitrary files, archived releases or anything
+outside `public/<platform>/`. CI uses it to obtain the previous full package
+over the restricted SSH channel when a hosted runner cannot reach the HTTPS
+download endpoint. Upload bodies are validated for length, SHA-256, SemVer,
+commit ID, safe paths, allowed names and Velopack feed/package consistency.
+Files are installed before `releases.stable.json` is replaced atomically.
+Version `0.25.15` must be full-only; later versions must contain a current delta.
+The latest five release sets remain public and older files move to
+`/srv/binhu-updates/archive`.
 
 ## 3. Obtain the IP certificate
 

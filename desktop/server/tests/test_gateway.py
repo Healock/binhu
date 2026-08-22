@@ -145,6 +145,22 @@ class GatewayTests(unittest.TestCase):
         data = self.bundle("0.25.16", "b" * 40, include_delta=True)
         self.assertEqual(self.run_publish(data, "0.25.16", "b" * 40), 1)
 
+    def test_fetch_only_current_full_package(self):
+        self.assertEqual(self.run_publish(self.bundle()), 0)
+        state = json.loads((self.root / "state" / "win7-x64.json").read_text())
+        filename = state["fullPackage"]
+        output = io.BytesIO()
+        self.assertEqual(gateway.main(["fetch", "win7-x64", filename], stdout=output), 0)
+        self.assertEqual(output.getvalue(), (self.root / "public" / "win7-x64" / filename).read_bytes())
+
+    def test_fetch_rejects_other_files_and_platforms(self):
+        self.assertEqual(self.run_publish(self.bundle()), 0)
+        state = json.loads((self.root / "state" / "win7-x64.json").read_text())
+        filename = state["fullPackage"]
+        self.assertEqual(gateway.main(["fetch", "other", filename], stdout=io.BytesIO()), 1)
+        self.assertEqual(gateway.main(["fetch", "win7-x64", "releases.stable.json"], stdout=io.BytesIO()), 1)
+        self.assertEqual(gateway.main(["fetch", "win7-x64", "missing-full.nupkg"], stdout=io.BytesIO()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
