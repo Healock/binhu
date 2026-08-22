@@ -146,6 +146,16 @@
 - 服务器部署脚本必须先校验版本、提交、文件哈希、磁盘空间、Compose 配置及同步/备份空闲状态，再构建候选镜像、保存旧程序和旧镜像、按发布人选择的范围备份数据库并切换。健康检查失败只自动恢复旧程序和旧镜像，绝不能自动导入数据库备份。
 - GitHub Environment 中的 SSH 私钥、主机指纹和地址只作为加密 Secret 保存。仓库、工作流日志、构建产物和服务器发布历史都不得出现这些值。紧急情况下可以使用私密运维资料进行人工发布，但必须说明为什么绕过固定工作流并留下验证记录。
 
+### Windows 桌面客户端发布
+
+- 桌面客户端与平台服务端共用根目录 `VERSION`。修改版本号后必须运行 `python desktop/scripts/sync_versions.py`，并提交脚本同步的 Electron、Tauri、Velopack、安装器、`desktop/package-lock.json` 和配置文件；发布前用 `python desktop/scripts/sync_versions.py --check` 证明没有漏同步。桌面客户端不单独维护版本号，也不能只改某一个 `package.json`。
+- 桌面发布只允许通过进入 `main` 的 PR 触发。合并后的主线 CI 成功后，由 `.github/workflows/desktop-release.yml` 自动完成前端构建、Win7 Electron/VxKex 构建、Win10/11 Tauri 构建、全量包和增量包生成、更新服务器发布及 GitHub Release 归档；不得从开发电脑手工上传更新包，也不能把 GitHub Release 当作正式更新源。
+- 发布前必须确认根目录 `VERSION`、所有桌面同步文件、前端构建和桌面架构检查均通过。0.25.15 是首个全量基线；从 0.25.16 起，Win7 与 Win10/11 两个平台都必须同时提供当前版本全量包和基于上一版本全量包生成的增量包。缺少任一平台全量包、增量包、清单或校验文件时，发布必须失败。
+- 桌面版本门禁允许同一版本标签指向较早提交的情况，但仅限于当前提交相对已发布提交没有改变 `VERSION`、`frontend/` 或 `desktop/`。只改 CI/CD、发布脚本、文档或其他发布元数据时可以跳过重复构建；只要上述发布面发生变化而版本号没有增加，必须拒绝发布。版本降低、同版本不同发布提交、文件哈希错误、非法文件名、目录穿越和缺少上一版本全量包都必须拒绝。
+- 更新服务器发布使用受限的 `binhu-update-publish` 账号和固定网关。并发锁只能使用 `/srv/binhu-updates/state/publish.lock`；禁止重新使用更新根目录下的 `publish.lock`，也不能把 root SSH、Docker Socket 或任意 Shell 权限交给 GitHub Actions。正式更新地址固定为 `https://47.100.44.36/updates/win7-x64/` 和 `https://47.100.44.36/updates/win10-x64/`。
+- 桌面发布完成后，先检查两平台 `releases.stable.json` 均包含 `0.25.16` 的 `Full` 与 `Delta`，再以 0.25.15 客户端验收“发现更新、优先增量、增量失败回退全量、重启后版本与本地会话/配置保持”。GitHub Release 只用于审计和备用归档；实机验收通过前不得手工改标签或重复发布同一版本。
+- 以后处理桌面 PR 时，汇报必须区分“代码已合并”“CI 已通过”“更新服务器已发布”“GitHub Release 已归档”和“Win7/Win10 实机已验收”五个状态；任何一项未完成都不能笼统写成“已上线”。
+
 ## 安全底线
 
 - `.env`、`backend/.env`、`AGENTS.local.md`、密码、令牌和私钥不能提交到 Git。

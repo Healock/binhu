@@ -1,6 +1,6 @@
 [package]
 name = "binhu-win10-tauri"
-version = "0.25.15"
+version = "0.25.16"
 description = "Binhu desktop shell for Windows 10 and later"
 authors = ["滨湖新城派出所"]
 edition = "2021"
