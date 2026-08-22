@@ -131,6 +131,17 @@ test('登录页只在本地记住用户名且不持久化密码', () => {
   assert.doesNotMatch(source, /storeRememberedUsername\([^\n]*password/)
 })
 
+test('客户端版本来自本地构建且登录页和侧栏显示同一版本', () => {
+  const auth = readFileSync(new URL('../src/context/AuthContext.tsx', import.meta.url), 'utf8')
+  const login = readFileSync(new URL('../src/pages/Login.tsx', import.meta.url), 'utf8')
+  const layout = readFileSync(new URL('../src/components/Layout.tsx', import.meta.url), 'utf8')
+  assert.match(auth, /clientVersion: typeof __APP_VERSION__ === 'string' \? __APP_VERSION__ : '0\.0\.0'/)
+  assert.match(auth, /if \(payload\.server_version\) setServerVersion\(payload\.server_version\)/)
+  assert.match(login, /客户端版本 v\{clientVersion\}/)
+  assert.match(layout, /数据管理中心 · v\{clientVersion\}/)
+  assert.doesNotMatch(layout, /数据管理中心 · v\{serverVersion\}/)
+})
+
 test('登录页使用公安平台品牌文案和分层视觉素材', () => {
   const source = readFileSync(
     new URL('../src/pages/Login.tsx', import.meta.url),

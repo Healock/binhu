@@ -13,6 +13,7 @@ import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
 
 interface AuthContextValue {
   user: User | null
+  clientVersion: string
   serverVersion: string
   systemTimezone: string
   loading: boolean
@@ -27,6 +28,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
+  clientVersion: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
   serverVersion: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
   systemTimezone: 'Asia/Shanghai',
   loading: true,
@@ -41,8 +43,9 @@ const AuthContext = createContext<AuthContextValue>({
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
+  const clientVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
   const [serverVersion, setServerVersion] = useState(
-    typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
+    clientVersion,
   )
   const [systemTimezone, setSystemTimezone] = useState('Asia/Shanghai')
   const [loading, setLoading] = useState(true)
@@ -115,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
       user,
+      clientVersion,
       serverVersion,
       systemTimezone,
       loading,

@@ -4030,6 +4030,14 @@ html[data-theme='dark'] ::selection {
   font-size: 13px;
 }
 
+.login-form-card__version {
+  margin-top: 20px;
+  color: #8a99ad;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .login-form {
   display: grid;
   gap: 20px;
@@ -4234,6 +4242,10 @@ html[data-theme='dark'] .login-form-card__heading h3 {
 
 html[data-theme='dark'] .login-form-card__heading p {
   color: #8ea0b8;
+}
+
+html[data-theme='dark'] .login-form-card__version {
+  color: #7f91aa;
 }
 
 html[data-theme='dark'] .login-form__field {
