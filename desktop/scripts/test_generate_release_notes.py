@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate_release_notes import normalize_prs, summarize_body
+from validate_pr_body import validate_body
 
 
 class ReleaseNotesTests(unittest.TestCase):
@@ -35,6 +36,17 @@ class ReleaseNotesTests(unittest.TestCase):
         )
         self.assertIn("登录页面", summary)
         self.assertNotIn("https://", summary)
+
+    def test_summary_recovers_literal_newlines_from_api_body(self):
+        summary = summarize_body(
+            "## 修改范围\\n- 修复更新弹窗\\n- 生成更新日志\\n\\n## 验收建议\\n- 升级后检查弹窗"
+        )
+        self.assertEqual(summary, "修复更新弹窗 生成更新日志")
+
+    def test_pr_body_rejects_literal_newlines_and_missing_template_sections(self):
+        errors = validate_body("## 修改范围\\n- bad")
+        self.assertTrue(any("字面量" in error for error in errors))
+        self.assertTrue(any("PR 摘要" in error for error in errors))
 
 
 if __name__ == "__main__":
