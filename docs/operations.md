@@ -1,5 +1,14 @@
 # 开发与运维手册
 
+## 0.25.14 桌面客户端 CORS 与跨来源 Cookie
+
+- 生产后端明确允许 `http://tauri.localhost`、`https://tauri.localhost` 和 `binhu://app`，并允许 `X-Binhu-Device-Id` 参与预检。不得使用 `*` 扩大来源。
+- Compose 默认传入 `BINHU_SESSION_COOKIE_SECURE=true`、`BINHU_SESSION_COOKIE_SAMESITE=none`、`BINHU_MULTI_DEVICE_SESSION_ENABLED=true` 和三个桌面来源；生产 `.env` 如覆盖这些值，必须保持相同安全语义。
+- 本版不修改数据库和业务数据，发布使用 `backup_scope=none / release_scope=full`。Compose 发生变化，不能只发布后端精简包。
+- 上线后分别以三个来源对 `/api/auth/login` 发送预检：应返回 HTTP 200、对应的具体 `Access-Control-Allow-Origin`、`Access-Control-Allow-Credentials: true`，且允许 `X-Binhu-Device-Id`。
+- 登录响应的 Cookie 应包含 `HttpOnly`、`Secure`、`SameSite=None` 和 `Path=/`。最终仍需真实 Tauri 客户端验证登录、刷新、重启、退出及手机/电脑双端同时在线；自动化预检不能替代 WebView2 的实际 Cookie 行为。
+- 回退程序时恢复上一版完整发布包；若只需紧急停止桌面跨域访问，可从生产白名单移除桌面来源，但不得关闭 `Secure`、`HttpOnly` 或改用通配 CORS。
+
 ## 0.24.1 任务图预览口径
 
 - `0.24.0` 首次生产预览只统计当前无法核实任务，漏报了已经形成最终结果但仍保存历史研判的完成链；`0.24.1` 将两类合并为预计依赖链，并单列历史研判链。
@@ -704,7 +713,9 @@ docker build -f nginx/Dockerfile.certbot -t binhu-certbot:5.4.0 nginx
 
 ```dotenv
 BINHU_SESSION_COOKIE_SECURE=true
-BINHU_CORS_ALLOWED_ORIGINS=https://<公网地址>
+BINHU_SESSION_COOKIE_SAMESITE=none
+BINHU_MULTI_DEVICE_SESSION_ENABLED=true
+BINHU_CORS_ALLOWED_ORIGINS=http://tauri.localhost,https://tauri.localhost,binhu://app
 ```
 
 新建空数据库时，临时设置 `BINHU_BOOTSTRAP_ADMIN_USERNAME` 和

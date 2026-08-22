@@ -1,6 +1,6 @@
 """应用配置 - 通过环境变量读取（docker-compose 或 .env 注入）"""
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 from app_version import is_semver
@@ -135,6 +135,20 @@ class Settings(BaseSettings):
     # 暂时关闭以便灰度回退到旧的单会话行为。
     MULTI_DEVICE_SESSION_ENABLED: bool = False
     CORS_ALLOWED_ORIGINS: str = ""
+
+    @field_validator("SESSION_COOKIE_SAMESITE")
+    @classmethod
+    def validate_session_cookie_samesite(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"lax", "strict", "none"}:
+            raise ValueError("SESSION_COOKIE_SAMESITE 只允许 lax、strict 或 none")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_cross_site_cookie_security(self):
+        if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
+            raise ValueError("SameSite=None 必须同时启用 Secure Cookie")
+        return self
 
     # Fresh databases only: bootstrap one administrator without a built-in password.
     BOOTSTRAP_ADMIN_USERNAME: str = ""

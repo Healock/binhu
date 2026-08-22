@@ -1,9 +1,17 @@
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from config import settings
+import httpx
+from fastapi import FastAPI, Response
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
+
+from config import Settings, settings
 from database import ensure_bootstrap_admin
 from deps import get_session_cookie_config, require_super_admin
+from http_security import add_cors_middleware
 from routers.system import router as system_router
 
 
@@ -28,14 +36,98 @@ class SecurityFoundationTests(unittest.IsolatedAsyncioTestCase):
     def test_cookie_security_comes_from_settings(self):
         with patch("deps.settings.SESSION_COOKIE_SECURE", True), patch(
             "deps.settings.SESSION_COOKIE_SAMESITE",
-            "lax",
+            "none",
         ):
             config = get_session_cookie_config()
 
         self.assertTrue(config["secure"])
         self.assertTrue(config["httponly"])
-        self.assertEqual(config["samesite"], "lax")
+        self.assertEqual(config["samesite"], "none")
         self.assertEqual(config["path"], "/")
+
+        response = Response()
+        response.set_cookie(value="test-session", **config)
+        cookie_header = response.headers["set-cookie"].lower()
+        self.assertIn("httponly", cookie_header)
+        self.assertIn("secure", cookie_header)
+        self.assertIn("samesite=none", cookie_header)
+        self.assertIn("path=/", cookie_header)
+
+    def test_cross_site_cookie_requires_secure(self):
+        with self.assertRaisesRegex(ValueError, "SameSite=None"):
+            Settings(
+                MYSQL_PASSWORD="test",
+                ENCRYPTION_KEY="test-key",
+                OPS_AGENT_TOKEN="test-token",
+                SESSION_COOKIE_SECURE=False,
+                SESSION_COOKIE_SAMESITE="none",
+            )
+
+    async def test_desktop_client_preflight_allows_explicit_origins(self):
+        desktop_origins = [
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "binhu://app",
+        ]
+        app = FastAPI()
+        add_cors_middleware(app, desktop_origins)
+
+        @app.post("/api/auth/login")
+        async def login_probe():
+            return {"ok": True}
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://api.example.test",
+        ) as client:
+            for origin in desktop_origins:
+                response = await client.options(
+                    "/api/auth/login",
+                    headers={
+                        "Origin": origin,
+                        "Access-Control-Request-Method": "POST",
+                        "Access-Control-Request-Headers": (
+                            "content-type,x-binhu-client-platform,"
+                            "x-binhu-client-version,x-binhu-device-id"
+                        ),
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200, origin)
+                self.assertEqual(
+                    response.headers.get("access-control-allow-origin"),
+                    origin,
+                )
+                self.assertEqual(
+                    response.headers.get("access-control-allow-credentials"),
+                    "true",
+                )
+                allowed_headers = response.headers.get(
+                    "access-control-allow-headers",
+                    "",
+                ).lower()
+                self.assertIn("x-binhu-device-id", allowed_headers)
+
+    async def test_desktop_client_preflight_rejects_unknown_origin(self):
+        app = FastAPI()
+        add_cors_middleware(app, ["https://tauri.localhost"])
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://api.example.test",
+        ) as client:
+            response = await client.options(
+                "/api/auth/login",
+                headers={
+                    "Origin": "https://untrusted.example",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "x-binhu-device-id",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("access-control-allow-origin", response.headers)
 
     def test_system_routes_require_super_admin(self):
         for route in system_router.routes:
