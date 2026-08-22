@@ -111,6 +111,33 @@ jobs:
             echo "win7_full=$win7_full"; echo "win10_full=$win10_full"
             echo "previous_version=$win7_version"
           } >> "$GITHUB_OUTPUT"
+      - name: Generate release notes from merged pull requests
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          version='${{ steps.gate.outputs.version }}'
+          commit='${{ steps.gate.outputs.commit }}'
+          current_tag="v$version"
+          previous_tag="$(git tag --merged "$commit" --sort=-version:refname | awk -v current="$current_tag" '$0 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && $0 != current { print; exit }')"
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main --limit 1000 \
+            --json number,title,body,mergeCommit > "$RUNNER_TEMP/binhu-merged-prs.json"
+          python desktop/scripts/generate_release_notes.py \
+            --version "$version" --commit "$commit" --previous-tag "$previous_tag" \
+            --prs-json "$RUNNER_TEMP/binhu-merged-prs.json" \
+            --output-markdown release-notes.md \
+            --output-json release-notes.json
+          test -s release-notes.md
+          test -s release-notes.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.gate.outputs.publish == 'true'
+        with:
+          name: desktop-release-notes-${{ steps.gate.outputs.commit }}
+          path: |
+            release-notes.md
+            release-notes.json
+          if-no-files-found: error
 
   frontend:
     needs: prepare
@@ -125,6 +152,14 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: desktop-release-notes-${{ needs.prepare.outputs.commit }}
+          path: release-notes
+      - name: Include release notes in desktop frontend
+        run: |
+          mkdir -p frontend/public
+          cp release-notes/release-notes.json frontend/public/release-notes.json
       - run: npm ci
         working-directory: frontend
       - run: npm test && npm run build -- --mode desktop
@@ -221,9 +256,20 @@ jobs:
         with:
           name: desktop-baseline-${{ needs.prepare.outputs.commit }}
           path: .build/previous
+      - name: Create ASCII-only build workspace
+        shell: pwsh
+        run: |
+          $asciiRoot = Join-Path $env:RUNNER_TEMP 'binhu-build'
+          if (Test-Path -LiteralPath $asciiRoot) { Remove-Item -LiteralPath $asciiRoot -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $asciiRoot | Out-Null
+          Copy-Item -Path (Join-Path (Get-Location) '*') -Destination $asciiRoot -Recurse -Force
+          if ($asciiRoot -match '[^\u0000-\u007F]') { throw "Build root must be ASCII: $asciiRoot" }
+          "BINHU_BUILD_ROOT=$asciiRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "ASCII build root: $asciiRoot"
       - name: Install desktop dependencies and copy local frontend
         shell: pwsh
         run: |
+          Set-Location $env:BINHU_BUILD_ROOT
           $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
           npm.cmd ci --prefix desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -232,6 +278,7 @@ jobs:
         if: matrix.target == 'win7-x64'
         shell: pwsh
         run: |
+          Set-Location $env:BINHU_BUILD_ROOT
           New-Item -ItemType Directory -Force release | Out-Null
           curl.exe -L --fail --retry 3 -o release/electron-v36.0.0-win32-x64.zip $env:ELECTRON_ARCHIVE_URL
           curl.exe -L --fail --retry 3 -o release/KexSetup_Release_1_2_1_2229.exe $env:VXKEX_URL
@@ -244,6 +291,7 @@ jobs:
         env:
           PREVIOUS_FULL: ${{ matrix.target == 'win7-x64' && needs.prepare.outputs.win7_full || needs.prepare.outputs.win10_full }}
         run: |
+          Set-Location $env:BINHU_BUILD_ROOT
           if (-not $env:PREVIOUS_FULL) { throw 'Previous full package is required after 0.25.15.' }
           $destination = Join-Path .build/previous $env:PREVIOUS_FULL
           if (-not (Test-Path -LiteralPath $destination)) { throw "Baseline package is missing: $destination" }
@@ -251,6 +299,7 @@ jobs:
       - name: Build Velopack release
         shell: pwsh
         run: |
+          Set-Location $env:BINHU_BUILD_ROOT
           $previous = Get-ChildItem .build/previous -Filter '*-full.nupkg' -File -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if ('${{ matrix.target }}' -eq 'win7-x64') {
             & desktop/scripts/build-win7-velopack.ps1 -WorkspaceRoot $PWD -PreviousFullPackage $previous
@@ -262,7 +311,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-${{ matrix.target }}-${{ needs.prepare.outputs.version }}
-          path: artifacts/updates/${{ matrix.target }}
+          path: ${{ runner.temp }}/binhu-build/artifacts/updates/${{ matrix.target }}
           if-no-files-found: error
 
   publish:
@@ -279,6 +328,10 @@ jobs:
           pattern: desktop-*-x64-${{ needs.prepare.outputs.version }}
           path: release-input
           merge-multiple: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: desktop-release-notes-${{ needs.prepare.outputs.commit }}
+          path: release-notes
       - name: Normalize artifacts and create transfer bundle
         run: |
           set -Eeuo pipefail
@@ -319,9 +372,10 @@ jobs:
           test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
           gh release create "$tag" --target '${{ needs.prepare.outputs.commit }}' \
             --title "滨湖桌面客户端 ${{ needs.prepare.outputs.version }}" \
-            --notes "Win7 Electron/VxKex 与 Win10/11 Tauri 稳定频道。客户端更新源为 47.100.44.36，本 Release 仅用于审计和备用归档。签名状态：signed=false。" \
+            --notes-file release-notes/release-notes.md \
             release-input/combined/win7-x64/*-${{ needs.prepare.outputs.version }}-*.nupkg release-input/combined/win7-x64/*${{ needs.prepare.outputs.version }}*.exe \
             release-input/combined/win10-x64/*-${{ needs.prepare.outputs.version }}-*.nupkg release-input/combined/win10-x64/*${{ needs.prepare.outputs.version }}*.exe \
             release-input/win7-x64-checksums.sha256 release-input/win10-x64-checksums.sha256 \
             release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz \
-            release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256
+            release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
+            release-notes/release-notes.json

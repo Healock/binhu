@@ -21,10 +21,11 @@ function errorMessage(error) {
 }
 
 class ElectronUpdateController {
-  constructor({ currentVersion, enabled, emit, quit }) {
+  constructor({ currentVersion, enabled, emit, quit, beforeApply }) {
     this.enabled = enabled
     this.emit = emit
     this.quit = quit
+    this.beforeApply = beforeApply || (() => {})
     this.manager = null
     this.pendingUpdate = null
     this.running = null
@@ -138,6 +139,7 @@ class ElectronUpdateController {
     }
     try {
       this.setState({ state: 'applying', error: null })
+      this.beforeApply(this.state.currentVersion, this.pendingUpdate.Version || this.state.availableVersion)
       this.getManager().waitExitThenApplyUpdate(this.pendingUpdate, false, true)
       this.quit()
     } catch (error) {
