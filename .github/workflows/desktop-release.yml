@@ -176,7 +176,7 @@ jobs:
               local fallback=".build/fallback/$platform"
               local checksums="$platform-checksums.sha256"
               mkdir -p "$fallback"
-              gh release download "v$PREVIOUS_VERSION" --dir "$fallback" \
+              gh release download "v$PREVIOUS_VERSION" --repo "$GITHUB_REPOSITORY" --dir "$fallback" \
                 --pattern "$filename" --pattern "$checksums"
               grep -F " $filename" "$fallback/$checksums" > "$fallback/selected.sha256"
               test -s "$fallback/selected.sha256"
