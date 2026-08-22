@@ -17,7 +17,7 @@ import {
 } from '../utils/rememberedUsername'
 
 export default function Login() {
-  const { login } = useAuth()
+  const { login, clientVersion } = useAuth()
   const navigate = useNavigate()
   const [initialUsername] = useState(() => readRememberedUsername(window.localStorage))
   const [username, setUsername] = useState(initialUsername)
@@ -212,6 +212,9 @@ export default function Login() {
                 </Button>
               </div>
             </form>
+            <div className="login-form-card__version" aria-label={`客户端版本 v${clientVersion}`}>
+              客户端版本 v{clientVersion}
+            </div>
           </div>
         </div>
       </main>

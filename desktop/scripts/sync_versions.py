@@ -55,6 +55,9 @@ def main() -> int:
         (ROOT / "desktop/packages/desktop-contract/package.json", ("version",)),
         (ROOT / "desktop/config/desktop.config.json", ("appVersion",)),
         (ROOT / "desktop/apps/win10-tauri/src-tauri/tauri.conf.json", ("version",)),
+        (ROOT / "frontend/package.json", ("version",)),
+        (ROOT / "frontend/package-lock.json", ("version",)),
+        (ROOT / "frontend/package-lock.json", ("packages", "", "version")),
     )
     for path, fields in json_targets:
         if update_json(path, fields):
