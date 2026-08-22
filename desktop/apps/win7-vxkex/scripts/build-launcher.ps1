@@ -20,8 +20,20 @@ $vcvarsCandidates = @(
     'E:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat',
     'E:\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
 )
+$vswhere = @(
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'),
+    (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe')
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+if ($vswhere) {
+    $visualStudioRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($visualStudioRoot) {
+        $vcvarsCandidates = @(
+            (Join-Path $visualStudioRoot 'VC\Auxiliary\Build\vcvars64.bat')
+        ) + $vcvarsCandidates
+    }
+}
 $vcvars = $vcvarsCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-if (-not $vcvars) { throw 'Visual Studio 2022 C++ build tools were not found.' }
+if (-not $vcvars) { throw 'Visual Studio C++ build tools were not found.' }
 & (Join-Path $desktopRoot 'scripts\prepare-windows-sdk.ps1')
 
 $sdkBin = Join-Path $sdkRoot "base\c\bin\$sdkVersion\x64"
