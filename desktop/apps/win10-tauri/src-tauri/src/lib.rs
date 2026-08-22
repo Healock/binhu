@@ -133,7 +133,7 @@ fn initialize_upgrade_info(app: &tauri::AppHandle) {
             current_version: current,
             upgraded_from,
         };
-    }
+    };
 }
 
 fn mark_pending_upgrade(app: &tauri::AppHandle) {
@@ -476,10 +476,11 @@ async fn restart_and_apply(app: tauri::AppHandle) -> DesktopUpdateState {
 #[tauri::command]
 fn get_upgrade_info(app: tauri::AppHandle) -> DesktopUpgradeInfo {
     let managed = app.state::<UpdateRuntimeState>();
-    match managed.0.lock() {
+    let info = match managed.0.lock() {
         Ok(runtime) => runtime.upgrade_info.clone(),
         Err(poisoned) => poisoned.into_inner().upgrade_info.clone(),
-    }
+    };
+    info
 }
 
 #[tauri::command]
@@ -493,7 +494,7 @@ fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
         },
     );
     let managed = app.state::<UpdateRuntimeState>();
-    match managed.0.lock() {
+    let info = match managed.0.lock() {
         Ok(mut runtime) => {
             runtime.upgrade_info = DesktopUpgradeInfo {
                 current_version: current,
@@ -502,7 +503,8 @@ fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
             runtime.upgrade_info.clone()
         }
         Err(poisoned) => poisoned.into_inner().upgrade_info.clone(),
-    }
+    };
+    info
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
