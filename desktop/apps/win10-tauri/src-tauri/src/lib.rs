@@ -520,7 +520,7 @@ fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
 pub fn run(restarted: bool) {
     tauri::Builder::default()
         .manage(UpdateRuntimeState::default())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             initialize_upgrade_info(&handle, restarted);
             thread::spawn(move || {
