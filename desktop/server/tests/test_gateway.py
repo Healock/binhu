@@ -99,6 +99,15 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.run_publish(self.bundle("0.25.14", "b" * 40), "0.25.14", "b" * 40), 1)
         self.assertEqual(self.run_publish(self.bundle("0.25.15", "b" * 40), "0.25.15", "b" * 40), 1)
 
+    def test_exact_release_retry_is_idempotent(self):
+        data = self.bundle()
+        self.assertEqual(self.run_publish(data), 0)
+        self.assertEqual(self.run_publish(data), 0)
+        for platform in gateway.PLATFORMS:
+            state = json.loads((self.root / "state" / f"{platform}.json").read_text())
+            self.assertEqual(state["version"], "0.25.15")
+            self.assertEqual(state["commit"], "a" * 40)
+
     def test_rejects_manifest_hash_mismatch(self):
         def mutate(_source, manifest):
             manifest["platforms"]["win7-x64"]["files"][0]["sha256"] = "0" * 64

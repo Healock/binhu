@@ -245,7 +245,7 @@ def archive_old_releases(root: Path, platform: str) -> None:
         os.replace(metadata_path, version_root / "release.json")
 
 
-def publish(root: Path, bundle: Path, expected_version: str, expected_commit: str) -> None:
+def publish(root: Path, bundle: Path, expected_version: str, expected_commit: str) -> bool:
     parse_version(expected_version)
     if not COMMIT_RE.fullmatch(expected_commit):
         raise PublishError("invalid commit id")
@@ -273,6 +273,7 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
             raise PublishError("release manifest must contain both Windows platforms")
 
         validated = {}
+        already_published = True
         for platform in PLATFORMS:
             current = current_states[platform]
             if current.get("version"):
@@ -283,11 +284,17 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
                 if incoming_version == current_version:
                     if current.get("commit") != expected_commit:
                         raise PublishError(f"same version has a different commit for {platform}")
-                    raise PublishError(f"version is already published for {platform}")
+                else:
+                    already_published = False
+            else:
+                already_published = False
             entry = platforms[platform]
             if not isinstance(entry, dict) or not isinstance(entry.get("files"), list):
                 raise PublishError(f"invalid platform manifest for {platform}")
             validated[platform] = validate_platform(stage, platform, expected_version, entry["files"])
+
+        if already_published:
+            return False
 
         for platform in PLATFORMS:
             public_root = root / "public" / platform
@@ -320,6 +327,7 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
             history.parent.mkdir(parents=True, exist_ok=True)
             history.write_text(json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
             archive_old_releases(root, platform)
+    return True
 
 
 def main(argv: list[str] | None = None, stdin: BinaryIO | None = None) -> int:
@@ -347,9 +355,10 @@ def main(argv: list[str] | None = None, stdin: BinaryIO | None = None) -> int:
             if fcntl is not None:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                publish(root, bundle, version, commit)
+                published = publish(root, bundle, version, commit)
             finally:
                 bundle.unlink(missing_ok=True)
+        print(f"PUBLISH_STATUS={'published' if published else 'already-published'}")
         print(f"PUBLISHED_VERSION={version}")
         print(f"PUBLISHED_COMMIT={commit}")
         return 0

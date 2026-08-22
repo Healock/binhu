@@ -85,12 +85,17 @@ jobs:
           PY
           publish=true
           if [ -n "$win7_version" ] && [ "$version" = "$win7_version" ]; then
-            publish=false
             if [ "$win7_commit" != "$win10_commit" ]; then
               echo 'server commit state is inconsistent' >&2; exit 1
             fi
             if ! git diff --quiet "$win7_commit" HEAD -- VERSION frontend desktop; then
               echo 'frontend or desktop changed without increasing VERSION' >&2; exit 1
+            fi
+            tag="v$version"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+              git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag"
+              test "$(git rev-list -n 1 "$tag")" = "$commit"
+              publish=false
             fi
           fi
           {

@@ -269,7 +269,7 @@ async fn check_for_updates(app: tauri::AppHandle) -> DesktopUpdateState {
 
 #[tauri::command]
 async fn download_update(app: tauri::AppHandle) -> DesktopUpdateState {
-    let selection = {
+    fn select_remote_update(app: &tauri::AppHandle) -> Option<(UpdateManager, UpdateInfo)> {
         let managed = app.state::<UpdateRuntimeState>();
         let runtime = match managed.0.lock() {
             Ok(runtime) => runtime,
@@ -277,12 +277,20 @@ async fn download_update(app: tauri::AppHandle) -> DesktopUpdateState {
         };
         match (runtime.manager.clone(), runtime.pending.clone()) {
             (Some(manager), Some(PendingUpdate::Remote(update))) => Some((manager, update)),
-            (_, Some(PendingUpdate::Downloaded(_))) => return runtime.state.clone(),
             _ => None,
         }
-    };
+    }
+
+    let mut selection = select_remote_update(&app);
+    if selection.is_none() {
+        let checked = perform_update_check(app.clone()).await;
+        if checked.state == "ready" || checked.state == "error" || checked.state == "idle" {
+            return checked;
+        }
+        selection = select_remote_update(&app);
+    }
     let Some((manager, update)) = selection else {
-        return perform_update_check(app).await;
+        return current_update_state(&app);
     };
 
     update_state(&app, |runtime| {

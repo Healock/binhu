@@ -8,6 +8,7 @@
     "version:sync": "python scripts/sync_versions.py",
     "version:check": "python scripts/sync_versions.py --check",
     "validate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-architecture.ps1",
+    "test": "node --test apps/win7-electron/src/*.test.js",
     "electron:dev": "electron .",
     "electron:smoke": "electron . --smoke-test",
     "tauri:deps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-tauri-deps.ps1",

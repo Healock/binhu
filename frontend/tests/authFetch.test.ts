@@ -6,11 +6,14 @@ import {
   resetUnauthorizedRedirectForTests,
 } from '../src/api/client.ts'
 
-function installBrowserState() {
+function installBrowserState(nativeDesktop = false) {
   const values = new Map<string, string>()
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
-    value: { location: { pathname: '/users', href: '/users' } },
+    value: {
+      location: { pathname: '/users', href: '/users' },
+      ...(nativeDesktop ? { binhuDesktop: {} } : {}),
+    },
   })
   Object.defineProperty(globalThis, 'sessionStorage', {
     configurable: true,
@@ -139,4 +142,19 @@ test('authenticated writes carry the user-activity marker', async () => {
   })
 
   await fetchWithAuth('/api/users', { method: 'POST' })
+})
+
+test('native Windows clients use the managed windows platform header', async () => {
+  installBrowserState(true)
+  resetUnauthorizedRedirectForTests()
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (_input: unknown, init: RequestInit) => {
+      const headers = new Headers(init.headers)
+      assert.equal(headers.get('X-Binhu-Client-Platform'), 'windows')
+      return new Response(null, { status: 204 })
+    },
+  })
+
+  await fetchWithAuth('/api/app/bootstrap')
 })

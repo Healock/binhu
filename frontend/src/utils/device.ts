@@ -1,4 +1,5 @@
 export type ClientDeviceType = 'desktop' | 'mobile'
+export type ClientPlatform = ClientDeviceType | 'windows'
 
 const DEVICE_ID_KEY = 'binhu_device_id'
 let fallbackDeviceId: string | null = null
@@ -34,9 +35,20 @@ export function detectClientDeviceType(): ClientDeviceType {
   return 'desktop'
 }
 
+export function detectClientPlatform(): ClientPlatform {
+  if (typeof window !== 'undefined') {
+    const desktopWindow = window as Window & {
+      binhuDesktop?: unknown
+      __TAURI__?: unknown
+    }
+    if (desktopWindow.binhuDesktop || desktopWindow.__TAURI__) return 'windows'
+  }
+  return detectClientDeviceType()
+}
+
 export function getClientDeviceHeaders(): Record<string, string> {
   return {
-    'X-Binhu-Client-Platform': detectClientDeviceType(),
+    'X-Binhu-Client-Platform': detectClientPlatform(),
     'X-Binhu-Device-Id': getDeviceId(),
   }
 }

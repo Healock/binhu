@@ -70,53 +70,56 @@ class ElectronUpdateController {
     return this.running
   }
 
-  async checkForUpdates() {
-    return this.runExclusive(async () => {
-      this.setState({ state: 'checking', progress: null, error: null })
-      let mandatory = false
+  async performCheck() {
+    this.setState({ state: 'checking', progress: null, error: null })
+    let mandatory = false
+    try {
       try {
-        try {
-          const response = await fetch(POLICY_URL, { signal: AbortSignal.timeout(10_000), cache: 'no-store' })
-          if (response.ok) {
-            const policy = await response.json()
-            mandatory = compareVersions(this.state.currentVersion, policy.minimumVersion) < 0
-          }
-        } catch (_error) {
-          // Policy lookup is advisory; the normal update feed remains usable.
+        const response = await fetch(POLICY_URL, { signal: AbortSignal.timeout(10_000), cache: 'no-store' })
+        if (response.ok) {
+          const policy = await response.json()
+          mandatory = compareVersions(this.state.currentVersion, policy.minimumVersion) < 0
         }
-        const manager = this.getManager()
-        const pending = manager.getUpdatePendingRestart()
-        if (pending) {
-          this.pendingUpdate = pending
-          return this.setState({
-            state: 'ready',
-            availableVersion: pending.Version,
-            progress: 100,
-            mandatory,
-          })
-        }
-        const update = await manager.checkForUpdatesAsync()
-        this.pendingUpdate = update
-        if (!update) {
-          return this.setState({ state: 'idle', availableVersion: null, mandatory })
-        }
+      } catch (_error) {
+        // Policy lookup is advisory; the normal update feed remains usable.
+      }
+      const manager = this.getManager()
+      const pending = manager.getUpdatePendingRestart()
+      if (pending) {
+        this.pendingUpdate = pending
         return this.setState({
-          state: 'available',
-          availableVersion: update.TargetFullRelease.Version,
+          state: 'ready',
+          availableVersion: pending.Version,
+          progress: 100,
           mandatory,
         })
-      } catch (error) {
-        return this.setState({ state: 'error', mandatory, error: errorMessage(error) })
       }
-    })
+      const update = await manager.checkForUpdatesAsync()
+      this.pendingUpdate = update
+      if (!update) {
+        return this.setState({ state: 'idle', availableVersion: null, mandatory })
+      }
+      return this.setState({
+        state: 'available',
+        availableVersion: update.TargetFullRelease.Version,
+        mandatory,
+      })
+    } catch (error) {
+      return this.setState({ state: 'error', mandatory, error: errorMessage(error) })
+    }
+  }
+
+  async checkForUpdates() {
+    return this.runExclusive(() => this.performCheck())
   }
 
   async downloadUpdate() {
     return this.runExclusive(async () => {
       if (!this.pendingUpdate) {
-        await this.checkForUpdates()
+        await this.performCheck()
       }
       if (!this.pendingUpdate) return this.snapshot()
+      if (this.state.state === 'ready') return this.snapshot()
       this.setState({ state: 'downloading', progress: 0, error: null })
       try {
         await this.getManager().downloadUpdateAsync(this.pendingUpdate, progress => {
