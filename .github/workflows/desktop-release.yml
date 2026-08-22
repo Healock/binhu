@@ -218,6 +218,8 @@ jobs:
             --version '${{ needs.prepare.outputs.version }}' --commit '${{ needs.prepare.outputs.commit }}' \
             --output release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz
           sha256sum release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256
+          cp release-input/combined/win7-x64/checksums.sha256 release-input/win7-x64-checksums.sha256
+          cp release-input/combined/win10-x64/checksums.sha256 release-input/win10-x64-checksums.sha256
       - name: Publish through fixed SSH gateway
         env:
           UPDATE_KEY: ${{ secrets.BINHU_UPDATE_SSH_KEY }}
@@ -247,6 +249,8 @@ jobs:
           gh release create "$tag" --target '${{ needs.prepare.outputs.commit }}' \
             --title "滨湖桌面客户端 ${{ needs.prepare.outputs.version }}" \
             --notes "Win7 Electron/VxKex 与 Win10/11 Tauri 稳定频道。客户端更新源为 47.100.44.36，本 Release 仅用于审计和备用归档。签名状态：signed=false。" \
-            release-input/combined/win7-x64/* release-input/combined/win10-x64/* \
+            release-input/combined/win7-x64/*.nupkg release-input/combined/win7-x64/*.exe \
+            release-input/combined/win10-x64/*.nupkg release-input/combined/win10-x64/*.exe \
+            release-input/win7-x64-checksums.sha256 release-input/win10-x64-checksums.sha256 \
             release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz \
             release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256
