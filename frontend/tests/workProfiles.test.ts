@@ -119,6 +119,18 @@ test('登录错误提示与按钮使用独立间距容器', () => {
   assert.match(source, /<div className="grid gap-3 pt-1">[\s\S]*<Alert[\s\S]*<Button/)
 })
 
+test('登录页只在本地记住用户名且不持久化密码', () => {
+  const source = readFileSync(
+    new URL('../src/pages/Login.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /readRememberedUsername\(window\.localStorage\)/)
+  assert.match(source, /storeRememberedUsername\(window\.localStorage, username\)/)
+  assert.match(source, /clearRememberedUsername\(window\.localStorage\)/)
+  assert.match(source, />\s*记住账号\s*<\/Checkbox>/)
+  assert.doesNotMatch(source, /storeRememberedUsername\([^\n]*password/)
+})
+
 test('登录页使用公安平台品牌文案和分层视觉素材', () => {
   const source = readFileSync(
     new URL('../src/pages/Login.tsx', import.meta.url),

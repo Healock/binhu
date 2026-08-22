@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Alert, Button, Input } from 'antd'
+import { Alert, Button, Checkbox, Input } from 'antd'
 import {
   LockOutlined,
   UserOutlined,
@@ -10,12 +10,19 @@ import { formatUTCTime, getMaintenanceStatus, type MaintenanceStatus } from '../
 import loginBlueGrid from '../assets/login/login-blue-grid.png'
 import loginSilkCity from '../assets/login/login-silk-city.png'
 import policeEmblem from '../assets/login/police-emblem.png'
+import {
+  clearRememberedUsername,
+  readRememberedUsername,
+  storeRememberedUsername,
+} from '../utils/rememberedUsername'
 
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const [username, setUsername] = useState('')
+  const [initialUsername] = useState(() => readRememberedUsername(window.localStorage))
+  const [username, setUsername] = useState(initialUsername)
   const [password, setPassword] = useState('')
+  const [rememberUsername, setRememberUsername] = useState(Boolean(initialUsername))
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null)
@@ -50,6 +57,14 @@ export default function Login() {
       window.clearInterval(timer)
     }
   }, [])
+
+  useEffect(() => {
+    if (rememberUsername) {
+      storeRememberedUsername(window.localStorage, username)
+    } else {
+      clearRememberedUsername(window.localStorage)
+    }
+  }, [rememberUsername, username])
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -162,6 +177,13 @@ export default function Login() {
                   aria-label="密码"
                 />
               </label>
+
+              <Checkbox
+                checked={rememberUsername}
+                onChange={event => setRememberUsername(event.target.checked)}
+              >
+                记住账号
+              </Checkbox>
 
               <div className="grid gap-3 pt-1">
                 {error && <Alert type="error" showIcon message={error} />}
