@@ -38,6 +38,8 @@ jobs:
         working-directory: backend
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
+      - name: Run desktop update gateway tests
+        run: python -m unittest discover -s desktop/server/tests
       - name: Compile Python sources
         run: |
           python -m compileall -q .
@@ -66,3 +68,52 @@ jobs:
       - name: Build frontend
         run: npm run build
         working-directory: frontend
+
+  desktop:
+    name: Desktop clients
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+            desktop/apps/win10-tauri/package-lock.json
+      - name: Build local desktop frontend
+        shell: pwsh
+        run: |
+          npm.cmd ci --prefix frontend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm.cmd run build --prefix frontend -- --mode desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & desktop/scripts/build-local-frontend.ps1 -SkipBuild -FrontendDist frontend/dist
+      - name: Test and validate desktop architecture
+        shell: pwsh
+        run: |
+          $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
+          npm.cmd ci --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm.cmd test --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm.cmd run version:check --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm.cmd run validate --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check Tauri client
+        shell: pwsh
+        run: |
+          npm.cmd ci --prefix desktop/apps/win10-tauri
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm.cmd run tauri:fmt --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm.cmd run tauri:check --prefix desktop

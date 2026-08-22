@@ -3282,6 +3282,7 @@ html[data-theme='dark'] .mobile-task-hero {
   --app-surface: #ffffff;
   --app-surface-muted: #f8fafc;
   --app-surface-subtle: #f1f5f9;
+  --app-hover-bg: #f1f5f9;
   --mobile-task-footer-bg: #eef3f8;
   --mobile-task-panel-shadow: 0 3px 12px rgb(15 23 42 / 0.07);
   --mobile-task-panel-shadow-hover: 0 7px 20px rgb(15 23 42 / 0.12);
@@ -3323,6 +3324,7 @@ html[data-theme='dark'] {
   --app-surface: #101826;
   --app-surface-muted: #151f2e;
   --app-surface-subtle: #1a2638;
+  --app-hover-bg: #1a2638;
   --mobile-task-footer-bg: #0b1320;
   --mobile-task-panel-shadow: 0 3px 14px rgb(0 0 0 / 0.28);
   --mobile-task-panel-shadow-hover: 0 7px 22px rgb(0 0 0 / 0.42);
@@ -3633,6 +3635,44 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+html.desktop-shell,
+html.desktop-shell body,
+html.desktop-shell #root {
+  background: transparent;
+}
+
+html.desktop-shell,
+html.desktop-shell body,
+html.desktop-shell #root {
+  min-width: 1280px;
+  min-height: 960px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.desktop-window-shell {
+  position: relative;
+  width: 100%;
+  min-width: 1280px;
+  height: 100vh;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  background: var(--app-bg);
+  box-shadow: 0 18px 44px rgb(15 23 42 / 0.18);
+}
+
+html[data-theme='dark'] .desktop-window-shell {
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.42);
+}
+
+html[data-window-maximized='true'] .desktop-window-shell {
+  border-radius: 0;
+  box-shadow: none;
+}
+
 button,
 input,
 select,
@@ -3646,6 +3686,155 @@ button:not(:disabled) {
 
 button:disabled {
   cursor: not-allowed;
+}
+
+.desktop-titlebar {
+  position: absolute;
+  z-index: 10000;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-surface) 96%, var(--app-bg));
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.28);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.desktop-titlebar__brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding-left: 12px;
+}
+
+.desktop-titlebar__mark {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--app-primary) 24%, var(--app-border));
+  border-radius: 8px;
+  color: #fff;
+  background: var(--app-primary);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--app-primary) 24%, transparent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.desktop-titlebar__title {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-titlebar__controls {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-titlebar__button {
+  display: grid;
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font-size: 13px;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-titlebar__button:hover,
+.desktop-titlebar__button:focus-visible {
+  border-color: var(--app-border);
+  background: var(--app-hover-bg);
+  outline: none;
+}
+
+.desktop-titlebar__button--close:hover,
+.desktop-titlebar__button--close:focus-visible {
+  color: #fff;
+  border-color: #b91c1c;
+  background: #b91c1c;
+}
+
+.desktop-update-control {
+  gap: 6px;
+  color: var(--app-text-secondary);
+}
+
+.desktop-update-control--wide {
+  width: auto;
+  min-width: 34px;
+  max-width: 180px;
+  grid-auto-flow: column;
+  padding: 0 10px;
+}
+
+.desktop-update-control span {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-update-control:disabled {
+  color: var(--app-text-tertiary);
+  opacity: 1;
+}
+
+.desktop-app-content {
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding-top: 44px;
+}
+
+.desktop-app-content .app-shell {
+  height: 100%;
+  min-height: 0;
+}
+
+.desktop-app-content .app-shell > aside {
+  height: 100%;
+  min-height: 0;
+}
+
+.desktop-app-content .app-shell > main {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.desktop-app-content .app-shell > main > .app-content {
+  min-height: 100%;
+}
+
+.desktop-app-content .login-page,
+.desktop-app-content .login-brand-panel,
+.desktop-app-content .login-form-panel,
+.desktop-app-content .min-h-screen {
+  min-height: calc(100vh - 44px);
+  min-height: calc(100dvh - 44px);
 }
 
 :focus-visible {
@@ -6552,3 +6741,44 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
     top: 56px !important;
   }
 }
+.mandatory-update {
+  position: fixed;
+  inset: 42px 0 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgba(15, 23, 42, 0.56);
+  backdrop-filter: blur(5px);
+}
+
+.mandatory-update__panel {
+  width: min(460px, 100%);
+  padding: 32px;
+  border: 1px solid #d8e2ee;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.22);
+  text-align: center;
+}
+
+.mandatory-update__mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8f2fb;
+  color: #1769aa;
+  font-size: 22px;
+}
+
+.mandatory-update__panel h2 { margin: 0 0 12px; color: #172033; font-size: 22px; }
+.mandatory-update__panel p { margin: 0; color: #5d6878; line-height: 1.75; }
+.mandatory-update__error { margin-top: 16px; color: #b42318; font-size: 13px; }
+.mandatory-update__actions { display: flex; justify-content: center; gap: 12px; margin-top: 24px; }
+.mandatory-update__actions button { min-height: 38px; padding: 0 18px; border-radius: 6px; font-weight: 600; }
+.mandatory-update__secondary { border: 1px solid #cbd5e1; background: #fff; color: #344054; }
+.mandatory-update__primary { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #1769aa; background: #1769aa; color: #fff; }
+.mandatory-update__primary:disabled { cursor: wait; opacity: 0.72; }

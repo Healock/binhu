@@ -1,13 +1,16 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app_version import APP_VERSION, read_app_version
 
+REPOSITORY_VERSION = (Path(__file__).resolve().parents[2] / "VERSION").read_text(encoding="utf-8").strip()
+
 
 class AppVersionTests(unittest.TestCase):
     def test_repository_version_is_used(self):
-        self.assertEqual(APP_VERSION, "0.25.14")
+        self.assertEqual(APP_VERSION, REPOSITORY_VERSION)
 
     def test_valid_environment_version_takes_priority(self):
         with patch.dict(
@@ -18,7 +21,7 @@ class AppVersionTests(unittest.TestCase):
 
     def test_invalid_environment_version_is_ignored(self):
         with patch.dict(os.environ, {"APP_VERSION": "latest"}):
-            self.assertEqual(read_app_version(), "0.25.14")
+            self.assertEqual(read_app_version(), REPOSITORY_VERSION)
 
 
 if __name__ == "__main__":

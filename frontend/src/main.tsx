@@ -14,6 +14,18 @@ import {
 import './index.css'
 
 dayjs.locale('zh-cn')
+
+if (import.meta.env.VITE_DESKTOP_MODE === 'true') {
+  document.documentElement.classList.add('desktop-shell')
+}
+
+if (
+  import.meta.env.VITE_DESKTOP_MODE === 'true'
+  && (window.location.pathname === '/' || window.location.pathname.endsWith('/index.html'))
+) {
+  window.history.replaceState({}, '', '/login')
+}
+
 applyThemeToDocument(resolveThemeMode(
   readStoredThemeMode(window.localStorage),
   window.matchMedia(THEME_MEDIA_QUERY).matches,

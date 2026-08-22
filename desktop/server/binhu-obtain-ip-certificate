@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+IP_ADDRESS=47.100.44.36
+WEBROOT=/var/www/binhu-acme
+EMAIL=${1:-}
+CERTBOT=${BINHU_CERTBOT:-/usr/local/bin/certbot}
+
+[ "$(id -u)" -eq 0 ] || { echo 'root is required' >&2; exit 1; }
+[ -n "$EMAIL" ] || { echo 'usage: binhu-obtain-ip-certificate <acme-email>' >&2; exit 1; }
+[ -x "$CERTBOT" ] || { echo "certbot not found: $CERTBOT" >&2; exit 1; }
+
+"$CERTBOT" certonly --non-interactive --agree-tos --email "$EMAIL" \
+  --cert-name "$IP_ADDRESS" --preferred-profile shortlived \
+  --webroot --webroot-path "$WEBROOT" --ip-address "$IP_ADDRESS" \
+  --deploy-hook "nginx -t && systemctl reload nginx"
+
+test -s "/etc/letsencrypt/live/$IP_ADDRESS/fullchain.pem"
+test -s "/etc/letsencrypt/live/$IP_ADDRESS/privkey.pem"
+if [ -d /www/server/panel/vhost/nginx ]; then
+  disabled=/www/server/panel/vhost/nginx/binhu-updates.conf.disabled
+  enabled=/www/server/panel/vhost/nginx/binhu-updates.conf
+  if [ ! -e "$enabled" ]; then
+    cp "$disabled" "$enabled"
+    if ! nginx -t; then
+      rm -f "$enabled"
+      echo 'HTTPS Nginx configuration failed validation and was rolled back.' >&2
+      exit 1
+    fi
+  fi
+else
+  ln -sfn /etc/nginx/sites-available/binhu-updates /etc/nginx/sites-enabled/binhu-updates
+fi
+nginx -t
+systemctl reload nginx
+systemctl enable --now binhu-ip-cert-renew.timer
+echo "HTTPS update service enabled for $IP_ADDRESS"

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "滨湖智慧平台",
+  "version": "0.25.15",
+  "identifier": "com.bhzh.binhu.win10.x64",
+  "build": {
+    "frontendDist": "../../shell-ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "滨湖智慧平台",
+        "width": 1440,
+        "height": 960,
+        "visible": true,
+        "minWidth": 1280,
+        "minHeight": 960,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://www.h332a0a4b.nyat.app:48726; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "publisher": "滨湖新城派出所",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "template": "windows/installer.nsi"
+      }
+    }
+  }
+}

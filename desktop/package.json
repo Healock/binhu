@@ -1,0 +1,27 @@
+{
+  "name": "@binhu/desktop",
+  "version": "0.25.15",
+  "private": true,
+  "main": "apps/win7-electron/src/main.js",
+  "scripts": {
+    "frontend:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-local-frontend.ps1",
+    "version:sync": "python scripts/sync_versions.py",
+    "version:check": "python scripts/sync_versions.py --check",
+    "validate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-architecture.ps1",
+    "test": "node --test apps/win7-electron/src/*.test.js",
+    "electron:dev": "electron .",
+    "electron:smoke": "electron . --smoke-test",
+    "tauri:deps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-tauri-deps.ps1",
+    "tauri:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 -Action Check",
+    "tauri:fmt": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 -Action FmtCheck",
+    "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 -Action Build",
+    "release:win7": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win7-velopack.ps1",
+    "release:win10": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win10-velopack.ps1"
+  },
+  "dependencies": {
+    "velopack": "1.2.110-ge826545"
+  },
+  "devDependencies": {
+    "electron": "36.0.0"
+  }
+}

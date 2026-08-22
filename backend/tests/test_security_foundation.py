@@ -33,6 +33,18 @@ class SecurityFoundationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 _ = settings.cors_allowed_origins
 
+    def test_cors_accepts_explicit_desktop_origins(self):
+        origins = "http://tauri.localhost,https://tauri.localhost,binhu://app"
+        with patch.object(settings, "CORS_ALLOWED_ORIGINS", origins):
+            self.assertEqual(
+                settings.cors_allowed_origins,
+                [
+                    "http://tauri.localhost",
+                    "https://tauri.localhost",
+                    "binhu://app",
+                ],
+            )
+
     def test_cookie_security_comes_from_settings(self):
         with patch("deps.settings.SESSION_COOKIE_SECURE", True), patch(
             "deps.settings.SESSION_COOKIE_SAMESITE",

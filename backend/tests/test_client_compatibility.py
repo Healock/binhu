@@ -10,6 +10,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import Settings, settings
+from app_version import APP_VERSION
 from routers.app_bootstrap import get_app_bootstrap
 from services.client_compatibility import (
     ClientCompatibilityMiddleware,
@@ -182,7 +183,7 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 conn=FakeConnection(),
             )
 
-        self.assertEqual(payload["server_version"], "0.25.14")
+        self.assertEqual(payload["server_version"], APP_VERSION)
         self.assertEqual(payload["business_date"], "2026-08-11")
         self.assertEqual(payload["timezone"], "Asia/Shanghai")
         self.assertTrue(payload["must_upgrade"])

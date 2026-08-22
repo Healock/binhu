@@ -11,8 +11,11 @@ import type {
 } from '../types'
 import { getClientDeviceHeaders } from '../utils/device.ts'
 
+const configuredApiBaseUrl = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const apiBaseUrl = configuredApiBaseUrl || '/api'
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: apiBaseUrl,
   timeout: 30000,
   withCredentials: true,
 })
@@ -69,6 +72,13 @@ export function resetUnauthorizedRedirectForTests(): void {
 export interface AuthFetchOptions {
   handleUnauthorized?: boolean
   markActivity?: boolean
+}
+
+function resolveApiRequest(input: RequestInfo | URL): RequestInfo | URL {
+  if (!configuredApiBaseUrl || input instanceof URL) return input
+  if (typeof input !== 'string' || /^https?:\/\//i.test(input)) return input
+  if (input.startsWith('/api')) return `${configuredApiBaseUrl}${input.slice(4)}`
+  return `${configuredApiBaseUrl}${input.startsWith('/') ? input : `/${input}`}`
 }
 
 export function handleUnauthorized(detail?: unknown): void {
@@ -131,7 +141,7 @@ export async function fetchWithAuth(
   ) {
     headers.set('X-User-Activity', '1')
   }
-  const response = await fetch(input, {
+  const response = await fetch(resolveApiRequest(input), {
     ...init,
     credentials: init.credentials || 'include',
     headers,
