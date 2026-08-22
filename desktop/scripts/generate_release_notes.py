@@ -22,6 +22,19 @@ SENSITIVE_RE = re.compile(
 URL_RE = re.compile(r"https?://[^\s)]+")
 
 
+def _normalize_body_newlines(value: str) -> str:
+    """Recover line breaks accidentally submitted as literal backslash escapes.
+
+    GitHub's API normally gives us real newlines, but callers that pass a JSON
+    encoded body twice can store ``\\n`` literally.  Normalize only when the
+    body contains no meaningful line breaks, so an intentional ``\\n`` inside
+    a code sample is not rewritten.
+    """
+    if "\\n" not in value or "\n" in value.strip():
+        return value
+    return value.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def _strip_markdown_links(value: str) -> str:
     """Keep link labels while removing destinations from release summaries."""
     return re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", value)
@@ -38,6 +51,7 @@ def _safe_text(value: str, limit: int) -> str:
 
 
 def summarize_body(body: str) -> str:
+    body = _normalize_body_newlines(body)
     lines = body.splitlines()
     selected: list[str] = []
     in_section = False

@@ -34,6 +34,7 @@ struct DesktopUpdateState {
 struct DesktopUpgradeInfo {
     current_version: String,
     upgraded_from: Option<String>,
+    upgrade_detected: bool,
 }
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
@@ -79,6 +80,7 @@ impl Default for UpdateRuntimeState {
             upgrade_info: DesktopUpgradeInfo {
                 current_version: env!("CARGO_PKG_VERSION").into(),
                 upgraded_from: None,
+                upgrade_detected: false,
             },
         }))
     }
@@ -113,18 +115,23 @@ fn read_upgrade_state(app: &tauri::AppHandle) -> UpgradeStateFile {
         .unwrap_or_default()
 }
 
-fn initialize_upgrade_info(app: &tauri::AppHandle) {
+fn initialize_upgrade_info(app: &tauri::AppHandle, restarted: bool) {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let state = read_upgrade_state(app);
+    let restarted_marker =
+        restarted || state.pending_from.as_deref() == Some("__velopack_restarted__");
     let upgraded_from = state
         .pending_from
-        .filter(|value| value != &current)
+        .filter(|value| value != &current && value != "__velopack_restarted__")
         .or_else(|| state.last_started_version.filter(|value| value != &current));
+    let upgrade_detected = upgraded_from.is_some() || restarted_marker;
     write_upgrade_state(
         app,
         &UpgradeStateFile {
             last_started_version: Some(current.clone()),
-            pending_from: upgraded_from.clone(),
+            pending_from: upgraded_from
+                .clone()
+                .or_else(|| restarted_marker.then(|| "__velopack_restarted__".to_string())),
         },
     );
     let managed = app.state::<UpdateRuntimeState>();
@@ -132,6 +139,7 @@ fn initialize_upgrade_info(app: &tauri::AppHandle) {
         runtime.upgrade_info = DesktopUpgradeInfo {
             current_version: current,
             upgraded_from,
+            upgrade_detected,
         };
     };
 }
@@ -499,6 +507,7 @@ fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
             runtime.upgrade_info = DesktopUpgradeInfo {
                 current_version: current,
                 upgraded_from: None,
+                upgrade_detected: false,
             };
             runtime.upgrade_info.clone()
         }
@@ -508,12 +517,12 @@ fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(restarted: bool) {
     tauri::Builder::default()
         .manage(UpdateRuntimeState::default())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
-            initialize_upgrade_info(&handle);
+            initialize_upgrade_info(&handle, restarted);
             thread::spawn(move || {
                 thread::sleep(INITIAL_CHECK_DELAY);
                 loop {

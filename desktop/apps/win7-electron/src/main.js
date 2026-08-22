@@ -1,5 +1,9 @@
 const { VelopackApp } = require('velopack')
-VelopackApp.build().setAutoApplyOnStartup(false).run()
+let velopackRestarted = false
+VelopackApp.build()
+  .setAutoApplyOnStartup(false)
+  .onRestarted(() => { velopackRestarted = true })
+  .run()
 
 const path = require('node:path')
 const fs = require('node:fs')
@@ -28,11 +32,13 @@ function loadUpgradeInfo() {
   }
   const previousVersion = typeof state.lastStartedVersion === 'string' ? state.lastStartedVersion : null
   const pendingFrom = typeof state.pendingFrom === 'string' ? state.pendingFrom : null
+  const restartedMarker = velopackRestarted || pendingFrom === '__velopack_restarted__'
   const upgradedFrom = pendingFrom && pendingFrom !== currentVersion
+    && pendingFrom !== '__velopack_restarted__'
     ? pendingFrom
     : (!pendingFrom && previousVersion && previousVersion !== currentVersion ? previousVersion : null)
-  upgradeInfo = { currentVersion, upgradedFrom }
-  writeUpgradeState({ lastStartedVersion: currentVersion, pendingFrom: upgradedFrom || pendingFrom || null })
+  upgradeInfo = { currentVersion, upgradedFrom, upgradeDetected: Boolean(upgradedFrom || restartedMarker) }
+  writeUpgradeState({ lastStartedVersion: currentVersion, pendingFrom: upgradedFrom || (restartedMarker ? '__velopack_restarted__' : null) })
 }
 
 function writeUpgradeState(state) {
@@ -49,7 +55,7 @@ function writeUpgradeState(state) {
 
 function acknowledgeUpgrade() {
   if (!upgradeInfo) return
-  upgradeInfo = { ...upgradeInfo, upgradedFrom: null }
+  upgradeInfo = { ...upgradeInfo, upgradedFrom: null, upgradeDetected: false }
   writeUpgradeState({ lastStartedVersion: config.appVersion, pendingFrom: null })
 }
 
