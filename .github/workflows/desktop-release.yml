@@ -182,14 +182,39 @@ jobs:
           if (-not $env:PREVIOUS_FULL) { throw 'Previous full package is required after 0.25.15.' }
           New-Item -ItemType Directory -Force .build/previous | Out-Null
           $destination = Join-Path .build/previous $env:PREVIOUS_FULL
-          # The update gateway serves large packages over a long-lived HTTPS
-          # connection.  A transient TLS close (curl 56 / missing
-          # close_notify) must resume the partial file instead of failing the
-          # whole release.  Keep HTTP/1.1 for the gateway and retry all
-          # transient errors; --continue-at is safe because the gateway
-          # advertises byte ranges and the final hash is checked by Velopack.
-          curl.exe --http1.1 -L --fail --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 600 --continue-at - -o $destination "https://$env:BINHU_UPDATE_HOST/updates/${{ matrix.target }}/$env:PREVIOUS_FULL"
+          # The update gateway may close a long-lived TLS GET from a hosted
+          # runner before sending the first byte.  Download the baseline in
+          # bounded HTTP Range requests instead.  Each chunk is independently
+          # retried and size-checked, then appended to the destination; the
+          # gateway advertises byte ranges and Velopack validates the package
+          # contents before producing a delta.
+          $url = "https://$env:BINHU_UPDATE_HOST/updates/${{ matrix.target }}/$env:PREVIOUS_FULL"
+          $headerFile = Join-Path .build/previous "$env:PREVIOUS_FULL.headers"
+          curl.exe --http1.1 -sSIL --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 120 -D $headerFile -o NUL $url
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $lengthMatch = Select-String -Path $headerFile -Pattern '^Content-Length:\s*(\d+)' | Select-Object -Last 1
+          if (-not $lengthMatch) { throw 'Previous full package length is missing.' }
+          $totalBytes = [int64]$lengthMatch.Matches[0].Groups[1].Value
+          if ($totalBytes -le 0) { throw 'Previous full package length is invalid.' }
+          if (Test-Path $destination) { Remove-Item -Force $destination }
+          $chunkBytes = 8MB
+          for ($start = [int64]0; $start -lt $totalBytes; $start += $chunkBytes) {
+            $end = [Math]::Min($totalBytes - 1, $start + $chunkBytes - 1)
+            $chunk = "$destination.$start.part"
+            $range = "$start-$end"
+            curl.exe --http1.1 -L --fail --retry 8 --retry-all-errors --retry-delay 2 --retry-max-time 300 --range $range -o $chunk $url
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $expected = $end - $start + 1
+            $actual = (Get-Item $chunk).Length
+            if ($actual -ne $expected) { throw "Range $range returned $actual bytes; expected $expected." }
+            $out = [IO.File]::Open($destination, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try {
+              $input = [IO.File]::OpenRead($chunk)
+              try { $input.CopyTo($out) } finally { $input.Dispose() }
+            } finally { $out.Dispose() }
+            Remove-Item -Force $chunk
+          }
+          if ((Get-Item $destination).Length -ne $totalBytes) { throw 'Previous full package size mismatch after assembly.' }
       - name: Build Velopack release
         shell: pwsh
         run: |
