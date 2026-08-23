@@ -682,7 +682,7 @@ export default function RegistryManagement() {
   } : false
 
   return (
-    <div className="space-y-4">
+    <div className="registry-management-layout">
       <PageHeader title="辖区档案" description="长期维护辖区房屋、房东、业主、中介和租房平台关系；业务数据只进入待审核变更。" />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
@@ -835,7 +835,7 @@ export default function RegistryManagement() {
       </Modal>
 
       <Drawer open={detailOpen} onClose={() => setDetailOpen(false)} width="min(94vw, 760px)" title={detail?.normalized_address || detail?.name || '档案详情'}>
-        {!detail ? <div className="py-16 text-center text-[var(--app-text-secondary)]">正在读取…</div> : <div className="space-y-5">
+        {!detail ? <div className="py-16 text-center text-[var(--app-text-secondary)]">正在读取…</div> : <div className="registry-detail">
           {canManage && detailKind === 'property' && <Space wrap>
             <Button onClick={() => openEdit('property', detail)}>编辑房屋</Button>
             <Button icon={<PlusOutlined />} onClick={() => { setSelected(detail); form.resetFields(); setModal('alias') }}>添加地址别名</Button>

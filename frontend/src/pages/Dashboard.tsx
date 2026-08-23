@@ -512,7 +512,7 @@ export default function Dashboard() {
                 scroll={{ x: 1030 }}
               />
             </div>
-            <div className="space-y-3 md:hidden">
+            <div className="dashboard-mobile-detail-list md:hidden">
               {detailRows.map(item => {
                 const state = OVERVIEW_STATE_LABELS[item.state] || { text: item.state || '未知', color: 'default' }
                 return (
@@ -660,7 +660,7 @@ export default function Dashboard() {
         </section>
       ) : (
         <>
-          <div className="space-y-3 md:hidden">
+          <div className="dashboard-mobile-report-list md:hidden">
             <Segmented
               block
               value={mobileReportSection}

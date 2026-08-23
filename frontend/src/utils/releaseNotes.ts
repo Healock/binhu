@@ -4,11 +4,18 @@ export interface ReleaseNotePullRequest {
   summary: string
 }
 
+export interface ReleaseNoteSection {
+  title: string
+  items: string[]
+  pullRequests?: number[]
+}
+
 export interface ReleaseNotes {
   schemaVersion?: number
   version: string
   previousVersion: string | null
   pullRequests: ReleaseNotePullRequest[]
+  sections?: ReleaseNoteSection[]
   commit?: string
 }
 
@@ -20,6 +27,16 @@ function isPullRequest(value: unknown): value is ReleaseNotePullRequest {
     && typeof item.summary === 'string'
 }
 
+function isSection(value: unknown): value is ReleaseNoteSection {
+  if (!value || typeof value !== 'object') return false
+  const section = value as Record<string, unknown>
+  return typeof section.title === 'string'
+    && Array.isArray(section.items)
+    && section.items.every(item => typeof item === 'string')
+    && (section.pullRequests === undefined
+      || (Array.isArray(section.pullRequests) && section.pullRequests.every(item => Number.isInteger(item))))
+}
+
 export function isReleaseNotes(value: unknown): value is ReleaseNotes {
   if (!value || typeof value !== 'object') return false
   const notes = value as Record<string, unknown>
@@ -27,6 +44,7 @@ export function isReleaseNotes(value: unknown): value is ReleaseNotes {
     && (notes.previousVersion === null || typeof notes.previousVersion === 'string')
     && Array.isArray(notes.pullRequests)
     && notes.pullRequests.every(isPullRequest)
+    && (notes.sections === undefined || (Array.isArray(notes.sections) && notes.sections.every(isSection)))
 }
 
 export function releaseNotesCandidates(locationHref?: string): string[] {

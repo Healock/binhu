@@ -239,7 +239,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       description="已处理文件预览后可自动发布正常数据；手机号缺失等异常记录会留在“未下发数据研判”"
       padded={false}
     >
-      <div className="space-y-5 p-5">
+      <div className="police-dispatch-panel__content">
         {!enabled && (
           <Alert type="info" showIcon message="当前账号没有数据下发权限" />
         )}
@@ -319,7 +319,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
         </div>
 
         {cleanPreview && (
-          <div className="space-y-3">
+          <div className="police-dispatch-panel__preview">
             <div className="flex flex-wrap gap-2">
               {cleanPreview.community_distribution.map(item => (
                 <Tag key={item.community_id} color="blue">{item.community_name} {item.count} 条</Tag>

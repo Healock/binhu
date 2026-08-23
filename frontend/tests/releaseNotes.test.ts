@@ -13,6 +13,18 @@ const validNotes = {
   pullRequests: [{ number: 343, title: '修复更新日志读取', summary: '修复桌面端本地资源读取。' }],
 }
 
+const sectionedNotes = {
+  schemaVersion: 2,
+  version: '0.25.21',
+  previousVersion: '0.25.20',
+  pullRequests: validNotes.pullRequests,
+  sections: [{
+    title: '任务编辑与照片回写可靠性',
+    items: ['修复批量编辑。'],
+    pullRequests: [343],
+  }],
+}
+
 test('release notes use the current local protocol before generic fallbacks', () => {
   assert.deepEqual(releaseNotesCandidates('binhu://app/login').slice(0, 2), [
     'binhu://app/release-notes.json',
@@ -59,4 +71,9 @@ test('invalid or stale release notes are ignored', async () => {
     'https://example.test/login',
   )
   assert.equal(notes, null)
+})
+
+test('sectioned release notes are accepted for curated user-facing changelogs', () => {
+  assert.equal(isReleaseNotes(sectionedNotes), true)
+  assert.equal(isReleaseNotes({ ...sectionedNotes, sections: [{ title: '坏数据', items: [1] }] }), false)
 })

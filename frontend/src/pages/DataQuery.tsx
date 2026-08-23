@@ -773,7 +773,7 @@ export default function DataQuery() {
         </div>
       </div>
 
-      <div className="space-y-3 md:hidden">
+      <div className="data-query-mobile-list md:hidden">
         {loading ? <div className="app-card p-10 text-center"><Spin /></div> : rows.length === 0 ? (
           <div className="app-card p-8"><Empty description={error || '没有找到符合条件的数据'} /></div>
         ) : rows.slice(
@@ -888,7 +888,7 @@ export default function DataQuery() {
         ) : null}
       >
         {drawerLoading ? <div className="py-16 text-center"><Spin /></div> : (
-          <div className="space-y-4">
+          <div className="query-drawer-content">
             {drawerSources.length > 1 && (
               <Select
                 className="w-full"

@@ -53,6 +53,13 @@
   backdrop-filter: blur(10px);
 }
 
+/* The desktop clients use a frameless, 44px custom title bar. Keep the
+ * presence control below that chrome instead of letting the title bar cover
+ * its hit target. Browser and mobile layouts retain the compact top offset. */
+html.desktop-shell .online-presence-indicator {
+  top: 54px;
+}
+
 .online-presence-indicator.is-clickable {
   cursor: pointer;
 }
@@ -2697,6 +2704,68 @@
   min-width: 0;
 }
 
+.registry-management-layout,
+.operations-log-layout {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+/*
+ * Detail drawers contain Ant Design descriptions, bordered Panels and
+ * tables. Keep their separation on a named parent grid instead of relying
+ * on Tailwind's margin-based `space-y-*`, which can be normalized away by
+ * component styles and leave two bordered blocks touching.
+ */
+.registry-detail,
+.query-drawer-content,
+.operations-center-layout {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.operations-log-layout {
+  gap: 12px;
+}
+
+.registry-detail > *,
+.query-drawer-content > *,
+.operations-center-layout > * {
+  min-width: 0;
+}
+
+.registry-detail > .ant-descriptions,
+.registry-detail > .app-card,
+.registry-detail > .registry-certificate-summary {
+  margin: 0;
+}
+
+.police-dispatch-panel__content {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  padding: 20px;
+}
+
+.police-dispatch-panel__preview {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Mobile card collections are real bordered blocks; use parent `gap` so
+ * Ant Design Card/Table margins cannot collapse or leave cards touching. */
+.dashboard-mobile-detail-list,
+.dashboard-mobile-report-list,
+.data-query-mobile-list,
+.work-log-drafts__mobile-list,
+.mobile-report-table__layout {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .registry-import-result {
   display: grid;
   gap: 16px;
@@ -2942,6 +3011,34 @@
 
   .registry-management__content {
     gap: 12px;
+  }
+
+  .registry-management-layout,
+  .operations-log-layout {
+    gap: 12px;
+  }
+
+  .registry-detail,
+  .query-drawer-content,
+  .operations-center-layout {
+    gap: 12px;
+  }
+
+  .police-dispatch-panel__content {
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .police-dispatch-panel__preview {
+    gap: 10px;
+  }
+
+  .dashboard-mobile-detail-list,
+  .dashboard-mobile-report-list,
+  .data-query-mobile-list,
+  .work-log-drafts__mobile-list,
+  .mobile-report-table__layout {
+    gap: 10px;
   }
 
   .registry-issue-evidence__item {
@@ -6864,8 +6961,14 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
 .version-updated__versions { margin: -6px 0 2px; color: var(--app-text-secondary); font-size: 13px; }
 .version-updated__versions span { padding: 0 8px; color: var(--app-primary); }
 .version-updated__notes { display: grid; gap: 10px; }
+.version-updated__sections { display: grid; gap: 9px; max-height: min(48vh, 430px); overflow: auto; padding-right: 3px; }
+.version-updated__section { padding: 11px 13px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-bg); }
+.version-updated__section h4 { margin: 0 0 7px; color: var(--app-text); font-size: 14px; line-height: 1.45; }
+.version-updated__section ul { display: grid; gap: 5px; margin: 0; padding: 0 0 0 18px; list-style: disc; }
+.version-updated__section li { display: list-item; padding: 0; border: 0; background: transparent; color: var(--app-text-secondary); font-size: 13px; line-height: 1.6; }
 .version-updated__notes ul { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .version-updated__notes li { display: grid; gap: 3px; padding: 11px 13px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-bg); }
+.version-updated__notes .version-updated__section li { display: list-item; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .version-updated__notes li strong { font-size: 13px; line-height: 1.45; }
 .version-updated__notes li span,
 .version-updated__empty { color: var(--app-text-secondary); font-size: 13px; line-height: 1.6; }

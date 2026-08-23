@@ -155,7 +155,7 @@ export default function MobileReportTable({
   }))
 
   return (
-    <div className="space-y-3">
+    <div className="mobile-report-table__layout">
       <section className="app-card app-card--padded space-y-3">
         <Segmented
           block
