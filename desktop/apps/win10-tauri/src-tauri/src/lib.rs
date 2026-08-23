@@ -15,7 +15,6 @@ use velopack::{
 const DESKTOP_CONFIG: &str = include_str!("../../../../config/desktop.config.json");
 const UPDATE_URL: &str = "https://47.100.44.36/updates/win10-x64/";
 const POLICY_URL: &str = "https://47.100.44.36/updates/win10-x64/policy.stable.json";
-const INITIAL_CHECK_DELAY: Duration = Duration::from_secs(15);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Serialize)]
@@ -523,12 +522,9 @@ pub fn run(restarted: bool) {
         .setup(move |app| {
             let handle = app.handle().clone();
             initialize_upgrade_info(&handle, restarted);
-            thread::spawn(move || {
-                thread::sleep(INITIAL_CHECK_DELAY);
-                loop {
-                    tauri::async_runtime::block_on(perform_update_check(handle.clone()));
-                    thread::sleep(CHECK_INTERVAL);
-                }
+            thread::spawn(move || loop {
+                tauri::async_runtime::block_on(perform_update_check(handle.clone()));
+                thread::sleep(CHECK_INTERVAL);
             });
             Ok(())
         })

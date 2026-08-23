@@ -85,14 +85,14 @@ if ($win10.packageId -ne 'com.bhzh.binhu.win10.x64' -or $win10.runtimeId -ne 'wi
 }
 $electronUpdater = Get-Content (Join-Path $root 'apps\win7-electron\src\updater.js') -Raw
 if ($electronUpdater -notmatch [regex]::Escape($win7.updateUrl) -or
-    $electronUpdater -notmatch 'INITIAL_CHECK_DELAY_MS\s*=\s*15_000' -or
+    $electronUpdater -notmatch [regex]::Escape('setTimeout(() => { void this.checkForUpdates() }, 0)') -or
     $electronUpdater -notmatch 'CHECK_INTERVAL_MS\s*=\s*6\s*\*\s*60\s*\*\s*60') {
-    throw 'Electron update source or schedule is invalid.'
+    throw 'Electron update source or startup-immediate schedule is invalid.'
 }
 if ($tauriShell -notmatch [regex]::Escape($win10.updateUrl) -or
-    $tauriShell -notmatch 'Duration::from_secs\(15\)' -or
+    $tauriShell -match 'INITIAL_CHECK_DELAY' -or
     $tauriShell -notmatch 'Duration::from_secs\(6\s*\*\s*60\s*\*\s*60\)') {
-    throw 'Tauri update source or schedule is invalid.'
+    throw 'Tauri update source or startup-immediate schedule is invalid.'
 }
 $preload = Get-Content (Join-Path $root 'apps\win7-electron\src\preload.js') -Raw
 $bridge = Get-Content (Join-Path $repoRoot 'frontend\src\desktop\bridge.ts') -Raw

@@ -1,7 +1,6 @@
 const { HttpSource, UpdateManager } = require('velopack')
 
 const UPDATE_URL = 'https://47.100.44.36/updates/win7-x64/'
-const INITIAL_CHECK_DELAY_MS = 15_000
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000
 const POLICY_URL = `${UPDATE_URL}policy.stable.json`
 
@@ -150,7 +149,8 @@ class ElectronUpdateController {
 
   schedule() {
     if (!this.enabled) return
-    const first = setTimeout(() => { void this.checkForUpdates() }, INITIAL_CHECK_DELAY_MS)
+    // 启动后立即检查一次；设置页只复用当前状态，不会额外触发启动检查。
+    const first = setTimeout(() => { void this.checkForUpdates() }, 0)
     const recurring = setInterval(() => { void this.checkForUpdates() }, CHECK_INTERVAL_MS)
     first.unref()
     recurring.unref()
