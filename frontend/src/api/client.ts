@@ -65,6 +65,45 @@ export interface AuthSessionItem {
   current: boolean
 }
 
+export type AdminTaskQueueState =
+  | 'queued'
+  | 'running'
+  | 'retrying'
+  | 'success'
+  | 'warning'
+  | 'failed'
+  | 'paused'
+  | 'cancelled'
+
+export interface AdminTaskQueueItem {
+  id: string
+  source: string
+  category: string
+  title: string
+  state: AdminTaskQueueState
+  phase: string
+  current: number | null
+  total: number | null
+  progress: number | null
+  message: string
+  active: boolean
+  created_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  updated_at: string | null
+}
+
+export interface AdminTaskQueueResponse {
+  server_time: string
+  refresh_after_seconds: number
+  active_count: number
+  queued_count: number
+  running_count: number
+  attention_count: number
+  items: AdminTaskQueueItem[]
+  unavailable_sources: string[]
+}
+
 export function resetUnauthorizedRedirectForTests(): void {
   unauthorizedRedirectStarted = false
 }
@@ -198,6 +237,11 @@ export async function getCurrentUser(): Promise<User> {
 export async function getAuthSessions(): Promise<AuthSessionItem[]> {
   const { data } = await api.get('/auth/sessions')
   return data.sessions || []
+}
+
+export async function getAdminTaskQueue(): Promise<AdminTaskQueueResponse> {
+  const { data } = await api.get('/admin/task-queue', passiveRequest)
+  return data
 }
 
 export async function revokeAuthSession(managementId: string): Promise<void> {

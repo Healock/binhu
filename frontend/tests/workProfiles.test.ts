@@ -140,7 +140,8 @@ test('客户端版本来自本地构建且登录页和侧栏显示同一版本',
   assert.match(auth, /clientVersion: typeof __APP_VERSION__ === 'string' \? __APP_VERSION__ : '0\.0\.0'/)
   assert.match(auth, /if \(payload\.server_version\) setServerVersion\(payload\.server_version\)/)
   assert.match(login, /客户端版本 v\{clientVersion\}/)
-  assert.match(layout, /数据管理中心 · v\{clientVersion\}/)
+  assert.match(layout, />v\{clientVersion\}<\/div>/)
+  assert.doesNotMatch(layout, /数据管理中心 · v\{clientVersion\}/)
   assert.doesNotMatch(layout, /数据管理中心 · v\{serverVersion\}/)
 })
 
