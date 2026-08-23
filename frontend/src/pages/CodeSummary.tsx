@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, DatePicker, Empty, Input, Select, Spin, Table, Tabs, Tag, message } from 'antd'
+import AppTable from '../components/AppTable'
 import dayjs, { type Dayjs } from 'dayjs'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
@@ -365,7 +366,7 @@ export default function CodeSummary() {
               <Select value={locationStatus} onChange={value => { setLocationStatus(value); setLocationPage(1) }} options={[{ value: 'unclassified', label: '仅未分类' }, { value: 'classified', label: '已分类' }, { value: 'all', label: '全部位置' }]} />
             </div>
             <Spin spinning={locationLoading}>
-              <Table size="small" rowKey="location_key" columns={locationColumns as any} dataSource={locationReport?.data || []} pagination={{ current: locationPage, pageSize: 20, total: locationReport?.total || 0, showSizeChanger: false, onChange: page => setLocationPage(page) }} scroll={{ x: 650 }} />
+              <AppTable size="small" rowKey="location_key" columns={locationColumns as any} dataSource={locationReport?.data || []} pagination={{ current: locationPage, pageSize: 20, total: locationReport?.total || 0, showSizeChanger: false, onChange: page => setLocationPage(page) }} scroll={{ x: 650 }} />
             </Spin>
             {!canManageLocations && <div className="mt-2 text-xs text-slate-500">当前账号只有查看权限；管理员可在此维护位置分类。</div>}
           </Panel>
@@ -375,7 +376,7 @@ export default function CodeSummary() {
         <Tabs activeKey={source} items={SOURCE_OPTIONS.map(item => ({ key: item.value, label: item.label }))} onChange={value => setSource(value as CodeSummarySource)} />
         {source === 'peace' && <Alert className="mb-3" type="info" showIcon message="新增登记数按全链条创建时间和核查结果实时统计；当天数据可能随核查进度变化。" />}
         <Spin spinning={loading}>
-          {rows.length ? <Table
+          {rows.length ? <AppTable
             rowKey={row => `${source}-${row.business_date}-${row.version || 'total'}`}
             columns={tableColumns as any}
             dataSource={rows}

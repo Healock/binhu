@@ -12,7 +12,7 @@ authentication, business data and update files.
 - `apps/shell-ui`: generated local React assets shared by both targets.
 - `config/desktop.config.json`: package IDs, API endpoint and fixed update URLs.
 
-Both clients use a frameless `1280x960` minimum window, local `/login` and
+Both clients use a frameless `1024x640` minimum window, local `/login` and
 `/offline` routes, and the same credentialed API at
 `https://www.h332a0a4b.nyat.app:48726/api`. No remote frontend, `file://` URL,
 iframe, browser extension or local HTTP gateway is used.

@@ -6,6 +6,7 @@ import {
 import type { TableColumnsType } from 'antd'
 import { FileImageOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
+import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -456,15 +457,15 @@ export default function RegistryManagement() {
     await load()
   }
 
-  const propertyColumns: TableColumnsType<RegistryProperty> = [
-    { title: '社区', dataIndex: 'community_name', width: 130 },
-    { title: '标准详细地址', width: 360, ellipsis: true, render: (_, row) => row.natural_address || row.normalized_address },
-    { title: '户号', dataIndex: 'source_house_no', width: 150, ellipsis: true, render: value => value || '-' },
-    { title: '住房类型', dataIndex: 'housing_type', width: 120, render: value => value
+  const propertyColumns: ResponsiveColumns<RegistryProperty> = [
+    { title: '社区', dataIndex: 'community_name', width: 130, responsivePriority: 'always' },
+    { title: '标准详细地址', width: 360, ellipsis: true, responsivePriority: 'always', render: (_, row) => row.natural_address || row.normalized_address },
+    { title: '户号', dataIndex: 'source_house_no', width: 150, ellipsis: true, responsivePriority: 'standard', render: value => value || '-' },
+    { title: '住房类型', dataIndex: 'housing_type', width: 120, responsivePriority: 'standard', render: value => value
       ? <Tag color={['个人出租', '单位出租'].includes(value) ? 'blue' : value === '自购房屋' ? 'green' : 'default'}>{value}</Tag>
       : <Tag color="warning">未标注</Tag> },
-    { title: '居住处所', dataIndex: 'residence_type', width: 120, render: value => value || '-' },
-    { title: '责任书', key: 'certificate_status', width: 220, render: (_, row) => (
+    { title: '居住处所', dataIndex: 'residence_type', width: 120, responsivePriority: 'wide', render: value => value || '-' },
+    { title: '责任书', key: 'certificate_status', width: 220, responsivePriority: 'standard', render: (_, row) => (
       <div className="registry-certificate-cell">
         <Tag color={certificateStatusColors[row.certificate_status || 'not_uploaded']}>
           {row.certificate_status_label || '未上传告知书'}
@@ -474,8 +475,8 @@ export default function RegistryManagement() {
         )}
       </div>
     ) },
-    { title: '状态', dataIndex: 'status', width: 90, render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag> },
-    { title: '版本', dataIndex: 'version', width: 80 },
+    { title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always', render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag> },
+    { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
     { title: '操作', key: 'actions', width: 210, render: (_, row) => <Space>
       <Button size="small" onClick={() => openDetail('property', row)}>详情</Button>
       {canManage && <Button size="small" onClick={() => openEdit('property', row)}>编辑</Button>}
@@ -760,7 +761,7 @@ export default function RegistryManagement() {
               description={importPreview.status === 'preview' ? '当前仍是预览状态，确认后只导入正常数据，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
           </ExternalDataPanel>}
-        {tab === 'properties' && <AppTable rowKey="id" loading={loading} columns={propertyColumns} dataSource={properties} pagination={listPagination} scroll={{ x: 1300 }} emptyText="当前筛选条件下没有房屋档案" />}
+        {tab === 'properties' && <AppTable fitHeight rowKey="id" loading={loading} columns={propertyColumns} responsiveDetails dataSource={properties} pagination={listPagination} scroll={{ x: 1300 }} emptyText="当前筛选条件下没有房屋档案" />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'merges' && <AppTable rowKey="id" loading={loading} dataSource={merges} pagination={false} columns={[

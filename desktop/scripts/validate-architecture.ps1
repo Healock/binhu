@@ -34,8 +34,8 @@ if (-not $electronMain.StartsWith("const { VelopackApp } = require('velopack')")
 if ($electronMain -notmatch 'contextIsolation:\s*true' -or $electronMain -notmatch 'nodeIntegration:\s*false') {
     throw 'Electron shell security defaults are missing.'
 }
-if ($electronMain -notmatch 'frame:\s*false' -or $electronMain -notmatch 'minWidth:\s*1280' -or $electronMain -notmatch 'minHeight:\s*960') {
-    throw 'Electron must be frameless with a minimum size of 1280x960.'
+if ($electronMain -notmatch 'frame:\s*false' -or $electronMain -notmatch 'minWidth:\s*1024' -or $electronMain -notmatch 'minHeight:\s*640') {
+    throw 'Electron must be frameless with a minimum size of 1024x640.'
 }
 if ($electronMain -notmatch "registerSchemesAsPrivileged" -or $electronMain -notmatch "binhu://app/login") {
     throw 'Electron local assets must use the private binhu protocol.'
@@ -57,8 +57,8 @@ if ($tauriMain.IndexOf('velopack::VelopackApp::build()') -lt 0 -or
 $tauriConfig = Get-Content (Join-Path $root 'apps\win10-tauri\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
 $tauriWindow = $tauriConfig.app.windows[0]
 if ($tauriWindow.decorations -ne $false) { throw 'Tauri must use the local frameless title bar.' }
-if ($tauriWindow.minWidth -ne 1280 -or $tauriWindow.minHeight -ne 960) {
-    throw 'Tauri minimum window size must be 1280x960.'
+if ($tauriWindow.minWidth -ne 1024 -or $tauriWindow.minHeight -ne 640) {
+    throw 'Tauri minimum window size must be 1024x640.'
 }
 $tauriCsp = [string]$tauriConfig.app.security.csp
 if ($tauriCsp -notmatch "connect-src[^;]*\bhttp://tauri\.localhost") {

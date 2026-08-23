@@ -110,7 +110,7 @@ async function handleLocalAsset(request) {
 
 function createMainWindow() {
   const window = new BrowserWindow({
-    width: 1440, height: 960, minWidth: 1280, minHeight: 960, show: false,
+    width: 1440, height: 960, minWidth: 1024, minHeight: 640, show: false,
     frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: true,
     title: config.appName,
     webPreferences: {

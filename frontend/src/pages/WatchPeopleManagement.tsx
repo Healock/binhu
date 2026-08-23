@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, Modal, Select, Space,
-  Table, Tabs, Tag, Upload, message,
+  Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType, UploadFile } from 'antd'
 import { InboxOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
+import AppTable from '../components/AppTable'
+import type { ResponsiveColumns } from '../components/responsiveTable'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   registryApi,
@@ -206,37 +208,37 @@ export default function WatchPeopleManagement() {
     }
   }
 
-  const personColumns: TableColumnsType<WatchPerson> = [
-    { title: '姓名', dataIndex: 'name', width: 130 },
+  const personColumns: ResponsiveColumns<WatchPerson> = [
+    { title: '姓名', dataIndex: 'name', width: 130, responsivePriority: 'always' },
     ...(user?.role === 'super_admin'
-      ? [{ title: '身份证号', dataIndex: 'identity_number', width: 210, render: (value: string) => value || '未登记' }]
+      ? [{ title: '身份证号', dataIndex: 'identity_number', width: 210, responsivePriority: 'standard' as const, render: (value: string) => value || '未登记' }]
       : []),
     {
-      title: '人员标签', dataIndex: 'categories', minWidth: 250,
+      title: '人员标签', dataIndex: 'categories', minWidth: 250, responsivePriority: 'always',
       render: (values: WatchPerson['categories']) => values?.length
         ? <Space size={[4, 4]} wrap>{values.map(item => <Tag key={item.id} color={item.color}>{item.name}</Tag>)}</Space>
         : <span className="text-slate-400">暂无有效标签</span>,
     },
-    { title: '核实状态', dataIndex: 'verification_status', width: 110 },
+    { title: '核实状态', dataIndex: 'verification_status', width: 110, responsivePriority: 'always' },
     {
-      title: '状态', dataIndex: 'status', width: 90,
+      title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always',
       render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag>,
     },
     {
-      title: '操作', width: 190,
+      title: '操作', width: 190, responsivePriority: 'always',
       render: (_, row) => <Space>
         <Button size="small" onClick={() => void openDetail(row)}>查看标签</Button>
         {canManage && <Button size="small" onClick={() => openEditPerson(row)}>编辑</Button>}
       </Space>,
     },
   ]
-  const categoryColumns: TableColumnsType<WatchCategory> = [
-    { title: '分类', dataIndex: 'name', width: 180, render: (value, row) => <Tag color={row.color}>{value}</Tag> },
-    { title: '代码', dataIndex: 'code', width: 180 },
-    { title: '提示级别', dataIndex: 'alert_level', width: 110 },
-    { title: '状态', dataIndex: 'is_active', width: 100, render: value => value ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
-    { title: '说明', dataIndex: 'description', ellipsis: true },
-    { title: '操作', width: 90, render: (_: unknown, row: WatchCategory) => canManage && <Button type="link" size="small" onClick={() => openEditCategory(row)}>编辑</Button> },
+  const categoryColumns: ResponsiveColumns<WatchCategory> = [
+    { title: '分类', dataIndex: 'name', width: 180, responsivePriority: 'always', render: (value, row) => <Tag color={row.color}>{value}</Tag> },
+    { title: '代码', dataIndex: 'code', width: 180, responsivePriority: 'standard' },
+    { title: '提示级别', dataIndex: 'alert_level', width: 110, responsivePriority: 'standard' },
+    { title: '状态', dataIndex: 'is_active', width: 100, responsivePriority: 'always', render: value => value ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
+    { title: '说明', dataIndex: 'description', responsivePriority: 'standard', ellipsis: true },
+    { title: '操作', width: 90, responsivePriority: 'always', render: (_: unknown, row: WatchCategory) => canManage && <Button type="link" size="small" onClick={() => openEditCategory(row)}>编辑</Button> },
   ]
 
   const categoryOptions = useMemo(
@@ -315,7 +317,7 @@ export default function WatchPeopleManagement() {
             </Button>}
           </>}
           />
-          {tab === 'people' ? <Table
+          {tab === 'people' ? <AppTable
           rowKey="id"
           loading={loading}
           columns={personColumns}
@@ -333,7 +335,7 @@ export default function WatchPeopleManagement() {
             },
           }}
           scroll={{ x: 900 }}
-          /> : <Table
+          /> : <AppTable
           rowKey="id"
           loading={loading}
           columns={categoryColumns}
@@ -353,7 +355,7 @@ export default function WatchPeopleManagement() {
             { key: 'verify', label: '核实状态', children: personDetail.verification_status },
           ]} /></section>
           <section className="watch-person-detail__section"><div className="flex items-center justify-between gap-3"><h3 className="font-semibold">标签历史</h3>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('assignment')}>新增标签</Button>}</div>
-          <Table rowKey="id" size="small" pagination={false} dataSource={personDetail.assignments || []} columns={[
+          <AppTable rowKey="id" size="small" pagination={false} dataSource={personDetail.assignments || []} columns={[
             { title: '分类', dataIndex: 'category_name', render: (value, row) => <Tag color={row.color}>{value}</Tag> },
             { title: '生效时间', dataIndex: 'valid_from' },
             { title: '结束时间', dataIndex: 'valid_to', render: value => value || '持续有效' },

@@ -14,7 +14,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   message,
@@ -27,6 +26,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import ExternalDataPanel from '../components/ExternalDataPanel'
+import AppTable from '../components/AppTable'
 import { PageHeader, Panel } from '../components/ui'
 import { getExternalAcquisitionRun, workflowApi, type PhotoSheetConfig, type PhotoSheetPreview, type WorkflowType } from '../api/client'
 import useSystemTime from '../hooks/useSystemTime'
@@ -421,7 +421,7 @@ export default function WorkflowConfig() {
         )}
       </ExternalDataPanel>
       <Panel>
-        <Table
+        <AppTable
           rowKey="id"
           loading={loading}
           dataSource={types}
@@ -466,7 +466,7 @@ export default function WorkflowConfig() {
             { key: 'outbox', label: '待写回队列' },
           ]}
         />
-        <Table
+        <AppTable
           size="small"
           rowKey={row => String(row.id || `${row.work_order_id}-${row.physical_row}`)}
           loading={photoMonitorLoading}
@@ -508,7 +508,7 @@ export default function WorkflowConfig() {
       >
         <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
           <Card size="small" title="历史版本">
-            <Table
+            <AppTable
               size="small"
               rowKey="id"
               pagination={false}

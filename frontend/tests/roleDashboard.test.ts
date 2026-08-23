@@ -64,8 +64,8 @@ test('运维和照片批次图表使用真实序列且保留明细表', () => {
   assert.match(operations, /requestUsage\.daily\.map/)
   assert.match(operations, /data\.sync_daily_counts\.map/)
   assert.match(operations, /<MonoTrendChart/)
-  assert.match(operations, /<Table[\s\S]*dataSource=\{requestUsage\?\.daily \|\| \[\]\}/)
-  assert.match(operations, /<Table[\s\S]*dataSource=\{data\?\.sync_daily_counts \|\| \[\]\}/)
+  assert.match(operations, /<AppTable(?:<[^>]+>)?[\s\S]*dataSource=\{requestUsage\?\.daily \|\| \[\]\}/)
+  assert.match(operations, /<AppTable(?:<[^>]+>)?[\s\S]*dataSource=\{data\?\.sync_daily_counts \|\| \[\]\}/)
   assert.match(uploads, /<MonoWaterfallChart/)
   for (const field of ['matched_files', 'unmatched_files', 'conflict_files', 'duplicate_files', 'failed_files']) {
     assert.match(uploads, new RegExp(`photoBatch\\.${field}`))

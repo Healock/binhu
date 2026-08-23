@@ -5,6 +5,7 @@ import { ExportOutlined, MobileOutlined, SearchOutlined } from '@ant-design/icon
 import { useNavigate, useParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
+import type { ResponsiveColumns } from '../components/responsiveTable'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   getPoliceDispatchBatch,
@@ -83,20 +84,20 @@ export default function PoliceDispatchBatchDetail() {
 
   useEffect(() => { void load(1, 20) }, [id, status, category, keyword])
 
-  const columns: TableColumnsType<PoliceDispatchTask> = [
-    { title: 'Excel 行', dataIndex: 'source_row', width: 90 },
-    { title: '姓名', dataIndex: 'person_name', width: 110 },
-    { title: '身份证号', dataIndex: 'identity_number', width: 190 },
-    { title: '手机号', dataIndex: 'phone', width: 150 },
-    { title: '原地址', dataIndex: 'original_address', width: 340, ellipsis: true },
+  const columns: ResponsiveColumns<PoliceDispatchTask> = [
+    { title: 'Excel 行', dataIndex: 'source_row', width: 90, responsivePriority: 'standard' },
+    { title: '姓名', dataIndex: 'person_name', width: 110, responsivePriority: 'always' },
+    { title: '身份证号', dataIndex: 'identity_number', width: 190, responsivePriority: 'standard' },
+    { title: '手机号', dataIndex: 'phone', width: 150, responsivePriority: 'standard' },
+    { title: '原地址', dataIndex: 'original_address', width: 340, responsivePriority: 'always', ellipsis: true },
     {
-      title: '建议', width: 150,
+      title: '建议', width: 150, responsivePriority: 'standard',
       render: (_, item) => (
         <span>{actionLabels[item.suggested_action]}{item.suggested_community_name ? ` · ${item.suggested_community_name}` : ''}</span>
       ),
     },
     {
-      title: '最终结果', width: 170,
+      title: '最终结果', width: 170, responsivePriority: 'always',
       render: (_, item) => item.final_action
         ? <Tag color={item.task_status === 'completed' ? 'success' : 'processing'}>
             {actionLabels[item.final_action]}{item.final_community_name ? ` · ${item.final_community_name}` : ''}
@@ -104,7 +105,7 @@ export default function PoliceDispatchBatchDetail() {
         : <Tag>待审核</Tag>,
     },
     {
-      title: '异常', width: 120,
+      title: '异常', width: 120, responsivePriority: 'standard',
       render: (_, item) => (
         <Space direction="vertical" size={2}>
           {item.duplicate_group_key && <Tag color="orange">{item.duplicate_kind === 'exact' ? '完全重复' : '重复有差异'}</Tag>}
@@ -114,7 +115,7 @@ export default function PoliceDispatchBatchDetail() {
       ),
     },
     {
-      title: '发布状态', width: 180,
+      title: '发布状态', width: 180, responsivePriority: 'standard',
       render: (_, item) => (
         <Space direction="vertical" size={2}>
           <Tag color={item.publish_status === 'success' ? 'success' : item.publish_status === 'conflict' ? 'error' : item.publish_status === 'needs_reconciliation' ? 'warning' : 'default'}>
@@ -134,7 +135,7 @@ export default function PoliceDispatchBatchDetail() {
         description={batch
           ? `${batch.file_name} · ${batch.import_mode === 'clean' ? '已处理直发' : '原始审核'} · 用于历史倒查、复盘和发布异常处理`
           : '查看审核进度、社区分配和腾讯发布结果'}
-        extra={batch && (
+        actions={batch && (
           <Space wrap>
             <Button icon={<MobileOutlined />} onClick={() => navigate(`/police-tasks?batch=${id}`)}>
               打开审核工作台
@@ -216,6 +217,8 @@ export default function PoliceDispatchBatchDetail() {
           meta={<span>当前筛选 {total} 条</span>}
         />
         <AppTable<PoliceDispatchTask>
+          fitHeight
+          responsiveDetails
           rowKey="id"
           columns={columns}
           dataSource={tasks}

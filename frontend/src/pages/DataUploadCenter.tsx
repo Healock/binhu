@@ -12,6 +12,7 @@ import type { UploadFile, UploadProps } from 'antd'
 import { InboxOutlined, UploadOutlined } from '@ant-design/icons'
 import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
 import FullchainPoliceRawPanel from '../components/FullchainPoliceRawPanel'
+import AppTable from '../components/AppTable'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import { canManageFullchainArchive } from '../utils/mobileTaskRouting'
@@ -310,7 +311,7 @@ export default function DataUploadCenter() {
                 />
               </Suspense>
               {(photoBatch.items?.length || 0) > 0 && (
-                <Table
+                <AppTable
                   size="small"
                   rowKey={(row: any) => `${row.safe_name}-${row.sha256}`}
                   dataSource={photoBatch.items}
@@ -333,7 +334,7 @@ export default function DataUploadCenter() {
           {photoHistory.length > 0 && (
             <div className="mt-5">
               <div className="mb-2 text-sm font-medium text-[var(--app-text-strong)]">最近照片批次</div>
-              <Table
+              <AppTable
                 size="small"
                 rowKey="id"
                 dataSource={photoHistory}

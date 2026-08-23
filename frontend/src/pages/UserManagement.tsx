@@ -5,6 +5,7 @@ import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import { EmptyState, ListToolbar, LoadingState, PageHeader } from '../components/ui'
+import type { ResponsiveColumns } from '../components/responsiveTable'
 import {
   fetchWithAuth,
   getPermissionGroups,
@@ -184,9 +185,9 @@ export default function UserManagement() {
     },
   })
 
-  const columns: TableColumnsType<UserItem> = [
+  const columns: ResponsiveColumns<UserItem> = [
     {
-      title: '姓名', dataIndex: 'display_name', width: 140,
+      title: '姓名', dataIndex: 'display_name', width: 140, responsivePriority: 'always',
       render: (value, user) => (
         <div>
           <Link
@@ -200,15 +201,15 @@ export default function UserManagement() {
         </div>
       ),
     },
-    { title: '登录用户名', dataIndex: 'username', width: 160 },
+    { title: '登录用户名', dataIndex: 'username', width: 160, responsivePriority: 'standard' },
     {
-      title: '关联人员', width: 220,
+      title: '关联人员', width: 220, responsivePriority: 'standard',
       render: (_, user) => user.member
         ? `${user.member.department_name || '未分配部门'} · ${user.member.name}（${user.member.position}）`
         : <span className="text-amber-600">未关联</span>,
     },
     {
-      title: '权限组', width: 180,
+      title: '权限组', width: 180, responsivePriority: 'standard',
       render: (_, user) => (
         <div>
           <div className="flex flex-wrap gap-1">
@@ -222,9 +223,9 @@ export default function UserManagement() {
         </div>
       ),
     },
-    { title: '创建时间', dataIndex: 'created_at', width: 180, render: formatTime },
+    { title: '创建时间', dataIndex: 'created_at', width: 180, responsivePriority: 'wide', render: formatTime },
     {
-      title: '操作', width: 130,
+      title: '操作', width: 130, responsivePriority: 'always',
       render: (_, user) => (
         <>
           <Button type="link" size="small" onClick={() => beginEdit(user)}>编辑</Button>
@@ -266,7 +267,7 @@ export default function UserManagement() {
         actions={<><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button><Button type="primary" icon={<PlusOutlined />} onClick={beginCreate}>添加账号</Button></>}
       />
       {loading ? <LoadingState /> : visibleUsers.length === 0 ? <EmptyState label={users.length ? '没有符合条件的账号' : '暂无用户'} /> : (
-        <AppTable columns={columns} dataSource={visibleUsers} rowKey="id" scroll={{ x: 900 }} />
+        <AppTable fitHeight responsiveDetails columns={columns} dataSource={visibleUsers} rowKey="id" scroll={{ x: 900 }} />
       )}
 
       <Modal
