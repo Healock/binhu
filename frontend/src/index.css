@@ -4497,9 +4497,13 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   display: none !important;
 }
 
-.app-sidebar--collapsed > div:first-child {
+.app-sidebar--collapsed .app-sidebar__header {
   justify-content: center;
-  padding-inline: 10px;
+  padding-inline: 8px;
+}
+
+.app-sidebar--collapsed .app-sidebar__brand {
+  display: none;
 }
 
 .app-sidebar--collapsed .app-sidebar__toggle {
@@ -4523,15 +4527,17 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   width: 24px;
 }
 
-.app-sidebar--collapsed > div:last-child {
+.app-sidebar--collapsed .app-sidebar__footer {
   padding-inline: 8px;
 }
 
-.app-sidebar--collapsed > div:last-child > div {
+.app-sidebar--collapsed .app-sidebar__footer-main {
+  flex-direction: column;
   justify-content: center;
+  gap: 6px;
 }
 
-.app-sidebar--collapsed > div:last-child .ant-avatar {
+.app-sidebar--collapsed .app-sidebar__footer .ant-avatar {
   margin-inline: auto;
 }
 
@@ -5889,7 +5895,7 @@ button.role-dashboard-metric:hover {
   border-radius: 8px;
 }
 
-.app-shell button:not(.ant-btn):not(.ant-switch):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card):not(.mobile-task-review-badge) {
+.app-shell button:not(.ant-btn):not(.ant-switch):not(.ant-table-row-expand-icon):not(.compact-action):not(.mobile-task-business-card):not(.mobile-task-source-card):not(.mobile-task-review-badge) {
   min-height: 36px;
   border-radius: 8px;
 }
@@ -6163,6 +6169,31 @@ html[data-theme='dark'] .ant-modal .app-surface-muted {
 
 .app-data-table .ant-table-cell-ellipsis {
   max-width: 100%;
+}
+
+/* Expandable rows use a native button rather than .ant-btn. Keep the control
+ * square and reserve a stable cell width so compact tables cannot compress it
+ * into the tall, cross-shaped control seen in the registry list. */
+.app-shell .ant-table-row-expand-icon-cell {
+  width: 40px !important;
+  min-width: 40px !important;
+  padding-inline: 10px !important;
+  text-align: center;
+}
+
+.app-shell .ant-table-row-expand-icon {
+  display: inline-flex;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  margin-inline-end: 0;
+  padding: 0;
+  line-height: 16px;
+  vertical-align: middle;
 }
 
 .app-table-wrap--sticky {

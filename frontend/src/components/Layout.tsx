@@ -175,7 +175,7 @@ export default function Layout() {
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 px-4">
+        <div className="app-sidebar__header flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 px-4">
           <span className="app-sidebar__brand flex h-9 w-9 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">
             滨
           </span>
@@ -239,8 +239,8 @@ export default function Layout() {
         </nav>
 
         {user && (
-          <div className="shrink-0 border-t border-slate-200 p-3">
-            <div className="flex items-center gap-2.5 px-1 py-1">
+          <div className="app-sidebar__footer shrink-0 border-t border-slate-200 p-3">
+            <div className="app-sidebar__footer-main flex items-center gap-2.5 px-1 py-1">
               <Avatar
                 size={36}
                 src={user.avatar_url || undefined}

@@ -1,7 +1,7 @@
 {
   "name": "binhu-frontend",
   "private": true,
-  "version": "0.25.23",
+  "version": "0.25.24",
   "type": "module",
   "scripts": {
     "dev": "vite",

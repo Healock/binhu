@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { getResponsiveColumns } from '../src/components/responsiveTable.ts'
 import { getResponsiveLayoutMode } from '../src/hooks/useResponsiveLayout.ts'
@@ -38,4 +39,18 @@ test('标准和宽屏逐步恢复响应式列', () => {
     (getResponsiveColumns(columns, 'wide') as Array<{ title?: string }>).map(column => column.title),
     ['姓名', '社区', '备注'],
   )
+})
+
+test('桌面收缩侧栏和表格展开按钮保持稳定尺寸', () => {
+  const layoutSource = readFileSync(new URL('../src/components/Layout.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(layoutSource, /className="app-sidebar__header /)
+  assert.match(layoutSource, /className="app-sidebar__footer /)
+  assert.match(layoutSource, /className="app-sidebar__footer-main /)
+  assert.match(styles, /\.app-sidebar--collapsed \.app-sidebar__brand\s*\{[^}]*display:\s*none;/s)
+  assert.match(styles, /\.app-sidebar--collapsed \.app-sidebar__footer-main\s*\{[^}]*flex-direction:\s*column;[^}]*gap:\s*6px;/s)
+  assert.match(styles, /button:not\(\.ant-btn\)[^{]*:not\(\.ant-table-row-expand-icon\)/)
+  assert.match(styles, /\.app-shell \.ant-table-row-expand-icon-cell\s*\{[^}]*min-width:\s*40px !important;/s)
+  assert.match(styles, /\.app-shell \.ant-table-row-expand-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*min-height:\s*18px;/s)
 })
