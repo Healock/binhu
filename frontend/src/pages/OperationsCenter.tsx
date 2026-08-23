@@ -14,7 +14,6 @@ import {
   Statistic,
   Skeleton,
   Switch,
-  Table,
   Tabs,
   Tag,
   TimePicker,
@@ -56,6 +55,7 @@ import type {
   OpsOverview,
 } from '../types'
 import { ListToolbar, Panel } from '../components/ui'
+import AppTable from '../components/AppTable'
 import useSystemTime from '../hooks/useSystemTime'
 
 const MonoTrendChart = lazy(
@@ -298,7 +298,7 @@ function OverviewTab({
             />
           </Suspense>
         )}
-        <Table
+        <AppTable<any>
           size="small"
           rowKey="business_date"
           pagination={false}
@@ -316,7 +316,7 @@ function OverviewTab({
           ]}
         />
         <div className="mt-4 text-sm font-medium text-[var(--app-text-strong)]">当前业务日请求构成</div>
-        <Table
+        <AppTable<any>
           className="mt-2"
           size="small"
           rowKey={row => `${row.source}:${row.endpoint}:${row.method}`}
@@ -365,7 +365,7 @@ function OverviewTab({
             />
           </Suspense>
         )}
-        <Table
+        <AppTable<any>
           size="small"
           rowKey="business_date"
           pagination={false}
@@ -648,7 +648,7 @@ function DatabasesTab() {
       </div>
 
       <Panel title={`${selected} 数据表`} description="行数为 MySQL 估算值；这里只能查看结构，不能修改数据">
-        <Table
+        <AppTable<any>
           rowKey="name"
           loading={loading}
           dataSource={tables}
@@ -693,7 +693,7 @@ function DatabasesTab() {
         width="min(720px, 100vw)"
         title={drawer ? `${drawer.database}.${drawer.table}` : '表结构'}
       >
-        <Table
+        <AppTable<any>
           rowKey="name"
           loading={drawerLoading}
           dataSource={drawer?.columns || []}
@@ -709,7 +709,7 @@ function DatabasesTab() {
           ]}
         />
         <div className="mb-2 mt-6 font-medium">索引</div>
-        <Table
+        <AppTable<any>
           rowKey={(row, index) => `${row.name}-${row.position}-${index}`}
           dataSource={drawer?.indexes || []}
           pagination={false}
@@ -854,7 +854,7 @@ function BackupsTab() {
           </Button>
         )}
       >
-        <Table
+        <AppTable<any>
           rowKey="id"
           loading={loading}
           dataSource={jobs}
@@ -905,7 +905,7 @@ function BackupsTab() {
 
       {legacy.length > 0 && (
         <Panel title="历史备份" description="上线本功能以前创建的文件，只展示，不自动清理或下载">
-          <Table
+          <AppTable<any>
             rowKey="filename"
             dataSource={legacy}
             pagination={false}
@@ -992,7 +992,7 @@ function AuditTab() {
         meta={<span>共 {total} 条操作记录</span>}
         actions={<Button icon={<ReloadOutlined />} onClick={() => setRefreshToken(value => value + 1)}>刷新</Button>}
       />
-      <Table
+      <AppTable<AuditEvent>
         rowKey="id"
         loading={loading}
         dataSource={data}
@@ -1033,7 +1033,7 @@ function AuditTab() {
             title: '详情',
             dataIndex: 'detail_items',
             width: 360,
-            render: items => items?.length
+            render: (items: Array<{ key: string; label: string; value: string }> | undefined) => items?.length
               ? (
                   <Space size={[4, 4]} wrap>
                     {items.slice(0, 4).map(item => (

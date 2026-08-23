@@ -56,6 +56,7 @@ import {
   type PersonnelPosition,
 } from '../constants/personnel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import type { ResponsiveColumns } from '../components/responsiveTable'
 import { useAuth } from '../context/AuthContext'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 
@@ -260,7 +261,7 @@ export default function GridMembers() {
     setKeyword(debouncedSearchInput.trim())
     resetCategoryPages()
   }, [debouncedSearchInput])
-  const memberColumns: TableColumnsType<GridMember> = [
+  const memberColumns: ResponsiveColumns<GridMember> = [
     {
       title: '姓名',
       dataIndex: 'name',
@@ -277,6 +278,7 @@ export default function GridMembers() {
       title: '所属部门',
       key: 'department',
       width: 150,
+      responsivePriority: 'standard',
       render: (_, member) => `${member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'} · ${member.position}`,
     },
     {
@@ -284,6 +286,7 @@ export default function GridMembers() {
       dataIndex: 'position',
       key: 'position',
       width: 110,
+      responsivePriority: 'always',
       render: value => <Tag color="blue">{value || '组员'}</Tag>,
     },
     {
@@ -291,6 +294,7 @@ export default function GridMembers() {
       dataIndex: 'phone',
       key: 'phone',
       width: 140,
+      responsivePriority: 'standard',
       render: value => value || '-',
     },
     {
@@ -298,12 +302,14 @@ export default function GridMembers() {
       dataIndex: 'id_card_number',
       key: 'id_card_number',
       width: 185,
+      responsivePriority: 'standard',
       render: value => value || <span className="text-slate-400">未补齐</span>,
     },
     {
       title: '人员状态',
       key: 'status',
       width: 210,
+      responsivePriority: 'always',
       render: (_, member) => <MemberStatus member={member} />,
     },
     {
@@ -311,6 +317,7 @@ export default function GridMembers() {
       dataIndex: 'notes',
       key: 'notes',
       width: 200,
+      responsivePriority: 'wide',
       ellipsis: { showTitle: false },
       render: value => (
         <Tooltip title={value || '-'}>
@@ -322,6 +329,7 @@ export default function GridMembers() {
       title: '操作',
       key: 'actions',
       width: 190,
+      responsivePriority: 'always',
       fixed: 'right',
       render: (_, member) => (
         <div className="whitespace-nowrap">
@@ -544,6 +552,8 @@ export default function GridMembers() {
               <>
                 <div className="hidden md:block">
                   <AppTable<GridMember>
+                    fitHeight
+                    responsiveDetails
                     columns={memberColumns.filter(column => (
                       (canViewSensitive || column.key !== 'notes')
                       && (canManageIdentity || column.key !== 'id_card_number')

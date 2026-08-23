@@ -35,6 +35,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
+import AppTable from '../components/AppTable'
 import {
   workflowApi,
   formatUTCTime,
@@ -551,7 +552,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
                 </>}
               />
-              <Table
+              <AppTable
                 rowKey="id"
                 loading={loading}
                 columns={photoColumns}
@@ -628,7 +629,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   {canCreate && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工单</Button>}
                 </>}
               />
-              <Table
+              <AppTable
                 rowKey="id"
                 loading={loading}
                 columns={columns}

@@ -503,7 +503,7 @@ export default function Dashboard() {
         ) : (
           <>
             <div className="hidden md:block">
-              <Table
+              <AppTable
                 rowKey={item => `${item.parser_type}:${item.row_key}`}
                 columns={overviewDetailColumns}
                 dataSource={detailRows}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   CloseOutlined,
@@ -22,13 +22,18 @@ import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
 import OnlinePresenceIndicator from './OnlinePresenceIndicator'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
+    typeof window !== 'undefined' && window.innerWidth < 1200
+  ))
   const [accountOpen, setAccountOpen] = useState(false)
   const { user, logout, clientVersion } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const layout = useResponsiveLayout()
   const permissionGroupCodes = useMemo(
     () => user?.permission_groups?.map(group => group.code) || [],
     [user],
@@ -60,6 +65,10 @@ export default function Layout() {
     [permissionGroupCodes, user],
   )
 
+  useEffect(() => {
+    if (layout.isCompact) setSidebarCollapsed(true)
+  }, [layout.isCompact])
+
   const handleLogout = async () => {
     if (!confirmPendingNavigation()) return
     setAccountOpen(false)
@@ -68,7 +77,7 @@ export default function Layout() {
   }
 
   return (
-    <div className="app-shell flex">
+    <div className={`app-shell app-shell--${layout.mode} flex`}>
       <header className="md:hidden fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-4">
         {mobileNavigationMode === 'sidebar' && (
           <button
@@ -162,18 +171,26 @@ export default function Layout() {
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[232px] shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-200 md:sticky md:top-0 md:translate-x-0 ${
+        className={`app-sidebar ${sidebarCollapsed ? 'app-sidebar--collapsed' : ''} fixed inset-y-0 left-0 z-50 flex h-screen w-[232px] shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-200 md:sticky md:top-0 md:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 px-4">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">
+          <span className="app-sidebar__brand flex h-9 w-9 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">
             滨
           </span>
-          <div className="min-w-0">
+          <div className="app-sidebar__identity min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900">滨湖智慧平台</div>
             <div className="text-xs text-slate-500">数据管理中心 · v{clientVersion}</div>
           </div>
+          <button
+            type="button"
+            aria-label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+            className="app-sidebar__toggle ml-auto flex h-9 w-9 items-center justify-center rounded-lg border-0 bg-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            onClick={() => setSidebarCollapsed(value => !value)}
+          >
+            <MenuOutlined />
+          </button>
           <button
             type="button"
             onClick={() => setSidebarOpen(false)}
@@ -210,9 +227,9 @@ export default function Layout() {
                     <span className="flex w-5 justify-center text-base">
                       <NavigationIcon name={item.icon} />
                     </span>
-                    <span className={mobileWorkbenchPosition ? 'hidden md:inline' : ''}>{item.label}</span>
+                    <span className={`app-sidebar__item-label ${mobileWorkbenchPosition ? 'hidden md:inline' : ''}`}>{item.label}</span>
                     {mobileWorkbenchPosition && (
-                      <span className="md:hidden">{mobileNavigationItemLabel(item, user.member.position)}</span>
+                      <span className="md:hidden">{mobileNavigationItemLabel(item, user?.member?.position || '')}</span>
                     )}
                   </NavLink>
                 ))}
@@ -237,7 +254,7 @@ export default function Layout() {
                 onClick={() => {
                   if (confirmPendingNavigation()) navigate('/profile')
                 }}
-                className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
+                className="app-sidebar__account min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
               >
                 <div className="truncate text-sm font-semibold text-slate-800">{getUserDisplayName(user)}</div>
                 <div className="mt-0.5 truncate text-xs text-slate-500">
@@ -249,7 +266,7 @@ export default function Layout() {
             <button
               type="button"
               onClick={handleLogout}
-              className="mt-2 flex w-full items-center justify-center gap-2 border-0 bg-slate-50 text-sm text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              className="app-sidebar__logout mt-2 flex w-full items-center justify-center gap-2 border-0 bg-slate-50 text-sm text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
             >
               <LogoutOutlined />
               退出登录

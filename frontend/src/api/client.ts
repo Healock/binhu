@@ -4046,7 +4046,10 @@ export const workflowApi = {
     return (await api.put('/workflow/photo-sheet/config', payload)).data as PhotoSheetConfig
   },
   async previewPhotoSheet() {
-    return (await api.post('/workflow/photo-sheet/preview', {}, activeRequest)).data as PhotoSheetPreview
+    return (await api.post('/workflow/photo-sheet/preview', {}, activeRequest)).data as {
+      run: ExternalAcquisitionRun
+      reused: boolean
+    }
   },
   async importPhotoSheet(previewToken: string) {
     return (await api.post('/workflow/photo-sheet/import', { preview_token: previewToken }, {

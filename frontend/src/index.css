@@ -3741,8 +3741,8 @@ html.desktop-shell #root {
 html.desktop-shell,
 html.desktop-shell body,
 html.desktop-shell #root {
-  min-width: 1280px;
-  min-height: 960px;
+  min-width: 1024px;
+  min-height: 640px;
   height: 100%;
   overflow: hidden;
 }
@@ -3750,7 +3750,7 @@ html.desktop-shell #root {
 .desktop-window-shell {
   position: relative;
   width: 100%;
-  min-width: 1280px;
+  min-width: 1024px;
   height: 100vh;
   min-height: 0;
   box-sizing: border-box;
@@ -4464,14 +4464,176 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
 }
 
 .app-shell {
+  min-width: 0;
   min-height: 100vh;
   background: var(--app-bg);
 }
 
 .app-content {
+  min-width: 0;
   width: 100%;
   max-width: 1600px;
   margin: 0 auto;
+}
+
+.app-shell > main {
+  min-width: 0;
+}
+
+.app-sidebar {
+  width: 232px;
+  min-width: 0;
+  transition: width 180ms ease, transform 200ms ease;
+}
+
+.app-sidebar--collapsed {
+  width: 64px !important;
+}
+
+.app-sidebar--collapsed .app-sidebar__identity,
+.app-sidebar--collapsed .app-sidebar__item-label,
+.app-sidebar--collapsed .app-sidebar__account,
+.app-sidebar--collapsed .app-sidebar__logout {
+  display: none !important;
+}
+
+.app-sidebar--collapsed > div:first-child {
+  justify-content: center;
+  padding-inline: 10px;
+}
+
+.app-sidebar--collapsed .app-sidebar__toggle {
+  margin-left: 0;
+}
+
+.app-sidebar--collapsed nav {
+  padding-inline: 8px;
+}
+
+.app-sidebar--collapsed nav > div > div:first-child {
+  display: none;
+}
+
+.app-sidebar--collapsed nav a {
+  justify-content: center;
+  padding-inline: 8px;
+}
+
+.app-sidebar--collapsed nav a > span:first-child {
+  width: 24px;
+}
+
+.app-sidebar--collapsed > div:last-child {
+  padding-inline: 8px;
+}
+
+.app-sidebar--collapsed > div:last-child > div {
+  justify-content: center;
+}
+
+.app-sidebar--collapsed > div:last-child .ant-avatar {
+  margin-inline: auto;
+}
+
+.app-shell--compact .app-content {
+  padding: 16px;
+}
+
+.app-shell--compact .app-page {
+  gap: 12px;
+}
+
+.app-shell--compact .app-card--padded,
+.app-shell--compact .app-card__body {
+  padding: 14px;
+}
+
+.app-shell--compact .page-header {
+  gap: 10px;
+}
+
+.app-shell--compact .page-header__title {
+  font-size: 20px;
+}
+
+.app-shell--compact .page-header__actions,
+.app-shell--compact .list-toolbar__filters,
+.app-shell--compact .list-toolbar__actions {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.app-shell--compact .list-toolbar__filters {
+  flex-basis: 100%;
+}
+
+.app-shell--compact .list-toolbar__actions {
+  justify-content: flex-start;
+}
+
+.app-shell--compact .app-table-wrap {
+  min-width: 0;
+}
+
+.app-shell--compact .ant-table-wrapper {
+  min-width: 0;
+}
+
+.app-shell--compact .app-data-table,
+.app-shell--compact .ant-table {
+  font-size: 12px;
+}
+
+.app-shell--compact .app-data-table .ant-table-thead > tr > th,
+.app-shell--compact .app-data-table .ant-table-tbody > tr > td,
+.app-shell--compact .ant-table-thead > tr > th,
+.app-shell--compact .ant-table-tbody > tr > td {
+  padding: 8px 10px;
+}
+
+.app-shell--compact .app-data-table .ant-table-pagination.ant-pagination,
+.app-shell--compact .ant-table-pagination.ant-pagination {
+  margin: 10px 12px;
+}
+
+.app-shell--compact .ant-table-expanded-row > td {
+  padding: 10px 12px !important;
+}
+
+@media (max-width: 1199px) and (min-width: 768px) {
+  .desktop-app-content .app-content {
+    padding-inline: 16px;
+  }
+
+  .desktop-app-content .app-sidebar--collapsed {
+    width: 64px !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-sidebar__toggle {
+    display: none !important;
+  }
+}
+
+@media (max-height: 760px) and (min-width: 768px) {
+  .desktop-app-content .app-content {
+    padding-top: 60px;
+    padding-bottom: 12px;
+  }
+
+  .desktop-app-content .app-page {
+    gap: 12px;
+  }
+
+  .desktop-app-content .app-card__header {
+    padding-block: 10px;
+  }
+
+  .desktop-app-content .app-card--padded,
+  .desktop-app-content .app-card__body {
+    padding-block: 12px;
+  }
 }
 
 .app-page {
