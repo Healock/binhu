@@ -56,3 +56,32 @@ test('downloadUpdate leaves an already downloaded update ready', async (context)
   assert.equal(result.state, 'ready')
   assert.equal(result.availableVersion, '0.25.16')
 })
+
+test('schedule checks immediately on startup and keeps the periodic check', () => {
+  const originalSetTimeout = global.setTimeout
+  const originalSetInterval = global.setInterval
+  const delays = []
+  let checks = 0
+  try {
+    global.setTimeout = (callback, delay) => {
+      delays.push(['timeout', delay])
+      callback()
+      return { unref() {} }
+    }
+    global.setInterval = (_callback, delay) => {
+      delays.push(['interval', delay])
+      return { unref() {} }
+    }
+    const { controller } = makeController({})
+    controller.checkForUpdates = async () => { checks += 1; return controller.snapshot() }
+    controller.schedule()
+    assert.equal(checks, 1)
+    assert.deepEqual(delays, [
+      ['timeout', 0],
+      ['interval', 6 * 60 * 60 * 1_000],
+    ])
+  } finally {
+    global.setTimeout = originalSetTimeout
+    global.setInterval = originalSetInterval
+  }
+})

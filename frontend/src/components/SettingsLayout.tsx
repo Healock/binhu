@@ -2,6 +2,7 @@ import { Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   ApiOutlined,
   BgColorsOutlined,
+  CloudDownloadOutlined,
   ClockCircleOutlined,
   FileTextOutlined,
   ApartmentOutlined,
@@ -22,6 +23,7 @@ export default function SettingsLayout() {
     { path: '/settings/workflow', label: '工单流程配置', icon: <ApartmentOutlined />, superOnly: true },
     { path: '/settings/account-security', label: '账号与安全', icon: <SafetyCertificateOutlined />, superOnly: false },
     { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
+    { path: '/settings/updates', label: '应用更新', icon: <CloudDownloadOutlined />, superOnly: false },
   ]
 
   const menuItems = allMenuItems.filter(item => !item.superOnly || canManageSystem)
