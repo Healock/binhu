@@ -3,18 +3,7 @@ import { CheckCircleOutlined, CloseOutlined } from '@ant-design/icons'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { resolveDesktopBridge, type DesktopBridge, type DesktopUpgradeInfo } from '../desktop/bridge'
-
-interface ReleaseNotePullRequest {
-  number: number
-  title: string
-  summary: string
-}
-
-interface ReleaseNotes {
-  version: string
-  previousVersion: string | null
-  pullRequests: ReleaseNotePullRequest[]
-}
+import { loadReleaseNotes, type ReleaseNotes } from '../utils/releaseNotes'
 
 export default function VersionUpdatedGate() {
   const [bridge, setBridge] = useState<DesktopBridge | null>(null)
@@ -22,6 +11,7 @@ export default function VersionUpdatedGate() {
   const location = useLocation()
   const [upgrade, setUpgrade] = useState<DesktopUpgradeInfo | null>(null)
   const [notes, setNotes] = useState<ReleaseNotes | null>(null)
+  const currentVersion = upgrade?.currentVersion || __APP_VERSION__
 
   useEffect(() => {
     let disposed = false
@@ -51,16 +41,12 @@ export default function VersionUpdatedGate() {
 
   useEffect(() => {
     let mounted = true
-    fetch('/release-notes.json', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : null)
-      .then(value => {
-        if (mounted && value?.version === (upgrade?.currentVersion || __APP_VERSION__)) setNotes(value)
-      })
-      .catch(() => {})
+    setNotes(null)
+    loadReleaseNotes(currentVersion)
+      .then(value => { if (mounted) setNotes(value) })
     return () => { mounted = false }
-  }, [upgrade?.currentVersion])
+  }, [currentVersion])
 
-  const currentVersion = upgrade?.currentVersion || __APP_VERSION__
   const acknowledgedVersion = (() => {
     try { return window.localStorage.getItem('binhu.version-updated.acknowledged') } catch (_error) { return null }
   })()

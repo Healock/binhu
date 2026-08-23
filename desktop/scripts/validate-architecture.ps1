@@ -60,6 +60,10 @@ if ($tauriWindow.decorations -ne $false) { throw 'Tauri must use the local frame
 if ($tauriWindow.minWidth -ne 1280 -or $tauriWindow.minHeight -ne 960) {
     throw 'Tauri minimum window size must be 1280x960.'
 }
+$tauriCsp = [string]$tauriConfig.app.security.csp
+if ($tauriCsp -notmatch "connect-src[^;]*\bhttp://tauri\.localhost") {
+    throw 'Tauri CSP must allow the bundled release-notes.json same-origin request.'
+}
 $repoRoot = (Resolve-Path (Join-Path $root '..')).Path
 $titleBar = Get-Content (Join-Path $repoRoot 'frontend\src\components\DesktopTitleBar.tsx') -Raw
 foreach ($control in @('window-minimize-button', 'window-maximize-button', 'window-close-button')) {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Alert, Button, Checkbox, Input } from 'antd'
+import { Alert, AutoComplete, Button, Checkbox, Input } from 'antd'
 import {
   LockOutlined,
   UserOutlined,
@@ -13,13 +13,16 @@ import policeEmblem from '../assets/login/police-emblem.png'
 import {
   clearRememberedUsername,
   readRememberedUsername,
+  readRememberedUsernames,
   storeRememberedUsername,
 } from '../utils/rememberedUsername'
 
 export default function Login() {
   const { login, clientVersion } = useAuth()
   const navigate = useNavigate()
+  const [initialUsernames] = useState(() => readRememberedUsernames(window.localStorage))
   const [initialUsername] = useState(() => readRememberedUsername(window.localStorage))
+  const [rememberedUsernames, setRememberedUsernames] = useState(initialUsernames)
   const [username, setUsername] = useState(initialUsername)
   const [password, setPassword] = useState('')
   const [rememberUsername, setRememberUsername] = useState(Boolean(initialUsername))
@@ -58,21 +61,21 @@ export default function Login() {
     }
   }, [])
 
-  useEffect(() => {
-    if (rememberUsername) {
-      storeRememberedUsername(window.localStorage, username)
-    } else {
-      clearRememberedUsername(window.localStorage)
-    }
-  }, [rememberUsername, username])
-
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!username.trim() || !password) return
     setLoading(true)
     setError('')
     try {
-      await login(username.trim(), password)
+      const normalizedUsername = username.trim()
+      await login(normalizedUsername, password)
+      if (rememberUsername) {
+        storeRememberedUsername(window.localStorage, normalizedUsername)
+        setRememberedUsernames(readRememberedUsernames(window.localStorage))
+      } else {
+        clearRememberedUsername(window.localStorage)
+        setRememberedUsernames([])
+      }
       navigate('/', { replace: true })
     } catch (err: any) {
       const message = err?.message || '登录失败'
@@ -158,16 +161,23 @@ export default function Login() {
             <form onSubmit={handleSubmit} className="login-form">
               <label className="login-form__field">
                 <span>用户名</span>
-                <Input
-                  size="large"
-                  prefix={<UserOutlined />}
+                <AutoComplete
                   value={username}
-                  onChange={event => setUsername(event.target.value)}
-                  placeholder="请输入用户名"
-                  autoFocus
-                  autoComplete="username"
-                  aria-label="用户名"
-                />
+                  options={rememberedUsernames.map(value => ({ value, label: value }))}
+                  onChange={setUsername}
+                  onSelect={() => setPassword('')}
+                  filterOption={false}
+                  style={{ width: '100%' }}
+                >
+                  <Input
+                    size="large"
+                    prefix={<UserOutlined />}
+                    placeholder={rememberedUsernames.length ? '请输入或选择历史账号' : '请输入用户名'}
+                    autoFocus
+                    autoComplete="username"
+                    aria-label="用户名"
+                  />
+                </AutoComplete>
               </label>
 
               <label className="login-form__field">
@@ -185,7 +195,14 @@ export default function Login() {
 
               <Checkbox
                 checked={rememberUsername}
-                onChange={event => setRememberUsername(event.target.checked)}
+                onChange={event => {
+                  const checked = event.target.checked
+                  setRememberUsername(checked)
+                  if (!checked) {
+                    clearRememberedUsername(window.localStorage)
+                    setRememberedUsernames([])
+                  }
+                }}
               >
                 记住账号
               </Checkbox>

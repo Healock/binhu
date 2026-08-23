@@ -164,6 +164,20 @@ jobs:
         working-directory: frontend
       - run: npm test && npm run build -- --mode desktop
         working-directory: frontend
+      - name: Verify release notes are bundled
+        run: |
+          test -s frontend/dist/release-notes.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          notes = json.loads(Path('frontend/dist/release-notes.json').read_text(encoding='utf-8'))
+          if not isinstance(notes.get('version'), str):
+              raise SystemExit('release-notes.json is missing version')
+          if not isinstance(notes.get('pullRequests'), list):
+              raise SystemExit('release-notes.json is missing pullRequests')
+          print(f"Bundled release notes for v{notes['version']}: {len(notes['pullRequests'])} PR(s)")
+          PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-frontend-${{ needs.prepare.outputs.commit }}

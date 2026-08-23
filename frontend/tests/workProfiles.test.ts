@@ -119,14 +119,16 @@ test('登录错误提示与按钮使用独立间距容器', () => {
   assert.match(source, /<div className="grid gap-3 pt-1">[\s\S]*<Alert[\s\S]*<Button/)
 })
 
-test('登录页只在本地记住用户名且不持久化密码', () => {
+test('登录页只在成功后记录本地历史账号且不持久化密码', () => {
   const source = readFileSync(
     new URL('../src/pages/Login.tsx', import.meta.url),
     'utf8',
   )
   assert.match(source, /readRememberedUsername\(window\.localStorage\)/)
-  assert.match(source, /storeRememberedUsername\(window\.localStorage, username\)/)
+  assert.match(source, /readRememberedUsernames\(window\.localStorage\)/)
+  assert.match(source, /await login\(normalizedUsername, password\)[\s\S]*storeRememberedUsername\(window\.localStorage, normalizedUsername\)/)
   assert.match(source, /clearRememberedUsername\(window\.localStorage\)/)
+  assert.match(source, /<AutoComplete[\s\S]*options=\{rememberedUsernames\.map/)
   assert.match(source, />\s*记住账号\s*<\/Checkbox>/)
   assert.doesNotMatch(source, /storeRememberedUsername\([^\n]*password/)
 })
