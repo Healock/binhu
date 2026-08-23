@@ -508,7 +508,7 @@ function LogsTab() {
   const exportUrl = `/api/admin/ops/logs/export?source=${encodeURIComponent(source)}&since_minutes=${sinceMinutes}`
 
   return (
-    <div className="space-y-3">
+    <div className="operations-log-layout">
       <Alert
         type="info"
         showIcon
@@ -622,7 +622,7 @@ function DatabasesTab() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="operations-center-layout">
       <div className="grid gap-4 md:grid-cols-3">
         {databases.map(database => (
           <Card
@@ -1130,7 +1130,7 @@ export default function OperationsCenter() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="operations-center-layout">
       <Panel
         title="运维中心"
         description="只读查看底层状态，并安全地创建数据库备份"

@@ -123,9 +123,18 @@ jobs:
           previous_tag="$(git tag --merged "$commit" --sort=-version:refname | awk -v current="$current_tag" '$0 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && $0 != current { print; exit }')"
           gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main --limit 1000 \
             --json number,title,body,mergeCommit > "$RUNNER_TEMP/binhu-merged-prs.json"
+          curated_file="release-notes/v${version}.md"
+          curated_args=()
+          if [ -f "$curated_file" ]; then
+            echo "Using Codex-authored release notes: $curated_file"
+            curated_args+=(--curated-markdown "$curated_file")
+          else
+            echo "No release-level notes file found; using safe PR-summary fallback"
+          fi
           python desktop/scripts/generate_release_notes.py \
             --version "$version" --commit "$commit" --previous-tag "$previous_tag" \
             --prs-json "$RUNNER_TEMP/binhu-merged-prs.json" \
+            "${curated_args[@]}" \
             --output-markdown release-notes.md \
             --output-json release-notes.json
           test -s release-notes.md
@@ -173,10 +182,12 @@ jobs:
 
           notes = json.loads(Path('frontend/dist/release-notes.json').read_text(encoding='utf-8'))
           if not isinstance(notes.get('version'), str):
-              raise SystemExit('release-notes.json is missing version')
+            raise SystemExit('release-notes.json is missing version')
           if not isinstance(notes.get('pullRequests'), list):
-              raise SystemExit('release-notes.json is missing pullRequests')
-          print(f"Bundled release notes for v{notes['version']}: {len(notes['pullRequests'])} PR(s)")
+            raise SystemExit('release-notes.json is missing pullRequests')
+          if not isinstance(notes.get('sections'), list):
+            raise SystemExit('release-notes.json is missing sections')
+          print(f"Bundled release notes for v{notes['version']}: {len(notes['sections'])} section(s), {len(notes['pullRequests'])} PR(s)")
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

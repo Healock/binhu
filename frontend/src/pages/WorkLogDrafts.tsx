@@ -350,7 +350,7 @@ export default function WorkLogDrafts() {
               />
             </Card>
           ) : (
-            <div className="space-y-3">
+            <div className="work-log-drafts__mobile-list">
               {drafts.map(draft => (
                 <Card key={draft.id} size="small">
                   <div className="flex items-start justify-between gap-3">

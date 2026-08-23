@@ -86,7 +86,21 @@ export default function VersionUpdatedGate() {
         <div className="version-updated__mark"><CheckCircleOutlined /></div>
         <h2 id="version-updated-title">版本已更新</h2>
         <p className="version-updated__versions">v{upgradedFrom || '上一版本'} <span>→</span> v{currentVersion}</p>
-        {notes?.pullRequests?.length ? (
+        {notes?.sections?.length ? (
+          <div className="version-updated__notes">
+            <h3>本次更新内容</h3>
+            <div className="version-updated__sections">
+              {notes.sections.map((section, index) => (
+                <section key={`${section.title}-${index}`} className="version-updated__section">
+                  <h4>{index + 1}. {section.title}</h4>
+                  <ul>
+                    {section.items.map((item, itemIndex) => <li key={`${section.title}-${itemIndex}`}>{item}</li>)}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          </div>
+        ) : notes?.pullRequests?.length ? (
           <div className="version-updated__notes">
             <h3>本次更新内容</h3>
             <ul>

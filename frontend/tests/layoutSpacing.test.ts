@@ -94,6 +94,57 @@ test('辖区档案连续区块由父级 gap 分隔且筛选不游离在工具栏
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.registry-management__content\s*\{[^}]*gap:\s*12px/s)
 })
 
+test('详情抽屉和高密度工作台不使用容易贴边的 space-y 分隔', () => {
+  const registrySource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const querySource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  const dispatchSource = readFileSync(
+    new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
+    'utf8',
+  )
+  const operationsSource = readFileSync(
+    new URL('../src/pages/OperationsCenter.tsx', import.meta.url),
+    'utf8',
+  )
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(registrySource, /<div className="registry-detail">/)
+  assert.doesNotMatch(registrySource, /<div className="space-y-5">[\s\S]*?<Descriptions bordered/)
+  assert.match(querySource, /<div className="query-drawer-content">/)
+  assert.match(dispatchSource, /<div className="police-dispatch-panel__content">/)
+  assert.match(dispatchSource, /<div className="police-dispatch-panel__preview">/)
+  assert.match(operationsSource, /<div className="operations-log-layout">/)
+  assert.match(operationsSource, /<div className="operations-center-layout">/)
+  assert.match(registrySource, /<div className="registry-management-layout">/)
+  assert.match(styles, /\.registry-detail,[\s\S]*?\.operations-center-layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px/s)
+  assert.match(styles, /\.registry-management-layout,[\s\S]*?\.operations-log-layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*16px/s)
+  assert.match(styles, /\.police-dispatch-panel__content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px[^}]*padding:\s*20px/s)
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.registry-detail,[\s\S]*?\.operations-center-layout\s*\{[^}]*gap:\s*12px/s)
+})
+
+test('移动端卡片列表使用父级 gap，避免卡片或表格贴在一起', () => {
+  const sources = [
+    readFileSync(new URL('../src/pages/Dashboard.tsx', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/pages/DataQuery.tsx', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/pages/WorkLogDrafts.tsx', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/components/MobileReportTable.tsx', import.meta.url), 'utf8'),
+  ]
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(sources[0], /dashboard-mobile-detail-list/)
+  assert.match(sources[0], /dashboard-mobile-report-list/)
+  assert.match(sources[1], /data-query-mobile-list/)
+  assert.match(sources[2], /work-log-drafts__mobile-list/)
+  assert.match(sources[3], /mobile-report-table__layout/)
+  assert.match(styles, /\.dashboard-mobile-detail-list,[\s\S]*?\.mobile-report-table__layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*12px/s)
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.dashboard-mobile-detail-list,[\s\S]*?\.mobile-report-table__layout\s*\{[^}]*gap:\s*10px/s)
+})
+
 test('在线查询桌面端把数据范围控件放在工作表状态提示左侧', () => {
   const querySource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),
