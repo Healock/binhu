@@ -193,6 +193,51 @@ async def list_notifications(
     }
 
 
+@router.get("/announcements/important-unread")
+async def list_important_unread_announcements(
+    limit: int = Query(20, ge=1, le=50),
+    user: dict = Depends(require_notification_view),
+    conn=Depends(get_db),
+):
+    """返回当前账号尚未确认阅读的重要公告，不混入个人通知。"""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT a.id, a.title, a.content, a.published_at
+            FROM _announcements a
+            LEFT JOIN _announcement_reads r
+              ON r.announcement_id=a.id AND r.user_id=%s
+            WHERE a.is_active=1
+              AND a.severity='warning'
+              AND a.published_at <= UTC_TIMESTAMP()
+              AND (a.expires_at IS NULL OR a.expires_at > UTC_TIMESTAMP())
+              AND r.user_id IS NULL
+            ORDER BY a.published_at, a.id
+            LIMIT %s
+            """,
+            (user["id"], limit),
+        )
+        rows = await cur.fetchall()
+    return {
+        "data": [
+            {
+                "id": int(row[0]),
+                "source": "announcement",
+                "category": "announcement",
+                "severity": "warning",
+                "title": row[1],
+                "content": row[2],
+                "related_task_id": None,
+                "action_path": None,
+                "is_read": False,
+                "created_at": _iso_utc(row[3]),
+                "read_at": None,
+            }
+            for row in rows
+        ]
+    }
+
+
 @router.post("/read-all")
 async def mark_all_read(
     user: dict = Depends(require_notification_view),

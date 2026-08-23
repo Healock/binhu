@@ -76,6 +76,9 @@ def _item(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
     updated_at: datetime | None = None,
+    detail_count: int = 0,
+    attention_count: int = 0,
+    retry_kind: str | None = None,
 ) -> dict[str, Any]:
     state = normalize_task_state(status)
     return {
@@ -94,6 +97,9 @@ def _item(
         "started_at": _iso(started_at),
         "finished_at": _iso(finished_at),
         "updated_at": _iso(updated_at or finished_at or started_at or created_at),
+        "detail_count": max(0, int(detail_count or 0)),
+        "attention_count": max(0, int(attention_count or 0)),
+        "retry_kind": retry_kind,
     }
 
 
@@ -109,6 +115,180 @@ async def _rows(pool_name: str, sql: str) -> list[tuple]:
         async with conn.cursor() as cur:
             await cur.execute(sql)
             return list(await cur.fetchall())
+
+
+async def _query_rows(
+    pool_name: str,
+    sql: str,
+    params: tuple[Any, ...] = (),
+) -> list[tuple]:
+    try:
+        pool = db_manager.get_pool(pool_name)
+    except ValueError:
+        pool = db_manager.get_pool("online_data")
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+            return list(await cur.fetchall())
+
+
+ONLINE_WRITEBACK_DIAGNOSIS = {
+    "source_missing": (
+        "腾讯来源行已经不存在，平台无法继续定位原记录。",
+        "请先执行一次正常同步，再回到任务详情核对来源状态。",
+    ),
+    "source_relocated": (
+        "腾讯来源行的位置或身份已经变化，平台为防止写错行而停止写回。",
+        "请先同步腾讯在线表，再在任务详情中核对并重新保存。",
+    ),
+    "remote_changed": (
+        "腾讯端内容已被其他人修改，与平台保存时的版本不一致。",
+        "请在任务详情查看最新内容，人工决定采用腾讯内容还是重新修改。",
+    ),
+    "row_key_conflict": (
+        "任务来源标识不再唯一，继续自动写回可能写到错误记录。",
+        "请先同步并核对重复来源，不要直接重试。",
+    ),
+}
+
+
+PHOTO_WRITEBACK_DIAGNOSIS = {
+    "source_disabled": (
+        "调照片腾讯名单写回当前未启用。",
+        "请先在工单流程设置中确认写回开关和目标表配置。",
+    ),
+    "source_missing": (
+        "原腾讯名单行已经不存在或无法安全定位。",
+        "请先同步调照片名单，确认原工单仍有唯一来源后再重试。",
+    ),
+    "source_relocated": (
+        "原腾讯名单行位置已经变化，系统已停止自动写回。",
+        "请先同步名单重新定位，再执行安全重试。",
+    ),
+    "quota_exhausted": (
+        "腾讯接口当前额度不足，自动重试已经暂停。",
+        "额度恢复后可手动重新加入写回队列。",
+    ),
+    "request_failed": (
+        "腾讯接口连续请求失败，达到自动重试上限。",
+        "确认网络和腾讯接口恢复后再手动重试。",
+    ),
+}
+
+
+def _diagnosis(
+    mapping: dict[str, tuple[str, str]],
+    error_code: object,
+    *,
+    fallback_diagnosis: str,
+    fallback_action: str,
+) -> tuple[str, str]:
+    code = str(error_code or "").strip().lower()
+    return mapping.get(code, (fallback_diagnosis, fallback_action))
+
+
+async def get_admin_task_queue_details(
+    source: str,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    """返回固定白名单队列的脱敏问题明细。"""
+    offset = (page - 1) * page_size
+    if source == "online_writeback_queue":
+        count_rows, rows = await asyncio.gather(
+            _query_rows(
+                "online_data",
+                "SELECT COUNT(*) FROM _online_local_changes "
+                "WHERE status IN ('retry','conflict')",
+            ),
+            _query_rows(
+                "online_data",
+                "SELECT id,parser_type,row_key,field_name,status,attempt_count,"
+                "error_code,updated_at FROM _online_local_changes "
+                "WHERE status IN ('retry','conflict') "
+                "ORDER BY FIELD(status,'conflict','retry'),updated_at DESC,id DESC "
+                "LIMIT %s OFFSET %s",
+                (page_size, offset),
+            ),
+        )
+        data = []
+        for row in rows:
+            diagnosis, action = _diagnosis(
+                ONLINE_WRITEBACK_DIAGNOSIS,
+                row[6],
+                fallback_diagnosis=(
+                    "字段写回遇到异常或冲突，平台已保留本地修改并停止危险重放。"
+                ),
+                fallback_action="请先同步腾讯在线表，再回到对应任务详情核对。",
+            )
+            row_key = str(row[2] or "")
+            data.append({
+                "id": int(row[0]),
+                "state": str(row[4]),
+                "reference": f"{row[1]} · {row_key[:8]}…" if row_key else str(row[1]),
+                "action": f"字段：{row[3]}",
+                "attempt_count": int(row[5] or 0),
+                "error_code": str(row[6] or "unknown"),
+                "diagnosis": diagnosis,
+                "recommended_action": action,
+                "can_retry": False,
+                "retry_kind": None,
+                "updated_at": _iso(row[7]),
+            })
+    elif source == "photo_writeback_queue":
+        count_rows, rows = await asyncio.gather(
+            _query_rows(
+                "workflow",
+                "SELECT COUNT(*) FROM photo_sheet_outbox "
+                "WHERE status IN ('retry','paused')",
+            ),
+            _query_rows(
+                "workflow",
+                "SELECT id,work_order_id,action,status,attempt_count,error_code,updated_at "
+                "FROM photo_sheet_outbox WHERE status IN ('retry','paused') "
+                "ORDER BY FIELD(status,'paused','retry'),updated_at DESC,id DESC "
+                "LIMIT %s OFFSET %s",
+                (page_size, offset),
+            ),
+        )
+        action_labels = {
+            "complete": "写回完成标记",
+            "claim": "写回领取状态",
+            "update": "更新腾讯名单",
+        }
+        data = []
+        for row in rows:
+            diagnosis, action = _diagnosis(
+                PHOTO_WRITEBACK_DIAGNOSIS,
+                row[5],
+                fallback_diagnosis="调照片名单写回连续失败，系统已停止自动重试。",
+                fallback_action="确认外部系统和名单配置恢复后，可执行一次安全重试。",
+            )
+            data.append({
+                "id": int(row[0]),
+                "state": str(row[3]),
+                "reference": f"工单 #{int(row[1])}",
+                "action": action_labels.get(str(row[2]), "调照片名单写回"),
+                "attempt_count": int(row[4] or 0),
+                "error_code": str(row[5] or "unknown"),
+                "diagnosis": diagnosis,
+                "recommended_action": action,
+                "can_retry": True,
+                "retry_kind": "photo_outbox",
+                "updated_at": _iso(row[6]),
+            })
+    else:
+        raise ValueError("unsupported task queue source")
+
+    total = int(count_rows[0][0] or 0) if count_rows else 0
+    return {
+        "source": source,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "data": data,
+    }
 
 
 async def _external_jobs() -> list[dict[str, Any]]:
@@ -423,6 +603,8 @@ async def _writeback_queues() -> list[dict[str, Any]]:
             ),
             created_at=min((row[2] for row in online_rows if row[2]), default=None),
             updated_at=max((row[3] for row in online_rows if row[3]), default=None),
+            detail_count=counts.get("retry", 0) + counts.get("conflict", 0),
+            attention_count=counts.get("retry", 0) + counts.get("conflict", 0),
         ))
     if photo_rows:
         counts = {str(row[0]): int(row[1] or 0) for row in photo_rows}
@@ -445,6 +627,9 @@ async def _writeback_queues() -> list[dict[str, Any]]:
             ),
             created_at=min((row[2] for row in photo_rows if row[2]), default=None),
             updated_at=max((row[3] for row in photo_rows if row[3]), default=None),
+            detail_count=counts.get("retry", 0) + counts.get("paused", 0),
+            attention_count=counts.get("retry", 0) + counts.get("paused", 0),
+            retry_kind="photo_outbox" if counts.get("retry", 0) or counts.get("paused", 0) else None,
         ))
     return items
 

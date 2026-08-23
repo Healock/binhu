@@ -8,6 +8,7 @@ from routers.notifications import (
     create_announcement,
     delete_announcement,
     get_unread_count,
+    list_important_unread_announcements,
     list_notifications,
     mark_all_read,
     mark_announcement_read,
@@ -54,6 +55,15 @@ class NotificationCursor:
         return None
 
     async def fetchall(self):
+        if self.last_sql.startswith("SELECT a.id, a.title, a.content"):
+            return [
+                (
+                    4,
+                    "Attendance history notice",
+                    "History starts on 2026-07-30",
+                    datetime(2026, 7, 30, 8, 0, 0),
+                )
+            ]
         if self.last_sql.startswith("SELECT detail.work_order_id"):
             return [(12, "全链条", "row/key")]
         if self.last_sql.startswith("SELECT id, category, severity"):
@@ -285,6 +295,23 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
                 "announcement_unread_count": 2,
             },
         )
+
+    async def test_important_popup_only_queries_unread_warning_announcements(self):
+        cursor = NotificationCursor()
+        result = await list_important_unread_announcements(
+            limit=20,
+            user={"id": 5, "role": "member"},
+            conn=make_connection(cursor),
+        )
+
+        self.assertEqual(len(result["data"]), 1)
+        self.assertEqual(result["data"][0]["source"], "announcement")
+        self.assertEqual(result["data"][0]["severity"], "warning")
+        self.assertFalse(result["data"][0]["is_read"])
+        sql, params = cursor.executed[0]
+        self.assertIn("a.severity='warning'", sql)
+        self.assertIn("r.user_id IS NULL", sql)
+        self.assertEqual(params, (5, 20))
 
     async def test_read_operations_are_scoped_to_current_user(self):
         cursor = NotificationCursor()
