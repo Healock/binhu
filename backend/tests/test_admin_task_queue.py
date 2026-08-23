@@ -1,13 +1,18 @@
 import os
 import unittest
 from datetime import datetime
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from deps import require_admin_account
 from routers.admin_task_queue import router
-from services.admin_task_queue import _item, normalize_task_state
+from services.admin_task_queue import (
+    _item,
+    get_admin_task_queue_details,
+    normalize_task_state,
+)
 
 
 class AdminTaskQueueTests(unittest.TestCase):
@@ -48,6 +53,10 @@ class AdminTaskQueueTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, item)
 
+        self.assertEqual(item["detail_count"], 0)
+        self.assertEqual(item["attention_count"], 0)
+        self.assertIsNone(item["retry_kind"])
+
     def test_every_task_queue_route_requires_admin_account(self):
         self.assertTrue(router.routes)
         for route in router.routes:
@@ -58,6 +67,54 @@ class AdminTaskQueueTests(unittest.TestCase):
                 ),
                 route.path,
             )
+
+
+class AdminTaskQueueDetailTests(unittest.IsolatedAsyncioTestCase):
+    async def test_online_conflicts_are_described_without_business_values_or_retry(self):
+        query = AsyncMock(side_effect=[
+            [(1,)],
+            [(
+                7,
+                "全链条",
+                "abcdef0123456789",
+                "核查结果",
+                "conflict",
+                2,
+                "remote_changed",
+                datetime(2026, 8, 23, 8, 0, 0),
+            )],
+        ])
+        with patch("services.admin_task_queue._query_rows", new=query):
+            result = await get_admin_task_queue_details("online_writeback_queue")
+
+        detail = result["data"][0]
+        self.assertFalse(detail["can_retry"])
+        self.assertIsNone(detail["retry_kind"])
+        self.assertIn("腾讯端内容已被其他人修改", detail["diagnosis"])
+        self.assertNotIn("base_value", detail)
+        self.assertNotIn("local_value", detail)
+        self.assertNotIn("remote_value", detail)
+
+    async def test_paused_photo_writeback_allows_only_the_named_safe_retry(self):
+        query = AsyncMock(side_effect=[
+            [(1,)],
+            [(
+                18,
+                42,
+                "complete",
+                "paused",
+                5,
+                "quota_exhausted",
+                datetime(2026, 8, 23, 8, 0, 0),
+            )],
+        ])
+        with patch("services.admin_task_queue._query_rows", new=query):
+            result = await get_admin_task_queue_details("photo_writeback_queue")
+
+        detail = result["data"][0]
+        self.assertTrue(detail["can_retry"])
+        self.assertEqual(detail["retry_kind"], "photo_outbox")
+        self.assertEqual(detail["reference"], "工单 #42")
 
 
 if __name__ == "__main__":

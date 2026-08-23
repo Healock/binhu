@@ -203,7 +203,7 @@ export default function Layout() {
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto px-3 py-4" onClick={() => setSidebarOpen(false)}>
+        <nav className="app-sidebar__nav flex-1 overflow-y-auto px-3 py-4" onClick={() => setSidebarOpen(false)}>
           {menuGroups.map((group) => (
             <div key={group.label} className="mb-5 last:mb-0">
               <div className="mb-1.5 px-3 text-[11px] font-semibold tracking-wide text-slate-400">

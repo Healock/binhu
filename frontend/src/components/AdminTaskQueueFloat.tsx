@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
+  Collapse,
   Drawer,
   Empty,
   FloatButton,
@@ -9,9 +10,16 @@ import {
   Skeleton,
   Tag,
 } from 'antd'
-import { CloudServerOutlined, ReloadOutlined } from '@ant-design/icons'
+import {
+  CloudServerOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons'
 import {
   getAdminTaskQueue,
+  getAdminTaskQueueDetails,
+  retryAdminPhotoWriteback,
+  type AdminTaskQueueDetailItem,
   type AdminTaskQueueItem,
   type AdminTaskQueueResponse,
   type AdminTaskQueueState,
@@ -62,10 +70,104 @@ export function isAdminTaskQueueUser(user: User | null | undefined): boolean {
     : ['admin', 'super_admin'].includes(user.role)
 }
 
-function TaskQueueCard({ item }: { item: AdminTaskQueueItem }) {
+function TaskQueueDetail({
+  detail,
+  onRetried,
+}: {
+  detail: AdminTaskQueueDetailItem
+  onRetried: () => void
+}) {
+  const formatTime = useSystemTime()
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState('')
+
+  const retry = async () => {
+    if (!detail.can_retry || detail.retry_kind !== 'photo_outbox') return
+    setRetrying(true)
+    setRetryError('')
+    try {
+      await retryAdminPhotoWriteback(detail.id)
+      onRetried()
+    } catch {
+      setRetryError('重新加入写回队列失败，请稍后重试。')
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  return (
+    <div className="admin-task-queue-detail">
+      <div className="admin-task-queue-detail__header">
+        <strong>{detail.reference}</strong>
+        <Tag color={detail.state === 'paused' || detail.state === 'conflict' ? 'warning' : 'orange'}>
+          {detail.state === 'paused' ? '已暂停' : detail.state === 'conflict' ? '冲突' : '等待重试'}
+        </Tag>
+      </div>
+      <div className="admin-task-queue-detail__meta">
+        <span>{detail.action}</span>
+        <span>错误类型：{detail.error_code || 'unknown'}</span>
+        {detail.attempt_count > 0 && <span>已尝试 {detail.attempt_count} 次</span>}
+      </div>
+      <div className="admin-task-queue-detail__analysis">
+        <div><b>原因分析</b><span>{detail.diagnosis}</span></div>
+        <div><b>建议处理</b><span>{detail.recommended_action}</span></div>
+      </div>
+      <div className="admin-task-queue-detail__footer">
+        <span>{detail.updated_at ? formatTime(detail.updated_at) : '时间待更新'}</span>
+        {detail.can_retry ? (
+          <Button size="small" loading={retrying} onClick={() => void retry()}>
+            安全重试
+          </Button>
+        ) : (
+          <span className="admin-task-queue-detail__protected">
+            <SafetyCertificateOutlined /> 已禁止盲目重试
+          </span>
+        )}
+      </div>
+      {retryError && <Alert type="error" showIcon message={retryError} />}
+    </div>
+  )
+}
+
+function TaskQueueCard({
+  item,
+  onRefresh,
+}: {
+  item: AdminTaskQueueItem
+  onRefresh: () => void
+}) {
   const formatTime = useSystemTime()
   const meta = STATE_META[item.state]
   const time = item.finished_at || item.updated_at || item.started_at || item.created_at
+  const [details, setDetails] = useState<AdminTaskQueueDetailItem[]>([])
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsLoading, setDetailsLoading] = useState(false)
+  const [detailsError, setDetailsError] = useState('')
+
+  const loadDetails = useCallback(async () => {
+    if (!item.detail_count) return
+    setDetailsLoading(true)
+    setDetailsError('')
+    try {
+      const result = await getAdminTaskQueueDetails(item.source)
+      setDetails(result.data)
+    } catch {
+      setDetailsError('问题明细暂时无法读取，请稍后重试。')
+    } finally {
+      setDetailsLoading(false)
+    }
+  }, [item.detail_count, item.source])
+
+  const toggleDetails = () => {
+    const next = !detailsOpen
+    setDetailsOpen(next)
+    if (next && !details.length) void loadDetails()
+  }
+
+  const handleRetried = () => {
+    void loadDetails()
+    onRefresh()
+  }
 
   return (
     <article className={`admin-task-queue-card is-${item.state}`}>
@@ -97,6 +199,37 @@ function TaskQueueCard({ item }: { item: AdminTaskQueueItem }) {
       <div className="text-[11px] text-[var(--app-text-tertiary)]">
         {time ? formatTime(time) : '时间待更新'}
       </div>
+      {item.detail_count > 0 && (
+        <Collapse
+          ghost
+          className="admin-task-queue-card__details"
+          activeKey={detailsOpen ? ['details'] : []}
+          onChange={toggleDetails}
+          items={[{
+            key: 'details',
+            label: `查看问题明细（${item.detail_count}）`,
+            children: (
+              <div className="admin-task-queue-detail-list">
+                {detailsLoading && <Skeleton active paragraph={{ rows: 3 }} />}
+                {detailsError && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={detailsError}
+                    action={<Button size="small" onClick={() => void loadDetails()}>重试</Button>}
+                  />
+                )}
+                {!detailsLoading && !detailsError && details.map(detail => (
+                  <TaskQueueDetail key={detail.id} detail={detail} onRetried={handleRetried} />
+                ))}
+                {!detailsLoading && !detailsError && !details.length && (
+                  <div className="admin-task-queue-empty">问题已经处理完毕</div>
+                )}
+              </div>
+            ),
+          }]}
+        />
+      )}
     </article>
   )
 }
@@ -217,7 +350,9 @@ export default function AdminTaskQueueFloat() {
                   <Tag>{activeItems.length}</Tag>
                 </div>
                 {activeItems.length
-                  ? activeItems.map(item => <TaskQueueCard key={item.id} item={item} />)
+                  ? activeItems.map(item => (
+                    <TaskQueueCard key={item.id} item={item} onRefresh={() => void refresh(false)} />
+                  ))
                   : <div className="admin-task-queue-empty">当前没有正在运行或排队的任务</div>}
               </section>
               {!!recentItems.length && (
@@ -226,7 +361,9 @@ export default function AdminTaskQueueFloat() {
                     <span>最近结束</span>
                     <Tag>{recentItems.length}</Tag>
                   </div>
-                  {recentItems.map(item => <TaskQueueCard key={item.id} item={item} />)}
+                  {recentItems.map(item => (
+                    <TaskQueueCard key={item.id} item={item} onRefresh={() => void refresh(false)} />
+                  ))}
                 </section>
               )}
             </>

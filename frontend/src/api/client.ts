@@ -91,6 +91,31 @@ export interface AdminTaskQueueItem {
   started_at: string | null
   finished_at: string | null
   updated_at: string | null
+  detail_count: number
+  attention_count: number
+  retry_kind: string | null
+}
+
+export interface AdminTaskQueueDetailItem {
+  id: number
+  state: string
+  reference: string
+  action: string
+  attempt_count: number
+  error_code: string
+  diagnosis: string
+  recommended_action: string
+  can_retry: boolean
+  retry_kind: 'photo_outbox' | null
+  updated_at: string | null
+}
+
+export interface AdminTaskQueueDetailResponse {
+  source: string
+  page: number
+  page_size: number
+  total: number
+  data: AdminTaskQueueDetailItem[]
 }
 
 export interface AdminTaskQueueResponse {
@@ -242,6 +267,27 @@ export async function getAuthSessions(): Promise<AuthSessionItem[]> {
 export async function getAdminTaskQueue(): Promise<AdminTaskQueueResponse> {
   const { data } = await api.get('/admin/task-queue', passiveRequest)
   return data
+}
+
+export async function getAdminTaskQueueDetails(
+  source: string,
+  page = 1,
+  pageSize = 20,
+): Promise<AdminTaskQueueDetailResponse> {
+  const { data } = await api.get(
+    `/admin/task-queue/${encodeURIComponent(source)}/details`,
+    { ...passiveRequest, params: { page, page_size: pageSize } },
+  )
+  return data
+}
+
+export async function retryAdminPhotoWriteback(outboxId: number): Promise<void> {
+  await api.post(`/admin/task-queue/photo-writeback/${outboxId}/retry`)
+}
+
+export async function getImportantUnreadAnnouncements(): Promise<AppNotification[]> {
+  const { data } = await api.get('/notifications/announcements/important-unread', passiveRequest)
+  return data.data || []
 }
 
 export async function revokeAuthSession(managementId: string): Promise<void> {

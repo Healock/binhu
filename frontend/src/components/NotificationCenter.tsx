@@ -95,6 +95,12 @@ export default function NotificationCenter() {
     return () => window.clearInterval(timer)
   }, [load, loadUnreadCount, open])
 
+  useEffect(() => {
+    const refreshCounts = () => void loadUnreadCount()
+    window.addEventListener('binhu:notifications-changed', refreshCounts)
+    return () => window.removeEventListener('binhu:notifications-changed', refreshCounts)
+  }, [loadUnreadCount])
+
   const announcements = useMemo(
     () => notifications.filter(item => item.source === 'announcement'),
     [notifications],
