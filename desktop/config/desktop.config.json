@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "appName": "滨湖智慧平台",
-  "appVersion": "0.25.22",
+  "appVersion": "0.25.23",
   "serverUrl": "https://www.h332a0a4b.nyat.app:48726",
   "apiBaseUrl": "https://www.h332a0a4b.nyat.app:48726/api",
   "initialRoute": "/login",
