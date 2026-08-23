@@ -23,6 +23,7 @@ from routers.system import router as system_router
 from routers.users import router as users_router
 from routers.notifications import router as notifications_router
 from routers.admin_ops import router as admin_ops_router
+from routers.admin_task_queue import router as admin_task_queue_router
 from routers.visits import router as visits_router
 from routers.visit_sources import router as visit_sources_router
 from routers.code_summaries import router as code_summaries_router
@@ -231,6 +232,7 @@ app.include_router(external_acquisition_router, dependencies=auth_dep)
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)
 app.include_router(admin_ops_router, dependencies=auth_dep)
+app.include_router(admin_task_queue_router, dependencies=auth_dep)
 
 
 # ========== 前端静态文件一体化托管（单端口模式，无需 Nginx） ==========

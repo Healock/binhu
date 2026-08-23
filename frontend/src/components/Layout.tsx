@@ -21,6 +21,7 @@ import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
 import OnlinePresenceIndicator from './OnlinePresenceIndicator'
+import AdminTaskQueueFloat from './AdminTaskQueueFloat'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 
@@ -160,6 +161,7 @@ export default function Layout() {
       </header>
 
       <OnlinePresenceIndicator />
+      <AdminTaskQueueFloat />
 
       {sidebarOpen && (
         <button
@@ -181,7 +183,7 @@ export default function Layout() {
           </span>
           <div className="app-sidebar__identity min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900">滨湖智慧平台</div>
-            <div className="text-xs text-slate-500">数据管理中心 · v{clientVersion}</div>
+            <div className="text-xs text-slate-500">v{clientVersion}</div>
           </div>
           <button
             type="button"
