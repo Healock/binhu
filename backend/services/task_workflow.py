@@ -170,7 +170,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止日期", "下发日期"),
         identity_fields=("身份证号码",),
         secondary_fields=("二次核查结果",),
-        result_options=("已登记", "无需登记", "移交", "无法核实"),
+        result_options=("已登记", "无需登记", "移交", "无法核实", "离苏"),
     ),
 }
 
