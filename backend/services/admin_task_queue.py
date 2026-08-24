@@ -23,6 +23,7 @@ EXTERNAL_KIND_LABELS = {
     "visit_source_preview": "走访来源数据获取",
     "photo_sheet_preview": "调照片名单预览",
     "photo_sheet_sync": "调照片名单同步",
+    "qmf_source": "全民防未核查任务同步",
 }
 
 
@@ -309,7 +310,7 @@ async def _external_jobs() -> list[dict[str, Any]]:
         _item(
             source="external_acquisition",
             source_id=row[0],
-            category="数据获取",
+            category="全民防同步" if str(row[1]) == "qmf_source" else "数据获取",
             title=EXTERNAL_KIND_LABELS.get(str(row[1]), "外部数据获取"),
             status=row[2],
             phase=row[3],

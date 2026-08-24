@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from config import settings
 from services.txdocs_client import TxDocsClient
 from services.parsers import get_parser
 from services.business_time import get_business_date
@@ -25,12 +24,7 @@ from services.online_source import (
     source_row_hash,
 )
 from services.police_dispatch import reconcile_police_dispatch_publications
-from services.qmf_source import (
-    MODEL_THREE_PARSER,
-    QmfSourceError,
-    fetch_pending_rows,
-    resolve_rows,
-)
+from services.qmf_source import MODEL_THREE_PARSER
 
 
 @dataclass(frozen=True)
@@ -186,6 +180,38 @@ class SyncEngine:
         """db_pool: OnlineData 库的连接池"""
         self.db_pool = db_pool
 
+    async def _sync_qmf_source(self, conn, result: dict) -> tuple[int, str | None]:
+        """兼容旧测试/内部调用；正式入口已迁移到 qmf_source 后台任务。"""
+        parser = get_parser(MODEL_THREE_PARSER)
+        rows = [parser.normalize_source_row(row) for row in (result.get("rows") or [])]
+        if not rows:
+            return 0, None
+        column_map = await get_database_column_map(conn, parser.table_name, parser)
+        source_fields = ("截止时间", "核查人", "姓名", "身份证号", "联系方式", "地址", "下发社区")
+        quoted_columns = ", ".join(quote_identifier(column_map[column]) for column in parser.COLUMNS)
+        update_parts = []
+        for column in source_fields:
+            identifier = quote_identifier(column_map[column])
+            update_parts.append(
+                f"{identifier}=IF(TRIM(COALESCE({identifier},''))='',VALUES({identifier}),{identifier})"
+                if column == "核查人" else f"{identifier}=VALUES({identifier})"
+            )
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                for row in rows:
+                    await cur.execute(
+                        f"INSERT INTO {parser.table_name} (_row_key,{quoted_columns}) VALUES ({','.join(['%s'] * (len(parser.COLUMNS) + 1))}) "
+                        f"ON DUPLICATE KEY UPDATE {','.join(update_parts)}",
+                        (parser.make_row_key(row), *[row.get(column, '') for column in parser.COLUMNS]),
+                    )
+            report_date = await self._save_snapshot(conn, parser.table_name, MODEL_THREE_PARSER)
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        return len(rows), report_date
+
     async def run_full_sync(self, task_id: int):
         """执行全量同步"""
         conn = await self.db_pool.acquire()
@@ -194,13 +220,9 @@ class SyncEngine:
             await self._set_status(conn, task_id, "running", "syncing")
             await self._set_current(conn, task_id, "读取同步配置")
 
-            qmf_source_enabled = bool(
-                settings.QMF_SOURCE_ACQUISITION_ENABLED
-                and settings.QMF_SOURCE_AUTO_SYNC
-            )
-
-            # 1. 获取 OAuth 凭据。仅启用旧平台模型三来源时，不要求腾讯
-            # OAuth；这样模型三只读任务可以独立运行。
+            # 全民防模型三来源已拆为数据上传中心的独立后台任务；本流程
+            # 只负责腾讯在线表同步。
+            # 1. 获取 OAuth 凭据。
             creds = await self._get_oauth_creds(conn)
             if creds:
                 client = TxDocsClient(
@@ -210,10 +232,9 @@ class SyncEngine:
                     usage_source="full_sync",
                 )
 
-            # 2. 获取启用的表格。旧平台模型三来源是独立的只读来源，
-            # 因此启用它时不要求必须配置腾讯在线表格。
+            # 2. 获取启用的腾讯在线表格。
             spreadsheets = await self._get_spreadsheets(conn)
-            if not spreadsheets and not qmf_source_enabled:
+            if not spreadsheets:
                 if not creds:
                     await self._fail(conn, task_id, "未配置OAuth凭据，请先在设置页配置腾讯文档OAuth")
                     return
@@ -224,70 +245,10 @@ class SyncEngine:
             total = 0
             errors = []
             report_jobs: list[tuple[str, str]] = []
-            # 当旧平台模型三来源启用时，跳过同类型腾讯表，避免腾讯表的
-            # “来源缺失即归档”逻辑误删旧平台刚同步的任务。来源读取失败时
-            # 也跳过而不删除，保留当前任务等待下一次成功读取。
-            sync_spreadsheets = [
-                sp for sp in spreadsheets
-                if not (
-                    qmf_source_enabled
-                    and sp["parser_type"] == MODEL_THREE_PARSER
-                )
-            ]
-            if sync_spreadsheets and client is None:
+            sync_spreadsheets = spreadsheets
+            if client is None:
                 await self._fail(conn, task_id, "未配置OAuth凭据，请先在设置页配置腾讯文档OAuth")
                 return
-
-            if qmf_source_enabled:
-                await self._set_current(conn, task_id, "同步疑似未注销模型三来源")
-                try:
-                    source_result = await fetch_pending_rows()
-                    async with conn.cursor() as cur:
-                        source_result = await resolve_rows(cur, source_result)
-                    qmf_count, qmf_report_date = await self._sync_qmf_source(
-                        conn,
-                        source_result,
-                    )
-                    total += qmf_count
-                    await self._set_progress(conn, task_id, total)
-                    if qmf_report_date:
-                        report_jobs.append((qmf_report_date, MODEL_THREE_PARSER))
-                    unresolved_count = int(
-                        source_result.get("unresolved_count") or 0
-                    )
-                    issue_count = int(source_result.get("issue_count") or 0)
-                    if unresolved_count or issue_count:
-                        # Unresolved rows are quarantined as source-quality
-                        # warnings; valid rows still belong to this successful
-                        # sync and must not suppress unrelated summary tables.
-                        print(
-                            "[SYNC] 疑似未注销模型三来源问题统计："
-                            f"社区无法匹配{unresolved_count}条，"
-                            f"字段或范围问题{issue_count}条"
-                        )
-                    print(
-                        "[SYNC] 疑似未注销模型三来源："
-                        f"读取{source_result.get('record_count', 0)}条，"
-                        f"有效{source_result.get('valid_count', 0)}条，"
-                        f"已入库{qmf_count}条，"
-                        f"社区未匹配{unresolved_count}条"
-                    )
-                except QmfSourceError as exc:
-                    # 来源不可用时绝不清空或归档现有任务；本轮标记为部分成功，
-                    # 便于后台任务面板展示原因并在下次同步重试。
-                    errors.append(f"疑似未注销模型三来源：{exc.message}")
-                    print(
-                        f"[SYNC] 疑似未注销模型三来源读取失败："
-                        f"{exc.code}"
-                    )
-                except Exception as exc:
-                    errors.append(f"疑似未注销模型三来源：{exc}")
-                    print(
-                        "[SYNC] 疑似未注销模型三来源处理失败："
-                        f"{type(exc).__name__}"
-                    )
-                finally:
-                    await self._advance_step(conn, task_id)
 
             for sp in sync_spreadsheets:
                 await self._set_current(
@@ -420,78 +381,6 @@ class SyncEngine:
                     print(f"[SYNC] 关闭腾讯文档客户端失败: {e}")
             self.db_pool.release(conn)
 
-    async def _sync_qmf_source(
-        self,
-        conn,
-        result: dict,
-    ) -> tuple[int, str | None]:
-        """把旧平台模型三未核查任务幂等写入本地任务表。
-
-        旧平台接口只提供未核查数据，因此本阶段只新增或刷新来源字段，
-        不会因为一次来源读取为空、异常或社区未匹配而删除本地任务；
-        已填写的核查人、核查结果和备注始终由本地保留。
-        """
-        parser = get_parser(MODEL_THREE_PARSER)
-        table = parser.table_name
-        column_map = await get_database_column_map(conn, table, parser)
-        rows = [
-            parser.normalize_source_row(row)
-            for row in (result.get("rows") or [])
-        ]
-        if not rows:
-            return 0, None
-
-        deduplicated = deduplicate_rows(parser, rows)
-        online = deduplicated.rows
-        # 只更新旧平台能够提供的来源字段；核查人、核查结果、备注属于
-        # 平台本地处理状态，不能被下一次来源同步的空值覆盖。
-        source_fields = (
-            "截止时间",
-            "核查人",
-            "姓名",
-            "身份证号",
-            "联系方式",
-            "地址",
-            "下发社区",
-        )
-        await conn.begin()
-        try:
-            for key, data in online.items():
-                values = [key, *[data.get(column, "") for column in parser.COLUMNS]]
-                quoted_columns = ", ".join(
-                    quote_identifier(column_map[column])
-                    for column in parser.COLUMNS
-                )
-                placeholders = ", ".join(["%s"] * (len(parser.COLUMNS) + 1))
-                update_parts = []
-                for column in source_fields:
-                    identifier = quote_identifier(column_map[column])
-                    if column == "核查人":
-                        # The source may assign an inspector, but a local manual
-                        # assignment must remain authoritative on subsequent syncs.
-                        update_parts.append(
-                            f"{identifier}=IF(TRIM(COALESCE({identifier},''))='', "
-                            f"VALUES({identifier}), {identifier})"
-                        )
-                    else:
-                        update_parts.append(
-                            f"{identifier}=VALUES({identifier})"
-                        )
-                update_clause = ", ".join(update_parts)
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        f"INSERT INTO {table} (_row_key, {quoted_columns}) "
-                        f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_clause}",
-                        values,
-                    )
-
-            report_date = await self._save_snapshot(conn, table, MODEL_THREE_PARSER)
-            await conn.commit()
-        except Exception:
-            await conn.rollback()
-            raise
-        return len(online), report_date
-
     async def _get_oauth_creds(self, conn) -> dict | None:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -506,7 +395,8 @@ class SyncEngine:
         async with conn.cursor() as cur:
             await cur.execute(
                 """SELECT id, name, url, file_id, data_sheet_id, header_row, parser_type
-                   FROM _config_spreadsheets WHERE enabled = 1 AND url != '' AND file_id != ''"""
+                   FROM _config_spreadsheets WHERE enabled = 1 AND url != '' AND file_id != ''
+                   AND parser_type <> '疑似未注销模型三'"""
             )
             rows = await cur.fetchall()
         return [

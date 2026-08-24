@@ -75,6 +75,7 @@ ACTION_LABELS: dict[str, str] = {
     "code_summary.location_classify": "维护码数据位置分类",
     "code_summary.location_recompute": "重新计算码数据位置汇总",
     "qmf_status_scan.start": "启动全民防反馈扫描",
+    "qmf_source.sync": "同步全民防未核查任务",
     "work_log.create": "创建工作日志",
     "work_log.delete": "删除工作日志",
     "work_log.takeover": "接管工作日志",

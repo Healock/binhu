@@ -41,22 +41,9 @@ async def _estimate_steps(cur) -> int:
         "WHERE enabled=1 AND url<>'' AND file_id<>''"
     )
     parser_types = [row[0] for row in await cur.fetchall()]
-    qmf_source_enabled = bool(
-        settings.QMF_SOURCE_ACQUISITION_ENABLED
-        and settings.QMF_SOURCE_AUTO_SYNC
-    )
-    if qmf_source_enabled:
-        # 旧平台模型三来源接管同类型腾讯表，避免初始进度把被跳过的
-        # 腾讯步骤也算进去。
-        parser_types = [
-            parser_type
-            for parser_type in parser_types
-            if parser_type != "疑似未注销模型三"
-        ]
     report_types = {ptype for ptype in parser_types if ptype in BUILDERS}
     return (
         len(parser_types)
-        + (1 if qmf_source_enabled else 0)
         + len(report_types)
         + (1 if report_types else 0)
     )

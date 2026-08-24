@@ -26,6 +26,7 @@ from services.qmf_status import (
     STATUS_NON_JURISDICTION,
     STATUS_UNAVAILABLE,
 )
+from services.task_graph import reconcile_projection_task_graph
 
 
 SCAN_CONCURRENCY = 4
@@ -79,6 +80,61 @@ def _state_bucket(state: str) -> str:
     if state == STATUS_NON_JURISDICTION:
         return "non_jurisdiction_count"
     return "error_count"
+
+
+async def archive_due_qmf_tasks() -> int:
+    """归档已连续保持一致一整天的模型三任务，且全过程幂等。"""
+    pool = _pool()
+    async with pool.acquire() as conn:
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT snapshot.row_key FROM _qmf_status_snapshots AS snapshot "
+                    "JOIN _online_source_projection AS projection "
+                    " ON projection.parser_type=snapshot.parser_type AND projection.row_key=snapshot.row_key "
+                    "WHERE snapshot.parser_type=%s AND snapshot.feedback_state='completed_match' "
+                    "AND snapshot.archived_at IS NULL AND snapshot.archive_due_at IS NOT NULL "
+                    "AND snapshot.archive_due_at<=UTC_TIMESTAMP() AND projection.task_state='completed' "
+                    "FOR UPDATE",
+                    (MODEL_THREE_PARSER,),
+                )
+                keys = [str(row[0]) for row in await cur.fetchall() if row[0]]
+                if not keys:
+                    await conn.commit()
+                    return 0
+                placeholders = ",".join(["%s"] * len(keys))
+                columns = ["截止时间", "核查人", "姓名", "身份证号", "联系方式", "地址", "下发社区", "核查结果", "备注"]
+                quoted = ",".join(f"`{column}`" for column in columns)
+                await cur.execute(
+                    f"INSERT IGNORE INTO OnlineDataArchive.t_suspect_unrevoked_archive "
+                    f"(_row_key,{quoted},_archive_reason) "
+                    f"SELECT _row_key,{quoted},'qmf_feedback_match' FROM t_suspect_unrevoked "
+                    f"WHERE _row_key IN ({placeholders})",
+                    keys,
+                )
+                await cur.execute(
+                    f"DELETE FROM t_suspect_unrevoked WHERE _row_key IN ({placeholders})", keys
+                )
+                await cur.execute(
+                    f"DELETE FROM _online_source_rows WHERE parser_type=%s AND row_key IN ({placeholders})",
+                    (MODEL_THREE_PARSER, *keys),
+                )
+                await cur.execute(
+                    f"DELETE FROM _online_source_projection WHERE parser_type=%s AND row_key IN ({placeholders})",
+                    (MODEL_THREE_PARSER, *keys),
+                )
+                await reconcile_projection_task_graph(cur, MODEL_THREE_PARSER)
+                await cur.execute(
+                    f"UPDATE _qmf_status_snapshots SET archived_at=UTC_TIMESTAMP() "
+                    f"WHERE parser_type=%s AND row_key IN ({placeholders})",
+                    (MODEL_THREE_PARSER, *keys),
+                )
+            await conn.commit()
+            return len(keys)
+        except Exception:
+            await conn.rollback()
+            raise
 
 
 async def ensure_qmf_status_scan_schema(cur) -> None:
@@ -167,6 +223,9 @@ async def ensure_qmf_status_scan_schema(cur) -> None:
             origin VARCHAR(40) NOT NULL DEFAULT '',
             error_code VARCHAR(64) NOT NULL DEFAULT '',
             scan_run_id BIGINT NOT NULL,
+            matched_at DATETIME DEFAULT NULL,
+            archive_due_at DATETIME DEFAULT NULL,
+            archived_at DATETIME DEFAULT NULL,
             last_scanned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP,
@@ -178,6 +237,18 @@ async def ensure_qmf_status_scan_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    for column, definition in (
+        ("matched_at", "DATETIME DEFAULT NULL AFTER scan_run_id"),
+        ("archive_due_at", "DATETIME DEFAULT NULL AFTER matched_at"),
+        ("archived_at", "DATETIME DEFAULT NULL AFTER archive_due_at"),
+    ):
+        await cur.execute(
+            "SHOW COLUMNS FROM `_qmf_status_snapshots` WHERE Field=%s", (column,)
+        )
+        if not await cur.fetchone():
+            await cur.execute(
+                f"ALTER TABLE `_qmf_status_snapshots` ADD COLUMN {column} {definition}"
+            )
 
 
 async def _acquire_lock(cur) -> bool:
@@ -263,6 +334,11 @@ async def create_status_scan_run(
                             END
                             OR snapshot.last_scanned_at<DATE_SUB(
                                 UTC_TIMESTAMP(), INTERVAL 7 DAY
+                            )
+                            OR (
+                                snapshot.feedback_state='completed_match'
+                                AND snapshot.archive_due_at IS NOT NULL
+                                AND snapshot.archive_due_at<=UTC_TIMESTAMP()
                             )
                         )
                 """
@@ -472,8 +548,10 @@ async def persist_realtime_qmf_status(
                 parser_type,row_key,source_id,source_revision,
                 source_row_hash,identity_hmac,platform_result,
                 feedback_state,feedback_result,checked_at,origin,
-                error_code,scan_run_id,last_scanned_at
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'',0,UTC_TIMESTAMP())
+                error_code,scan_run_id,matched_at,archive_due_at,archived_at,last_scanned_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'',0,
+                IF(%s='completed_match',UTC_TIMESTAMP(),NULL),
+                IF(%s='completed_match',DATE_SUB(DATE_ADD(DATE(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)),INTERVAL 1 DAY),INTERVAL 8 HOUR),NULL),NULL,UTC_TIMESTAMP())
             ON DUPLICATE KEY UPDATE
                 source_id=VALUES(source_id),
                 source_revision=VALUES(source_revision),
@@ -484,6 +562,9 @@ async def persist_realtime_qmf_status(
                 feedback_result=VALUES(feedback_result),
                 checked_at=VALUES(checked_at),
                 origin=VALUES(origin),error_code='',
+                matched_at=IF(VALUES(feedback_state)='completed_match',COALESCE(matched_at,VALUES(matched_at)),NULL),
+                archive_due_at=IF(VALUES(feedback_state)='completed_match',COALESCE(archive_due_at,VALUES(archive_due_at)),NULL),
+                archived_at=IF(VALUES(feedback_state)='completed_match',archived_at,NULL),
                 scan_run_id=0,last_scanned_at=UTC_TIMESTAMP()
             """,
             (
@@ -498,6 +579,8 @@ async def persist_realtime_qmf_status(
                 status.result,
                 status.checked_at,
                 origin,
+                status.state,
+                status.state,
             ),
         )
 
@@ -554,8 +637,10 @@ async def _finish_item(
                     parser_type,row_key,source_id,source_revision,
                     source_row_hash,identity_hmac,platform_result,
                     feedback_state,feedback_result,checked_at,origin,
-                    error_code,scan_run_id,last_scanned_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP())
+                    error_code,scan_run_id,matched_at,archive_due_at,archived_at,last_scanned_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    IF(%s='completed_match',UTC_TIMESTAMP(),NULL),
+                    IF(%s='completed_match',DATE_SUB(DATE_ADD(DATE(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)),INTERVAL 1 DAY),INTERVAL 8 HOUR),NULL),NULL,UTC_TIMESTAMP())
                 ON DUPLICATE KEY UPDATE
                     source_id=VALUES(source_id),
                     source_revision=VALUES(source_revision),
@@ -566,6 +651,9 @@ async def _finish_item(
                     feedback_result=VALUES(feedback_result),
                     checked_at=VALUES(checked_at),
                     origin=VALUES(origin),error_code=VALUES(error_code),
+                    matched_at=IF(VALUES(feedback_state)='completed_match',COALESCE(matched_at,VALUES(matched_at)),NULL),
+                    archive_due_at=IF(VALUES(feedback_state)='completed_match',COALESCE(archive_due_at,VALUES(archive_due_at)),NULL),
+                    archived_at=IF(VALUES(feedback_state)='completed_match',archived_at,NULL),
                     scan_run_id=VALUES(scan_run_id),last_scanned_at=UTC_TIMESTAMP()
                 """,
                 (
@@ -574,6 +662,7 @@ async def _finish_item(
                     item["identity_hmac"],
                     normalize_qmf_result(item["expected_result"]), state,
                     feedback_result, checked_at, origin, safe_code, run_id,
+                    state, state,
                 ),
             )
             await cur.execute(
@@ -686,6 +775,12 @@ async def run_status_scan(run_id: int) -> None:
     except Exception:
         stop_code = "scan_session_failed"
     await _finish_run(run_id, stopped_code=stop_code)
+    try:
+        archived = await archive_due_qmf_tasks()
+        if archived:
+            print(f"[QMF_STATUS_SCAN] 已归档全民防反馈一致且满一天任务 {archived} 条")
+    except Exception as exc:  # 归档失败不覆盖扫描结果，下次扫描继续重试
+        print(f"[QMF_STATUS_SCAN] 延迟归档失败：{type(exc).__name__}")
 
 
 def launch_status_scan(run_id: int) -> None:
