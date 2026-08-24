@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     VISIT_SOURCE_MAX_PAGES: int = 1000
     VISIT_SOURCE_MAX_RECORDS: int = 100000
     VISIT_SOURCE_AUTO_CONFIRM: bool = False
+    # Legacy model-three task acquisition.  Credentials stay server-side;
+    # QMF_* values take precedence, with the visit-source values retained as
+    # a backwards-compatible fallback for deployments that share them.
+    QMF_SOURCE_ACQUISITION_ENABLED: bool = False
+    QMF_SOURCE_BASE_URL: str = ""
+    QMF_SOURCE_TIMEOUT_SECONDS: int = 30
+    QMF_SOURCE_MAX_PAGES: int = 1000
+    QMF_SOURCE_MAX_RECORDS: int = 100000
+    QMF_SOURCE_AUTO_SYNC: bool = True
     CERTIFICATE_IMAGE_BASE_URL: str = ""
     CERTIFICATE_SOURCE_DAILY_ENABLED: bool = False
     CERTIFICATE_SOURCE_DAILY_TIME: str = "02:30"
