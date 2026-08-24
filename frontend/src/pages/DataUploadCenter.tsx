@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Modal,
+  Progress,
   Statistic,
   Table,
   Tag,
@@ -18,6 +19,9 @@ import { useAuth } from '../context/AuthContext'
 import { canManageFullchainArchive } from '../utils/mobileTaskRouting'
 import {
   formatUTCTime,
+  getExternalAcquisitionRun,
+  getLatestExternalAcquisitionRun,
+  startQmfSourceSync,
   type PhotoImportBatch,
   type PhotoImportReconcileResult,
   workflowApi,
@@ -58,7 +62,8 @@ export default function DataUploadCenter() {
       || user?.role === 'super_admin'
       || user?.permissions.includes('workflow.ticket.manage'),
   )
-  const canUseUploadCenter = canManagePoliceDispatch || canManagePhotoImport
+  const canManageQmfSource = Boolean(user?.permissions.includes('sync.trigger'))
+  const canUseUploadCenter = canManagePoliceDispatch || canManagePhotoImport || canManageQmfSource
   const [photoFileList, setPhotoFileList] = useState<UploadFile[]>([])
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoBatch, setPhotoBatch] = useState<PhotoImportBatch | null>(null)
@@ -66,6 +71,39 @@ export default function DataUploadCenter() {
   const [photoLoading, setPhotoLoading] = useState(false)
   const [photoHistory, setPhotoHistory] = useState<PhotoImportBatch[]>([])
   const [photoReconcile, setPhotoReconcile] = useState<PhotoImportReconcileResult | null>(null)
+  const [qmfRun, setQmfRun] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
+  const [qmfLoading, setQmfLoading] = useState(false)
+
+  const loadQmfRun = async () => {
+    if (!canManageQmfSource) return
+    try {
+      const latest = await getLatestExternalAcquisitionRun('qmf_source')
+      if (latest) setQmfRun(latest)
+    } catch {
+      // 同步入口仍可使用；任务状态读取失败不阻断页面其他上传功能。
+    }
+  }
+
+  useEffect(() => { void loadQmfRun() }, [canManageQmfSource])
+  useEffect(() => {
+    if (!canManageQmfSource || !qmfRun || !['queued', 'running'].includes(qmfRun.status)) return
+    const timer = window.setInterval(() => {
+      void getExternalAcquisitionRun(qmfRun.id).then(setQmfRun).catch(() => undefined)
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [canManageQmfSource, qmfRun?.id, qmfRun?.status])
+
+  const handleQmfSync = async () => {
+    setQmfLoading(true)
+    try {
+      const response = await startQmfSourceSync()
+      setQmfRun(response.data)
+    } catch (error: any) {
+      Modal.error({ title: '全民防同步启动失败', content: error?.response?.data?.detail || '请稍后重试' })
+    } finally {
+      setQmfLoading(false)
+    }
+  }
 
   const loadPhotoHistory = async () => {
     if (!canManagePhotoImport) return
@@ -196,6 +234,42 @@ export default function DataUploadCenter() {
           message="当前账号没有上传权限"
           description="当前账号没有可用的数据上传权限。"
         />
+      )}
+
+      {canManageQmfSource && (
+        <Panel
+          title="全民防同步"
+          description="从全民防只读获取疑似未注销模型三的未核查任务，不属于腾讯在线表同步；已在平台完成的任务会保留，交由每日反馈核对后归档。"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="primary" loading={qmfLoading} onClick={() => void handleQmfSync()}>
+              获取未核查任务
+            </Button>
+            {qmfRun && (
+              <span className="text-sm text-[var(--app-text-secondary)]">
+                最近任务：{qmfRun.status === 'success' ? '已完成' : qmfRun.status === 'warning' ? '完成但有提醒' : qmfRun.status === 'failed' ? '失败' : qmfRun.status === 'running' ? '处理中' : '排队中'}
+              </span>
+            )}
+          </div>
+          {qmfRun && (
+            <div className="mt-3 rounded-lg border border-[var(--app-border)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span>{qmfRun.message || '全民防同步任务'}</span>
+                {qmfRun.created_at && <span className="text-[var(--app-text-secondary)]">{formatUTCTime(qmfRun.created_at, systemTimezone)}</span>}
+              </div>
+              {qmfRun.progress !== null && <Progress percent={qmfRun.progress} size="small" status={qmfRun.status === 'failed' ? 'exception' : qmfRun.status === 'success' || qmfRun.status === 'warning' ? 'success' : 'active'} />}
+              {qmfRun.error_message && <Alert className="mt-2" type="error" showIcon message={qmfRun.error_message} />}
+              {qmfRun.result && (
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-[var(--app-text-secondary)]">
+                  <span>读取 {qmfRun.result.record_count ?? 0} 条</span>
+                  <span>有效 {qmfRun.result.valid_count ?? 0} 条</span>
+                  <span>社区未匹配 {qmfRun.result.unresolved_count ?? 0} 条</span>
+                  <span>来源问题 {qmfRun.result.issue_count ?? 0} 条</span>
+                </div>
+              )}
+            </div>
+          )}
+        </Panel>
       )}
 
       {canManagePhotoImport && (

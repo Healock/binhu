@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('binhuDesktop', {
   target: 'win7',
-  appVersion: '0.25.27',
+  appVersion: '0.25.28',
   getConfig: () => ipcRenderer.invoke('desktop:get-config'),
   openOnline: () => ipcRenderer.invoke('desktop:open-online'),
   openOffline: () => ipcRenderer.invoke('desktop:open-offline'),

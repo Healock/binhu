@@ -22,6 +22,8 @@ from services.permissions import (
 )
 from services.parsers import get_parser
 from services.police_dispatch import (
+    PUBLISH_OWNED_COLUMNS,
+    WORKFLOW_EDITABLE_COLUMNS,
     apply_clean_import_actions,
     apply_preprocessing_suggestions,
     build_feedback_workbook,
@@ -560,6 +562,9 @@ def test_publish_comparison_columns_follow_current_tencent_layout():
 
     assert "登记情况" in _publish_comparison_columns(parser, list(new_layout))
     assert "登记情况" not in _publish_comparison_columns(parser, list(old_layout))
+    comparison_columns = _publish_comparison_columns(parser, list(new_layout))
+    assert comparison_columns == list(PUBLISH_OWNED_COLUMNS)
+    assert not set(WORKFLOW_EDITABLE_COLUMNS) & set(comparison_columns)
 
 
 def test_publish_request_values_omit_columns_missing_from_old_layout():
@@ -574,13 +579,29 @@ def test_publish_request_values_omit_columns_missing_from_old_layout():
 
     assert requested["地址"] == "值-地址"
     assert "登记情况" not in requested
+    assert "核查人" not in requested
+    assert "现住址" not in requested
 
 
 def test_publish_values_match_uses_only_saved_physical_columns():
-    actual = {"姓名": "甲", "登记情况": ""}
+    actual = {"姓名": "甲", "登记情况": "", "核查人": "网格员甲"}
 
-    assert publish_values_match({"姓名": "甲"}, actual)
+    assert publish_values_match({"姓名": "甲", "核查人": ""}, actual)
     assert not publish_values_match({"姓名": "甲", "登记情况": "流口已注销"}, actual)
+    assert not publish_values_match({"核查人": ""}, actual)
+
+
+def test_publish_overwrite_values_preserve_live_workflow_fields():
+    parser = get_parser("全链条")
+    comparison_columns = _publish_comparison_columns(parser, list(parser.COLUMNS))
+    platform_values = {column: "平台值" for column in parser.COLUMNS}
+    live_values = {column: "腾讯值" for column in parser.COLUMNS}
+
+    requested = _publish_request_values(platform_values, comparison_columns)
+    merged = {**live_values, **requested}
+
+    assert all(merged[column] == "平台值" for column in PUBLISH_OWNED_COLUMNS)
+    assert all(merged[column] == "腾讯值" for column in WORKFLOW_EDITABLE_COLUMNS)
 
 
 def test_task_counts_keeps_review_and_publish_states_separate():
@@ -1249,12 +1270,14 @@ def test_normal_sync_reconciliation_classifies_exact_conflict_and_absent_rows():
             (12, 21, "b" * 64, stable_json(source_conflict)),
         ],
         [
-            (101, keys[0], stable_json(requested_exact), 7),
-            (102, keys[1], stable_json(requested_conflict), 7),
+            (101, keys[0], stable_json(requested_exact), 7,
+             "needs_reconciliation", "sending", 20),
+            (102, keys[1], stable_json(requested_conflict), 7,
+             "needs_reconciliation", "sending", 21),
             (103, keys[2], stable_json({
                 "下发日期": "08-05", "身份证号": "C1",
                 "电话号码": "3", "姓名": "丙", "社区": "长板",
-                }), 7),
+                }), 7, "needs_reconciliation", "sending", 22),
             ],
         [],
     ])
@@ -1287,7 +1310,8 @@ def test_normal_sync_reconciliation_ignores_registration_status_for_old_layout()
     cursor.execute = AsyncMock()
     cursor.fetchall = AsyncMock(side_effect=[
         [(11, 20, "a" * 64, stable_json(source))],
-        [(101, key, stable_json(requested), 7)],
+        [(101, key, stable_json(requested), 7,
+          "needs_reconciliation", "sending", 20)],
         [],
     ])
     cursor.fetchone = AsyncMock(return_value=(1, 0, 1, 0))
@@ -1297,3 +1321,69 @@ def test_normal_sync_reconciliation_ignores_registration_status_for_old_layout()
     )
 
     assert result == {"success": 1, "conflict": 0, "retryable": 0}
+
+
+def test_normal_sync_reconciliation_repairs_editable_only_historical_conflict():
+    requested = {
+        "下发日期": "08-24", "截止日期": "08-27", "身份证号": "A1",
+        "电话号码": "1", "姓名": "甲", "社区": "长板", "来源": "平安码",
+        "地址": "测试地址", "登记情况": "流口未登记",
+        "创建时间": "2026-08-24 10:00:00", "核查人": "",
+        "现住址": "", "核查结果": "", "研判": "", "二次反馈": "",
+    }
+    source = {
+        **requested,
+        "核查人": "网格员甲",
+        "现住址": "测试现住址",
+        "核查结果": "已登记",
+    }
+    key = publish_business_key("A1", "1", "08-24")
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(side_effect=[
+        [(11, 20, "a" * 64, stable_json(source))],
+        [(101, key, stable_json(requested), 7,
+          "conflict", "content_conflict", 20)],
+        [(101, 8)],
+    ])
+    cursor.fetchone = AsyncMock(side_effect=[
+        (1, 1, 1, 0, 0, 0),
+        (1, 0, 0, 0),
+    ])
+
+    result = asyncio.run(reconcile_police_dispatch_publications(cursor, 5))
+
+    assert result == {"success": 1, "conflict": 0, "retryable": 0}
+    sql = "\n".join(call.args[0] for call in cursor.execute.await_args_list)
+    assert "auto_accept_workflow_updates" in sql
+    assert "status IN ('needs_reconciliation','conflict')" in sql
+    assert "SET status=%s,error_code=%s" in sql
+
+
+def test_normal_sync_reconciliation_keeps_ambiguous_historical_conflict():
+    requested = {
+        "下发日期": "08-24", "身份证号": "A1", "电话号码": "1",
+        "姓名": "甲", "社区": "长板",
+    }
+    source = {**requested, "核查人": "网格员甲"}
+    key = publish_business_key("A1", "1", "08-24")
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(side_effect=[
+        [
+            (11, 20, "a" * 64, stable_json(source)),
+            (12, 21, "b" * 64, stable_json(source)),
+        ],
+        [(101, key, stable_json(requested), 7,
+          "conflict", "content_conflict", 99)],
+        [],
+    ])
+
+    result = asyncio.run(reconcile_police_dispatch_publications(cursor, 5))
+
+    assert result == {"success": 0, "conflict": 0, "retryable": 0}
+    update_sql = [
+        call.args[0] for call in cursor.execute.await_args_list
+        if call.args[0].lstrip().startswith("UPDATE")
+    ]
+    assert update_sql == []

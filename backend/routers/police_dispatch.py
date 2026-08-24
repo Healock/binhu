@@ -46,6 +46,7 @@ from services.permissions import (
 from services.police_dispatch import (
     FINAL_ACTIONS,
     MAX_POLICE_FILE_BYTES,
+    PUBLISH_OWNED_COLUMNS,
     PoliceWorkbookError,
     apply_clean_import_actions,
     apply_preprocessing_suggestions,
@@ -2148,9 +2149,12 @@ def _publish_values(task: dict[str, Any], community: str, publish_date) -> dict[
 
 
 def _publish_comparison_columns(parser, source_columns: list[str]) -> list[str]:
-    """只校验腾讯物理表实际存在的发布列。"""
+    """只校验腾讯物理表实际存在且由下发流程拥有的列。"""
     source_column_set = set(source_columns)
-    return [column for column in parser.COLUMNS if column in source_column_set]
+    return [
+        column for column in parser.COLUMNS
+        if column in source_column_set and column in PUBLISH_OWNED_COLUMNS
+    ]
 
 
 def _publish_request_values(
@@ -2584,13 +2588,23 @@ async def _execute_publish_selection(
                         spreadsheet["data_sheet_id"], start_row - 1, 0, rows
                     )],
                 )
+                try:
+                    verified_rows = await client.read_source_rows(
+                        spreadsheet["file_id"], spreadsheet["data_sheet_id"],
+                        start_row, start_row + len(chunk) - 1, source_columns,
+                    )
+                    verified_by_row = {
+                        int(item["physical_row"]): item
+                        for item in verified_rows
+                    }
+                except Exception:
+                    verified_by_row = {}
                 for index, (task, values, request_values, key) in enumerate(chunk):
                     physical_row = start_row + index
+                    verified = verified_by_row.get(physical_row)
                     try:
-                        verified = await client.read_source_row(
-                            spreadsheet["file_id"], spreadsheet["data_sheet_id"],
-                            physical_row, source_columns,
-                        )
+                        if verified is None:
+                            raise ValueError("腾讯范围回读缺少目标行")
                         verified["values"] = parser.normalize_source_row(
                             verified["values"]
                         )

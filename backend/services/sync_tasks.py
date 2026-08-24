@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import datetime
 
+from config import settings
 from database import db_manager
 from services.notifications import (
     create_sync_failure_notifications,
@@ -41,7 +42,11 @@ async def _estimate_steps(cur) -> int:
     )
     parser_types = [row[0] for row in await cur.fetchall()]
     report_types = {ptype for ptype in parser_types if ptype in BUILDERS}
-    return len(parser_types) + len(report_types) + (1 if report_types else 0)
+    return (
+        len(parser_types)
+        + len(report_types)
+        + (1 if report_types else 0)
+    )
 
 
 async def run_scheduled_visit_source_acquisition() -> None:

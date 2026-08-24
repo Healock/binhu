@@ -181,6 +181,7 @@ class CommunityAliasesUpdate(BaseModel):
     police_officer_ids: Optional[list[int]] = Field(default=None, max_length=50)
     area_id: Optional[int] = Field(default=None, gt=0)
     qmf_community_code: Optional[str] = Field(default=None, max_length=20)
+    qmf_organization_codes: list[str] = Field(default_factory=list, max_length=30)
 
     @field_validator("name")
     @classmethod
@@ -200,6 +201,20 @@ class CommunityAliasesUpdate(BaseModel):
         normalized = normalize_qmf_community_code(value)
         if normalized and not valid_qmf_community_code(normalized):
             raise ValueError("全民防社区代码必须为 10 位大写字母或数字")
+        return normalized
+
+    @field_validator("qmf_organization_codes")
+    @classmethod
+    def normalize_qmf_organization_codes(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            item = str(value or "").strip().upper()
+            if not item:
+                continue
+            if len(item) > 50 or not item.isalnum():
+                raise ValueError("全民防组织编码只能填写字母或数字，长度不超过 50 位")
+            if item not in normalized:
+                normalized.append(item)
         return normalized
     @field_validator("aliases")
     @classmethod
@@ -690,6 +705,11 @@ async def list_communities(
         )
         alias_rows = await cur.fetchall()
         await cur.execute(
+            "SELECT community_id, organization_code FROM _qmf_organization_codes "
+            "WHERE is_active=1 ORDER BY community_id, organization_code"
+        )
+        organization_rows = await cur.fetchall()
+        await cur.execute(
             """
             SELECT department.community_id, member.id, member.name
             FROM _grid_member_department_links AS link
@@ -710,6 +730,11 @@ async def list_communities(
             "id": int(member_id),
             "name": str(member_name),
         })
+    organizations_by_community: dict[int, list[str]] = {}
+    for community_id, organization_code in organization_rows:
+        organizations_by_community.setdefault(int(community_id), []).append(
+            str(organization_code or "").strip()
+        )
     return {
         "data": [
             {
@@ -728,6 +753,7 @@ async def list_communities(
                 "area_name": str(row[5] or ""),
                 "is_active": bool(row[6]),
                 "qmf_community_code": str(row[7] or ""),
+                "qmf_organization_codes": organizations_by_community.get(int(row[0]), []),
             }
             for row in rows
         ]
@@ -1230,6 +1256,42 @@ async def update_community_aliases(
                     "UPDATE _communities SET qmf_community_code=%s WHERE id=%s",
                     (data.qmf_community_code or None, community_id),
                 )
+
+            if "qmf_organization_codes" in data.model_fields_set:
+                requested_codes = set(data.qmf_organization_codes)
+                if requested_codes:
+                    placeholders = ",".join(["%s"] * len(requested_codes))
+                    await cur.execute(
+                        f"SELECT community_id, organization_code "
+                        f"FROM _qmf_organization_codes "
+                        f"WHERE organization_code IN ({placeholders}) "
+                        "AND community_id<>%s AND is_active=1",
+                        [*sorted(requested_codes), community_id],
+                    )
+                    conflict = await cur.fetchone()
+                    if conflict:
+                        raise HTTPException(
+                            400,
+                            f"组织编码“{conflict[1]}”已绑定其他社区",
+                        )
+                await cur.execute(
+                    "UPDATE _qmf_organization_codes SET is_active=0 "
+                    "WHERE community_id=%s",
+                    (community_id,),
+                )
+                if requested_codes:
+                    await cur.executemany(
+                        """
+                        INSERT INTO _qmf_organization_codes (
+                            community_id, organization_code, source, is_active
+                        ) VALUES (%s, %s, 'manual', 1)
+                        ON DUPLICATE KEY UPDATE
+                            community_id=VALUES(community_id),
+                            is_active=1,
+                            source='manual'
+                        """,
+                        [(community_id, code) for code in sorted(requested_codes)],
+                    )
 
             target_name = data.name or current["name"]
             target_normalized_name = normalize_community(target_name)

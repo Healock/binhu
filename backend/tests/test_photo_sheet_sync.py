@@ -11,6 +11,8 @@ from services.photo_sheet_sync import (
     SourceRowsCache,
     _pause_exhausted_outbox,
     _pair_relocated_rows,
+    _pair_revised_rows,
+    _canonical_revised_mapping,
     normalize_import_identity,
     historical_result,
     _locate_mapping,
@@ -354,6 +356,51 @@ class PhotoSheetOutboxCacheTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PhotoSheetRelocationTests(unittest.IsolatedAsyncioTestCase):
+    def test_unique_identity_pairs_a_revised_source_row_without_creating_a_ticket(self):
+        incoming = parse_rows([source_row(
+            23, ["冬梅社区", "出租房核查", "甲", "32050020000101001X", "申请人", "2026/8/12", ""],
+        )])[0]
+        previous = ExistingPhotoSheetRow(
+            1, 101, 10, "old-fingerprint", identity_hmac=incoming.identity_hmac,
+        )
+
+        pairs, remaining = _pair_revised_rows([previous], [incoming], {})
+
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0].previous.work_order_id, 101)
+        self.assertEqual(pairs[0].incoming.physical_row, 23)
+        self.assertEqual(remaining, [])
+
+    def test_revised_row_with_duplicate_identity_stays_for_manual_review(self):
+        incoming = parse_rows([source_row(
+            23, ["冬梅社区", "出租房核查", "甲", "32050020000101001X", "申请人", "2026/8/12", ""],
+        )])[0]
+        previous = ExistingPhotoSheetRow(
+            1, 101, 10, "old-fingerprint", identity_hmac=incoming.identity_hmac,
+        )
+        another_previous = ExistingPhotoSheetRow(
+            2, 102, 11, "another-fingerprint", identity_hmac=incoming.identity_hmac,
+        )
+
+        pairs, remaining = _pair_revised_rows([previous, another_previous], [incoming], {})
+
+        self.assertEqual(pairs, [])
+        self.assertEqual({item.work_order_id for item in remaining}, {101, 102})
+
+    def test_revised_duplicate_prefers_earlier_ticket_with_existing_attachment(self):
+        previous = ExistingPhotoSheetRow(
+            1, 101, 10, "old", identity_hmac="identity", has_attachment=True,
+            work_order_status="completed", created_at=datetime(2026, 8, 10),
+        )
+        current = ExistingPhotoSheetRow(
+            2, 102, 23, "new", identity_hmac="identity", has_attachment=False,
+            work_order_status="queued", created_at=datetime(2026, 8, 12),
+        )
+
+        canonical = _canonical_revised_mapping(previous, current)
+
+        self.assertEqual(canonical.work_order_id, 101)
+
     def test_swapped_physical_rows_are_paired_before_unique_rows_are_restored(self):
         first = parse_rows([source_row(
             20, ["冬梅社区", "来源甲", "甲", "32050020000101001X", "申请人", "2026/8/11", ""],

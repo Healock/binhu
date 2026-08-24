@@ -2079,6 +2079,7 @@ export interface GridCommunity {
   area_name: string
   is_active: boolean
   qmf_community_code: string
+  qmf_organization_codes: string[]
 }
 
 export interface CommunityArea {
@@ -2194,6 +2195,7 @@ export async function updateGridCommunityDetails(
   policeOfficerIds: number[],
   areaId: number,
   qmfCommunityCode: string,
+  qmfOrganizationCodes: string[] = [],
 ): Promise<{
   name: string
   aliases: string[]
@@ -2206,6 +2208,7 @@ export async function updateGridCommunityDetails(
     police_officer_ids: policeOfficerIds,
     area_id: areaId,
     qmf_community_code: qmfCommunityCode,
+    qmf_organization_codes: qmfOrganizationCodes,
   })
   return data
 }
@@ -2581,6 +2584,13 @@ export async function getLatestExternalAcquisitionRun(kind: string): Promise<Ext
     ...activeRequest,
     params: { kind },
   })).data.data || null
+}
+
+export async function startQmfSourceSync(): Promise<{
+  data: ExternalAcquisitionRun
+  reused: boolean
+}> {
+  return (await api.post('/qmf-source/sync', {}, { ...activeRequest, timeout: 30_000 })).data
 }
 
 export async function getCodeSummary(

@@ -148,11 +148,11 @@ class TxDocsClient:
                         http_status=resp.status_code,
                         error_code=business_error.code,
                     )
-                    # 腾讯偶尔会把上游 TCP 读超时包装成 HTTP 200 + 400010。
-                    # 这类错误通常是瞬时传输问题，和参数/权限错误不同，可以安全重试；
-                    # 只有明确包含传输超时特征时才重试，避免掩盖真实业务错误。
+                    # 腾讯偶尔会把只读范围请求的瞬时故障包装成 HTTP 200 + 400010。
+                    # 只有 GET 且错误包含已确认的临时特征时才重试，写请求始终不重放。
                     if (
                         attempt < max_retries - 1
+                        and method.upper() == "GET"
                         and self._is_retryable_transport_error(business_error)
                     ):
                         await asyncio.sleep(2 ** attempt)
@@ -220,6 +220,7 @@ class TxDocsClient:
             "timeout",
             "tcp client transport",
             "transport",
+            "cgo ticket busy",
         )
         return any(marker in message for marker in transport_markers)
 
@@ -613,20 +614,39 @@ class TxDocsClient:
         physical_row: int,
         column_names: list[str],
     ) -> dict:
+        rows = await self.read_source_rows(
+            file_id, sheet_id, physical_row, physical_row, column_names,
+        )
+        return rows[0]
+
+    async def read_source_rows(
+        self,
+        file_id: str,
+        sheet_id: str,
+        start_row: int,
+        end_row: int,
+        column_names: list[str],
+    ) -> list[dict]:
+        """一次读取连续物理行；缺失行保留为空，交由调用方进入待对账。"""
+        if end_row < start_row:
+            return []
         col_end = column_letter(len(column_names) - 1)
         response = await self.read_range(
             file_id,
             sheet_id,
-            f"A{physical_row}:{col_end}{physical_row}",
+            f"A{start_row}:{col_end}{end_row}",
         )
         raw_rows = self._raw_rows(response)
-        raw_row = raw_rows[0] if raw_rows else []
-        values, metadata = self._decode_row(raw_row, column_names)
-        return {
-            "physical_row": physical_row,
-            "values": values,
-            "cell_meta": metadata,
-        }
+        result: list[dict] = []
+        for offset in range(end_row - start_row + 1):
+            raw_row = raw_rows[offset] if offset < len(raw_rows) else []
+            values, metadata = self._decode_row(raw_row, column_names)
+            result.append({
+                "physical_row": start_row + offset,
+                "values": values,
+                "cell_meta": metadata,
+            })
+        return result
 
     async def batch_update(
         self,

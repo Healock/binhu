@@ -275,11 +275,16 @@ async def retry_photo_sheet_conflict(
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT work_order_id,status FROM photo_sheet_conflicts WHERE id=%s FOR UPDATE", (conflict_id,),
+                "SELECT work_order_id,status,conflict_type FROM photo_sheet_conflicts WHERE id=%s FOR UPDATE",
+                (conflict_id,),
             )
             row = await cur.fetchone()
             if not row:
                 raise HTTPException(404, "冲突记录不存在")
+            if row[1] != "pending":
+                raise HTTPException(409, "该冲突已经处理，无需重复重试")
+            if str(row[2] or "") == "source_missing":
+                raise HTTPException(409, "来源行已不存在，无需重试")
             await cur.execute(
                 "UPDATE photo_sheet_outbox SET status='pending',next_attempt_at=NULL,last_error='',error_code='' "
                 "WHERE work_order_id=%s AND status<>'done'", (row[0],),
@@ -310,7 +315,7 @@ async def retry_photo_sheet_outbox(
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT work_order_id,status FROM photo_sheet_outbox WHERE id=%s FOR UPDATE",
+                "SELECT work_order_id,status,error_code FROM photo_sheet_outbox WHERE id=%s FOR UPDATE",
                 (outbox_id,),
             )
             row = await cur.fetchone()
@@ -318,6 +323,8 @@ async def retry_photo_sheet_outbox(
                 raise HTTPException(404, "写回任务不存在")
             if row[1] == "done":
                 raise HTTPException(409, "该写回任务已经完成")
+            if str(row[2] or "") in {"source_missing", "superseded"}:
+                raise HTTPException(409, "该任务来源已失效或已合并，无需重试")
             ticket_id = int(row[0])
             await cur.execute(
                 "UPDATE photo_sheet_outbox SET status='pending',attempt_count=0,"
