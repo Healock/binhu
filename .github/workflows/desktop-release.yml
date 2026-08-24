@@ -235,12 +235,12 @@ jobs:
               local fallback=".build/fallback/$platform"
               local checksums="checksums.sha256"
               mkdir -p "$fallback"
-              curl --fail --location --retry 3 --retry-all-errors \
+              curl --fail --http1.1 --location --retry 3 --retry-all-errors \
                 "https://47.100.44.36/updates/$platform/$checksums" \
                 -o "$fallback/$checksums"
               grep -F " $filename" "$fallback/$checksums" > "$fallback/selected.sha256"
               test -s "$fallback/selected.sha256"
-              curl --fail --location --retry 3 --retry-all-errors \
+              curl --fail --http1.1 --location --retry 3 --retry-all-errors \
                 "https://47.100.44.36/updates/$platform/$filename" \
                 -o "$fallback/$filename"
               (cd "$fallback" && sha256sum -c selected.sha256)
