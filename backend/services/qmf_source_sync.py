@@ -81,7 +81,7 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
                 # 先把历史上直接写入业务表、但还没有来源缓存的任务迁移到
                 # 虚拟全民防来源，保证任务列表和状态核对使用同一投影。
                 await cur.execute(
-                    "SELECT row_key," + ",".join(
+                    "SELECT _row_key," + ",".join(
                         quote_identifier(column_map[column]) for column in parser.COLUMNS
                     ) + f" FROM {parser.table_name}"
                 )
