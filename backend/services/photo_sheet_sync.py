@@ -66,6 +66,21 @@ class ExistingPhotoSheetRow:
     work_order_id: int
     physical_row: int | None
     fingerprint: str
+    identity_hmac: str = ""
+    subject_name: str = ""
+    work_order_status: str = ""
+    result_status: str = ""
+    has_attachment: bool = False
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class RevisedPhotoSheetPair:
+    """一个旧工单与当前腾讯行之间的稳定身份迁移候选。"""
+
+    incoming: ParsedRow
+    previous: ExistingPhotoSheetRow
+    current: ExistingPhotoSheetRow | None = None
 
 
 class PhotoSheetRowLocationError(RuntimeError):
@@ -223,6 +238,255 @@ def _pair_relocated_rows(
         mapping for mapping in existing_rows if mapping.mapping_id not in matched_ids
     ]
     return matches, unmatched
+
+
+def _pair_revised_rows(
+    unmatched_existing: list[ExistingPhotoSheetRow],
+    incoming_rows: list[ParsedRow],
+    relocated_rows: dict[int, ExistingPhotoSheetRow],
+) -> tuple[list[RevisedPhotoSheetPair], list[ExistingPhotoSheetRow]]:
+    """按稳定身份识别“来源行被修订”而不是创建第二条工单。
+
+    A-F 指纹包含社区、来源、申请人和日期，任何一个字段被补齐或纠正都会
+    使原指纹失效。身份证 HMAC 是这类来源行唯一可复用的稳定身份，但只有
+    在旧映射和当前行都各自唯一时才允许迁移；重复身份证或缺失身份证继续
+    作为人工核查，不做猜测。
+    """
+    old_by_identity: dict[str, list[ExistingPhotoSheetRow]] = {}
+    for mapping in unmatched_existing:
+        identity = str(mapping.identity_hmac or "").strip()
+        if identity:
+            old_by_identity.setdefault(identity, []).append(mapping)
+
+    incoming_by_identity: dict[str, list[ParsedRow]] = {}
+    for row in incoming_rows:
+        if row.kind != "request" or not row.identity_hmac:
+            continue
+        incoming_by_identity.setdefault(row.identity_hmac, []).append(row)
+
+    pairs: list[RevisedPhotoSheetPair] = []
+    consumed_old: set[int] = set()
+    for identity in sorted(set(old_by_identity) & set(incoming_by_identity)):
+        old_group = old_by_identity[identity]
+        incoming_group = incoming_by_identity[identity]
+        if len(old_group) != 1 or len(incoming_group) != 1:
+            continue
+        previous = old_group[0]
+        incoming = incoming_group[0]
+        pairs.append(RevisedPhotoSheetPair(
+            incoming=incoming,
+            previous=previous,
+            current=relocated_rows.get(incoming.physical_row),
+        ))
+        consumed_old.add(previous.mapping_id)
+
+    remaining = [
+        mapping for mapping in unmatched_existing
+        if mapping.mapping_id not in consumed_old
+    ]
+    return pairs, remaining
+
+
+def _canonical_revised_mapping(
+    previous: ExistingPhotoSheetRow,
+    current: ExistingPhotoSheetRow | None,
+) -> ExistingPhotoSheetRow:
+    """选择合并后的真实工单，优先保留已有照片和较早工单。"""
+    if current is None:
+        return previous
+
+    def score(item: ExistingPhotoSheetRow) -> tuple[int, int, int, int]:
+        terminal = int(item.work_order_status in TERMINAL_STATUSES)
+        # 先保留已有附件，再保留已完成记录，最后保留更早创建的工单。
+        created = item.created_at.timestamp() if item.created_at else float("inf")
+        return (
+            int(item.has_attachment),
+            terminal,
+            -int(created),
+            -item.work_order_id,
+        )
+
+    return max((previous, current), key=score)
+
+
+async def _update_ticket_source_snapshot(cur, ticket_id: int, row: ParsedRow) -> None:
+    """把修订后的来源字段写回原工单，不创建新的业务实体。"""
+    await cur.execute(
+        "UPDATE photo_request_details SET subject_id=%s,subject_name=%s,identity_number=%s,"
+        "identity_hmac=%s,identity_hmac_version=%s,community_name=%s,source_label=%s,"
+        "requester_name_snapshot=%s,requested_at=%s,data_issue=%s WHERE work_order_id=%s",
+        (
+            f"row:{row.physical_row}",
+            row.values["对象姓名"][:100],
+            row.identity_number or None,
+            row.identity_hmac or None,
+            row.identity_hmac_version,
+            row.values["任务社区"][:200],
+            row.values["数据来源"][:200],
+            row.values["申请人员"][:100],
+            row.requested_at,
+            row.data_issue[:500],
+            ticket_id,
+        ),
+    )
+
+
+async def _reconcile_revised_outbox(
+    cur,
+    *,
+    source_id: int,
+    ticket_id: int,
+    row: ParsedRow,
+    result_status: str,
+) -> None:
+    """修订迁移后让 G 列状态与已有照片结果保持幂等。"""
+    if row.values["处理状态"] == COMPLETED_MARK:
+        await cur.execute(
+            "UPDATE photo_sheet_outbox SET status='done',next_attempt_at=NULL,"
+            "last_error='',error_code='' WHERE work_order_id=%s AND action='mark_completed'",
+            (ticket_id,),
+        )
+        await cur.execute(
+            "UPDATE photo_request_details SET external_sync_status='synced' WHERE work_order_id=%s",
+            (ticket_id,),
+        )
+        return
+    if result_status != "found":
+        return
+    await cur.execute(
+        "INSERT INTO photo_sheet_outbox (source_id,work_order_id,action) VALUES (%s,%s,'mark_completed') "
+        "ON DUPLICATE KEY UPDATE status=IF(status='done','done','pending'),"
+        "next_attempt_at=NULL,last_error='',error_code=''",
+        (source_id, ticket_id),
+    )
+    await cur.execute(
+        "UPDATE photo_request_details SET external_sync_status='pending' WHERE work_order_id=%s",
+        (ticket_id,),
+    )
+
+
+async def _supersede_photo_ticket(
+    cur,
+    *,
+    duplicate: ExistingPhotoSheetRow,
+    canonical: ExistingPhotoSheetRow,
+    physical_row: int,
+) -> None:
+    """合并重复投影，保留附件、事件和可审计的取消记录。"""
+    duplicate_id = duplicate.work_order_id
+    canonical_id = canonical.work_order_id
+    if duplicate_id == canonical_id:
+        return
+    await cur.execute(
+        "UPDATE work_order_attachments SET work_order_id=%s WHERE work_order_id=%s",
+        (canonical_id, duplicate_id),
+    )
+    await cur.execute(
+        "UPDATE photo_sheet_rows SET physical_row=NULL,sync_status='superseded',"
+        "last_error='来源修订已与原工单合并' WHERE work_order_id=%s",
+        (duplicate_id,),
+    )
+    await cur.execute(
+        "UPDATE photo_sheet_outbox SET status='cancelled',next_attempt_at=NULL,"
+        "error_code='superseded',last_error='来源修订已与原工单合并' "
+        "WHERE work_order_id=%s AND status<>'done'",
+        (duplicate_id,),
+    )
+    await cur.execute(
+        "UPDATE photo_request_details SET external_sync_status='superseded' "
+        "WHERE work_order_id=%s",
+        (duplicate_id,),
+    )
+    await cur.execute(
+        "UPDATE work_orders SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),"
+        "cancel_reason='来源修订已与原工单合并',version_no=version_no+1 "
+        "WHERE id=%s AND status NOT IN ('completed','approved','rejected','cancelled','withdrawn')",
+        (duplicate_id,),
+    )
+    await cur.execute(
+        "UPDATE work_order_steps SET status='cancelled',decision='superseded',"
+        "decision_note='来源修订已与原工单合并',decided_at=UTC_TIMESTAMP(),version_no=version_no+1 "
+        "WHERE work_order_id=%s AND status NOT IN ('completed','approved','rejected','cancelled')",
+        (duplicate_id,),
+    )
+    await cur.execute(
+        "UPDATE photo_sheet_conflicts SET status='resolved',resolved_at=UTC_TIMESTAMP(),"
+        "safe_detail='来源修订已自动合并，重复工单已关闭' "
+        "WHERE work_order_id=%s AND status='pending'",
+        (duplicate_id,),
+    )
+    await cur.execute(
+        "INSERT INTO work_order_events (work_order_id,event_type,actor_user_id,from_status,to_status,detail_json) "
+        "SELECT %s,'source_reconciled',NULL,'','',%s FROM DUAL WHERE NOT EXISTS ("
+        "SELECT 1 FROM work_order_events WHERE work_order_id=%s AND event_type='source_reconciled' "
+        "AND JSON_EXTRACT(detail_json,'$.duplicate_work_order_id')=%s)",
+        (
+            canonical_id,
+            json.dumps({
+                "source": SOURCE_CODE,
+                "physical_row": physical_row,
+                "duplicate_work_order_id": duplicate_id,
+                "reason": "source_row_revised",
+            }, ensure_ascii=False),
+            canonical_id,
+            duplicate_id,
+        ),
+    )
+
+
+async def _mark_source_missing(
+    cur,
+    *,
+    mapping: ExistingPhotoSheetRow,
+    actor_user_id: int | None,
+) -> None:
+    """来源行确实消失时关闭自动写回和活动工单，但保留历史。"""
+    ticket_id = mapping.work_order_id
+    await cur.execute(
+        "UPDATE photo_sheet_rows SET physical_row=NULL,sync_status='missing',"
+        "last_error='完整核对未找到对应腾讯行' WHERE work_order_id=%s",
+        (ticket_id,),
+    )
+    await cur.execute(
+        "UPDATE photo_sheet_outbox SET status='cancelled',next_attempt_at=NULL,"
+        "error_code='source_missing',last_error='腾讯来源行已不存在，无需重试' "
+        "WHERE work_order_id=%s AND status<>'done'",
+        (ticket_id,),
+    )
+    await cur.execute(
+        "UPDATE photo_request_details SET external_sync_status='source_missing' "
+        "WHERE work_order_id=%s",
+        (ticket_id,),
+    )
+    await cur.execute(
+        "UPDATE work_orders SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),"
+        "cancel_reason='腾讯来源行已不存在，无需重试',version_no=version_no+1 "
+        "WHERE id=%s AND status NOT IN ('completed','approved','rejected','cancelled','withdrawn')",
+        (ticket_id,),
+    )
+    await cur.execute(
+        "UPDATE work_order_steps SET status='cancelled',decision='source_missing',"
+        "decision_note='腾讯来源行已不存在，无需重试',decided_at=UTC_TIMESTAMP(),version_no=version_no+1 "
+        "WHERE work_order_id=%s AND status NOT IN ('completed','approved','rejected','cancelled')",
+        (ticket_id,),
+    )
+    await cur.execute(
+        "UPDATE photo_sheet_conflicts SET status='resolved',resolved_by=%s,"
+        "resolved_at=UTC_TIMESTAMP(),safe_detail='腾讯来源行已不存在，无需重试' "
+        "WHERE work_order_id=%s AND status='pending'",
+        (actor_user_id, ticket_id),
+    )
+    await cur.execute(
+        "INSERT INTO work_order_events (work_order_id,event_type,actor_user_id,from_status,to_status,detail_json) "
+        "SELECT %s,'source_missing',%s,'','cancelled',%s FROM DUAL WHERE NOT EXISTS ("
+        "SELECT 1 FROM work_order_events WHERE work_order_id=%s AND event_type='source_missing')",
+        (
+            ticket_id,
+            actor_user_id,
+            json.dumps({"source": SOURCE_CODE, "reason": "source_row_missing"}, ensure_ascii=False),
+            ticket_id,
+        ),
+    )
 
 
 def parse_source_url(value: str) -> tuple[str, str]:
@@ -1160,6 +1424,7 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
         full_sync_date = await get_business_date_from_db() if full else None
         await conn.begin()
         created = completed = 0
+        revised_count = superseded_count = source_missing_count = 0
         try:
             async with conn.cursor() as cur:
                 if full and not requested_full:
@@ -1176,8 +1441,14 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                         (source["id"],),
                     )
                     await cur.execute(
-                        "SELECT id,work_order_id,physical_row,row_fingerprint FROM photo_sheet_rows "
-                        "WHERE source_id=%s FOR UPDATE",
+                        "SELECT map.id,map.work_order_id,map.physical_row,map.row_fingerprint,"
+                        "detail.identity_hmac,detail.subject_name,order_row.status,detail.result_status,"
+                        "EXISTS (SELECT 1 FROM work_order_attachments attachment "
+                        "WHERE attachment.work_order_id=map.work_order_id AND attachment.deleted_at IS NULL),"
+                        "order_row.created_at FROM photo_sheet_rows map "
+                        "LEFT JOIN photo_request_details detail ON detail.work_order_id=map.work_order_id "
+                        "LEFT JOIN work_orders order_row ON order_row.id=map.work_order_id "
+                        "WHERE map.source_id=%s FOR UPDATE",
                         (source["id"],),
                     )
                     existing_rows = [
@@ -1186,8 +1457,17 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                             work_order_id=int(work_order_id),
                             physical_row=int(physical_row) if physical_row is not None else None,
                             fingerprint=str(fingerprint or ""),
+                            identity_hmac=str(identity_hmac or ""),
+                            subject_name=str(subject_name or ""),
+                            work_order_status=str(work_order_status or ""),
+                            result_status=str(result_status or ""),
+                            has_attachment=bool(has_attachment),
+                            created_at=created_at,
                         )
-                        for map_id, work_order_id, physical_row, fingerprint in await cur.fetchall()
+                        for (
+                            map_id, work_order_id, physical_row, fingerprint, identity_hmac,
+                            subject_name, work_order_status, result_status, has_attachment, created_at,
+                        ) in await cur.fetchall()
                     ]
                     old_rows_by_physical = {
                         mapping.physical_row: mapping
@@ -1195,11 +1475,54 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                         if mapping.physical_row is not None
                     }
                     relocated_rows, unmatched_existing = _pair_relocated_rows(existing_rows, parsed)
+                    revised_pairs, unmatched_existing = _pair_revised_rows(
+                        unmatched_existing, parsed, relocated_rows,
+                    )
                     await cur.execute(
                         "UPDATE photo_sheet_rows SET physical_row=NULL,sync_status='relocating',last_error='' "
                         "WHERE source_id=%s",
                         (source["id"],),
                     )
+                    for pair in revised_pairs:
+                        canonical = _canonical_revised_mapping(pair.previous, pair.current)
+                        duplicate = (
+                            pair.current
+                            if canonical.work_order_id == pair.previous.work_order_id
+                            else pair.previous
+                        )
+                        if duplicate is not None and duplicate.work_order_id != canonical.work_order_id:
+                            await _supersede_photo_ticket(
+                                cur,
+                                duplicate=duplicate,
+                                canonical=canonical,
+                                physical_row=pair.incoming.physical_row,
+                            )
+                            superseded_count += 1
+                        await _update_ticket_source_snapshot(
+                            cur, canonical.work_order_id, pair.incoming,
+                        )
+                        await _reconcile_revised_outbox(
+                            cur,
+                            source_id=source["id"],
+                            ticket_id=canonical.work_order_id,
+                            row=pair.incoming,
+                            result_status=canonical.result_status,
+                        )
+                        if canonical.work_order_id == pair.previous.work_order_id:
+                            relocated_rows[pair.incoming.physical_row] = pair.previous
+                        revised_count += 1
+                    incoming_physical_rows = {
+                        row.physical_row for row in parsed if row.kind == "request"
+                    }
+                    for mapping in unmatched_existing:
+                        # 同一物理行仍存在但内容已变更，必须保留冲突而不是
+                        # 把它误报成来源删除；只有物理行确实消失才终止重试。
+                        if mapping.physical_row in incoming_physical_rows:
+                            continue
+                        await _mark_source_missing(
+                            cur, mapping=mapping, actor_user_id=actor_user_id,
+                        )
+                        source_missing_count += 1
                 unmatched_ids = {mapping.mapping_id for mapping in unmatched_existing}
                 for row in parsed:
                     if row.kind == "marker":
@@ -1232,6 +1555,17 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                             "last_seen_at=UTC_TIMESTAMP(),sync_status='linked',last_error='' WHERE work_order_id=%s",
                             (row.physical_row, row.row_hash, row.fingerprint, row.values["处理状态"][:2000], existing[0]),
                         )
+                        if row.values["处理状态"] == COMPLETED_MARK:
+                            await cur.execute(
+                                "UPDATE photo_sheet_outbox SET status='done',next_attempt_at=NULL,"
+                                "last_error='',error_code='' WHERE work_order_id=%s AND action='mark_completed'",
+                                (existing[0],),
+                            )
+                            await cur.execute(
+                                "UPDATE photo_request_details SET external_sync_status='synced' "
+                                "WHERE work_order_id=%s",
+                                (existing[0],),
+                            )
                         if full:
                             await cur.execute(
                                 "UPDATE photo_sheet_conflicts SET status='resolved',resolved_by=%s,"
@@ -1248,18 +1582,16 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                             "AND conflict_type='row_changed' AND status='pending')",
                             (source["id"], row.physical_row, source["id"], row.physical_row),
                         )
+                        if full and previous:
+                            await cur.execute(
+                                "UPDATE photo_sheet_rows SET sync_status='conflict',"
+                                "last_error='物理行内容变化，等待安全重定位' WHERE id=%s",
+                                (previous.mapping_id,),
+                            )
                         continue
                     await _create_external_ticket(cur, source_id=source["id"], row=row, batch_id=None,
                                                   completed=False, legacy=False, notify_queue=True)
                     created += 1
-                if full and unmatched_ids:
-                    placeholders = ",".join(["%s"] * len(unmatched_ids))
-                    await cur.execute(
-                        f"UPDATE photo_sheet_rows SET sync_status='missing',"
-                        "last_error='完整核对未找到对应腾讯行' WHERE id IN ("
-                        f"{placeholders}) AND physical_row IS NULL",
-                        tuple(sorted(unmatched_ids)),
-                    )
                 parsed_cursor = max((row.physical_row for row in parsed), default=source["header_row"])
                 cursor = parsed_cursor if full else max(
                     int(source["last_cursor_row"] or source["header_row"]), parsed_cursor,
@@ -1273,7 +1605,12 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                 await cur.execute(
                     "UPDATE photo_sheet_sync_runs SET status='success',rows_read=%s,requests_found=%s,markers_found=%s,created_tickets=%s,completed_tickets=%s,issue_count=%s,summary_json=%s,finished_at=UTC_TIMESTAMP() WHERE id=%s",
                     (summary["rows_read"], summary["requests"], summary["markers"], created, completed,
-                     summary["issue_count"], json.dumps(summary, ensure_ascii=False), run_id),
+                     summary["issue_count"], json.dumps({
+                         **summary,
+                         "revised_count": revised_count,
+                         "superseded_count": superseded_count,
+                         "source_missing_count": source_missing_count,
+                     }, ensure_ascii=False), run_id),
                 )
             await conn.commit()
         except asyncio.CancelledError:
@@ -1306,7 +1643,15 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
                     (safe_error, source["id"]),
                 )
             raise
-    return {**summary, "created_tickets": created, "completed_tickets": completed, "disabled": False}
+    return {
+        **summary,
+        "created_tickets": created,
+        "completed_tickets": completed,
+        "revised_count": revised_count,
+        "superseded_count": superseded_count,
+        "source_missing_count": source_missing_count,
+        "disabled": False,
+    }
 
 
 async def sync_online_once(*, full: bool = False, actor_user_id: int | None = None) -> dict:

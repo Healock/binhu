@@ -81,7 +81,7 @@ class _RetryCursor:
 
     async def fetchone(self):
         if self.query.startswith("SELECT work_order_id,status"):
-            return (321, "paused")
+            return (321, "paused", "quota_exhausted")
         return None
 
 
