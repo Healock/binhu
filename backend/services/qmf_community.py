@@ -29,6 +29,11 @@ DEFAULT_QMF_COMMUNITY_CODES = {
 }
 
 
+def normalize_qmf_organization_code(value: Any) -> str:
+    """Normalize the legacy model-three organization/distribution code."""
+    return str(value or "").strip().upper()
+
+
 def normalize_qmf_community_code(value: Any) -> str:
     """Normalize the verified QMF option code without changing its namespace."""
     return str(value or "").strip().upper()
@@ -86,6 +91,108 @@ class QmfCommunity:
     id: int
     name: str
     qmf_community_code: str
+
+
+@dataclass(frozen=True)
+class QmfOrganizationResolution:
+    community_id: int | None
+    community_name: str
+    organization_code: str
+    state: str
+    reason: str = ""
+
+
+async def resolve_qmf_organization(
+    cur,
+    *,
+    organization_code: str,
+    source_community: str = "",
+) -> QmfOrganizationResolution:
+    """Resolve a legacy 12-digit organization code without guessing.
+
+    Organization codes and QMF community codes belong to different
+    namespaces.  A configured organization mapping wins; the source label
+    is only a safe alias/name fallback when the code is absent.
+    """
+    code = normalize_qmf_organization_code(organization_code)
+    source_key = normalize_community_label(source_community)
+    await cur.execute(
+        """
+        SELECT c.id, c.name, a.alias
+        FROM _communities AS c
+        LEFT JOIN _community_aliases AS a ON a.community_id=c.id
+        WHERE c.is_active=1
+        ORDER BY c.id, a.id
+        """
+    )
+    communities: dict[int, dict[str, Any]] = {}
+    for row in await cur.fetchall():
+        item = communities.setdefault(int(row[0]), {
+            "id": int(row[0]), "name": str(row[1] or "").strip(),
+            "aliases": [],
+        })
+        if row[2]:
+            item["aliases"].append(str(row[2]).strip())
+
+    if code:
+        await cur.execute(
+            """
+            SELECT c.id, c.name
+            FROM _qmf_organization_codes AS code
+            JOIN _communities AS c ON c.id=code.community_id
+            WHERE code.organization_code=%s AND code.is_active=1
+              AND c.is_active=1
+            ORDER BY c.id
+            """,
+            (code,),
+        )
+        matches = await cur.fetchall()
+        if len(matches) == 1:
+            return QmfOrganizationResolution(
+                community_id=int(matches[0][0]),
+                community_name=str(matches[0][1] or "").strip(),
+                organization_code=code,
+                state="matched_code",
+            )
+        if len(matches) > 1:
+            return QmfOrganizationResolution(
+                community_id=None,
+                community_name="",
+                organization_code=code,
+                state="ambiguous_code",
+                reason="同一组织编码对应多个社区",
+            )
+
+    if source_key:
+        matches = []
+        for item in communities.values():
+            labels = [item["name"], *item["aliases"]]
+            if any(normalize_community_label(label) == source_key for label in labels):
+                matches.append(item)
+        if len(matches) == 1:
+            return QmfOrganizationResolution(
+                community_id=int(matches[0]["id"]),
+                community_name=str(matches[0]["name"]),
+                organization_code=code,
+                state="matched_name" if not code else "matched_name_without_code",
+                reason="组织编码未配置，使用来源社区名/别名匹配",
+            )
+        if len(matches) > 1:
+            return QmfOrganizationResolution(
+                community_id=None,
+                community_name="",
+                organization_code=code,
+                state="ambiguous_name",
+                reason="来源社区名对应多个社区",
+            )
+
+    return QmfOrganizationResolution(
+        community_id=None,
+        community_name="",
+        organization_code=code,
+        state="not_found",
+        reason="组织编码和来源社区名均无法匹配",
+    )
 
 
 def _json_list(value: Any) -> list[str]:

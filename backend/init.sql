@@ -270,6 +270,19 @@ CREATE TABLE IF NOT EXISTS _communities (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _qmf_organization_codes (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    community_id INT NOT NULL,
+    organization_code VARCHAR(50) NOT NULL,
+    source VARCHAR(30) NOT NULL DEFAULT 'manual',
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_qmf_organization_code (organization_code),
+    INDEX idx_qmf_organization_community (community_id, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _administrative_areas (
     source_row INT NOT NULL PRIMARY KEY,
     code CHAR(6) NOT NULL,
