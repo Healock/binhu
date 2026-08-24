@@ -428,6 +428,72 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await http.aclose()
 
+    async def test_cgo_ticket_busy_is_retried_for_range_reads(self):
+        responses = [
+            httpx.Response(
+                200,
+                json={
+                    "code": 400010,
+                    "message": "get range data error: type:business, code:608699, msg:cgo ticket busy",
+                },
+            ),
+            httpx.Response(200, json={"code": 0, "data": {"ok": True}}),
+        ]
+
+        async def handler(_request):
+            return responses.pop(0)
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient("client", "token", "user", http_client=http)
+        try:
+            with patch("services.txdocs_client.asyncio.sleep", new=AsyncMock()):
+                result = await client.read_range("file", "sheet", "A1:A1")
+            self.assertEqual(result, {"code": 0, "data": {"ok": True}})
+            self.assertEqual(responses, [])
+        finally:
+            await http.aclose()
+
+    async def test_cgo_ticket_busy_is_not_retried_for_writes(self):
+        calls = 0
+
+        async def handler(_request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                json={"code": 400010, "message": "cgo ticket busy"},
+            )
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient("client", "token", "user", http_client=http)
+        request = client.build_update_range_request("sheet", 0, 0, [["value"]])
+        try:
+            with self.assertRaisesRegex(TxDocsAPIError, "400010.*cgo ticket busy"):
+                await client.batch_update("file", [request])
+            self.assertEqual(calls, 1)
+        finally:
+            await http.aclose()
+
+    async def test_read_source_rows_uses_one_contiguous_range_request(self):
+        client = TxDocsClient("client", "token", "user")
+        client.read_range = AsyncMock(return_value=make_response(2, 3))
+
+        rows = await client.read_source_rows(
+            "file", "sheet", 10, 12, ["A", "B", "C"],
+        )
+
+        client.read_range.assert_awaited_once_with("file", "sheet", "A10:C12")
+        self.assertEqual([row["physical_row"] for row in rows], [10, 11, 12])
+        self.assertEqual(rows[0]["values"]["A"], "row-0-col-0")
+        self.assertEqual(rows[1]["values"]["C"], "row-1-col-2")
+        self.assertEqual(rows[2]["values"], {"A": "", "B": "", "C": ""})
+
     async def test_non_transport_400010_is_not_retried(self):
         calls = 0
 
