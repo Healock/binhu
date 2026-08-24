@@ -20,6 +20,13 @@ MAX_POLICE_FILE_BYTES = 30 * 1024 * 1024
 FINAL_ACTIONS = {"dispatch", "no_registration", "transfer", "duplicate_exclude"}
 MISSING_PHONE_ANALYSIS_REASON = "缺少手机号，需基础管控先研判；补齐手机号后才能下发"
 IDENTITY_PATTERN = re.compile(r"^(?:\d{15}|\d{17}[0-9X])$")
+PUBLISH_OWNED_COLUMNS = (
+    "下发日期", "截止日期", "社区", "来源", "姓名",
+    "身份证号", "电话号码", "地址", "登记情况", "创建时间",
+)
+WORKFLOW_EDITABLE_COLUMNS = (
+    "核查人", "现住址", "核查结果", "研判", "二次反馈",
+)
 
 
 class PoliceWorkbookError(ValueError):
@@ -554,12 +561,39 @@ def publish_business_key(identity_number: str, phone: str, dispatch_date: str) -
 
 
 def publish_values_match(requested: dict[str, Any], actual: dict[str, Any]) -> bool:
-    """对账时只比较当次腾讯物理布局实际写入并保存的列。"""
+    """只比较下发拥有字段，允许腾讯用户并发填写后续业务字段。"""
+    comparable = [
+        (column, expected)
+        for column, expected in requested.items()
+        if column in PUBLISH_OWNED_COLUMNS
+    ]
+    if not comparable:
+        return False
     return all(
         str(actual.get(column, "") or "").strip()
         == str(expected or "").strip()
-        for column, expected in requested.items()
+        for column, expected in comparable
     )
+
+
+def _select_publish_candidate(
+    candidates: list[dict[str, Any]],
+    requested: dict[str, Any],
+    physical_row: int | None,
+) -> dict[str, Any] | None:
+    """优先原物理行；否则只接受唯一匹配，避免重复主键误关联。"""
+    if physical_row is not None:
+        preferred = next((
+            item for item in candidates
+            if int(item["physical_row"]) == physical_row
+        ), None)
+        if preferred and publish_values_match(requested, preferred["values"]):
+            return preferred
+    matched = [
+        item for item in candidates
+        if publish_values_match(requested, item["values"])
+    ]
+    return matched[0] if len(matched) == 1 else None
 
 
 async def reconcile_police_dispatch_publications(
@@ -599,12 +633,17 @@ async def reconcile_police_dispatch_publications(
 
     await cur.execute("""
         SELECT result.task_id, result.business_key, result.request_values_json,
-               task.batch_id
+               task.batch_id, result.status, result.error_code, result.physical_row
         FROM _police_dispatch_publish_results AS result
         JOIN _police_dispatch_tasks AS task ON task.id=result.task_id
         WHERE result.spreadsheet_id=%s
-          AND result.status='needs_reconciliation'
-          AND task.publish_status='needs_reconciliation'
+          AND (
+            (result.status='needs_reconciliation'
+             AND task.publish_status='needs_reconciliation')
+            OR
+            (result.status='conflict' AND result.error_code='content_conflict'
+             AND task.publish_status='conflict')
+          )
         FOR UPDATE
     """, (spreadsheet_id,))
     pending = await cur.fetchall()
@@ -617,27 +656,32 @@ async def reconcile_police_dispatch_publications(
         placeholders = ",".join(["%s"] * len(pending_task_ids))
         await cur.execute(f"""
             SELECT task_id,run_id FROM _police_dispatch_publish_run_items
-            WHERE task_id IN ({placeholders}) AND status='needs_reconciliation'
+            WHERE task_id IN ({placeholders})
+              AND status IN ('needs_reconciliation','conflict')
         """, pending_task_ids)
         for task_id, run_id in await cur.fetchall():
             task_runs.setdefault(int(task_id), []).append(int(run_id))
             affected_runs.add(int(run_id))
-    for task_id, business_key, raw_requested, batch_id in pending:
+    for (
+        task_id, business_key, raw_requested, batch_id,
+        result_status, _error_code, physical_row,
+    ) in pending:
         requested = {
             str(column): str(value or "").strip()
             for column, value in json_value(raw_requested, {}).items()
-            if column in comparison_columns
+            if column in comparison_columns and column in PUBLISH_OWNED_COLUMNS
         }
         candidates = sources_by_key.get(str(business_key or ""), [])
-        exact = next((
-            item for item in candidates
-            if publish_values_match(requested, item["values"])
-        ), None)
-        affected_batches.add(int(batch_id))
+        exact = _select_publish_candidate(
+            candidates,
+            requested,
+            int(physical_row) if physical_row is not None else None,
+        )
         if exact:
             run_item_status = "success"
             run_item_error = ""
             counts["success"] += 1
+            affected_batches.add(int(batch_id))
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
                     publish_status='success', task_status='completed',
@@ -653,16 +697,22 @@ async def reconcile_police_dispatch_publications(
                 UPDATE _police_dispatch_publish_results SET
                     status='success', physical_row=%s, source_row_id=%s,
                     expected_row_hash=%s, verified_values_json=%s,
+                    resolution=CASE WHEN %s='conflict'
+                        THEN 'auto_accept_workflow_updates' ELSE resolution END,
                     error_code='', error_message='', cache_pending=0
                 WHERE task_id=%s
             """, (
                 exact["physical_row"], exact["id"], exact["row_hash"],
-                stable_json(exact["values"]), task_id,
+                stable_json(exact["values"]), str(result_status), task_id,
             ))
+        elif str(result_status) == "conflict":
+            # 历史冲突只有在下发字段唯一匹配时才自动修复；否则保持原状。
+            continue
         elif candidates:
             run_item_status = "conflict"
             run_item_error = "content_conflict"
             counts["conflict"] += 1
+            affected_batches.add(int(batch_id))
             candidate = candidates[0]
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
@@ -690,6 +740,7 @@ async def reconcile_police_dispatch_publications(
             run_item_status = "retryable"
             run_item_error = "confirmed_absent"
             counts["retryable"] += 1
+            affected_batches.add(int(batch_id))
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
                     publish_status='retryable', task_status='pending_publish',
