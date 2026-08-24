@@ -181,6 +181,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "online_task": "在线核查任务",
     "qmf_registration_run": "全民防登记运行",
     "qmf_status_scan": "全民防反馈扫描",
+    "qmf_source": "全民防同步",
     "online_source_row": "腾讯原始行",
     "spreadsheet": "在线表格配置",
     "system_config": "系统设置",

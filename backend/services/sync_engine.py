@@ -275,7 +275,6 @@ class SyncEngine:
                 conn,
                 task_id,
                 len(sync_spreadsheets)
-                + (1 if qmf_source_enabled else 0)
                 + len(report_jobs)
                 + len(report_dates),
             )
