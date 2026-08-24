@@ -52,5 +52,7 @@ test('桌面收缩侧栏和表格展开按钮保持稳定尺寸', () => {
   assert.match(styles, /\.app-sidebar--collapsed \.app-sidebar__footer-main\s*\{[^}]*flex-direction:\s*column;[^}]*gap:\s*6px;/s)
   assert.match(styles, /button:not\(\.ant-btn\)[^{]*:not\(\.ant-table-row-expand-icon\)/)
   assert.match(styles, /\.app-shell \.ant-table-row-expand-icon-cell\s*\{[^}]*min-width:\s*40px !important;/s)
-  assert.match(styles, /\.app-shell \.ant-table-row-expand-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*min-height:\s*18px;/s)
+  assert.match(styles, /\.app-shell \.ant-table-row-expand-icon\s*\{[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*min-height:\s*17px;/s)
+  assert.match(styles, /\.app-shell \.ant-table-row-expand-icon::before,[\s\r\n]+\.app-shell \.ant-table-row-expand-icon::after\s*\{[^}]*top:\s*50%;[^}]*left:\s*50%;[^}]*width:\s*7px;[^}]*height:\s*1px;/s)
+  assert.match(styles, /\.app-shell \.ant-table-row-expand-icon-collapsed::after\s*\{[^}]*rotate\(90deg\)/s)
 })

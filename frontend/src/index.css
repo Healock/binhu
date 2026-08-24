@@ -6409,7 +6409,10 @@ html[data-theme='dark'] .ant-modal .app-surface-muted {
 
 /* Expandable rows use a native button rather than .ant-btn. Keep the control
  * square and reserve a stable cell width so compact tables cannot compress it
- * into the tall, cross-shaped control seen in the registry list. */
+ * into the tall, cross-shaped control seen in the registry list. The two marks
+ * are intentionally drawn from the same horizontal geometry: Ant Design's
+ * default vertical mark uses a different inset formula, which becomes visibly
+ * asymmetric when the button size is overridden or the page is scaled. */
 .app-shell .ant-table-row-expand-icon-cell {
   width: 40px !important;
   min-width: 40px !important;
@@ -6419,17 +6422,42 @@ html[data-theme='dark'] .ant-modal .app-surface-muted {
 
 .app-shell .ant-table-row-expand-icon {
   display: inline-flex;
-  width: 18px;
-  min-width: 18px;
-  height: 18px;
-  min-height: 18px;
-  flex: 0 0 18px;
+  width: 17px;
+  min-width: 17px;
+  height: 17px;
+  min-height: 17px;
+  flex: 0 0 17px;
   align-items: center;
   justify-content: center;
   margin-inline-end: 0;
   padding: 0;
-  line-height: 16px;
+  line-height: 15px;
   vertical-align: middle;
+  transform: none;
+  box-sizing: border-box;
+}
+
+.app-shell .ant-table-row-expand-icon::before,
+.app-shell .ant-table-row-expand-icon::after {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  inset-inline-end: auto;
+  inset-inline-start: 50%;
+  width: 7px;
+  height: 1px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  transform-origin: center;
+}
+
+.app-shell .ant-table-row-expand-icon::after {
+  transform: translate(-50%, -50%);
+}
+
+.app-shell .ant-table-row-expand-icon-collapsed::after {
+  transform: translate(-50%, -50%) rotate(90deg);
 }
 
 .app-table-wrap--sticky {
