@@ -2586,6 +2586,13 @@ export async function getLatestExternalAcquisitionRun(kind: string): Promise<Ext
   })).data.data || null
 }
 
+export async function startQmfSourceSync(): Promise<{
+  data: ExternalAcquisitionRun
+  reused: boolean
+}> {
+  return (await api.post('/qmf-source/sync', {}, { ...activeRequest, timeout: 30_000 })).data
+}
+
 export async function getCodeSummary(
   source: CodeSummarySource,
   startDate: string,
