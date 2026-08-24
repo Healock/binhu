@@ -171,6 +171,7 @@ class Settings(BaseSettings):
     WORKFLOW_PHOTO_IMPORT_DIR: str = "../workflow-photo-imports"
     USER_AVATAR_DIR: str = "../user-avatars"
     FULLCHAIN_ARCHIVE_DIR: str = "../fullchain-archives"
+    POLICE_DISPATCH_IMPORT_DIR: str = "../police-dispatch-imports"
     FULLCHAIN_ARCHIVE_MAX_ROWS: int = 5000
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 

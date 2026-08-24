@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.25.29"
+  #define AppVersion "0.26.0"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "0.25.29.0"
+  #define NumericVersion "0.26.0.0"
 #endif
 #ifndef VelopackSetup
   #error VelopackSetup must point to the baseline Velopack Setup executable.

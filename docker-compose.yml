@@ -76,6 +76,7 @@ services:
       WORKFLOW_PHOTO_IMPORT_DIR: /app/workflow-photo-imports
       USER_AVATAR_DIR: /app/user-avatars
       FULLCHAIN_ARCHIVE_DIR: /app/fullchain-archives
+      POLICE_DISPATCH_IMPORT_DIR: /app/police-dispatch-imports
       VISIT_SOURCE_BASE_URL: ${BINHU_VISIT_SOURCE_BASE_URL:-}
       VISIT_SOURCE_AUTHORIZATION: ${BINHU_VISIT_SOURCE_AUTHORIZATION:-}
       VISIT_SOURCE_USERNAME: ${BINHU_VISIT_SOURCE_USERNAME:-}
@@ -119,6 +120,7 @@ services:
       - ${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:-/data/binhu/workflow-photo-imports}:/app/workflow-photo-imports
       - ${BINHU_USER_AVATAR_DIR:-/data/binhu/user-avatars}:/app/user-avatars
       - ${BINHU_FULLCHAIN_ARCHIVE_DIR:-/data/binhu/fullchain-archives}:/app/fullchain-archives
+      - ${BINHU_POLICE_DISPATCH_IMPORT_DIR:-/data/binhu/police-dispatch-imports}:/app/police-dispatch-imports
     logging:
       driver: json-file
       options:

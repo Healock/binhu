@@ -52,7 +52,7 @@ from services.qmf_registration import (
 )
 from services.qmf_config import load_qmf_config
 from services.qmf_runs import WRITE_STEP_KEYS, parse_steps, utc_text
-from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
+from services.task_workflow import MOBILE_TASK_TYPES, SUMMARY_TASK_TYPES, TASK_WORKFLOWS
 from services.task_graph import online_task_blocked
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
@@ -1197,9 +1197,14 @@ async def _source_readiness(cur) -> dict[str, bool]:
     return result
 
 
-async def _aggregate_live(cur, context: dict, scope: FlowScope) -> dict[str, dict]:
+async def _aggregate_live(
+    cur,
+    context: dict,
+    scope: FlowScope,
+    parser_types: tuple[str, ...] = MOBILE_TASK_TYPES,
+) -> dict[str, dict]:
     where, params = _scope_where(context, scope)
-    type_placeholders = ", ".join(["%s"] * len(MOBILE_TASK_TYPES))
+    type_placeholders = ", ".join(["%s"] * len(parser_types))
     await cur.execute(
         f"""
         SELECT projection.parser_type, projection.task_state,
@@ -1219,7 +1224,7 @@ async def _aggregate_live(cur, context: dict, scope: FlowScope) -> dict[str, dic
           AND {where}
         GROUP BY projection.parser_type, projection.task_state
         """,
-        (*MOBILE_TASK_TYPES, *params),
+        (*parser_types, *params),
     )
     totals = {
         parser_type: {
@@ -1231,7 +1236,7 @@ async def _aggregate_live(cur, context: dict, scope: FlowScope) -> dict[str, dic
             "completed": 0,
             "review": 0,
         }
-        for parser_type in MOBILE_TASK_TYPES
+        for parser_type in parser_types
     }
     for parser_type, state, count, review in await cur.fetchall():
         item = totals[str(parser_type)]
@@ -1353,11 +1358,11 @@ async def get_mobile_task_home(
     async with conn.cursor() as cur:
         business_date = await get_business_date(cur)
         readiness = await _source_readiness(cur)
-        selected = await _aggregate_live(cur, context, scope)
+        selected = await _aggregate_live(cur, context, scope, MOBILE_TASK_TYPES)
         personal_scope: FlowScope = "all" if context["admin_mode"] else "mine"
         community_scope: FlowScope = "all" if context["admin_mode"] else "community"
-        personal = await _aggregate_live(cur, context, personal_scope)
-        community = await _aggregate_live(cur, context, community_scope)
+        personal = await _aggregate_live(cur, context, personal_scope, SUMMARY_TASK_TYPES)
+        community = await _aggregate_live(cur, context, community_scope, SUMMARY_TASK_TYPES)
         await cur.execute(
             "SELECT MAX(finished_at) FROM _sync_log "
             "WHERE status IN ('success', 'completed')"
@@ -1372,7 +1377,7 @@ async def get_mobile_task_home(
             SUMMARY_TYPE,
             context["community_values"],
             inspector=None if context["admin_mode"] else context["name"],
-            parser_types_override=list(MOBILE_TASK_TYPES),
+            parser_types_override=list(SUMMARY_TASK_TYPES),
         )
     except (RuntimeError, ValueError):
         today = {"exists": False}

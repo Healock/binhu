@@ -34,7 +34,7 @@ from services.permissions import (
 )
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.report_range import get_summary_range
-from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
+from services.task_workflow import SUMMARY_TASK_TYPES, TASK_WORKFLOWS
 from services.visit_summary import (
     VISIT_CATEGORY_RENTAL,
     get_visit_summary,
@@ -211,7 +211,7 @@ async def _load_flow_tasks(
         SUMMARY_TYPE,
         [formal_community],
         inspector=name,
-        parser_types_override=list(MOBILE_TASK_TYPES),
+        parser_types_override=list(SUMMARY_TASK_TYPES),
     )
     trend_inspector = name if position == "组员" else None
     week = await get_online_overview(
@@ -220,7 +220,7 @@ async def _load_flow_tasks(
         SUMMARY_TYPE,
         [formal_community],
         inspector=trend_inspector,
-        parser_types_override=list(MOBILE_TASK_TYPES),
+        parser_types_override=list(SUMMARY_TASK_TYPES),
     )
     personal_items = list(personal.values())
     community_items = list(community.values())
