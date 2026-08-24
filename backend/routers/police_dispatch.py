@@ -6,14 +6,16 @@ import asyncio
 import hmac
 import io
 import json
-from datetime import datetime, timedelta
+import os
+import tempfile
+from datetime import date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, Field, field_validator
@@ -54,6 +56,7 @@ from services.police_dispatch import (
     build_publish_address,
     normalize_lookup,
     parse_dispatch_workbook,
+    parser_business_key,
     publish_business_key,
     resolve_community,
     community_resolver,
@@ -66,6 +69,14 @@ from services.police_dispatch_publish_jobs import (
     get_latest_police_publish_run,
     get_police_publish_run,
     launch_police_publish_run,
+)
+from services.police_import_profiles import (
+    ADAPTER_VERSION,
+    PROFILES,
+    parse_profile,
+    preview_token as import_preview_token,
+    profile_payload,
+    verify_preview_token as verify_import_preview_token,
 )
 from services.txdocs_client import TxDocsAPIError
 from services.work_activity import (
@@ -221,8 +232,8 @@ def _clean_preview_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-ALLOWED_POLICE_POSITIONS = {"基础管控", "中队长"}
-FULLCHAIN_ARCHIVE_POSITIONS = ALLOWED_POLICE_POSITIONS | {"所队领导"}
+ALLOWED_POLICE_POSITIONS = {"基础管控", "中队长", "所队领导"}
+FULLCHAIN_ARCHIVE_POSITIONS = ALLOWED_POLICE_POSITIONS
 
 
 def _permission_group_codes(user: dict) -> set[str]:
@@ -242,14 +253,10 @@ def require_police_access(permission: str) -> Callable:
 
     async def dependency(user: dict = Depends(base_dependency)) -> dict:
         permission_scope = (user.get("permission_scopes") or {}).get(
-            permission,
-            user.get("data_scope"),
+            permission, user.get("data_scope"),
         )
         if permission_scope != "all":
-            raise HTTPException(
-                403,
-                "数据预处理必须使用全所数据范围，请联系超级管理员修正权限组",
-            )
+            raise HTTPException(403, "数据预处理必须使用全所数据范围，请联系超级管理员修正权限组")
         group_codes = _permission_group_codes(user)
         member = user.get("member")
         if member:
@@ -260,13 +267,289 @@ def require_police_access(permission: str) -> Callable:
             not group_codes and user.get("role") in {"admin", "super_admin"}
         ):
             return user
-        raise HTTPException(403, "数据预处理仅向内勤和系统管理员开放")
+        raise HTTPException(403, "数据预处理仅向基础管控、中队长、所队领导和系统管理员开放")
 
     dependency.__name__ = f"require_police_{permission.replace('.', '_')}"
     return dependency
 
 
 require_police_dispatch = require_police_access(POLICE_DISPATCH_MANAGE)
+
+
+def _dispatch_import_dir() -> Path:
+    root = Path(settings.POLICE_DISPATCH_IMPORT_DIR).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _fullchain_standard_values(item: dict[str, Any]) -> dict[str, str]:
+    return {
+        "下发日期": str(item.get("created_time") or ""), "截止日期": "", "核查人": "",
+        "社区": str(item.get("community_name") or ""), "来源": str(item.get("source_name") or ""),
+        "姓名": str(item.get("person_name") or ""), "身份证号": str(item.get("identity_number") or ""),
+        "电话号码": str(item.get("phone") or ""), "地址": str(item.get("original_address") or ""),
+        "登记情况": str(item.get("registration_status") or ""),
+        "创建时间": str(item.get("created_time") or ""), "现住址": "", "核查结果": "",
+        "研判": "", "二次反馈": "",
+    }
+
+
+async def _parse_import_upload(
+    *, profile_key: str, content: bytes, filename: str, business_date: date,
+    communities: list[dict[str, Any]], addresses: list[dict[str, Any]],
+) -> dict[str, Any]:
+    profile = PROFILES.get(profile_key)
+    if not profile:
+        raise PoliceWorkbookError("未知导入类型")
+    if not profile.enabled:
+        raise PoliceWorkbookError(profile.description)
+    if profile_key in {"fullchain_raw", "fullchain_processed"}:
+        sheet_name, parsed = await asyncio.to_thread(
+            parse_dispatch_workbook, content, filename,
+            profile_key == "fullchain_processed",
+        )
+        tasks = [{
+            "source_row": item.source_row, "source_name": item.source_name,
+            "community_name": item.community_name, "person_name": item.person_name,
+            "identity_number": item.identity_number, "phone": item.phone,
+            "original_address": item.original_address,
+            "registration_status": item.registration_status,
+            "created_time": item.created_time, "transfer_note": item.transfer_note,
+            "raw_values": item.raw_values,
+        } for item in parsed]
+        if profile_key == "fullchain_processed":
+            apply_clean_import_actions(tasks, communities)
+        else:
+            apply_preprocessing_suggestions(tasks, communities, addresses)
+        for item in tasks:
+            item["standard_values"] = _fullchain_standard_values(item)
+            key_payload = "\x1f".join((item["identity_number"], item["phone"], item["created_time"] or business_date.isoformat()))
+            item["business_key_hmac"] = hmac.new(
+                settings.registry_hmac_key.encode(), key_payload.encode(), sha256,
+            ).hexdigest()
+            item["validation_issues"] = [] if item.get("suggested_action") != "manual" else [{
+                "field": "记录", "type": "conflict", "value": str(item.get("suggestion_reason") or "需要人工复核")[:200],
+            }]
+        summary = _clean_preview_summary(tasks)
+        return {
+            "profile": profile, "adapter_version": ADAPTER_VERSION,
+            "sheet_name": sheet_name, "rows": tasks,
+            "counts": {
+                "total": len(tasks),
+                "importable": sum(item.get("suggested_action") != "manual" for item in tasks),
+                "missing_key": 0,
+                "duplicate": summary["counts"]["duplicate"],
+                "identity_invalid": summary["counts"]["invalid"],
+                "community_invalid": sum("社区无法匹配" in str(item.get("suggestion_reason")) for item in tasks),
+                "conflict": summary["counts"]["manual_review"],
+            },
+            "community_distribution": summary["community_distribution"],
+            "preview_rows": [{
+                "source_row": row["source_row"], "person_name": row["person_name"],
+                "identity_number": row["identity_number"], "phone": row["phone"],
+                "community_name": row["community_name"], "business_key": "",
+                "result": "importable" if row["result"] != "manual" else "problem",
+                "issues": [] if row["result"] != "manual" else [{"field": "记录", "type": "conflict", "value": row["reason"][:200]}],
+            } for row in summary["rows"]],
+            "rows_truncated": summary["rows_truncated"],
+        }
+    return await asyncio.to_thread(
+        parse_profile, profile_key, content, filename, business_date, communities,
+    )
+
+
+@router.get("/import-profiles")
+async def get_import_profiles(
+    _user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    data = []
+    async with conn.cursor() as cur:
+        for profile in PROFILES.values():
+            payload = profile_payload(profile)
+            spreadsheets = await _enabled_spreadsheets(cur, profile.target_parser)
+            payload["target_configured"] = len(spreadsheets) == 1
+            data.append(payload)
+    return {"data": data, "adapter_version": ADAPTER_VERSION}
+
+
+@router.post("/imports/preview")
+async def preview_dispatch_import(
+    request: Request,
+    file: UploadFile = File(...),
+    profile: str = Form(...),
+    business_date: date = Form(...),
+    user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    filename, content = await _read_upload(file)
+    digest = sha256(content).hexdigest()
+    try:
+        async with conn.cursor() as cur:
+            communities = await _communities(cur)
+            addresses = await _address_entries(cur, enabled_only=True)
+        parsed = await _parse_import_upload(
+            profile_key=profile, content=content, filename=filename,
+            business_date=business_date, communities=communities, addresses=addresses,
+        )
+    except (PoliceWorkbookError, MemoryError) as exc:
+        raise HTTPException(400 if not isinstance(exc, MemoryError) else 413, str(exc) or "文件过大") from exc
+    token = import_preview_token(
+        user_id=int(user["id"]), file_sha256=digest, profile_key=profile,
+        business_date=business_date, row_count=len(parsed["rows"]),
+        sheet_name=parsed["sheet_name"],
+    )
+    await record_admin_audit(
+        user, "police_dispatch.import_preview", target_type="police_dispatch_import",
+        target_name=profile, detail={"row_count": len(parsed["rows"]), "profile": profile},
+        **request_audit_fields(request),
+    )
+    return {
+        "status": "preview", "preview_token": token, "file_sha256": digest,
+        "preview": {
+            "file_name": filename, "sheet_name": parsed["sheet_name"],
+            "row_count": len(parsed["rows"]), "profile": profile_payload(parsed["profile"]),
+            "business_date": business_date.isoformat(), "counts": parsed["counts"],
+            "community_distribution": parsed["community_distribution"],
+            "rows": parsed["preview_rows"], "rows_truncated": parsed["rows_truncated"],
+        },
+    }
+
+
+@router.post("/imports/confirm")
+async def confirm_dispatch_import(
+    request: Request,
+    file: UploadFile = File(...),
+    profile: str = Form(...),
+    business_date: date = Form(...),
+    preview_token: str = Form(...),
+    user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    filename, content = await _read_upload(file)
+    digest = sha256(content).hexdigest()
+    async with conn.cursor() as cur:
+        communities = await _communities(cur)
+        addresses = await _address_entries(cur, enabled_only=True)
+    try:
+        parsed = await _parse_import_upload(
+            profile_key=profile, content=content, filename=filename,
+            business_date=business_date, communities=communities, addresses=addresses,
+        )
+    except PoliceWorkbookError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not verify_import_preview_token(
+        preview_token, user_id=int(user["id"]), file_sha256=digest,
+        profile_key=profile, business_date=business_date,
+        row_count=len(parsed["rows"]), sheet_name=parsed["sheet_name"],
+    ):
+        raise HTTPException(409, "预览已过期、文件已变化或导入配置已变化，请重新预览")
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id FROM _police_dispatch_batches WHERE file_sha256=%s AND import_profile=%s",
+            (digest, profile),
+        )
+        duplicate = await cur.fetchone()
+        if duplicate:
+            return {"status": "duplicate", "message": "同一文件已按此业务类型导入", "batch": await _batch_payload(cur, int(duplicate[0]))}
+
+    profile_meta = parsed["profile"]
+    suffix = Path(filename).suffix.lower()
+    storage_key = f"{profile}/{digest}{suffix}"
+    target = (_dispatch_import_dir() / storage_key).resolve()
+    if _dispatch_import_dir() not in target.parents:
+        raise HTTPException(400, "文件存储路径无效")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged_path = None
+    created_file = False
+    if not target.is_file():
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".import-", suffix=".tmp", delete=False) as staged:
+            staged.write(content)
+            staged_path = staged.name
+        os.replace(staged_path, target)
+        staged_path = None
+        created_file = True
+
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                INSERT INTO _police_dispatch_batches (
+                    file_name,file_sha256,sheet_name,import_mode,status,total_count,
+                    counts_json,imported_by,business_type,police_subtype,import_profile,
+                    adapter_version,target_parser,business_date,source_summary_json,storage_key
+                ) VALUES (%s,%s,%s,'processed','reviewing',%s,JSON_OBJECT(),%s,
+                          %s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                filename, digest, parsed["sheet_name"], len(parsed["rows"]), user["id"],
+                profile_meta.business_type, profile_meta.police_subtype, profile,
+                parsed["adapter_version"], profile_meta.target_parser, business_date,
+                stable_json(parsed["counts"]), storage_key,
+            ))
+            batch_id = int(cur.lastrowid)
+            for item in parsed["rows"]:
+                await cur.execute("""
+                    INSERT INTO _police_dispatch_tasks (
+                        batch_id,source_row,source_name,person_name,identity_number,
+                        identity_hash,phone,original_address,source_created_time,
+                        transfer_note,raw_values_json,duplicate_group_key,duplicate_kind,
+                        suggested_action,suggested_community_id,suggestion_reason,
+                        allocation_mode,standard_values_json,business_key_hmac,
+                        validation_issues_json
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (
+                    batch_id, item["source_row"], item.get("source_name", ""),
+                    item.get("person_name", ""), item.get("identity_number", ""),
+                    identity_digest(item.get("identity_number", "")), item.get("phone", ""),
+                    item.get("original_address", ""), item.get("created_time", ""),
+                    item.get("transfer_note", ""), stable_json(item.get("raw_values", {})),
+                    item.get("duplicate_group_key", ""), item.get("duplicate_kind", ""),
+                    item.get("suggested_action", "manual"), item.get("suggested_community_id"),
+                    item.get("suggestion_reason", ""), item.get("allocation_mode", "conflict"),
+                    stable_json({k: v for k, v in item.get("standard_values", {}).items() if not k.startswith("__")}),
+                    item.get("business_key_hmac", ""), stable_json(item.get("validation_issues", [])),
+                ))
+                task_id = int(cur.lastrowid)
+                for issue in item.get("validation_issues", []):
+                    await cur.execute("""
+                        INSERT INTO _police_dispatch_import_issues
+                        (batch_id,task_id,source_row,field_name,issue_type,safe_value)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                    """, (batch_id, task_id, item["source_row"], issue.get("field", ""), issue.get("type", "conflict"), str(issue.get("value", ""))[:200]))
+            await _refresh_batch_status(cur, batch_id)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        if created_file:
+            target.unlink(missing_ok=True)
+        raise
+    async with conn.cursor() as cur:
+        payload = await _batch_payload(cur, batch_id)
+    await record_admin_audit(
+        user, "police_dispatch.import_confirm", target_type="police_dispatch_batch",
+        target_name=str(batch_id), detail={"row_count": len(parsed["rows"]), "profile": profile},
+        **request_audit_fields(request),
+    )
+    return {"status": "success", "message": "数据已导入下发工作台，请审核后发布", "batch": payload}
+
+
+@router.get("/batches/{batch_id}/source-file")
+async def download_dispatch_source_file(
+    batch_id: int,
+    _user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT file_name,storage_key FROM _police_dispatch_batches WHERE id=%s", (batch_id,))
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "批次不存在")
+    if not row[1]:
+        raise HTTPException(404, "旧批次没有保存原始文件")
+    path = (_dispatch_import_dir() / str(row[1])).resolve()
+    if _dispatch_import_dir() not in path.parents or not path.is_file():
+        raise HTTPException(410, "原始文件已丢失，请联系超级管理员")
+    return FileResponse(path, media_type="application/octet-stream", filename=str(row[0]))
 
 
 def require_fullchain_archive_access() -> Callable:
@@ -805,7 +1088,10 @@ async def _batch_payloads(cur, batch_ids: list[int]) -> list[dict[str, Any]]:
         SELECT batch.id, batch.file_name, batch.sheet_name, batch.status,
                batch.total_count, batch.counts_json, batch.first_publish_date,
                batch.last_error, batch.created_at, batch.updated_at,
-               user.display_name, user.username, batch.import_mode
+               user.display_name, user.username, batch.import_mode,
+               batch.business_type, batch.police_subtype, batch.import_profile,
+               batch.adapter_version, batch.target_parser, batch.business_date,
+               batch.source_summary_json, batch.storage_key
         FROM _police_dispatch_batches AS batch
         LEFT JOIN _users AS user ON user.id=batch.imported_by
         WHERE batch.id IN ({placeholders})
@@ -864,6 +1150,14 @@ async def _batch_payloads(cur, batch_ids: list[int]) -> list[dict[str, Any]]:
             "id": int(row[0]), "file_name": str(row[1]), "sheet_name": str(row[2]),
             "status": str(row[3]), "total_count": int(row[4]), "counts": counts,
             "import_mode": str(row[12] or "raw") if len(row) > 12 else "raw",
+            "business_type": str(row[13] or "fullchain") if len(row) > 13 else "fullchain",
+            "police_subtype": str(row[14] or "") if len(row) > 14 else "",
+            "import_profile": str(row[15] or "fullchain_raw") if len(row) > 15 else "fullchain_raw",
+            "adapter_version": str(row[16] or "") if len(row) > 16 else "",
+            "target_parser": str(row[17] or "全链条") if len(row) > 17 else "全链条",
+            "business_date": row[18].isoformat() if len(row) > 18 and row[18] else None,
+            "source_summary": json_value(row[19], {}) if len(row) > 19 else {},
+            "source_file_available": bool(row[20]) if len(row) > 20 else False,
             "first_publish_date": row[6].isoformat() if row[6] else None,
             "last_error": str(row[7] or ""),
             "created_at": row[8].isoformat() + "Z", "updated_at": row[9].isoformat() + "Z",
@@ -886,8 +1180,13 @@ async def upload_dispatch_batch(
 ):
     filename, content = await _read_upload(file)
     digest = sha256(content).hexdigest()
+    legacy_profile = "fullchain_processed" if import_mode == "clean" else "fullchain_raw"
     async with conn.cursor() as cur:
-        await cur.execute("SELECT id FROM _police_dispatch_batches WHERE file_sha256=%s", (digest,))
+        await cur.execute(
+            "SELECT id FROM _police_dispatch_batches "
+            "WHERE file_sha256=%s AND import_profile=%s",
+            (digest, legacy_profile),
+        )
         duplicate = await cur.fetchone()
         if duplicate:
             payload = await _batch_payload(cur, int(duplicate[0]))
@@ -962,9 +1261,13 @@ async def upload_dispatch_batch(
             await cur.execute("""
                 INSERT INTO _police_dispatch_batches (
                     file_name, file_sha256, sheet_name, import_mode, status,
-                    total_count, counts_json, imported_by
-                ) VALUES (%s, %s, %s, %s, 'reviewing', %s, JSON_OBJECT(), %s)
-            """, (filename, digest, sheet_name, import_mode, len(tasks), user["id"]))
+                    total_count, counts_json, imported_by, import_profile,
+                    adapter_version
+                ) VALUES (%s, %s, %s, %s, 'reviewing', %s, JSON_OBJECT(), %s, %s, %s)
+            """, (
+                filename, digest, sheet_name, import_mode, len(tasks), user["id"],
+                legacy_profile, ADAPTER_VERSION,
+            ))
             batch_id = int(cur.lastrowid)
             for item in tasks:
                 await cur.execute("""
@@ -1036,6 +1339,8 @@ async def list_batches(
     file_name: str = Query("", max_length=100),
     upload_date: str = Query("", max_length=10),
     status: str = Query("all", max_length=30),
+    business_type: str = Query("all", max_length=30),
+    police_subtype: str = Query("all", max_length=30),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: dict = Depends(require_police_dispatch),
@@ -1060,6 +1365,16 @@ async def list_batches(
             raise HTTPException(400, "批次状态筛选无效")
         where.append("status=%s")
         params.append(status)
+    if business_type != "all":
+        if business_type not in {"fullchain", "rental", "police", "delivery", "suspect_return"}:
+            raise HTTPException(400, "业务类型筛选无效")
+        where.append("business_type=%s")
+        params.append(business_type)
+    if police_subtype != "all":
+        if police_subtype not in {"internal", "suzhou"}:
+            raise HTTPException(400, "涉警子类型筛选无效")
+        where.append("police_subtype=%s")
+        params.append(police_subtype)
     where_sql = " AND ".join(where)
     async with conn.cursor() as cur:
         await cur.execute(
@@ -1175,6 +1490,8 @@ def _task_payload(row: tuple) -> dict[str, Any]:
     raw_values = json_value(row[27], {}) if len(row) > 27 else {}
     requested_values = json_value(row[32], {}) if len(row) > 32 else {}
     conflict_values = json_value(row[30], {}) if len(row) > 30 else {}
+    standard_values = json_value(row[33], {}) if len(row) > 33 else {}
+    validation_issues = json_value(row[34], []) if len(row) > 34 else []
     conflict_diff = [
         {
             "field": field,
@@ -1210,6 +1527,13 @@ def _task_payload(row: tuple) -> dict[str, Any]:
         "requested_values": requested_values,
         "conflict_diff": conflict_diff,
         "cache_pending": bool(row[31]) if len(row) > 31 else False,
+        "standard_values": standard_values,
+        "validation_issues": validation_issues if isinstance(validation_issues, list) else [],
+        "business_key_hmac": str(row[35] or "") if len(row) > 35 else "",
+        "target_parser": str(row[36] or "全链条") if len(row) > 36 else "全链条",
+        "business_type": str(row[37] or "fullchain") if len(row) > 37 else "fullchain",
+        "police_subtype": str(row[38] or "") if len(row) > 38 else "",
+        "import_profile": str(row[39] or "fullchain_raw") if len(row) > 39 else "fullchain_raw",
     }
 
 
@@ -1225,8 +1549,12 @@ TASK_SELECT = """
            task.version, task.task_status, task.publish_status,
            task.publish_error, task.raw_values_json, task.linked_source_id,
            task.linked_row_hash, task.conflict_values_json,
-           task.cache_pending, result.request_values_json
+           task.cache_pending, result.request_values_json,
+           task.standard_values_json, task.validation_issues_json,
+           task.business_key_hmac, batch.target_parser,
+           batch.business_type, batch.police_subtype, batch.import_profile
     FROM _police_dispatch_tasks AS task
+    JOIN _police_dispatch_batches AS batch ON batch.id=task.batch_id
     LEFT JOIN _communities AS suggested ON suggested.id=task.suggested_community_id
     LEFT JOIN _communities AS final ON final.id=task.final_community_id
     LEFT JOIN _police_dispatch_publish_results AS result ON result.task_id=task.id
@@ -1323,7 +1651,7 @@ async def publishable_task_selection(
         "task.final_action='dispatch'",
         "task.task_status='pending_publish'",
         "task.publish_status IN ('pending', 'retryable')",
-        "TRIM(COALESCE(task.phone, ''))<>''",
+        "(batch.target_parser='涉警统计' OR TRIM(COALESCE(task.phone, ''))<>'')",
         "(task.duplicate_group_key='' OR NOT EXISTS ("
         "SELECT 1 FROM _police_dispatch_tasks AS grouped "
         "WHERE grouped.batch_id=task.batch_id "
@@ -1334,6 +1662,7 @@ async def publishable_task_selection(
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT task.id FROM _police_dispatch_tasks AS task "
+            "JOIN _police_dispatch_batches AS batch ON batch.id=task.batch_id "
             f"WHERE {' AND '.join(where)} ORDER BY task.source_row, task.id LIMIT 5001",
             params,
         )
@@ -1397,9 +1726,12 @@ async def get_task(
 async def _review_one(cur, task_id: int, data: TaskReview, user: dict) -> int:
     await cur.execute("""
         SELECT batch_id, version, publish_status, duplicate_group_key,
-               person_name, identity_number, phone, original_address
-        FROM _police_dispatch_tasks
-        WHERE id=%s FOR UPDATE
+               person_name, identity_number, phone, original_address,
+               batch.target_parser, task.standard_values_json,
+               task.validation_issues_json
+        FROM _police_dispatch_tasks AS task
+        JOIN _police_dispatch_batches AS batch ON batch.id=task.batch_id
+        WHERE task.id=%s FOR UPDATE
     """, (task_id,))
     row = await cur.fetchone()
     if not row:
@@ -1412,17 +1744,31 @@ async def _review_one(cur, task_id: int, data: TaskReview, user: dict) -> int:
         raise HTTPException(400, "只有同批重复人员记录才能标记为重复排除")
     community_id = data.final_community_id if data.final_action == "dispatch" else None
     if data.final_action == "dispatch":
-        missing = [
-            label for value, label in (
+        target_parser = str(row[8] or "全链条") if len(row) > 8 else "全链条"
+        standard_values = json_value(row[9], {}) if len(row) > 9 else {}
+        validation_issues = json_value(row[10], []) if len(row) > 10 else []
+        if target_parser == "涉警统计":
+            required_values = (
+                (standard_values.get("序号", ""), "接警编号"),
+                (standard_values.get("简要警情及处理结果", ""), "简要警情及处理结果"),
+            )
+        else:
+            required_values = (
                 (row[4] if len(row) > 4 else "", "姓名"),
                 (row[5] if len(row) > 5 else "", "身份证号"),
                 (row[6] if len(row) > 6 else "", "手机号"),
                 (row[7] if len(row) > 7 else "", "地址"),
             )
-            if not str(value or "").strip()
-        ]
+        missing = [label for value, label in required_values if not str(value or "").strip()]
         if missing:
             raise HTTPException(400, f"下发前必须补齐：{'、'.join(missing)}")
+        blocking_issues = {
+            str(issue.get("type") or "")
+            for issue in validation_issues
+            if isinstance(issue, dict)
+        } & {"missing_key", "identity_invalid"}
+        if blocking_issues:
+            raise HTTPException(400, "文件中的业务主键或身份证格式异常，请修正原文件后重新导入")
         if not community_id:
             raise HTTPException(400, "下发任务必须选择社区")
         await _assert_community(cur, community_id, require_enabled=True)
@@ -1554,8 +1900,11 @@ async def update_task_business_fields(
     try:
         async with conn.cursor() as cur:
             await cur.execute("""
-                SELECT batch_id, version, publish_status, raw_values_json
-                FROM _police_dispatch_tasks WHERE id=%s FOR UPDATE
+                SELECT task.batch_id, task.version, task.publish_status,
+                       task.raw_values_json, batch.target_parser
+                FROM _police_dispatch_tasks AS task
+                JOIN _police_dispatch_batches AS batch ON batch.id=task.batch_id
+                WHERE task.id=%s FOR UPDATE
             """, (task_id,))
             row = await cur.fetchone()
             if not row:
@@ -1564,6 +1913,9 @@ async def update_task_business_fields(
                 raise HTTPException(409, "任务已被其他人修改，请刷新后重试")
             if str(row[2]) in {"success", "publishing", "needs_reconciliation", "conflict"}:
                 raise HTTPException(409, "已写入或正在对账的任务不能修改业务字段")
+            target_parser = str(row[4] or "全链条") if len(row) > 4 else "全链条"
+            if target_parser != "全链条":
+                raise HTTPException(409, "当前业务请在对应任务表单中维护，不能修改导入原始字段")
             raw_values = json_value(row[3], {})
             unknown = sorted(set(data.fields) - set(raw_values))
             if unknown:
@@ -1814,14 +2166,16 @@ async def resolve_publish_conflict(
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
-    parser = get_parser("全链条")
     async with conn.cursor() as cur:
         await cur.execute("""
             SELECT task.batch_id, task.version, task.publish_status,
                    task.linked_source_id, task.linked_row_hash,
                    task.raw_values_json, result.request_values_json,
-                   result.spreadsheet_id, result.physical_row
+                   result.spreadsheet_id, result.physical_row,
+                   batch.target_parser, task.standard_values_json,
+                   task.business_key_hmac
             FROM _police_dispatch_tasks AS task
+            JOIN _police_dispatch_batches AS batch ON batch.id=task.batch_id
             JOIN _police_dispatch_publish_results AS result
               ON result.task_id=task.id
             WHERE task.id=%s
@@ -1837,7 +2191,8 @@ async def resolve_publish_conflict(
             raise HTTPException(409, "腾讯来源行已变化，请等待同步后刷新")
         if not row[3]:
             raise HTTPException(409, "尚未定位腾讯来源行，请等待一次正常同步")
-        source = await _load_source_row(cur, "全链条", int(row[3]))
+        parser = get_parser(str(row[9] or "全链条"))
+        source = await _load_source_row(cur, parser.parser_type, int(row[3]))
         if source["row_hash"] != data.expected_row_hash:
             raise HTTPException(409, "腾讯来源行已变化，请刷新后重新选择")
         batch_id = int(row[0])
@@ -1867,25 +2222,37 @@ async def resolve_publish_conflict(
                 if not community or not community.get("enabled", False):
                     raise HTTPException(409, "腾讯内容中的社区无法映射为启用中的正式社区")
                 raw_values = json_value(row[5], {})
-                roles = dispatch_field_roles(raw_values)
-                replacements = {
-                    "source": values.get("来源", ""),
-                    "name": values.get("姓名", ""),
-                    "identity": values.get("身份证号", ""),
-                    "phone": values.get("电话号码", ""),
-                    "address": values.get("地址", ""),
-                    "created": values.get("创建时间", ""),
-                    "transfer_note": "",
-                }
-                for field, value in replacements.items():
-                    header = roles.get(field)
-                    if header:
-                        raw_values[header] = value
+                if parser.parser_type == "全链条":
+                    roles = dispatch_field_roles(raw_values)
+                    replacements = {
+                        "source": values.get("来源", ""),
+                        "name": values.get("姓名", ""),
+                        "identity": values.get("身份证号", ""),
+                        "phone": values.get("电话号码", ""),
+                        "address": values.get("地址", ""),
+                        "created": values.get("创建时间", ""),
+                        "transfer_note": "",
+                    }
+                    for field, value in replacements.items():
+                        header = roles.get(field)
+                        if header:
+                            raw_values[header] = value
+                else:
+                    replacements = {
+                        "source": str(values.get("来源") or parser.parser_type),
+                        "name": str(values.get("姓名") or ""),
+                        "identity": str(values.get("身份证号") or values.get("身份证号码") or ""),
+                        "phone": str(values.get("电话号码") or values.get("手机号码") or values.get("联系号码") or ""),
+                        "address": str(values.get("地址") or values.get("地址1") or values.get("疑似现住址") or values.get("高频抓拍小区") or ""),
+                        "created": str(values.get("创建时间") or values.get("下发日期") or values.get("下发时间") or values.get("日期") or ""),
+                        "transfer_note": str(values.get("出警内容") or ""),
+                    }
                 await cur.execute("""
                     UPDATE _police_dispatch_tasks SET
                         source_name=%s, person_name=%s, identity_number=%s,
                         identity_hash=%s, phone=%s, original_address=%s,
-                        source_created_time=%s, transfer_note='', raw_values_json=%s,
+                        source_created_time=%s, transfer_note=%s, raw_values_json=%s,
+                        standard_values_json=%s,
                         final_action='dispatch', final_community_id=%s,
                         suggested_action='dispatch', suggested_community_id=%s,
                         suggestion_reason='已采用腾讯现有内容', allocation_mode='matched',
@@ -1898,7 +2265,8 @@ async def resolve_publish_conflict(
                     replacements["source"], replacements["name"],
                     replacements["identity"], identity_digest(replacements["identity"]),
                     replacements["phone"], replacements["address"],
-                    replacements["created"], stable_json(raw_values), community["id"],
+                    replacements["created"], replacements["transfer_note"],
+                    stable_json(raw_values), stable_json(values), community["id"],
                     community["id"], task_id, data.expected_version,
                 ))
                 if cur.rowcount != 1:
@@ -1910,7 +2278,8 @@ async def resolve_publish_conflict(
                         error_code='', error_message='', cache_pending=0
                     WHERE task_id=%s
                 """, (stable_json(values), data.expected_row_hash, task_id))
-                await _recalculate_batch_tasks(cur, batch_id, task_id)
+                if parser.parser_type == "全链条":
+                    await _recalculate_batch_tasks(cur, batch_id, task_id)
                 await _refresh_batch_status(cur, batch_id)
             await conn.commit()
         except Exception:
@@ -1922,7 +2291,7 @@ async def resolve_publish_conflict(
         async with conn.cursor() as cur:
             if not await _writeback_enabled(cur):
                 raise HTTPException(503, "在线回写已由超级管理员暂停")
-            spreadsheets = await _enabled_spreadsheets(cur, "全链条")
+            spreadsheets = await _enabled_spreadsheets(cur, parser.parser_type)
             spreadsheet = next(
                 (item for item in spreadsheets if item["id"] == int(row[7])),
                 None,
@@ -1930,7 +2299,7 @@ async def resolve_publish_conflict(
             if not spreadsheet:
                 raise HTTPException(409, "原腾讯来源表已停用，不能覆盖")
             if not await acquire_sheet_lock(cur, spreadsheet["id"], timeout=2):
-                raise HTTPException(409, "全链条表格正在同步或被他人编辑，请稍后重试")
+                raise HTTPException(409, f"{parser.parser_type}表格正在同步或被他人编辑，请稍后重试")
         client = None
         cache_pending = False
         request_sent = False
@@ -2020,6 +2389,7 @@ async def resolve_publish_conflict(
                         spreadsheet=spreadsheet,
                         physical_row=int(row[8]),
                         requested=requested,
+                        business_key=str(row[11] or "") or parser_business_key(parser, platform_values),
                         error=safe_error,
                     )
                 if marked_for_reconciliation:
@@ -2091,12 +2461,19 @@ async def export_feedback(
 ):
     async with conn.cursor() as cur:
         batch = await _batch_payload(cur, batch_id)
-        await cur.execute("""
+        target_parser = str(batch.get("target_parser") or "全链条")
+        action_filter = (
+            "AND final_action IN ('no_registration', 'transfer')"
+            if target_parser == "全链条" else ""
+        )
+        await cur.execute(f"""
             SELECT source_row, source_name, person_name, identity_number,
                    phone, original_address, final_action, review_note,
-                   suggestion_reason, reviewer_name, reviewed_at
+                   suggestion_reason, reviewer_name, reviewed_at,
+                   standard_values_json, validation_issues_json,
+                   task_status, publish_status, publish_error
             FROM _police_dispatch_tasks
-            WHERE batch_id=%s AND final_action IN ('no_registration', 'transfer')
+            WHERE batch_id=%s {action_filter}
             ORDER BY source_row
         """, (batch_id,))
         tasks = [
@@ -2106,6 +2483,11 @@ async def export_feedback(
                 "final_action": row[6], "review_note": row[7], "suggestion_reason": row[8],
                 "reviewer_name": row[9],
                 "reviewed_at_text": row[10].strftime("%Y-%m-%d %H:%M:%S") if row[10] else "",
+                "standard_values": json_value(row[11], {}),
+                "validation_issues": json_value(row[12], []),
+                "task_status": str(row[13] or ""),
+                "publish_status": str(row[14] or ""),
+                "publish_error": str(row[15] or ""),
             }
             for row in await cur.fetchall()
         ]
@@ -2131,6 +2513,16 @@ async def export_feedback(
 
 
 def _publish_values(task: dict[str, Any], community: str, publish_date) -> dict[str, str]:
+    standard = task.get("standard_values") or {}
+    if standard:
+        values = {str(key): str(value or "") for key, value in standard.items()}
+        if "社区" in values:
+            values["社区"] = community
+        if not values.get("下发日期") and "下发日期" in values:
+            values["下发日期"] = publish_date.strftime("%m-%d")
+        if not values.get("下发时间") and "下发时间" in values:
+            values["下发时间"] = publish_date.strftime("%m-%d")
+        return values
     deadline = publish_date + timedelta(days=3)
     return {
         "下发日期": publish_date.strftime("%m-%d"),
@@ -2151,10 +2543,16 @@ def _publish_values(task: dict[str, Any], community: str, publish_date) -> dict[
 def _publish_comparison_columns(parser, source_columns: list[str]) -> list[str]:
     """只校验腾讯物理表实际存在且由下发流程拥有的列。"""
     source_column_set = set(source_columns)
-    return [
-        column for column in parser.COLUMNS
-        if column in source_column_set and column in PUBLISH_OWNED_COLUMNS
-    ]
+    if parser.parser_type == "全链条":
+        owned = set(PUBLISH_OWNED_COLUMNS)
+    else:
+        owned = set(parser.COLUMNS) - {
+            "核查人", "现住址", "核查结果", "核查反馈", "研判",
+            "二次反馈", "二次核查结果", "入住方式", "是否开户",
+            "房屋属性", "居住时间", "房东信息", "二房东信息", "备注",
+            "房东是否处罚",
+        }
+    return [column for column in parser.COLUMNS if column in source_column_set and column in owned]
 
 
 def _publish_request_values(
@@ -2304,14 +2702,16 @@ async def _mark_overwrite_uncertain(
     spreadsheet: dict[str, Any],
     physical_row: int,
     requested: dict[str, str],
+    business_key: str = "",
     error: str,
 ) -> bool:
     """覆盖请求可能已到腾讯时锁定重试，交由正常同步只读对账。"""
-    business_key = publish_business_key(
-        requested.get("身份证号", ""),
-        requested.get("电话号码", ""),
-        requested.get("下发日期", ""),
-    )
+    if not business_key:
+        business_key = publish_business_key(
+            requested.get("身份证号", ""),
+            requested.get("电话号码", ""),
+            requested.get("下发日期", ""),
+        )
     await cur.execute("""
         UPDATE _police_dispatch_tasks SET
             publish_status='needs_reconciliation',
@@ -2347,7 +2747,6 @@ async def _execute_publish_selection(
     *,
     run_id: int | None = None,
 ):
-    parser = get_parser("全链条")
     selected_ids = data.task_ids
     placeholders = ",".join(["%s"] * len(selected_ids))
     eligible_publish_status = (
@@ -2360,18 +2759,20 @@ async def _execute_publish_selection(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
-            await _batch_payload(cur, batch_id)
+            batch = await _batch_payload(cur, batch_id)
+            parser = get_parser(batch.get("target_parser") or "全链条")
             if not await _writeback_enabled(cur):
                 raise HTTPException(503, "在线回写已由超级管理员暂停")
-            spreadsheets = await _enabled_spreadsheets(cur, "全链条")
+            spreadsheets = await _enabled_spreadsheets(cur, parser.parser_type)
             if len(spreadsheets) != 1:
-                raise HTTPException(409, "全链条业务没有唯一启用的腾讯来源表")
+                raise HTTPException(409, f"{parser.parser_type}业务没有唯一启用的腾讯来源表")
             spreadsheet = spreadsheets[0]
             await cur.execute(f"""
                 SELECT task.id, task.source_row, task.source_name, task.person_name,
                        task.identity_number, task.phone, task.original_address,
                        task.source_created_time, task.transfer_note,
-                       task.raw_values_json, community.name
+                       task.raw_values_json, community.name,
+                       task.standard_values_json, task.business_key_hmac
                 FROM _police_dispatch_tasks AS task
                 JOIN _communities AS community ON community.id=task.final_community_id
                 WHERE task.batch_id=%s AND task.id IN ({placeholders})
@@ -2391,6 +2792,8 @@ async def _execute_publish_selection(
                         json_value(row[9], {})
                     ).get("registration_status", ""),
                     "community": str(row[10]),
+                    "standard_values": json_value(row[11], {}),
+                    "business_key_hmac": str(row[12] or ""),
                 }
                 for row in await cur.fetchall()
             ]
@@ -2413,7 +2816,8 @@ async def _execute_publish_selection(
             """, [batch_id, batch_id, *selected_ids])
             if await cur.fetchone():
                 raise HTTPException(409, "所选任务中存在尚未正确处理的重复人员组")
-            missing_phone_count = sum(not item["phone"].strip() for item in pending)
+            missing_phone_count = sum(not item["phone"].strip() for item in pending) \
+                if parser.parser_type != "涉警统计" else 0
             if missing_phone_count:
                 raise HTTPException(
                     409,
@@ -2421,7 +2825,7 @@ async def _execute_publish_selection(
                 )
             lock_timeout = 30 if run_id is not None else 2
             if not await acquire_sheet_lock(cur, spreadsheet["id"], timeout=lock_timeout):
-                raise HTTPException(409, "全链条表格正在同步或被他人编辑，请稍后重试")
+                raise HTTPException(409, f"{parser.parser_type}表格正在同步或被他人编辑，请稍后重试")
             sheet_lock_acquired = True
             publish_date = await get_business_date(cur)
             await cur.execute("""
@@ -2481,19 +2885,20 @@ async def _execute_publish_selection(
         source_rows = [row for row in all_rows if not row.get("is_header")]
         existing_by_key: dict[str, list[dict[str, Any]]] = {}
         for source in source_rows:
-            key = publish_business_key(
-                source["values"].get("身份证号", ""),
-                source["values"].get("电话号码", ""),
-                source["values"].get("下发日期", ""),
-            )
-            existing_by_key.setdefault(key, []).append(source)
+            for key in {
+                parser_business_key(parser, source["values"]),
+                parser_business_key(parser, source["values"], legacy=True),
+            }:
+                existing_by_key.setdefault(key, []).append(source)
         next_row = max([spreadsheet["header_row"], *[row["physical_row"] for row in all_rows]]) + 1
         ready: list[tuple[dict, dict, dict, str]] = []
         async with conn.cursor() as cur:
             for task in pending:
                 values = _publish_values(task, task["community"], publish_date)
                 request_values = _publish_request_values(values, comparison_columns)
-                key = publish_business_key(task["identity_number"], task["phone"], values["下发日期"])
+                key = task.get("business_key_hmac") or parser_business_key(
+                    parser, values, legacy=True
+                )
                 candidates = existing_by_key.get(key, [])
                 if candidates:
                     exact = next((
@@ -2989,12 +3394,13 @@ async def publish_selected_tasks(
             lock_acquired = bool(lock_row and lock_row[0] == 1)
             if not lock_acquired:
                 raise HTTPException(409, "发布任务正在创建，请稍后重试")
-            await _batch_payload(cur, batch_id)
+            batch = await _batch_payload(cur, batch_id)
+            target_parser = str(batch.get("target_parser") or "全链条")
             if not await _writeback_enabled(cur):
                 raise HTTPException(503, "在线回写已由超级管理员暂停")
-            spreadsheets = await _enabled_spreadsheets(cur, "全链条")
+            spreadsheets = await _enabled_spreadsheets(cur, target_parser)
             if len(spreadsheets) != 1:
-                raise HTTPException(409, "全链条业务没有唯一启用的腾讯来源表")
+                raise HTTPException(409, f"{target_parser}业务没有唯一启用的腾讯来源表")
             spreadsheet = spreadsheets[0]
             await cur.execute("""
                 SELECT id FROM _police_dispatch_publish_runs
@@ -3019,7 +3425,8 @@ async def publish_selected_tasks(
             eligible = [(int(row[0]), str(row[1] or "")) for row in await cur.fetchall()]
             if len(eligible) != len(selected_ids):
                 raise HTTPException(409, "部分所选任务已不可发布，请刷新列表后重新选择")
-            missing_phone_count = sum(not phone.strip() for _, phone in eligible)
+            missing_phone_count = sum(not phone.strip() for _, phone in eligible) \
+                if target_parser != "涉警统计" else 0
             if missing_phone_count:
                 raise HTTPException(
                     409,

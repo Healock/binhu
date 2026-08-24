@@ -80,12 +80,12 @@ async def finalize_source_projection(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
-            if spreadsheet["parser_type"] == "全链条":
-                await reconcile_police_dispatch_publications(
-                    cur,
-                    spreadsheet["id"],
-                    source_columns,
-                )
+            await reconcile_police_dispatch_publications(
+                cur,
+                spreadsheet["id"],
+                source_columns,
+                parser_type=spreadsheet["parser_type"],
+            )
             await mark_writebacks_synced(cur, spreadsheet["id"])
             await rebuild_projection(cur, spreadsheet["parser_type"])
         await conn.commit()
