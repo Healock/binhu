@@ -26,7 +26,7 @@ from services.online_edit_permissions import (
     inspector_option_context,
     row_edit_capabilities,
 )
-from services.online_source import json_value
+from services.online_source import json_value, logical_source_sql_filter
 from services.online_local_writeback import (
     launch_local_change_processing,
     load_local_changes,
@@ -2074,11 +2074,12 @@ async def _mobile_task_detail_data(
         ) not in {"waiting_analysis", "analyzed"}:
             raise HTTPException(404, "该任务当前不属于网格核查研判范围")
         await cur.execute(
-            """
+            f"""
             SELECT id, physical_row, values_json, cell_meta_json,
                    revision, row_hash, spreadsheet_id, sheet_id
-            FROM _online_source_rows
-            WHERE parser_type=%s AND row_key=%s
+            FROM _online_source_rows AS source
+            WHERE source.parser_type=%s AND source.row_key=%s
+              {logical_source_sql_filter(parser_type)}
             ORDER BY spreadsheet_id, physical_row
             """,
             (parser_type, row_key),
@@ -2671,10 +2672,12 @@ async def bulk_assign_mobile_tasks(
 
         await cur.execute(
             f"""
-            SELECT id, row_key, revision
-            FROM _online_source_rows
-            WHERE parser_type=%s AND row_key IN ({key_placeholders})
-            ORDER BY row_key, id
+            SELECT source.id, source.row_key, source.revision
+            FROM _online_source_rows AS source
+            WHERE source.parser_type=%s
+              AND source.row_key IN ({key_placeholders})
+              {logical_source_sql_filter(parser_type)}
+            ORDER BY source.row_key, source.id
             """,
             [parser_type, *row_keys],
         )

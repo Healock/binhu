@@ -115,6 +115,10 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("snapshot.row_key IS NULL", source)
         self.assertIn("snapshot.error_code<>''", source)
         self.assertIn("snapshot.source_revision<>source.revision", source)
+        self.assertIn(
+            "logical_source_sql_filter(MODEL_THREE_PARSER, 'candidate')",
+            source,
+        )
         self.assertIn("INTERVAL 7 DAY", source)
 
     async def test_schema_contains_only_safe_snapshot_fields(self):
