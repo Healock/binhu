@@ -57,6 +57,7 @@ import type {
 import { ListToolbar, Panel } from '../components/ui'
 import AppTable from '../components/AppTable'
 import useSystemTime from '../hooks/useSystemTime'
+import { downloadBlob } from '../utils/fileDownload'
 
 const MonoTrendChart = lazy(
   () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoTrendChart })),
@@ -123,15 +124,6 @@ function formatBytes(value?: number | null) {
     index += 1
   }
   return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[index]}`
-}
-
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  anchor.click()
-  URL.revokeObjectURL(url)
 }
 
 function StatusTag({ value, label }: { value?: string | null; label?: string | null }) {
@@ -794,7 +786,7 @@ function BackupsTab() {
     setDownloading(true)
     try {
       const blob = await downloadBackup(downloadJob.id, password)
-      saveBlob(blob, downloadJob.filename || `binhu-backup-${downloadJob.id}.sql.gz`)
+      await downloadBlob(blob, downloadJob.filename || `binhu-backup-${downloadJob.id}.sql.gz`)
       message.success('备份下载已开始')
       setDownloadJob(null)
       setPassword('')
@@ -1117,7 +1109,7 @@ export default function OperationsCenter() {
   const diagnostics = async () => {
     setDiagnosing(true)
     try {
-      saveBlob(await downloadDiagnostics(), 'binhu-diagnostics.zip')
+      await downloadBlob(await downloadDiagnostics(), 'binhu-diagnostics.zip')
       message.success('诊断包已生成')
     } catch {
       message.error('诊断包生成失败')

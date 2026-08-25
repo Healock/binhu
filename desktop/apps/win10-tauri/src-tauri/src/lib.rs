@@ -351,6 +351,26 @@ fn window_close(window: tauri::WebviewWindow) {
 }
 
 #[tauri::command]
+fn save_file(app: tauri::AppHandle, filename: String, data: Vec<u8>) -> Result<(), String> {
+    let safe_name = PathBuf::from(filename)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("下载文件")
+        .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let safe_name = if safe_name.is_empty() {
+        "下载文件".to_string()
+    } else {
+        safe_name
+    };
+    let directory = app
+        .path()
+        .download_dir()
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::write(directory.join(safe_name), data).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_update_status(app: tauri::AppHandle) -> DesktopUpdateState {
     current_update_state(&app)
 }
@@ -536,6 +556,7 @@ pub fn run(restarted: bool) {
             window_toggle_maximize,
             window_is_maximized,
             window_close,
+            save_file,
             get_update_status,
             get_upgrade_info,
             acknowledge_upgrade,

@@ -46,6 +46,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import { downloadBlob } from '../utils/fileDownload'
 
 const STATUS_LABELS: Record<string, string> = {
   draft: '草稿', queued: '待领取', in_progress: '处理中', pending_requester: '待补充',
@@ -82,15 +83,6 @@ function formatBytes(value: number) {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 / 1024).toFixed(1)} MB`
-}
-
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  anchor.click()
-  URL.revokeObjectURL(url)
 }
 
 export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets' | 'photo' }) {
@@ -316,7 +308,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
         source_label: photoSource,
       })
       const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-      saveBlob(blob, `未调照片-${stamp}.xlsx`)
+      await downloadBlob(blob, `未调照片-${stamp}.xlsx`)
       message.success('未调照片清单已导出')
     } catch (reason) {
       message.error(apiError(reason, '导出失败'))

@@ -4,6 +4,7 @@ import type {
   Sheet,
   SheetData,
 } from 'write-excel-file/browser'
+import { downloadBlob } from './fileDownload.ts'
 
 export type SummaryExportRow = Record<string, unknown>
 
@@ -167,8 +168,9 @@ export function buildSummaryWorkbook(options: SummaryWorkbookOptions) {
 export async function exportSummaryWorkbook(options: SummaryWorkbookOptions): Promise<void> {
   const { default: writeXlsxFile } = await import('write-excel-file/browser')
   const workbook = buildSummaryWorkbook(options)
-  await writeXlsxFile(workbook.sheets, {
+  const blob = await writeXlsxFile(workbook.sheets, {
     fontFamily: 'Microsoft YaHei',
     fontSize: 10,
-  }).toFile(workbook.fileName)
+  }).toBlob()
+  await downloadBlob(blob, workbook.fileName)
 }
