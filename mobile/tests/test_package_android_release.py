@@ -23,6 +23,18 @@ class AndroidReleaseDigestTests(unittest.TestCase):
             output = f"certificate SHA 256 fingerprint = {formatted}\n"
             self.assertEqual(package_android_release.extract_sha256_digest(output), digest.lower())
 
+    def test_ignores_public_key_sha256_digest(self):
+        certificate_digest = "620E2C2822BE26999D08E9753CB76EC0DEA8B84D68C03A0465234B30AAA7FF59"
+        public_key_digest = "11" * 32
+        output = (
+            f"Signer #1 certificate SHA-256 digest: {certificate_digest}\n"
+            f"Signer #1 public key SHA-256 digest: {public_key_digest}\n"
+        )
+        self.assertEqual(
+            package_android_release.extract_sha256_digest(output),
+            certificate_digest.lower(),
+        )
+
     def test_rejects_missing_or_ambiguous_digest(self):
         with self.assertRaises(SystemExit):
             package_android_release.extract_sha256_digest("Verified\n")
