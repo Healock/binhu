@@ -96,6 +96,22 @@ test('走访社区汇总导出将三项最低指标各标黄三个单元格', ()
       && cell.backgroundColor === '#fff2cc'
     )))
   assert.equal(yellowCells.length, 9)
+  const isYellow = (rowIndex: number, columnIndex: number) => (
+    (sheet.data[rowIndex][columnIndex] as { backgroundColor?: string }).backgroundColor
+    === '#fff2cc'
+  )
+  assert.deepEqual(
+    [1, 2, 3, 4].filter(rowIndex => isYellow(rowIndex, 1)),
+    [2, 3, 4],
+  )
+  assert.deepEqual(
+    [1, 2, 3, 4].filter(rowIndex => isYellow(rowIndex, 2)),
+    [1, 3, 4],
+  )
+  assert.deepEqual(
+    [1, 2, 3, 4].filter(rowIndex => isYellow(rowIndex, 3)),
+    [2, 3, 4],
+  )
 })
 
 test('在线和走访汇总导出前都会写入操作记录', () => {
