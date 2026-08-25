@@ -240,6 +240,28 @@ def find_android_tool(environment_name: str, executable: str) -> str:
     raise PublishError(f"Android publishing requires {executable}")
 
 
+def extract_android_signer_digest(output: str) -> str:
+    digests: set[str] = set()
+    for line in output.splitlines():
+        if not re.search(r"sha\s*[- ]?\s*256", line, flags=re.IGNORECASE):
+            continue
+        for candidate in re.findall(
+            r"(?<![0-9a-f])(?:[0-9a-f]{2}[\s:-]*){32}(?![0-9a-f])",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            normalized = "".join(
+                character.lower()
+                for character in candidate
+                if character.lower() in "0123456789abcdef"
+            )
+            if len(normalized) == 64:
+                digests.add(normalized)
+    if len(digests) != 1:
+        raise PublishError("Android signing certificate SHA-256 digest is unavailable or ambiguous")
+    return digests.pop()
+
+
 def inspect_android_apk(path: Path) -> dict:
     aapt2 = find_android_tool("BINHU_AAPT2", "aapt2")
     apksigner = find_android_tool("BINHU_APKSIGNER", "apksigner")
@@ -263,10 +285,9 @@ def inspect_android_apk(path: Path) -> dict:
         badging,
         flags=re.MULTILINE,
     )
-    signer = re.search(r"Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F:]{64,95})", signing)
-    if not package or not signer:
+    if not package:
         raise PublishError("Android APK metadata or signing certificate is unavailable")
-    signer_digest = "".join(character.lower() for character in signer.group(1) if character.lower() in "0123456789abcdef")
+    signer_digest = extract_android_signer_digest(signing)
     return {
         "package": package.group(1),
         "versionCode": int(package.group(2)),
