@@ -1,6 +1,6 @@
 {
   "name": "@binhu/desktop",
-  "version": "0.26.0",
+  "version": "0.26.1",
   "private": true,
   "main": "apps/win7-electron/src/main.js",
   "scripts": {

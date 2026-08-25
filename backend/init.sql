@@ -1268,7 +1268,30 @@ CREATE TABLE IF NOT EXISTS t_suzhou_police (
     INDEX idx_sp_community (社区)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 8. 群租房核查（16列，仅raw入库）
+-- 8. 交通涉警（12列；进入涉警任务池，不纳入平台汇总）
+CREATE TABLE IF NOT EXISTS t_traffic_police (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发日期        VARCHAR(50),
+    截止日期        VARCHAR(50),
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(500),
+    联系号码        VARCHAR(500),
+    地址1           VARCHAR(500),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_tp_inspector (核查人),
+    INDEX idx_tp_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 9. 群租房核查（16列，仅raw入库）
 CREATE TABLE IF NOT EXISTS t_group_rental (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     _row_key        VARCHAR(200) NOT NULL,

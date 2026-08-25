@@ -12,6 +12,8 @@ from openpyxl import Workbook
 
 from services.police_dispatch import PoliceWorkbookError
 from services.police_import_profiles import parse_profile
+from services.parsers import get_parser
+from services.task_workflow import SUMMARY_TASK_TYPES, TASK_WORKFLOWS
 
 
 def workbook_bytes(rows: list[list[object]]) -> bytes:
@@ -67,6 +69,65 @@ def test_suzhou_police_supports_case_number_and_short_dates():
     assert row["standard_values"]["截止日期"] == "2026-08-24"
     assert row["standard_values"]["接警编号"] == "CASE-001"
     assert row["business_key_hmac"]
+
+
+def test_traffic_police_maps_position_dates_and_person_fields():
+    result = parse_profile(
+        "police_traffic_processed",
+        workbook_bytes([
+            ["8.25", "8.25", "", "业务分类", "姓名", "身份证号码", "手机号码", "地址1"],
+            ["8.25", "8.25", "", "长板社区", "虚构人员", "32050020000101001X", "13800000000", "虚构地址"],
+        ]),
+        "traffic.xlsx",
+        BUSINESS_DATE,
+        COMMUNITIES,
+    )
+
+    row = result["rows"][0]
+    assert result["counts"]["importable"] == 1
+    assert row["standard_values"] == {
+        "下发日期": "2026-08-25",
+        "截止日期": "2026-08-25",
+        "核查人": "",
+        "社区": "长板社区",
+        "姓名": "虚构人员",
+        "身份证号": "32050020000101001X",
+        "联系号码": "13800000000",
+        "地址1": "虚构地址",
+        "现住址": "",
+        "核查结果": "",
+        "研判": "",
+        "二次反馈": "",
+    }
+    assert row["business_key_hmac"]
+    assert get_parser("交通涉警").table_name == "t_traffic_police"
+    assert TASK_WORKFLOWS["交通涉警"].label == "涉警 · 交通涉警"
+    assert "交通涉警" not in SUMMARY_TASK_TYPES
+
+
+def test_traffic_police_rejects_conflicting_position_dates_for_manual_review():
+    result = parse_profile(
+        "police_traffic_processed",
+        workbook_bytes([
+            ["8.25", "8.25", "", "业务分类", "姓名", "身份证号码", "手机号码", "地址1"],
+            ["8.23", "8.24", "", "长板社区", "虚构人员", "32050020000101001X", "13800000000", "虚构地址"],
+        ]),
+        "traffic.xlsx",
+        BUSINESS_DATE,
+        COMMUNITIES,
+    )
+
+    row = result["rows"][0]
+    assert result["counts"]["importable"] == 0
+    assert result["counts"]["conflict"] == 1
+    assert row["suggested_action"] == "manual"
+    assert row["standard_values"]["下发日期"] == "2026-08-25"
+    assert row["standard_values"]["截止日期"] == "2026-08-25"
+    assert row["validation_issues"] == [{
+        "field": "业务日期",
+        "type": "date_conflict",
+        "value": "前两列日期不一致，已使用上传时确认的业务日期，请人工核对",
+    }]
 
 
 @pytest.mark.parametrize(
