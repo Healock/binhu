@@ -220,6 +220,17 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(gateway.main(["fetch", "win7-x64", "releases.stable.json"], stdout=io.BytesIO()), 1)
         self.assertEqual(gateway.main(["fetch", "win7-x64", "missing-full.nupkg"], stdout=io.BytesIO()), 1)
 
+    def test_android_signer_parser_accepts_separator_delimited_digest(self):
+        digest_value = "12" * 32
+        output = f"Signer certificate SHA 256 fingerprint = {' '.join(['12'] * 32)}\n"
+        self.assertEqual(gateway.extract_android_signer_digest(output), digest_value)
+
+    def test_android_signer_parser_rejects_ambiguous_digest(self):
+        with self.assertRaises(gateway.PublishError):
+            gateway.extract_android_signer_digest(
+                f"SHA-256: {'1' * 64}\nSHA-256: {'2' * 64}\n"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

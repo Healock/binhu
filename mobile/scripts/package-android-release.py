@@ -47,6 +47,28 @@ def run_tool(tool: Path, *arguments: str) -> str:
     return output
 
 
+def extract_sha256_digest(output: str) -> str:
+    """Extract one certificate SHA-256 digest from apksigner output.
+
+    Android build-tools have emitted both contiguous and separator-delimited
+    fingerprints, and the surrounding label can vary between releases.  Only
+    consider lines that explicitly identify SHA-256, then require exactly one
+    normalized 64-character digest so an unrelated checksum cannot be used as
+    the APK signer.
+    """
+    digests: set[str] = set()
+    for line in output.splitlines():
+        if not re.search(r"sha\s*[- ]?\s*256", line, flags=re.IGNORECASE):
+            continue
+        for candidate in re.findall(r"(?<![0-9a-f])(?:[0-9a-f]{2}[\s:-]*){32}(?![0-9a-f])", line, flags=re.IGNORECASE):
+            normalized = normalize_digest(candidate)
+            if HASH_RE.fullmatch(normalized):
+                digests.add(normalized)
+    if len(digests) != 1:
+        raise SystemExit("apksigner did not return exactly one SHA-256 signing certificate digest")
+    return digests.pop()
+
+
 def inspect_apk(apk: Path, aapt2: Path, apksigner: Path) -> tuple[str, int, str, str]:
     badging = run_tool(aapt2, "dump", "badging", str(apk))
     package = re.search(
@@ -57,10 +79,7 @@ def inspect_apk(apk: Path, aapt2: Path, apksigner: Path) -> tuple[str, int, str,
     if not package:
         raise SystemExit("aapt2 did not return Android package version metadata")
     signing = run_tool(apksigner, "verify", "--verbose", "--print-certs", str(apk))
-    signer = re.search(r"Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F:]{64,95})", signing)
-    if not signer:
-        raise SystemExit("apksigner did not return a SHA-256 signing certificate digest")
-    return package.group(1), int(package.group(2)), package.group(3), normalize_digest(signer.group(1))
+    return package.group(1), int(package.group(2)), package.group(3), extract_sha256_digest(signing)
 
 
 def normalize_digest(value: str) -> str:
