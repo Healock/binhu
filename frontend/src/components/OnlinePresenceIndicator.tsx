@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Drawer, Input, List, Popover, Tag } from 'antd'
 import { TeamOutlined, UserOutlined } from '@ant-design/icons'
 import { getPresenceUsers, sendPresenceHeartbeat } from '../api/client'
@@ -88,7 +88,24 @@ export default function OnlinePresenceIndicator() {
   const [open, setOpen] = useState(false)
   const [users, setUsers] = useState<PresenceUser[]>([])
   const [loadingUsers, setLoadingUsers] = useState(false)
+  const heartbeatInFlight = useRef(false)
+  const heartbeatTimer = useRef<number | null>(null)
   const canViewDetails = Boolean(user?.permissions?.includes('presence.detail.view'))
+
+  const refreshUsers = useCallback(async (showLoading = false) => {
+    if (!canViewDetails) return
+    if (showLoading) setLoadingUsers(true)
+    try {
+      const result = await getPresenceUsers()
+      setUsers(result.users)
+      setOnlineCount(result.online_count)
+      setConnected(true)
+    } catch {
+      // Keep the last successful list visible during a transient refresh failure.
+    } finally {
+      if (showLoading) setLoadingUsers(false)
+    }
+  }, [canViewDetails])
 
   useEffect(() => {
     if (!user) {
@@ -98,38 +115,68 @@ export default function OnlinePresenceIndicator() {
     }
     const clientId = getClientId()
     let disposed = false
-    const heartbeat = async () => {
-      if (document.visibilityState !== 'visible') return
+    const heartbeat = async (): Promise<boolean> => {
+      if (disposed || document.visibilityState !== 'visible' || heartbeatInFlight.current) return false
+      heartbeatInFlight.current = true
       try {
         const result = await sendPresenceHeartbeat(clientId)
-        if (disposed) return
+        if (disposed) return true
         setOnlineCount(result.online_count)
         setConnected(true)
+        if (open && canViewDetails) void refreshUsers()
+        return true
       } catch {
         if (!disposed) setConnected(false)
+        return false
+      } finally {
+        heartbeatInFlight.current = false
       }
     }
-    heartbeat()
-    const timer = window.setInterval(heartbeat, HEARTBEAT_INTERVAL_MS)
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') heartbeat()
+    const scheduleHeartbeat = (delay = HEARTBEAT_INTERVAL_MS) => {
+      if (heartbeatTimer.current !== null) window.clearTimeout(heartbeatTimer.current)
+      heartbeatTimer.current = window.setTimeout(async () => {
+        const succeeded = await heartbeat()
+        if (!disposed) scheduleHeartbeat(succeeded ? HEARTBEAT_INTERVAL_MS : 5000)
+      }, delay)
     }
+    heartbeat()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void heartbeat()
+        scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
+      }
+    }
+    const onFocus = () => {
+      void heartbeat()
+      scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
+    }
+    const onOnline = () => {
+      void heartbeat()
+      scheduleHeartbeat(1000)
+    }
+    const onPageShow = () => {
+      void heartbeat()
+      scheduleHeartbeat(1000)
+    }
+    scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
     document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('pageshow', onPageShow)
     return () => {
       disposed = true
-      window.clearInterval(timer)
+      if (heartbeatTimer.current !== null) window.clearTimeout(heartbeatTimer.current)
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('pageshow', onPageShow)
     }
-  }, [user])
+  }, [canViewDetails, open, refreshUsers, user])
 
   useEffect(() => {
     if (!open || !canViewDetails) return
-    setLoadingUsers(true)
-    getPresenceUsers()
-      .then(result => setUsers(result.users))
-      .catch(() => setUsers([]))
-      .finally(() => setLoadingUsers(false))
-  }, [canViewDetails, open])
+    void refreshUsers(true)
+  }, [canViewDetails, open, refreshUsers])
 
   if (!user) return null
   const content = loadingUsers
