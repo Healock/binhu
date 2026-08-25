@@ -27,6 +27,7 @@ from services.online_edit_permissions import (
 from services.online_source import (
     acquire_sheet_lock,
     json_value,
+    logical_source_sql_filter,
     rebuild_projection,
     release_sheet_lock,
     replace_source_cache,
@@ -484,10 +485,11 @@ async def _source_ready(cur, spreadsheets: list[dict]) -> bool:
 async def _source_data_version(cur, parser_type: str) -> str:
     """Return a non-sensitive token that changes when cached source rows change."""
     await cur.execute(
-        """
+        f"""
         SELECT COUNT(*), COALESCE(SUM(revision), 0), MAX(refreshed_at)
-        FROM _online_source_rows
-        WHERE parser_type=%s
+        FROM _online_source_rows AS source
+        WHERE source.parser_type=%s
+        {logical_source_sql_filter(parser_type)}
         """,
         (parser_type,),
     )
@@ -1585,11 +1587,12 @@ async def list_source_rows(
         allowed = set(await community_names_for_scopes(conn, scopes))
     async with conn.cursor() as cur:
         await cur.execute(
-            """
+            f"""
             SELECT id, physical_row, values_json, cell_meta_json,
                    revision, row_hash
-            FROM _online_source_rows
-            WHERE parser_type=%s AND row_key=%s
+            FROM _online_source_rows AS source
+            WHERE source.parser_type=%s AND source.row_key=%s
+              {logical_source_sql_filter(parser_type)}
             ORDER BY spreadsheet_id, physical_row
             """,
             (parser_type, row_key),

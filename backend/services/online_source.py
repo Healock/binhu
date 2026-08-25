@@ -18,6 +18,28 @@ from services.watch_matching import (
 
 
 ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
+LEGACY_MODEL_THREE_SOURCE_SHEET = "legacy-model-three"
+
+
+def logical_source_sql_filter(parser_type: str, alias: str = "source") -> str:
+    """Collapse an identical API/Tencent model-three pair into one source.
+
+    The virtual API row remains active when it is the only copy or its content
+    differs.  Only an exact row-hash duplicate is shadowed by a physical source.
+    """
+    if parser_type != "疑似未注销模型三":
+        return ""
+    prefix = f"{alias}."
+    return (
+        f" AND NOT ({prefix}spreadsheet_id=0 "
+        f"AND {prefix}sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}' "
+        "AND EXISTS (SELECT 1 FROM _online_source_rows AS physical_source "
+        f"WHERE physical_source.parser_type={prefix}parser_type "
+        f"AND physical_source.row_key={prefix}row_key "
+        f"AND physical_source.row_hash={prefix}row_hash "
+        "AND NOT (physical_source.spreadsheet_id=0 "
+        f"AND physical_source.sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}')))"
+    )
 
 
 def json_value(value: Any, fallback):
@@ -126,8 +148,10 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         str(row[0]): row[1] for row in await cur.fetchall() if row[1]
     }
     await cur.execute(
-        "SELECT id, row_key, values_json FROM _online_source_rows "
-        "WHERE parser_type=%s ORDER BY spreadsheet_id, physical_row",
+        "SELECT source.id, source.row_key, source.values_json "
+        "FROM _online_source_rows AS source WHERE source.parser_type=%s"
+        f"{logical_source_sql_filter(parser_type)} "
+        "ORDER BY spreadsheet_id, physical_row",
         (parser_type,),
     )
     source_records = await cur.fetchall()

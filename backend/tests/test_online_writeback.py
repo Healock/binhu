@@ -30,6 +30,7 @@ from services.online_edit_permissions import (
 )
 from services.online_source import (
     cleanup_expired_writeback_audit,
+    logical_source_sql_filter,
     match_source_cache_rows,
     rebuild_projection,
     source_row_hash,
@@ -118,11 +119,16 @@ class ProjectionCursor:
         self.pending_rows = pending_rows or []
         self.mode = ""
         self.many_rows = []
+        self.executed_sql = []
 
     async def execute(self, sql, params=None):
         compact = " ".join(sql.split())
+        self.executed_sql.append(compact)
         params_text = str(params)
-        if compact.startswith("SELECT id, row_key, values_json"):
+        if compact.startswith((
+            "SELECT id, row_key, values_json",
+            "SELECT source.id, source.row_key, source.values_json",
+        )):
             self.mode = "sources"
         elif compact.startswith("SELECT source_id, field_name, local_value"):
             self.mode = "local_changes"
@@ -232,6 +238,13 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_three_virtual_source_is_identified_and_deduplicated(self):
+        predicate = logical_source_sql_filter("疑似未注销模型三", "source")
+        self.assertIn("source.spreadsheet_id=0", predicate)
+        self.assertIn("source.sheet_id='legacy-model-three'", predicate)
+        self.assertIn("physical_source.row_hash=source.row_hash", predicate)
+        self.assertEqual(logical_source_sql_filter("全链条"), "")
+
     def test_blank_rental_result_select_uses_business_write_options(self):
         metadata = writeback_cell_metadata(
             "出租房屋核查",
@@ -761,6 +774,29 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(projection[9], 0)
         self.assertEqual(projection[11], "pending")
         self.assertEqual(json.loads(projection[2])["现住址"], "新址")
+
+    async def test_model_three_projection_collapses_identical_virtual_copy(self):
+        parser = get_parser("疑似未注销模型三")
+        values = {column: "" for column in parser.COLUMNS}
+        values.update({
+            "下发社区": "祥泰",
+            "身份证号": "320000000000000000",
+            "核查结果": "离吴",
+        })
+        cursor = ProjectionCursor([
+            ("same-key", json.dumps(values, ensure_ascii=False)),
+        ])
+
+        await rebuild_projection(cursor, "疑似未注销模型三")
+
+        source_sql = next(
+            sql for sql in cursor.executed_sql
+            if sql.startswith("SELECT source.id, source.row_key, source.values_json")
+        )
+        self.assertIn("source.spreadsheet_id=0", source_sql)
+        self.assertIn("sheet_id='legacy-model-three'", source_sql)
+        self.assertIn("physical_source.row_hash=source.row_hash", source_sql)
+        self.assertEqual(cursor.many_rows[0][8], 1)
 
     async def test_non_mergeable_duplicates_are_exposed_as_conflict(self):
         parser = get_parser("全链条")
