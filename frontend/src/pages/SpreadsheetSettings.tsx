@@ -14,6 +14,8 @@ const FIXED_TYPES = [
   '疑似返苏',
   '寄递业',
   '群租房核查',
+  '苏州涉警',
+  '交通涉警',
 ]
 
 export default function SpreadsheetSettings() {

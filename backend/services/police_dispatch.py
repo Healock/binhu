@@ -913,7 +913,7 @@ def build_feedback_workbook(
             "delivery": "寄递业",
             "suspect_return": "疑似返苏",
         }
-        subtype_labels = {"internal": "所内涉警", "suzhou": "苏州涉警"}
+        subtype_labels = {"internal": "所内涉警", "suzhou": "苏州涉警", "traffic": "交通涉警"}
         business_label = business_labels.get(
             str(batch.get("business_type") or ""), target_parser,
         )

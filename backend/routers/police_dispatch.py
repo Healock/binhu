@@ -1371,7 +1371,7 @@ async def list_batches(
         where.append("business_type=%s")
         params.append(business_type)
     if police_subtype != "all":
-        if police_subtype not in {"internal", "suzhou"}:
+        if police_subtype not in {"internal", "suzhou", "traffic"}:
             raise HTTPException(400, "涉警子类型筛选无效")
         where.append("police_subtype=%s")
         params.append(police_subtype)

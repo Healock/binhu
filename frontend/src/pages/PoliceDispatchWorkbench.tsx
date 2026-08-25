@@ -175,7 +175,9 @@ function TaskCard({
     ? '涉警 · 所内涉警'
     : item.police_subtype === 'suzhou'
       ? '涉警 · 苏州涉警'
-      : item.target_parser || item.source_name
+      : item.police_subtype === 'traffic'
+        ? '涉警 · 交通涉警'
+        : item.target_parser || item.source_name
   return (
     <article
       role="button"

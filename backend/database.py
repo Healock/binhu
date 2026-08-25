@@ -1226,6 +1226,24 @@ async def ensure_police_dispatch_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS t_traffic_police (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            _row_key VARCHAR(200) NOT NULL,
+            `下发日期` VARCHAR(500), `截止日期` VARCHAR(500),
+            `核查人` VARCHAR(500), `社区` VARCHAR(500), `姓名` VARCHAR(500),
+            `身份证号` VARCHAR(500), `联系号码` VARCHAR(500),
+            `地址1` VARCHAR(500), `现住址` VARCHAR(500),
+            `核查结果` VARCHAR(500), `研判` VARCHAR(500),
+            `二次反馈` VARCHAR(500),
+            _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_traffic_police_row_key (_row_key),
+            INDEX idx_traffic_police_community (`社区`),
+            INDEX idx_traffic_police_inspector (`核查人`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS _fullchain_police_raw_uploads (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             file_name VARCHAR(255) NOT NULL DEFAULT '',

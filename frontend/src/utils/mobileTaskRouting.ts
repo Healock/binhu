@@ -16,6 +16,7 @@ export const MOBILE_TASK_TYPES = [
   '疑似未注销模型三',
   '疑似返苏',
   '苏州涉警',
+  '交通涉警',
 ] as const
 
 export function isFlowTaskPosition(position?: string | null): boolean {
