@@ -10,6 +10,7 @@ import type {
   PresenceHeartbeatResponse, PresenceUsersResponse,
 } from '../types'
 import { getClientDeviceHeaders } from '../utils/device.ts'
+import { resolveApiAssetUrl } from '../utils/apiUrl.ts'
 
 const configuredApiBaseUrl = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 const apiBaseUrl = configuredApiBaseUrl || '/api'
@@ -25,6 +26,13 @@ const webClientVersion = typeof __APP_VERSION__ === 'string'
 const activeRequest = { headers: { 'X-User-Activity': '1' } }
 const passiveRequest = { headers: { 'X-User-Activity': '0' } }
 let unauthorizedRedirectStarted = false
+
+function normalizeUserAssets(user: User): User {
+  return {
+    ...user,
+    avatar_url: resolveApiAssetUrl(user.avatar_url, configuredApiBaseUrl),
+  }
+}
 
 export interface MaintenanceStatus {
   enabled: boolean
@@ -256,7 +264,7 @@ api.interceptors.response.use(
 
 export async function getCurrentUser(): Promise<User> {
   const { data } = await api.get('/auth/me')
-  return data.user
+  return normalizeUserAssets(data.user)
 }
 
 export async function getAuthSessions(): Promise<AuthSessionItem[]> {
@@ -309,7 +317,10 @@ export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> 
   const form = new FormData()
   form.append('file', file)
   const { data } = await api.post('/auth/avatar', form)
-  return data
+  return {
+    ...data,
+    avatar_url: resolveApiAssetUrl(data.avatar_url, configuredApiBaseUrl) || '',
+  }
 }
 
 export async function getAppBootstrap(): Promise<AppBootstrapSummary> {
@@ -326,7 +337,7 @@ export async function getAppBootstrap(): Promise<AppBootstrapSummary> {
 
 export async function recordSessionActivity(): Promise<User> {
   const { data } = await api.post('/auth/activity')
-  return data.user
+  return normalizeUserAssets(data.user)
 }
 
 export async function sendPresenceHeartbeat(clientId: string): Promise<PresenceHeartbeatResponse> {
@@ -340,7 +351,13 @@ export async function sendPresenceHeartbeat(clientId: string): Promise<PresenceH
 
 export async function getPresenceUsers(): Promise<PresenceUsersResponse> {
   const { data } = await api.get('/presence/users')
-  return data
+  return {
+    ...data,
+    users: (data.users || []).map((user: PresenceUsersResponse['users'][number]) => ({
+      ...user,
+      avatar_url: resolveApiAssetUrl(user.avatar_url, configuredApiBaseUrl),
+    })),
+  }
 }
 
 export async function changeOwnPassword(
@@ -854,7 +871,7 @@ export async function getOnlineDataOverviewDetails(params: {
 
 export async function saveUserPreferences(payload: UserPreferences): Promise<User> {
   const { data } = await api.put('/auth/preferences', payload)
-  return data.user
+  return normalizeUserAssets(data.user)
 }
 
 export async function getReport(

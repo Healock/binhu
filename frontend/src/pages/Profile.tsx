@@ -7,11 +7,11 @@ import { getPublicProfile, uploadAvatar } from '../api/client'
 import { PageHeader, Panel } from '../components/ui'
 import ContributionCalendar from '../components/ContributionCalendar'
 
-function errorMessage(error: any): string {
+function errorMessage(error: any, fallback = '操作失败'): string {
   const detail = error?.response?.data?.detail
   return typeof detail === 'object'
-    ? detail?.message || '密码修改失败'
-    : detail || '密码修改失败'
+    ? detail?.message || fallback
+    : detail || fallback
 }
 
 export default function Profile() {
@@ -19,6 +19,7 @@ export default function Profile() {
   const [year, setYear] = useState(new Date().getFullYear())
   const [publicProfile, setPublicProfile] = useState<PublicProfile | null>(null)
   const [contributionLoading, setContributionLoading] = useState(true)
+  const [avatarUploading, setAvatarUploading] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -34,12 +35,16 @@ export default function Profile() {
   if (!user) return null
 
   const handleAvatarUpload = async (file: File) => {
+    if (avatarUploading) return false
+    setAvatarUploading(true)
     try {
       await uploadAvatar(file)
       await refreshUser()
       message.success('头像已更新')
     } catch (error) {
-      message.error(errorMessage(error))
+      message.error(errorMessage(error, '头像上传失败'))
+    } finally {
+      setAvatarUploading(false)
     }
     return false
   }
@@ -95,8 +100,19 @@ export default function Profile() {
             <div className="profile-avatar-editor__content">
               <div className="font-medium">个人头像</div>
               <div className="text-sm text-[var(--app-text-secondary)]">支持 JPG、PNG、WebP 或 HEIC，最大 5MB</div>
-              <Upload accept=".jpg,.jpeg,.png,.webp,.heic" showUploadList={false} beforeUpload={handleAvatarUpload}>
-                <Button icon={<UploadOutlined />}>上传头像</Button>
+              <Upload
+                accept=".jpg,.jpeg,.png,.webp,.heic"
+                disabled={avatarUploading}
+                showUploadList={false}
+                beforeUpload={handleAvatarUpload}
+              >
+                <Button
+                  icon={<UploadOutlined />}
+                  loading={avatarUploading}
+                  disabled={avatarUploading}
+                >
+                  {user.avatar_url ? '更换头像' : '上传头像'}
+                </Button>
               </Upload>
             </div>
           </div>

@@ -7,6 +7,7 @@ import {
   contributionLevel,
 } from '../src/utils/contributionCalendar.ts'
 import { defaultMobileDockConfig } from '../src/navigation/mobileNavigation.ts'
+import { resolveApiAssetUrl } from '../src/utils/apiUrl.ts'
 
 test('贡献强度使用固定工作量区间', () => {
   assert.deepEqual(
@@ -21,10 +22,27 @@ test('profile upload and light theme contrast', () => {
   const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
   assert.match(profile, /uploadAvatar\(file\)/)
   assert.match(profile, /beforeUpload=\{handleAvatarUpload\}/)
+  assert.match(profile, /loading=\{avatarUploading\}/)
+  assert.match(profile, /user\.avatar_url \? '更换头像' : '上传头像'/)
   assert.match(profile, /user\.avatar_url/)
   assert.match(workbench, /police-dispatch-workbench__hero/)
   assert.doesNotMatch(workbench, /bg-gradient-to-br from-blue-700/)
   assert.match(styles, /police-dispatch-workbench__hero[\s\S]*var\(--app-surface\)/)
+})
+
+test('desktop clients resolve private avatar paths against the configured API server', () => {
+  assert.equal(
+    resolveApiAssetUrl('/api/auth/avatar/7?v=abc', 'https://example.test/api'),
+    'https://example.test/api/auth/avatar/7?v=abc',
+  )
+  assert.equal(
+    resolveApiAssetUrl('/api/auth/avatar/7?v=abc', ''),
+    '/api/auth/avatar/7?v=abc',
+  )
+  assert.equal(
+    resolveApiAssetUrl('https://cdn.example.test/avatar.jpg', 'https://example.test/api'),
+    'https://cdn.example.test/avatar.jpg',
+  )
 })
 
 test('账号区域优先显示已上传头像并保留默认图标兜底', () => {
