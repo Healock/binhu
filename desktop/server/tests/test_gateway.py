@@ -225,6 +225,15 @@ class GatewayTests(unittest.TestCase):
         output = f"Signer certificate SHA 256 fingerprint = {' '.join(['12'] * 32)}\n"
         self.assertEqual(gateway.extract_android_signer_digest(output), digest_value)
 
+    def test_android_signer_parser_ignores_public_key_digest(self):
+        certificate_digest = "12" * 32
+        public_key_digest = "34" * 32
+        output = (
+            f"Signer #1 certificate SHA-256 digest: {certificate_digest}\n"
+            f"Signer #1 public key SHA-256 digest: {public_key_digest}\n"
+        )
+        self.assertEqual(gateway.extract_android_signer_digest(output), certificate_digest)
+
     def test_android_signer_parser_rejects_ambiguous_digest(self):
         with self.assertRaises(gateway.PublishError):
             gateway.extract_android_signer_digest(

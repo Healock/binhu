@@ -243,7 +243,7 @@ def find_android_tool(environment_name: str, executable: str) -> str:
 def extract_android_signer_digest(output: str) -> str:
     digests: set[str] = set()
     for line in output.splitlines():
-        if not re.search(r"sha\s*[- ]?\s*256", line, flags=re.IGNORECASE):
+        if not re.search(r"certificate.*sha\s*[- ]?\s*256", line, flags=re.IGNORECASE):
             continue
         for candidate in re.findall(
             r"(?<![0-9a-f])(?:[0-9a-f]{2}[\s:-]*){32}(?![0-9a-f])",

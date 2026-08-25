@@ -52,13 +52,13 @@ def extract_sha256_digest(output: str) -> str:
 
     Android build-tools have emitted both contiguous and separator-delimited
     fingerprints, and the surrounding label can vary between releases.  Only
-    consider lines that explicitly identify SHA-256, then require exactly one
-    normalized 64-character digest so an unrelated checksum cannot be used as
-    the APK signer.
+    consider lines that explicitly identify a certificate SHA-256 value, then
+    require exactly one normalized 64-character digest so the public-key
+    fingerprint or an unrelated checksum cannot be used as the APK signer.
     """
     digests: set[str] = set()
     for line in output.splitlines():
-        if not re.search(r"sha\s*[- ]?\s*256", line, flags=re.IGNORECASE):
+        if not re.search(r"certificate.*sha\s*[- ]?\s*256", line, flags=re.IGNORECASE):
             continue
         for candidate in re.findall(r"(?<![0-9a-f])(?:[0-9a-f]{2}[\s:-]*){32}(?![0-9a-f])", line, flags=re.IGNORECASE):
             normalized = normalize_digest(candidate)
