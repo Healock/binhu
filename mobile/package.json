@@ -1,0 +1,13 @@
+{
+  "name": "@binhu/mobile",
+  "version": "0.25.27",
+  "private": true,
+  "scripts": {
+    "android:frontend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-local-frontend.ps1",
+    "android:toolchain": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-android-toolchain.ps1",
+    "android:init": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-android.ps1 -Action Init",
+    "android:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-android.ps1 -Action Check",
+    "android:build:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-android.ps1 -Action BuildDebug",
+    "android:build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-android.ps1 -Action BuildRelease"
+  }
+}

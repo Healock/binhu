@@ -7,7 +7,7 @@ import react from '@vitejs/plugin-react'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const appVersion = readFileSync(resolve(repoRoot, 'VERSION'), 'utf8').trim()
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
@@ -21,4 +21,5 @@ export default defineConfig({
       },
     },
   },
-})
+  ...(mode === 'android' ? { build: { target: 'chrome91' } } : {}),
+}))

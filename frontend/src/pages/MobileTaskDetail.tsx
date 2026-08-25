@@ -61,6 +61,7 @@ import MobilePhonePicker from '../components/MobilePhonePicker'
 import QmfFeedbackStatus from '../components/QmfFeedbackStatus'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
+import { openNativePhoneDialer } from '../utils/nativePhone'
 import {
   QMF_MARKER_STATUS,
   QMF_RUN_STATUS,
@@ -403,6 +404,13 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     )) {
       await navigator.clipboard.writeText(phone)
       message.info('当前设备没有拨号功能，已复制电话号码')
+      return
+    }
+    try {
+      if (await openNativePhoneDialer(phone)) return
+    } catch {
+      await navigator.clipboard.writeText(phone).catch(() => {})
+      message.error('无法打开系统拨号界面，电话号码已复制')
       return
     }
     window.location.href = `tel:${phone}`

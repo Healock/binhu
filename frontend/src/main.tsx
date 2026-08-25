@@ -15,6 +15,19 @@ import './index.css'
 
 dayjs.locale('zh-cn')
 
+if (import.meta.env.VITE_NATIVE_MOBILE === 'true') {
+  document.documentElement.classList.add('native-mobile-shell')
+
+  // Keep tablets in the mobile CSS range while exposing display cutout insets
+  // on ordinary phones. The Android host also applies native system-bar insets.
+  document.querySelector<HTMLMetaElement>('meta[name="viewport"]')?.setAttribute(
+    'content',
+    window.innerWidth >= 768
+      ? 'width=600, initial-scale=1.0, viewport-fit=cover'
+      : 'width=device-width, initial-scale=1.0, viewport-fit=cover',
+  )
+}
+
 if (import.meta.env.VITE_DESKTOP_MODE === 'true') {
   document.documentElement.classList.add('desktop-shell')
 }

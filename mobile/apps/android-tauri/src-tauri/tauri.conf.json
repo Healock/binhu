@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "滨湖智慧平台",
+  "version": "0.25.27",
+  "identifier": "com.bhzh.binhu.android",
+  "build": {
+    "frontendDist": "../../shell-ui",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/build-local-frontend.ps1"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "滨湖智慧平台"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://tauri.localhost https://www.h332a0a4b.nyat.app:48726; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "滨湖新城派出所",
+    "android": {
+      "minSdkVersion": 24
+    }
+  }
+}

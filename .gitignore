@@ -18,10 +18,14 @@ frontend/dist/
 desktop/apps/shell-ui/
 desktop/**/node_modules/
 desktop/apps/win10-tauri/src-tauri/target/
+mobile/apps/shell-ui/
+mobile/**/node_modules/
+mobile/apps/android-tauri/src-tauri/target/
 /.build/
 /.tooling/
 /artifacts/
 /.temp/
+/.secrets/
 
 # Local work-tool metadata
 .workbuddy/

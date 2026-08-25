@@ -20,7 +20,9 @@ import {
   mobileTaskSourceTags,
   mobileTaskSurfaceTone,
 } from '../utils/mobileTasks'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import QmfFeedbackStatus from './QmfFeedbackStatus'
+import { getResponsiveColumns, type ResponsiveColumns } from './responsiveTable'
 
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
@@ -60,6 +62,8 @@ export default function MobileTaskTable({
   onCopy,
   onSaved,
 }: MobileTaskTableProps) {
+  const tableRef = useRef<HTMLDivElement>(null)
+  const responsiveLayout = useResponsiveLayout(tableRef)
   const [editorItems, setEditorItems] = useState<Record<string, MobileTaskInlineEditorItem>>({})
   const [editorValues, setEditorValues] = useState<Record<string, Record<string, string>>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
@@ -410,18 +414,20 @@ export default function MobileTaskTable({
     )
   }
 
-  const columns: TableColumnsType<MobileTaskItem> = [
+  const columns: ResponsiveColumns<MobileTaskItem> = [
     {
       title: '截止日期',
       key: 'deadline',
       fixed: 'left',
       width: 100,
+      responsivePriority: 'always',
       render: (_, task) => formatMobileTaskDeadline(task.summary.deadline) || '-',
     },
     {
       title: '社区',
       dataIndex: 'community',
       width: 105,
+      responsivePriority: 'always',
       ellipsis: true,
       render: value => value || <span className="text-[var(--app-text-muted)]">未识别社区</span>,
     },
@@ -429,6 +435,7 @@ export default function MobileTaskTable({
       title: '核查人',
       dataIndex: 'inspector',
       width: 105,
+      responsivePriority: 'always',
       ellipsis: true,
       render: value => value || <span className="text-[var(--app-text-muted)]">待分配</span>,
     },
@@ -436,6 +443,7 @@ export default function MobileTaskTable({
       title: '来源',
       key: 'source',
       width: 130,
+      responsivePriority: 'standard',
       render: (_, task) => {
         const sources = mobileTaskSourceTags(task.summary.source)
         return sources.length
@@ -457,6 +465,7 @@ export default function MobileTaskTable({
       title: '姓名',
       key: 'name',
       width: 110,
+      responsivePriority: 'always',
       render: (_, task) => (
         <button
           type="button"
@@ -472,6 +481,7 @@ export default function MobileTaskTable({
       title: '身份证号码',
       key: 'identity_number',
       width: 190,
+      responsivePriority: 'wide',
       render: (_, task) => task.summary.identity_number ? (
         <Button
           type="link"
@@ -488,6 +498,7 @@ export default function MobileTaskTable({
       title: '电话',
       key: 'phone',
       width: 150,
+      responsivePriority: 'standard',
       render: (_, task) => {
         const phones = mobileTaskPhoneOptions(task.summary.phone)
         const visiblePhones = phones.slice(0, 3)
@@ -519,6 +530,7 @@ export default function MobileTaskTable({
       title: '地址',
       key: 'address',
       width: 250,
+      responsivePriority: 'always',
       ellipsis: true,
       render: (_, task) => {
         const address = task.summary.original_address || '未填写'
@@ -529,6 +541,7 @@ export default function MobileTaskTable({
       title: '登记情况',
       dataIndex: ['summary', 'registration_status'],
       width: 110,
+      responsivePriority: 'wide',
       ellipsis: true,
       render: value => value || <span className="text-[var(--app-text-muted)]">未填写</span>,
     },
@@ -536,6 +549,7 @@ export default function MobileTaskTable({
       title: '状态',
       key: 'state',
       width: 190,
+      responsivePriority: 'always',
       render: (_, task) => {
         const state = STATE_LABELS[task.state]
         return (
@@ -558,16 +572,26 @@ export default function MobileTaskTable({
     },
   ]
 
+  const visibleColumns = useMemo(
+    () => getResponsiveColumns(columns, responsiveLayout.mode) as TableColumnsType<MobileTaskItem>,
+    [columns, responsiveLayout.mode],
+  )
+  const tableScrollWidth = responsiveLayout.isCompact
+    ? 860
+    : responsiveLayout.isStandard
+      ? 1140
+      : 1440
+
   return (
-    <div className="app-card mobile-task-table overflow-hidden">
+    <div ref={tableRef} className="app-card mobile-task-table overflow-hidden">
       <Table<MobileTaskItem>
         rowKey="task_key"
         size="middle"
         loading={loading}
         dataSource={rows}
-        columns={columns}
+        columns={visibleColumns}
         tableLayout="fixed"
-        scroll={{ x: 1440 }}
+        scroll={{ x: tableScrollWidth }}
         rowSelection={selectionMode ? {
           selectedRowKeys,
           hideSelectAll: true,

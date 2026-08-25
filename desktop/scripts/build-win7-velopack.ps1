@@ -4,7 +4,8 @@ param(
     [string]$PreviousFullPackage,
     [string]$ElectronArchive,
     [string]$VxKexInstaller,
-    [string]$IsccPath
+    [string]$IsccPath,
+    [switch]$AllowFullOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +23,7 @@ if (Test-Path -LiteralPath $outputRoot) { Remove-Item -LiteralPath $outputRoot -
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 $args = @{ Target = 'win7-x64'; PackDirectory = $packRoot; MainExecutable = 'BinhuWin7Launcher.exe'; OutputDirectory = $outputRoot }
 if ($PreviousFullPackage) { $args.PreviousFullPackage = $PreviousFullPackage }
+if ($AllowFullOnly) { $args.AllowFullOnly = $true }
 & (Join-Path $desktopRoot 'scripts\invoke-velopack.ps1') @args
 $velopackSetup = Get-ChildItem -LiteralPath $outputRoot -Filter '*Setup*.exe' -File | Select-Object -First 1
 if (-not $velopackSetup) { throw 'Velopack did not produce a Setup executable for Win7.' }

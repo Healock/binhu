@@ -56,3 +56,22 @@ test('桌面收缩侧栏和表格展开按钮保持稳定尺寸', () => {
   assert.match(styles, /\.app-shell \.ant-table-row-expand-icon::before,[\s\r\n]+\.app-shell \.ant-table-row-expand-icon::after\s*\{[^}]*top:\s*50%;[^}]*left:\s*50%;[^}]*width:\s*7px;[^}]*height:\s*1px;/s)
   assert.match(styles, /\.app-shell \.ant-table-row-expand-icon-collapsed::after\s*\{[^}]*rotate\(90deg\)/s)
 })
+
+test('桌面端顶部消息和通知避开自定义标题栏', () => {
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(styles, /html\.desktop-shell \.ant-message\s*\{[^}]*top:\s*56px\s*!important;/s)
+  assert.match(styles, /html\.desktop-shell \.ant-notification-top,[\s\S]*?\.ant-notification-topRight\s*\{[^}]*top:\s*56px\s*!important;/s)
+})
+
+test('任务分配和行内编辑在紧凑桌面宽度保持完整可操作', () => {
+  const assignmentSource = readFileSync(new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url), 'utf8')
+  const taskTableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(assignmentSource, /icon=\{<CloseOutlined \/>\}[\s\S]*?>\s*退出分配\s*<\/Button>/)
+  assert.match(taskTableSource, /getResponsiveColumns\(columns, responsiveLayout\.mode\)/)
+  assert.match(styles, /\.mobile-task-assignment-workbench__toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s)
+  assert.match(styles, /\.mobile-task-table-inline-editor\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s)
+  assert.doesNotMatch(styles, /\.mobile-task-table-inline-editor\s*\{[^}]*min-width:\s*1044px;/s)
+})

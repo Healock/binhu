@@ -158,3 +158,22 @@ test('native Windows clients use the managed windows platform header', async () 
 
   await fetchWithAuth('/api/app/bootstrap')
 })
+
+test('native Android clients use the managed android platform header', async () => {
+  installBrowserState()
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36' },
+  })
+  resetUnauthorizedRedirectForTests()
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (_input: unknown, init: RequestInit) => {
+      const headers = new Headers(init.headers)
+      assert.equal(headers.get('X-Binhu-Client-Platform'), 'android')
+      return new Response(null, { status: 204 })
+    },
+  })
+
+  await fetchWithAuth('/api/app/bootstrap')
+})

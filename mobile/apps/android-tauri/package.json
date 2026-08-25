@@ -1,0 +1,15 @@
+{
+  "name": "@binhu/android-tauri",
+  "version": "0.25.27",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "android:init": "tauri android init --ci",
+    "android:build:debug": "tauri android build --debug --apk --target aarch64",
+    "android:build:release": "tauri android build --apk --target aarch64 --ci",
+    "check": "cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

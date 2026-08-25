@@ -15,6 +15,9 @@ foreach ($path in @(
     'apps\win7-electron\scripts\assemble-app.ps1',
     'apps\win7-vxkex\launcher\BinhuWin7Launcher.cpp',
     'apps\win10-tauri\src-tauri\tauri.conf.json',
+    'apps\win10-tauri\installer\BinhuWin10Bootstrap.iss',
+    'apps\win10-tauri\scripts\build-installer.ps1',
+    'apps\win7-vxkex\installer\BinhuWin7VxKex.iss',
     'apps\win10-tauri\src-tauri\icons\icon.ico',
     'apps\win10-tauri\src-tauri\src\main.rs',
     'scripts\prepare-windows-sdk.ps1',
@@ -60,6 +63,9 @@ if ($tauriWindow.decorations -ne $false) { throw 'Tauri must use the local frame
 if ($tauriWindow.minWidth -ne 1024 -or $tauriWindow.minHeight -ne 640) {
     throw 'Tauri minimum window size must be 1024x640.'
 }
+if ($tauriWindow.dragDropEnabled -ne $false) {
+    throw 'Tauri must leave native drag/drop disabled so HTML5 upload drop zones receive files on Windows.'
+}
 $tauriCsp = [string]$tauriConfig.app.security.csp
 if ($tauriCsp -notmatch "connect-src[^;]*\bhttp://tauri\.localhost") {
     throw 'Tauri CSP must allow the bundled release-notes.json same-origin request.'
@@ -83,6 +89,18 @@ if ($win10.packageId -ne 'com.bhzh.binhu.win10.x64' -or $win10.runtimeId -ne 'wi
     $win10.updateUrl -ne 'https://47.100.44.36/updates/win10-x64/') {
     throw 'Win10 package identity or update URL is invalid.'
 }
+$win7Installer = Get-Content (Join-Path $root 'apps\win7-vxkex\installer\BinhuWin7VxKex.iss') -Raw
+if ($win7Installer -notmatch 'ConfigureVxKexFor' -or
+    $win7Installer -notmatch 'VxKexLdr\.exe' -or
+    $win7Installer -notmatch 'Binhu-Velopack-Setup\.exe') {
+    throw 'Win7 first-install bootstrapper must run the Velopack setup through VxKex.'
+}
+$win10Installer = Get-Content (Join-Path $root 'apps\win10-tauri\installer\BinhuWin10Bootstrap.iss') -Raw
+if ($win10Installer -notmatch 'MicrosoftEdgeWebView2Setup\.exe' -or
+    $win10Installer -notmatch 'Binhu-Velopack-Setup\.exe' -or
+    $win10Installer -notmatch '/silent /install') {
+    throw 'Win10 first-install bootstrapper must install WebView2 before Velopack.'
+}
 $electronUpdater = Get-Content (Join-Path $root 'apps\win7-electron\src\updater.js') -Raw
 if ($electronUpdater -notmatch [regex]::Escape($win7.updateUrl) -or
     $electronUpdater -notmatch [regex]::Escape('setTimeout(() => { void this.checkForUpdates() }, 0)') -or
@@ -102,6 +120,15 @@ foreach ($api in @('getUpdateStatus', 'checkForUpdates', 'downloadUpdate', 'rest
 $launcher = Get-Content (Join-Path $root 'apps\win7-vxkex\launcher\BinhuWin7Launcher.cpp') -Raw
 if ($launcher -notmatch 'VxKexLdr\.exe' -or $launcher -notmatch 'BinhuWin7\.exe') {
     throw 'Win7 launcher must start the packaged Electron runtime through VxKex.'
+}
+if ($launcher -notmatch '--binhu-after-update' -or
+    $launcher -notmatch 'WaitForSingleObject') {
+    throw 'Win7 launcher must wait for Velopack to exit before starting the updated Electron runtime.'
+}
+$win7Updater = Get-Content (Join-Path $root 'apps\win7-electron\src\updater.js') -Raw
+if ($win7Updater -notmatch 'VELOPACK_RESTART_ARGUMENT' -or
+    $win7Updater -notmatch 'waitExitThenApplyUpdate[\s\S]*VELOPACK_RESTART_ARGUMENT') {
+    throw 'Win7 updater must pass the post-update restart marker to the native launcher.'
 }
 $mandatoryGate = Get-Content (Join-Path $repoRoot 'frontend\src\components\MandatoryUpdateGate.tsx') -Raw
 if ($mandatoryGate -notmatch "navigate\('/offline'\)" -or $mandatoryGate -notmatch 'status\?\.mandatory') {

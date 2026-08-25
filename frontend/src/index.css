@@ -60,6 +60,19 @@ html.desktop-shell .online-presence-indicator {
   top: 54px;
 }
 
+/* Ant Design mounts transient overlays directly under body, outside
+ * .desktop-app-content. Keep top messages and notifications clear of the
+ * frameless client's 44px title bar. */
+html.desktop-shell .ant-message {
+  top: 56px !important;
+}
+
+html.desktop-shell .ant-notification-top,
+html.desktop-shell .ant-notification-topLeft,
+html.desktop-shell .ant-notification-topRight {
+  top: 56px !important;
+}
+
 .online-presence-indicator.is-clickable {
   cursor: pointer;
 }
@@ -316,13 +329,19 @@ html.desktop-shell .online-presence-indicator {
   .online-presence-indicator {
     z-index: 39;
     top: 10px;
-    right: 54px;
+    right: 64px;
     min-width: 52px;
     height: 34px;
     gap: 5px;
     border-color: transparent;
     padding: 0 8px;
     box-shadow: none;
+  }
+
+  .mobile-account-trigger {
+    min-width: 40px;
+    min-height: 40px;
+    justify-content: center;
   }
 
   .admin-task-queue-float {
@@ -363,13 +382,17 @@ html.desktop-shell .online-presence-indicator {
 
 .mobile-task-assignment-workbench__toolbar {
   display: flex;
+  min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 16px;
 }
 
 .mobile-task-assignment-workbench__toolbar > div:first-child {
   display: grid;
+  min-width: 180px;
+  flex: 1 1 260px;
   gap: 3px;
 }
 
@@ -385,9 +408,15 @@ html.desktop-shell .online-presence-indicator {
 
 .mobile-task-assignment-workbench__actions {
   display: flex;
+  min-width: 0;
+  flex: 1 1 520px;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.mobile-task-assignment-workbench__actions .ant-btn {
+  flex: 0 0 auto;
 }
 
 .mobile-task-assignment-workbench__scroll {
@@ -502,7 +531,7 @@ html.desktop-shell .online-presence-indicator {
     grid-template-columns: 1fr 1fr;
   }
 
-  .mobile-task-assignment-workbench__actions .ant-btn:last-child {
+  .mobile-task-assignment-workbench__actions .ant-btn:nth-child(4) {
     grid-column: 1 / -1;
   }
 
@@ -1642,6 +1671,8 @@ html.desktop-shell .online-presence-indicator {
 }
 
 .mobile-task-table {
+  container-type: inline-size;
+  min-width: 0;
   padding: 0 10px 10px;
   background: color-mix(in srgb, var(--app-bg) 72%, var(--app-surface));
 }
@@ -1752,8 +1783,10 @@ html.desktop-shell .online-presence-indicator {
 
 .mobile-task-table-inline-editor {
   display: flex;
-  min-width: 1044px;
+  width: 100%;
+  min-width: 0;
   min-height: 76px;
+  box-sizing: border-box;
   align-items: stretch;
   gap: 14px;
   padding: 10px 12px 11px 16px;
@@ -4694,6 +4727,71 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   background: var(--app-bg);
 }
 
+@container (max-width: 980px) {
+  .mobile-task-table-inline-editor {
+    flex-wrap: wrap;
+  }
+
+  .mobile-task-table-inline-fields {
+    flex-basis: 100%;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  }
+
+  .mobile-task-table-inline-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    border-top: 1px solid var(--app-border);
+    border-left: 0;
+    padding-top: 8px;
+    padding-left: 0;
+  }
+}
+
+html.native-mobile-shell,
+html.native-mobile-shell body,
+html.native-mobile-shell #root {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  max-width: 100%;
+}
+
+html.native-mobile-shell {
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+html.native-mobile-shell body,
+html.native-mobile-shell #root {
+  height: auto;
+  overflow: visible;
+}
+
+html.native-mobile-shell .app-shell {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  flex-direction: column;
+  overflow: visible;
+}
+
+html.native-mobile-shell .mobile-app-header {
+  position: sticky;
+  inset: 0 0 auto;
+  width: 100%;
+  flex: 0 0 56px;
+}
+
+html.native-mobile-shell .app-shell > main {
+  min-height: 0;
+  overflow: visible;
+}
+
+html.native-mobile-shell .app-content {
+  padding-top: 16px !important;
+}
+
 .app-content {
   min-width: 0;
   width: 100%;
@@ -7316,6 +7414,12 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
   padding: 32px;
   background: rgba(15, 23, 42, 0.56);
   backdrop-filter: blur(5px);
+}
+
+.mandatory-update--android {
+  inset: 0;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .mandatory-update__panel {

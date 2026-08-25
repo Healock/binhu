@@ -8,17 +8,17 @@ import {
   ReloadOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { useDesktopUpdateStatus } from '../desktop/useDesktopUpdateStatus'
+import { useClientUpdateStatus } from '../desktop/useClientUpdateStatus'
 import { Panel } from './ui'
 
 export default function DesktopUpdateSettings() {
-  const { bridge, status, setStatus } = useDesktopUpdateStatus()
+  const { bridge, status, setStatus } = useClientUpdateStatus()
   const [actionError, setActionError] = useState('')
 
   if (!bridge) {
     return (
       <Panel title="应用更新" description="桌面客户端会在启动时自动检查更新。">
-        <Alert type="info" showIcon message="当前浏览器版本无需使用桌面客户端更新功能。" />
+        <Alert type="info" showIcon message="当前浏览器无需使用客户端更新功能。" />
       </Panel>
     )
   }
@@ -31,6 +31,7 @@ export default function DesktopUpdateSettings() {
     || status?.state === 'downloading'
     || status?.state === 'ready'
     || status?.state === 'applying'
+  const android = status?.platform === 'android'
 
   const runAction = async () => {
     setActionError('')
@@ -51,9 +52,9 @@ export default function DesktopUpdateSettings() {
     : status?.state === 'downloading'
       ? `正在下载 ${status.progress ?? 0}%`
       : status?.state === 'ready'
-        ? '重启并应用更新'
+        ? android ? '安装更新' : '重启并应用更新'
         : status?.state === 'applying'
-          ? '正在应用更新…'
+          ? android ? '正在打开安装界面…' : '正在应用更新…'
           : available
             ? `下载 v${status?.availableVersion || '新版本'}`
             : '检查更新'
@@ -89,7 +90,17 @@ export default function DesktopUpdateSettings() {
         {status?.state === 'error' && status.error && <Alert type="error" showIcon message={status.error} />}
         {actionError && <Alert type="error" showIcon message={actionError} />}
         {status?.state === 'downloading' && <Alert type="info" showIcon message={`正在下载新版本，当前进度 ${status.progress ?? 0}%。`} />}
-        {status?.state === 'ready' && <Alert type="success" showIcon message="更新包已准备好，点击按钮后客户端会重启并应用更新。" />}
+        {status?.state === 'ready' && (
+          <Alert
+            type="success"
+            showIcon
+            message={android
+              ? status.requiresInstallPermission
+                ? '更新包已通过校验。点击“安装更新”，按系统提示允许本应用安装未知应用。'
+                : '更新包已通过校验。点击“安装更新”后，请在 Android 系统界面确认覆盖安装。'
+              : '更新包已准备好，点击按钮后客户端会重启并应用更新。'}
+          />
+        )}
       </div>
     </Panel>
   )

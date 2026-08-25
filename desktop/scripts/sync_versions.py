@@ -58,6 +58,11 @@ def main() -> int:
         (ROOT / "frontend/package.json", ("version",)),
         (ROOT / "frontend/package-lock.json", ("version",)),
         (ROOT / "frontend/package-lock.json", ("packages", "", "version")),
+        (ROOT / "mobile/package.json", ("version",)),
+        (ROOT / "mobile/apps/android-tauri/package.json", ("version",)),
+        (ROOT / "mobile/apps/android-tauri/package-lock.json", ("version",)),
+        (ROOT / "mobile/apps/android-tauri/package-lock.json", ("packages", "", "version")),
+        (ROOT / "mobile/apps/android-tauri/src-tauri/tauri.conf.json", ("version",)),
     )
     for path, fields in json_targets:
         if update_json(path, fields):
@@ -67,12 +72,18 @@ def main() -> int:
         (ROOT / "desktop/apps/win10-tauri/src-tauri/Cargo.lock", r'(?ms)(name = "binhu-win10-tauri"\nversion = )"[^"]+"', rf'\g<1>"{VERSION}"'),
         (ROOT / "desktop/apps/win7-electron/src/preload.js", r"(appVersion:\s*)'[^']+'", rf"\g<1>'{VERSION}'"),
         (ROOT / "desktop/apps/win7-vxkex/installer/BinhuWin7VxKex.iss", r'(#define AppVersion\s+)"[^"]+"', rf'\g<1>"{VERSION}"'),
+        (ROOT / "desktop/apps/win10-tauri/installer/BinhuWin10Bootstrap.iss", r'(#define AppVersion\s+)"[^"]+"', rf'\g<1>"{VERSION}"'),
+        (ROOT / "mobile/apps/android-tauri/src-tauri/Cargo.toml", r'^(version\s*=\s*)"[^"]+"', rf'\g<1>"{VERSION}"'),
+        (ROOT / "mobile/apps/android-tauri/src-tauri/Cargo.lock", r'(?ms)(name = "binhu-android-tauri"\nversion = )"[^"]+"', rf'\g<1>"{VERSION}"'),
     )
     for path, pattern, replacement in text_targets:
         if replace(path, pattern, replacement):
             changed.append(str(path.relative_to(ROOT)))
     numeric = VERSION + ".0"
     path = ROOT / "desktop/apps/win7-vxkex/installer/BinhuWin7VxKex.iss"
+    if replace(path, r'(#define NumericVersion\s+)"[^"]+"', rf'\g<1>"{numeric}"'):
+        changed.append(str(path.relative_to(ROOT)))
+    path = ROOT / "desktop/apps/win10-tauri/installer/BinhuWin10Bootstrap.iss"
     if replace(path, r'(#define NumericVersion\s+)"[^"]+"', rf'\g<1>"{numeric}"'):
         changed.append(str(path.relative_to(ROOT)))
     if args.check and changed:

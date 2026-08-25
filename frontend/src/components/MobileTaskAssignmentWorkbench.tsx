@@ -250,6 +250,9 @@ export default function MobileTaskAssignmentWorkbench({
             <span>按地址排序，只展示来源和地址</span>
           </div>
           <div className="mobile-task-assignment-workbench__actions">
+            <Button icon={<CloseOutlined />} disabled={saving} onClick={close}>
+              退出分配
+            </Button>
             <Button
               icon={<CheckSquareOutlined />}
               disabled={!visible.length || !inspectorOptions.length}
