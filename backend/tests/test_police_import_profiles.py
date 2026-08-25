@@ -130,6 +130,89 @@ def test_traffic_police_rejects_conflicting_position_dates_for_manual_review():
     }]
 
 
+def test_rental_maps_position_dates_and_tenant_fields():
+    extension_headers = [f"extended_{index}" for index in range(1, 50)]
+    result = parse_profile(
+        "rental_processed",
+        workbook_bytes([
+            ["8.25", "8.25", "", "社区", "承租人姓名", "承租人身份证号码", "承租人联系号码", "租赁房屋地址", *extension_headers],
+            ["8.25", "8.25", "", "长板社区", "虚构人员", "32050020000101001X", "13800000000", "虚构租赁地址", *([""] * 49)],
+        ]),
+        "rental.xlsx",
+        BUSINESS_DATE,
+        COMMUNITIES,
+    )
+
+    row = result["rows"][0]
+    assert result["counts"]["importable"] == 1
+    assert row["standard_values"] == {
+        "下发时间": "2026-08-25",
+        "截止时间": "2026-08-25",
+        "核查人": "",
+        "社区": "长板社区",
+        "姓名": "虚构人员",
+        "身份证号": "32050020000101001X",
+        "手机号码": "13800000000",
+        "房屋地址": "虚构租赁地址",
+        "现住址": "",
+        "核查结果": "",
+        "入住方式": "",
+        "研判": "",
+        "二次反馈": "",
+    }
+    assert row["business_key_hmac"]
+    assert get_parser("出租房屋核查").table_name == "t_rental_check"
+    assert TASK_WORKFLOWS["出租房屋核查"].label == "出租房屋核查"
+    assert "出租房屋核查" in SUMMARY_TASK_TYPES
+
+
+def test_rental_rejects_conflicting_position_dates_for_manual_review():
+    result = parse_profile(
+        "rental_processed",
+        workbook_bytes([
+            ["8.25", "8.25", "", "社区", "承租人姓名", "承租人身份证号码", "承租人联系号码", "租赁房屋地址"],
+            ["8.23", "8.24", "", "长板社区", "虚构人员", "32050020000101001X", "13800000000", "虚构租赁地址"],
+        ]),
+        "rental.xlsx",
+        BUSINESS_DATE,
+        COMMUNITIES,
+    )
+
+    row = result["rows"][0]
+    assert result["counts"]["importable"] == 0
+    assert result["counts"]["conflict"] == 1
+    assert row["standard_values"]["下发时间"] == "2026-08-25"
+    assert row["standard_values"]["截止时间"] == "2026-08-25"
+    assert row["validation_issues"] == [{
+        "field": "业务日期",
+        "type": "date_conflict",
+        "value": "前两列日期不一致，已使用上传时确认的业务日期，请人工核对",
+    }]
+
+
+def test_rental_marks_missing_address_and_duplicate_business_key_for_review():
+    result = parse_profile(
+        "rental_processed",
+        workbook_bytes([
+            ["8.25", "8.25", "", "社区", "承租人姓名", "承租人身份证号码", "承租人联系号码", "租赁房屋地址"],
+            ["8.25", "8.25", "", "长板社区", "虚构人员甲", "32050020000101001X", "13800000000", ""],
+            ["8.25", "8.25", "", "长板社区", "虚构人员乙", "32050020000101001X", "13800000000", "虚构租赁地址"],
+        ]),
+        "rental.xlsx",
+        BUSINESS_DATE,
+        COMMUNITIES,
+    )
+
+    assert result["counts"]["importable"] == 0
+    assert result["counts"]["duplicate"] == 1
+    assert result["rows"][0]["validation_issues"] == [{
+        "field": "租赁房屋地址",
+        "type": "missing_required",
+        "value": "缺少租赁房屋地址",
+    }]
+    assert any(issue["type"] == "duplicate" for issue in result["rows"][1]["validation_issues"])
+
+
 @pytest.mark.parametrize(
     ("profile", "headers", "values", "expected"),
     [
@@ -153,17 +236,6 @@ def test_other_business_adapters_map_standard_fields(profile, headers, values, e
     assert result["counts"]["importable"] == 1
     assert row["standard_values"][expected[0]] == expected[1]
     assert row["business_key_hmac"]
-
-
-def test_rental_entry_is_explicitly_disabled():
-    with pytest.raises(PoliceWorkbookError, match="等待真实已处理文件样本"):
-        parse_profile(
-            "rental_processed",
-            workbook_bytes([["姓名"], ["虚构人员"]]),
-            "rental.xlsx",
-            BUSINESS_DATE,
-            COMMUNITIES,
-        )
 
 
 def test_unknown_header_is_rejected_instead_of_guessing_business_type():

@@ -148,6 +148,7 @@ test('已处理数据在任务工作台多选发布且卡片沿用流口任务�
   assert.match(workbenchSource, /<CopyIconButton value=\{value\} label=\{label\} \/>/)
   assert.match(panelSource, /status=pending_publish&category=all/)
   assert.match(panelSource, /确认导入到下发工作台/)
+  assert.match(panelSource, /'rental_processed', 'police_suzhou_processed', 'police_traffic_processed'/)
   assert.doesNotMatch(panelSource, /确认导入并发布可发布项/)
   assert.doesNotMatch(panelSource, /整批发布/)
   assert.match(panelSource, /pending_review&category=manual/)

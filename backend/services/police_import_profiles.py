@@ -27,7 +27,7 @@ from services.police_dispatch import (
 )
 
 
-ADAPTER_VERSION = "2026-08-25.1"
+ADAPTER_VERSION = "2026-08-25.2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +195,89 @@ def _finalize(
         "preview_rows": preview_rows,
         "rows_truncated": len(rows) > 100,
     }
+
+
+def _parse_rental(content: bytes, filename: str, business_date: date, communities: list[dict[str, Any]]) -> dict[str, Any]:
+    sheet, rows, header_index, columns = _find_sheet(
+        content,
+        filename,
+        (
+            ("社区", "所属社区", "业务分类"),
+            ("承租人姓名", "姓名"),
+            ("承租人身份证号码", "身份证号码", "身份证号"),
+            ("承租人联系号码", "联系号码", "手机号码", "手机号"),
+            ("租赁房屋地址", "房屋地址", "地址"),
+        ),
+    )
+    headers = rows[header_index]
+    result = []
+    for number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        def value(column: str) -> str:
+            target = columns.get(column)
+            return _cell(row[target]) if target is not None and target < len(row) else ""
+
+        identity = normalize_identity(value("承租人身份证号码"))
+        phone = value("承租人联系号码")
+        name = value("承租人姓名")
+        address = value("租赁房屋地址")
+        if not any((identity, phone, name, address)):
+            continue
+
+        first_date = _date_value(_cell(row[0]) if row else "", business_date)
+        second_date = _date_value(_cell(row[1]) if len(row) > 1 else "", business_date)
+        issues: list[dict[str, str]] = []
+        dates_conflict = bool(first_date and second_date and first_date != second_date)
+        if dates_conflict:
+            issues.append({
+                "field": "业务日期",
+                "type": "date_conflict",
+                "value": "前两列日期不一致，已使用上传时确认的业务日期，请人工核对",
+            })
+        if not name:
+            issues.append({"field": "承租人姓名", "type": "missing_required", "value": "缺少承租人姓名"})
+        if not address:
+            issues.append({"field": "租赁房屋地址", "type": "missing_required", "value": "缺少租赁房屋地址"})
+
+        dispatch_date = business_date.isoformat() if dates_conflict else (first_date or second_date or business_date.isoformat())
+        deadline = business_date.isoformat() if dates_conflict else (second_date or first_date or business_date.isoformat())
+        community = value("社区")
+        values = {
+            "下发时间": dispatch_date,
+            "截止时间": deadline,
+            "核查人": "",
+            "社区": community,
+            "姓名": name,
+            "身份证号": identity,
+            "手机号码": phone,
+            "房屋地址": address,
+            "现住址": "",
+            "核查结果": "",
+            "入住方式": "",
+            "研判": "",
+            "二次反馈": "",
+        }
+        result.append({
+            "source_row": number,
+            "source_name": "出租房屋核查",
+            "community_name": community,
+            "person_name": name,
+            "identity_number": identity,
+            "phone": phone,
+            "original_address": address,
+            "created_time": dispatch_date,
+            "transfer_note": "",
+            "raw_values": _raw_values(headers, row),
+            "standard_values": values,
+            "validation_issues": issues,
+        })
+    if not result:
+        raise PoliceWorkbookError("出租房屋核查文件中没有可导入的数据")
+    return _finalize(
+        sheet_name=sheet,
+        rows=result,
+        communities=communities,
+        business_key_fields=("身份证号", "手机号码"),
+    )
 
 
 def _parse_internal(content: bytes, filename: str, business_date: date, communities: list[dict[str, Any]]) -> dict[str, Any]:
@@ -408,7 +491,7 @@ def _parse_return(content: bytes, filename: str, business_date: date, communitie
 PROFILES: dict[str, ImportProfile] = {
     "fullchain_raw": ImportProfile("fullchain_raw", "fullchain", "全链条原始数据", "", "全链条", True, "待基础管控审核的全链条原始文件", ("姓名", "身份证号", "地址"), None),
     "fullchain_processed": ImportProfile("fullchain_processed", "fullchain", "全链条已处理数据", "", "全链条", True, "已包含社区和登记情况的全链条文件", ("社区", "登记情况", "姓名", "身份证号", "手机号", "地址"), None),
-    "rental_processed": ImportProfile("rental_processed", "rental", "出租房屋核查", "", "出租房屋核查", False, "等待真实已处理文件样本，本版禁止确认导入", ("待真实样本确认",), None),
+    "rental_processed": ImportProfile("rental_processed", "rental", "出租房屋核查", "", "出租房屋核查", True, "双短日期列的承租人任务；进入现有出租房屋核查任务池", ("前两列短日期", "社区", "承租人姓名", "承租人身份证号码", "承租人联系号码", "租赁房屋地址"), _parse_rental),
     "police_internal_processed": ImportProfile("police_internal_processed", "police", "所内涉警", "internal", "涉警统计", True, "按接警编号导入，仅进入审核、发布和在线查询", ("接警编号", "社区", "简要警情及处理结果"), _parse_internal),
     "police_suzhou_processed": ImportProfile("police_suzhou_processed", "police", "苏州涉警", "suzhou", "苏州涉警", True, "人员型涉警任务；未配置腾讯表时可导入但不可发布", ("任务有效期", "身份证号码", "联系号码"), _parse_suzhou),
     "police_traffic_processed": ImportProfile("police_traffic_processed", "police", "交通涉警", "traffic", "交通涉警", True, "双短日期列的人员型涉警任务；未配置腾讯表时可导入但不可发布", ("前两列短日期", "业务分类（社区）", "姓名", "身份证号码", "手机号码", "地址1"), _parse_traffic),
