@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppThemeProvider from './components/AppThemeProvider'
 import DesktopTitleBar from './components/DesktopTitleBar'
+import ClientUpdateCoordinator from './components/ClientUpdateCoordinator'
 import MandatoryUpdateGate from './components/MandatoryUpdateGate'
 import VersionUpdatedGate from './components/VersionUpdatedGate'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -123,9 +124,10 @@ function App() {
       <AppThemeProvider>
         <div className={isDesktop ? 'desktop-window-shell' : undefined}>
           <DesktopTitleBar />
-          <MandatoryUpdateGate />
-          <VersionUpdatedGate />
-          <div className={isDesktop ? 'desktop-app-content' : undefined}>
+          <ClientUpdateCoordinator />
+          <MandatoryUpdateGate>
+            <VersionUpdatedGate />
+            <div className={isDesktop ? 'desktop-app-content' : undefined}>
             <Routes>
           {/* 登录页不套 Layout */}
           <Route path="/login" element={<Login />} />
@@ -228,7 +230,8 @@ function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-          </div>
+            </div>
+          </MandatoryUpdateGate>
         </div>
       </AppThemeProvider>
     </AuthProvider>

@@ -1,10 +1,14 @@
 #include <windows.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 
 #include <string>
 #include <vector>
 
 namespace {
+
+constexpr wchar_t kAfterUpdateArgument[] = L"--binhu-after-update";
+constexpr DWORD kUpdaterExitTimeoutMs = 30 * 1000;
 
 std::wstring quote(const std::wstring& value) {
     return L"\"" + value + L"\"";
@@ -23,9 +27,58 @@ void show_error(const wchar_t* message) {
     MessageBoxW(nullptr, message, L"滨湖智慧平台", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
+DWORD parent_process_id() {
+    const DWORD current_process_id = GetCurrentProcessId();
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    DWORD parent_id = 0;
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == current_process_id) {
+                parent_id = entry.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return parent_id;
+}
+
+bool is_update_restart() {
+    const wchar_t* command_line = GetCommandLineW();
+    return command_line && wcsstr(command_line, kAfterUpdateArgument) != nullptr;
+}
+
+void wait_for_updater_exit() {
+    const DWORD parent_id = parent_process_id();
+    if (parent_id == 0) {
+        Sleep(1500);
+        return;
+    }
+
+    HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, parent_id);
+    if (!parent) {
+        Sleep(1500);
+        return;
+    }
+    WaitForSingleObject(parent, kUpdaterExitTimeoutMs);
+    CloseHandle(parent);
+
+    // Give antivirus and the filesystem a short moment to release the newly
+    // installed executable after the updater process has gone away.
+    Sleep(500);
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    if (is_update_restart()) {
+        wait_for_updater_exit();
+    }
+
     const std::wstring app_directory = module_directory();
     if (app_directory.empty()) {
         show_error(L"无法定位客户端安装目录。");

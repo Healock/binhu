@@ -51,6 +51,7 @@ import FullchainArchivePanel from '../components/FullchainArchivePanel'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import useSystemTime from '../hooks/useSystemTime'
+import { openNativePhoneDialer } from '../utils/nativePhone'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
@@ -716,6 +717,13 @@ export default function MobileTaskList({
     )) {
       await navigator.clipboard.writeText(phone)
       message.info('当前设备没有拨号功能，已复制电话号码')
+      return
+    }
+    try {
+      if (await openNativePhoneDialer(phone)) return
+    } catch {
+      await navigator.clipboard.writeText(phone).catch(() => {})
+      message.error('无法打开系统拨号界面，电话号码已复制')
       return
     }
     window.location.href = `tel:${phone}`

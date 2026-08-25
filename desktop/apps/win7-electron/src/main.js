@@ -138,6 +138,12 @@ function createMainWindow() {
 
 function mainWindow() { return BrowserWindow.getAllWindows()[0] || null }
 
+function velopackPackagesDirectory() {
+  const executableDirectory = path.dirname(process.execPath)
+  const installRoot = path.dirname(executableDirectory)
+  return path.join(installRoot, 'packages')
+}
+
 ipcMain.handle('desktop:get-config', () => ({
   schemaVersion: config.schemaVersion, appName: config.appName, appVersion: config.appVersion,
   serverUrl: config.serverUrl, apiBaseUrl: config.apiBaseUrl, initialRoute: config.initialRoute,
@@ -188,6 +194,8 @@ app.whenReady().then(() => {
       lastStartedVersion: config.appVersion,
       pendingFrom: fromVersion,
     }),
+    packagesDirectory: velopackPackagesDirectory(),
+    logPath: path.join(app.getPath('userData'), 'logs', 'updater.log'),
     quit: () => app.quit(),
   })
   createMainWindow()

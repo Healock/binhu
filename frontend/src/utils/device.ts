@@ -1,5 +1,5 @@
 export type ClientDeviceType = 'desktop' | 'mobile'
-export type ClientPlatform = ClientDeviceType | 'windows'
+export type ClientPlatform = ClientDeviceType | 'windows' | 'android'
 
 const DEVICE_ID_KEY = 'binhu_device_id'
 let fallbackDeviceId: string | null = null
@@ -36,6 +36,9 @@ export function detectClientDeviceType(): ClientDeviceType {
 }
 
 export function detectClientPlatform(): ClientPlatform {
+  if (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '')) {
+    return 'android'
+  }
   if (typeof window !== 'undefined') {
     const desktopWindow = window as Window & {
       binhuDesktop?: unknown

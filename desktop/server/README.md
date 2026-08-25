@@ -1,6 +1,6 @@
 # Binhu update server
 
-These files deploy an isolated desktop-update service on `47.100.44.36`. They
+These files deploy an isolated Windows and Android update service on `47.100.44.36`. They
 do not modify the platform containers, database or existing application site.
 The installer supports Debian/Ubuntu Nginx layouts and the BT Panel layout
 used by the production Alibaba Cloud Linux server. On BT Panel it preserves the
@@ -54,8 +54,11 @@ platform state. It cannot read arbitrary files, archived releases or anything
 outside `public/<platform>/`. CI uses it to obtain the previous full package
 over the restricted SSH channel when a hosted runner cannot reach the HTTPS
 download endpoint. Upload bodies are validated for length, SHA-256, SemVer,
-commit ID, safe paths, allowed names and Velopack feed/package consistency.
-Files are installed before `releases.stable.json` is replaced atomically.
+commit ID, safe paths and allowed names. Windows packages are checked against
+their Velopack feeds. Android publishing additionally requires `aapt2` and
+`apksigner` in `PATH` or under `/opt/android-sdk/build-tools`; the gateway reads
+the APK package ID, versionCode, version name and signing certificate itself.
+Files are installed before each platform's stable manifest is replaced atomically.
 Version `0.25.15` must be full-only; later versions must contain a current delta.
 The latest five release sets remain public and older files move to
 `/srv/binhu-updates/archive`.
@@ -97,6 +100,19 @@ Create the `desktop-production` Environment and add:
 ```text
 BINHU_UPDATE_SSH_KEY
 BINHU_UPDATE_KNOWN_HOSTS
+ANDROID_KEYSTORE_BASE64
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+ANDROID_SIGNING_CERT_SHA256
+```
+
+Optionally add the non-secret Environment variable below. It defaults to
+`0.0.0`; set it to the oldest Android client version that is still allowed to
+run when a mandatory upgrade is required:
+
+```text
+ANDROID_MINIMUM_VERSION
 ```
 
 `BINHU_UPDATE_KNOWN_HOSTS` must be the verified `[47.100.44.36]:51234` host-key
@@ -110,6 +126,8 @@ After the first publish, check:
 ```text
 https://47.100.44.36/updates/win7-x64/releases.stable.json
 https://47.100.44.36/updates/win10-x64/releases.stable.json
+https://47.100.44.36/updates/android-arm64/manifest.stable.json
+https://47.100.44.36/updates/android-arm64/policy.stable.json
 ```
 
 Feeds and `policy.stable.json` use `Cache-Control: no-store`. Versioned setup,

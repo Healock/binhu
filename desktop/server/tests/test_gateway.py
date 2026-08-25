@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from desktop.server import binhu_update_gateway as gateway
 
@@ -26,10 +27,23 @@ class GatewayTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         os.environ["BINHU_UPDATE_ROOT"] = str(self.root)
+        self.apk_inspection = mock.patch.object(gateway, "inspect_android_apk", side_effect=self.inspect_apk)
+        self.apk_inspection.start()
 
     def tearDown(self):
+        self.apk_inspection.stop()
         os.environ.pop("BINHU_UPDATE_ROOT", None)
         self.temp.cleanup()
+
+    @staticmethod
+    def inspect_apk(path: Path) -> dict:
+        version = path.stem.removeprefix("Binhu-Android-arm64-")
+        return {
+            "package": "com.bhzh.binhu.android",
+            "version": version,
+            "versionCode": gateway.android_version_code(version),
+            "signerSha256": "1" * 64,
+        }
 
     def bundle(self, version="0.25.15", commit="a" * 40, mutate=None, include_delta=None) -> bytes:
         source = self.root / "source"
@@ -38,7 +52,7 @@ class GatewayTests(unittest.TestCase):
             shutil.rmtree(source)
         source.mkdir()
         platforms = {}
-        for platform in gateway.PLATFORMS:
+        for platform in gateway.WINDOWS_PLATFORMS:
             platform_root = source / platform
             platform_root.mkdir()
             full = platform_root / f"Binhu-{platform}-{version}-full.nupkg"
@@ -67,8 +81,40 @@ class GatewayTests(unittest.TestCase):
             files = []
             for path in sorted(platform_root.iterdir()):
                 files.append({"name": path.name, "size": path.stat().st_size, "sha256": digest(path)})
-            platforms[platform] = {"files": files}
-        manifest = {"schemaVersion": 1, "version": version, "commit": commit, "signed": False, "platforms": platforms}
+            platforms[platform] = {"files": files, "signed": False}
+        android_root = source / gateway.ANDROID_PLATFORM
+        android_root.mkdir()
+        apk = android_root / f"Binhu-Android-arm64-{version}.apk"
+        apk.write_bytes(b"signed-apk")
+        android_manifest = {
+            "schemaVersion": 1,
+            "channel": "stable",
+            "version": version,
+            "versionCode": gateway.android_version_code(version),
+            "commit": commit,
+            "publishedAt": "2026-08-24T00:00:00Z",
+            "apk": {
+                "filename": apk.name,
+                "size": apk.stat().st_size,
+                "sha256": digest(apk),
+                "signerSha256": "1" * 64,
+            },
+        }
+        android_manifest_path = android_root / "manifest.stable.json"
+        android_manifest_path.write_text(json.dumps(android_manifest), encoding="utf-8")
+        policy_path = android_root / "policy.stable.json"
+        policy_path.write_text(json.dumps({"minimumVersion": version}), encoding="utf-8")
+        checksum_names = (apk.name, android_manifest_path.name, policy_path.name)
+        (android_root / "checksums.sha256").write_text(
+            "".join(f"{digest(android_root / name)}  {name}\n" for name in checksum_names),
+            encoding="ascii",
+        )
+        android_files = [
+            {"name": path.name, "size": path.stat().st_size, "sha256": digest(path)}
+            for path in sorted(android_root.iterdir())
+        ]
+        platforms[gateway.ANDROID_PLATFORM] = {"files": android_files, "signed": True}
+        manifest = {"schemaVersion": 2, "version": version, "commit": commit, "platforms": platforms}
         if mutate:
             mutate(source, manifest)
         (source / "release.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -87,7 +133,8 @@ class GatewayTests(unittest.TestCase):
     def test_publish_and_status(self):
         self.assertEqual(self.run_publish(self.bundle()), 0)
         for platform in gateway.PLATFORMS:
-            self.assertTrue((self.root / "public" / platform / "releases.stable.json").is_file())
+            pointer = "manifest.stable.json" if platform == gateway.ANDROID_PLATFORM else "releases.stable.json"
+            self.assertTrue((self.root / "public" / platform / pointer).is_file())
             state = json.loads((self.root / "state" / f"{platform}.json").read_text())
             self.assertEqual(state["version"], "0.25.15")
         self.assertTrue((self.root / "state" / "publish.lock").is_file())
@@ -113,6 +160,18 @@ class GatewayTests(unittest.TestCase):
     def test_rejects_manifest_hash_mismatch(self):
         def mutate(_source, manifest):
             manifest["platforms"]["win7-x64"]["files"][0]["sha256"] = "0" * 64
+        self.assertEqual(self.run_publish(self.bundle(mutate=mutate)), 1)
+
+    def test_rejects_android_manifest_and_real_signer_mismatch(self):
+        def mutate(source, manifest):
+            path = source / gateway.ANDROID_PLATFORM / "manifest.stable.json"
+            android_manifest = json.loads(path.read_text())
+            android_manifest["apk"]["signerSha256"] = "2" * 64
+            path.write_text(json.dumps(android_manifest), encoding="utf-8")
+            for item in manifest["platforms"][gateway.ANDROID_PLATFORM]["files"]:
+                candidate = source / gateway.ANDROID_PLATFORM / item["name"]
+                item["size"] = candidate.stat().st_size
+                item["sha256"] = digest(candidate)
         self.assertEqual(self.run_publish(self.bundle(mutate=mutate)), 1)
 
     def test_rejects_path_traversal(self):

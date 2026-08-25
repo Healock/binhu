@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   CloseOutlined,
@@ -31,6 +31,7 @@ export default function Layout() {
     typeof window !== 'undefined' && window.innerWidth < 1200
   ))
   const [accountOpen, setAccountOpen] = useState(false)
+  const mainRef = useRef<HTMLElement>(null)
   const { user, logout, clientVersion } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -70,6 +71,13 @@ export default function Layout() {
     if (layout.isCompact) setSidebarCollapsed(true)
   }, [layout.isCompact])
 
+  useEffect(() => {
+    if (location.pathname === '/') {
+      mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+    }
+  }, [location.key, location.pathname])
+
   const handleLogout = async () => {
     if (!confirmPendingNavigation()) return
     setAccountOpen(false)
@@ -79,7 +87,7 @@ export default function Layout() {
 
   return (
     <div className={`app-shell app-shell--${layout.mode} flex`}>
-      <header className="md:hidden fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-4">
+      <header className="mobile-app-header md:hidden fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-4">
         {mobileNavigationMode === 'sidebar' && (
           <button
             type="button"
@@ -149,7 +157,7 @@ export default function Layout() {
             <button
               type="button"
               aria-label="打开账号菜单"
-              className="ml-auto mr-16 flex items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+              className="mobile-account-trigger ml-auto flex shrink-0 items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
             >
               <Avatar size={24} src={user.avatar_url || undefined} icon={<UserOutlined />}>
                 {getUserDisplayName(user).slice(0, 1)}
@@ -277,7 +285,7 @@ export default function Layout() {
         )}
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-auto">
+      <main ref={mainRef} className="min-w-0 flex-1 overflow-auto">
         <div className={`app-content p-4 pt-[72px] md:p-6 ${
           mobileNavigationMode === 'dock'
             ? 'app-content--mobile-dock'

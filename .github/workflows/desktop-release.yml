@@ -1,4 +1,4 @@
-name: Desktop release
+name: Client release
 
 on:
   workflow_run:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: desktop-stable-release
+  group: client-stable-release
   cancel-in-progress: false
 
 env:
@@ -20,6 +20,8 @@ env:
   ELECTRON_ARCHIVE_SHA256: 3690467f4cb67752cdad90962bb3bee252dafcbfb12834d853e36d97117cd5b2
   VXKEX_URL: https://github.com/i486/VxKex/releases/download/Version1.2.1.2229/KexSetup_Release_1_2_1_2229.exe
   VXKEX_SHA256: 7db81065591ab62f2086af84ff5cbf0d021589715024ba893e22a74f6c8708cd
+  WEBVIEW2_BOOTSTRAPPER_URL: https://go.microsoft.com/fwlink/p/?LinkId=2124703
+  WEBVIEW2_BOOTSTRAPPER_SHA256: 94314d8b20c8a370df81c5cc3d8d7a3e23fe5de14ef5e988229ff3208e449146
 
 jobs:
   prepare:
@@ -33,6 +35,7 @@ jobs:
       commit: ${{ steps.gate.outputs.commit }}
       win7_full: ${{ steps.gate.outputs.win7_full }}
       win10_full: ${{ steps.gate.outputs.win10_full }}
+      android_version: ${{ steps.gate.outputs.android_version }}
       previous_version: ${{ steps.gate.outputs.previous_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,30 +77,32 @@ jobs:
           win10_commit="$(printf '%s\n' "$status" | awk -F= '$1=="WIN10_X64_COMMIT"{print $2}')"
           win7_full="$(printf '%s\n' "$status" | awk -F= '$1=="WIN7_X64_FULL_PACKAGE"{print $2}')"
           win10_full="$(printf '%s\n' "$status" | awk -F= '$1=="WIN10_X64_FULL_PACKAGE"{print $2}')"
-          python - "$version" "$win7_version" "$win10_version" <<'PY'
+          android_version="$(printf '%s\n' "$status" | awk -F= '$1=="ANDROID_ARM64_VERSION"{print $2}')"
+          python - "$version" "$win7_version" "$win10_version" "$android_version" <<'PY'
           import re, sys
-          incoming, win7, win10 = sys.argv[1:]
+          incoming, win7, win10, android = sys.argv[1:]
           parse = lambda value: tuple(map(int, value.split('.'))) if re.fullmatch(r'\d+\.\d+\.\d+', value) else None
           target = parse(incoming)
           if target is None: raise SystemExit('invalid repository VERSION')
           if bool(win7) != bool(win10) or (win7 and win7 != win10): raise SystemExit('server platform versions are inconsistent')
+          if android and android != win7: raise SystemExit('server Android version is inconsistent with Windows')
           if not win7 and incoming != '0.25.15': raise SystemExit('an empty server must start at baseline 0.25.15')
-          if win7 and target < parse(win7): raise SystemExit('VERSION would downgrade the desktop release')
+          if win7 and target < parse(win7): raise SystemExit('VERSION would downgrade the client release')
           PY
           publish=true
           if [ -n "$win7_version" ] && [ "$version" = "$win7_version" ]; then
             if [ "$win7_commit" != "$win10_commit" ]; then
               echo 'server commit state is inconsistent' >&2; exit 1
             fi
-            if ! git diff --quiet "$win7_commit" HEAD -- VERSION frontend desktop; then
-              echo 'frontend or desktop changed without increasing VERSION' >&2; exit 1
+            if ! git diff --quiet "$win7_commit" HEAD -- VERSION frontend desktop mobile; then
+              echo 'frontend, desktop or mobile changed without increasing VERSION' >&2; exit 1
             fi
             tag="v$version"
             if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
               git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag"
               tag_commit="$(git rev-list -n 1 "$tag")"
               if [ "$tag_commit" != "$commit" ]; then
-                if ! git diff --quiet "$tag_commit" HEAD -- VERSION frontend desktop; then
+                if ! git diff --quiet "$tag_commit" HEAD -- VERSION frontend desktop mobile; then
                   echo "existing $tag points to an earlier commit with release-surface changes" >&2
                   exit 1
                 fi
@@ -109,6 +114,7 @@ jobs:
           {
             echo "publish=$publish"; echo "version=$version"; echo "commit=$commit"
             echo "win7_full=$win7_full"; echo "win10_full=$win10_full"
+            echo "android_version=$android_version"
             echo "previous_version=$win7_version"
           } >> "$GITHUB_OUTPUT"
       - name: Generate release notes from merged pull requests
@@ -328,6 +334,15 @@ jobs:
           if ((Get-FileHash release/electron-v36.0.0-win32-x64.zip -Algorithm SHA256).Hash.ToLower() -ne $env:ELECTRON_ARCHIVE_SHA256) { throw 'Electron hash mismatch' }
           if ((Get-FileHash release/KexSetup_Release_1_2_1_2229.exe -Algorithm SHA256).Hash.ToLower() -ne $env:VXKEX_SHA256) { throw 'VxKex hash mismatch' }
           choco install innosetup -y --no-progress
+      - name: Download pinned Win10 WebView2 prerequisite
+        if: matrix.target == 'win10-x64'
+        shell: pwsh
+        run: |
+          Set-Location $env:BINHU_BUILD_ROOT
+          New-Item -ItemType Directory -Force release | Out-Null
+          curl.exe -L --fail --retry 3 -o release/MicrosoftEdgeWebView2Setup.exe $env:WEBVIEW2_BOOTSTRAPPER_URL
+          if ((Get-FileHash release/MicrosoftEdgeWebView2Setup.exe -Algorithm SHA256).Hash.ToLower() -ne $env:WEBVIEW2_BOOTSTRAPPER_SHA256) { throw 'WebView2 bootstrapper hash mismatch' }
+          choco install innosetup -y --no-progress
       - name: Download previous full package
         if: needs.prepare.outputs.version != '0.25.15'
         shell: pwsh
@@ -349,7 +364,7 @@ jobs:
           } else {
             npm.cmd ci --prefix desktop/apps/win10-tauri
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & desktop/scripts/build-win10-velopack.ps1 -WorkspaceRoot $PWD -PreviousFullPackage $previous
+            & desktop/scripts/build-win10-velopack.ps1 -WorkspaceRoot $PWD -PreviousFullPackage $previous -WebView2Bootstrapper (Join-Path $PWD 'release/MicrosoftEdgeWebView2Setup.exe')
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -357,8 +372,78 @@ jobs:
           path: ${{ runner.temp }}/binhu-build/artifacts/updates/${{ matrix.target }}
           if-no-files-found: error
 
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: desktop-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ needs.prepare.outputs.commit }}" }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            mobile/apps/android-tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - name: Restore Android release keystore
+        shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if (-not $env:KEYSTORE_BASE64 -or -not $env:KEYSTORE_PASSWORD -or -not $env:KEY_ALIAS -or -not $env:KEY_PASSWORD) {
+            throw 'Android signing secrets are incomplete.'
+          }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'binhu-android-release.jks'
+          [IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          "ANDROID_KEYSTORE_PATH=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ANDROID_KEYSTORE_PASSWORD=$env:KEYSTORE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ANDROID_KEY_ALIAS=$env:KEY_ALIAS" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ANDROID_KEY_PASSWORD=$env:KEY_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+        working-directory: mobile/apps/android-tauri
+      - name: Build signed Android arm64 APK
+        shell: pwsh
+        run: |
+          npm.cmd run android:build:release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        working-directory: mobile/apps/android-tauri
+      - name: Validate and stage Android stable release
+        shell: pwsh
+        env:
+          SIGNER_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+          MINIMUM_VERSION: ${{ vars.ANDROID_MINIMUM_VERSION || '0.0.0' }}
+        run: |
+          $apk = Get-ChildItem mobile/apps/android-tauri/src-tauri/gen/android/app/build/outputs/apk -Recurse -Filter '*release*.apk' -File |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $apk) { throw 'Signed Android release APK was not generated.' }
+          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          python mobile/scripts/package-android-release.py `
+            --apk $apk --version '${{ needs.prepare.outputs.version }}' `
+            --commit '${{ needs.prepare.outputs.commit }}' --minimum-version $env:MINIMUM_VERSION `
+            --expected-signer $env:SIGNER_SHA256 `
+            --aapt2 (Join-Path $buildTools.FullName 'aapt2.exe') `
+            --apksigner (Join-Path $buildTools.FullName 'apksigner.bat') `
+            --output artifacts/updates/android-arm64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-android-arm64-${{ needs.prepare.outputs.version }}
+          path: artifacts/updates/android-arm64
+          if-no-files-found: error
+
   publish:
-    needs: [prepare, build]
+    needs: [prepare, build, android]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -373,18 +458,23 @@ jobs:
           merge-multiple: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
+          name: client-android-arm64-${{ needs.prepare.outputs.version }}
+          path: release-input/client-android-arm64-${{ needs.prepare.outputs.version }}
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
           name: desktop-release-notes-${{ needs.prepare.outputs.commit }}
           path: release-notes
       - name: Normalize artifacts and create transfer bundle
         run: |
           set -Eeuo pipefail
-          mkdir -p release-input/combined/win7-x64 release-input/combined/win10-x64
+          mkdir -p release-input/combined/win7-x64 release-input/combined/win10-x64 release-input/combined/android-arm64
           cp -a release-input/desktop-win7-x64-${{ needs.prepare.outputs.version }}/. release-input/combined/win7-x64/
           cp -a release-input/desktop-win10-x64-${{ needs.prepare.outputs.version }}/. release-input/combined/win10-x64/
+          cp -a release-input/client-android-arm64-${{ needs.prepare.outputs.version }}/. release-input/combined/android-arm64/
           python desktop/server/build_release_bundle.py --input release-input/combined \
             --version '${{ needs.prepare.outputs.version }}' --commit '${{ needs.prepare.outputs.commit }}' \
-            --output release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz
-          sha256sum release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256
+            --output release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz
+          sha256sum release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256
           cp release-input/combined/win7-x64/checksums.sha256 release-input/win7-x64-checksums.sha256
           cp release-input/combined/win10-x64/checksums.sha256 release-input/win10-x64-checksums.sha256
       - name: Publish through fixed SSH gateway
@@ -397,7 +487,7 @@ jobs:
           printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/binhu-update-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/binhu-update-ssh/key" "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
-          bundle=release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz
+          bundle=release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz
           size=$(wc -c < "$bundle")
           hash=$(sha256sum "$bundle" | awk '{print $1}')
           ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
@@ -414,11 +504,12 @@ jobs:
           tag="v${{ needs.prepare.outputs.version }}"
           test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
           gh release create "$tag" --target '${{ needs.prepare.outputs.commit }}' \
-            --title "滨湖桌面客户端 ${{ needs.prepare.outputs.version }}" \
+            --title "滨湖客户端 ${{ needs.prepare.outputs.version }}" \
             --notes-file release-notes/release-notes.md \
             release-input/combined/win7-x64/*-${{ needs.prepare.outputs.version }}-*.nupkg release-input/combined/win7-x64/*${{ needs.prepare.outputs.version }}*.exe \
             release-input/combined/win10-x64/*-${{ needs.prepare.outputs.version }}-*.nupkg release-input/combined/win10-x64/*${{ needs.prepare.outputs.version }}*.exe \
+            release-input/combined/android-arm64/*${{ needs.prepare.outputs.version }}*.apk release-input/combined/android-arm64/manifest.stable.json release-input/combined/android-arm64/policy.stable.json release-input/combined/android-arm64/checksums.sha256 \
             release-input/win7-x64-checksums.sha256 release-input/win10-x64-checksums.sha256 \
-            release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz \
-            release-input/binhu-desktop-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
+            release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz \
+            release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
             release-notes/release-notes.json

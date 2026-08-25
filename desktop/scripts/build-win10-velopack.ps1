@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$WorkspaceRoot = 'E:\bhzh-forth',
-    [string]$PreviousFullPackage
+    [string]$PreviousFullPackage,
+    [string]$WebView2Bootstrapper,
+    [switch]$AllowFullOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +18,12 @@ if (Test-Path -LiteralPath $outputRoot) { Remove-Item -LiteralPath $outputRoot -
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 $args = @{ Target = 'win10-x64'; PackDirectory = $packRoot; MainExecutable = 'BinhuWin10.exe'; OutputDirectory = $outputRoot }
 if ($PreviousFullPackage) { $args.PreviousFullPackage = $PreviousFullPackage }
+if ($AllowFullOnly) { $args.AllowFullOnly = $true }
 & (Join-Path $desktopRoot 'scripts\invoke-velopack.ps1') @args
+$velopackSetup = Get-ChildItem -LiteralPath $outputRoot -Filter '*Setup*.exe' -File | Select-Object -First 1
+if (-not $velopackSetup) { throw 'Velopack did not produce a Setup executable for Win10/11.' }
+$installerArgs = @{ WorkspaceRoot = $WorkspaceRoot; VelopackSetup = $velopackSetup.FullName }
+if ($WebView2Bootstrapper) { $installerArgs.WebView2Bootstrapper = $WebView2Bootstrapper }
+& (Join-Path $desktopRoot 'apps\win10-tauri\scripts\build-installer.ps1') @installerArgs | Out-Host
 & (Join-Path $desktopRoot 'scripts\write-release-checksums.ps1') -ReleaseDirectory $outputRoot
 Write-Host $outputRoot

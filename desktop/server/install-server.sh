@@ -26,6 +26,15 @@ find_certbot() {
   command -v certbot 2>/dev/null || return 1
 }
 
+find_android_tool() {
+  name=$1
+  command -v "$name" 2>/dev/null && return 0
+  for candidate in /opt/android-sdk/build-tools/*/"$name"; do
+    [ -x "$candidate" ] || continue
+    printf '%s\n' "$candidate"
+  done | sort -Vr | head -n 1
+}
+
 [ -r /etc/os-release ] || { echo '/etc/os-release is required' >&2; exit 1; }
 # shellcheck source=/dev/null
 . /etc/os-release
@@ -49,6 +58,9 @@ PYTHON=$(find_python || true)
 printf 'Python 3.9+: %s\n' "${PYTHON:-not found}"
 CERTBOT=$(find_certbot || true)
 printf 'Certbot: %s\n' "${CERTBOT:-not found}"
+AAPT2=$(find_android_tool aapt2 || true)
+APKSIGNER=$(find_android_tool apksigner || true)
+printf 'Android APK verifier: aapt2=%s apksigner=%s\n' "${AAPT2:-not found}" "${APKSIGNER:-not found}"
 
 if [ "$MODE" != "--install" ]; then
   printf 'Inspection only. Re-run as root with --install and the SSH public key.\n'
@@ -58,6 +70,8 @@ fi
 [ -n "$PUBLIC_KEY" ] || { echo 'SSH public key is required' >&2; exit 1; }
 [ -n "$PYTHON" ] || { echo 'Python 3.9 or newer is required.' >&2; exit 1; }
 [ -n "$CERTBOT" ] || { echo 'Certbot is required.' >&2; exit 1; }
+[ -n "$AAPT2" ] || { echo 'aapt2 is required for Android release verification.' >&2; exit 1; }
+[ -n "$APKSIGNER" ] || { echo 'apksigner is required for Android release verification.' >&2; exit 1; }
 "$CERTBOT" --version 2>&1 | grep -E 'certbot (5\.[4-9]|[6-9]\.|[1-9][0-9]+\.)' >/dev/null || {
   echo 'Certbot 5.4 or newer is required for IP webroot certificates.' >&2; exit 1;
 }
@@ -69,8 +83,8 @@ esac
 id binhu-update-publish >/dev/null 2>&1 || useradd --system --home-dir /var/lib/binhu-update-publish --create-home --shell /bin/sh binhu-update-publish
 usermod --shell /bin/sh binhu-update-publish
 install -d -o binhu-update-publish -g binhu-update-publish -m 0750 "$ROOT/incoming" "$ROOT/state" "$ROOT/archive"
-install -d -o binhu-update-publish -g "$WEB_GROUP" -m 0750 "$ROOT/public/win7-x64" "$ROOT/public/win10-x64"
-for platform in win7-x64 win10-x64; do
+install -d -o binhu-update-publish -g "$WEB_GROUP" -m 0750 "$ROOT/public/win7-x64" "$ROOT/public/win10-x64" "$ROOT/public/android-arm64"
+for platform in win7-x64 win10-x64 android-arm64; do
   policy="$ROOT/public/$platform/policy.stable.json"
   if [ ! -e "$policy" ]; then
     printf '{"minimumVersion":"0.0.0"}\n' > "$policy"

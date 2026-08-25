@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -21,7 +22,9 @@ try:
 except ModuleNotFoundError:  # Windows unit tests do not provide POSIX flock.
     fcntl = None
 
-PLATFORMS = ("win7-x64", "win10-x64")
+WINDOWS_PLATFORMS = ("win7-x64", "win10-x64")
+ANDROID_PLATFORM = "android-arm64"
+PLATFORMS = (*WINDOWS_PLATFORMS, ANDROID_PLATFORM)
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -82,7 +85,10 @@ def safe_member_name(name: str) -> PurePosixPath:
         raise PublishError(f"unexpected archive path: {name}")
     if not FILE_RE.fullmatch(path.name):
         raise PublishError(f"invalid release file name: {path.name}")
-    if path.name != "releases.stable.json" and not path.name.endswith((".nupkg", ".exe", ".sha256", ".json")):
+    allowed_suffixes = (".apk", ".sha256", ".json") if path.parts[0] == ANDROID_PLATFORM else (
+        ".nupkg", ".exe", ".sha256", ".json"
+    )
+    if not path.name.endswith(allowed_suffixes):
         raise PublishError(f"file type is not allowed: {path.name}")
     return path
 
@@ -135,7 +141,12 @@ def nupkg_version(path: Path) -> str:
     raise PublishError(f"nupkg has no version: {path.name}")
 
 
-def validate_platform(stage: Path, platform: str, expected_version: str, declared: list[dict]) -> dict:
+def validate_declared_files(
+    stage: Path,
+    platform: str,
+    declared: list[dict],
+    allowed_suffixes: tuple[str, ...],
+) -> tuple[Path, dict[str, dict], set[str]]:
     platform_root = stage / platform
     if not platform_root.is_dir():
         raise PublishError(f"missing platform directory: {platform}")
@@ -146,16 +157,13 @@ def validate_platform(stage: Path, platform: str, expected_version: str, declare
         name = item.get("name")
         if not isinstance(name, str) or not FILE_RE.fullmatch(name) or name in declared_by_name:
             raise PublishError(f"invalid or duplicate file declaration: {name}")
-        if name != "releases.stable.json" and not name.endswith((".nupkg", ".exe", ".sha256", ".json")):
+        if not name.endswith(allowed_suffixes):
             raise PublishError(f"declared file type is not allowed: {name}")
         declared_by_name[name] = item
 
     actual_names = {path.name for path in platform_root.iterdir() if path.is_file()}
     if actual_names != set(declared_by_name):
         raise PublishError(f"declared files do not match archive for {platform}")
-    if "releases.stable.json" not in actual_names:
-        raise PublishError(f"missing Velopack feed for {platform}")
-
     for name, item in declared_by_name.items():
         path = platform_root / name
         size = item.get("size")
@@ -164,8 +172,21 @@ def validate_platform(stage: Path, platform: str, expected_version: str, declare
             raise PublishError(f"size mismatch: {platform}/{name}")
         if not isinstance(digest, str) or not HASH_RE.fullmatch(digest) or sha256_file(path) != digest:
             raise PublishError(f"SHA-256 mismatch: {platform}/{name}")
+    return platform_root, declared_by_name, actual_names
+
+
+def validate_windows_platform(stage: Path, platform: str, expected_version: str, declared: list[dict]) -> dict:
+    platform_root, _, actual_names = validate_declared_files(
+        stage,
+        platform,
+        declared,
+        (".nupkg", ".exe", ".sha256", ".json"),
+    )
+    if "releases.stable.json" not in actual_names:
+        raise PublishError(f"missing Velopack feed for {platform}")
+    for name in actual_names:
         if name.endswith(".nupkg"):
-            package_version = nupkg_version(path)
+            package_version = nupkg_version(platform_root / name)
             if parse_version(package_version) > parse_version(expected_version):
                 raise PublishError(f"package version is newer than the release: {platform}/{name}")
 
@@ -197,6 +218,123 @@ def validate_platform(stage: Path, platform: str, expected_version: str, declare
     return {"fullPackage": full_packages[0], "files": sorted(actual_names)}
 
 
+def android_version_code(version: str) -> int:
+    major, minor, patch = parse_version(version)
+    if minor >= 1000 or patch >= 1000:
+        raise PublishError("Android minor and patch versions must be below 1000")
+    return major * 1_000_000 + minor * 1_000 + patch
+
+
+def find_android_tool(environment_name: str, executable: str) -> str:
+    configured = os.environ.get(environment_name, "").strip()
+    if configured:
+        if Path(configured).is_file():
+            return configured
+        raise PublishError(f"configured Android verifier does not exist: {environment_name}")
+    discovered = shutil.which(executable)
+    if discovered:
+        return discovered
+    candidates = sorted(Path("/opt/android-sdk/build-tools").glob(f"*/{executable}"), reverse=True)
+    if candidates:
+        return str(candidates[0])
+    raise PublishError(f"Android publishing requires {executable}")
+
+
+def inspect_android_apk(path: Path) -> dict:
+    aapt2 = find_android_tool("BINHU_AAPT2", "aapt2")
+    apksigner = find_android_tool("BINHU_APKSIGNER", "apksigner")
+    try:
+        badging = subprocess.run(
+            [aapt2, "dump", "badging", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        signing = subprocess.run(
+            [apksigner, "verify", "--verbose", "--print-certs", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise PublishError(f"Android APK inspection failed: {error}") from error
+    package = re.search(
+        r"^package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'",
+        badging,
+        flags=re.MULTILINE,
+    )
+    signer = re.search(r"Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F:]{64,95})", signing)
+    if not package or not signer:
+        raise PublishError("Android APK metadata or signing certificate is unavailable")
+    signer_digest = "".join(character.lower() for character in signer.group(1) if character.lower() in "0123456789abcdef")
+    return {
+        "package": package.group(1),
+        "versionCode": int(package.group(2)),
+        "version": package.group(3),
+        "signerSha256": signer_digest,
+    }
+
+
+def validate_android_platform(stage: Path, expected_version: str, expected_commit: str, declared: list[dict]) -> dict:
+    platform_root, _, actual_names = validate_declared_files(
+        stage,
+        ANDROID_PLATFORM,
+        declared,
+        (".apk", ".sha256", ".json"),
+    )
+    required = {"manifest.stable.json", "policy.stable.json", "checksums.sha256"}
+    if not required.issubset(actual_names):
+        raise PublishError("Android release is missing its manifest, policy or checksums")
+    apks = sorted(name for name in actual_names if name.endswith(".apk"))
+    if len(apks) != 1:
+        raise PublishError("Android release must contain exactly one APK")
+    manifest = load_json(platform_root / "manifest.stable.json")
+    apk = manifest.get("apk")
+    if (
+        manifest.get("schemaVersion") != 1
+        or manifest.get("channel") != "stable"
+        or manifest.get("version") != expected_version
+        or manifest.get("versionCode") != android_version_code(expected_version)
+        or manifest.get("commit") != expected_commit
+        or not isinstance(manifest.get("publishedAt"), str)
+        or not manifest.get("publishedAt")
+        or not isinstance(apk, dict)
+    ):
+        raise PublishError("Android stable manifest metadata is invalid")
+    apk_name = apks[0]
+    apk_path = platform_root / apk_name
+    expected_name = f"Binhu-Android-arm64-{expected_version}.apk"
+    signer = str(apk.get("signerSha256", "")).lower().replace(":", "")
+    if (
+        apk_name != expected_name
+        or apk.get("filename") != apk_name
+        or apk.get("size") != apk_path.stat().st_size
+        or apk.get("sha256") != sha256_file(apk_path)
+        or not HASH_RE.fullmatch(signer)
+    ):
+        raise PublishError("Android APK declaration does not match the uploaded file")
+    policy = load_json(platform_root / "policy.stable.json")
+    minimum = policy.get("minimumVersion")
+    if not isinstance(minimum, str) or parse_version(minimum) > parse_version(expected_version):
+        raise PublishError("Android minimum version policy is invalid")
+    inspection = inspect_android_apk(apk_path)
+    if (
+        inspection.get("package") != "com.bhzh.binhu.android"
+        or inspection.get("version") != expected_version
+        or inspection.get("versionCode") != android_version_code(expected_version)
+        or inspection.get("signerSha256") != signer
+    ):
+        raise PublishError("Android APK package, version or signer verification failed")
+    checksum_lines = (platform_root / "checksums.sha256").read_text(encoding="ascii").splitlines()
+    expected_checksums = {
+        f"{sha256_file(platform_root / name)}  {name}"
+        for name in (apk_name, "manifest.stable.json", "policy.stable.json")
+    }
+    if set(checksum_lines) != expected_checksums:
+        raise PublishError("Android checksums.sha256 is incomplete or inconsistent")
+    return {"apk": apk_name, "files": sorted(actual_names), "signerSha256": signer}
+
+
 def state_file(root: Path, platform: str) -> Path:
     return root / "state" / f"{platform}.json"
 
@@ -216,11 +354,12 @@ def status(root: Path) -> None:
         print(f"{prefix}_VERSION={current.get('version', '')}")
         print(f"{prefix}_COMMIT={current.get('commit', '')}")
         print(f"{prefix}_FULL_PACKAGE={current.get('fullPackage', '')}")
+        print(f"{prefix}_APK={current.get('apk', '')}")
 
 
 def fetch_full_package(root: Path, platform: str, filename: str, output: BinaryIO) -> None:
     """Stream only the currently published full package for one platform."""
-    if platform not in PLATFORMS:
+    if platform not in WINDOWS_PLATFORMS:
         raise PublishError("invalid fetch platform")
     if not FILE_RE.fullmatch(filename) or not filename.endswith("-full.nupkg"):
         raise PublishError("only a valid full package may be fetched")
@@ -258,7 +397,7 @@ def archive_old_releases(root: Path, platform: str) -> None:
         version_root.mkdir(parents=True, exist_ok=True)
         for name in metadata.get("files", []):
             source = public_root / name
-            if source.exists() and name != "releases.stable.json" and name not in retained_names:
+            if source.exists() and name not in {"releases.stable.json", "manifest.stable.json"} and name not in retained_names:
                 os.replace(source, version_root / name)
         os.replace(metadata_path, version_root / "release.json")
 
@@ -268,27 +407,33 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
     if not COMMIT_RE.fullmatch(expected_commit):
         raise PublishError("invalid commit id")
     current_states = {platform: read_state(root, platform) for platform in PLATFORMS}
+    windows_populated = [current_states[platform] for platform in WINDOWS_PLATFORMS if current_states[platform].get("version")]
+    if windows_populated and len(windows_populated) != len(WINDOWS_PLATFORMS):
+        raise PublishError("server Windows platform state is incomplete")
     populated = [state for state in current_states.values() if state.get("version")]
-    if populated and len(populated) != len(PLATFORMS):
-        raise PublishError("server platform state is incomplete")
-    if populated:
-        versions = {state.get("version") for state in populated}
-        commits = {state.get("commit") for state in populated}
+    if windows_populated:
+        versions = {state.get("version") for state in windows_populated}
+        commits = {state.get("commit") for state in windows_populated}
         if len(versions) != 1 or len(commits) != 1:
-            raise PublishError("server platform state is inconsistent")
+            raise PublishError("server Windows platform state is inconsistent")
+        android_state = current_states[ANDROID_PLATFORM]
+        if android_state.get("version") and (
+            android_state.get("version") not in versions or android_state.get("commit") not in commits
+        ):
+            raise PublishError("server Android platform state is inconsistent")
     elif expected_version != "0.25.15":
         raise PublishError("an empty server must start at baseline 0.25.15")
     with tempfile.TemporaryDirectory(prefix="binhu-update-stage-", dir=root / "incoming") as temporary:
         stage = Path(temporary)
         extract_bundle(bundle, stage)
         manifest = load_json(stage / "release.json")
-        if manifest.get("schemaVersion") != 1 or manifest.get("version") != expected_version:
+        if manifest.get("schemaVersion") != 2 or manifest.get("version") != expected_version:
             raise PublishError("release manifest version or schema mismatch")
-        if manifest.get("commit") != expected_commit or manifest.get("signed") is not False:
-            raise PublishError("release manifest commit or signature status mismatch")
+        if manifest.get("commit") != expected_commit:
+            raise PublishError("release manifest commit mismatch")
         platforms = manifest.get("platforms")
         if not isinstance(platforms, dict) or set(platforms) != set(PLATFORMS):
-            raise PublishError("release manifest must contain both Windows platforms")
+            raise PublishError("release manifest must contain Windows and Android platforms")
 
         validated = {}
         already_published = True
@@ -309,7 +454,19 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
             entry = platforms[platform]
             if not isinstance(entry, dict) or not isinstance(entry.get("files"), list):
                 raise PublishError(f"invalid platform manifest for {platform}")
-            validated[platform] = validate_platform(stage, platform, expected_version, entry["files"])
+            if platform == ANDROID_PLATFORM:
+                if entry.get("signed") is not True:
+                    raise PublishError("Android release must be signed")
+                validated[platform] = validate_android_platform(
+                    stage,
+                    expected_version,
+                    expected_commit,
+                    entry["files"],
+                )
+            else:
+                if entry.get("signed") is not False:
+                    raise PublishError(f"unsigned Windows release expected for {platform}")
+                validated[platform] = validate_windows_platform(stage, platform, expected_version, entry["files"])
 
         if already_published:
             return False
@@ -318,8 +475,9 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
             public_root = root / "public" / platform
             public_root.mkdir(parents=True, exist_ok=True)
             source_root = stage / platform
+            pointer_name = "manifest.stable.json" if platform == ANDROID_PLATFORM else "releases.stable.json"
             for name in validated[platform]["files"]:
-                if name == "releases.stable.json":
+                if name == pointer_name:
                     continue
                 temporary_target = public_root / f".{name}.new"
                 shutil.copy2(source_root / name, temporary_target)
@@ -327,15 +485,17 @@ def publish(root: Path, bundle: Path, expected_version: str, expected_commit: st
 
         for platform in PLATFORMS:
             public_root = root / "public" / platform
-            feed_temporary = public_root / ".releases.stable.json.new"
-            shutil.copy2(stage / platform / "releases.stable.json", feed_temporary)
-            os.replace(feed_temporary, public_root / "releases.stable.json")
+            pointer_name = "manifest.stable.json" if platform == ANDROID_PLATFORM else "releases.stable.json"
+            feed_temporary = public_root / f".{pointer_name}.new"
+            shutil.copy2(stage / platform / pointer_name, feed_temporary)
+            os.replace(feed_temporary, public_root / pointer_name)
             metadata = {
                 "version": expected_version,
                 "commit": expected_commit,
-                "fullPackage": validated[platform]["fullPackage"],
+                "fullPackage": validated[platform].get("fullPackage", ""),
+                "apk": validated[platform].get("apk", ""),
                 "files": validated[platform]["files"],
-                "signed": False,
+                "signed": platform == ANDROID_PLATFORM,
             }
             state_file(root, platform).parent.mkdir(parents=True, exist_ok=True)
             state_temp = state_file(root, platform).with_suffix(".json.new")

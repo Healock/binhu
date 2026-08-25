@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.26.2"
+  #define AppVersion "0.26.3"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "0.26.2.0"
+  #define NumericVersion "0.26.3.0"
 #endif
 #ifndef VelopackSetup
   #error VelopackSetup must point to the baseline Velopack Setup executable.
@@ -73,10 +73,21 @@ begin
     Result := Version;
 end;
 
+function ConfigureVxKexFor(TargetPath: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(GetVxKexConfigPath(),
+    '/EXE:"' + TargetPath + '" /ENABLE:1 /DISABLEFORCHILD:0 /WINVERSPOOF:WIN10',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   CurrentVersion: String;
   ResultCode: Integer;
+  VxKexLoader: String;
+  VelopackSetupPath: String;
 begin
   Result := '';
   CurrentVersion := InstalledVxKexVersion();
@@ -107,8 +118,20 @@ begin
   end;
 
   ExtractTemporaryFile('Binhu-Velopack-Setup.exe');
-  if not Exec(ExpandConstant('{tmp}\Binhu-Velopack-Setup.exe'),
-    '--silent --installto "' + ExpandConstant('{localappdata}\Bhzh\BinhuWin7') + '"',
+  VelopackSetupPath := ExpandConstant('{tmp}\Binhu-Velopack-Setup.exe');
+  if not ConfigureVxKexFor(VelopackSetupPath) then
+  begin
+    Result := '无法为客户端安装程序启用 Win7 兼容层。';
+    Exit;
+  end;
+  VxKexLoader := AddBackslash(GetVxKexDirectory()) + 'VxKexLdr.exe';
+  if not FileExists(VxKexLoader) then
+  begin
+    Result := '未找到 VxKex 启动器，请重新安装 VxKex。';
+    Exit;
+  end;
+  if not Exec(VxKexLoader,
+    '"' + VelopackSetupPath + '" --silent --installto "' + ExpandConstant('{localappdata}\Bhzh\BinhuWin7') + '"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     Result := '无法启动客户端安装程序。';
