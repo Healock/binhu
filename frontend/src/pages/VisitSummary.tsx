@@ -342,6 +342,11 @@ export default function VisitSummary() {
             sheet: '社区汇总',
             columns: summaryReport.community.columns,
             rows: visibleCommunityRows,
+            highlightLowestColumns: [
+              '人均日走访户数',
+              '人均日变动数',
+              '户均变动数',
+            ],
             total: buildVisitTableTotal(
               summaryReport.community.columns,
               visibleCommunityRows,

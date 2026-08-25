@@ -449,6 +449,20 @@ test('在线人数按钮再次点击会关闭当前弹层', () => {
   assert.doesNotMatch(source, /onClick=\{\(\) => canViewDetails && setOpen\(true\)\}/)
 })
 
+test('在线人数在前台聚焦、网络恢复和心跳周期都会刷新', () => {
+  const source = readFileSync(
+    new URL('../src/components/OnlinePresenceIndicator.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(source, /window\.addEventListener\('focus', onFocus\)/)
+  assert.match(source, /window\.addEventListener\('online', onOnline\)/)
+  assert.match(source, /window\.addEventListener\('pageshow', onPageShow\)/)
+  assert.match(source, /scheduleHeartbeat\(HEARTBEAT_INTERVAL_MS\)/)
+  assert.match(source, /if \(open && canViewDetails\) void refreshUsers\(\)/)
+  assert.match(source, /void refreshUsers\(true\)/)
+})
+
 test('工单流程配置只从设置页进入，不再出现在主侧边栏导航', () => {
   const navigation = readFileSync(
     new URL('../src/navigation/mobileNavigation.ts', import.meta.url),

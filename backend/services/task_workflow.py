@@ -171,7 +171,15 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止日期", "下发日期"),
         identity_fields=("身份证号码",),
         secondary_fields=("二次核查结果",),
-        result_options=("已登记", "无需登记", "移交", "无法核实", "离苏"),
+        result_options=(
+            "已登记",
+            "无需登记",
+            "无需登记，原因写备注",
+            "移交",
+            "移交，移交哪个社区写备注",
+            "无法核实",
+            "离苏",
+        ),
     ),
     "苏州涉警": TaskWorkflow(
         parser_type="苏州涉警",
