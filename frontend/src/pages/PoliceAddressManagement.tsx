@@ -112,11 +112,11 @@ export default function PoliceAddressManagement() {
     setExporting(true)
     try {
       const blob = await exportPoliceAddresses({ keyword })
-      await downloadBlob(
+      const saved = await downloadBlob(
         blob,
         `小区管理-${new Date().toISOString().slice(0, 10)}.xlsx`,
       )
-      message.success(`已导出 ${data.length} 条当前可见记录`)
+      if (saved) message.success(`已导出 ${data.length} 条当前可见记录`)
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '导出失败')
     } finally {

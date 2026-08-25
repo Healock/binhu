@@ -351,7 +351,12 @@ fn window_close(window: tauri::WebviewWindow) {
 }
 
 #[tauri::command]
-fn save_file(app: tauri::AppHandle, filename: String, data: Vec<u8>) -> Result<(), String> {
+fn save_file(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    data: Vec<u8>,
+) -> Result<bool, String> {
     let safe_name = PathBuf::from(filename)
         .file_name()
         .and_then(|value| value.to_str())
@@ -362,12 +367,25 @@ fn save_file(app: tauri::AppHandle, filename: String, data: Vec<u8>) -> Result<(
     } else {
         safe_name
     };
-    let directory = app
-        .path()
-        .download_dir()
-        .map_err(|error| error.to_string())?;
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    fs::write(directory.join(safe_name), data).map_err(|error| error.to_string())
+    let extension = PathBuf::from(&safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_string);
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("保存导出文件")
+        .set_file_name(&safe_name)
+        .set_parent(&window);
+    if let Ok(directory) = app.path().download_dir() {
+        dialog = dialog.set_directory(directory);
+    }
+    if let Some(extension) = extension.as_deref() {
+        dialog = dialog.add_filter(extension.to_uppercase(), &[extension]);
+    }
+    let Some(target) = dialog.save_file() else {
+        return Ok(false);
+    };
+    fs::write(target, data).map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]

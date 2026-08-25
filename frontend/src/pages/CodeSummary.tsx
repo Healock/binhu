@@ -269,11 +269,11 @@ export default function CodeSummary() {
           inspector_rows: item.data.length,
           community_rows: 0,
         })))
-      await exportSummaryWorkbook({
+      const saved = await exportSummaryWorkbook({
         fileName: `平安码管家码汇总_${startDate}_至_${endDate}`,
         tables: [exportTable(peace, 'peace'), exportTable(manager, 'manager')],
       })
-      message.success('已导出当前码数据汇总')
+      if (saved) message.success('已导出当前码数据汇总')
     } catch (reason: any) {
       message.error(apiErrorMessage(reason, '导出失败，请稍后重试'))
     }

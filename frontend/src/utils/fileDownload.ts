@@ -1,7 +1,7 @@
 import { resolveDesktopBridge } from '../desktop/bridge.ts'
 
 interface DesktopFileBridge {
-  saveFile: (filename: string, data: number[]) => Promise<void>
+  saveFile: (filename: string, data: number[]) => Promise<boolean>
 }
 
 function safeFileName(filename: string): string {
@@ -10,13 +10,12 @@ function safeFileName(filename: string): string {
 }
 
 /** Save through the native shell when running in a Windows client. */
-export async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+export async function downloadBlob(blob: Blob, filename: string): Promise<boolean> {
   const safeName = safeFileName(filename)
   const desktop = resolveDesktopBridge() as (DesktopFileBridge | null)
   if (desktop?.saveFile) {
     const bytes = new Uint8Array(await blob.arrayBuffer())
-    await desktop.saveFile(safeName, Array.from(bytes))
-    return
+    return desktop.saveFile(safeName, Array.from(bytes))
   }
 
   const url = URL.createObjectURL(blob)
@@ -28,4 +27,5 @@ export async function downloadBlob(blob: Blob, filename: string): Promise<void> 
   anchor.click()
   anchor.remove()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return true
 }

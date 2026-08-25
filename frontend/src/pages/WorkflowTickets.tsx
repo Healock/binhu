@@ -308,8 +308,8 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
         source_label: photoSource,
       })
       const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-      await downloadBlob(blob, `未调照片-${stamp}.xlsx`)
-      message.success('未调照片清单已导出')
+      const saved = await downloadBlob(blob, `未调照片-${stamp}.xlsx`)
+      if (saved) message.success('未调照片清单已导出')
     } catch (reason) {
       message.error(apiError(reason, '导出失败'))
     } finally {

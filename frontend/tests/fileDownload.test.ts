@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { downloadBlob } from '../src/utils/fileDownload.ts'
 
-test('桌面客户端通过原生桥接保存 Blob，并保留安全文件名', async () => {
+test('桌面客户端通过原生另存为桥接保存 Blob，并保留安全文件名', async () => {
   const calls: Array<{ filename: string; data: number[] }> = []
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
@@ -15,17 +15,36 @@ test('桌面客户端通过原生桥接保存 Blob，并保留安全文件名', 
       binhuDesktop: {
         saveFile: async (filename: string, data: number[]) => {
           calls.push({ filename, data })
+          return true
         },
       },
     },
   })
 
-  await downloadBlob(new Blob([new Uint8Array([1, 2, 3])]), '报告:/2026.xlsx')
+  const saved = await downloadBlob(new Blob([new Uint8Array([1, 2, 3])]), '报告:/2026.xlsx')
 
+  assert.equal(saved, true)
   assert.deepEqual(calls, [{
     filename: '报告__2026.xlsx',
     data: [1, 2, 3],
   }])
+})
+
+test('用户取消桌面另存为时返回未保存且不报错', async () => {
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent: 'Windows' },
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      binhuDesktop: {
+        saveFile: async () => false,
+      },
+    },
+  })
+
+  assert.equal(await downloadBlob(new Blob(['xlsx']), '汇总.xlsx'), false)
 })
 
 test('网页回退会插入下载链接并延迟释放 Blob URL', async () => {
@@ -69,8 +88,9 @@ test('网页回退会插入下载链接并延迟释放 Blob URL', async () => {
     },
   })
 
-  await downloadBlob(new Blob(['xlsx']), '汇总.xlsx')
+  const saved = await downloadBlob(new Blob(['xlsx']), '汇总.xlsx')
 
+  assert.equal(saved, true)
   assert.equal(clicked, true)
   assert.equal(anchor.download, '汇总.xlsx')
   assert.equal(revoked, false)

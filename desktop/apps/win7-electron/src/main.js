@@ -7,7 +7,7 @@ VelopackApp.build()
 
 const path = require('node:path')
 const fs = require('node:fs')
-const { app, BrowserWindow, ipcMain, protocol, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
 const { ElectronUpdateController } = require('./updater')
 
 const root = path.resolve(__dirname, '..', '..', '..')
@@ -172,16 +172,26 @@ ipcMain.handle('desktop:window-is-maximized', (event) => (
 ipcMain.handle('desktop:window-close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close()
 })
-ipcMain.handle('desktop:save-file', async (_event, payload) => {
+ipcMain.handle('desktop:save-file', async (event, payload) => {
   const filename = typeof payload?.filename === 'string' ? payload.filename : '下载文件'
   const safeName = path.basename(filename).replace(/[\\/:*?"<>|]/g, '_') || '下载文件'
   const data = payload?.data
   if (!Array.isArray(data) && !Buffer.isBuffer(data) && !(data instanceof Uint8Array)) {
     throw new Error('下载文件内容无效')
   }
-  const target = path.join(app.getPath('downloads'), safeName)
-  await fs.promises.writeFile(target, Buffer.from(data))
-  return target
+  const extension = path.extname(safeName).slice(1)
+  const options = {
+    title: '保存导出文件',
+    defaultPath: path.join(app.getPath('downloads'), safeName),
+    filters: extension ? [{ name: extension.toUpperCase(), extensions: [extension] }] : [],
+  }
+  const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow()
+  const result = parent
+    ? await dialog.showSaveDialog(parent, options)
+    : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return false
+  await fs.promises.writeFile(result.filePath, Buffer.from(data))
+  return true
 })
 ipcMain.handle('desktop:get-update-status', () => updateController?.snapshot() || null)
 ipcMain.handle('desktop:get-upgrade-info', () => upgradeInfo)

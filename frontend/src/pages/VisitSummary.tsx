@@ -326,7 +326,7 @@ export default function VisitSummary() {
         inspector_rows: visibleInspectorRows.length,
         community_rows: visibleCommunityRows.length,
       })
-      await exportSummaryWorkbook({
+      const saved = await exportSummaryWorkbook({
         fileName: `走访汇总_${shownCategoryLabel}_${shownSummaryRange[0]}_至_${shownSummaryRange[1]}`,
         tables: [
           {
@@ -349,7 +349,7 @@ export default function VisitSummary() {
           },
         ],
       })
-      message.success('已导出当前走访汇总数据')
+      if (saved) message.success('已导出当前走访汇总数据')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
     } finally {

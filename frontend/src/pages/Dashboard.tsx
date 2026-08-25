@@ -289,7 +289,7 @@ export default function Dashboard() {
         inspector_rows: visibleInspectorRows.length,
         community_rows: visibleCommunityRows.length,
       })
-      await exportSummaryWorkbook({
+      const saved = await exportSummaryWorkbook({
         fileName: `在线数据汇总_${reportType}_${startDate}_至_${endDate}`,
         tables: [
           {
@@ -306,7 +306,7 @@ export default function Dashboard() {
           },
         ],
       })
-      message.success('已导出当前在线汇总数据')
+      if (saved) message.success('已导出当前在线汇总数据')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
     } finally {
