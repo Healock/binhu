@@ -4,6 +4,7 @@ import unittest
 from services.qmf_community import (
     DEFAULT_QMF_COMMUNITY_CODES,
     QMF_COMMUNITY_CODE_SEED_MARKER,
+    resolve_qmf_organization,
     resolve_qmf_community,
     seed_default_qmf_community_codes,
 )
@@ -26,6 +27,41 @@ class FakeCursor:
             self.rows = list(self.entries)
         else:
             raise AssertionError(f"unexpected SQL: {normalized}")
+
+    async def fetchall(self):
+        return list(self.rows)
+
+
+class OrganizationCursor:
+    """Minimal cursor for organization-code and alias resolution tests."""
+
+    def __init__(self, communities, organization_codes=(), aliases=()):
+        self.communities = communities
+        self.organization_codes = organization_codes
+        self.aliases = aliases
+        self.rows = []
+
+    async def execute(self, sql, params=None):
+        normalized = " ".join(str(sql).split())
+        if "FROM _communities AS c LEFT JOIN _community_aliases AS a" in normalized:
+            aliases_by_community = {}
+            for community_id, alias in self.aliases:
+                aliases_by_community.setdefault(int(community_id), []).append(alias)
+            self.rows = [
+                (community_id, name, alias)
+                for community_id, name in self.communities
+                for alias in (aliases_by_community.get(int(community_id)) or [None])
+            ]
+            return
+        if "FROM _qmf_organization_codes" in normalized:
+            code = (params or ("",))[0]
+            self.rows = [
+                (community_id, next(name for cid, name in self.communities if int(cid) == int(community_id)))
+                for organization_code, community_id in self.organization_codes
+                if organization_code == code
+            ]
+            return
+        raise AssertionError(f"unexpected SQL: {normalized}")
 
     async def fetchall(self):
         return list(self.rows)
@@ -147,6 +183,51 @@ class QmfCommunityTests(unittest.IsolatedAsyncioTestCase):
             await resolve_qmf_community(
                 cursor, source_community="冬梅社区", address=""
             )
+
+    async def test_organization_code_resolves_to_the_single_configured_community(self):
+        cursor = OrganizationCursor(
+            communities=[(1, "长板社区"), (2, "水秀社区")],
+            organization_codes=[("320584710103", 1)],
+        )
+        resolved = await resolve_qmf_organization(
+            cursor,
+            organization_code=" 320584710103 ",
+            source_community="完全不同的来源名称",
+        )
+        self.assertEqual(resolved.community_id, 1)
+        self.assertEqual(resolved.community_name, "长板社区")
+        self.assertEqual(resolved.state, "matched_code")
+
+    async def test_ludang_alias_falls_back_to_changban_without_an_org_mapping(self):
+        cursor = OrganizationCursor(
+            communities=[(1, "长板社区"), (2, "水秀社区")],
+            aliases=[(1, "芦荡社区")],
+        )
+        resolved = await resolve_qmf_organization(
+            cursor, organization_code="", source_community="芦荡"
+        )
+        self.assertEqual(resolved.community_id, 1)
+        self.assertEqual(resolved.community_name, "长板社区")
+        self.assertEqual(resolved.state, "matched_name")
+
+    async def test_ambiguous_organization_code_is_not_guessed(self):
+        cursor = OrganizationCursor(
+            communities=[(1, "长板社区"), (2, "水秀社区")],
+            organization_codes=[("DUPLICATE", 1), ("DUPLICATE", 2)],
+        )
+        resolved = await resolve_qmf_organization(
+            cursor, organization_code="duplicate", source_community="长板"
+        )
+        self.assertIsNone(resolved.community_id)
+        self.assertEqual(resolved.state, "ambiguous_code")
+
+    async def test_unknown_code_and_community_are_reported_as_not_found(self):
+        cursor = OrganizationCursor(communities=[(1, "长板社区")])
+        resolved = await resolve_qmf_organization(
+            cursor, organization_code="UNKNOWN", source_community="不存在"
+        )
+        self.assertIsNone(resolved.community_id)
+        self.assertEqual(resolved.state, "not_found")
 
 
 if __name__ == "__main__":

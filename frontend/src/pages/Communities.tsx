@@ -38,6 +38,7 @@ export default function Communities() {
   const [officerDraft, setOfficerDraft] = useState<number[]>([])
   const [areaDraft, setAreaDraft] = useState<number>()
   const [qmfCommunityCodeDraft, setQmfCommunityCodeDraft] = useState('')
+  const [qmfOrganizationCodesDraft, setQmfOrganizationCodesDraft] = useState<string[]>([])
   const [policeOptions, setPoliceOptions] = useState<Array<{ id: number; name: string }>>([])
   const [savingDetails, setSavingDetails] = useState(false)
   const [areaEditorOpen, setAreaEditorOpen] = useState(false)
@@ -102,6 +103,7 @@ export default function Communities() {
     setOfficerDraft(community.police_officer_ids || [])
     setAreaDraft(community.area_id || undefined)
     setQmfCommunityCodeDraft(community.qmf_community_code || '')
+    setQmfOrganizationCodesDraft(community.qmf_organization_codes || [])
   }
 
   const handleSaveDetails = async () => {
@@ -119,6 +121,7 @@ export default function Communities() {
         officerDraft,
         areaDraft,
         qmfCommunityCodeDraft.trim(),
+        qmfOrganizationCodesDraft,
       )
       const matchedText = result.matched_visit_rows > 0
         ? `，同时归类 ${result.matched_visit_rows} 条已有走访数据`
@@ -130,6 +133,7 @@ export default function Communities() {
       setOfficerDraft([])
       setAreaDraft(undefined)
       setQmfCommunityCodeDraft('')
+      setQmfOrganizationCodesDraft([])
       await fetch()
     } catch (error: any) {
       setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
@@ -201,6 +205,15 @@ export default function Communities() {
       key: 'qmf_community_code',
       width: 170,
       render: value => value || <Tag color="warning">待填写</Tag>,
+    },
+    {
+      title: '全民防组织编码',
+      dataIndex: 'qmf_organization_codes',
+      key: 'qmf_organization_codes',
+      width: 230,
+      render: (values: string[]) => values?.length > 0
+        ? <div className="flex flex-wrap gap-1">{values.map(value => <Tag key={value}>{value}</Tag>)}</div>
+        : <Tag color="warning">待配置</Tag>,
     },
     {
       title: '社区名称',
@@ -295,6 +308,7 @@ export default function Communities() {
       community.name,
       community.area_name,
       community.qmf_community_code,
+      ...(community.qmf_organization_codes || []),
       ...(community.aliases || []),
       ...(community.police_officers || []),
     ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalizedKeyword))
@@ -385,6 +399,9 @@ export default function Communities() {
                     <div className="mt-1 text-sm text-slate-600">片区：{c.area_name || '待分配'}</div>
                     <div className="mt-1 text-sm text-slate-600">全民防社区代码：{c.qmf_community_code || '待填写'}</div>
                     <div className="mt-1 text-sm text-slate-600">
+                      全民防组织编码：{c.qmf_organization_codes?.length ? c.qmf_organization_codes.join('、') : '待配置'}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-600">
                       社区民警：{c.police_officers?.length > 0
                         ? c.police_officers.join('、')
                         : '暂未填写'}
@@ -429,6 +446,7 @@ export default function Communities() {
           setOfficerDraft([])
           setAreaDraft(undefined)
           setQmfCommunityCodeDraft('')
+          setQmfOrganizationCodesDraft([])
         }}
       >
         <div className="space-y-5">
@@ -453,6 +471,21 @@ export default function Communities() {
             />
             <p className="mt-2 text-sm text-slate-500">
               “离开不返吴”反馈会使用该代码；未填写时系统会在写入前停止。
+            </p>
+          </div>
+          <div>
+            <div className="mb-2 font-medium text-slate-700">全民防组织编码</div>
+            <Select
+              mode="tags"
+              value={qmfOrganizationCodesDraft}
+              onChange={values => setQmfOrganizationCodesDraft(values.map(value => value.trim().toUpperCase()).filter(Boolean))}
+              tokenSeparators={[',', '，', ' ', '　']}
+              placeholder="例如：320584710103；可填写多个"
+              className="w-full"
+              maxTagCount="responsive"
+            />
+            <p className="mt-2 text-sm text-slate-500">
+              这是旧模型三来源中的组织/下发编码，不是上面的 10 位全民防社区代码；芦荡等名称仍通过社区别名归一。
             </p>
           </div>
           <div>

@@ -9,7 +9,7 @@ from schemas.spreadsheet import SpreadsheetCreate, SpreadsheetUpdate, Spreadshee
 from services.parsers import SUPPORTED_TYPES
 from services.audit import record_admin_audit, request_audit_fields
 
-# 固定的7种表格类型（用户配置时按此列表展示，不可自由添加）
+# 固定表格类型（用户配置时按此列表展示，不可自由添加）
 FIXED_TYPES = [
     "全链条",
     "出租房屋核查",
@@ -18,6 +18,8 @@ FIXED_TYPES = [
     "疑似返苏",
     "寄递业",
     "群租房核查",
+    "苏州涉警",
+    "交通涉警",
 ]
 
 router = APIRouter(
@@ -69,7 +71,7 @@ async def get_parser_types():
 
 @router.get("/config")
 async def get_spreadsheets_config(conn=Depends(get_db)):
-    """获取固定7种表格类型的URL配置"""
+    """获取固定表格类型的 URL 配置。"""
     async with conn.cursor() as cur:
         placeholders = ",".join(["%s"] * len(FIXED_TYPES))
         await cur.execute(

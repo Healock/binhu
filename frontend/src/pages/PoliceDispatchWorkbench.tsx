@@ -165,6 +165,19 @@ function TaskCard({
   const actionName = actionLabels[item.final_action || item.suggested_action] || '待处理'
   const suggestedActionName = actionLabels[item.suggested_action] || '等待人工判断'
   const sourceTags = mobileTaskSourceTags(item.source_name)
+  const standard = item.standard_values || {}
+  const displayName = item.person_name || standard['姓名'] || standard['接警编号'] || `Excel 第 ${item.source_row} 行`
+  const identity = item.identity_number || standard['身份证号'] || standard['身份证号码'] || ''
+  const phone = item.phone || standard['电话号码'] || standard['手机号码'] || standard['联系号码'] || ''
+  const address = item.original_address
+    || standard['地址'] || standard['地址1'] || standard['疑似现住址'] || standard['高频抓拍小区'] || standard['简要警情及处理结果'] || ''
+  const businessLabel = item.police_subtype === 'internal'
+    ? '涉警 · 所内涉警'
+    : item.police_subtype === 'suzhou'
+      ? '涉警 · 苏州涉警'
+      : item.police_subtype === 'traffic'
+        ? '涉警 · 交通涉警'
+        : item.target_parser || item.source_name
   return (
     <article
       role="button"
@@ -192,7 +205,8 @@ function TaskCard({
         <div className="mobile-task-item-card__header">
           <div className="mobile-task-item-card__header-main">
             <div className="mobile-task-item-card__title-row">
-              <h2 title={item.person_name || '姓名缺失'}>{item.person_name || '姓名缺失'}</h2>
+              <h2 title={displayName}>{displayName}</h2>
+              <Tag color="blue">{businessLabel}</Tag>
             </div>
           </div>
           <Tag color={taskStatus.color} className="mobile-task-item-card__state">{taskStatus.text}</Tag>
@@ -211,25 +225,25 @@ function TaskCard({
         )}
 
         <dl className="mobile-task-item-card__key-info">
-          {item.identity_number && (
+          {identity && (
             <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--identity">
               <dt>身份证号</dt>
               <dd className="mobile-task-item-card__identity">
-                <CardCopyValue value={item.identity_number} label="身份证号" />
+                <CardCopyValue value={identity} label="身份证号" />
               </dd>
             </div>
           )}
-          {item.phone && (
+          {phone && (
             <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--phone">
               <dt>手机号</dt>
-              <dd><CardCopyValue value={item.phone} label="手机号" /></dd>
+              <dd><CardCopyValue value={phone} label="手机号" /></dd>
             </div>
           )}
-          {item.original_address && (
+          {address && (
             <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--address">
               <dt>地址</dt>
               <dd>
-                <CardCopyValue value={item.original_address} label="地址" />
+                <CardCopyValue value={address} label="地址" />
               </dd>
             </div>
           )}
@@ -267,7 +281,7 @@ function TaskCard({
             <span title={actionName}>{actionName}</span>
           </div>
           <div className="mobile-task-item-card__date">
-            {item.created_time || `Excel 第 ${item.source_row} 行`}
+            {item.created_time || standard['下发日期'] || standard['日期'] || `Excel 第 ${item.source_row} 行`}
           </div>
         </div>
       </div>
@@ -777,6 +791,13 @@ export default function PoliceDispatchWorkbench({
     ? Object.keys(selected.raw_values || {}).filter(field => !keyBusinessHeaders.includes(field))
     : []
   const publishStatusActive = publishStatusValues.includes(status)
+  const selectedBusinessIsFullchain = selected?.target_parser === '全链条' || !selected?.target_parser
+  const selectedDisplayName = selected
+    ? selected.person_name
+      || selected.standard_values?.['姓名']
+      || selected.standard_values?.['接警编号']
+      || `Excel 第 ${selected.source_row} 行`
+    : '待核查对象'
   const completedCount = activeBatch
     ? Math.max(0, activeBatch.counts.total - activeBatch.counts.pending_review - activeBatch.counts.pending_publish)
     : 0
@@ -1130,7 +1151,7 @@ export default function PoliceDispatchWorkbench({
 
       <Drawer
         open={Boolean(selected)}
-        title={selected ? `${selected.person_name || '待核查对象'} · 第 ${selected.source_row} 行` : '任务审核'}
+        title={selected ? `${selectedDisplayName} · 第 ${selected.source_row} 行` : '任务审核'}
         placement={mobile ? 'bottom' : 'right'}
         height={mobile ? 'min(88dvh, 820px)' : undefined}
         width={mobile ? undefined : 'min(720px, 88vw)'}
@@ -1183,7 +1204,7 @@ export default function PoliceDispatchWorkbench({
                 ) : null)}
               </section>
 
-              <section className="rounded-2xl border border-slate-200 p-4">
+              {selectedBusinessIsFullchain ? <section className="rounded-2xl border border-slate-200 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="font-medium text-slate-900">导入业务字段</div>
@@ -1240,7 +1261,29 @@ export default function PoliceDispatchWorkbench({
                     }]}
                   />
                 )}
-              </section>
+              </section> : (
+                <section className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                  <div className="font-medium text-blue-900">业务标准字段</div>
+                  <div className="mt-1 text-xs text-blue-700">该业务按独立适配器导入，标准字段只读；如需修正，请重新上传修正后的文件。</div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {Object.entries(selected.standard_values || {}).map(([field, value]) => (
+                      <div key={field} className="rounded-lg bg-white/80 p-2 text-sm">
+                        <span className="text-slate-500">{field}：</span>
+                        <span className="break-all text-slate-800">{value || '（空）'}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {selected.validation_issues.length > 0 && (
+                    <Alert
+                      className="mt-3"
+                      type="warning"
+                      showIcon
+                      message="该行存在导入问题"
+                      description={selected.validation_issues.map(issue => `${issue.field}：${issue.value}`).join('；')}
+                    />
+                  )}
+                </section>
+              )}
 
               <Alert
                 type={selected.suggested_action === 'manual' ? 'warning' : 'info'}

@@ -237,16 +237,34 @@ jobs:
               mv "$temporary" "$destination"
             else
               rm -f "$temporary"
-              echo "restricted fetch is unavailable; using the audited v$PREVIOUS_VERSION release asset"
-              test -n "$PREVIOUS_VERSION"
+              echo "restricted fetch is unavailable; trying the audited update feed"
               local fallback=".build/fallback/$platform"
-              local checksums="$platform-checksums.sha256"
+              local checksums="checksums.sha256"
+              local downloaded=0
               mkdir -p "$fallback"
-              gh release download "v$PREVIOUS_VERSION" --repo "$GITHUB_REPOSITORY" --dir "$fallback" \
-                --pattern "$filename" --pattern "$checksums"
-              grep -F " $filename" "$fallback/$checksums" > "$fallback/selected.sha256"
-              test -s "$fallback/selected.sha256"
-              (cd "$fallback" && sha256sum -c selected.sha256)
+              if curl --fail --silent --show-error --http1.1 --ipv4 --noproxy '*' \
+                --location --retry 3 --retry-all-errors \
+                "https://47.100.44.36/updates/$platform/$checksums" \
+                -o "$fallback/$checksums" \
+                && grep -F " $filename" "$fallback/$checksums" > "$fallback/selected.sha256" \
+                && test -s "$fallback/selected.sha256" \
+                && curl --fail --silent --show-error --http1.1 --ipv4 --noproxy '*' \
+                  --location --retry 3 --retry-all-errors \
+                  "https://47.100.44.36/updates/$platform/$filename" \
+                  -o "$fallback/$filename" \
+                && (cd "$fallback" && sha256sum -c selected.sha256); then
+                downloaded=1
+              fi
+              if [[ "$downloaded" != 1 ]]; then
+                echo "update feed unavailable; using the audited v$PREVIOUS_VERSION release asset"
+                rm -f "$fallback/$filename" "$fallback/$checksums" "$fallback/selected.sha256"
+                local release_checksums="$platform-checksums.sha256"
+                gh release download "v$PREVIOUS_VERSION" --repo "$GITHUB_REPOSITORY" \
+                  --dir "$fallback" --pattern "$filename" --pattern "$release_checksums"
+                grep -F " $filename" "$fallback/$release_checksums" > "$fallback/selected.sha256"
+                test -s "$fallback/selected.sha256"
+                (cd "$fallback" && sha256sum -c selected.sha256)
+              fi
               mv "$fallback/$filename" "$destination"
             fi
             test -s "$destination"

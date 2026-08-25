@@ -196,7 +196,7 @@ test('在线查询使用 Univer 原生入口触发后台全量排序并在切换
   assert.match(typeReset, /setSortBy\(undefined\)/)
 })
 
-test('下发导入工作台提供原始与已处理数据模式', () => {
+test('下发导入工作台提供五类业务入口并把确认导入与发布分离', () => {
   const panelSource = readFileSync(
     new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
     'utf8',
@@ -206,9 +206,13 @@ test('下发导入工作台提供原始与已处理数据模式', () => {
     'utf8',
   )
 
-  assert.match(panelSource, /已处理数据直接下发/)
-  assert.match(panelSource, /确认导入并发布可发布项/)
-  assert.match(panelSource, /\/police-tasks\?batch=/)
+  assert.match(panelSource, /全链条/)
+  assert.match(panelSource, /出租房屋核查/)
+  assert.match(panelSource, /涉警/)
+  assert.match(panelSource, /寄递业/)
+  assert.match(panelSource, /疑似返苏/)
+  assert.match(panelSource, /确认导入到下发工作台/)
+  assert.match(panelSource, /police-dispatch-panel__preview/)
   assert.match(clientSource, /form\.append\('import_mode', importMode\)/)
 })
 

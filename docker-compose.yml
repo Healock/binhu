@@ -76,6 +76,7 @@ services:
       WORKFLOW_PHOTO_IMPORT_DIR: /app/workflow-photo-imports
       USER_AVATAR_DIR: /app/user-avatars
       FULLCHAIN_ARCHIVE_DIR: /app/fullchain-archives
+      POLICE_DISPATCH_IMPORT_DIR: /app/police-dispatch-imports
       VISIT_SOURCE_BASE_URL: ${BINHU_VISIT_SOURCE_BASE_URL:-}
       VISIT_SOURCE_AUTHORIZATION: ${BINHU_VISIT_SOURCE_AUTHORIZATION:-}
       VISIT_SOURCE_USERNAME: ${BINHU_VISIT_SOURCE_USERNAME:-}
@@ -94,6 +95,12 @@ services:
       QMF_LOGIN_PORT: ${BINHU_QMF_LOGIN_PORT:-0}
       QMF_SOURCE_USERNAME: ${BINHU_QMF_SOURCE_USERNAME:-}
       QMF_SOURCE_PASSWORD: ${BINHU_QMF_SOURCE_PASSWORD:-}
+      QMF_SOURCE_ACQUISITION_ENABLED: ${BINHU_QMF_SOURCE_ACQUISITION_ENABLED:-false}
+      QMF_SOURCE_BASE_URL: ${BINHU_QMF_SOURCE_BASE_URL:-}
+      QMF_SOURCE_TIMEOUT_SECONDS: ${BINHU_QMF_SOURCE_TIMEOUT_SECONDS:-30}
+      QMF_SOURCE_MAX_PAGES: ${BINHU_QMF_SOURCE_MAX_PAGES:-1000}
+      QMF_SOURCE_MAX_RECORDS: ${BINHU_QMF_SOURCE_MAX_RECORDS:-100000}
+      QMF_SOURCE_AUTO_SYNC: ${BINHU_QMF_SOURCE_AUTO_SYNC:-true}
       QMF_SOURCE_IMEI: ${BINHU_QMF_SOURCE_IMEI:-}
       QMF_SOURCE_MACHINE_UID: ${BINHU_QMF_SOURCE_MACHINE_UID:-}
       QMF_EXPECTED_STATION_CODE: ${BINHU_QMF_EXPECTED_STATION_CODE:-320584710000}
@@ -113,6 +120,7 @@ services:
       - ${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:-/data/binhu/workflow-photo-imports}:/app/workflow-photo-imports
       - ${BINHU_USER_AVATAR_DIR:-/data/binhu/user-avatars}:/app/user-avatars
       - ${BINHU_FULLCHAIN_ARCHIVE_DIR:-/data/binhu/fullchain-archives}:/app/fullchain-archives
+      - ${BINHU_POLICE_DISPATCH_IMPORT_DIR:-/data/binhu/police-dispatch-imports}:/app/police-dispatch-imports
     logging:
       driver: json-file
       options:

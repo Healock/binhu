@@ -2079,6 +2079,7 @@ export interface GridCommunity {
   area_name: string
   is_active: boolean
   qmf_community_code: string
+  qmf_organization_codes: string[]
 }
 
 export interface CommunityArea {
@@ -2194,6 +2195,7 @@ export async function updateGridCommunityDetails(
   policeOfficerIds: number[],
   areaId: number,
   qmfCommunityCode: string,
+  qmfOrganizationCodes: string[] = [],
 ): Promise<{
   name: string
   aliases: string[]
@@ -2206,6 +2208,7 @@ export async function updateGridCommunityDetails(
     police_officer_ids: policeOfficerIds,
     area_id: areaId,
     qmf_community_code: qmfCommunityCode,
+    qmf_organization_codes: qmfOrganizationCodes,
   })
   return data
 }
@@ -2583,6 +2586,13 @@ export async function getLatestExternalAcquisitionRun(kind: string): Promise<Ext
   })).data.data || null
 }
 
+export async function startQmfSourceSync(): Promise<{
+  data: ExternalAcquisitionRun
+  reused: boolean
+}> {
+  return (await api.post('/qmf-source/sync', {}, { ...activeRequest, timeout: 30_000 })).data
+}
+
 export async function getCodeSummary(
   source: CodeSummarySource,
   startDate: string,
@@ -2737,7 +2747,15 @@ export interface PoliceDispatchBatch {
   id: number
   file_name: string
   sheet_name: string
-  import_mode: 'raw' | 'clean'
+  import_mode: 'raw' | 'clean' | 'processed'
+  business_type: 'fullchain' | 'rental' | 'police' | 'delivery' | 'suspect_return'
+  police_subtype: 'internal' | 'suzhou' | 'traffic' | ''
+  import_profile: string
+  adapter_version: string
+  target_parser: string
+  business_date: string | null
+  source_summary: Record<string, number>
+  source_file_available: boolean
   status: 'reviewing' | 'ready_to_publish' | 'publishing' | 'reconciling' | 'completed'
   total_count: number
   counts: PoliceDispatchCounts
@@ -2752,6 +2770,48 @@ export interface PoliceDispatchBatch {
     community_name: string
     count: number
   }>
+}
+
+export interface PoliceImportProfile {
+  key: string
+  business_type: PoliceDispatchBatch['business_type']
+  label: string
+  police_subtype: PoliceDispatchBatch['police_subtype']
+  target_parser: string
+  enabled: boolean
+  description: string
+  example_fields: string[]
+  adapter_version: string
+  target_configured: boolean
+}
+
+export interface PoliceImportPreview {
+  file_name: string
+  sheet_name: string
+  row_count: number
+  profile: PoliceImportProfile
+  business_date: string
+  counts: {
+    total: number
+    importable: number
+    missing_key: number
+    duplicate: number
+    identity_invalid: number
+    community_invalid: number
+    conflict: number
+  }
+  community_distribution: Array<{ community_id: number; community_name: string; count: number }>
+  rows: Array<{
+    source_row: number
+    person_name: string
+    identity_number: string
+    phone: string
+    community_name: string
+    business_key: string
+    result: 'importable' | 'problem'
+    issues: Array<{ field: string; type: string; value: string }>
+  }>
+  rows_truncated: boolean
 }
 
 export interface PoliceDispatchTask {
@@ -2790,6 +2850,13 @@ export interface PoliceDispatchTask {
   requested_values: Record<string, string>
   conflict_diff: Array<{ field: string; platform: string; tencent: string }>
   cache_pending: boolean
+  standard_values: Record<string, string>
+  validation_issues: Array<{ field: string; type: string; value: string }>
+  business_key_hmac: string
+  target_parser: string
+  business_type: PoliceDispatchBatch['business_type']
+  police_subtype: PoliceDispatchBatch['police_subtype']
+  import_profile: string
 }
 
 export interface PoliceDispatchPublishRun {
@@ -2892,11 +2959,50 @@ export async function listPoliceDispatchBatches(params?: {
   file_name?: string
   upload_date?: string
   status?: string
+  business_type?: string
+  police_subtype?: string
   page?: number
   page_size?: number
 }): Promise<{ data: PoliceDispatchBatch[]; total: number; page: number; page_size: number }> {
   const { data } = await api.get('/police-dispatch/batches', { params })
   return data
+}
+
+export async function getPoliceImportProfiles(): Promise<{ data: PoliceImportProfile[]; adapter_version: string }> {
+  const { data } = await api.get('/police-dispatch/import-profiles')
+  return data
+}
+
+export async function previewPoliceDispatchImport(
+  file: File,
+  profile: string,
+  businessDate: string,
+): Promise<{ status: 'preview'; preview_token: string; file_sha256: string; preview: PoliceImportPreview }> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('profile', profile)
+  form.append('business_date', businessDate)
+  const { data } = await api.post('/police-dispatch/imports/preview', form, { timeout: 300000 })
+  return data
+}
+
+export async function confirmPoliceDispatchImport(
+  file: File,
+  profile: string,
+  businessDate: string,
+  previewToken: string,
+): Promise<{ status: 'success' | 'duplicate'; message: string; batch: PoliceDispatchBatch }> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('profile', profile)
+  form.append('business_date', businessDate)
+  form.append('preview_token', previewToken)
+  const { data } = await api.post('/police-dispatch/imports/confirm', form, { timeout: 300000 })
+  return data
+}
+
+export function policeDispatchSourceFileUrl(batchId: number): string {
+  return `/api/police-dispatch/batches/${batchId}/source-file`
 }
 
 export async function getPoliceDispatchBatch(id: number): Promise<{

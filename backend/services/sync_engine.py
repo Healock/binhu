@@ -24,6 +24,7 @@ from services.online_source import (
     source_row_hash,
 )
 from services.police_dispatch import reconcile_police_dispatch_publications
+from services.qmf_source import MODEL_THREE_PARSER
 
 
 @dataclass(frozen=True)
@@ -79,12 +80,12 @@ async def finalize_source_projection(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
-            if spreadsheet["parser_type"] == "全链条":
-                await reconcile_police_dispatch_publications(
-                    cur,
-                    spreadsheet["id"],
-                    source_columns,
-                )
+            await reconcile_police_dispatch_publications(
+                cur,
+                spreadsheet["id"],
+                source_columns,
+                parser_type=spreadsheet["parser_type"],
+            )
             await mark_writebacks_synced(cur, spreadsheet["id"])
             await rebuild_projection(cur, spreadsheet["parser_type"])
         await conn.commit()
@@ -179,6 +180,38 @@ class SyncEngine:
         """db_pool: OnlineData 库的连接池"""
         self.db_pool = db_pool
 
+    async def _sync_qmf_source(self, conn, result: dict) -> tuple[int, str | None]:
+        """兼容旧测试/内部调用；正式入口已迁移到 qmf_source 后台任务。"""
+        parser = get_parser(MODEL_THREE_PARSER)
+        rows = [parser.normalize_source_row(row) for row in (result.get("rows") or [])]
+        if not rows:
+            return 0, None
+        column_map = await get_database_column_map(conn, parser.table_name, parser)
+        source_fields = ("截止时间", "核查人", "姓名", "身份证号", "联系方式", "地址", "下发社区")
+        quoted_columns = ", ".join(quote_identifier(column_map[column]) for column in parser.COLUMNS)
+        update_parts = []
+        for column in source_fields:
+            identifier = quote_identifier(column_map[column])
+            update_parts.append(
+                f"{identifier}=IF(TRIM(COALESCE({identifier},''))='',VALUES({identifier}),{identifier})"
+                if column == "核查人" else f"{identifier}=VALUES({identifier})"
+            )
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                for row in rows:
+                    await cur.execute(
+                        f"INSERT INTO {parser.table_name} (_row_key,{quoted_columns}) VALUES ({','.join(['%s'] * (len(parser.COLUMNS) + 1))}) "
+                        f"ON DUPLICATE KEY UPDATE {','.join(update_parts)}",
+                        (parser.make_row_key(row), *[row.get(column, '') for column in parser.COLUMNS]),
+                    )
+            report_date = await self._save_snapshot(conn, parser.table_name, MODEL_THREE_PARSER)
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        return len(rows), report_date
+
     async def run_full_sync(self, task_id: int):
         """执行全量同步"""
         conn = await self.db_pool.acquire()
@@ -187,22 +220,24 @@ class SyncEngine:
             await self._set_status(conn, task_id, "running", "syncing")
             await self._set_current(conn, task_id, "读取同步配置")
 
-            # 1. 获取 OAuth 凭据
+            # 全民防模型三来源已拆为数据上传中心的独立后台任务；本流程
+            # 只负责腾讯在线表同步。
+            # 1. 获取 OAuth 凭据。
             creds = await self._get_oauth_creds(conn)
-            if not creds:
-                await self._fail(conn, task_id, "未配置OAuth凭据，请先在设置页配置腾讯文档OAuth")
-                return
+            if creds:
+                client = TxDocsClient(
+                    creds["client_id"],
+                    creds["access_token"],
+                    creds["open_id"],
+                    usage_source="full_sync",
+                )
 
-            client = TxDocsClient(
-                creds["client_id"],
-                creds["access_token"],
-                creds["open_id"],
-                usage_source="full_sync",
-            )
-
-            # 2. 获取启用的表格
+            # 2. 获取启用的腾讯在线表格。
             spreadsheets = await self._get_spreadsheets(conn)
             if not spreadsheets:
+                if not creds:
+                    await self._fail(conn, task_id, "未配置OAuth凭据，请先在设置页配置腾讯文档OAuth")
+                    return
                 await self._fail(conn, task_id, "没有已配置且启用的在线表格")
                 return
 
@@ -210,7 +245,12 @@ class SyncEngine:
             total = 0
             errors = []
             report_jobs: list[tuple[str, str]] = []
-            for sp in spreadsheets:
+            sync_spreadsheets = spreadsheets
+            if client is None:
+                await self._fail(conn, task_id, "未配置OAuth凭据，请先在设置页配置腾讯文档OAuth")
+                return
+
+            for sp in sync_spreadsheets:
                 await self._set_current(
                     conn,
                     task_id,
@@ -234,7 +274,9 @@ class SyncEngine:
             await self._set_total_steps(
                 conn,
                 task_id,
-                len(spreadsheets) + len(report_jobs) + len(report_dates),
+                len(sync_spreadsheets)
+                + len(report_jobs)
+                + len(report_dates),
             )
             built_reports: dict[str, set[str]] = {
                 date: set() for date in report_dates
@@ -352,7 +394,8 @@ class SyncEngine:
         async with conn.cursor() as cur:
             await cur.execute(
                 """SELECT id, name, url, file_id, data_sheet_id, header_row, parser_type
-                   FROM _config_spreadsheets WHERE enabled = 1 AND url != '' AND file_id != ''"""
+                   FROM _config_spreadsheets WHERE enabled = 1 AND url != '' AND file_id != ''
+                   AND parser_type <> '疑似未注销模型三'"""
             )
             rows = await cur.fetchall()
         return [

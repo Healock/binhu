@@ -643,6 +643,21 @@ async def ensure_online_editor_schema(cur) -> None:
         "qmf_community_code",
         "VARCHAR(20) DEFAULT NULL",
     )
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _qmf_organization_codes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            community_id INT NOT NULL,
+            organization_code VARCHAR(50) NOT NULL,
+            source VARCHAR(30) NOT NULL DEFAULT 'manual',
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_qmf_organization_code (organization_code),
+            INDEX idx_qmf_organization_community (community_id, is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
     await _ensure_index(
         cur,
         "_communities",
@@ -1034,7 +1049,7 @@ async def ensure_police_dispatch_schema(cur) -> None:
         CREATE TABLE IF NOT EXISTS _police_dispatch_batches (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             file_name VARCHAR(255) NOT NULL DEFAULT '',
-            file_sha256 CHAR(64) NOT NULL UNIQUE,
+            file_sha256 CHAR(64) NOT NULL,
             sheet_name VARCHAR(255) NOT NULL DEFAULT '',
             import_mode VARCHAR(20) NOT NULL DEFAULT 'raw',
             status VARCHAR(30) NOT NULL DEFAULT 'reviewing',
@@ -1175,6 +1190,60 @@ async def ensure_police_dispatch_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _police_dispatch_import_issues (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            batch_id BIGINT NOT NULL,
+            task_id BIGINT DEFAULT NULL,
+            source_row INT NOT NULL,
+            field_name VARCHAR(100) NOT NULL DEFAULT '',
+            issue_type VARCHAR(50) NOT NULL,
+            safe_value VARCHAR(200) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_police_import_issue_batch (batch_id, source_row),
+            INDEX idx_police_import_issue_task (task_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS t_suzhou_police (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            _row_key VARCHAR(200) NOT NULL,
+            `下发日期` VARCHAR(500), `截止日期` VARCHAR(500),
+            `核查人` VARCHAR(500), `社区` VARCHAR(500), `姓名` VARCHAR(500),
+            `身份证号` VARCHAR(500), `联系号码` VARCHAR(500),
+            `疑似现住址` VARCHAR(500), `接警编号` VARCHAR(500),
+            `出警日期` VARCHAR(500), `出警类别` VARCHAR(500),
+            `出警内容` VARCHAR(500), `出警单位` VARCHAR(500),
+            `参考派出所` VARCHAR(500), `现住址` VARCHAR(500),
+            `核查结果` VARCHAR(500), `研判` VARCHAR(500),
+            `二次反馈` VARCHAR(500),
+            _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_suzhou_police_row_key (_row_key),
+            INDEX idx_suzhou_police_community (`社区`),
+            INDEX idx_suzhou_police_inspector (`核查人`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS t_traffic_police (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            _row_key VARCHAR(200) NOT NULL,
+            `下发日期` VARCHAR(500), `截止日期` VARCHAR(500),
+            `核查人` VARCHAR(500), `社区` VARCHAR(500), `姓名` VARCHAR(500),
+            `身份证号` VARCHAR(500), `联系号码` VARCHAR(500),
+            `地址1` VARCHAR(500), `现住址` VARCHAR(500),
+            `核查结果` VARCHAR(500), `研判` VARCHAR(500),
+            `二次反馈` VARCHAR(500),
+            _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_traffic_police_row_key (_row_key),
+            INDEX idx_traffic_police_community (`社区`),
+            INDEX idx_traffic_police_inspector (`核查人`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS _fullchain_police_raw_uploads (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             file_name VARCHAR(255) NOT NULL DEFAULT '',
@@ -1263,9 +1332,20 @@ async def ensure_police_dispatch_schema(cur) -> None:
             "linked_row_hash": "CHAR(64) NOT NULL DEFAULT ''",
             "conflict_values_json": "JSON DEFAULT NULL",
             "cache_pending": "TINYINT(1) NOT NULL DEFAULT 0",
+            "standard_values_json": "JSON DEFAULT NULL",
+            "business_key_hmac": "CHAR(64) NOT NULL DEFAULT ''",
+            "validation_issues_json": "JSON DEFAULT NULL",
         },
         "_police_dispatch_batches": {
             "import_mode": "VARCHAR(20) NOT NULL DEFAULT 'raw'",
+            "business_type": "VARCHAR(30) NOT NULL DEFAULT 'fullchain'",
+            "police_subtype": "VARCHAR(30) NOT NULL DEFAULT ''",
+            "import_profile": "VARCHAR(50) NOT NULL DEFAULT 'fullchain_raw'",
+            "adapter_version": "VARCHAR(30) NOT NULL DEFAULT ''",
+            "target_parser": "VARCHAR(50) NOT NULL DEFAULT '全链条'",
+            "business_date": "DATE DEFAULT NULL",
+            "source_summary_json": "JSON DEFAULT NULL",
+            "storage_key": "VARCHAR(500) NOT NULL DEFAULT ''",
         },
         "_police_dispatch_publish_results": {
             "source_row_id": "BIGINT DEFAULT NULL",
@@ -1285,31 +1365,69 @@ async def ensure_police_dispatch_schema(cur) -> None:
                     f"ADD COLUMN `{column_name}` {column_definition}"
                 )
 
+    await cur.execute("""
+        UPDATE _police_dispatch_batches
+        SET business_type='fullchain',
+            import_profile=CASE import_mode
+                WHEN 'clean' THEN 'fullchain_processed'
+                ELSE 'fullchain_raw' END,
+            target_parser='全链条'
+        WHERE business_type='' OR import_profile='' OR target_parser=''
+    """)
+
+    # 0.26.0：同一份文件可能属于不同业务入口。移除旧的单列唯一索引，
+    # 改为“适配器 + 文件摘要”组合唯一；索引迁移幂等且不触碰批次数据。
+    await cur.execute("""
+        SELECT index_name
+        FROM information_schema.statistics
+        WHERE table_schema=DATABASE()
+          AND table_name='_police_dispatch_batches'
+          AND non_unique=0
+          AND index_name<>'PRIMARY'
+        GROUP BY index_name
+        HAVING COUNT(*)=1
+           AND MAX(column_name)='file_sha256'
+    """)
+    for (index_name,) in await cur.fetchall():
+        safe_index = str(index_name).replace("`", "``")
+        await cur.execute(
+            f"ALTER TABLE `_police_dispatch_batches` DROP INDEX `{safe_index}`"
+        )
+    await _ensure_index(
+        cur,
+        "_police_dispatch_batches",
+        "uk_police_dispatch_profile_file",
+        "UNIQUE INDEX uk_police_dispatch_profile_file "
+        "(import_profile, file_sha256)",
+    )
+
     # 0.13.1：手机号为空的记录不能继续自动下发。只重新打开尚未产生
     # 腾讯外部结果的任务；已成功、发布中、待对账或冲突任务保持原状。
     missing_phone_reason = "缺少手机号，需基础管控先研判；补齐手机号后才能下发"
     await cur.execute("""
-        UPDATE _police_dispatch_tasks
-        SET suggested_action='manual', suggested_community_id=NULL,
-            suggestion_reason=%s, allocation_mode='missing_phone',
-            final_action='', final_community_id=NULL, review_note='',
-            reviewed_by=NULL, reviewer_name='', reviewed_at=NULL,
-            task_status='pending_review', publish_status='not_required',
-            publish_error='', version=version+1
-        WHERE TRIM(phone)=''
+        UPDATE _police_dispatch_tasks AS task
+        JOIN _police_dispatch_batches AS batch ON batch.id=task.batch_id
+        SET task.suggested_action='manual', task.suggested_community_id=NULL,
+            task.suggestion_reason=%s, task.allocation_mode='missing_phone',
+            task.final_action='', task.final_community_id=NULL, task.review_note='',
+            task.reviewed_by=NULL, task.reviewer_name='', task.reviewed_at=NULL,
+            task.task_status='pending_review', task.publish_status='not_required',
+            task.publish_error='', task.version=task.version+1
+        WHERE batch.target_parser='全链条'
+          AND TRIM(task.phone)=''
           AND (
-              (task_status='pending_review' AND final_action='')
+              (task.task_status='pending_review' AND task.final_action='')
               OR (
-                  final_action='dispatch'
-                  AND publish_status IN ('pending', 'retryable', 'not_required')
+                  task.final_action='dispatch'
+                  AND task.publish_status IN ('pending', 'retryable', 'not_required')
               )
           )
           AND NOT (
-              suggested_action='manual'
-              AND suggested_community_id IS NULL
-              AND allocation_mode='missing_phone'
-              AND suggestion_reason=%s
-              AND final_action=''
+              task.suggested_action='manual'
+              AND task.suggested_community_id IS NULL
+              AND task.allocation_mode='missing_phone'
+              AND task.suggestion_reason=%s
+              AND task.final_action=''
           )
     """, (missing_phone_reason, missing_phone_reason))
     await cur.execute("""

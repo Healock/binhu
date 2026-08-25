@@ -20,6 +20,7 @@ class TaskWorkflow:
     analysis_fields: tuple[str, ...] = ("研判",)
     valid_results: tuple[str, ...] = ()
     result_options: tuple[str, ...] = ()
+    include_in_summary: bool = True
 
     def state(self, values: dict[str, str]) -> str:
         """返回 unchecked、checked 或 completed。"""
@@ -170,11 +171,49 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         date_fields=("截止日期", "下发日期"),
         identity_fields=("身份证号码",),
         secondary_fields=("二次核查结果",),
-        result_options=("已登记", "无需登记", "移交", "无法核实"),
+        result_options=("已登记", "无需登记", "移交", "无法核实", "离苏"),
+    ),
+    "苏州涉警": TaskWorkflow(
+        parser_type="苏州涉警",
+        label="涉警 · 苏州涉警",
+        result_field="核查结果",
+        phone_fields=("联系号码",),
+        title_fields=("姓名",),
+        address_fields=("现住址", "疑似现住址"),
+        date_fields=("截止日期", "下发日期"),
+        identity_fields=("身份证号",),
+        source_fields=("出警内容", "出警类别", "出警单位"),
+        secondary_fields=("二次反馈",),
+        result_options=(
+            "已登记", "离苏", "常口", "无需登记，原因写备注",
+            "移交，移交哪个社区写备注", "无法核实",
+        ),
+        include_in_summary=False,
+    ),
+    "交通涉警": TaskWorkflow(
+        parser_type="交通涉警",
+        label="涉警 · 交通涉警",
+        result_field="核查结果",
+        phone_fields=("联系号码",),
+        title_fields=("姓名",),
+        address_fields=("现住址", "地址1"),
+        date_fields=("截止日期", "下发日期"),
+        identity_fields=("身份证号",),
+        secondary_fields=("二次反馈",),
+        result_options=(
+            "已登记", "离苏", "常口", "无需登记，原因写备注",
+            "移交，移交哪个社区写备注", "无法核实",
+        ),
+        include_in_summary=False,
     ),
 }
 
 MOBILE_TASK_TYPES = tuple(TASK_WORKFLOWS)
+SUMMARY_TASK_TYPES = tuple(
+    parser_type
+    for parser_type, workflow in TASK_WORKFLOWS.items()
+    if workflow.include_in_summary
+)
 
 
 def task_state(parser_type: str, values: dict[str, str]) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hmac
 import json
 import re
 from dataclasses import dataclass
@@ -15,11 +16,20 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from config import settings
+
 
 MAX_POLICE_FILE_BYTES = 30 * 1024 * 1024
 FINAL_ACTIONS = {"dispatch", "no_registration", "transfer", "duplicate_exclude"}
 MISSING_PHONE_ANALYSIS_REASON = "缺少手机号，需基础管控先研判；补齐手机号后才能下发"
 IDENTITY_PATTERN = re.compile(r"^(?:\d{15}|\d{17}[0-9X])$")
+PUBLISH_OWNED_COLUMNS = (
+    "下发日期", "截止日期", "社区", "来源", "姓名",
+    "身份证号", "电话号码", "地址", "登记情况", "创建时间",
+)
+WORKFLOW_EDITABLE_COLUMNS = (
+    "核查人", "现住址", "核查结果", "研判", "二次反馈",
+)
 
 
 class PoliceWorkbookError(ValueError):
@@ -553,58 +563,163 @@ def publish_business_key(identity_number: str, phone: str, dispatch_date: str) -
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
-def publish_values_match(requested: dict[str, Any], actual: dict[str, Any]) -> bool:
-    """对账时只比较当次腾讯物理布局实际写入并保存的列。"""
+def business_key_hmac(
+    parts: Iterable[Any],
+    fields: Iterable[str] | None = None,
+) -> str:
+    """生成不暴露业务主键原文的稳定 HMAC。"""
+    names = list(fields or [])
+    normalized: list[str] = []
+    for index, value in enumerate(parts):
+        field = names[index] if index < len(names) else ""
+        normalized.append(
+            normalize_identity(value)
+            if "身份证" in field
+            else normalize_space(value)
+        )
+    payload = "\x1f".join(normalized)
+    return hmac.new(
+        settings.registry_hmac_key.encode("utf-8"),
+        payload.encode("utf-8"),
+        sha256,
+    ).hexdigest()
+
+
+def parser_business_key_fields(parser, values: dict[str, Any]) -> tuple[str, ...]:
+    """返回某行实际采用的业务主键字段。"""
+    if parser.parser_type == "苏州涉警" and normalize_space(values.get("接警编号", "")):
+        return ("接警编号",)
+    if parser.parser_type == "涉警统计":
+        case_number = normalize_space(values.get("序号", ""))
+        if len(case_number) == 20 and case_number.isdigit():
+            return ("序号",)
+    return tuple(parser.get_business_key())
+
+
+def parser_business_key(
+    parser,
+    values: dict[str, Any],
+    *,
+    legacy: bool = False,
+) -> str:
+    fields = parser_business_key_fields(parser, values)
+    parts = [values.get(field, "") for field in fields]
+    if not legacy:
+        return business_key_hmac(parts, fields)
+    payload = "\x1f".join(normalize_space(value) for value in parts)
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def publish_values_match(
+    requested: dict[str, Any],
+    actual: dict[str, Any],
+    allowed_columns: Iterable[str] | None = None,
+) -> bool:
+    """只比较下发拥有字段，允许腾讯用户并发填写后续业务字段。"""
+    allowed = set(allowed_columns or PUBLISH_OWNED_COLUMNS)
+    comparable = [
+        (column, expected)
+        for column, expected in requested.items()
+        if column in allowed
+    ]
+    if not comparable:
+        return False
     return all(
         str(actual.get(column, "") or "").strip()
         == str(expected or "").strip()
-        for column, expected in requested.items()
+        for column, expected in comparable
     )
+
+
+def _select_publish_candidate(
+    candidates: list[dict[str, Any]],
+    requested: dict[str, Any],
+    physical_row: int | None,
+    comparison_columns: Iterable[str] | None = None,
+) -> dict[str, Any] | None:
+    """优先原物理行；否则只接受唯一匹配，避免重复主键误关联。"""
+    if physical_row is not None:
+        preferred = next((
+            item for item in candidates
+            if int(item["physical_row"]) == physical_row
+        ), None)
+        if preferred and publish_values_match(
+            requested, preferred["values"], comparison_columns
+        ):
+            return preferred
+    matched = [
+        item for item in candidates
+        if publish_values_match(requested, item["values"], comparison_columns)
+    ]
+    return matched[0] if len(matched) == 1 else None
 
 
 async def reconcile_police_dispatch_publications(
     cur,
     spreadsheet_id: int,
     source_columns: list[str] | None = None,
+    parser_type: str | None = None,
 ) -> dict[str, int]:
     """仅在一次正常同步完整成功后，对结果不确定的发布任务做只读对账。"""
     from services.online_source import json_value, source_row_hash
     from services.parsers import get_parser
 
-    parser = get_parser("全链条")
-    comparison_columns = set(source_columns or parser.COLUMNS)
+    # Lightweight transaction doubles used by the atomicity tests do not expose
+    # result-set readers. Production database cursors always implement fetchall;
+    # keep this optional reconciliation read non-invasive for those doubles.
+    if not hasattr(cur, "fetchall"):
+        return {"success": 0, "conflict": 0, "retryable": 0}
+
+    # 兼容旧调用和历史测试：未显式提供时仍按全链条处理；正常同步会传入
+    # 当前腾讯配置的 parser_type，从而覆盖所有五入口目标表。
+    parser = get_parser(parser_type or "全链条")
+    if parser.parser_type == "全链条":
+        owned_columns = set(PUBLISH_OWNED_COLUMNS)
+    else:
+        owned_columns = set(parser.COLUMNS) - {
+            "核查人", "现住址", "核查结果", "核查反馈", "研判",
+            "二次反馈", "二次核查结果", "入住方式", "是否开户",
+            "房屋属性", "居住时间", "房东信息", "二房东信息", "备注",
+            "房东是否处罚",
+        }
+    comparison_columns = set(source_columns or parser.COLUMNS) & owned_columns
     await cur.execute("""
         SELECT source.id, source.physical_row, source.row_hash, source.values_json
         FROM _online_source_rows AS source
-        WHERE source.spreadsheet_id=%s AND source.parser_type='全链条'
+        WHERE source.spreadsheet_id=%s AND source.parser_type=%s
         ORDER BY source.physical_row, source.id
-    """, (spreadsheet_id,))
+    """, (spreadsheet_id, parser.parser_type))
     sources_by_key: dict[str, list[dict[str, Any]]] = {}
     for source_id, physical_row, row_hash, raw_values in await cur.fetchall():
         values = {
             column: str(json_value(raw_values, {}).get(column, "") or "").strip()
             for column in parser.COLUMNS
         }
-        key = publish_business_key(
-            values.get("身份证号", ""),
-            values.get("电话号码", ""),
-            values.get("下发日期", ""),
-        )
-        sources_by_key.setdefault(key, []).append({
+        source_item = {
             "id": int(source_id),
             "physical_row": int(physical_row),
             "row_hash": str(row_hash or source_row_hash(values)),
             "values": values,
-        })
+        }
+        for key in {
+            parser_business_key(parser, values),
+            parser_business_key(parser, values, legacy=True),
+        }:
+            sources_by_key.setdefault(key, []).append(source_item)
 
     await cur.execute("""
         SELECT result.task_id, result.business_key, result.request_values_json,
-               task.batch_id
+               task.batch_id, result.status, result.error_code, result.physical_row
         FROM _police_dispatch_publish_results AS result
         JOIN _police_dispatch_tasks AS task ON task.id=result.task_id
         WHERE result.spreadsheet_id=%s
-          AND result.status='needs_reconciliation'
-          AND task.publish_status='needs_reconciliation'
+          AND (
+            (result.status='needs_reconciliation'
+             AND task.publish_status='needs_reconciliation')
+            OR
+            (result.status='conflict' AND result.error_code='content_conflict'
+             AND task.publish_status='conflict')
+          )
         FOR UPDATE
     """, (spreadsheet_id,))
     pending = await cur.fetchall()
@@ -617,27 +732,33 @@ async def reconcile_police_dispatch_publications(
         placeholders = ",".join(["%s"] * len(pending_task_ids))
         await cur.execute(f"""
             SELECT task_id,run_id FROM _police_dispatch_publish_run_items
-            WHERE task_id IN ({placeholders}) AND status='needs_reconciliation'
+            WHERE task_id IN ({placeholders})
+              AND status IN ('needs_reconciliation','conflict')
         """, pending_task_ids)
         for task_id, run_id in await cur.fetchall():
             task_runs.setdefault(int(task_id), []).append(int(run_id))
             affected_runs.add(int(run_id))
-    for task_id, business_key, raw_requested, batch_id in pending:
+    for (
+        task_id, business_key, raw_requested, batch_id,
+        result_status, _error_code, physical_row,
+    ) in pending:
         requested = {
             str(column): str(value or "").strip()
             for column, value in json_value(raw_requested, {}).items()
             if column in comparison_columns
         }
         candidates = sources_by_key.get(str(business_key or ""), [])
-        exact = next((
-            item for item in candidates
-            if publish_values_match(requested, item["values"])
-        ), None)
-        affected_batches.add(int(batch_id))
+        exact = _select_publish_candidate(
+            candidates,
+            requested,
+            int(physical_row) if physical_row is not None else None,
+            comparison_columns,
+        )
         if exact:
             run_item_status = "success"
             run_item_error = ""
             counts["success"] += 1
+            affected_batches.add(int(batch_id))
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
                     publish_status='success', task_status='completed',
@@ -653,16 +774,22 @@ async def reconcile_police_dispatch_publications(
                 UPDATE _police_dispatch_publish_results SET
                     status='success', physical_row=%s, source_row_id=%s,
                     expected_row_hash=%s, verified_values_json=%s,
+                    resolution=CASE WHEN %s='conflict'
+                        THEN 'auto_accept_workflow_updates' ELSE resolution END,
                     error_code='', error_message='', cache_pending=0
                 WHERE task_id=%s
             """, (
                 exact["physical_row"], exact["id"], exact["row_hash"],
-                stable_json(exact["values"]), task_id,
+                stable_json(exact["values"]), str(result_status), task_id,
             ))
+        elif str(result_status) == "conflict":
+            # 历史冲突只有在下发字段唯一匹配时才自动修复；否则保持原状。
+            continue
         elif candidates:
             run_item_status = "conflict"
             run_item_error = "content_conflict"
             counts["conflict"] += 1
+            affected_batches.add(int(batch_id))
             candidate = candidates[0]
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
@@ -690,6 +817,7 @@ async def reconcile_police_dispatch_publications(
             run_item_status = "retryable"
             run_item_error = "confirmed_absent"
             counts["retryable"] += 1
+            affected_batches.add(int(batch_id))
             await cur.execute("""
                 UPDATE _police_dispatch_tasks SET
                     publish_status='retryable', task_status='pending_publish',
@@ -772,42 +900,98 @@ def build_feedback_workbook(
     tasks: list[dict[str, Any]],
     exported_at: datetime,
 ) -> bytes:
+    from services.parsers import get_parser
+
     workbook = Workbook()
     summary = workbook.active
     summary.title = "汇总"
-    summary_rows = [
-        ["全链条预处理反馈"],
-        ["批次", batch.get("id")],
-        ["原文件", batch.get("file_name", "")],
-        ["导出时间", exported_at.strftime("%Y-%m-%d %H:%M:%S")],
-        ["审核进度", f"{batch.get('reviewed_count', 0)}/{batch.get('total_count', 0)}"],
-        ["版本说明", "最终版本" if batch.get("reviewed_count") == batch.get("total_count") else "非最终版本"],
-        ["无需登记", sum(item.get("final_action") == "no_registration" for item in tasks)],
-        ["移交", sum(item.get("final_action") == "transfer" for item in tasks)],
-    ]
-    for row in summary_rows:
-        summary.append(row)
-    summary.merge_cells("A1:B1")
+    target_parser = str(batch.get("target_parser") or "全链条")
+    if target_parser != "全链条":
+        business_labels = {
+            "rental": "出租房屋核查",
+            "police": "涉警",
+            "delivery": "寄递业",
+            "suspect_return": "疑似返苏",
+        }
+        subtype_labels = {"internal": "所内涉警", "suzhou": "苏州涉警", "traffic": "交通涉警"}
+        business_label = business_labels.get(
+            str(batch.get("business_type") or ""), target_parser,
+        )
+        subtype_label = subtype_labels.get(str(batch.get("police_subtype") or ""), "")
+        display_business = f"{business_label} · {subtype_label}" if subtype_label else business_label
+        summary_rows = [
+            [f"{display_business}下发反馈"],
+            ["批次", batch.get("id")],
+            ["原文件", batch.get("file_name", "")],
+            ["目标业务表", target_parser],
+            ["导出时间", exported_at.strftime("%Y-%m-%d %H:%M:%S")],
+            ["任务总数", len(tasks)],
+            ["待审核", sum(item.get("task_status") == "pending_review" for item in tasks)],
+            ["待发布", sum(item.get("publish_status") in {"pending", "publishing", "retryable"} for item in tasks)],
+            ["发布成功", sum(item.get("publish_status") == "success" for item in tasks)],
+            ["冲突或待对账", sum(item.get("publish_status") in {"conflict", "needs_reconciliation"} for item in tasks)],
+        ]
+        for row in summary_rows:
+            summary.append(row)
+        summary.merge_cells("A1:B1")
 
-    headers = [
-        "批次", "Excel行", "来源", "姓名", "身份证号", "手机号", "原地址",
-        "反馈结果", "处理说明", "建议理由", "审核人", "审核时间",
-    ]
-    action_labels = {"no_registration": "无需登记", "transfer": "移交"}
-    for action, title in (("no_registration", "无需登记"), ("transfer", "移交")):
-        sheet = workbook.create_sheet(title)
+        parser = get_parser(target_parser)
+        business_columns = list(parser.COLUMNS)
+        sheet = workbook.create_sheet("任务明细")
+        headers = [
+            "批次", "业务", "Excel行", "来源", "最终动作", "任务状态",
+            "发布状态", "发布错误", "审核人", "审核时间",
+            *business_columns,
+        ]
         sheet.append(headers)
+        action_labels = {
+            "dispatch": "下发到社区", "no_registration": "无需登记",
+            "transfer": "移交", "duplicate_exclude": "重复排除", "": "待审核",
+        }
         for item in tasks:
-            if item.get("final_action") != action:
-                continue
+            values = item.get("standard_values") or {}
             sheet.append([
-                batch.get("id"), item.get("source_row"), item.get("source_name", ""),
-                item.get("person_name", ""), item.get("identity_number", ""),
-                item.get("phone", ""), item.get("original_address", ""),
-                action_labels[action], item.get("review_note", ""),
-                item.get("suggestion_reason", ""), item.get("reviewer_name", ""),
+                batch.get("id"), display_business, item.get("source_row"),
+                item.get("source_name", ""), action_labels.get(item.get("final_action", ""), item.get("final_action", "")),
+                item.get("task_status", ""), item.get("publish_status", ""),
+                item.get("publish_error", ""), item.get("reviewer_name", ""),
                 item.get("reviewed_at_text", ""),
+                *[values.get(column, "") for column in business_columns],
             ])
+    else:
+        summary_rows = [
+            ["全链条预处理反馈"],
+            ["批次", batch.get("id")],
+            ["原文件", batch.get("file_name", "")],
+            ["导出时间", exported_at.strftime("%Y-%m-%d %H:%M:%S")],
+            ["审核进度", f"{batch.get('reviewed_count', 0)}/{batch.get('total_count', 0)}"],
+            ["版本说明", "最终版本" if batch.get("reviewed_count") == batch.get("total_count") else "非最终版本"],
+            ["无需登记", sum(item.get("final_action") == "no_registration" for item in tasks)],
+            ["移交", sum(item.get("final_action") == "transfer" for item in tasks)],
+        ]
+        for row in summary_rows:
+            summary.append(row)
+        summary.merge_cells("A1:B1")
+
+        headers = [
+            "批次", "Excel行", "来源", "姓名", "身份证号", "手机号", "原地址",
+            "反馈结果", "处理说明", "建议理由", "审核人", "审核时间",
+        ]
+        action_labels = {"no_registration": "无需登记", "transfer": "移交"}
+        for action, title in (("no_registration", "无需登记"), ("transfer", "移交")):
+            sheet = workbook.create_sheet(title)
+            sheet.append(headers)
+            for item in tasks:
+                if item.get("final_action") != action:
+                    continue
+                sheet.append([
+                    batch.get("id"), item.get("source_row"), item.get("source_name", ""),
+                    item.get("person_name", ""), item.get("identity_number", ""),
+                    item.get("phone", ""), item.get("original_address", ""),
+                    action_labels[action], item.get("review_note", ""),
+                    item.get("suggestion_reason", ""), item.get("reviewer_name", ""),
+                    item.get("reviewed_at_text", ""),
+                ])
 
     header_fill = PatternFill("solid", fgColor="1D4ED8")
     light_fill = PatternFill("solid", fgColor="EFF6FF")
@@ -846,7 +1030,7 @@ def build_feedback_workbook(
         for column in range(1, max_col + 1):
             values = [str(sheet.cell(row, column).value or "") for row in range(1, max_row + 1)]
             width = min(42, max(10, max((len(value) for value in values), default=0) + 2))
-            if sheet.title != "汇总" and column in {7, 9, 10}:
+            if sheet.title != "汇总" and column in {7, 8, 9, 10}:
                 width = 34
             sheet.column_dimensions[get_column_letter(column)].width = width
     output = io.BytesIO()

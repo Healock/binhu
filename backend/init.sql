@@ -270,6 +270,19 @@ CREATE TABLE IF NOT EXISTS _communities (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _qmf_organization_codes (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    community_id INT NOT NULL,
+    organization_code VARCHAR(50) NOT NULL,
+    source VARCHAR(30) NOT NULL DEFAULT 'manual',
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_qmf_organization_code (organization_code),
+    INDEX idx_qmf_organization_community (community_id, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _administrative_areas (
     source_row INT NOT NULL PRIMARY KEY,
     code CHAR(6) NOT NULL,
@@ -497,6 +510,9 @@ CREATE TABLE IF NOT EXISTS _qmf_status_snapshots (
     origin VARCHAR(40) NOT NULL DEFAULT '',
     error_code VARCHAR(64) NOT NULL DEFAULT '',
     scan_run_id BIGINT NOT NULL,
+    matched_at DATETIME DEFAULT NULL,
+    archive_due_at DATETIME DEFAULT NULL,
+    archived_at DATETIME DEFAULT NULL,
     last_scanned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (parser_type, row_key),
@@ -624,8 +640,17 @@ CREATE TABLE IF NOT EXISTS _police_address_import_conflicts (
 CREATE TABLE IF NOT EXISTS _police_dispatch_batches (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     file_name VARCHAR(255) NOT NULL DEFAULT '',
-    file_sha256 CHAR(64) NOT NULL UNIQUE,
+    file_sha256 CHAR(64) NOT NULL,
     sheet_name VARCHAR(255) NOT NULL DEFAULT '',
+    import_mode VARCHAR(20) NOT NULL DEFAULT 'raw',
+    business_type VARCHAR(30) NOT NULL DEFAULT 'fullchain',
+    police_subtype VARCHAR(30) NOT NULL DEFAULT '',
+    import_profile VARCHAR(50) NOT NULL DEFAULT 'fullchain_raw',
+    adapter_version VARCHAR(30) NOT NULL DEFAULT '',
+    target_parser VARCHAR(50) NOT NULL DEFAULT '全链条',
+    business_date DATE DEFAULT NULL,
+    source_summary_json JSON DEFAULT NULL,
+    storage_key VARCHAR(500) NOT NULL DEFAULT '',
     status VARCHAR(30) NOT NULL DEFAULT 'reviewing',
     total_count INT NOT NULL DEFAULT 0,
     counts_json JSON NOT NULL,
@@ -636,7 +661,8 @@ CREATE TABLE IF NOT EXISTS _police_dispatch_batches (
     last_error VARCHAR(500) NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_police_dispatch_batch_status (status, created_at)
+    INDEX idx_police_dispatch_batch_status (status, created_at),
+    UNIQUE KEY uk_police_dispatch_profile_file (import_profile, file_sha256)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _police_dispatch_tasks (
@@ -674,6 +700,9 @@ CREATE TABLE IF NOT EXISTS _police_dispatch_tasks (
     linked_row_hash CHAR(64) NOT NULL DEFAULT '',
     conflict_values_json JSON DEFAULT NULL,
     cache_pending TINYINT(1) NOT NULL DEFAULT 0,
+    standard_values_json JSON DEFAULT NULL,
+    business_key_hmac CHAR(64) NOT NULL DEFAULT '',
+    validation_issues_json JSON DEFAULT NULL,
     published_at DATETIME DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -682,6 +711,19 @@ CREATE TABLE IF NOT EXISTS _police_dispatch_tasks (
     INDEX idx_police_dispatch_task_duplicate (batch_id, duplicate_group_key),
     INDEX idx_police_dispatch_task_identity (batch_id, identity_hash),
     INDEX idx_police_dispatch_task_publish (batch_id, publish_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _police_dispatch_import_issues (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_id BIGINT NOT NULL,
+    task_id BIGINT DEFAULT NULL,
+    source_row INT NOT NULL,
+    field_name VARCHAR(100) NOT NULL DEFAULT '',
+    issue_type VARCHAR(50) NOT NULL,
+    safe_value VARCHAR(200) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_police_import_issue_batch (batch_id, source_row),
+    INDEX idx_police_import_issue_task (task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _police_dispatch_publish_results (
@@ -1197,7 +1239,59 @@ CREATE TABLE IF NOT EXISTS t_suspect_return (
     INDEX idx_sr_community (社区)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 7. 群租房核查（16列，仅raw入库）
+-- 7. 苏州涉警（18列；进入涉警任务池，不纳入平台汇总）
+CREATE TABLE IF NOT EXISTS t_suzhou_police (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发日期        VARCHAR(50),
+    截止日期        VARCHAR(50),
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(500),
+    联系号码        VARCHAR(500),
+    疑似现住址      VARCHAR(500),
+    接警编号        VARCHAR(100),
+    出警日期        VARCHAR(50),
+    出警类别        VARCHAR(200),
+    出警内容        TEXT,
+    出警单位        VARCHAR(200),
+    参考派出所      VARCHAR(200),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_sp_inspector (核查人),
+    INDEX idx_sp_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 8. 交通涉警（12列；进入涉警任务池，不纳入平台汇总）
+CREATE TABLE IF NOT EXISTS t_traffic_police (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发日期        VARCHAR(50),
+    截止日期        VARCHAR(50),
+    核查人          VARCHAR(100),
+    社区            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(500),
+    联系号码        VARCHAR(500),
+    地址1           VARCHAR(500),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_tp_inspector (核查人),
+    INDEX idx_tp_community (社区)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 9. 群租房核查（16列，仅raw入库）
 CREATE TABLE IF NOT EXISTS t_group_rental (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     _row_key        VARCHAR(200) NOT NULL,

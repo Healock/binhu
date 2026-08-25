@@ -200,9 +200,7 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
             "role": "user",
             "member": {"position": "所队领导"},
         }
-        with self.assertRaises(HTTPException) as denied:
-            await require_police_access(POLICE_DISPATCH_MANAGE)(user=user)
-        self.assertEqual(denied.exception.status_code, 403)
+        self.assertIs(await require_police_access(POLICE_DISPATCH_MANAGE)(user=user), user)
 
 
 if __name__ == "__main__":

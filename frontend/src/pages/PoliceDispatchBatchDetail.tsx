@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Input, Progress, Select, Space, Statistic, Tag } from 'antd'
+import { Alert, Button, Descriptions, Input, Progress, Select, Space, Statistic, Tag } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { ExportOutlined, MobileOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -32,6 +32,51 @@ const publishStatusLabels: Record<string, string> = {
   conflict: '内容冲突',
   success: '发布成功',
   not_required: '不需发布',
+}
+
+const businessLabels: Record<string, string> = {
+  fullchain: '全链条', rental: '出租房屋核查', police: '涉警',
+  delivery: '寄递业', suspect_return: '疑似返苏',
+}
+const policeSubtypeLabels: Record<string, string> = {
+  internal: '所内涉警',
+  suzhou: '苏州涉警',
+  traffic: '交通涉警',
+}
+
+function standardValue(task: PoliceDispatchTask, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = task.standard_values?.[key]
+    if (value) return String(value)
+  }
+  return ''
+}
+
+function taskTitle(task: PoliceDispatchTask): string {
+  if (task.police_subtype === 'internal' || task.target_parser === '涉警统计') {
+    return standardValue(task, '序号', '接警编号') || `第 ${task.source_row} 行`
+  }
+  return task.person_name || standardValue(task, '姓名') || `第 ${task.source_row} 行`
+}
+
+function taskDetailItems(task: PoliceDispatchTask) {
+  const values = task.standard_values || {}
+  const preferred = task.target_parser === '涉警统计'
+    ? ['序号', '日期', '社区', '简要警情及处理结果']
+    : task.target_parser === '苏州涉警'
+      ? ['下发日期', '截止日期', '核查人', '社区', '姓名', '身份证号', '联系号码', '疑似现住址', '接警编号', '出警日期', '出警类别', '出警内容', '出警单位', '参考派出所', '现住址', '核查结果', '研判', '二次反馈']
+      : task.target_parser === '交通涉警'
+        ? ['下发日期', '截止日期', '核查人', '社区', '姓名', '身份证号', '联系号码', '地址1', '现住址', '核查结果', '研判', '二次反馈']
+      : task.target_parser === '寄递业'
+        ? ['下发时间', '截止时间', '核查人', '姓名', '身份证号', '地址1', '手机号码', '社区', '参考姓名', '参考身份证号码', '现住址', '核查结果', '研判', '二次反馈']
+        : task.target_parser === '疑似返苏'
+          ? ['下发日期', '截止日期', '核查人', '业务分类', '姓名', '身份证号码', '联系号码', '高频抓拍小区', '现住址', '核查反馈', '研判', '二次核查结果']
+          : ['下发日期', '截止日期', '核查人', '社区', '姓名', '身份证号', '电话号码', '地址', '登记情况', '现住址', '核查结果', '研判', '二次反馈']
+  return preferred.filter(key => values[key] !== undefined && String(values[key] ?? '').trim() !== '').map(key => ({
+    key,
+    label: key,
+    children: String(values[key]),
+  }))
 }
 
 export default function PoliceDispatchBatchDetail() {
@@ -86,10 +131,11 @@ export default function PoliceDispatchBatchDetail() {
 
   const columns: ResponsiveColumns<PoliceDispatchTask> = [
     { title: 'Excel 行', dataIndex: 'source_row', width: 90, responsivePriority: 'standard' },
-    { title: '姓名', dataIndex: 'person_name', width: 110, responsivePriority: 'always' },
-    { title: '身份证号', dataIndex: 'identity_number', width: 190, responsivePriority: 'standard' },
-    { title: '手机号', dataIndex: 'phone', width: 150, responsivePriority: 'standard' },
-    { title: '原地址', dataIndex: 'original_address', width: 340, responsivePriority: 'always', ellipsis: true },
+    { title: batch?.target_parser === '涉警统计' ? '接警编号' : '姓名', width: 150, responsivePriority: 'always', render: (_, item) => taskTitle(item) },
+    { title: '身份证号', width: 190, responsivePriority: 'standard', render: (_, item) => item.identity_number || standardValue(item, '身份证号', '身份证号码') || '—' },
+    { title: '手机号', width: 150, responsivePriority: 'standard', render: (_, item) => item.phone || standardValue(item, '电话号码', '手机号码', '联系号码') || '—' },
+    { title: batch?.target_parser === '涉警统计' ? '简要警情及处理结果' : '原地址', width: 340, responsivePriority: 'always', ellipsis: true, render: (_, item) => item.original_address || standardValue(item, '疑似现住址', '地址1', '高频抓拍小区', '简要警情及处理结果') || '—' },
+    { title: '社区', width: 130, responsivePriority: 'standard', render: (_, item) => standardValue(item, '社区', '业务分类') || '—' },
     {
       title: '建议', width: 150, responsivePriority: 'standard',
       render: (_, item) => (
@@ -131,9 +177,9 @@ export default function PoliceDispatchBatchDetail() {
   return (
     <div className="app-page min-w-0">
       <PageHeader
-        title={batch ? `下发批次 #${batch.id}` : '下发批次'}
+        title={batch ? `${businessLabels[batch.business_type] || batch.target_parser}${batch.police_subtype ? ` · ${policeSubtypeLabels[batch.police_subtype] || batch.police_subtype}` : ''} · 批次 #${batch.id}` : '下发批次'}
         description={batch
-          ? `${batch.file_name} · ${batch.import_mode === 'clean' ? '已处理直发' : '原始审核'} · 用于历史倒查、复盘和发布异常处理`
+          ? `${batch.file_name} · ${batch.import_mode === 'clean' ? '已处理直发' : '原始审核'} · 目标解析器：${batch.target_parser} · 用于历史倒查、复盘和发布异常处理`
           : '查看审核进度、社区分配和腾讯发布结果'}
         actions={batch && (
           <Space wrap>
@@ -231,6 +277,9 @@ export default function PoliceDispatchBatchDetail() {
             onChange: (nextPage, nextPageSize) => void load(nextPage, nextPageSize),
           }}
           scroll={{ x: 1450 }}
+          expandable={{
+            expandedRowRender: item => <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} items={taskDetailItems(item)} />,
+          }}
         />
         </ListContent>
       </Panel>
