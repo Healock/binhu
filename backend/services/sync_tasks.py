@@ -1,6 +1,7 @@
 """手动与定时同步共用的任务创建、执行和排期逻辑。"""
 
 import asyncio
+import inspect
 import json
 from datetime import datetime
 
@@ -18,6 +19,7 @@ SYNC_TRIGGER_LOCK = "binhu_sync_trigger"
 TERMINAL_STATUSES = {"success", "completed", "partial", "failed"}
 DEFAULT_SYNC_INTERVAL_MINUTES = 10
 _background_tasks: set[asyncio.Task] = set()
+QMF_TERMINAL_STATUSES = {"success", "warning", "failed", "interrupted"}
 
 
 def _iso_utc(value: datetime | None) -> str | None:
@@ -149,6 +151,79 @@ async def run_scheduled_visit_source_acquisition() -> None:
         pool.release(conn)
 
 
+async def _scheduled_qmf_business_date() -> str:
+    from services.business_time import get_business_date
+
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            value = await get_business_date(cur)
+        return value.isoformat()
+    finally:
+        pool.release(conn)
+
+
+async def run_scheduled_qmf_source_acquisition() -> dict | None:
+    """在每日第一次自动同步前获取模型三，并等待结果可供日报使用。
+
+    失败只记录在独立来源任务中，不阻断腾讯在线表同步；同一业务日不重复
+    自动请求，人工触发仍可单独执行。
+    """
+    from services.external_acquisition_jobs import create_job, get_job
+
+    business_date = await _scheduled_qmf_business_date()
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id,status,payload_json FROM _external_acquisition_runs "
+                "WHERE kind='qmf_source' ORDER BY id DESC LIMIT 30"
+            )
+            rows = await cur.fetchall()
+    finally:
+        pool.release(conn)
+
+    for run_id, status, payload in rows:
+        try:
+            payload_data = json.loads(payload) if isinstance(payload, str) else (payload or {})
+        except (TypeError, ValueError):
+            payload_data = {}
+        if payload_data.get("trigger") != "scheduled":
+            continue
+        if payload_data.get("business_date") != business_date:
+            continue
+        if str(status) in QMF_TERMINAL_STATUSES:
+            return await get_job(int(run_id))
+
+    from services.qmf_source_sync import run_qmf_source_sync
+
+    job, _ = await create_job(
+        "qmf_source",
+        None,
+        {
+            "source": "legacy-model-three",
+            "mode": "pending-only",
+            "trigger": "scheduled",
+            "business_date": business_date,
+        },
+        run_qmf_source_sync,
+        dedupe_key=f"scheduled:{business_date}",
+    )
+    run_id = int(job.get("id") or 0)
+    if not run_id:
+        return job
+
+    # 来源客户端自带超时保护；这里再设置上限，避免外部平台异常拖住主同步。
+    for _ in range(360):
+        current = await get_job(run_id)
+        if not current or current.get("status") not in {"queued", "running"}:
+            return current or job
+        await asyncio.sleep(0.5)
+    return await get_job(run_id) or job
+
+
 async def create_sync_task(
     trigger_source: str,
     requested_by: int | None = None,
@@ -266,6 +341,14 @@ async def stop_sync_tasks() -> None:
 async def run_sync_task(task_id: int) -> None:
     """执行任务，并在结束后重排下次同步和发送失败通知。"""
     try:
+        trigger_source = await _get_task_trigger_source(task_id)
+        if trigger_source == "scheduled":
+            try:
+                await run_scheduled_qmf_source_acquisition()
+            except Exception as exc:
+                # 模型三来源独立失败，不阻断在线表同步；总汇总会给出
+                # “独立来源尚未完成”的明确原因。
+                print(f"[QMF_SOURCE] scheduled acquisition failed: {type(exc).__name__}")
         engine = SyncEngine(db_manager.get_pool("online_data"))
         await engine.run_full_sync(task_id)
         task_state = await _get_task_terminal_state(task_id)
@@ -328,6 +411,24 @@ async def _get_task_terminal_state(
             if not row or row[0] not in TERMINAL_STATUSES:
                 return None
             return row[0], row[1], row[2]
+    finally:
+        pool.release(conn)
+
+
+async def _get_task_trigger_source(task_id: int) -> str | None:
+    pool = db_manager.get_pool("online_data")
+    acquired = pool.acquire()
+    if not inspect.isawaitable(acquired):
+        return None
+    conn = await acquired
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT trigger_source FROM _sync_log WHERE id=%s",
+                (task_id,),
+            )
+            row = await cur.fetchone()
+            return str(row[0]) if row and row[0] else None
     finally:
         pool.release(conn)
 

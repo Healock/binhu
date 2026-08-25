@@ -25,6 +25,21 @@ from services.qmf_source import (
 from services.schema_compat import get_database_column_map, quote_identifier
 
 
+async def _save_qmf_snapshot(conn) -> str | None:
+    """保存模型三当天快照，供日报和总汇总使用。
+
+    模型三来源不是腾讯在线表，但它仍然需要和普通来源一样落一份
+    业务日期快照；否则总汇总无法判断独立来源是否已经在本轮完成。
+    """
+    from services.sync_engine import SyncEngine
+
+    return await SyncEngine(None)._save_snapshot(
+        conn,
+        get_parser(MODEL_THREE_PARSER).table_name,
+        MODEL_THREE_PARSER,
+    )
+
+
 def _physical_row(row_key: str, used: set[int]) -> int:
     """为虚拟来源生成稳定的正整数行号，避免来源重排导致实体 ID 变化。"""
     value = int(hashlib.sha256(row_key.encode("utf-8")).hexdigest()[:8], 16) & 0x7FFFFFFF
@@ -157,6 +172,7 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
                     )
 
                 await rebuild_projection(cur, MODEL_THREE_PARSER)
+                report_date = await _save_qmf_snapshot(conn)
             await conn.commit()
         except Exception:
             await conn.rollback()
@@ -172,6 +188,7 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
         "unresolved_count": int(result.get("unresolved_count") or 0),
         "issue_count": int(result.get("issue_count") or 0),
         "unresolved": result.get("unresolved") or [],
+        "report_date": report_date,
     }
 
 
