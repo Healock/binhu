@@ -37,6 +37,7 @@ export interface ClientUpdateBridge {
 }
 
 export interface DesktopBridge extends ClientUpdateBridge {
+  saveFile: (filename: string, data: number[]) => Promise<void>
   openOffline: () => Promise<void>
   minimize: () => Promise<void>
   toggleMaximize: () => Promise<boolean>
@@ -111,6 +112,7 @@ export function resolveDesktopBridge(): DesktopBridge | null {
   if (!invoke || !listen) return null
 
   return {
+    saveFile: (filename, data) => invoke<void>('save_file', { filename, data }),
     openOffline: () => invoke<void>('open_offline'),
     minimize: () => invoke<void>('window_minimize'),
     toggleMaximize: () => invoke<boolean>('window_toggle_maximize'),

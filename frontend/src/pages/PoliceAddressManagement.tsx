@@ -22,6 +22,7 @@ import {
 } from '@ant-design/icons'
 import AppTable from '../components/AppTable'
 import { ListContent, ListToolbar, PageHeader, Panel } from '../components/ui'
+import { downloadBlob } from '../utils/fileDownload'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   createPoliceAddress,
@@ -111,12 +112,10 @@ export default function PoliceAddressManagement() {
     setExporting(true)
     try {
       const blob = await exportPoliceAddresses({ keyword })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = `小区管理-${new Date().toISOString().slice(0, 10)}.xlsx`
-      anchor.click()
-      URL.revokeObjectURL(url)
+      await downloadBlob(
+        blob,
+        `小区管理-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      )
       message.success(`已导出 ${data.length} 条当前可见记录`)
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '导出失败')

@@ -54,19 +54,11 @@ import {
   deriveWorkLogValues,
   leafWorkLogColumns,
 } from '../utils/workLog'
+import { downloadBlob } from '../utils/fileDownload'
 
 type Values = Record<string, unknown>
 type Row = Record<string, unknown>
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed' | 'conflict'
-
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  anchor.click()
-  URL.revokeObjectURL(url)
-}
 
 function errorMessage(error: unknown, fallback: string) {
   if (axios.isAxiosError(error)) {
@@ -638,7 +630,7 @@ export default function WorkLog() {
     setExporting(true)
     try {
       const blob = await exportWorkLog(draft.id)
-      saveBlob(
+      await downloadBlob(
         blob,
         `${businessDate.format('MMDD')}日报滨湖新城派出所社区警务工作日志.pdf`,
       )
@@ -692,7 +684,7 @@ export default function WorkLog() {
         rental_target: rentalTarget,
         self_owned_target: selfOwnedTarget,
       })
-      saveBlob(
+      await downloadBlob(
         blob,
         `${dailyDetailDate.format('MMDD')}滨湖网格工作每日明细.xlsx`,
       )

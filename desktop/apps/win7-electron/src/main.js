@@ -172,6 +172,17 @@ ipcMain.handle('desktop:window-is-maximized', (event) => (
 ipcMain.handle('desktop:window-close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close()
 })
+ipcMain.handle('desktop:save-file', async (_event, payload) => {
+  const filename = typeof payload?.filename === 'string' ? payload.filename : '下载文件'
+  const safeName = path.basename(filename).replace(/[\\/:*?"<>|]/g, '_') || '下载文件'
+  const data = payload?.data
+  if (!Array.isArray(data) && !Buffer.isBuffer(data) && !(data instanceof Uint8Array)) {
+    throw new Error('下载文件内容无效')
+  }
+  const target = path.join(app.getPath('downloads'), safeName)
+  await fs.promises.writeFile(target, Buffer.from(data))
+  return target
+})
 ipcMain.handle('desktop:get-update-status', () => updateController?.snapshot() || null)
 ipcMain.handle('desktop:get-upgrade-info', () => upgradeInfo)
 ipcMain.handle('desktop:acknowledge-upgrade', () => { acknowledgeUpgrade(); return upgradeInfo })
