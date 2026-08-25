@@ -89,6 +89,10 @@ class QmfSourceSyncTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=column_map),
             ),
             patch("services.qmf_source_sync.rebuild_projection", AsyncMock()) as rebuild,
+            patch(
+                "services.qmf_source_sync._save_qmf_snapshot",
+                AsyncMock(return_value="2026-08-25"),
+            ) as snapshot,
         ):
             result = await _sync_rows(
                 ctx,
@@ -106,6 +110,7 @@ class QmfSourceSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pool.released)
         self.assertTrue(connection.cursor_instance.executed[0].startswith("SELECT _row_key,"))
         rebuild.assert_awaited_once()
+        snapshot.assert_awaited_once()
 
 
 if __name__ == "__main__":

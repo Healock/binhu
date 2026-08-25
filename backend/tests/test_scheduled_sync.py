@@ -82,6 +82,35 @@ class FakePool:
         self.release = MagicMock()
 
 
+class ExistingQmfCursor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def execute(self, sql, params=None):
+        return None
+
+    async def fetchall(self):
+        return self.rows
+
+
+class ExistingQmfPool:
+    def __init__(self, rows):
+        self.cursor = ExistingQmfCursor(rows)
+        self.connection = MagicMock()
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=self.cursor)
+        context.__aexit__ = AsyncMock(return_value=None)
+        self.connection.cursor.return_value = context
+        self.acquire = AsyncMock(return_value=self.connection)
+        self.release = MagicMock()
+
+
 class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
     def test_schedule_defaults_to_enabled_every_ten_minutes(self):
         schedule = SyncScheduleStatus()
@@ -249,6 +278,32 @@ class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
 
                 reset.assert_awaited_once()
                 self.assertEqual(notify.await_count, notice_count)
+
+    async def test_scheduled_qmf_does_not_repeat_terminal_run_for_same_business_date(self):
+        payload = '{"trigger":"scheduled","business_date":"2026-08-25"}'
+        pool = ExistingQmfPool([(42, "success", payload)])
+        current = {"id": 42, "status": "success"}
+
+        with patch.object(
+            sync_tasks,
+            "_scheduled_qmf_business_date",
+            new=AsyncMock(return_value="2026-08-25"),
+        ), patch.object(
+            sync_tasks.db_manager,
+            "get_pool",
+            return_value=pool,
+        ), patch(
+            "services.external_acquisition_jobs.get_job",
+            new=AsyncMock(return_value=current),
+        ) as get_job, patch(
+            "services.external_acquisition_jobs.create_job",
+            new=AsyncMock(),
+        ) as create_job:
+            result = await sync_tasks.run_scheduled_qmf_source_acquisition()
+
+        self.assertEqual(result, current)
+        get_job.assert_awaited_once_with(42)
+        create_job.assert_not_awaited()
 
     async def test_startup_recovery_marks_tasks_failed_and_notifies_auto_only(self):
         cursor = FakeCursor(

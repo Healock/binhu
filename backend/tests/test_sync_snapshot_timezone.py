@@ -160,6 +160,60 @@ class SyncSnapshotTimezoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[1:3], (124, 15))
         self.assertIn("出租房屋核查", args[3])
 
+    async def test_existing_model_three_snapshot_is_added_to_report_batch(self):
+        events = []
+        engine, connection = make_engine()
+        engine._get_spreadsheets = AsyncMock(
+            return_value=[{"name": "全链条", "parser_type": "全链条"}]
+        )
+        engine._sync_one = AsyncMock(return_value=(3, "2026-07-27"))
+        engine._has_daily_report_snapshot = AsyncMock(return_value=True)
+
+        fullchain = MagicMock()
+        model_three = MagicMock()
+        fullchain.build = AsyncMock(
+            side_effect=lambda report_date: events.append(
+                ("report", "全链条", report_date)
+            ) or {"implemented": True}
+        )
+        model_three.build = AsyncMock(
+            side_effect=lambda report_date: events.append(
+                ("report", "疑似未注销模型三", report_date)
+            ) or {"implemented": True}
+        )
+        model_three.table_suffix = "suspectUnrevoked"
+        client = MagicMock()
+        client.close = AsyncMock()
+
+        async def build_total(report_date, summary_types=None):
+            events.append(("summary", summary_types))
+            return {"implemented": True}
+
+        with patch(
+            "services.sync_engine.TxDocsClient", return_value=client
+        ), patch(
+            "services.report_builders.BUILDERS",
+            {
+                "全链条": fullchain,
+                "疑似未注销模型三": model_three,
+            },
+        ), patch(
+            "services.report_builders.summary._load_summary_types",
+            new=AsyncMock(return_value=["全链条", "疑似未注销模型三"]),
+        ), patch(
+            "services.report_builders.summary.build_summary",
+            new=AsyncMock(side_effect=build_total),
+        ):
+            await engine.run_full_sync(125)
+
+        fullchain.build.assert_awaited_once_with("2026-07-27")
+        model_three.build.assert_awaited_once_with("2026-07-27")
+        self.assertIn(
+            ("summary", ["全链条", "疑似未注销模型三"]),
+            events,
+        )
+        engine._complete.assert_awaited_once_with(connection, 125, 3)
+
     async def test_snapshot_uses_business_date_without_building_report(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()

@@ -271,6 +271,29 @@ class SyncEngine:
 
             # 4. 数据阶段结束后，再统一生成本轮成功业务的分汇总表。
             report_dates = sorted({date for date, _ in report_jobs})
+            # 模型三来源由独立后台任务维护，但它的当天快照仍应参与本轮
+            # 日报和总汇总。独立任务成功后只需保存快照，普通同步在这里
+            # 将其接回统一的日报生成流程。
+            if report_dates:
+                from services.report_builders import BUILDERS
+
+                qmf_builder = BUILDERS.get(MODEL_THREE_PARSER)
+                if qmf_builder:
+                    async with conn.cursor() as cur:
+                        for report_date in report_dates:
+                            if any(
+                                date == report_date and parser_type == MODEL_THREE_PARSER
+                                for date, parser_type in report_jobs
+                            ):
+                                continue
+                            snapshot_name = (
+                                f"{report_date}_snapshot_{qmf_builder.table_suffix}"
+                            )
+                            if await self._has_daily_report_snapshot(
+                                conn, snapshot_name
+                            ):
+                                report_jobs.append((report_date, MODEL_THREE_PARSER))
+
             await self._set_total_steps(
                 conn,
                 task_id,
@@ -341,6 +364,11 @@ class SyncEngine:
                             if parser_type not in built_reports[report_date]
                         ]
                         if missing_types:
+                            if MODEL_THREE_PARSER in missing_types:
+                                raise RuntimeError(
+                                    "模型三独立来源尚未在本轮成功获取或生成快照，"
+                                    "请查看全民防同步任务状态"
+                                )
                             raise RuntimeError(
                                 "以下总汇总配置未在本轮成功生成："
                                 + "、".join(missing_types)
@@ -403,6 +431,15 @@ class SyncEngine:
              "data_sheet_id": r[4], "header_row": r[5], "parser_type": r[6]}
             for r in rows
         ]
+
+    async def _has_daily_report_snapshot(self, conn, snapshot_name: str) -> bool:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM daily_report._daily_report_meta "
+                "WHERE table_name=%s LIMIT 1",
+                (snapshot_name,),
+            )
+            return bool(await cur.fetchone())
 
     async def _sync_one(self, conn, client, sp: dict) -> tuple[int, str | None]:
         async with conn.cursor() as cur:
