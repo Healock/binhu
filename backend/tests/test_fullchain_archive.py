@@ -20,7 +20,11 @@ from routers.fullchain_archive import (
 from routers.police_dispatch import require_police_access
 from services.permissions import POLICE_DISPATCH_MANAGE
 from services.fullchain_archive import build_archive_workbook, parse_police_raw
-from services.fullchain_archive_jobs import _safe_error_code, _stage_platform_archive
+from services.fullchain_archive_jobs import (
+    _acquire_sheet_lock_with_retry,
+    _safe_error_code,
+    _stage_platform_archive,
+)
 from services.report_builders.base import BaseReportBuilder
 from services.task_workflow import TASK_WORKFLOWS
 
@@ -131,6 +135,30 @@ class _Connection:
 
 
 class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_archive_lock_retries_until_previous_write_releases(self):
+        attempts = []
+
+        async def acquire(_cur, spreadsheet_id, timeout):
+            attempts.append((spreadsheet_id, timeout))
+            return len(attempts) == 3
+
+        sleep = AsyncMock()
+        self.assertTrue(await _acquire_sheet_lock_with_retry(
+            object(), 7, acquire=acquire, sleep=sleep, retry_delays=(1, 2, 3),
+        ))
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [1, 2])
+        self.assertTrue(all(timeout == 5 for _, timeout in attempts))
+
+    async def test_archive_lock_retry_has_a_bounded_wait(self):
+        acquire = AsyncMock(return_value=False)
+        sleep = AsyncMock()
+        self.assertFalse(await _acquire_sheet_lock_with_retry(
+            object(), 7, acquire=acquire, sleep=sleep, retry_delays=(1, 2),
+        ))
+        self.assertEqual(acquire.await_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [1, 2])
+
     @patch("routers.fullchain_archive._latest_raw_upload", new=AsyncMock(return_value=None))
     @patch("routers.fullchain_archive.get_business_date", new=AsyncMock(return_value=date(2026, 8, 21)))
     async def test_duplicate_projection_is_visible_but_cannot_archive(self):

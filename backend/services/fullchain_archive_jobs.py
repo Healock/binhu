@@ -15,6 +15,36 @@ from services.schema_compat import get_database_column_map, quote_identifier
 
 _tasks: set[asyncio.Task] = set()
 
+# 腾讯表写回和归档共用同一把 MySQL 命名锁。外部写回可能需要几十秒，
+# 归档不能把这段短暂竞争直接记成失败；同时保留上限，避免后台任务无限占用连接。
+_ARCHIVE_LOCK_TIMEOUT_SECONDS = 5
+_ARCHIVE_LOCK_RETRY_DELAYS = (5, 10, 20, 30)
+
+
+class _ArchiveLockRetry(Exception):
+    """当前归档因腾讯表写回占锁，稍后应重新进入队列。"""
+
+
+async def _acquire_sheet_lock_with_retry(
+    cur,
+    spreadsheet_id: int,
+    *,
+    acquire=acquire_sheet_lock,
+    sleep=asyncio.sleep,
+    retry_delays: tuple[int, ...] = _ARCHIVE_LOCK_RETRY_DELAYS,
+) -> bool:
+    """等待腾讯表锁释放，返回是否成功拿到锁。
+
+    ``acquire`` 和 ``sleep`` 可注入，测试无需真实等待，也不会触碰生产锁。
+    最后一轮失败由调用方转为 queued/waiting_lock，而不是 error。
+    """
+    for attempt in range(len(retry_delays) + 1):
+        if await acquire(cur, spreadsheet_id, timeout=_ARCHIVE_LOCK_TIMEOUT_SECONDS):
+            return True
+        if attempt < len(retry_delays):
+            await sleep(retry_delays[attempt])
+    return False
+
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() + "Z" if value else None
@@ -120,7 +150,7 @@ async def run_fullchain_archive_export(export_id: int) -> None:
             await cur.execute("""
                 UPDATE _fullchain_archive_exports
                 SET status='running',phase='deleting',started_at=COALESCE(started_at,UTC_TIMESTAMP())
-                WHERE id=%s AND status='queued'
+                WHERE id=%s AND status IN ('queued','waiting_lock')
             """, (export_id,))
             await cur.execute("""
                 SELECT item.source_id,item.spreadsheet_id,item.sheet_id,item.physical_row,
@@ -130,7 +160,8 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                 FROM _fullchain_archive_export_items item
                 LEFT JOIN _online_source_rows source ON source.id=item.source_id
                 LEFT JOIN _config_spreadsheets spreadsheet ON spreadsheet.id=item.spreadsheet_id
-                WHERE item.export_id=%s ORDER BY item.spreadsheet_id,item.sheet_id,item.physical_row DESC
+                WHERE item.export_id=%s AND item.status <> 'success'
+                ORDER BY item.spreadsheet_id,item.sheet_id,item.physical_row DESC
             """, (export_id,))
             rows = await cur.fetchall()
 
@@ -138,6 +169,7 @@ async def run_fullchain_archive_export(export_id: int) -> None:
         for row in rows:
             groups[(int(row[1]), str(row[2]))].append(row)
         success = conflicts = errors = 0
+        lock_waiting = False
         for (spreadsheet_id, sheet_id), items in groups.items():
             client = None
             locked = False
@@ -145,7 +177,7 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                 async with conn.cursor() as cur:
                     if not await _writeback_enabled(cur):
                         raise RuntimeError("online_writeback_disabled")
-                    if not await acquire_sheet_lock(cur, spreadsheet_id, timeout=5):
+                    if not await _acquire_sheet_lock_with_retry(cur, spreadsheet_id):
                         raise RuntimeError("spreadsheet_locked")
                     locked = True
                     await cur.execute("SELECT id,name,file_id,data_sheet_id,header_row,parser_type FROM _config_spreadsheets WHERE id=%s", (spreadsheet_id,))
@@ -240,8 +272,14 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                 code = _safe_error_code(exc, "archive_group_failed")
                 async with conn.cursor() as cur:
                     for row in items:
-                        await _mark_item(cur, export_id, int(row[0]), "error", code)
-                errors += len(items)
+                        if code == "spreadsheet_locked":
+                            await _mark_item(cur, export_id, int(row[0]), "queued", code)
+                        else:
+                            await _mark_item(cur, export_id, int(row[0]), "error", code)
+                if code == "spreadsheet_locked":
+                    lock_waiting = True
+                else:
+                    errors += len(items)
             finally:
                 if client:
                     await client.close()
@@ -250,6 +288,28 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                     async with conn.cursor() as cur:
                         await release_sheet_lock(cur, spreadsheet_id)
 
+        if lock_waiting:
+            async with conn.cursor() as cur:
+                await cur.execute("""
+                    UPDATE _fullchain_archive_exports
+                    SET status='queued',phase='waiting_lock',
+                        error_message='腾讯表正在写回，归档任务将在锁释放后自动继续'
+                    WHERE id=%s
+                """, (export_id,))
+            raise _ArchiveLockRetry
+
+        # 重试时只读取尚未成功的条目，因此统计必须以数据库内的最终状态为准，
+        # 不能沿用本次进程启动时的局部计数。
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT
+                    SUM(status='success'), SUM(status='conflict'), SUM(status='error')
+                FROM _fullchain_archive_export_items WHERE export_id=%s
+            """, (export_id,))
+            counts = await cur.fetchone()
+            success = int((counts[0] if counts else 0) or 0)
+            conflicts = int((counts[1] if counts else 0) or 0)
+            errors = int((counts[2] if counts else 0) or 0)
         status = "completed" if conflicts == 0 and errors == 0 else "partial"
         async with conn.cursor() as cur:
             await cur.execute("""
@@ -271,7 +331,43 @@ def launch_fullchain_archive_export(export_id: int) -> None:
 
 async def _run_fullchain_archive_export_guarded(export_id: int) -> None:
     try:
-        await run_fullchain_archive_export(export_id)
+        # 锁竞争只会把任务短暂留在 queued/waiting_lock；后台任务继续退避，
+        # 服务重启时 recover_interrupted_fullchain_exports 也会重新接回这类任务。
+        for delay in (*_ARCHIVE_LOCK_RETRY_DELAYS, None):
+            try:
+                await run_fullchain_archive_export(export_id)
+                return
+            except _ArchiveLockRetry:
+                if delay is None:
+                    pool = db_manager.get_pool("online_data")
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute("""
+                                UPDATE _fullchain_archive_export_items
+                                SET status='error',error_code='spreadsheet_locked'
+                                WHERE export_id=%s AND status='queued'
+                            """, (export_id,))
+                            await cur.execute("""
+                                SELECT
+                                    SUM(status='success'), SUM(status='conflict'), SUM(status='error')
+                                FROM _fullchain_archive_export_items WHERE export_id=%s
+                            """, (export_id,))
+                            counts = await cur.fetchone()
+                            await cur.execute("""
+                                UPDATE _fullchain_archive_exports
+                                SET status='partial',phase='finished',
+                                    success_count=%s,conflict_count=%s,error_count=%s,
+                                    error_message='腾讯表持续繁忙，请稍后重新发起归档',
+                                    finished_at=UTC_TIMESTAMP()
+                                WHERE id=%s AND status IN ('queued','waiting_lock')
+                            """, (
+                                int((counts[0] if counts else 0) or 0),
+                                int((counts[1] if counts else 0) or 0),
+                                int((counts[2] if counts else 0) or 0),
+                                export_id,
+                            ))
+                    return
+                await asyncio.sleep(delay)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -296,7 +392,16 @@ async def recover_interrupted_fullchain_exports() -> int:
                     error_message='服务重启，已保留导出文件；来源行需重新核对',finished_at=UTC_TIMESTAMP()
                 WHERE status='running'
             """)
-            return int(cur.rowcount or 0)
+            interrupted = int(cur.rowcount or 0)
+            await cur.execute("""
+                SELECT id FROM _fullchain_archive_exports
+                WHERE status='queued' AND phase IN ('queued','waiting_lock')
+                ORDER BY id
+            """)
+            queued_ids = [int(row[0]) for row in await cur.fetchall()]
+    for export_id in queued_ids:
+        launch_fullchain_archive_export(export_id)
+    return interrupted
 
 
 async def stop_fullchain_archive_tasks() -> None:
