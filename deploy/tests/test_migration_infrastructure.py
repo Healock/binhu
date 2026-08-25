@@ -130,6 +130,20 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             self.assertIn("proxy_read_timeout 300s", block)
             self.assertIn("proxy_send_timeout 300s", block)
 
+    def test_avatar_upload_accepts_backend_limit(self) -> None:
+        configs = [
+            (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8"),
+            (ROOT / "nginx/migration/new-app-locations.conf").read_text(
+                encoding="utf-8"
+            ),
+        ]
+        route = "location = /api/auth/avatar"
+        for config in configs:
+            start = config.index(route)
+            end = config.index("\n}", start)
+            block = config[start:end]
+            self.assertIn("client_max_body_size 6m", block)
+
     def test_templates_do_not_contain_real_public_hosts_or_secrets(self) -> None:
         paths = [
             ROOT / "deploy/install-offsite-backup.sh",
