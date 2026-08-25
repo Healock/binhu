@@ -190,6 +190,22 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         ),
         include_in_summary=False,
     ),
+    "交通涉警": TaskWorkflow(
+        parser_type="交通涉警",
+        label="涉警 · 交通涉警",
+        result_field="核查结果",
+        phone_fields=("联系号码",),
+        title_fields=("姓名",),
+        address_fields=("现住址", "地址1"),
+        date_fields=("截止日期", "下发日期"),
+        identity_fields=("身份证号",),
+        secondary_fields=("二次反馈",),
+        result_options=(
+            "已登记", "离苏", "常口", "无需登记，原因写备注",
+            "移交，移交哪个社区写备注", "无法核实",
+        ),
+        include_in_summary=False,
+    ),
 }
 
 MOBILE_TASK_TYPES = tuple(TASK_WORKFLOWS)

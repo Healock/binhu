@@ -2749,7 +2749,7 @@ export interface PoliceDispatchBatch {
   sheet_name: string
   import_mode: 'raw' | 'clean' | 'processed'
   business_type: 'fullchain' | 'rental' | 'police' | 'delivery' | 'suspect_return'
-  police_subtype: 'internal' | 'suzhou' | ''
+  police_subtype: 'internal' | 'suzhou' | 'traffic' | ''
   import_profile: string
   adapter_version: string
   target_parser: string

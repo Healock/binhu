@@ -38,6 +38,11 @@ const businessLabels: Record<string, string> = {
   fullchain: '全链条', rental: '出租房屋核查', police: '涉警',
   delivery: '寄递业', suspect_return: '疑似返苏',
 }
+const policeSubtypeLabels: Record<string, string> = {
+  internal: '所内涉警',
+  suzhou: '苏州涉警',
+  traffic: '交通涉警',
+}
 
 function standardValue(task: PoliceDispatchTask, ...keys: string[]): string {
   for (const key of keys) {
@@ -60,6 +65,8 @@ function taskDetailItems(task: PoliceDispatchTask) {
     ? ['序号', '日期', '社区', '简要警情及处理结果']
     : task.target_parser === '苏州涉警'
       ? ['下发日期', '截止日期', '核查人', '社区', '姓名', '身份证号', '联系号码', '疑似现住址', '接警编号', '出警日期', '出警类别', '出警内容', '出警单位', '参考派出所', '现住址', '核查结果', '研判', '二次反馈']
+      : task.target_parser === '交通涉警'
+        ? ['下发日期', '截止日期', '核查人', '社区', '姓名', '身份证号', '联系号码', '地址1', '现住址', '核查结果', '研判', '二次反馈']
       : task.target_parser === '寄递业'
         ? ['下发时间', '截止时间', '核查人', '姓名', '身份证号', '地址1', '手机号码', '社区', '参考姓名', '参考身份证号码', '现住址', '核查结果', '研判', '二次反馈']
         : task.target_parser === '疑似返苏'
@@ -170,7 +177,7 @@ export default function PoliceDispatchBatchDetail() {
   return (
     <div className="app-page min-w-0">
       <PageHeader
-        title={batch ? `${businessLabels[batch.business_type] || batch.target_parser}${batch.police_subtype ? ` · ${batch.police_subtype === 'internal' ? '所内涉警' : '苏州涉警'}` : ''} · 批次 #${batch.id}` : '下发批次'}
+        title={batch ? `${businessLabels[batch.business_type] || batch.target_parser}${batch.police_subtype ? ` · ${policeSubtypeLabels[batch.police_subtype] || batch.police_subtype}` : ''} · 批次 #${batch.id}` : '下发批次'}
         description={batch
           ? `${batch.file_name} · ${batch.import_mode === 'clean' ? '已处理直发' : '原始审核'} · 目标解析器：${batch.target_parser} · 用于历史倒查、复盘和发布异常处理`
           : '查看审核进度、社区分配和腾讯发布结果'}

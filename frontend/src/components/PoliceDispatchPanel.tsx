@@ -18,6 +18,11 @@ const businessOptions = [
   { value: 'suspect_return', label: '疑似返苏' },
 ]
 const businessLabels: Record<string, string> = Object.fromEntries(businessOptions.map(item => [item.value, item.label]))
+const policeSubtypeLabels: Record<string, string> = {
+  internal: '所内涉警',
+  suzhou: '苏州涉警',
+  traffic: '交通涉警',
+}
 const statusMeta: Record<string, { color: string; text: string }> = {
   reviewing: { color: 'processing', text: '审核中' }, ready_to_publish: { color: 'warning', text: '待发布' },
   publishing: { color: 'blue', text: '发布中' }, reconciling: { color: 'error', text: '待对账/冲突' },
@@ -118,7 +123,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
 
   const columns: TableColumnsType<PoliceDispatchBatch> = [
     { title: '批次', dataIndex: 'id', width: 78, render: value => `#${value}` },
-    { title: '业务', width: 150, render: (_, row) => row.police_subtype ? `涉警 · ${row.police_subtype === 'internal' ? '所内涉警' : '苏州涉警'}` : businessLabels[row.business_type] || row.target_parser },
+    { title: '业务', width: 150, render: (_, row) => row.police_subtype ? `涉警 · ${policeSubtypeLabels[row.police_subtype] || row.police_subtype}` : businessLabels[row.business_type] || row.target_parser },
     { title: '原文件', dataIndex: 'file_name', ellipsis: true, width: 230 },
     { title: '审核进度', width: 170, render: (_, item) => <Progress size="small" percent={item.total_count ? Math.round(item.reviewed_count / item.total_count * 100) : 0} format={() => `${item.reviewed_count}/${item.total_count}`} /> },
     { title: '状态', dataIndex: 'status', width: 110, render: value => <Tag color={statusMeta[value]?.color}>{statusMeta[value]?.text || value}</Tag> },
@@ -147,7 +152,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
         <div className="flex flex-wrap items-center gap-2"><strong>{selectedProfile.label}</strong><Tag color={selectedProfile.enabled ? 'green' : 'default'}>{selectedProfile.enabled ? '可用' : '暂未开放'}</Tag><Tag color={selectedProfile.target_configured ? 'blue' : 'orange'}>{selectedProfile.target_configured ? '腾讯目标表已配置' : '腾讯目标表未配置'}</Tag></div>
         <div className="text-sm text-[var(--app-text-secondary)]">{selectedProfile.description}</div>
         <div className="flex flex-wrap gap-2">{selectedProfile.example_fields.map(field => <Tag key={field}>{field}</Tag>)}</div>
-        {!selectedProfile.target_configured && selectedProfile.key === 'police_suzhou_processed' && <Alert type="warning" showIcon message="可以预览、导入和审核；配置唯一启用的“苏州涉警”腾讯表前，发布会被后端阻止。" />}
+        {!selectedProfile.target_configured && ['police_suzhou_processed', 'police_traffic_processed'].includes(selectedProfile.key) && <Alert type="warning" showIcon message={`可以预览、导入和审核；配置唯一启用的“${selectedProfile.target_parser}”腾讯表前，发布会被后端阻止。`} />}
       </div></Card>}
       <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)] md:items-end">
         <label className="grid gap-1 text-sm"><span className="font-medium">业务日期</span><Input type="date" value={businessDate} onChange={event => { setBusinessDate(event.target.value); resetPreview() }} /></label>
