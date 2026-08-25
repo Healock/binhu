@@ -66,6 +66,38 @@ test('走访社区汇总把网格员人数放在在岗人日前并按整数导�
   assert.equal((sheet.data[1][3] as { format: string }).format, '0.0')
 })
 
+test('走访社区汇总导出将三项最低指标各标黄三个单元格', () => {
+  const workbook = buildSummaryWorkbook({
+    fileName: '走访汇总',
+    tables: [{
+      sheet: '社区汇总',
+      columns: ['社区', '人均日走访户数', '人均日变动数', '户均变动数'],
+      rows: [
+        { 社区: '甲', 人均日走访户数: 4, 人均日变动数: 2, 户均变动数: 0.9 },
+        { 社区: '乙', 人均日走访户数: 1, 人均日变动数: 5, 户均变动数: 0.3 },
+        { 社区: '丙', 人均日走访户数: 3, 人均日变动数: 1, 户均变动数: 0.7 },
+        { 社区: '丁', 人均日走访户数: 2, 人均日变动数: 4, 户均变动数: 0.2 },
+      ],
+      highlightLowestColumns: [
+        '人均日走访户数',
+        '人均日变动数',
+        '户均变动数',
+      ],
+      total: { 社区: '总计' },
+    }],
+  })
+  const sheet = workbook.sheets[0]
+  const yellowCells = sheet.data
+    .slice(1, -1)
+    .flatMap(row => row.filter(cell => (
+      typeof cell === 'object'
+      && cell
+      && 'backgroundColor' in cell
+      && cell.backgroundColor === '#fff2cc'
+    )))
+  assert.equal(yellowCells.length, 9)
+})
+
 test('在线和走访汇总导出前都会写入操作记录', () => {
   for (const page of ['Dashboard.tsx', 'VisitSummary.tsx']) {
     const source = readFileSync(

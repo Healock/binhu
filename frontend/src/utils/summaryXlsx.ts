@@ -12,6 +12,8 @@ export interface SummaryExportTable {
   columns: string[]
   rows: readonly SummaryExportRow[]
   total?: SummaryExportRow | null
+  /** Highlight the three lowest numeric values in each requested column. */
+  highlightLowestColumns?: readonly string[]
 }
 
 export interface SummaryWorkbookOptions {
@@ -55,14 +57,22 @@ function numberFormat(column: string, value: number): string {
   return Number.isInteger(value) ? '#,##0' : '0.00'
 }
 
-function dataCell(value: unknown, column: string, total: boolean): Cell {
+function dataCell(
+  value: unknown,
+  column: string,
+  total: boolean,
+  highlighted = false,
+): Cell {
   const style = total
     ? {
         ...borderStyle,
         backgroundColor: '#eff6ff',
         fontWeight: 'bold' as const,
       }
-    : borderStyle
+    : {
+        ...borderStyle,
+        ...(highlighted ? { backgroundColor: '#fff2cc' } : {}),
+      }
 
   if (value == null || value === '') {
     return { value: '', ...style }
@@ -104,9 +114,29 @@ function headerCell(column: string): CellObject {
 export function buildSummarySheet(table: SummaryExportTable): Sheet<Blob> {
   const columns = visibleColumns(table.columns)
   const rows = table.total ? [...table.rows, table.total] : [...table.rows]
+  const highlightColumns = new Set(
+    (table.highlightLowestColumns || []).filter(column => columns.includes(column)),
+  )
+  const highlightedCells = new Set<string>()
+  for (const column of highlightColumns) {
+    table.rows
+      .map((row, rowIndex) => ({
+        rowIndex,
+        value: row[column],
+      }))
+      .filter(({ value }) => typeof value === 'number' && Number.isFinite(value))
+      .sort((left, right) => left.value - right.value || left.rowIndex - right.rowIndex)
+      .slice(0, 3)
+      .forEach(({ rowIndex }) => highlightedCells.add(`${rowIndex}:${column}`))
+  }
   const data: SheetData = [
     columns.map(headerCell),
-    ...table.rows.map(row => columns.map(column => dataCell(row[column], column, false))),
+    ...table.rows.map((row, rowIndex) => columns.map(column => dataCell(
+      row[column],
+      column,
+      false,
+      highlightedCells.has(`${rowIndex}:${column}`),
+    ))),
   ]
   if (table.total) {
     data.push(columns.map(column => dataCell(table.total?.[column], column, true)))
