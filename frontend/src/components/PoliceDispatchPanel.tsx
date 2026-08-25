@@ -152,7 +152,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
         <div className="flex flex-wrap items-center gap-2"><strong>{selectedProfile.label}</strong><Tag color={selectedProfile.enabled ? 'green' : 'default'}>{selectedProfile.enabled ? '可用' : '暂未开放'}</Tag><Tag color={selectedProfile.target_configured ? 'blue' : 'orange'}>{selectedProfile.target_configured ? '腾讯目标表已配置' : '腾讯目标表未配置'}</Tag></div>
         <div className="text-sm text-[var(--app-text-secondary)]">{selectedProfile.description}</div>
         <div className="flex flex-wrap gap-2">{selectedProfile.example_fields.map(field => <Tag key={field}>{field}</Tag>)}</div>
-        {!selectedProfile.target_configured && ['police_suzhou_processed', 'police_traffic_processed'].includes(selectedProfile.key) && <Alert type="warning" showIcon message={`可以预览、导入和审核；配置唯一启用的“${selectedProfile.target_parser}”腾讯表前，发布会被后端阻止。`} />}
+        {!selectedProfile.target_configured && ['rental_processed', 'police_suzhou_processed', 'police_traffic_processed'].includes(selectedProfile.key) && <Alert type="warning" showIcon message={`可以预览、导入和审核；配置唯一启用的“${selectedProfile.target_parser}”腾讯表前，发布会被后端阻止。`} />}
       </div></Card>}
       <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)] md:items-end">
         <label className="grid gap-1 text-sm"><span className="font-medium">业务日期</span><Input type="date" value={businessDate} onChange={event => { setBusinessDate(event.target.value); resetPreview() }} /></label>
