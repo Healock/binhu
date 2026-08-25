@@ -407,7 +407,7 @@ test('任务详情直接展示身份证号、手机号、来源和地址', () =>
   }
 })
 
-test('已完成快捷调照片结果在任务详情可预览和下载', () => {
+test('任务详情不再展示调取照片信息', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
@@ -417,9 +417,9 @@ test('已完成快捷调照片结果在任务详情可预览和下载', () => {
     'utf8',
   )
 
-  assert.match(detailSource, /已调取照片/)
-  assert.match(detailSource, /workflowApi\.attachmentUrl\(request\.ticket_id, attachment\.file_id, true\)/)
-  assert.match(detailSource, /<DownloadOutlined/)
+  assert.doesNotMatch(detailSource, /已调取照片/)
+  assert.doesNotMatch(detailSource, /workflowApi\.attachmentUrl\(request\.ticket_id, attachment\.file_id, true\)/)
+  assert.doesNotMatch(detailSource, /<DownloadOutlined/)
   assert.match(clientSource, /photo_requests: Array/)
 })
 
@@ -462,9 +462,8 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /mobile-task-item-card__key-row--old-address/)
   assert.match(pageSource, /<dt>原地址<\/dt>/)
   assert.match(pageSource, /mobile-task-item-card__flags/)
-  assert.match(pageSource, /task\.photo_fetched/)
-  assert.match(pageSource, /<Tag color="green">已调照片<\/Tag>/)
-  assert.ok(pageSource.indexOf('已研判') < pageSource.indexOf('已调照片'))
+  assert.doesNotMatch(pageSource, /task\.photo_fetched/)
+  assert.doesNotMatch(pageSource, /已调照片/)
   assert.match(pageSource, /mobile-task-source-cloud/)
   assert.match(pageSource, /mobileTaskSourceTags/)
   assert.match(pageSource, /copyCardValue/)
@@ -618,12 +617,13 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /<Tooltip title=\{task\.summary\.analysis\}>/)
   assert.match(tableSource, /mobileTaskEditorFields/)
   assert.match(tableSource, /placeholder="请选择"/)
-  assert.match(tableSource, /placeholder="请输入"/)
+  assert.match(tableSource, /placeholder=\{field === '入住方式' \? '自购、房东出租、中介出租等' : '请输入'\}/)
   assert.match(tableSource, />现住址</)
   assert.match(tableSource, />核查结果</)
   assert.match(tableSource, />研判</)
   assert.match(tableSource, />二次反馈</)
-  assert.match(tableSource, />调取照片</)
+  assert.doesNotMatch(tableSource, />调取照片</)
+  assert.match(tableSource, /rows\.some\(task => task\.parser_type === '全链条'\)/)
   assert.match(tableSource, /hideSelectAll: true/)
   assert.match(tableSource, /pagination=\{false\}/)
   assert.doesNotMatch(pageSource, /new IntersectionObserver/)

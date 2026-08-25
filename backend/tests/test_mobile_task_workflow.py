@@ -169,6 +169,8 @@ class MobileTaskWorkflowTests(unittest.TestCase):
 
     def test_suspect_return_uses_feedback_as_result(self):
         self.assertIn("离苏", TASK_WORKFLOWS["疑似返苏"].result_options)
+        self.assertIn("无需登记，原因写备注", TASK_WORKFLOWS["疑似返苏"].result_options)
+        self.assertIn("移交，移交哪个社区写备注", TASK_WORKFLOWS["疑似返苏"].result_options)
         self.assertEqual(
             task_state("疑似返苏", {"核查结果": "已登记"}),
             "unchecked",

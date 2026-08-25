@@ -326,7 +326,6 @@ export default function MobileTaskTable({
               </strong>
             </div>
             <div className="mobile-task-table-inline-readonly"><span>二次反馈</span><strong>{task.summary.secondary_feedback || '未填写'}</strong></div>
-            <div className="mobile-task-table-inline-readonly"><span>调取照片</span><strong>{task.photo_fetched ? '已调照片' : '未调照片'}</strong></div>
           </div>
           <div className="mobile-task-table-inline-actions">
             <Tooltip title={item?.reason || '当前任务只能在详情中处理'}>
@@ -359,7 +358,7 @@ export default function MobileTaskTable({
               return (
                 <label
                   key={field}
-                  className={`mobile-task-table-inline-field${/地址|反馈|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}`}
+                  className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}`}
                 >
                   <span>{field === '核查人' ? '任务分配' : field}</span>
                   {metadata.type === 'select' || field === '核查人' ? (
@@ -380,7 +379,7 @@ export default function MobileTaskTable({
                   ) : (
                     <Input.TextArea
                       size="small"
-                      placeholder="请输入"
+                      placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : '请输入'}
                       disabled={selectionMode || savingRowKey === task.task_key}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
@@ -404,10 +403,6 @@ export default function MobileTaskTable({
                 </strong>
               </div>
             )}
-            <div className="mobile-task-table-inline-readonly mobile-task-table-inline-readonly--photo">
-              <span>调取照片</span>
-              <strong>{task.photo_fetched ? '已调照片' : '未调照片'}</strong>
-            </div>
           </div>
         )}
       </div>
@@ -439,12 +434,12 @@ export default function MobileTaskTable({
       ellipsis: true,
       render: value => value || <span className="text-[var(--app-text-muted)]">待分配</span>,
     },
-    {
+    ...(rows.some(task => task.parser_type === '全链条') ? [{
       title: '来源',
       key: 'source',
       width: 130,
-      responsivePriority: 'standard',
-      render: (_, task) => {
+      responsivePriority: 'standard' as const,
+      render: (_: unknown, task: MobileTaskItem) => {
         const sources = mobileTaskSourceTags(task.summary.source)
         return sources.length
           ? (
@@ -460,7 +455,7 @@ export default function MobileTaskTable({
             )
           : <span className="text-[var(--app-text-muted)]">未填写</span>
       },
-    },
+    }] : []),
     {
       title: '姓名',
       key: 'name',
@@ -557,7 +552,6 @@ export default function MobileTaskTable({
             <Tag color={state.color}>{state.text}</Tag>
             {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
             {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
-            {task.photo_fetched && <Tag color="green">已调照片</Tag>}
             {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
             {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
             {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}

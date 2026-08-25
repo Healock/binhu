@@ -2660,6 +2660,10 @@ html.desktop-shell .ant-notification-topRight {
   margin-top: 14px;
 }
 
+.mobile-task-detail-editor-field--compact {
+  width: min(100%, 360px);
+}
+
 .mobile-task-detail-primary-actions .mobile-phone-native-select,
 .mobile-task-detail-primary-actions .mobile-task-detail-pill {
   width: 100%;

@@ -1216,7 +1216,7 @@ async def ensure_police_dispatch_schema(cur) -> None:
             `出警内容` VARCHAR(500), `出警单位` VARCHAR(500),
             `参考派出所` VARCHAR(500), `现住址` VARCHAR(500),
             `核查结果` VARCHAR(500), `研判` VARCHAR(500),
-            `二次反馈` VARCHAR(500),
+            `二次反馈` VARCHAR(500), `备注` VARCHAR(500),
             _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_suzhou_police_row_key (_row_key),
@@ -1234,7 +1234,7 @@ async def ensure_police_dispatch_schema(cur) -> None:
             `身份证号` VARCHAR(500), `联系号码` VARCHAR(500),
             `地址1` VARCHAR(500), `现住址` VARCHAR(500),
             `核查结果` VARCHAR(500), `研判` VARCHAR(500),
-            `二次反馈` VARCHAR(500),
+            `二次反馈` VARCHAR(500), `备注` VARCHAR(500),
             _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_traffic_police_row_key (_row_key),
@@ -2376,6 +2376,19 @@ class DatabaseManager:
                     "t_fullchain",
                     "登记情况",
                     "VARCHAR(500) DEFAULT NULL AFTER `地址`",
+                )
+                # 涉警来源的备注是网格员可补充的业务字段；旧库需要平滑补列。
+                await _ensure_column(
+                    cur,
+                    "t_suzhou_police",
+                    "备注",
+                    "VARCHAR(500) DEFAULT NULL AFTER `二次反馈`",
+                )
+                await _ensure_column(
+                    cur,
+                    "t_traffic_police",
+                    "备注",
+                    "VARCHAR(500) DEFAULT NULL AFTER `二次反馈`",
                 )
                 # 旧数据库平滑补齐网格员状态和请假字段
                 for column_name, column_definition in [

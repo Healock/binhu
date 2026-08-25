@@ -10,6 +10,7 @@ class RentalCheckParser(BaseParser):
         "身份证号", "手机号码", "房屋地址", "现住址", "核查结果",
         "入住方式", "研判", "二次反馈",
     ]
+    MOBILE_EDITABLE_FIELDS = ("入住方式",)
 
     def get_business_key(self) -> list[str]:
         return ["身份证号", "手机号码"]

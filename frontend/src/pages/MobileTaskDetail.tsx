@@ -1,7 +1,5 @@
 import {
   ArrowLeftOutlined,
-  CameraOutlined,
-  DownloadOutlined,
   SafetyCertificateOutlined,
   PhoneOutlined,
   SaveOutlined,
@@ -712,7 +710,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </div>
           ))}
         </dl>
-        {sourceTags.length > 0 && (
+        {parserType === '全链条' && sourceTags.length > 0 && (
           <div className="mobile-task-source-cloud mobile-task-source-cloud--detail">
             <span>来源</span>
             <div>
@@ -734,14 +732,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           {interactionLocked && phoneOptions.length > 0 && <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>只读模式</Button>}
           {phoneOptions.length === 0 && (
             <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>缺少电话号码</Button>
-          )}
-          {!interactionLocked && user?.permissions.includes('workflow.ticket.create') && (
-            <Button
-              className="mobile-task-detail-pill"
-              icon={<CameraOutlined />}
-              disabled={!identityNumber}
-              onClick={() => setPhotoRequestOpen(true)}
-            >{identityNumber ? '调取照片' : '缺少身份证号'}</Button>
           )}
           {!interactionLocked && mode === 'tasks' && data.qmf_registration?.visible && (
             <Button
@@ -835,40 +825,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         </div>
       )}
 
-      {data.photo_requests?.some(request => request.attachments.length > 0) && (
-        <section className="app-card mobile-task-photo-results">
-          <div>
-            <h2 className="font-semibold text-[var(--app-text-strong)]">已调取照片</h2>
-            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
-              照片来自已完成的快捷调照片工单，可直接预览或下载原文件。
-            </p>
-          </div>
-          <div className="mobile-task-photo-results__grid">
-            {data.photo_requests.flatMap(request => request.attachments.map(attachment => {
-              const inlineUrl = workflowApi.attachmentUrl(request.ticket_id, attachment.file_id, true)
-              const downloadUrl = workflowApi.attachmentUrl(request.ticket_id, attachment.file_id)
-              return (
-                <article key={`${request.ticket_id}-${attachment.file_id}`} className="mobile-task-photo-result">
-                  <Image
-                    className="mobile-task-photo-result__image"
-                    src={inlineUrl}
-                    alt={attachment.original_name}
-                    preview={{ src: inlineUrl }}
-                  />
-                  <div className="mobile-task-photo-result__meta">
-                    <span title={attachment.original_name}>{attachment.original_name}</span>
-                    <Button
-                      type="link"
-                      icon={<DownloadOutlined />}
-                      href={downloadUrl}
-                    >下载</Button>
-                  </div>
-                </article>
-              )
-            }))}
-          </div>
-        </section>
-      )}
 
       {(data.task.source_count > 1 || data.task.conflict) && (
         <Alert
@@ -999,7 +955,10 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   label: String(option.text),
                 })) || []
                 return (
-                  <label key={field} className="block">
+                  <label
+                    key={field}
+                    className={`block${field === '核查反馈' ? ' mobile-task-detail-editor-field--compact' : ''}`}
+                  >
                     <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">
                       {field === '核查人' ? '任务分配' : field}
                     </span>
@@ -1019,6 +978,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     ) : (
                       <Input.TextArea
                         autoSize={{ minRows: field === '现住址' ? 2 : 3, maxRows: 7 }}
+                        placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : undefined}
                         value={formValues[field] || ''}
                         onChange={event => setFormValues(current => ({ ...current, [field]: event.target.value }))}
                       />

@@ -1057,7 +1057,9 @@ export default function MobileTaskList({
               : task.summary.phone ? [task.summary.phone] : []
             const primaryPhone = copyPhones[0] || ''
             const extraPhoneCount = Math.max(copyPhones.length - 1, 0)
-            const sourceTags = mobileTaskSourceTags(task.summary.source)
+            const sourceTags = task.parser_type === '全链条'
+              ? mobileTaskSourceTags(task.summary.source)
+              : []
             const currentAddress = String(task.summary.current_address || '').trim()
             const originalAddress = String(task.summary.original_address || '').trim()
             const primaryAddress = currentAddress || originalAddress || task.summary.address
@@ -1098,7 +1100,6 @@ export default function MobileTaskList({
                   {(task.needs_review
                     || task.review_stage === 'waiting_analysis'
                     || task.review_stage === 'analyzed'
-                    || task.photo_fetched
                     || task.conflict
                     || task.source_count > 1
                     || task.pending_sync
@@ -1108,7 +1109,6 @@ export default function MobileTaskList({
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
                       {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
                       {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
-                      {task.photo_fetched && <Tag color="green">已调照片</Tag>}
                       {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
                       {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
                       {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}

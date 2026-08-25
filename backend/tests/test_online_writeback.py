@@ -614,6 +614,25 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("登记情况", unlocked)
         self.assertNotIn("研判", unlocked)
 
+    def test_business_specific_grid_fields_are_editable(self):
+        user = make_user("组员", communities=["长板"])
+        rental = get_parser("出租房屋核查")
+        suzhou = get_parser("苏州涉警")
+        traffic = get_parser("交通涉警")
+
+        self.assertIn(
+            "入住方式",
+            editable_fields_for_row(user, rental.COLUMNS, {"核查结果": ""}, extra_fields=rental.MOBILE_EDITABLE_FIELDS),
+        )
+        self.assertIn(
+            "备注",
+            editable_fields_for_row(user, suzhou.COLUMNS, {"核查结果": ""}, extra_fields=suzhou.MOBILE_EDITABLE_FIELDS),
+        )
+        self.assertIn(
+            "备注",
+            editable_fields_for_row(user, traffic.COLUMNS, {"核查结果": ""}, extra_fields=traffic.MOBILE_EDITABLE_FIELDS),
+        )
+
     async def test_batch_validation_can_save_result_and_secondary_together(self):
         user = make_user("组员", communities=["长板"])
         parser = get_parser("全链条")
