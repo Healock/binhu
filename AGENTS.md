@@ -191,11 +191,13 @@
 - 桌面客户端与平台服务端共用根目录 `VERSION`。修改版本号后必须运行 `python desktop/scripts/sync_versions.py`，并提交脚本同步的 Electron、Tauri、Velopack、安装器、`desktop/package-lock.json` 和配置文件；发布前用 `python desktop/scripts/sync_versions.py --check` 证明没有漏同步。桌面客户端不单独维护版本号，也不能只改某一个 `package.json`。
 - 桌面发布只允许通过进入 `main` 的 PR 触发。合并后的主线 CI 成功后，由 `.github/workflows/desktop-release.yml` 自动完成前端构建、Win7 Electron/VxKex 构建、Win10/11 Tauri 构建、全量包和增量包生成、更新服务器发布及 GitHub Release 归档；不得从开发电脑手工上传更新包，也不能把 GitHub Release 当作正式更新源。
 - 发布前必须确认根目录 `VERSION`、所有桌面同步文件、前端构建和桌面架构检查均通过。0.25.15 是首个全量基线；从 0.25.16 起，Win7 与 Win10/11 两个平台都必须同时提供当前版本全量包和基于上一版本全量包生成的增量包。缺少任一平台全量包、增量包、清单或校验文件时，发布必须失败。
+- Win7 与 Win10/11 的上一版本全量包必须按平台隔离存放和读取，禁止把两个平台的基线包放入同一目录后用“取第一个文件”的方式选择。Win7 只能使用 `com.bhzh.binhu.win7.x64`，Win10/11 只能使用 `com.bhzh.binhu.win10.x64`；构建前必须校验基线文件名、Nuspec PackageId 和上一版本号，构建后必须校验清单中的每个包仍属于当前平台。
 - 桌面版本门禁允许同一版本标签指向较早提交的情况，但仅限于当前提交相对已发布提交没有改变 `VERSION`、`frontend/` 或 `desktop/`。只改 CI/CD、发布脚本、文档或其他发布元数据时可以跳过重复构建；只要上述发布面发生变化而版本号没有增加，必须拒绝发布。版本降低、同版本不同发布提交、文件哈希错误、非法文件名、目录穿越和缺少上一版本全量包都必须拒绝。
 - 更新服务器发布使用受限的 `binhu-update-publish` 账号和固定网关。并发锁只能使用 `/srv/binhu-updates/state/publish.lock`；禁止重新使用更新根目录下的 `publish.lock`，也不能把 root SSH、Docker Socket 或任意 Shell 权限交给 GitHub Actions。正式更新地址固定为 `https://47.100.44.36/updates/win7-x64/` 和 `https://47.100.44.36/updates/win10-x64/`。
 - 桌面发布需要上一版全量包来生成增量包；GitHub Runner 不得直接假定更新服务器 HTTPS 下载一定可达。受限网关可以提供只读的 `fetch <平台> <当前全量包文件名>`，但只能读取当前状态文件指定的 `public/<平台>/` 全量包，禁止读取归档、任意文件或执行其他命令。修改 `desktop/server/` 后，必须先由运维按 `desktop/server/install-server.sh` 更新服务器固定入口，再触发桌面发布工作流。
 - 若服务器网关尚未升级或 GitHub Runner 临时无法读取更新服务器，构建阶段可以从上一版本的 GitHub 审计 Release 获取同名全量包作为兜底，但必须同时下载对应平台的 `checksums.sha256` 并校验通过。此兜底只用于生成增量包，客户端更新地址、发布清单和正式安装包仍只能由更新服务器提供。
 - 桌面发布完成后，先检查两平台 `releases.stable.json` 均包含 `0.25.16` 的 `Full` 与 `Delta`，再以 0.25.15 客户端验收“发现更新、优先增量、增量失败回退全量、重启后版本与本地会话/配置保持”。GitHub Release 只用于审计和备用归档；实机验收通过前不得手工改标签或重复发布同一版本。
+- 更新服务器发布门禁必须拒绝跨平台包、跨平台 PackageId 和跨平台清单引用；发布后必须从公网分别读取 Win7、Win10/11 清单，确认不存在其他平台的包。发现平台污染时不得覆盖原版本清单或重写原 Delta，必须提升修订版本重新生成 Full/Delta，并明确标记受影响版本的增量包不可依赖。
 - 以后处理桌面 PR 时，汇报必须区分“代码已合并”“CI 已通过”“更新服务器已发布”“GitHub Release 已归档”和“Win7/Win10 实机已验收”五个状态；任何一项未完成都不能笼统写成“已上线”。
 - 桌面版本发布流程固定为：PR 评审 → 合并 `main` → 主 CI 成功 → 确认服务器网关版本 → Desktop release 自动构建 Full/Delta → 更新服务器两平台清单核验 → GitHub Release 审计归档 → Win7 与 Win10/11 实机验收。发布失败时先区分代码门禁、构建、基线包获取、服务器发布和客户端验收，不得手工补传包或提前创建标签；只有更新服务器和 Release 都成功后，才向使用者报告“可验收”。
 - 如果 Desktop release 已经成功发布更新服务器，但仅在 GitHub Release 资产上传或归档阶段失败，必须将其视为“服务器已发布、审计归档待补齐”：禁止回滚或再次发布同一版本，禁止把当前版本当作下一次增量基线；应从该次成功构建产物或线上已核验的当前版本 Full/Delta、安装器和清单中恢复同一个 `v<version>` Release，并记录原始运行号、发布提交和资产哈希。恢复完成后再继续实机验收。

@@ -126,7 +126,7 @@ def load_json(path: Path) -> dict:
     return value
 
 
-def nupkg_version(path: Path) -> str:
+def nupkg_metadata(path: Path) -> tuple[str, str]:
     try:
         with zipfile.ZipFile(path) as package:
             nuspecs = [name for name in package.namelist() if name.lower().endswith(".nuspec")]
@@ -135,10 +135,20 @@ def nupkg_version(path: Path) -> str:
             root = ElementTree.fromstring(package.read(nuspecs[0]))
     except (zipfile.BadZipFile, ElementTree.ParseError) as error:
         raise PublishError(f"invalid nupkg {path.name}: {error}") from error
-    for element in root.iter():
-        if element.tag.rsplit("}", 1)[-1] == "version" and element.text:
-            return element.text.strip()
-    raise PublishError(f"nupkg has no version: {path.name}")
+    metadata = {
+        element.tag.rsplit("}", 1)[-1]: element.text.strip()
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] in {"id", "version"} and element.text
+    }
+    package_id = metadata.get("id")
+    version = metadata.get("version")
+    if not package_id or not version:
+        raise PublishError(f"nupkg has no package id or version: {path.name}")
+    return package_id, version
+
+
+def nupkg_version(path: Path) -> str:
+    return nupkg_metadata(path)[1]
 
 
 def validate_declared_files(
@@ -184,9 +194,12 @@ def validate_windows_platform(stage: Path, platform: str, expected_version: str,
     )
     if "releases.stable.json" not in actual_names:
         raise PublishError(f"missing Velopack feed for {platform}")
+    expected_package_id = f"com.bhzh.binhu.{platform}"
     for name in actual_names:
         if name.endswith(".nupkg"):
-            package_version = nupkg_version(platform_root / name)
+            package_id, package_version = nupkg_metadata(platform_root / name)
+            if package_id != expected_package_id:
+                raise PublishError(f"cross-platform package in {platform}: {name}")
             if parse_version(package_version) > parse_version(expected_version):
                 raise PublishError(f"package version is newer than the release: {platform}/{name}")
 
@@ -202,6 +215,8 @@ def validate_windows_platform(stage: Path, platform: str, expected_version: str,
         filename = asset.get("FileName")
         if not isinstance(filename, str) or filename not in actual_names or not filename.endswith(".nupkg"):
             raise PublishError(f"feed references missing package: {platform}/{filename}")
+        if asset.get("PackageId") != expected_package_id:
+            raise PublishError(f"feed contains cross-platform package: {platform}/{filename}")
         asset_version = asset.get("Version")
         if not isinstance(asset_version, str) or parse_version(asset_version) > parse_version(expected_version):
             raise PublishError(f"feed version mismatch: {platform}/{filename}")

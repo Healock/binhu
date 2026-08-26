@@ -12,8 +12,8 @@ from unittest import mock
 from desktop.server import binhu_update_gateway as gateway
 
 
-def make_nupkg(path: Path, version: str) -> None:
-    nuspec = f"""<?xml version="1.0"?><package><metadata><id>Binhu</id><version>{version}</version></metadata></package>"""
+def make_nupkg(path: Path, version: str, package_id: str) -> None:
+    nuspec = f"""<?xml version="1.0"?><package><metadata><id>{package_id}</id><version>{version}</version></metadata></package>"""
     with zipfile.ZipFile(path, "w") as package:
         package.writestr("Binhu.nuspec", nuspec)
 
@@ -55,14 +55,15 @@ class GatewayTests(unittest.TestCase):
         for platform in gateway.WINDOWS_PLATFORMS:
             platform_root = source / platform
             platform_root.mkdir()
+            package_id = f"com.bhzh.binhu.{platform}"
             full = platform_root / f"Binhu-{platform}-{version}-full.nupkg"
-            make_nupkg(full, version)
+            make_nupkg(full, version, package_id)
             if include_delta is None:
                 include_delta = version != "0.25.15"
             delta = None
             if include_delta:
                 delta = platform_root / f"Binhu-{platform}-{version}-delta.nupkg"
-                make_nupkg(delta, version)
+                make_nupkg(delta, version, package_id)
             setup = platform_root / f"Binhu-{platform}-Setup.exe"
             setup.write_bytes(b"setup")
             assets = [{
@@ -160,6 +161,30 @@ class GatewayTests(unittest.TestCase):
     def test_rejects_manifest_hash_mismatch(self):
         def mutate(_source, manifest):
             manifest["platforms"]["win7-x64"]["files"][0]["sha256"] = "0" * 64
+        self.assertEqual(self.run_publish(self.bundle(mutate=mutate)), 1)
+
+    def test_rejects_cross_platform_package_id(self):
+        def mutate(source, manifest):
+            package_path = source / "win7-x64" / "Binhu-win7-x64-0.25.15-full.nupkg"
+            make_nupkg(package_path, "0.25.15", "com.bhzh.binhu.win10.x64")
+            for item in manifest["platforms"]["win7-x64"]["files"]:
+                if item["name"] == package_path.name:
+                    item["size"] = package_path.stat().st_size
+                    item["sha256"] = digest(package_path)
+
+        self.assertEqual(self.run_publish(self.bundle(mutate=mutate)), 1)
+
+    def test_rejects_cross_platform_feed_package_id(self):
+        def mutate(source, manifest):
+            feed_path = source / "win7-x64" / "releases.stable.json"
+            feed = json.loads(feed_path.read_text())
+            feed["Assets"][0]["PackageId"] = "com.bhzh.binhu.win10.x64"
+            feed_path.write_text(json.dumps(feed), encoding="utf-8")
+            for item in manifest["platforms"]["win7-x64"]["files"]:
+                if item["name"] == feed_path.name:
+                    item["size"] = feed_path.stat().st_size
+                    item["sha256"] = digest(feed_path)
+
         self.assertEqual(self.run_publish(self.bundle(mutate=mutate)), 1)
 
     def test_rejects_android_manifest_and_real_signer_mismatch(self):
