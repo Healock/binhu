@@ -1226,12 +1226,13 @@ async def update_community_aliases(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT id, name FROM _communities")
+            await cur.execute("SELECT id, name, qmf_community_code FROM _communities")
             community_rows = await cur.fetchall()
             communities = {
                 row[0]: {
                     "name": str(row[1]).strip(),
                     "normalized_name": normalize_community(row[1]),
+                    "qmf_community_code": str(row[2] or "").strip(),
                 }
                 for row in community_rows
             }
@@ -1252,10 +1253,23 @@ async def update_community_aliases(
                 )
 
             if "qmf_community_code" in data.model_fields_set:
+                previous_code = str(current.get("qmf_community_code") or "").strip()
+                next_code = str(data.qmf_community_code or "").strip()
                 await cur.execute(
                     "UPDATE _communities SET qmf_community_code=%s WHERE id=%s",
                     (data.qmf_community_code or None, community_id),
                 )
+                session_keys = {
+                    f"residence_session_{code}"
+                    for code in (previous_code, next_code)
+                    if code
+                }
+                if session_keys:
+                    placeholders = ",".join(["%s"] * len(session_keys))
+                    await cur.execute(
+                        f"DELETE FROM _system_config WHERE config_key IN ({placeholders})",
+                        tuple(sorted(session_keys)),
+                    )
 
             if "qmf_organization_codes" in data.model_fields_set:
                 requested_codes = set(data.qmf_organization_codes)

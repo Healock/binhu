@@ -21,6 +21,11 @@ const ERROR_LABELS: Record<string, string> = {
   request_error: '居住证平台查询暂时不可用',
   source_changed: '任务来源已变化',
   interrupted: '上次查询被服务重启中断，系统将继续查询',
+  community_missing: '任务社区未填写',
+  community_not_found: '任务社区无法匹配社区管理',
+  community_ambiguous: '任务社区匹配到多个社区',
+  community_code_missing: '社区尚未配置全民防社区代码',
+  login_rejected: '社区账号登录失败',
 }
 
 export default function ResidenceRegistrationStatus({
@@ -36,6 +41,7 @@ export default function ResidenceRegistrationStatus({
   const detail = [
     `居住证状态：${meta.label}`,
     status.checked_at ? `查询时间：${formatTime(status.checked_at)}` : '',
+    typeof status.duration_ms === 'number' ? `本次耗时：${(status.duration_ms / 1000).toFixed(2)} 秒` : '',
     status.error_code ? `说明：${ERROR_LABELS[status.error_code] || '查询结果需要人工核对'}` : '',
   ].filter(Boolean)
   return (

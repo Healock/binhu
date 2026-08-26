@@ -152,16 +152,24 @@ class ResidencePlatformClient:
             raise ResidencePlatformError("mac_missing", "MAC 服务未返回设备地址")
         return mac
 
-    async def login(self, *, captcha: str, check_key: str) -> tuple[str, str]:
+    async def login(
+        self,
+        *,
+        captcha: str = "",
+        check_key: str = "",
+    ) -> tuple[str, str]:
         if not self.config.credentials_configured:
             raise ResidencePlatformError("config_incomplete", "请先完整填写居住证平台配置")
+        effective_check_key = str(check_key or "").strip()
+        if not effective_check_key:
+            effective_check_key, _ = await self.fetch_captcha()
         body = {
             "username": self.config.username,
             "password": self.config.password,
             "mac": await self._read_mac(),
             "remember_me": True,
             "captcha": str(captcha or "").strip(),
-            "checkKey": str(check_key or "").strip(),
+            "checkKey": effective_check_key,
             "terminalType": 1,
         }
         async with self._client() as client:
@@ -175,7 +183,7 @@ class ResidencePlatformClient:
         if not isinstance(payload, dict) or not payload.get("success"):
             raise ResidencePlatformError(
                 "login_rejected",
-                "居住证平台拒绝登录，请检查验证码、账号和设备信息",
+                "居住证平台拒绝登录，请检查社区账号、统一密码和设备信息",
             )
         result = payload.get("result")
         token = str(result.get("token") or "").strip() if isinstance(result, dict) else ""

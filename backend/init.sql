@@ -528,6 +528,7 @@ CREATE TABLE IF NOT EXISTS _residence_registration_status (
     error_code VARCHAR(64) NOT NULL DEFAULT '',
     checked_at DATETIME DEFAULT NULL,
     last_attempt_at DATETIME DEFAULT NULL,
+    duration_ms INT UNSIGNED DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (parser_type,row_key),
