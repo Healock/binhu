@@ -1319,7 +1319,7 @@ CREATE TABLE IF NOT EXISTS t_group_rental (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
--- OnlineDataArchive 库：7张归档表（结构同业务表 + 归档元数据）
+-- OnlineDataArchive 库：9张归档表（结构同业务表 + 归档元数据）
 -- ============================================================
 USE OnlineDataArchive;
 
@@ -1364,6 +1364,18 @@ ALTER TABLE t_group_rental_archive ADD COLUMN _archived_at DATETIME DEFAULT CURR
                                    ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
                                    DROP INDEX uk_row_key,
                                    ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_suzhou_police_archive LIKE OnlineData.t_suzhou_police;
+ALTER TABLE t_suzhou_police_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                    ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                    DROP INDEX uk_row_key,
+                                    ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_traffic_police_archive LIKE OnlineData.t_traffic_police;
+ALTER TABLE t_traffic_police_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                     ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                     DROP INDEX uk_row_key,
+                                     ADD INDEX idx_row_key (_row_key);
 
 -- ============================================================
 -- daily_report 库：元数据表（日报表后续动态创建）
