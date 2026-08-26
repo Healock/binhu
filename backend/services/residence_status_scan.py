@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from services.qmf_registration import normalize_identity, valid_identity
+from services.qmf_community import normalize_qmf_community_code, valid_qmf_community_code
 from services.residence_platform import ResidencePlatformClient, ResidencePlatformError
-from services.residence_platform_config import load_residence_config
+from services.residence_platform_config import (
+    ResidenceCommunitySession,
+    ResidencePlatformConfig,
+    load_residence_config,
+    load_residence_session,
+    residence_username,
+    save_residence_session,
+)
+from services.police_dispatch import normalize_community_label
+from services.parsers import get_parser
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 
 
@@ -17,6 +29,13 @@ LOOKUP_BATCH_SIZE = 50
 LOOKUP_CONCURRENCY = 2
 REFRESH_DAYS = 7
 _wake_event = asyncio.Event()
+_community_login_locks: dict[str, asyncio.Lock] = {}
+
+
+@dataclass(frozen=True)
+class ResidenceLookupTarget:
+    identity: str
+    community_code: str
 
 
 def _pool():
@@ -36,6 +55,7 @@ async def ensure_residence_status_schema(cur) -> None:
             error_code VARCHAR(64) NOT NULL DEFAULT '',
             checked_at DATETIME DEFAULT NULL,
             last_attempt_at DATETIME DEFAULT NULL,
+            duration_ms INT UNSIGNED DEFAULT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP,
@@ -47,6 +67,14 @@ async def ensure_residence_status_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
         """
     )
+    await cur.execute(
+        "SHOW COLUMNS FROM _residence_registration_status LIKE 'duration_ms'"
+    )
+    if not await cur.fetchone():
+        await cur.execute(
+            "ALTER TABLE _residence_registration_status "
+            "ADD COLUMN duration_ms INT UNSIGNED DEFAULT NULL AFTER last_attempt_at"
+        )
 
 
 def _values(raw: Any) -> dict[str, str]:
@@ -80,7 +108,7 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE _residence_registration_status "
-                "SET status='pending',error_code='interrupted' "
+                "SET status='pending',error_code='interrupted',duration_ms=NULL "
                 "WHERE status='querying' "
                 "AND last_attempt_at<DATE_SUB(UTC_TIMESTAMP(), INTERVAL 5 MINUTE)"
             )
@@ -107,7 +135,8 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
                         VALUES (%s,%s,%s,%s,%s,NULL,NULL)
                         ON DUPLICATE KEY UPDATE
                             identity_hmac=VALUES(identity_hmac),status=VALUES(status),
-                            error_code=VALUES(error_code),checked_at=NULL,last_attempt_at=NULL
+                            error_code=VALUES(error_code),checked_at=NULL,
+                            last_attempt_at=NULL,duration_ms=NULL
                         """,
                         (parser_type, row_key, identity_hmac, status, error_code),
                     )
@@ -123,6 +152,7 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
                         error_code=IF(identity_hmac<>VALUES(identity_hmac),'',error_code),
                         checked_at=IF(identity_hmac<>VALUES(identity_hmac),NULL,checked_at),
                         last_attempt_at=IF(identity_hmac<>VALUES(identity_hmac),NULL,last_attempt_at),
+                        duration_ms=IF(identity_hmac<>VALUES(identity_hmac),NULL,duration_ms),
                         identity_hmac=VALUES(identity_hmac)
                     """,
                     (parser_type, row_key, identity_hmac, status, error_code),
@@ -131,7 +161,7 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
             await cur.execute(
                 """
                 UPDATE _residence_registration_status
-                SET status='pending',error_code='',last_attempt_at=NULL
+                SET status='pending',error_code='',last_attempt_at=NULL,duration_ms=NULL
                 WHERE status IN ('registered','first_registration')
                   AND checked_at<DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
                 """
@@ -171,7 +201,39 @@ async def _claim_pending(limit: int) -> list[tuple[str, str, str]]:
     return rows
 
 
-async def _load_current_identity(parser_type: str, row_key: str, expected_hmac: str) -> str:
+async def _resolve_community_code(cur, source_community: str) -> str:
+    source_key = normalize_community_label(source_community)
+    if not source_key:
+        raise ResidencePlatformError("community_missing", "任务社区未填写")
+    await cur.execute(
+        """
+        SELECT community.id,community.name,community.qmf_community_code,alias.alias
+        FROM _communities AS community
+        LEFT JOIN _community_aliases AS alias ON alias.community_id=community.id
+        WHERE community.is_active=1
+        ORDER BY community.id,alias.id
+        """
+    )
+    matches: dict[int, str] = {}
+    for community_id, name, community_code, alias in await cur.fetchall():
+        labels = (str(name or ""), str(alias or ""))
+        if any(normalize_community_label(label) == source_key for label in labels if label):
+            matches[int(community_id)] = normalize_qmf_community_code(community_code)
+    if not matches:
+        raise ResidencePlatformError("community_not_found", "任务社区无法匹配社区管理")
+    if len(matches) != 1:
+        raise ResidencePlatformError("community_ambiguous", "任务社区匹配到多个社区")
+    code = next(iter(matches.values()))
+    if not valid_qmf_community_code(code):
+        raise ResidencePlatformError("community_code_missing", "社区尚未配置全民防社区代码")
+    return code
+
+
+async def _load_current_target(
+    parser_type: str,
+    row_key: str,
+    expected_hmac: str,
+) -> ResidenceLookupTarget:
     pool = _pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -181,12 +243,73 @@ async def _load_current_identity(parser_type: str, row_key: str, expected_hmac: 
                 (parser_type, row_key),
             )
             row = await cur.fetchone()
-    if not row or str(row[1] or "") != expected_hmac:
-        raise ResidencePlatformError("source_changed", "任务来源已变化")
-    identity = _identity(parser_type, row[0])
-    if not valid_identity(identity):
-        raise ResidencePlatformError("invalid_identity", "身份证号码无效")
-    return identity
+            if not row or str(row[1] or "") != expected_hmac:
+                raise ResidencePlatformError("source_changed", "任务来源已变化")
+            values = _values(row[0])
+            identity = _identity(parser_type, values)
+            if not valid_identity(identity):
+                raise ResidencePlatformError("invalid_identity", "身份证号码无效")
+            parser = get_parser(parser_type)
+            community_code = await _resolve_community_code(
+                cur,
+                parser.community_value(values),
+            )
+    return ResidenceLookupTarget(identity=identity, community_code=community_code)
+
+
+async def _community_client(
+    config: ResidencePlatformConfig,
+    community_code: str,
+    *,
+    rejected_token: str = "",
+) -> ResidencePlatformClient:
+    pool = _pool()
+    async with pool.acquire() as conn:
+        session = await load_residence_session(conn, community_code)
+    if session is None or session.token == rejected_token:
+        lock = _community_login_locks.setdefault(community_code, asyncio.Lock())
+        async with lock:
+            async with pool.acquire() as conn:
+                session = await load_residence_session(conn, community_code)
+            if session is None or session.token == rejected_token:
+                login_config = replace(
+                    config,
+                    username=residence_username(community_code),
+                    access_token="",
+                    organization_code="",
+                )
+                token, detected_org = await ResidencePlatformClient(login_config).login()
+                organization_code = detected_org or community_code[:6]
+                session = ResidenceCommunitySession(
+                    token=token,
+                    organization_code=organization_code,
+                )
+                async with pool.acquire() as conn:
+                    await save_residence_session(conn, community_code, session)
+    return ResidencePlatformClient(replace(
+        config,
+        username=residence_username(community_code),
+        access_token=session.token,
+        organization_code=session.organization_code,
+    ))
+
+
+async def _lookup_target(
+    config: ResidencePlatformConfig,
+    target: ResidenceLookupTarget,
+) -> Any:
+    client = await _community_client(config, target.community_code)
+    try:
+        return await client.lookup(target.identity)
+    except ResidencePlatformError as exc:
+        if exc.code != "authentication_expired":
+            raise
+    client = await _community_client(
+        config,
+        target.community_code,
+        rejected_token=client.config.access_token,
+    )
+    return await client.lookup(target.identity)
 
 
 async def _save_result(
@@ -195,40 +318,61 @@ async def _save_result(
     *,
     status: str,
     error_code: str = "",
+    duration_ms: int | None = None,
 ) -> None:
     pool = _pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE _residence_registration_status "
-                "SET status=%s,error_code=%s,checked_at=UTC_TIMESTAMP() "
+                "SET status=%s,error_code=%s,duration_ms=%s,checked_at=UTC_TIMESTAMP() "
                 "WHERE parser_type=%s AND row_key=%s",
-                (status, error_code[:64], parser_type, row_key),
+                (
+                    status,
+                    error_code[:64],
+                    max(0, int(duration_ms)) if duration_ms is not None else None,
+                    parser_type,
+                    row_key,
+                ),
             )
         await conn.commit()
 
 
 async def _process_one(
-    client: ResidencePlatformClient,
+    config: ResidencePlatformConfig,
     item: tuple[str, str, str],
 ) -> str:
     parser_type, row_key, identity_hmac = item
+    started = time.perf_counter()
     try:
-        identity = await _load_current_identity(parser_type, row_key, identity_hmac)
-        result = await client.lookup(identity)
+        target = await _load_current_target(parser_type, row_key, identity_hmac)
+        result = await _lookup_target(config, target)
         await _save_result(
             parser_type,
             row_key,
             status=result.state,
             error_code=result.error_code,
+            duration_ms=round((time.perf_counter() - started) * 1000),
         )
         return result.error_code
     except ResidencePlatformError as exc:
         status = "pending" if exc.code == "source_changed" else "error"
-        await _save_result(parser_type, row_key, status=status, error_code=exc.code)
+        await _save_result(
+            parser_type,
+            row_key,
+            status=status,
+            error_code=exc.code,
+            duration_ms=round((time.perf_counter() - started) * 1000),
+        )
         return exc.code
     except Exception:  # noqa: BLE001 - external response details must not reach logs
-        await _save_result(parser_type, row_key, status="error", error_code="request_error")
+        await _save_result(
+            parser_type,
+            row_key,
+            status="error",
+            error_code="request_error",
+            duration_ms=round((time.perf_counter() - started) * 1000),
+        )
         return "request_error"
 
 
@@ -243,12 +387,11 @@ async def run_residence_lookup_cycle(*, queue_tasks: bool = True) -> dict[str, i
     items = await _claim_pending(LOOKUP_BATCH_SIZE)
     if not items:
         return {"processed": 0, "status": "idle"}
-    client = ResidencePlatformClient(config)
     semaphore = asyncio.Semaphore(LOOKUP_CONCURRENCY)
 
     async def guarded(item):
         async with semaphore:
-            return await _process_one(client, item)
+            return await _process_one(config, item)
 
     errors = await asyncio.gather(*(guarded(item) for item in items))
     if "authentication_expired" in errors:
@@ -295,7 +438,7 @@ async def residence_status_by_rows(
     await cur.execute(
         f"""
         SELECT status.row_key,status.identity_hmac,status.status,status.error_code,
-               status.checked_at,status.last_attempt_at
+               status.checked_at,status.last_attempt_at,status.duration_ms
         FROM _residence_registration_status AS status
         JOIN _online_source_projection AS projection
           ON projection.parser_type=status.parser_type
@@ -306,7 +449,7 @@ async def residence_status_by_rows(
         (parser_type, *keys),
     )
     result: dict[str, dict[str, Any]] = {}
-    for row_key, identity_hmac, status, error_code, checked_at, last_attempt_at in await cur.fetchall():
+    for row_key, identity_hmac, status, error_code, checked_at, last_attempt_at, duration_ms in await cur.fetchall():
         key = str(row_key)
         state = str(status or "pending")
         result[key] = {
@@ -314,5 +457,6 @@ async def residence_status_by_rows(
             "checked_at": checked_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z") if isinstance(checked_at, datetime) else None,
             "last_attempt_at": last_attempt_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z") if isinstance(last_attempt_at, datetime) else None,
             "error_code": str(error_code or ""),
+            "duration_ms": int(duration_ms) if duration_ms is not None else None,
         }
     return result

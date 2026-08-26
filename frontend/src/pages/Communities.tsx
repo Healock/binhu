@@ -207,6 +207,14 @@ export default function Communities() {
       render: value => value || <Tag color="warning">待填写</Tag>,
     },
     {
+      title: '居住证账号',
+      key: 'residence_username',
+      width: 170,
+      render: (_, community) => community.qmf_community_code
+        ? `${community.qmf_community_code}00`
+        : <Tag color="warning">待生成</Tag>,
+    },
+    {
       title: '全民防组织编码',
       dataIndex: 'qmf_organization_codes',
       key: 'qmf_organization_codes',
@@ -308,6 +316,7 @@ export default function Communities() {
       community.name,
       community.area_name,
       community.qmf_community_code,
+      community.qmf_community_code ? `${community.qmf_community_code}00` : '',
       ...(community.qmf_organization_codes || []),
       ...(community.aliases || []),
       ...(community.police_officers || []),
@@ -318,7 +327,7 @@ export default function Communities() {
     <div className="app-page">
       <PageHeader
         title="社区管理"
-        description="维护片区、社区名单、别名和社区民警；片长的在线编辑范围以片区配置为准"
+        description="维护片区、社区名单、别名和社区民警；居住证账号由全民防社区代码末尾追加 00 自动生成"
       />
 
       <section className="app-card app-card--padded">
@@ -398,6 +407,9 @@ export default function Communities() {
                     <div className="text-sm text-gray-500">人员 {c.grid_count} 人</div>
                     <div className="mt-1 text-sm text-slate-600">片区：{c.area_name || '待分配'}</div>
                     <div className="mt-1 text-sm text-slate-600">全民防社区代码：{c.qmf_community_code || '待填写'}</div>
+                    <div className="mt-1 text-sm text-slate-600">
+                      居住证账号：{c.qmf_community_code ? `${c.qmf_community_code}00` : '待生成'}
+                    </div>
                     <div className="mt-1 text-sm text-slate-600">
                       全民防组织编码：{c.qmf_organization_codes?.length ? c.qmf_organization_codes.join('、') : '待配置'}
                     </div>

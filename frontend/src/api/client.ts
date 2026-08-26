@@ -1160,6 +1160,7 @@ export interface MobileTaskResidenceStatus {
   checked_at: string | null
   last_attempt_at: string | null
   error_code: string
+  duration_ms?: number | null
 }
 
 export type QmfFeedbackState =
@@ -1533,23 +1534,22 @@ export interface QmfConfigUpdate {
 export interface ResidencePlatformConfig {
   enabled: boolean
   base_url: string
-  username: string
   password_configured: boolean
   mac_service_url: string
-  access_token_configured: boolean
-  organization_code: string
   timeout_seconds: number
   credentials_configured: boolean
   session_ready: boolean
+  account_mode: 'community_code_suffix_00'
+  login_mode: 'automatic_hidden_challenge'
+  community_account_count: number
+  active_session_count: number
 }
 
 export interface ResidencePlatformConfigUpdate {
   enabled: boolean
   base_url: string
-  username: string
   password?: string
   mac_service_url: string
-  organization_code: string
   timeout_seconds: number
 }
 
@@ -1889,19 +1889,6 @@ export async function updateResidencePlatformConfig(
   payload: ResidencePlatformConfigUpdate,
 ): Promise<ResidencePlatformConfig> {
   const { data } = await api.put('/residence-platform/config', payload, activeRequest)
-  return data
-}
-
-export async function getResidencePlatformCaptcha(): Promise<{ check_key: string; image: string }> {
-  const { data } = await api.post('/residence-platform/captcha', {}, activeRequest)
-  return data
-}
-
-export async function loginResidencePlatform(payload: {
-  captcha: string
-  check_key: string
-}): Promise<ResidencePlatformConfig> {
-  const { data } = await api.post('/residence-platform/login', payload, activeRequest)
   return data
 }
 

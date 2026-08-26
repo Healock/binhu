@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from pathlib import Path
 
 import httpx
 
@@ -14,6 +15,7 @@ from services.residence_platform import (  # noqa: E402
 )
 from services.residence_platform_config import (  # noqa: E402
     ResidencePlatformConfig,
+    residence_username,
     serialize_residence_value,
 )
 from services.qmf_config import decrypt_secret  # noqa: E402
@@ -38,6 +40,16 @@ def config(**overrides) -> ResidencePlatformConfig:
 
 
 class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
+    def test_community_account_is_derived_from_qmf_code(self):
+        self.assertEqual(residence_username("A123456789"), "A12345678900")
+        with self.assertRaises(ValueError):
+            residence_username("320584")
+
+    def test_residence_status_schema_tracks_safe_total_duration(self):
+        source = Path(__file__).parents[1].joinpath("services", "residence_status_scan.py").read_text(encoding="utf-8")
+        self.assertIn("duration_ms INT UNSIGNED DEFAULT NULL", source)
+        self.assertIn("time.perf_counter()", source)
+
     def test_confirmed_no_data_contract_is_the_only_first_registration_result(self):
         self.assertEqual(
             classify_floating_response({
@@ -186,6 +198,42 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "login_rejected")
         self.assertNotIn("fixture-sensitive", str(raised.exception))
         self.assertEqual(len(requests), 2)
+
+    async def test_login_fetches_hidden_challenge_and_submits_empty_captcha(self):
+        requests: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.host == "mac.invalid":
+                return httpx.Response(200, json={"mac": "AA-BB-CC-DD-EE-FF"})
+            if "/sys/randomImage/" in request.url.path:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "result": "data:image/png;base64,ZmFrZQ==",
+                })
+            body = json.loads(request.content.decode("utf-8"))
+            self.assertEqual(body["captcha"], "")
+            self.assertTrue(str(body["checkKey"]).isdigit())
+            self.assertEqual(body["username"], "fixture-user")
+            return httpx.Response(200, json={
+                "success": True,
+                "result": {
+                    "token": "fixture-new-token",
+                    "userInfo": {"orgCode": "999999999900"},
+                },
+            })
+
+        token, organization_code = await ResidencePlatformClient(
+            config(access_token=""),
+            transport=httpx.MockTransport(handler),
+        ).login()
+
+        self.assertEqual(token, "fixture-new-token")
+        self.assertEqual(organization_code, "999999999900")
+        self.assertEqual(
+            [request.method for request in requests],
+            ["GET", "GET", "POST"],
+        )
 
 
 if __name__ == "__main__":

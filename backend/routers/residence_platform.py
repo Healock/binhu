@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from database import get_db
 from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
-from services.residence_platform import ResidencePlatformClient, ResidencePlatformError
 from services.residence_platform_config import (
     RESIDENCE_CONFIG_KEYS,
+    clear_residence_sessions,
     load_residence_config,
     public_residence_config,
     serialize_residence_value,
@@ -31,18 +31,9 @@ class ResidenceConfigUpdate(BaseModel):
 
     enabled: bool = False
     base_url: str = Field(max_length=500)
-    username: str = Field(default="", max_length=200)
     password: str | None = Field(default=None, max_length=500)
     mac_service_url: str = Field(default="http://127.0.0.1:23333", max_length=500)
-    organization_code: str = Field(default="", max_length=100)
     timeout_seconds: int = Field(default=15, ge=1, le=120)
-
-
-class ResidenceLoginRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    captcha: str = Field(min_length=1, max_length=20)
-    check_key: str = Field(min_length=1, max_length=40)
 
 
 async def _save_values(conn, values: dict[str, Any]) -> None:
@@ -58,12 +49,33 @@ async def _save_values(conn, values: dict[str, Any]) -> None:
             )
 
 
+async def _public_config(conn) -> dict[str, Any]:
+    config = await load_residence_config(conn)
+    payload = public_residence_config(config)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COUNT(*) FROM _communities "
+            "WHERE is_active=1 AND qmf_community_code REGEXP '^[0-9A-Z]{10}$'"
+        )
+        payload["community_account_count"] = int((await cur.fetchone())[0] or 0)
+        payload["session_ready"] = bool(
+            payload["session_ready"] and payload["community_account_count"]
+        )
+        await cur.execute(
+            "SELECT COUNT(*) FROM _system_config "
+            "WHERE LEFT(config_key,%s)=%s",
+            (len("residence_session_"), "residence_session_"),
+        )
+        payload["active_session_count"] = int((await cur.fetchone())[0] or 0)
+    return payload
+
+
 @router.get("/config")
 async def get_residence_config(
     _user: dict = Depends(require_super_admin),
     conn=Depends(get_db),
 ):
-    return public_residence_config(await load_residence_config(conn))
+    return await _public_config(conn)
 
 
 @router.put("/config")
@@ -78,26 +90,21 @@ async def update_residence_config(
     if data.enabled and not all(
         (
             data.base_url.strip(),
-            data.username.strip(),
             password,
             data.mac_service_url.strip(),
         )
     ):
-        raise HTTPException(400, "开启居住证查询前请完整填写接口、账号、密码和 MAC 服务")
+        raise HTTPException(400, "开启居住证查询前请完整填写接口、统一密码和 MAC 服务")
     values: dict[str, Any] = {
         "residence_lookup_enabled": "1" if data.enabled else "0",
         "residence_base_url": data.base_url.strip().rstrip("/"),
-        "residence_username": data.username.strip(),
         "residence_mac_service_url": data.mac_service_url.strip().rstrip("/"),
-        "residence_organization_code": data.organization_code.strip(),
         "residence_timeout_seconds": str(data.timeout_seconds),
     }
     connection_changed = any(
         (
             data.base_url.strip().rstrip("/") != current.base_url,
-            data.username.strip() != current.username,
             data.mac_service_url.strip().rstrip("/") != current.mac_service_url,
-            data.organization_code.strip() != current.organization_code,
         )
     )
     if data.password is not None:
@@ -105,6 +112,8 @@ async def update_residence_config(
     if data.password is not None or connection_changed:
         values["residence_access_token"] = ""
     await _save_values(conn, values)
+    if data.password is not None or connection_changed:
+        await clear_residence_sessions(conn)
     await record_admin_audit(
         user,
         "residence_platform.config.update",
@@ -114,59 +123,7 @@ async def update_residence_config(
         **request_audit_fields(request),
     )
     wake_residence_lookup_scheduler()
-    return public_residence_config(await load_residence_config(conn))
-
-
-@router.post("/captcha")
-async def fetch_residence_captcha(
-    _user: dict = Depends(require_super_admin),
-    conn=Depends(get_db),
-):
-    try:
-        check_key, image = await ResidencePlatformClient(
-            await load_residence_config(conn)
-        ).fetch_captcha()
-        return {"check_key": check_key, "image": image}
-    except ResidencePlatformError as exc:
-        raise HTTPException(502, {"code": exc.code, "message": str(exc)}) from exc
-
-
-@router.post("/login")
-async def login_residence_platform(
-    data: ResidenceLoginRequest,
-    request: Request,
-    user: dict = Depends(require_super_admin),
-    conn=Depends(get_db),
-):
-    config = await load_residence_config(conn)
-    try:
-        token, detected_org = await ResidencePlatformClient(config).login(
-            captcha=data.captcha,
-            check_key=data.check_key,
-        )
-    except ResidencePlatformError as exc:
-        raise HTTPException(502, {"code": exc.code, "message": str(exc)}) from exc
-    organization_code = detected_org or config.organization_code
-    if len(organization_code.strip()) < 6:
-        raise HTTPException(400, "登录成功，但未能确定账号所属机构代码；请先在设置中填写")
-    await _save_values(
-        conn,
-        {
-            "residence_access_token": token,
-            "residence_organization_code": organization_code,
-        },
-    )
-    await record_admin_audit(
-        user,
-        "residence_platform.login",
-        target_type="external_session",
-        target_name="residence_platform",
-        detail={"organization_prefix": organization_code[:6]},
-        **request_audit_fields(request),
-    )
-    await queue_due_residence_tasks(force=True)
-    wake_residence_lookup_scheduler()
-    return public_residence_config(await load_residence_config(conn))
+    return await _public_config(conn)
 
 
 @router.post("/scan", status_code=202)
