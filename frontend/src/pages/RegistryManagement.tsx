@@ -21,6 +21,7 @@ import {
   type RegistryOrganization,
   type RegistryPerson,
   type RegistryProperty,
+  type RegistryPropertyVisit,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -112,6 +113,10 @@ export default function RegistryManagement() {
   const [roleTypes, setRoleTypes] = useState<Array<{ id: number; name: string; subject_type: 'person' | 'organization'; is_active: boolean }>>([])
   const [detail, setDetail] = useState<any>(null)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [propertyVisits, setPropertyVisits] = useState<RegistryPropertyVisit[]>([])
+  const [propertyVisitTotal, setPropertyVisitTotal] = useState(0)
+  const [propertyVisitPage, setPropertyVisitPage] = useState(1)
+  const [propertyVisitLoading, setPropertyVisitLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [certificateImageLoading, setCertificateImageLoading] = useState<number | null>(null)
   const [certificatePreview, setCertificatePreview] = useState<{ url: string; title: string } | null>(null)
@@ -314,10 +319,43 @@ export default function RegistryManagement() {
     setDetailKind(kind)
     setDetailOpen(true)
     setDetail(null)
+    setPropertyVisits([])
+    setPropertyVisitTotal(0)
+    setPropertyVisitPage(1)
     try {
-      setDetail(kind === 'property' ? await registryApi.property(row.id) : kind === 'person' ? await registryApi.person(row.id) : await registryApi.organization(row.id))
+      if (kind === 'property') {
+        setPropertyVisitLoading(true)
+        const propertyDetail = await registryApi.property(row.id)
+        setDetail(propertyDetail)
+        try {
+          const visits = await registryApi.propertyVisits(row.id, { page: 1, page_size: 20 })
+          setPropertyVisits(visits.data)
+          setPropertyVisitTotal(visits.total)
+        } catch (reason: any) {
+          message.error(reason?.response?.data?.detail || '历史走访读取失败')
+        }
+      } else {
+        setDetail(kind === 'person' ? await registryApi.person(row.id) : await registryApi.organization(row.id))
+      }
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '档案详情读取失败')
+    } finally {
+      setPropertyVisitLoading(false)
+    }
+  }
+
+  const loadPropertyVisits = async (nextPage: number) => {
+    if (!detail?.id) return
+    setPropertyVisitLoading(true)
+    try {
+      const response = await registryApi.propertyVisits(detail.id, { page: nextPage, page_size: 20 })
+      setPropertyVisits(response.data)
+      setPropertyVisitTotal(response.total)
+      setPropertyVisitPage(response.page)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '历史走访读取失败')
+    } finally {
+      setPropertyVisitLoading(false)
     }
   }
 
@@ -475,6 +513,14 @@ export default function RegistryManagement() {
         )}
       </div>
     ) },
+    { title: '最近走访日期', key: 'latest_visit_date', width: 130, responsivePriority: 'always', render: (_, row) => (
+      <div className="registry-visit-cell">
+        <strong>{row.latest_visit_date || '暂无走访'}</strong>
+      </div>
+    ) },
+    { title: '星级评定', key: 'latest_star_rating', width: 130, responsivePriority: 'always', render: (_, row) => row.latest_star_rating
+      ? <Tag color="gold">{row.latest_star_rating}</Tag>
+      : '-' },
     { title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always', render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag> },
     { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
     { title: '操作', key: 'actions', width: 210, render: (_, row) => <Space>
@@ -835,7 +881,7 @@ export default function RegistryManagement() {
         </Form>
       </Modal>
 
-      <Drawer open={detailOpen} onClose={() => setDetailOpen(false)} width="min(94vw, 760px)" title={detail?.normalized_address || detail?.name || '档案详情'}>
+      <Drawer open={detailOpen} onClose={() => setDetailOpen(false)} width="min(96vw, 980px)" title={detail?.normalized_address || detail?.name || '档案详情'}>
         {!detail ? <div className="py-16 text-center text-[var(--app-text-secondary)]">正在读取…</div> : <div className="registry-detail">
           {canManage && detailKind === 'property' && <Space wrap>
             <Button onClick={() => openEdit('property', detail)}>编辑房屋</Button>
@@ -877,7 +923,48 @@ export default function RegistryManagement() {
               </div>
             </section>
           })()}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && !['identity_hmac', 'certificate_summary'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'property' && <section className="registry-visit-summary">
+            <div>
+              <span>最近一次走访</span>
+              <strong>{detail.latest_visit_date || '暂无走访记录'}</strong>
+            </div>
+            <div>
+              <span>历史走访</span>
+              <strong>{detail.visit_count || 0} 次</strong>
+            </div>
+            <div>
+              <span>最近星级评定</span>
+              <strong>{detail.latest_star_rating || '暂无评定'}</strong>
+            </div>
+          </section>}
+          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'property' && <Panel title="历史走访与星级评定" extra={<Tag color={propertyVisitTotal ? 'blue' : 'default'}>{propertyVisitTotal} 次走访</Tag>}>
+            <AppTable
+              rowKey="id"
+              loading={propertyVisitLoading}
+              dataSource={propertyVisits}
+              scroll={{ x: 980 }}
+              emptyText="当前房屋暂无可关联的走访记录"
+              pagination={{
+                current: propertyVisitPage,
+                pageSize: 20,
+                total: propertyVisitTotal,
+                showSizeChanger: false,
+                onChange: nextPage => void loadPropertyVisits(nextPage),
+              }}
+              columns={[
+                { title: '走访日期', dataIndex: 'business_date', width: 120, responsivePriority: 'always' },
+                { title: '走访时间', dataIndex: 'visited_at', width: 170, responsivePriority: 'standard', render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
+                { title: '走访人', dataIndex: 'operator_name', width: 110, responsivePriority: 'always' },
+                { title: '进入方式', dataIndex: 'entry_method', width: 90, responsivePriority: 'wide' },
+                { title: '房间核查', dataIndex: 'room_check_count', width: 100, responsivePriority: 'standard' },
+                { title: '变动', width: 170, responsivePriority: 'wide', render: (_, row) => `新增 ${row.added_count} · 变更 ${row.changed_count} · 注销 ${row.cancelled_count}` },
+                { title: '星级评定', dataIndex: 'star_rating', width: 130, responsivePriority: 'always', render: value => value ? <Tag color="gold">{value}</Tag> : '-' },
+                { title: '得分', dataIndex: 'score', width: 90, responsivePriority: 'standard', render: value => value ?? '-' },
+                { title: '走访地址', dataIndex: 'address', width: 260, ellipsis: true, responsivePriority: 'wide' },
+              ] as ResponsiveColumns<RegistryPropertyVisit>}
+            />
+          </Panel>}
           {detail.aliases && <Panel title="地址别名"><Space wrap>{detail.aliases.length ? detail.aliases.map((item: any) => <Tag key={item.id} color={item.enabled ? 'blue' : undefined}>{item.alias}{item.enabled ? '' : ' · 已停用'}{canManage && <Button type="link" size="small" onClick={async () => { await registryApi.changeAliasStatus(item.id, { status: item.enabled ? 'inactive' : 'active' }); setDetail(await registryApi.property(detail.id)) }}>{item.enabled ? '停用' : '启用'}</Button>}</Tag>) : '暂无'}</Space></Panel>}
           {detail.phones && <Panel title="联系电话" extra={canManage ? <Button size="small" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModal('phone') }}>添加号码</Button> : undefined}>
             <Space wrap>{detail.phones.length ? detail.phones.map((item: any) => <Tag key={item.id} color={item.is_primary ? 'blue' : undefined}>{item.phone}{item.is_primary ? ' · 主号码' : ''}</Tag>) : '暂无'}</Space>

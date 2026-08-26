@@ -44,6 +44,11 @@ from services.registry_import import (
 from services.registry_certificate_source import fetch_certificate_image, fetch_certificate_rows
 from services.registry_certificate_apply import apply_certificate_batch
 from services.registry_certificate_status import certificate_status_summary
+from services.registry_visit_history import (
+    load_property_address_variants,
+    load_property_visit_history,
+    load_property_visit_summaries,
+)
 from services.registry_certificate_jobs import (
     create_certificate_source_run,
     get_certificate_source_run,
@@ -670,6 +675,17 @@ async def get_property_detail(
         updated_at=_iso(latest_certificate[14] or latest_certificate[15]) if latest_certificate else None,
         responsibility_identity=responsibility_identity,
     )
+    visit_property = {
+        "id": int(row[0]),
+        "community_name": row[3],
+        "natural_address": row[4],
+        "normalized_address": row[13],
+    }
+    async with conn.cursor() as cur:
+        visit_summary = (await load_property_visit_summaries(
+            cur,
+            [visit_property],
+        ))[int(row[0])]
     return {
         "id": int(row[0]), "street": row[1], "community_id": row[2],
         "community_name": row[3], "natural_address": row[4], "building": row[5],
@@ -700,7 +716,42 @@ async def get_property_detail(
         ],
         "certificate_summary": certificate_summary,
         "certificates": certificate_items,
+        **visit_summary,
     }
+
+
+@router.get("/properties/{property_id}/visits")
+async def get_property_visit_history(
+    property_id: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    """读取一套房屋的历史走访和已关联星级，不复制跨库业务数据。"""
+    async with conn.cursor() as cur:
+        await _property_scope(cur, property_id, user, REGISTRY_PROPERTY_VIEW)
+        await cur.execute(
+            "SELECT id,community_name_snapshot,natural_address,normalized_address "
+            "FROM registry_properties WHERE id=%s",
+            (property_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "房屋档案不存在")
+        variants = await load_property_address_variants(cur, [property_id])
+        return await load_property_visit_history(
+            cur,
+            {
+                "id": int(row[0]),
+                "community_name": row[1],
+                "natural_address": row[2],
+                "normalized_address": row[3],
+            },
+            variants.get(property_id, []),
+            page=page,
+            page_size=page_size,
+        )
 
 
 @router.get("/properties/{property_id}/certificates/{certificate_id}/image")

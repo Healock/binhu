@@ -3101,6 +3101,56 @@ html.desktop-shell .ant-notification-topRight {
   white-space: normal;
 }
 
+.registry-visit-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.registry-visit-cell strong {
+  color: var(--app-text);
+  font-size: 13px;
+}
+
+.registry-visit-cell span {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.registry-visit-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-soft);
+}
+
+.registry-visit-summary > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.registry-visit-summary span {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.registry-visit-summary strong {
+  overflow-wrap: anywhere;
+  color: var(--app-text);
+  font-size: 18px;
+}
+
+@media (max-width: 720px) {
+  .registry-visit-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 .registry-certificate-summary {
   --certificate-accent: var(--app-warning);
   display: grid;

@@ -21,6 +21,7 @@ from services.permissions import (
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.registry_certificate_status import certificate_status_summary
+from services.registry_visit_history import load_property_visit_summaries
 from services.watch_matching import backfill_assignment_snapshots
 
 
@@ -409,11 +410,16 @@ async def _property_search_result(
             tuple(params) + (data.page_size, offset),
         )
         rows = await cur.fetchall()
+    payloads = [_property_payload(row) for row in rows]
+    async with conn.cursor() as cur:
+        visit_summaries = await load_property_visit_summaries(cur, payloads)
+    for payload in payloads:
+        payload.update(visit_summaries.get(int(payload["id"]), {}))
     return {
         "total": total,
         "page": data.page,
         "page_size": data.page_size,
-        "data": [_property_payload(row) for row in rows],
+        "data": payloads,
     }
 
 
