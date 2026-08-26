@@ -226,8 +226,9 @@ jobs:
             local platform="$1" filename="$2"
             test -n "$filename"
             [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._+\-]{0,199}-full\.nupkg$ ]]
-            local destination=".build/previous/$filename"
+            local destination=".build/previous/$platform/$filename"
             local temporary="$destination.partial"
+            mkdir -p "$(dirname "$destination")"
             if ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
               -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
@@ -358,8 +359,20 @@ jobs:
         shell: pwsh
         run: |
           Set-Location $env:BINHU_BUILD_ROOT
-          $previous = Get-ChildItem .build/previous -Filter '*-full.nupkg' -File -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-          if ('${{ matrix.target }}' -eq 'win7-x64') {
+          $target = '${{ matrix.target }}'
+          $expectedPackageId = if ($target -eq 'win7-x64') { 'com.bhzh.binhu.win7.x64' } else { 'com.bhzh.binhu.win10.x64' }
+          $previousRoot = Join-Path '.build/previous' $target
+          $previousPackages = @(Get-ChildItem $previousRoot -Filter '*-full.nupkg' -File -ErrorAction SilentlyContinue)
+          if ($previousPackages.Count -ne 1) {
+            throw "Exactly one baseline full package is required for $target. Found $($previousPackages.Count)."
+          }
+          $previous = $previousPackages[0].FullName
+          if ($previousPackages[0].Name -notlike "$expectedPackageId-*") {
+            throw "Baseline package does not belong to $target: $($previousPackages[0].Name)"
+          }
+          python desktop/scripts/validate-velopack-baseline.py --target $target --package $previous --expected-version '${{ needs.prepare.outputs.previous_version }}'
+          if ($LASTEXITCODE -ne 0) { throw "Baseline package metadata validation failed for $target." }
+          if ($target -eq 'win7-x64') {
             & desktop/scripts/build-win7-velopack.ps1 -WorkspaceRoot $PWD -PreviousFullPackage $previous
           } else {
             npm.cmd ci --prefix desktop/apps/win10-tauri
