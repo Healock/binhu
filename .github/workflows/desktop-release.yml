@@ -368,7 +368,7 @@ jobs:
           }
           $previous = $previousPackages[0].FullName
           if ($previousPackages[0].Name -notlike "$expectedPackageId-*") {
-            throw "Baseline package does not belong to $target: $($previousPackages[0].Name)"
+            throw "Baseline package does not belong to ${target}: $($previousPackages[0].Name)"
           }
           python desktop/scripts/validate-velopack-baseline.py --target $target --package $previous --expected-version '${{ needs.prepare.outputs.previous_version }}'
           if ($LASTEXITCODE -ne 0) { throw "Baseline package metadata validation failed for $target." }
