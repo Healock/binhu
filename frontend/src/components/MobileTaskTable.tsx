@@ -22,6 +22,7 @@ import {
 } from '../utils/mobileTasks'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import QmfFeedbackStatus from './QmfFeedbackStatus'
+import ResidenceRegistrationStatus from './ResidenceRegistrationStatus'
 import { getResponsiveColumns, type ResponsiveColumns } from './responsiveTable'
 
 const STATE_LABELS = {
@@ -560,6 +561,7 @@ export default function MobileTaskTable({
               <Tag key={`${task.task_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
             ))}
             {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
+            <ResidenceRegistrationStatus status={task.residence_status} compact />
           </div>
         )
       },

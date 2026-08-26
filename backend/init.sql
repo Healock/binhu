@@ -520,6 +520,22 @@ CREATE TABLE IF NOT EXISTS _qmf_status_snapshots (
     INDEX idx_qmf_status_snapshot_source (source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _residence_registration_status (
+    parser_type VARCHAR(50) NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    identity_hmac CHAR(64) NOT NULL DEFAULT '',
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    error_code VARCHAR(64) NOT NULL DEFAULT '',
+    checked_at DATETIME DEFAULT NULL,
+    last_attempt_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (parser_type,row_key),
+    INDEX idx_residence_status_queue (status,last_attempt_at),
+    INDEX idx_residence_status_checked (checked_at),
+    INDEX idx_residence_status_identity (identity_hmac)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _online_source_cache_state (
     spreadsheet_id INT NOT NULL PRIMARY KEY,
     parser_type VARCHAR(50) NOT NULL,

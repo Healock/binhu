@@ -45,6 +45,7 @@ from routers.workflow_photo_sheet import router as workflow_photo_sheet_router
 from routers.qmf_registration import router as qmf_registration_router
 from routers.task_graph import router as task_graph_router
 from routers.qmf_source import router as qmf_source_router
+from routers.residence_platform import router as residence_platform_router
 from routers.maintenance import router as maintenance_router
 from routers.app_bootstrap import router as app_bootstrap_router
 from services.backup_scheduler import run_backup_scheduler
@@ -81,6 +82,7 @@ from services.qmf_status_scan import (
 from services.external_acquisition_jobs import recover_interrupted_jobs, stop_external_acquisition_tasks
 from routers.external_acquisition import router as external_acquisition_router
 from services.presence import run_presence_cleanup_scheduler
+from services.residence_status_scan import run_residence_lookup_scheduler
 from routers.presence import router as presence_router
 
 
@@ -132,6 +134,7 @@ async def lifespan(app: FastAPI):
     certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())
     qmf_status_scan_scheduler_task = asyncio.create_task(run_status_scan_scheduler())
     presence_cleanup_task = asyncio.create_task(run_presence_cleanup_scheduler())
+    residence_lookup_task = asyncio.create_task(run_residence_lookup_scheduler())
     try:
         yield
     finally:
@@ -143,6 +146,7 @@ async def lifespan(app: FastAPI):
         certificate_scheduler_task.cancel()
         qmf_status_scan_scheduler_task.cancel()
         presence_cleanup_task.cancel()
+        residence_lookup_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
@@ -159,6 +163,8 @@ async def lifespan(app: FastAPI):
             await qmf_status_scan_scheduler_task
         with suppress(asyncio.CancelledError):
             await presence_cleanup_task
+        with suppress(asyncio.CancelledError):
+            await residence_lookup_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()
@@ -227,6 +233,7 @@ app.include_router(workflow_router, dependencies=auth_dep)
 app.include_router(workflow_extended_router, dependencies=auth_dep)
 app.include_router(workflow_photo_sheet_router, dependencies=auth_dep)
 app.include_router(qmf_registration_router, dependencies=auth_dep)
+app.include_router(residence_platform_router, dependencies=auth_dep)
 app.include_router(task_graph_router, dependencies=auth_dep)
 app.include_router(qmf_source_router, dependencies=auth_dep)
 app.include_router(external_acquisition_router, dependencies=auth_dep)

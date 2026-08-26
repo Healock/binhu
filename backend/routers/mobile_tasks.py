@@ -57,6 +57,7 @@ from services.task_graph import online_task_blocked
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
 from services.watch_matching import task_watch_payload
+from services.residence_status_scan import residence_status_by_rows
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
@@ -1300,6 +1301,7 @@ def _task_record(
     photo_fetched: bool = False,
     sync_state: str = "",
     qmf_status: dict | None = None,
+    residence_status: dict | None = None,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
@@ -1334,6 +1336,7 @@ def _task_record(
         "watch_marks": list(watch.get("watch_marks") or []),
         "first_dispatch_at": _iso_utc(watch.get("first_dispatch_at")),
         "qmf_status": qmf_status,
+        "residence_status": residence_status,
     }
 
 
@@ -1661,6 +1664,7 @@ async def _list_mobile_tasks_data(
         )
         rows = await cur.fetchall()
         qmf_by_row = await _qmf_status_by_rows(cur, parser_type, rows)
+        residence_by_row = await residence_status_by_rows(cur, parser_type, rows)
         watch_by_row = await task_watch_payload(
             cur,
             parser_type,
@@ -1689,6 +1693,7 @@ async def _list_mobile_tasks_data(
                     if str(row[5] or "") == "completed"
                     else None
                 ),
+                residence_status=residence_by_row.get(str(row[0])),
             )
             for row in rows
         ],
@@ -2104,6 +2109,11 @@ async def _mobile_task_detail_data(
             parser_type,
             [(row_key, parent_row[0])],
         )
+        residence_by_row = await residence_status_by_rows(
+            cur,
+            parser_type,
+            [(row_key, parent_row[0])],
+        )
 
         sources = []
         for (
@@ -2269,6 +2279,7 @@ async def _mobile_task_detail_data(
                 if str(parent_row[4] or "") == "completed"
                 else None
             ),
+            residence_status=residence_by_row.get(row_key),
         ),
         "workflow": {
             "label": workflow.label,
@@ -2296,6 +2307,7 @@ async def _mobile_task_detail_data(
         "qmf_registration": qmf_registration,
         "qmf_feedback": qmf_feedback,
         "qmf_status": qmf_by_row.get(row_key),
+        "residence_status": residence_by_row.get(row_key),
         "sources": sources,
     }
 

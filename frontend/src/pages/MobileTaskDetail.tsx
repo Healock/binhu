@@ -57,6 +57,7 @@ import {
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
 import QmfFeedbackStatus from '../components/QmfFeedbackStatus'
+import ResidenceRegistrationStatus from '../components/ResidenceRegistrationStatus'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
@@ -807,6 +808,18 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </p>
           </div>
           <QmfFeedbackStatus status={data.task.qmf_status} />
+        </section>
+      )}
+
+      {data.task.residence_status && (
+        <section className="app-card flex flex-wrap items-center justify-between gap-3 p-4">
+          <div>
+            <h2 className="font-semibold text-[var(--app-text-strong)]">居住证登记核对</h2>
+            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+              后台按身份证号只读查询“人员登记、注销”；明确没有登记资料时标记为首次登记。
+            </p>
+          </div>
+          <ResidenceRegistrationStatus status={data.task.residence_status} />
         </section>
       )}
 
