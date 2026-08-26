@@ -353,6 +353,14 @@ async def revoke_session(
         raise
     finally:
         pool.release(conn)
+    await record_admin_audit(
+        user,
+        "account.session.revoke",
+        target_type="user",
+        target_name=str(user["id"]),
+        detail={"revoked_sessions": 1},
+        **request_audit_fields(request),
+    )
     return {"message": "设备已退出"}
 
 
@@ -380,6 +388,14 @@ async def revoke_other_sessions(
         raise
     finally:
         pool.release(conn)
+    await record_admin_audit(
+        user,
+        "account.session.revoke_others",
+        target_type="user",
+        target_name=str(user["id"]),
+        detail={"revoked_sessions": len(session_ids)},
+        **request_audit_fields(request),
+    )
     return {"message": "其他设备已退出", "revoked": len(session_ids)}
 
 
@@ -409,6 +425,14 @@ async def revoke_all_sessions(
         httponly=cookie_cfg["httponly"],
         samesite=cookie_cfg["samesite"],
     )
+    await record_admin_audit(
+        user,
+        "account.session.revoke_all",
+        target_type="user",
+        target_name=str(user["id"]),
+        detail={"includes_current_session": True},
+        **request_audit_fields(request),
+    )
     return {"message": "全部设备已退出"}
 
 
@@ -420,6 +444,7 @@ async def get_me(user: dict = Depends(get_current_user)):
 
 @router.post("/avatar")
 async def upload_avatar(
+    request: Request,
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
@@ -464,6 +489,17 @@ async def upload_avatar(
     finally:
         pool.release(conn)
     _remove_avatar(previous_storage_key)
+    await record_admin_audit(
+        user,
+        "account.avatar.update",
+        target_type="user",
+        target_name=str(user["id"]),
+        detail={
+            "replaced_existing": previous_storage_key is not None,
+            "mime_type": mime_type,
+        },
+        **request_audit_fields(request),
+    )
     return {
         "message": "头像已更新",
         "avatar_url": f"/api/auth/avatar/{int(user['id'])}?v={Path(storage_key).stem}",

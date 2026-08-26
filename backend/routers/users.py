@@ -501,17 +501,22 @@ async def update_user(
         raise
     finally:
         pool.release(conn)
+    password_reset = req.password is not None
+    audit_detail = {
+        "member_id": member_id,
+        "assignment_mode": assignment_mode,
+        "permission_groups": [group["name"] for group in groups],
+    }
+    if password_reset:
+        audit_detail["sessions_invalidated"] = True
+        if req.password_is_temporary is not None:
+            audit_detail["temporary_password"] = req.password_is_temporary
     await record_admin_audit(
         user,
-        "user.update",
+        "user.password.reset" if password_reset else "user.update",
         target_type="user",
         target_name=str(user_id),
-        detail={
-            "member_id": member_id,
-            "assignment_mode": assignment_mode,
-            "permission_groups": [group["name"] for group in groups],
-            "password_changed": req.password is not None,
-        },
+        detail=audit_detail,
         **request_audit_fields(request),
     )
     return {"message": "用户修改成功"}
