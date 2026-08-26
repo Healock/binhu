@@ -281,6 +281,21 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
 
 export const MAX_DOCK_GROUPS = 4
 
+/** 汇总页面仅供电脑端使用，手机端导航和个性化配置统一排除。 */
+export function mobileAccessibleNavigationGroups(
+  role: Role,
+  permissions?: PermissionCode[],
+  permissionGroupCodes: string[] = [],
+  position?: string | null,
+): NavigationGroupDefinition[] {
+  return accessibleNavigationGroups(
+    role,
+    permissions,
+    permissionGroupCodes,
+    position,
+  ).filter(group => group.id !== 'summaries')
+}
+
 export function isNavigationItemAccessible(
   item: NavigationItemDefinition,
   role: Role,
@@ -360,7 +375,7 @@ export function defaultMobileDockConfig(
 ): MobileDockConfig {
   return {
     version: 2,
-    groups: accessibleNavigationGroups(role, permissions, permissionGroupCodes, position).slice(0, MAX_DOCK_GROUPS).map(group => ({
+    groups: mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position).slice(0, MAX_DOCK_GROUPS).map(group => ({
       id: group.id,
       items: group.items.map(item => item.id),
     })),
@@ -379,7 +394,7 @@ export function normalizeMobileDockConfig(
   }
 
   const definitions = new Map(
-    accessibleNavigationGroups(role, permissions, permissionGroupCodes, position).map(group => [group.id, group]),
+    mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position).map(group => [group.id, group]),
   )
   const rawTaskItems = new Set(
     value.groups
@@ -439,7 +454,7 @@ export function normalizeMobileDockConfig(
     appendMovedTask('workflow_tickets', 'photo_tasks')
   }
   const presentGroups = new Set(normalized.map(group => group.id))
-  for (const definition of accessibleNavigationGroups(
+  for (const definition of mobileAccessibleNavigationGroups(
     role,
     permissions,
     permissionGroupCodes,

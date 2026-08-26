@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, ROLE_LABELS } from '../types'
 import {
   accessibleNavigationGroups,
+  mobileAccessibleNavigationGroups,
   normalizeMobileDockConfig,
   mobileNavigationItemLabel,
   routeIsActive,
@@ -24,6 +25,7 @@ import OnlinePresenceIndicator from './OnlinePresenceIndicator'
 import AdminTaskQueueFloat from './AdminTaskQueueFloat'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
+import useMobileViewport from '../hooks/useMobileViewport'
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -36,20 +38,28 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const layout = useResponsiveLayout()
+  const mobile = useMobileViewport()
   const permissionGroupCodes = useMemo(
     () => user?.permission_groups?.map(group => group.code) || [],
     [user],
   )
   const menuGroups = useMemo(
     () => user
-      ? accessibleNavigationGroups(
+      ? (mobile
+        ? mobileAccessibleNavigationGroups(
           user.role,
           user.permissions,
           permissionGroupCodes,
           user.member?.position,
         )
+        : accessibleNavigationGroups(
+          user.role,
+          user.permissions,
+          permissionGroupCodes,
+          user.member?.position,
+        ))
       : [],
-    [permissionGroupCodes, user],
+    [mobile, permissionGroupCodes, user],
   )
   const mobileNavigationMode = user?.mobile_navigation_mode || 'dock'
   const mobileWorkbenchPosition = ['组员', '组长', '基础管控', '中队长']

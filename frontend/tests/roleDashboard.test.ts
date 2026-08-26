@@ -9,9 +9,28 @@ test('全端首页进入仪表盘且在线汇总迁移到独立路由', () => {
   const app = read('../src/App.tsx')
   const configurator = read('../src/components/DockConfigurator.tsx')
   assert.match(app, /path="\/" element=\{<RoleDashboard \/>\}/)
-  assert.match(app, /path="\/summary" element=\{<Dashboard \/>\}/)
+  assert.match(app, /path="\/summary" element=\{<DesktopSummaryRoute><Dashboard \/><\/DesktopSummaryRoute>\}/)
   assert.match(app, /function QueryEntry\(\)[\s\S]*shouldUseMobileTaskWorkbench/)
   assert.match(configurator, /locked=\{itemId === 'dashboard'\}/)
+})
+
+test('手机汇总入口按视口隐藏，电脑端仍保留', () => {
+  const source = read('../src/pages/RoleDashboard.tsx')
+  assert.match(source, /const mobile = useMobileViewport\(\)/)
+  assert.match(source, /extra=\{!mobile/)
+  assert.match(source, /查看完整汇总/)
+  assert.match(source, /查看走访汇总/)
+  assert.match(source, /!mobile && personal\.new_today != null/)
+  assert.match(source, /!mobile \? \(\) => navigate\(route\) : undefined/)
+})
+
+test('汇总直达路由在手机端返回仪表盘', () => {
+  const app = read('../src/App.tsx')
+  assert.match(app, /function DesktopSummaryRoute\(\{ children \}: \{ children: ReactNode \}\)/)
+  assert.match(app, /return mobile \? <Navigate to="\/" replace \/> : <\>\{children\}<\/>/)
+  for (const path of ['/summary', '/visit-summary', '/code-summary']) {
+    assert.match(app, new RegExp(`path="${path.replaceAll('/', '\\/')}" element=\\{<DesktopSummaryRoute>`))
+  }
 })
 
 test('仪表盘只消费后端模块并提供筛选直达', () => {
