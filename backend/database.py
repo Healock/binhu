@@ -33,6 +33,7 @@ from services.qmf_runs import ensure_qmf_registration_schema
 from services.qmf_status_scan import ensure_qmf_status_scan_schema
 from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
+from services.parsers import TABLE_NAMES
 
 # 数据库名称映射
 DB_NAMES = {
@@ -47,6 +48,10 @@ DB_NAMES = {
 }
 
 OPTIONAL_DB_KEYS = {"platform", "visit", "dispatch", "registry", "workflow"}
+
+# 所有在线业务表都可能在完整同步时产生移除记录。归档表清单直接来自
+# 解析器注册中心，避免新增业务类型后只创建当前表、遗漏对应归档表。
+ARCHIVE_SOURCE_TABLES = tuple(dict.fromkeys(TABLE_NAMES.values()))
 
 
 @contextmanager
@@ -104,6 +109,43 @@ async def _ensure_index(
     if not await cur.fetchone():
         await cur.execute(
             f"ALTER TABLE `{table}` ADD {definition}"
+        )
+
+
+async def ensure_online_archive_schema(cur) -> None:
+    """Ensure every parser-backed online table has a compatible archive table."""
+    online_database = DB_NAMES["online_data"].replace("`", "``")
+    for source_table in ARCHIVE_SOURCE_TABLES:
+        archive_table = f"{source_table}_archive"
+        await cur.execute(
+            f"CREATE TABLE IF NOT EXISTS `{archive_table}` "
+            f"LIKE `{online_database}`.`{source_table}`"
+        )
+        await _ensure_column(
+            cur,
+            archive_table,
+            "_archived_at",
+            "DATETIME DEFAULT CURRENT_TIMESTAMP",
+        )
+        await _ensure_column(
+            cur,
+            archive_table,
+            "_archive_reason",
+            "VARCHAR(100) DEFAULT 'online_removed'",
+        )
+        await cur.execute(
+            f"SHOW INDEX FROM `{archive_table}` WHERE Key_name=%s",
+            ("uk_row_key",),
+        )
+        if await cur.fetchone():
+            await cur.execute(
+                f"ALTER TABLE `{archive_table}` DROP INDEX `uk_row_key`"
+            )
+        await _ensure_index(
+            cur,
+            archive_table,
+            "idx_row_key",
+            "INDEX `idx_row_key` (`_row_key`)",
         )
 
 
@@ -2621,6 +2663,7 @@ class DatabaseManager:
         # 在启动时平滑补齐，既不改历史记录，也不要求重建归档库。
         async with cls._pools["archive"].acquire() as conn:
             async with conn.cursor() as cur:
+                await ensure_online_archive_schema(cur)
                 await _ensure_column(
                     cur,
                     "t_fullchain_archive",
