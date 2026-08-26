@@ -32,6 +32,7 @@ import {
   writeRoleDashboardCache,
 } from '../utils/dashboardCache'
 import { formatDashboardIdentityContext } from '../utils/dashboardIdentity'
+import useMobileViewport from '../hooks/useMobileViewport'
 
 const MonoRoundedStackedBarChart = lazy(
   () => import('../components/charts/MonoRoundedStackedBarChart'),
@@ -155,6 +156,7 @@ function ContributionPanel({ data }: { data: RoleDashboardData }) {
 
 function FlowTasks({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
+  const mobile = useMobileViewport()
   const flow = data.flow_tasks
   if (!flow) return null
   if (!flow.available) return <Alert type="warning" showIcon message={flow.message || '当前人员配置不完整，暂时无法读取任务。'} />
@@ -167,9 +169,9 @@ function FlowTasks({ data }: { data: RoleDashboardData }) {
         <MetricGrid>
           <DashboardCard label="我的待核查" value={personal.pending} tone="red" onClick={() => navigate('/tasks?scope=mine&status=pending')} />
           <DashboardCard label="需复核" value={personal.review} tone="amber" onClick={() => navigate('/tasks?scope=mine&status=review')} />
-          <DashboardCard label="今日新下发" value={metric(personal.new_today, '—')} tone="blue" onClick={personal.new_today == null ? undefined : () => navigate(buildUrl('/summary', { ...todayParams, category: 'new', scope: 'responsibility' }))} />
-          <DashboardCard label="昨日结转" value={metric(personal.carryover_today, '—')} tone="amber" onClick={personal.carryover_today == null ? undefined : () => navigate(buildUrl('/summary', { ...todayParams, category: 'carryover', scope: 'responsibility' }))} />
-          <DashboardCard label="今日完成" value={metric(personal.completed_today, '—')} tone="green" onClick={personal.completed_today == null ? undefined : () => navigate(buildUrl('/summary', { ...todayParams, category: 'completed', scope: 'responsibility' }))} />
+          <DashboardCard label="今日新下发" value={metric(personal.new_today, '—')} tone="blue" onClick={!mobile && personal.new_today != null ? () => navigate(buildUrl('/summary', { ...todayParams, category: 'new', scope: 'responsibility' })) : undefined} />
+          <DashboardCard label="昨日结转" value={metric(personal.carryover_today, '—')} tone="amber" onClick={!mobile && personal.carryover_today != null ? () => navigate(buildUrl('/summary', { ...todayParams, category: 'carryover', scope: 'responsibility' })) : undefined} />
+          <DashboardCard label="今日完成" value={metric(personal.completed_today, '—')} tone="green" onClick={!mobile && personal.completed_today != null ? () => navigate(buildUrl('/summary', { ...todayParams, category: 'completed', scope: 'responsibility' })) : undefined} />
           {flow.community_totals && (
             <DashboardCard label="本社区待办" value={flow.community_totals.pending} tone="purple" onClick={() => navigate('/tasks?scope=community&status=pending')} />
           )}
@@ -200,6 +202,7 @@ function FlowTasks({ data }: { data: RoleDashboardData }) {
 
 function OnlineOverview({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
+  const mobile = useMobileViewport()
   const [celebrating, setCelebrating] = useState(false)
   const overview = data.online_overview
   if (!overview) return null
@@ -215,7 +218,7 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
   const completedTasks = Number(week.completed_tasks || 0)
   const isComplete = totalTasks > 0 && completedTasks >= totalTasks
   return (
-    <Panel title="在线核查态势" description={`${overview.scope_label} · ${data.period.start_date} 至 ${data.period.end_date}`} extra={<Button type="link" onClick={() => navigate(buildUrl('/summary', { start: data.period.start_date, end: data.period.end_date, scope: 'responsibility' }))}>查看完整汇总</Button>}>
+    <Panel title="在线核查态势" description={`${overview.scope_label} · ${data.period.start_date} 至 ${data.period.end_date}`} extra={!mobile ? <Button type="link" onClick={() => navigate(buildUrl('/summary', { start: data.period.start_date, end: data.period.end_date, scope: 'responsibility' }))}>查看完整汇总</Button> : undefined}>
       <MetricGrid>
         <DashboardCard label="任务总数" value={metric(week.total_tasks)} tone="blue" />
         <DashboardCard label="待完成" value={metric(week.pending_tasks)} tone="red" onClick={() => go('pending')} />
@@ -261,6 +264,7 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
 
 function VisitOverview({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
+  const mobile = useMobileViewport()
   const visit = data.visit_overview
   if (!visit) return null
   const isSelfOwned = visit.category === 'self_owned'
@@ -275,12 +279,12 @@ function VisitOverview({ data }: { data: RoleDashboardData }) {
     scope: 'responsibility',
   })
   return (
-    <Panel title={isSelfOwned ? '自购房走访工作台' : '走访概览'} description={visit.scope_label || '本人职责范围'} extra={<Button type="link" onClick={() => navigate(route)}>查看走访汇总</Button>}>
+    <Panel title={isSelfOwned ? '自购房走访工作台' : '走访概览'} description={visit.scope_label || '本人职责范围'} extra={!mobile ? <Button type="link" onClick={() => navigate(route)}>查看走访汇总</Button> : undefined}>
       <MetricGrid>
-        <DashboardCard label="今日走访" value={todayVisits} tone="blue" onClick={() => navigate(buildUrl('/visit-summary', { start: data.business_date, end: data.business_date, category: visit.category, scope: 'responsibility' }))} />
-        <DashboardCard label="近 7 日走访" value={weekVisits} tone="purple" onClick={() => navigate(route)} />
-        <DashboardCard label="近 7 日变动" value={changes} tone="green" onClick={() => navigate(route)} />
-        <DashboardCard label="数据待补" value={unrated} tone={unrated ? 'amber' : 'slate'} onClick={() => navigate(route)} />
+        <DashboardCard label="今日走访" value={todayVisits} tone="blue" onClick={!mobile ? () => navigate(buildUrl('/visit-summary', { start: data.business_date, end: data.business_date, category: visit.category, scope: 'responsibility' })) : undefined} />
+        <DashboardCard label="近 7 日走访" value={weekVisits} tone="purple" onClick={!mobile ? () => navigate(route) : undefined} />
+        <DashboardCard label="近 7 日变动" value={changes} tone="green" onClick={!mobile ? () => navigate(route) : undefined} />
+        <DashboardCard label="数据待补" value={unrated} tone={unrated ? 'amber' : 'slate'} onClick={!mobile ? () => navigate(route) : undefined} />
       </MetricGrid>
       <Suspense fallback={null}>
         <MonoBulletChart

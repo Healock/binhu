@@ -105,6 +105,11 @@ function MobileTaskHomeEntry() {
     : <Navigate to="/query" replace />
 }
 
+function DesktopSummaryRoute({ children }: { children: ReactNode }) {
+  const mobile = useMobileViewport()
+  return mobile ? <Navigate to="/" replace /> : <>{children}</>
+}
+
 function PhotoTaskEntry() {
   const { user } = useAuth()
   const permissions = new Set(user?.permissions || [])
@@ -145,7 +150,7 @@ function App() {
                 <Route path="/task-flow-rete-lab" element={<LazyPage><ReteTaskFlowLab /></LazyPage>} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
-                <Route path="/summary" element={<Dashboard />} />
+                <Route path="/summary" element={<DesktopSummaryRoute><Dashboard /></DesktopSummaryRoute>} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
                 <Route path="/query" element={<QueryEntry />} />
@@ -157,8 +162,8 @@ function App() {
                 <Route path="/police-analysis/:parserType/:rowKey" element={<MobileTaskDetail mode="analysis" />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
-                <Route path="/visit-summary" element={<VisitSummary />} />
-                <Route path="/code-summary" element={<CodeSummary />} />
+                <Route path="/visit-summary" element={<DesktopSummaryRoute><VisitSummary /></DesktopSummaryRoute>} />
+                <Route path="/code-summary" element={<DesktopSummaryRoute><CodeSummary /></DesktopSummaryRoute>} />
               </Route>
               <Route element={<ProtectedRoute requireAnyPermission={['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage']} />}>
                 <Route path="/data-upload" element={<DataUploadCenter />} />

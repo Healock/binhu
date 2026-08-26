@@ -37,7 +37,7 @@ import type {
 } from '../types'
 import {
   MAX_DOCK_GROUPS,
-  accessibleNavigationGroups,
+  mobileAccessibleNavigationGroups,
   navigationGroupById,
   navigationItemById,
   normalizeMobileDockConfig,
@@ -323,7 +323,7 @@ export default function DockConfigurator({
     [permissionGroupCodes, permissions, position, role, value],
   )
   const definitions = useMemo(
-    () => accessibleNavigationGroups(
+    () => mobileAccessibleNavigationGroups(
       role,
       permissions,
       permissionGroupCodes,

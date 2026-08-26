@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   accessibleNavigationGroups,
+  mobileAccessibleNavigationGroups,
   defaultMobileDockConfig,
   normalizeMobileDockConfig,
   reorderMobileDockGroups,
@@ -36,7 +37,7 @@ test('超级管理员默认 Dock 使用前四类，设置类仍可配置加入',
   )
   assert.equal(
     config.groups.some(group => group.items.includes('operations')),
-    false,
+    true,
   )
   assert.equal(
     accessible.some(group => group.items.some(item => item.id === 'operations')),
@@ -115,6 +116,28 @@ test('新权限列表优先于旧角色决定 Dock 页面', () => {
   )
   assert.equal(
     config.groups.some(group => group.items.includes('online_query')),
+    false,
+  )
+})
+
+test('电脑端保留汇总导航，手机端移除整个汇总分组', () => {
+  const desktop = accessibleNavigationGroups('admin', [
+    'online.summary.view',
+    'visit.summary.view',
+  ])
+  const mobile = mobileAccessibleNavigationGroups('admin', [
+    'online.summary.view',
+    'visit.summary.view',
+  ])
+
+  assert.deepEqual(
+    desktop.find(group => group.id === 'summaries')?.items.map(item => item.id),
+    ['online_summary', 'visit_summary', 'code_summary'],
+  )
+  assert.equal(mobile.some(group => group.id === 'summaries'), false)
+  assert.equal(
+    defaultMobileDockConfig('admin', ['online.summary.view', 'visit.summary.view'])
+      .groups.some(group => group.id === 'summaries'),
     false,
   )
 })
@@ -427,6 +450,21 @@ test('平安码管家码汇总页面和导航接入', () => {
   assert.match(client, /api\.post\('\/code-summaries\/locations\/search'/)
   assert.match(client, /api\.post\('\/code-summaries\/locations\/classifications'/)
   assert.match(client, /api\.post\('\/code-summaries\/locations\/recompute'/)
+})
+
+test('历史手机 Dock 配置中的汇总入口会被清理', () => {
+  const config = normalizeMobileDockConfig({
+    version: 2,
+    groups: [
+      { id: 'summaries', items: ['online_summary', 'visit_summary', 'code_summary'] },
+      { id: 'workspace', items: ['dashboard', 'online_summary'] },
+    ],
+  }, 'admin', ['online.summary.view', 'visit.summary.view'])
+
+  assert.equal(config.groups.some(group => group.id === 'summaries'), false)
+  assert.equal(config.groups.some(group => group.items.some(item => (
+    item === 'online_summary' || item === 'visit_summary' || item === 'code_summary'
+  ))), false)
 })
 
 test('数据上传中心移除手动走访和星级上传入口', () => {
