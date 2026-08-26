@@ -352,7 +352,7 @@ jobs:
         run: |
           Set-Location $env:BINHU_BUILD_ROOT
           if (-not $env:PREVIOUS_FULL) { throw 'Previous full package is required after 0.25.15.' }
-          $destination = Join-Path .build/previous $env:PREVIOUS_FULL
+          $destination = Join-Path (Join-Path .build/previous '${{ matrix.target }}') $env:PREVIOUS_FULL
           if (-not (Test-Path -LiteralPath $destination)) { throw "Baseline package is missing: $destination" }
           if ((Get-Item -LiteralPath $destination).Length -le 0) { throw 'Baseline package is empty.' }
       - name: Build Velopack release
