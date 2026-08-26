@@ -169,6 +169,20 @@ async def _candidate_rows(cur, source_ids: list[int] | None = None) -> list[dict
     return rows
 
 
+def _filter_candidate_rows(rows: list[dict[str, Any]], data: CandidateSearch) -> list[dict[str, Any]]:
+    keyword = data.keyword.strip().lower()
+    return [
+        row for row in rows
+        if row["stage"] in data.stages
+        and (
+            not keyword
+            or keyword in "\n".join(
+                [row["name"], row["identity"], row["phone"], row["address"]]
+            ).lower()
+        )
+    ]
+
+
 @router.post("/police-raw/preview")
 async def preview_police_raw(file: UploadFile = File(...), user: dict = Depends(require_fullchain_archive)):
     del user
@@ -278,10 +292,22 @@ async def search_candidates(data: CandidateSearch, user: dict = Depends(require_
     del user
     async with conn.cursor() as cur:
         rows = await _candidate_rows(cur)
-    keyword = data.keyword.strip().lower()
-    rows = [row for row in rows if row["stage"] in data.stages and (not keyword or keyword in "\n".join([row["name"], row["identity"], row["phone"], row["address"]]).lower())]
+    rows = _filter_candidate_rows(rows, data)
     start = (data.page - 1) * data.page_size
     return {"data": rows[start:start + data.page_size], "total": len(rows), "page": data.page, "page_size": data.page_size, "counts": {stage: sum(row["stage"] == stage for row in rows) for stage in ("direct", "review", "registered")}}
+
+
+@router.post("/candidates/selection")
+async def select_candidates(data: CandidateSearch, user: dict = Depends(require_fullchain_archive), conn=Depends(get_db)):
+    """Return only selectable IDs for the current filter, without reloading row details."""
+    del user
+    async with conn.cursor() as cur:
+        rows = await _candidate_rows(cur)
+    filtered = _filter_candidate_rows(rows, data)
+    source_ids = [row["source_id"] for row in filtered if row["eligible"]]
+    if len(source_ids) > settings.FULLCHAIN_ARCHIVE_MAX_ROWS:
+        raise HTTPException(400, f"当前筛选下有 {len(source_ids)} 条可选数据，单次最多选择 {settings.FULLCHAIN_ARCHIVE_MAX_ROWS} 条")
+    return {"source_ids": source_ids, "total": len(source_ids), "max_total": settings.FULLCHAIN_ARCHIVE_MAX_ROWS}
 
 
 @router.post("/reviews")

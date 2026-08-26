@@ -3293,6 +3293,14 @@ export async function searchFullchainArchiveCandidates(params: {
   return data as { data: FullchainArchiveCandidate[]; total: number; page: number; page_size: number; counts: Record<string, number> }
 }
 
+export async function selectFullchainArchiveCandidates(params: {
+  stages?: Array<'direct' | 'review' | 'registered'>
+  keyword?: string
+}) {
+  const { data } = await api.post('/police-dispatch/fullchain-archive/candidates/selection', params, activeRequest)
+  return data as { source_ids: number[]; total: number; max_total: number }
+}
+
 export async function saveFullchainArchiveReview(payload: {
   row_key: string
   decision: 'transfer_internal' | 'transfer_external' | 'keep' | 'archive'
