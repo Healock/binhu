@@ -47,6 +47,7 @@ import MobilePhonePicker from '../components/MobilePhonePicker'
 import MobileTaskTable from '../components/MobileTaskTable'
 import MobileTaskAssignmentWorkbench from '../components/MobileTaskAssignmentWorkbench'
 import QmfFeedbackStatus, { QMF_FEEDBACK_OPTIONS } from '../components/QmfFeedbackStatus'
+import ResidenceRegistrationStatus from '../components/ResidenceRegistrationStatus'
 import FullchainArchivePanel from '../components/FullchainArchivePanel'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -1104,7 +1105,8 @@ export default function MobileTaskList({
                     || task.source_count > 1
                     || task.pending_sync
                     || Boolean(task.watch_marks?.length)
-                    || Boolean(task.qmf_status)) && (
+                    || Boolean(task.qmf_status)
+                    || task.residence_status?.state === 'first_registration') && (
                     <div className="mobile-task-item-card__flags">
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
                       {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
@@ -1117,6 +1119,7 @@ export default function MobileTaskList({
                         <Tag key={`${task.task_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
                       ))}
                       {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
+                      <ResidenceRegistrationStatus status={task.residence_status} compact />
                     </div>
                   )}
                   {(primaryPhone || task.summary.identity_number || primaryAddress) && (

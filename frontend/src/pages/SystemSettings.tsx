@@ -12,13 +12,18 @@ import {
 import {
   formatUTCTime,
   getQmfConfig,
+  getResidencePlatformCaptcha,
+  getResidencePlatformConfig,
   getSyncSchedule,
   getSystemConfig,
   updateQmfConfig,
+  updateResidencePlatformConfig,
+  loginResidencePlatform,
+  startResidencePlatformScan,
   updateSyncSchedule,
   updateSystemConfig,
 } from '../api/client'
-import type { QmfConfig, SyncSchedule } from '../api/client'
+import type { QmfConfig, ResidencePlatformConfig, SyncSchedule } from '../api/client'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -147,10 +152,17 @@ export default function SystemSettings() {
   const [qmfPassword, setQmfPassword] = useState('')
   const [savingQmf, setSavingQmf] = useState(false)
   const [qmfMsg, setQmfMsg] = useState('')
+  const [residenceConfig, setResidenceConfig] = useState<ResidencePlatformConfig | null>(null)
+  const [residencePassword, setResidencePassword] = useState('')
+  const [residenceCaptcha, setResidenceCaptcha] = useState('')
+  const [residenceCaptchaImage, setResidenceCaptchaImage] = useState('')
+  const [residenceCheckKey, setResidenceCheckKey] = useState('')
+  const [savingResidence, setSavingResidence] = useState(false)
+  const [residenceMsg, setResidenceMsg] = useState('')
 
   useEffect(() => {
-    Promise.all([getSystemConfig(), getSyncSchedule(), getQmfConfig()])
-      .then(([config, currentSchedule, currentQmf]) => {
+    Promise.all([getSystemConfig(), getSyncSchedule(), getQmfConfig(), getResidencePlatformConfig()])
+      .then(([config, currentSchedule, currentQmf, currentResidence]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
         const configuredTimezone = config.timezone || 'Asia/Shanghai'
         const configuredStartAt = formatDateTimeInput(config.maintenance_start_at, configuredTimezone)
@@ -189,6 +201,7 @@ export default function SystemSettings() {
             : 'custom',
         )
         setQmfConfig(currentQmf)
+        setResidenceConfig(currentResidence)
       })
       .catch(() => setScheduleMsg('系统设置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
@@ -373,6 +386,82 @@ export default function SystemSettings() {
       setQmfMsg(error?.response?.data?.detail || '全民防配置保存失败')
     } finally {
       setSavingQmf(false)
+    }
+  }
+
+  const handleSaveResidence = async () => {
+    if (!residenceConfig) return
+    setSavingResidence(true)
+    setResidenceMsg('')
+    try {
+      const result = await updateResidencePlatformConfig({
+        enabled: residenceConfig.enabled,
+        base_url: residenceConfig.base_url,
+        username: residenceConfig.username,
+        ...(residencePassword ? { password: residencePassword } : {}),
+        mac_service_url: residenceConfig.mac_service_url,
+        organization_code: residenceConfig.organization_code,
+        timeout_seconds: residenceConfig.timeout_seconds,
+      })
+      setResidenceConfig(result)
+      setResidencePassword('')
+      setResidenceMsg('居住证平台配置已保存；登录后将自动查询全部流动人口任务')
+    } catch (error: any) {
+      setResidenceMsg(error?.response?.data?.detail?.message || error?.response?.data?.detail || '居住证平台配置保存失败')
+    } finally {
+      setSavingResidence(false)
+    }
+  }
+
+  const handleResidenceCaptcha = async () => {
+    setSavingResidence(true)
+    setResidenceMsg('')
+    try {
+      const result = await getResidencePlatformCaptcha()
+      setResidenceCaptchaImage(result.image)
+      setResidenceCheckKey(result.check_key)
+      setResidenceCaptcha('')
+    } catch (error: any) {
+      setResidenceMsg(error?.response?.data?.detail?.message || '验证码读取失败')
+    } finally {
+      setSavingResidence(false)
+    }
+  }
+
+  const handleResidenceLogin = async () => {
+    if (!residenceCaptcha || !residenceCheckKey) {
+      setResidenceMsg('请先获取并填写验证码')
+      return
+    }
+    setSavingResidence(true)
+    setResidenceMsg('')
+    try {
+      const result = await loginResidencePlatform({
+        captcha: residenceCaptcha,
+        check_key: residenceCheckKey,
+      })
+      setResidenceConfig(result)
+      setResidenceCaptcha('')
+      setResidenceCaptchaImage('')
+      setResidenceCheckKey('')
+      setResidenceMsg('居住证平台登录成功，后台查询已启动')
+    } catch (error: any) {
+      setResidenceMsg(error?.response?.data?.detail?.message || error?.response?.data?.detail || '居住证平台登录失败')
+    } finally {
+      setSavingResidence(false)
+    }
+  }
+
+  const handleResidenceScan = async () => {
+    setSavingResidence(true)
+    setResidenceMsg('')
+    try {
+      const result = await startResidencePlatformScan()
+      setResidenceMsg(`已安排 ${result.queued_count} 条任务重新查询`)
+    } catch (error: any) {
+      setResidenceMsg(error?.response?.data?.detail || '重新查询启动失败')
+    } finally {
+      setSavingResidence(false)
     }
   }
 
@@ -662,6 +751,130 @@ export default function SystemSettings() {
                 type={qmfMsg.includes('失败') || qmfMsg.includes('请先') || qmfMsg.includes('必须') ? 'error' : 'success'}
                 showIcon
                 message={qmfMsg}
+              />
+            )}
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="居住证平台首次登记识别"
+        description="只读查询“流动人口管理 → 人员登记、注销”。明确查不到人员登记资料时，任务卡片、Table 和详情会显示“首次登记”。"
+      >
+        {!residenceConfig ? (
+          <Alert type="info" showIcon message="居住证平台配置加载中" />
+        ) : (
+          <div className="flex flex-col gap-5">
+            <Alert
+              type={residenceConfig.session_ready ? 'success' : 'warning'}
+              showIcon
+              message={residenceConfig.session_ready ? '居住证平台已登录，后台查询可用' : '请保存配置并完成一次验证码登录'}
+              description="系统只调用常住人口预检索和流动人口登记查询两个只读接口；不会登记、注销或修改居住证平台数据。"
+            />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="settings-field">
+                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">自动查询开关</span>
+                <div className="flex min-h-9 items-center gap-3">
+                  <Switch
+                    checked={residenceConfig.enabled}
+                    onChange={value => setResidenceConfig(current => current ? { ...current, enabled: value } : current)}
+                    disabled={savingResidence}
+                  />
+                  <span className="text-sm text-[var(--app-text-secondary)]">
+                    {residenceConfig.enabled ? '已开启' : '已关闭'}
+                  </span>
+                </div>
+              </div>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">接口地址</span>
+                <Input
+                  value={residenceConfig.base_url}
+                  onChange={event => setResidenceConfig(current => current ? { ...current, base_url: event.target.value } : current)}
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">登录账号</span>
+                <Input
+                  value={residenceConfig.username}
+                  onChange={event => setResidenceConfig(current => current ? { ...current, username: event.target.value } : current)}
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">登录密码</span>
+                <Input.Password
+                  value={residencePassword}
+                  onChange={event => setResidencePassword(event.target.value)}
+                  placeholder={residenceConfig.password_configured ? '已配置；留空保持不变' : '请输入密码'}
+                  autoComplete="new-password"
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">MAC 服务地址</span>
+                <Input
+                  value={residenceConfig.mac_service_url}
+                  onChange={event => setResidenceConfig(current => current ? { ...current, mac_service_url: event.target.value } : current)}
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">账号机构代码</span>
+                <Input
+                  value={residenceConfig.organization_code}
+                  onChange={event => setResidenceConfig(current => current ? { ...current, organization_code: event.target.value } : current)}
+                  placeholder="登录响应能识别时会自动填写"
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">请求超时（秒）</span>
+                <InputNumber
+                  min={1}
+                  max={120}
+                  value={residenceConfig.timeout_seconds}
+                  onChange={value => setResidenceConfig(current => current ? { ...current, timeout_seconds: Number(value || 15) } : current)}
+                  className="w-full"
+                  disabled={savingResidence}
+                />
+              </label>
+            </div>
+            <div className="settings-actions flex flex-wrap gap-2">
+              <Button type="primary" loading={savingResidence} onClick={handleSaveResidence}>保存配置</Button>
+              <Button loading={savingResidence} onClick={handleResidenceCaptcha}>获取登录验证码</Button>
+              <Button loading={savingResidence} disabled={!residenceConfig.session_ready} onClick={handleResidenceScan}>重新查询全部任务</Button>
+            </div>
+            {residenceCaptchaImage && (
+              <div className="flex flex-wrap items-end gap-3">
+                <img src={residenceCaptchaImage} alt="居住证平台登录验证码" className="h-10 rounded border border-[var(--app-border)]" />
+                <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                  <span className="settings-field__label font-medium">验证码</span>
+                  <Input
+                    value={residenceCaptcha}
+                    onChange={event => setResidenceCaptcha(event.target.value)}
+                    onPressEnter={() => void handleResidenceLogin()}
+                    className="w-40"
+                    disabled={savingResidence}
+                  />
+                </label>
+                <Button type="primary" loading={savingResidence} onClick={handleResidenceLogin}>登录并开始查询</Button>
+              </div>
+            )}
+            <Descriptions
+              size="small"
+              colon={false}
+              column={{ xs: 1, sm: 2 }}
+              items={[
+                { key: 'password', label: '密码', children: residenceConfig.password_configured ? '已配置（不回显）' : '未配置' },
+                { key: 'token', label: '登录状态', children: residenceConfig.access_token_configured ? '已有登录令牌' : '尚未登录' },
+              ]}
+            />
+            {residenceMsg && (
+              <Alert
+                type={residenceMsg.includes('失败') || residenceMsg.includes('请先') ? 'error' : 'success'}
+                showIcon
+                message={residenceMsg}
               />
             )}
           </div>

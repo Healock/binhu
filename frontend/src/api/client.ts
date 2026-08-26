@@ -1144,6 +1144,22 @@ export interface MobileTaskItem {
   watch_marks: MobileTaskWatchMark[]
   first_dispatch_at: string | null
   qmf_status: MobileTaskQmfStatus | null
+  residence_status?: MobileTaskResidenceStatus | null
+}
+
+export type ResidenceRegistrationState =
+  | 'pending'
+  | 'querying'
+  | 'registered'
+  | 'first_registration'
+  | 'error'
+  | 'stale'
+
+export interface MobileTaskResidenceStatus {
+  state: ResidenceRegistrationState
+  checked_at: string | null
+  last_attempt_at: string | null
+  error_code: string
 }
 
 export type QmfFeedbackState =
@@ -1215,6 +1231,7 @@ export interface MobileTaskSource {
 export interface MobileTaskDetailData {
   task: MobileTaskItem
   qmf_status?: MobileTaskQmfStatus | null
+  residence_status?: MobileTaskResidenceStatus | null
   workflow: {
     label: string
     result_field: string
@@ -1511,6 +1528,29 @@ export interface QmfConfigUpdate {
   session_max_seconds: number
   status_scan_enabled: boolean
   status_scan_time: string
+}
+
+export interface ResidencePlatformConfig {
+  enabled: boolean
+  base_url: string
+  username: string
+  password_configured: boolean
+  mac_service_url: string
+  access_token_configured: boolean
+  organization_code: string
+  timeout_seconds: number
+  credentials_configured: boolean
+  session_ready: boolean
+}
+
+export interface ResidencePlatformConfigUpdate {
+  enabled: boolean
+  base_url: string
+  username: string
+  password?: string
+  mac_service_url: string
+  organization_code: string
+  timeout_seconds: number
 }
 
 export type QmfStatusScanRunStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed'
@@ -1837,6 +1877,36 @@ export async function getQmfConfig(): Promise<QmfConfig> {
 
 export async function updateQmfConfig(payload: QmfConfigUpdate): Promise<QmfConfig> {
   const { data } = await api.put('/qmf-registration/config', payload, activeRequest)
+  return data
+}
+
+export async function getResidencePlatformConfig(): Promise<ResidencePlatformConfig> {
+  const { data } = await api.get('/residence-platform/config', activeRequest)
+  return data
+}
+
+export async function updateResidencePlatformConfig(
+  payload: ResidencePlatformConfigUpdate,
+): Promise<ResidencePlatformConfig> {
+  const { data } = await api.put('/residence-platform/config', payload, activeRequest)
+  return data
+}
+
+export async function getResidencePlatformCaptcha(): Promise<{ check_key: string; image: string }> {
+  const { data } = await api.post('/residence-platform/captcha', {}, activeRequest)
+  return data
+}
+
+export async function loginResidencePlatform(payload: {
+  captcha: string
+  check_key: string
+}): Promise<ResidencePlatformConfig> {
+  const { data } = await api.post('/residence-platform/login', payload, activeRequest)
+  return data
+}
+
+export async function startResidencePlatformScan(): Promise<{ queued_count: number }> {
+  const { data } = await api.post('/residence-platform/scan', {}, activeRequest)
   return data
 }
 
