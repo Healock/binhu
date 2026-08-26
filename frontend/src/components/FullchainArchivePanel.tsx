@@ -10,6 +10,7 @@ import {
   previewFullchainArchiveExport,
   saveFullchainArchiveReview,
   searchFullchainArchiveCandidates,
+  selectFullchainArchiveCandidates,
   type FullchainArchiveCandidate,
   type FullchainArchiveExport,
 } from '../api/client'
@@ -32,6 +33,7 @@ export default function FullchainArchivePanel() {
   const [keywordInput, setKeywordInput] = useState('')
   const keyword = useDebouncedValue(keywordInput.trim(), 350)
   const [loading, setLoading] = useState(false)
+  const [selectingAll, setSelectingAll] = useState(false)
   const [error, setError] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -125,6 +127,19 @@ export default function FullchainArchivePanel() {
     } catch (reason: unknown) { message.error(apiErrorMessage(reason, '归档预览失败')) }
   }
 
+  const selectAllEligible = async () => {
+    setSelectingAll(true)
+    try {
+      const result = await selectFullchainArchiveCandidates({ stages, keyword })
+      setSelected(result.source_ids)
+      message.success(`已选择当前筛选下全部 ${result.total} 条可选数据`)
+    } catch (reason: unknown) {
+      message.error(apiErrorMessage(reason, '全选可选数据失败'))
+    } finally {
+      setSelectingAll(false)
+    }
+  }
+
   const columns: TableColumnsType<FullchainArchiveCandidate> = useMemo(() => [
     { title: '姓名', dataIndex: 'name', width: 110 },
     { title: '核查结果', dataIndex: 'result', width: 130, render: value => <Tag>{value}</Tag> },
@@ -145,7 +160,10 @@ export default function FullchainArchivePanel() {
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="text-sm text-[var(--app-text-secondary)]">已选择 {selected.length} 条，仅可选择满足归档条件的数据</span>
-          <Button type="primary" danger disabled={!selected.length} onClick={() => void confirmExport()}>预览并导出归档</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button loading={selectingAll} onClick={() => void selectAllEligible()}>全选所有可选数据</Button>
+            <Button type="primary" danger disabled={!selected.length} onClick={() => void confirmExport()}>预览并导出归档</Button>
+          </div>
         </div>
         <Table<FullchainArchiveCandidate>
           rowKey="source_id"
@@ -158,6 +176,10 @@ export default function FullchainArchivePanel() {
             selectedRowKeys: selected,
             preserveSelectedRowKeys: true,
             onChange: setSelected,
+            onSelectAll: checked => {
+              if (checked) void selectAllEligible()
+              else setSelected([])
+            },
             getCheckboxProps: row => ({ disabled: !row.eligible }),
           }}
           pagination={{

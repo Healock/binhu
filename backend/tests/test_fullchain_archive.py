@@ -12,7 +12,9 @@ from fastapi import HTTPException
 from openpyxl import Workbook, load_workbook
 
 from routers.fullchain_archive import (
+    CandidateSearch,
     _candidate_rows,
+    _filter_candidate_rows,
     _parse_deadline,
     _preview_token,
     require_fullchain_archive,
@@ -41,6 +43,16 @@ def workbook_bytes(rows):
 
 
 class FullchainArchiveTests(unittest.TestCase):
+    def test_candidate_selection_filters_stages_keywords_and_eligibility(self):
+        rows = [
+            {"source_id": 10, "stage": "direct", "eligible": True, "name": "甲", "identity": "", "phone": "", "address": "一号"},
+            {"source_id": 11, "stage": "direct", "eligible": False, "name": "乙", "identity": "", "phone": "", "address": "二号"},
+            {"source_id": 12, "stage": "review", "eligible": True, "name": "丙", "identity": "", "phone": "", "address": "三号"},
+        ]
+        filtered = _filter_candidate_rows(rows, CandidateSearch(stages=["direct"], keyword="甲"))
+        self.assertEqual([row["source_id"] for row in filtered], [10])
+        self.assertEqual([row["source_id"] for row in filtered if row["eligible"]], [10])
+
     @patch("services.fullchain_archive.hmac_digest", side_effect=lambda value, kind: (f"digest-{value}", 1))
     def test_police_raw_parser_finds_identity_column_and_deduplicates(self, _digest):
         content = workbook_bytes([
