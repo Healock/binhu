@@ -4,6 +4,12 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: '已通过 CI 的发布提交 SHA；留空则使用 main 最新提交'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -25,7 +31,7 @@ env:
 
 jobs:
   prepare:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: desktop-production
@@ -40,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.commit || github.sha) || github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - name: Verify main commit and synchronized versions
         run: |
