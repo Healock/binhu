@@ -64,6 +64,14 @@ test('桌面端顶部消息和通知避开自定义标题栏', () => {
   assert.match(styles, /html\.desktop-shell \.ant-notification-top,[\s\S]*?\.ant-notification-topRight\s*\{[^}]*top:\s*56px\s*!important;/s)
 })
 
+test('短桌面窗口的登录页可滚动且不会裁掉底部操作', () => {
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(styles, /@media \(max-height: 720px\) and \(min-width: 901px\)[\s\S]*?\.desktop-app-content \.login-page\s*\{[^}]*overflow-y:\s*auto;/s)
+  assert.match(styles, /@media \(max-height: 720px\) and \(min-width: 901px\)[\s\S]*?\.desktop-app-content \.login-form-panel\s*\{[^}]*align-items:\s*flex-start;/s)
+  assert.match(styles, /@media \(max-height: 680px\) and \(min-width: 901px\)[\s\S]*?\.login-product-brand img\s*\{[^}]*width:\s*60px;[^}]*height:\s*56px;/s)
+})
+
 test('任务分配和行内编辑在紧凑桌面宽度保持完整可操作', () => {
   const assignmentSource = readFileSync(new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url), 'utf8')
   const taskTableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')

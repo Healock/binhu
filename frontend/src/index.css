@@ -4760,18 +4760,93 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
 }
 
 @media (max-height: 720px) and (min-width: 901px) {
+  /* Short desktop windows must keep the whole sign-in flow reachable. */
+  .desktop-app-content .login-page {
+    overflow-y: auto;
+  }
+
+  .desktop-app-content .login-form-panel {
+    align-items: flex-start;
+    padding-top: 18px;
+    padding-bottom: 24px;
+  }
+
   .login-product-brand {
-    margin-bottom: 24px;
+    margin-bottom: 18px;
   }
 
   .login-product-brand img {
-    width: 82px;
-    height: 76px;
+    width: 72px;
+    height: 66px;
     margin-bottom: 8px;
   }
 
+  .login-product-brand h2 {
+    font-size: 25px;
+  }
+
   .login-form-card {
-    padding-block: 26px 28px;
+    padding-block: 22px 24px;
+  }
+
+  .login-form {
+    gap: 16px;
+  }
+
+  .login-form__field .ant-input-affix-wrapper,
+  .login-form .ant-btn {
+    min-height: 44px;
+  }
+}
+
+@media (max-height: 680px) and (min-width: 901px) {
+  .desktop-app-content .login-form-panel {
+    padding-top: 12px;
+    padding-bottom: 18px;
+  }
+
+  .login-product-brand {
+    margin-bottom: 12px;
+  }
+
+  .login-product-brand img {
+    width: 60px;
+    height: 56px;
+    margin-bottom: 5px;
+  }
+
+  .login-product-brand h2 {
+    font-size: 22px;
+  }
+
+  .login-product-brand p {
+    margin-top: 4px;
+    font-size: 9px;
+  }
+
+  .login-form-card {
+    padding: 20px 24px 22px;
+  }
+
+  .login-form-card__heading {
+    margin-bottom: 18px;
+  }
+
+  .login-form {
+    gap: 14px;
+  }
+
+  .login-form__field {
+    gap: 6px;
+  }
+
+  .login-form__field .ant-input-affix-wrapper,
+  .login-form .ant-btn {
+    min-height: 42px;
+  }
+
+  .login-form-card__version {
+    margin-top: 12px;
   }
 }
 
