@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException, UploadFile
+from starlette.requests import Request
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -14,6 +15,16 @@ from routers.auth import _remove_avatar, _resolve_avatar, get_avatar, upload_ava
 
 
 JPEG = b"\xff\xd8\xffavatar"
+
+
+def request() -> Request:
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/auth/avatar",
+        "headers": [(b"user-agent", b"avatar-test")],
+        "client": ("127.0.0.1", 12345),
+    })
 
 
 class AvatarCursor:
@@ -63,11 +74,17 @@ class UserAvatarTests(unittest.IsolatedAsyncioTestCase):
             pool = AvatarPool(AvatarCursor("7/old.jpg"))
             upload = UploadFile(filename="avatar.jpg", file=io.BytesIO(JPEG))
             with patch("routers.auth.settings.USER_AVATAR_DIR", directory), \
-                 patch("routers.auth.db_manager.get_pool", return_value=pool):
-                result = await upload_avatar(upload, user={"id": 7})
+                 patch("routers.auth.db_manager.get_pool", return_value=pool), \
+                 patch("routers.auth.record_admin_audit", AsyncMock()) as audit:
+                result = await upload_avatar(request(), upload, user={"id": 7})
             self.assertFalse(old_path.exists())
             self.assertIn("/api/auth/avatar/7?v=", result["avatar_url"])
             self.assertEqual(len(list((root / "7").glob("*.jpg"))), 1)
+            self.assertEqual(audit.await_args.args[1], "account.avatar.update")
+            self.assertEqual(
+                audit.await_args.kwargs["detail"],
+                {"replaced_existing": True, "mime_type": "image/jpeg"},
+            )
 
     async def test_database_failure_removes_new_file_and_keeps_old_file(self):
         with TemporaryDirectory() as directory:
@@ -80,7 +97,7 @@ class UserAvatarTests(unittest.IsolatedAsyncioTestCase):
             with patch("routers.auth.settings.USER_AVATAR_DIR", directory), \
                  patch("routers.auth.db_manager.get_pool", return_value=pool):
                 with self.assertRaises(RuntimeError):
-                    await upload_avatar(upload, user={"id": 7})
+                    await upload_avatar(request(), upload, user={"id": 7})
             self.assertTrue(old_path.exists())
             self.assertEqual(list((root / "7").glob("*.jpg")), [old_path])
 
