@@ -49,6 +49,7 @@ const PHASE_LABELS: Record<string, string> = {
   fetching: '正在获取',
   parsing: '正在解析',
   preparing: '正在准备',
+  querying: '正在查询',
   sending: '正在发送',
   deleting: '正在归档',
   finished: '处理结束',

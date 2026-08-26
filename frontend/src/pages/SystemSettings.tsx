@@ -5,12 +5,15 @@ import {
   Descriptions,
   Input,
   InputNumber,
+  Progress,
   Radio,
   Select,
   Switch,
 } from 'antd'
 import {
   formatUTCTime,
+  getExternalAcquisitionRun,
+  getLatestExternalAcquisitionRun,
   getQmfConfig,
   getResidencePlatformConfig,
   getSyncSchedule,
@@ -21,7 +24,12 @@ import {
   updateSyncSchedule,
   updateSystemConfig,
 } from '../api/client'
-import type { QmfConfig, ResidencePlatformConfig, SyncSchedule } from '../api/client'
+import type {
+  ExternalAcquisitionRun,
+  QmfConfig,
+  ResidencePlatformConfig,
+  SyncSchedule,
+} from '../api/client'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -67,6 +75,14 @@ const COMMON_INTERVALS = new Set(
 )
 
 type MaintenanceMode = 'off' | 'immediate' | 'scheduled'
+
+const RESIDENCE_RUN_PHASES: Record<string, string> = {
+  queued: '等待执行',
+  starting: '正在启动',
+  preparing: '正在准备任务',
+  querying: '正在查询居住证平台',
+  finished: '处理结束',
+}
 
 function formatDateTimeInput(value: string | undefined, timezone: string): string {
   if (!value) return ''
@@ -154,6 +170,7 @@ export default function SystemSettings() {
   const [residencePassword, setResidencePassword] = useState('')
   const [savingResidence, setSavingResidence] = useState(false)
   const [residenceMsg, setResidenceMsg] = useState('')
+  const [residenceRun, setResidenceRun] = useState<ExternalAcquisitionRun | null>(null)
 
   useEffect(() => {
     Promise.all([getSystemConfig(), getSyncSchedule(), getQmfConfig(), getResidencePlatformConfig()])
@@ -201,6 +218,41 @@ export default function SystemSettings() {
       .catch(() => setScheduleMsg('系统设置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void getLatestExternalAcquisitionRun('residence_full_scan', { passive: true })
+      .then(run => {
+        if (!cancelled) {
+          setResidenceRun(current => (
+            !run || (current && current.id > run.id) ? current : run
+          ))
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!residenceRun || !['queued', 'running'].includes(residenceRun.status)) return
+    let cancelled = false
+    const refresh = () => {
+      void getExternalAcquisitionRun(residenceRun.id, { passive: true })
+        .then(run => {
+          if (!cancelled) {
+            setResidenceRun(current => current?.id === run.id ? run : current)
+          }
+        })
+        .catch(() => undefined)
+    }
+    const timer = window.setInterval(refresh, 2500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [residenceRun?.id, residenceRun?.status])
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1000)
@@ -412,7 +464,12 @@ export default function SystemSettings() {
     setResidenceMsg('')
     try {
       const result = await startResidencePlatformScan()
-      setResidenceMsg(`已安排 ${result.queued_count} 条任务重新查询`)
+      setResidenceRun(result.run)
+      setResidenceMsg(
+        result.reused
+          ? `查询任务 #${result.run.id} 已在运行，继续显示原任务进度`
+          : `查询任务 #${result.run.id} 已进入后台队列，可离开本页面继续运行`,
+      )
     } catch (error: any) {
       setResidenceMsg(error?.response?.data?.detail || '重新查询启动失败')
     } finally {
@@ -800,8 +857,50 @@ export default function SystemSettings() {
             </div>
             <div className="settings-actions flex flex-wrap gap-2">
               <Button type="primary" loading={savingResidence} onClick={handleSaveResidence}>保存配置</Button>
-              <Button loading={savingResidence} disabled={!residenceConfig.session_ready} onClick={handleResidenceScan}>重新查询全部任务</Button>
+              <Button
+                loading={savingResidence}
+                disabled={
+                  !residenceConfig.session_ready
+                  || residenceRun?.status === 'queued'
+                  || residenceRun?.status === 'running'
+                }
+                onClick={handleResidenceScan}
+              >
+                {residenceRun?.status === 'queued' || residenceRun?.status === 'running'
+                  ? '查询进行中'
+                  : '重新查询全部任务'}
+              </Button>
             </div>
+            {residenceRun && (
+              <div className="settings-field rounded-lg border border-[var(--app-border)] px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-[var(--app-text-strong)]">
+                    最近查询任务 #{residenceRun.id}
+                  </span>
+                  <span className="text-xs text-[var(--app-text-secondary)]">
+                    {RESIDENCE_RUN_PHASES[residenceRun.phase] || residenceRun.phase}
+                  </span>
+                </div>
+                <Progress
+                  className="mt-2"
+                  percent={residenceRun.progress ?? 0}
+                  size="small"
+                  status={
+                    residenceRun.status === 'failed' || residenceRun.status === 'interrupted'
+                      ? 'exception'
+                      : residenceRun.status === 'success' || residenceRun.status === 'warning'
+                        ? 'success'
+                        : 'active'
+                  }
+                  format={() => residenceRun.total !== null
+                    ? `${residenceRun.current}/${residenceRun.total}`
+                    : '准备中'}
+                />
+                <div className="mt-1 text-xs leading-5 text-[var(--app-text-secondary)]">
+                  {residenceRun.error_message || residenceRun.message || '等待后台更新进度'}
+                </div>
+              </div>
+            )}
             <Descriptions
               size="small"
               colon={false}
