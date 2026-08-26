@@ -786,10 +786,12 @@ function BackupsTab() {
     setDownloading(true)
     try {
       const blob = await downloadBackup(downloadJob.id, password)
-      await downloadBlob(blob, downloadJob.filename || `binhu-backup-${downloadJob.id}.sql.gz`)
-      message.success('备份下载已开始')
-      setDownloadJob(null)
-      setPassword('')
+      const saved = await downloadBlob(blob, downloadJob.filename || `binhu-backup-${downloadJob.id}.sql.gz`)
+      if (saved) {
+        message.success('备份已保存')
+        setDownloadJob(null)
+        setPassword('')
+      }
     } catch (error: any) {
       if (error?.response?.data instanceof Blob) {
         try {
@@ -1109,8 +1111,8 @@ export default function OperationsCenter() {
   const diagnostics = async () => {
     setDiagnosing(true)
     try {
-      await downloadBlob(await downloadDiagnostics(), 'binhu-diagnostics.zip')
-      message.success('诊断包已生成')
+      const saved = await downloadBlob(await downloadDiagnostics(), 'binhu-diagnostics.zip')
+      if (saved) message.success('诊断包已生成')
     } catch {
       message.error('诊断包生成失败')
     } finally {

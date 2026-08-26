@@ -165,12 +165,12 @@ export function buildSummaryWorkbook(options: SummaryWorkbookOptions) {
   }
 }
 
-export async function exportSummaryWorkbook(options: SummaryWorkbookOptions): Promise<void> {
+export async function exportSummaryWorkbook(options: SummaryWorkbookOptions): Promise<boolean> {
   const { default: writeXlsxFile } = await import('write-excel-file/browser')
   const workbook = buildSummaryWorkbook(options)
   const blob = await writeXlsxFile(workbook.sheets, {
     fontFamily: 'Microsoft YaHei',
     fontSize: 10,
   }).toBlob()
-  await downloadBlob(blob, workbook.fileName)
+  return downloadBlob(blob, workbook.fileName)
 }

@@ -630,11 +630,11 @@ export default function WorkLog() {
     setExporting(true)
     try {
       const blob = await exportWorkLog(draft.id)
-      await downloadBlob(
+      const saved = await downloadBlob(
         blob,
         `${businessDate.format('MMDD')}日报滨湖新城派出所社区警务工作日志.pdf`,
       )
-      message.success('PDF 工作日志已生成')
+      if (saved) message.success('PDF 工作日志已生成')
     } catch (error) {
       message.error(errorMessage(error, '生成 PDF 失败'))
     } finally {
@@ -684,11 +684,11 @@ export default function WorkLog() {
         rental_target: rentalTarget,
         self_owned_target: selfOwnedTarget,
       })
-      await downloadBlob(
+      const saved = await downloadBlob(
         blob,
         `${dailyDetailDate.format('MMDD')}滨湖网格工作每日明细.xlsx`,
       )
-      message.success('工作每日明细 XLSX 已生成，目标数已保存')
+      if (saved) message.success('工作每日明细 XLSX 已生成，目标数已保存')
     } catch (error) {
       message.error(errorMessage(error, '生成工作每日明细失败'))
     } finally {
