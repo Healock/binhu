@@ -1537,6 +1537,7 @@ export interface ResidencePlatformConfig {
   password_configured: boolean
   mac_service_url: string
   timeout_seconds: number
+  full_scan_interval_minutes: number
   credentials_configured: boolean
   session_ready: boolean
   account_mode: 'community_code_suffix_00'
@@ -1551,6 +1552,7 @@ export interface ResidencePlatformConfigUpdate {
   password?: string
   mac_service_url: string
   timeout_seconds: number
+  full_scan_interval_minutes: number
 }
 
 export type QmfStatusScanRunStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed'

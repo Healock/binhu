@@ -27,8 +27,8 @@ from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 
 LOOKUP_BATCH_SIZE = 50
 LOOKUP_CONCURRENCY = 2
-REFRESH_DAYS = 7
 _wake_event = asyncio.Event()
+_force_full_scan_requested = False
 _community_login_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -158,14 +158,6 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
                     (parser_type, row_key, identity_hmac, status, error_code),
                 )
                 queued += int(valid)
-            await cur.execute(
-                """
-                UPDATE _residence_registration_status
-                SET status='pending',error_code='',last_attempt_at=NULL,duration_ms=NULL
-                WHERE status IN ('registered','first_registration')
-                  AND checked_at<DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
-                """
-            )
         await conn.commit()
     return queued
 
@@ -376,14 +368,18 @@ async def _process_one(
         return "request_error"
 
 
-async def run_residence_lookup_cycle(*, queue_tasks: bool = True) -> dict[str, int | str]:
+async def run_residence_lookup_cycle(
+    *,
+    queue_tasks: bool = True,
+    full_scan: bool = False,
+) -> dict[str, int | str]:
     pool = _pool()
     async with pool.acquire() as conn:
         config = await load_residence_config(conn)
     if not config.session_ready:
         return {"processed": 0, "status": "session_not_ready"}
     if queue_tasks:
-        await queue_due_residence_tasks()
+        await queue_due_residence_tasks(force=full_scan)
     items = await _claim_pending(LOOKUP_BATCH_SIZE)
     if not items:
         return {"processed": 0, "status": "idle"}
@@ -399,28 +395,52 @@ async def run_residence_lookup_cycle(*, queue_tasks: bool = True) -> dict[str, i
     return {"processed": len(items), "status": "completed"}
 
 
-def wake_residence_lookup_scheduler() -> None:
+def wake_residence_lookup_scheduler(*, force_full_scan: bool = False) -> None:
+    global _force_full_scan_requested
+    if force_full_scan:
+        _force_full_scan_requested = True
     _wake_event.set()
 
 
 async def run_residence_lookup_scheduler() -> None:
+    global _force_full_scan_requested
+    next_full_scan_at = 0.0
     while True:
         try:
+            pool = _pool()
+            async with pool.acquire() as conn:
+                config = await load_residence_config(conn)
+            force_full_scan = _force_full_scan_requested
+            _force_full_scan_requested = False
+            full_scan_due = bool(
+                config.session_ready
+                and (force_full_scan or time.monotonic() >= next_full_scan_at)
+            )
             queue_tasks = True
             while True:
-                result = await run_residence_lookup_cycle(queue_tasks=queue_tasks)
+                result = await run_residence_lookup_cycle(
+                    queue_tasks=queue_tasks,
+                    full_scan=full_scan_due and queue_tasks,
+                )
                 queue_tasks = False
                 if int(result.get("processed") or 0) <= 0:
                     break
                 if result.get("status") == "authentication_expired":
                     break
                 await asyncio.sleep(0)
+            if full_scan_due:
+                next_full_scan_at = (
+                    time.monotonic() + config.full_scan_interval_minutes * 60
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - safe type-only diagnostic
             print(f"[RESIDENCE_LOOKUP] cycle failed: {type(exc).__name__}")
         try:
-            await asyncio.wait_for(_wake_event.wait(), timeout=60)
+            wait_seconds = 60.0
+            if next_full_scan_at > 0:
+                wait_seconds = max(1.0, next_full_scan_at - time.monotonic())
+            await asyncio.wait_for(_wake_event.wait(), timeout=wait_seconds)
             _wake_event.clear()
         except asyncio.TimeoutError:
             pass

@@ -19,6 +19,7 @@ RESIDENCE_CONFIG_KEYS = {
     "residence_access_token",
     "residence_organization_code",
     "residence_timeout_seconds",
+    "residence_full_scan_interval_minutes",
 }
 RESIDENCE_SECRET_KEYS = {
     "residence_username",
@@ -50,6 +51,7 @@ class ResidencePlatformConfig:
     access_token: str
     organization_code: str
     timeout_seconds: int
+    full_scan_interval_minutes: int
 
     @property
     def credentials_configured(self) -> bool:
@@ -161,6 +163,10 @@ async def load_residence_config(conn) -> ResidencePlatformConfig:
         access_token=value("residence_access_token"),
         organization_code=value("residence_organization_code"),
         timeout_seconds=_as_int(values.get("residence_timeout_seconds"), 15),
+        full_scan_interval_minutes=min(
+            1440,
+            max(5, _as_int(values.get("residence_full_scan_interval_minutes"), 30)),
+        ),
     )
 
 
@@ -176,6 +182,7 @@ def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
         "password_configured": bool(config.password),
         "mac_service_url": config.mac_service_url,
         "timeout_seconds": config.timeout_seconds,
+        "full_scan_interval_minutes": config.full_scan_interval_minutes,
         "credentials_configured": config.credentials_configured,
         "session_ready": config.session_ready,
         "account_mode": "community_code_suffix_00",

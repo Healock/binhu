@@ -15,6 +15,7 @@ from services.residence_platform import (  # noqa: E402
 )
 from services.residence_platform_config import (  # noqa: E402
     ResidencePlatformConfig,
+    public_residence_config,
     residence_username,
     serialize_residence_value,
 )
@@ -34,12 +35,23 @@ def config(**overrides) -> ResidencePlatformConfig:
         "access_token": "fixture-token",
         "organization_code": "3205840377",
         "timeout_seconds": 5,
+        "full_scan_interval_minutes": 30,
     }
     values.update(overrides)
     return ResidencePlatformConfig(**values)
 
 
 class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
+    def test_full_scan_interval_defaults_are_exposed(self):
+        public = public_residence_config(config())
+        self.assertEqual(public["full_scan_interval_minutes"], 30)
+
+        scan_source = Path(__file__).parents[1].joinpath(
+            "services", "residence_status_scan.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("queue_due_residence_tasks(force=full_scan)", scan_source)
+        self.assertNotIn("REFRESH_DAYS", scan_source)
+
     def test_community_account_is_derived_from_qmf_code(self):
         self.assertEqual(residence_username("A123456789"), "A12345678900")
         with self.assertRaises(ValueError):

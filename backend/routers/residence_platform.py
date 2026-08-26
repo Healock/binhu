@@ -34,6 +34,7 @@ class ResidenceConfigUpdate(BaseModel):
     password: str | None = Field(default=None, max_length=500)
     mac_service_url: str = Field(default="http://127.0.0.1:23333", max_length=500)
     timeout_seconds: int = Field(default=15, ge=1, le=120)
+    full_scan_interval_minutes: int = Field(default=30, ge=5, le=1440)
 
 
 async def _save_values(conn, values: dict[str, Any]) -> None:
@@ -100,6 +101,7 @@ async def update_residence_config(
         "residence_base_url": data.base_url.strip().rstrip("/"),
         "residence_mac_service_url": data.mac_service_url.strip().rstrip("/"),
         "residence_timeout_seconds": str(data.timeout_seconds),
+        "residence_full_scan_interval_minutes": str(data.full_scan_interval_minutes),
     }
     connection_changed = any(
         (
@@ -122,7 +124,7 @@ async def update_residence_config(
         detail={"keys": sorted(values)},
         **request_audit_fields(request),
     )
-    wake_residence_lookup_scheduler()
+    wake_residence_lookup_scheduler(force_full_scan=True)
     return await _public_config(conn)
 
 

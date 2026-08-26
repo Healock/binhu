@@ -395,6 +395,7 @@ export default function SystemSettings() {
         ...(residencePassword ? { password: residencePassword } : {}),
         mac_service_url: residenceConfig.mac_service_url,
         timeout_seconds: residenceConfig.timeout_seconds,
+        full_scan_interval_minutes: residenceConfig.full_scan_interval_minutes,
       })
       setResidenceConfig(result)
       setResidencePassword('')
@@ -754,6 +755,20 @@ export default function SystemSettings() {
                 />
               </label>
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">全量查询间隔（分钟）</span>
+                <InputNumber
+                  min={5}
+                  max={1440}
+                  value={residenceConfig.full_scan_interval_minutes}
+                  onChange={value => setResidenceConfig(current => current ? {
+                    ...current,
+                    full_scan_interval_minutes: Number(value || 30),
+                  } : current)}
+                  className="w-full"
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">统一登录密码</span>
                 <Input.Password
                   value={residencePassword}
@@ -795,7 +810,11 @@ export default function SystemSettings() {
                 { key: 'password', label: '统一密码', children: residenceConfig.password_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'accounts', label: '可用社区账号', children: `${residenceConfig.community_account_count} 个` },
                 { key: 'sessions', label: '已缓存社区会话', children: `${residenceConfig.active_session_count} 个` },
-                { key: 'timing', label: '自动查询时机', children: '新增或变化任务通常在 60 秒内开始；结果每 7 天复查' },
+                {
+                  key: 'timing',
+                  label: '自动查询时机',
+                  children: `每 ${residenceConfig.full_scan_interval_minutes} 分钟重新查询全部流口指令核查对象`,
+                },
               ]}
             />
             {residenceMsg && (
