@@ -2823,7 +2823,7 @@ export interface PoliceDispatchBatch {
   id: number
   file_name: string
   sheet_name: string
-  import_mode: 'raw' | 'clean' | 'processed'
+  import_mode: 'raw' | 'clean' | 'processed' | 'quick'
   business_type: 'fullchain' | 'rental' | 'police' | 'delivery' | 'suspect_return'
   police_subtype: 'internal' | 'suzhou' | 'traffic' | ''
   import_profile: string
@@ -3046,6 +3046,36 @@ export async function listPoliceDispatchBatches(params?: {
 
 export async function getPoliceImportProfiles(): Promise<{ data: PoliceImportProfile[]; adapter_version: string }> {
   const { data } = await api.get('/police-dispatch/import-profiles')
+  return data
+}
+
+export async function getQuickDispatchOptions(): Promise<{
+  communities: Array<{ id: number; name: string }>
+}> {
+  const { data } = await api.get('/police-dispatch/quick-dispatch/options')
+  return data
+}
+
+export interface QuickDispatchPayload {
+  source_name: string
+  community_id: number
+  person_name: string
+  identity_number: string
+  phone: string
+  original_address: string
+  registration_status: string
+  business_date: string
+  deadline_date?: string
+  created_time?: string
+}
+
+export async function createQuickPoliceDispatch(payload: QuickDispatchPayload): Promise<{
+  status: 'success'
+  message: string
+  batch: PoliceDispatchBatch
+  task_id: number
+}> {
+  const { data } = await api.post('/police-dispatch/quick-dispatch', payload)
   return data
 }
 

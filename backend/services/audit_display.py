@@ -44,6 +44,7 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.preview": "预览已处理下发数据",
     "police_dispatch.import_preview": "预览业务数据导入",
     "police_dispatch.import_confirm": "确认业务数据导入",
+    "police_dispatch.quick_create": "快捷下发临时任务",
     "police_dispatch.delete": "删除下发批次",
     "police_dispatch.business_fields.update": "修改下发任务字段",
     "police_dispatch.review": "审核下发任务",

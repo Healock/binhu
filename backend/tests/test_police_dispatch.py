@@ -37,6 +37,7 @@ from services.police_dispatch import (
 from routers.police_dispatch import (
     AddressCreate,
     DuplicateGroupResolution,
+    QuickDispatchCreate,
     TaskBusinessFieldsUpdate,
     TaskPublishSelection,
     TaskReview,
@@ -53,6 +54,7 @@ from routers.police_dispatch import (
     _search_tasks,
     _task_counts,
     _verify_clean_preview_token,
+    create_quick_dispatch,
     delete_batch,
     delete_address,
     export_addresses,
@@ -68,6 +70,28 @@ from routers.police_dispatch import (
     require_police_address_access,
     update_address,
 )
+
+
+def test_quick_dispatch_routes_are_registered_and_reject_invalid_identity_before_writes():
+    route_methods = {
+        route.path: route.methods
+        for route in router.routes
+    }
+    assert route_methods["/api/police-dispatch/quick-dispatch/options"] == {"GET"}
+    assert route_methods["/api/police-dispatch/quick-dispatch"] == {"POST"}
+
+    payload = QuickDispatchCreate(
+        source_name="临时指令",
+        community_id=1,
+        person_name="测试人员",
+        identity_number="123",
+        phone="18800000000",
+        original_address="测试地址",
+        registration_status="流口未登记",
+        business_date=date(2026, 8, 26),
+    )
+    with pytest.raises(HTTPException, match="身份证号格式不正确"):
+        asyncio.run(create_quick_dispatch(payload, MagicMock(), {"id": 1}, None))
 
 
 def test_clean_preview_token_binds_file_and_metadata():

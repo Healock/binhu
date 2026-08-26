@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Input, Progress, Segmented, Select, Space, Statistic, Tag, Upload, message } from 'antd'
+import { Alert, Button, Card, Form, Input, Modal, Progress, Segmented, Select, Space, Statistic, Tag, Upload, message } from 'antd'
 import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
-import { DownloadOutlined, ExportOutlined, InboxOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, ExportOutlined, InboxOutlined, PlusOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import AppTable from './AppTable'
 import { Panel } from './ui'
 import {
   confirmPoliceDispatchImport, getPoliceImportProfiles, listPoliceDispatchBatches,
   policeDispatchFeedbackUrl, policeDispatchSourceFileUrl, previewPoliceDispatchImport,
+  createQuickPoliceDispatch, getQuickDispatchOptions,
   type PoliceDispatchBatch, type PoliceImportPreview, type PoliceImportProfile,
 } from '../api/client'
 
@@ -53,6 +54,10 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
+  const [quickOpen, setQuickOpen] = useState(false)
+  const [quickLoading, setQuickLoading] = useState(false)
+  const [quickCommunities, setQuickCommunities] = useState<Array<{ id: number; name: string }>>([])
+  const [quickForm] = Form.useForm()
   const visibleProfiles = useMemo(() => profiles.filter(item => item.business_type === businessType), [profiles, businessType])
   const selectedProfile = profiles.find(item => item.key === profileKey)
 
@@ -121,6 +126,46 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     finally { setUploading(false) }
   }
 
+  const openQuickDispatch = async () => {
+    if (!enabled) return
+    setQuickOpen(true)
+    quickForm.setFieldsValue({ business_date: businessDate })
+    if (quickCommunities.length) return
+    setQuickLoading(true)
+    try {
+      const result = await getQuickDispatchOptions()
+      setQuickCommunities(result.communities)
+    } catch (reason: any) {
+      setError(reason?.response?.data?.detail || '快捷下发选项读取失败')
+    } finally { setQuickLoading(false) }
+  }
+
+  const submitQuickDispatch = async (values: Record<string, any>) => {
+    setQuickLoading(true)
+    try {
+      const result = await createQuickPoliceDispatch({
+        source_name: String(values.source_name || '').trim(),
+        community_id: Number(values.community_id),
+        person_name: String(values.person_name || '').trim(),
+        identity_number: String(values.identity_number || '').trim(),
+        phone: String(values.phone || '').trim(),
+        original_address: String(values.original_address || '').trim(),
+        registration_status: String(values.registration_status || '').trim(),
+        business_date: String(values.business_date),
+        deadline_date: values.deadline_date ? String(values.deadline_date) : undefined,
+        created_time: values.created_time ? String(values.created_time).replace('T', ' ') : undefined,
+      })
+      message.success(result.message)
+      setQuickOpen(false)
+      quickForm.resetFields()
+      await load(1)
+      navigate(`/police-tasks?batch=${result.batch.id}&status=pending_publish&category=all`)
+    } catch (reason: any) {
+      const detail = reason?.response?.data?.detail
+      message.error(detail || '快捷下发失败')
+    } finally { setQuickLoading(false) }
+  }
+
   const columns: TableColumnsType<PoliceDispatchBatch> = [
     { title: '批次', dataIndex: 'id', width: 78, render: value => `#${value}` },
     { title: '业务', width: 150, render: (_, row) => row.police_subtype ? `涉警 · ${policeSubtypeLabels[row.police_subtype] || row.police_subtype}` : businessLabels[row.business_type] || row.target_parser },
@@ -146,7 +191,10 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     <div className="police-dispatch-panel__content">
       {!enabled && <Alert type="info" showIcon message="当前账号没有数据下发权限" />}
       {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
-      <Segmented block value={businessType} onChange={value => setBusinessType(String(value))} options={businessOptions} />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1"><Segmented block value={businessType} onChange={value => setBusinessType(String(value))} options={businessOptions} /></div>
+        <Button type="primary" ghost icon={<PlusOutlined />} disabled={!enabled} onClick={() => void openQuickDispatch()}>快捷下发（全链条）</Button>
+      </div>
       {visibleProfiles.length > 1 && <Segmented value={profileKey} onChange={value => { setProfileKey(String(value)); resetPreview() }} options={visibleProfiles.map(item => ({ value: item.key, label: item.label }))} />}
       {selectedProfile && <Card size="small"><div className="app-semantic-stack">
         <div className="flex flex-wrap items-center gap-2"><strong>{selectedProfile.label}</strong><Tag color={selectedProfile.enabled ? 'green' : 'default'}>{selectedProfile.enabled ? '可用' : '暂未开放'}</Tag><Tag color={selectedProfile.target_configured ? 'blue' : 'orange'}>{selectedProfile.target_configured ? '腾讯目标表已配置' : '腾讯目标表未配置'}</Tag></div>
@@ -177,5 +225,35 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_170px_auto]"><Input.Search allowClear value={fileName} placeholder="按原文件名筛选" onChange={event => setFileName(event.target.value)} onSearch={() => void load(1)} /><Input type="date" value={uploadDate} onChange={event => setUploadDate(event.target.value)} /><Select value={status} onChange={setStatus} options={[{ value: 'all', label: '全部状态' }, { value: 'reviewing', label: '审核中' }, { value: 'ready_to_publish', label: '待发布' }, { value: 'reconciling', label: '待对账/冲突' }, { value: 'completed', label: '已完成' }]} /><Button onClick={() => void load(1)}>筛选</Button></div>
       <AppTable<PoliceDispatchBatch> rowKey="id" columns={columns} dataSource={batches} loading={loading} pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: nextPage => void load(nextPage) }} scroll={{ x: 1100 }} size="small" />
     </div>
+    <Modal
+      title="快捷下发（全链条）"
+      open={quickOpen}
+      onCancel={() => { if (!quickLoading) setQuickOpen(false) }}
+      footer={null}
+      width={760}
+      destroyOnClose
+    >
+      <Alert className="mb-4" type="info" showIcon message="适用于 1–2 条临时任务" description="提交后只加入下发任务池，不会立即写入腾讯表；请在发布工作台确认后发布。" />
+      <Form form={quickForm} layout="vertical" onFinish={values => void submitQuickDispatch(values)} initialValues={{ business_date: businessDate }}>
+        <div className="grid gap-x-3 sm:grid-cols-2">
+          <Form.Item name="source_name" label="来源" rules={[{ required: true, message: '请输入来源' }]}><Input maxLength={300} placeholder="例如：基础管控临时指令" /></Form.Item>
+          <Form.Item name="community_id" label="社区" rules={[{ required: true, message: '请选择社区' }]}><Select loading={quickLoading && !quickCommunities.length} options={quickCommunities.map(item => ({ value: item.id, label: item.name }))} placeholder="选择启用社区" showSearch optionFilterProp="label" /></Form.Item>
+          <Form.Item name="person_name" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}><Input maxLength={200} /></Form.Item>
+          <Form.Item name="identity_number" label="身份证号" rules={[{ required: true, message: '请输入身份证号' }]}><Input maxLength={50} /></Form.Item>
+          <Form.Item name="phone" label="手机号" rules={[{ required: true, message: '请输入手机号' }]}><Input maxLength={200} /></Form.Item>
+          <Form.Item name="registration_status" label="登记情况" rules={[{ required: true, message: '请选择登记情况' }]}><Select options={[
+            { value: '流口未登记', label: '流口未登记' }, { value: '流口已注销', label: '流口已注销' },
+            { value: '流口已登记', label: '流口已登记' }, { value: '地址待变更', label: '地址待变更' },
+            { value: '待登记', label: '待登记' }, { value: '未登记', label: '未登记' },
+            { value: '已注销', label: '已注销' }, { value: '注销', label: '注销' },
+          ]} placeholder="选择登记情况" /></Form.Item>
+          <Form.Item name="business_date" label="下发日期" rules={[{ required: true, message: '请选择下发日期' }]}><Input type="date" /></Form.Item>
+          <Form.Item name="deadline_date" label="截止日期（默认下发日期后 3 天）"><Input type="date" /></Form.Item>
+        </div>
+        <Form.Item name="original_address" label="地址" rules={[{ required: true, message: '请输入地址' }]}><Input.TextArea rows={2} maxLength={1500} showCount /></Form.Item>
+        <Form.Item name="created_time" label="创建时间（可选）"><Input type="datetime-local" /></Form.Item>
+        <div className="flex justify-end gap-2"><Button onClick={() => setQuickOpen(false)} disabled={quickLoading}>取消</Button><Button type="primary" htmlType="submit" loading={quickLoading}>加入任务池</Button></div>
+      </Form>
+    </Modal>
   </Panel>
 }
