@@ -1,7 +1,9 @@
+import asyncio
 import json
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -20,9 +22,23 @@ from services.residence_platform_config import (  # noqa: E402
     serialize_residence_value,
 )
 from services.qmf_config import decrypt_secret  # noqa: E402
+from services import residence_status_scan  # noqa: E402
 
 
 VALID_IDENTITY = "11010519491231002X"
+
+
+class FakeAcquire:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class FakePool:
+    def acquire(self):
+        return FakeAcquire()
 
 
 def config(**overrides) -> ResidencePlatformConfig:
@@ -61,6 +77,101 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         source = Path(__file__).parents[1].joinpath("services", "residence_status_scan.py").read_text(encoding="utf-8")
         self.assertIn("duration_ms INT UNSIGNED DEFAULT NULL", source)
         self.assertIn("time.perf_counter()", source)
+
+    async def test_manual_full_scan_reports_safe_batch_progress(self):
+        context = type("Context", (), {"update": AsyncMock()})()
+        cycles = AsyncMock(side_effect=[
+            {
+                "processed": 2,
+                "success_count": 2,
+                "error_count": 0,
+                "status": "completed",
+            },
+            {
+                "processed": 1,
+                "success_count": 0,
+                "error_count": 1,
+                "status": "completed",
+            },
+            {"processed": 0, "status": "idle"},
+        ])
+        with patch.object(
+            residence_status_scan,
+            "_scan_lock",
+            asyncio.Lock(),
+        ), patch.object(
+            residence_status_scan,
+            "_pool",
+            return_value=FakePool(),
+        ), patch.object(
+            residence_status_scan,
+            "load_residence_config",
+            new=AsyncMock(return_value=config()),
+        ), patch.object(
+            residence_status_scan,
+            "queue_due_residence_tasks",
+            new=AsyncMock(return_value=3),
+        ), patch.object(
+            residence_status_scan,
+            "run_residence_lookup_cycle",
+            new=cycles,
+        ):
+            result = await residence_status_scan.run_residence_full_scan_job(context)
+
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(result["processed"], 3)
+        self.assertEqual(result["success_count"], 2)
+        self.assertEqual(result["error_count"], 1)
+        self.assertEqual(context.update.await_count, 3)
+        self.assertEqual(context.update.await_args_list[-1].kwargs["current"], 3)
+        self.assertEqual(context.update.await_args_list[-1].kwargs["total"], 3)
+        for call in context.update.await_args_list:
+            rendered = json.dumps(call.kwargs, ensure_ascii=False)
+            self.assertNotIn(VALID_IDENTITY, rendered)
+            self.assertNotIn("姓名", rendered)
+            self.assertNotIn("地址", rendered)
+
+    async def test_manual_full_scan_fails_safely_when_not_configured(self):
+        context = type("Context", (), {"update": AsyncMock()})()
+        with patch.object(
+            residence_status_scan,
+            "_scan_lock",
+            asyncio.Lock(),
+        ), patch.object(
+            residence_status_scan,
+            "_pool",
+            return_value=FakePool(),
+        ), patch.object(
+            residence_status_scan,
+            "load_residence_config",
+            new=AsyncMock(return_value=config(enabled=False)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "配置尚未就绪"):
+                await residence_status_scan.run_residence_full_scan_job(context)
+        context.update.assert_not_awaited()
+
+    def test_manual_scan_uses_tracked_deduplicated_job_and_shared_lock(self):
+        backend = Path(__file__).parents[1]
+        router_source = backend.joinpath("routers", "residence_platform.py").read_text(
+            encoding="utf-8"
+        )
+        scan_source = backend.joinpath(
+            "services", "residence_status_scan.py"
+        ).read_text(encoding="utf-8")
+        task_queue_source = backend.joinpath(
+            "services", "admin_task_queue.py"
+        ).read_text(encoding="utf-8")
+        permission_source = backend.joinpath(
+            "routers", "external_acquisition.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"residence_full_scan"', router_source)
+        self.assertIn('dedupe_key="residence_full_scan"', router_source)
+        self.assertIn('return {"run": run, "reused": reused}', router_source)
+        self.assertGreaterEqual(scan_source.count("async with _scan_lock"), 2)
+        self.assertIn('"residence_full_scan": "居住证登记状态全量查询"', task_queue_source)
+        self.assertIn('kind == "residence_full_scan"', permission_source)
+        self.assertIn("is_super_admin_user(user)", permission_source)
 
     def test_confirmed_no_data_contract_is_the_only_first_registration_result(self):
         self.assertEqual(

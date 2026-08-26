@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from database import get_db
 from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
+from services.external_acquisition_jobs import create_job
 from services.residence_platform_config import (
     RESIDENCE_CONFIG_KEYS,
     clear_residence_sessions,
@@ -18,7 +19,7 @@ from services.residence_platform_config import (
     serialize_residence_value,
 )
 from services.residence_status_scan import (
-    queue_due_residence_tasks,
+    run_residence_full_scan_job,
     wake_residence_lookup_scheduler,
 )
 
@@ -133,14 +134,19 @@ async def start_residence_scan(
     request: Request,
     user: dict = Depends(require_super_admin),
 ):
-    count = await queue_due_residence_tasks(force=True)
-    wake_residence_lookup_scheduler()
+    run, reused = await create_job(
+        "residence_full_scan",
+        int(user["id"]),
+        {},
+        run_residence_full_scan_job,
+        dedupe_key="residence_full_scan",
+    )
     await record_admin_audit(
         user,
         "residence_platform.scan.start",
         target_type="external_readonly_scan",
         target_name="mobile_tasks",
-        detail={"queued_count": count},
+        detail={"run_id": run.get("id"), "reused": reused},
         **request_audit_fields(request),
     )
-    return {"queued_count": count}
+    return {"run": run, "reused": reused}

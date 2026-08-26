@@ -1894,7 +1894,10 @@ export async function updateResidencePlatformConfig(
   return data
 }
 
-export async function startResidencePlatformScan(): Promise<{ queued_count: number }> {
+export async function startResidencePlatformScan(): Promise<{
+  run: ExternalAcquisitionRun
+  reused: boolean
+}> {
   const { data } = await api.post('/residence-platform/scan', {}, activeRequest)
   return data
 }
@@ -2651,13 +2654,22 @@ export interface ExternalAcquisitionRun {
   finished_at?: string | null
 }
 
-export async function getExternalAcquisitionRun(runId: number): Promise<ExternalAcquisitionRun> {
-  return (await api.get(`/external-acquisition/runs/${runId}`, activeRequest)).data
+export async function getExternalAcquisitionRun(
+  runId: number,
+  options: { passive?: boolean } = {},
+): Promise<ExternalAcquisitionRun> {
+  return (await api.get(
+    `/external-acquisition/runs/${runId}`,
+    options.passive ? passiveRequest : activeRequest,
+  )).data
 }
 
-export async function getLatestExternalAcquisitionRun(kind: string): Promise<ExternalAcquisitionRun | null> {
+export async function getLatestExternalAcquisitionRun(
+  kind: string,
+  options: { passive?: boolean } = {},
+): Promise<ExternalAcquisitionRun | null> {
   return (await api.get('/external-acquisition/latest', {
-    ...activeRequest,
+    ...(options.passive ? passiveRequest : activeRequest),
     params: { kind },
   })).data.data || null
 }

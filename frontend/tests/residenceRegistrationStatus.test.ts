@@ -11,6 +11,8 @@ const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx'
 const detailSource = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
 const settingsSource = readFileSync(new URL('../src/pages/SystemSettings.tsx', import.meta.url), 'utf8')
 const communitiesSource = readFileSync(new URL('../src/pages/Communities.tsx', import.meta.url), 'utf8')
+const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+const taskQueueSource = readFileSync(new URL('../src/components/AdminTaskQueueFloat.tsx', import.meta.url), 'utf8')
 
 test('only a confirmed missing residence record is highlighted as first registration', () => {
   assert.match(statusSource, /first_registration:\s*\{ label: '首次登记'/)
@@ -41,4 +43,16 @@ test('system settings uses automatic community accounts without a manual captcha
   assert.doesNotMatch(settingsSource, /居住证.*(?:登记提交|注销提交|保存人员)/)
   assert.match(communitiesSource, /居住证账号/)
   assert.match(communitiesSource, /qmf_community_code\}00/)
+})
+
+test('manual residence scan is a tracked background job with passive progress polling', () => {
+  assert.match(apiSource, /startResidencePlatformScan[\s\S]*run: ExternalAcquisitionRun[\s\S]*reused: boolean/)
+  assert.match(settingsSource, /getLatestExternalAcquisitionRun\('residence_full_scan', \{ passive: true \}\)/)
+  assert.match(settingsSource, /getExternalAcquisitionRun\(residenceRun\.id, \{ passive: true \}\)/)
+  assert.match(settingsSource, /current && current\.id > run\.id/)
+  assert.match(settingsSource, /current\?\.id === run\.id \? run : current/)
+  assert.match(settingsSource, /查询任务 #\$\{result\.run\.id\} 已进入后台队列/)
+  assert.match(settingsSource, /\$\{residenceRun\.current\}\/\$\{residenceRun\.total\}/)
+  assert.match(taskQueueSource, /querying: '正在查询'/)
+  assert.doesNotMatch(settingsSource, /result\.queued_count/)
 })

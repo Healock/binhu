@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from services.qmf_registration import normalize_identity, valid_identity
 from services.qmf_community import normalize_qmf_community_code, valid_qmf_community_code
@@ -24,12 +24,16 @@ from services.police_dispatch import normalize_community_label
 from services.parsers import get_parser
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
 
+if TYPE_CHECKING:
+    from services.external_acquisition_jobs import JobContext
+
 
 LOOKUP_BATCH_SIZE = 50
 LOOKUP_CONCURRENCY = 2
 _wake_event = asyncio.Event()
 _force_full_scan_requested = False
 _community_login_locks: dict[str, asyncio.Lock] = {}
+_scan_lock = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -333,7 +337,7 @@ async def _save_result(
 async def _process_one(
     config: ResidencePlatformConfig,
     item: tuple[str, str, str],
-) -> str:
+) -> tuple[str, str]:
     parser_type, row_key, identity_hmac = item
     started = time.perf_counter()
     try:
@@ -346,7 +350,7 @@ async def _process_one(
             error_code=result.error_code,
             duration_ms=round((time.perf_counter() - started) * 1000),
         )
-        return result.error_code
+        return result.state, result.error_code
     except ResidencePlatformError as exc:
         status = "pending" if exc.code == "source_changed" else "error"
         await _save_result(
@@ -356,7 +360,7 @@ async def _process_one(
             error_code=exc.code,
             duration_ms=round((time.perf_counter() - started) * 1000),
         )
-        return exc.code
+        return status, exc.code
     except Exception:  # noqa: BLE001 - external response details must not reach logs
         await _save_result(
             parser_type,
@@ -365,7 +369,7 @@ async def _process_one(
             error_code="request_error",
             duration_ms=round((time.perf_counter() - started) * 1000),
         )
-        return "request_error"
+        return "error", "request_error"
 
 
 async def run_residence_lookup_cycle(
@@ -389,10 +393,73 @@ async def run_residence_lookup_cycle(
         async with semaphore:
             return await _process_one(config, item)
 
-    errors = await asyncio.gather(*(guarded(item) for item in items))
-    if "authentication_expired" in errors:
-        return {"processed": len(items), "status": "authentication_expired"}
-    return {"processed": len(items), "status": "completed"}
+    outcomes = await asyncio.gather(*(guarded(item) for item in items))
+    success_count = sum(not error_code for _, error_code in outcomes)
+    error_count = len(outcomes) - success_count
+    if any(error_code == "authentication_expired" for _, error_code in outcomes):
+        return {
+            "processed": len(items),
+            "success_count": success_count,
+            "error_count": error_count,
+            "status": "authentication_expired",
+        }
+    return {
+        "processed": len(items),
+        "success_count": success_count,
+        "error_count": error_count,
+        "status": "completed",
+    }
+
+
+async def run_residence_full_scan_job(context: "JobContext") -> dict[str, Any]:
+    """Drain one manually requested full scan with safe aggregate progress only."""
+    async with _scan_lock:
+        pool = _pool()
+        async with pool.acquire() as conn:
+            config = await load_residence_config(conn)
+        if not config.session_ready:
+            raise RuntimeError("居住证平台配置尚未就绪")
+
+        total = await queue_due_residence_tasks(force=True)
+        await context.update(
+            phase="preparing",
+            current=0,
+            total=total,
+            message=f"已准备 {total} 条任务，等待查询",
+        )
+        processed = 0
+        success_count = 0
+        error_count = 0
+        stopped_for_authentication = False
+        while True:
+            result = await run_residence_lookup_cycle(queue_tasks=False)
+            batch_count = int(result.get("processed") or 0)
+            if batch_count <= 0:
+                break
+            processed += batch_count
+            success_count += int(result.get("success_count") or 0)
+            error_count += int(result.get("error_count") or 0)
+            await context.update(
+                phase="querying",
+                current=processed,
+                total=total,
+                message=f"正在查询：已处理 {processed}/{total} 条",
+            )
+            if result.get("status") == "authentication_expired":
+                stopped_for_authentication = True
+                break
+            await asyncio.sleep(0)
+
+        message = f"查询完成：成功 {success_count} 条，异常 {error_count} 条"
+        if stopped_for_authentication:
+            message = f"登录状态失效，已停止：成功 {success_count} 条，异常 {error_count} 条"
+        return {
+            "status": "warning" if error_count or stopped_for_authentication else "success",
+            "processed": processed,
+            "success_count": success_count,
+            "error_count": error_count,
+            "message": message,
+        }
 
 
 def wake_residence_lookup_scheduler(*, force_full_scan: bool = False) -> None:
@@ -416,18 +483,19 @@ async def run_residence_lookup_scheduler() -> None:
                 config.session_ready
                 and (force_full_scan or time.monotonic() >= next_full_scan_at)
             )
-            queue_tasks = True
-            while True:
-                result = await run_residence_lookup_cycle(
-                    queue_tasks=queue_tasks,
-                    full_scan=full_scan_due and queue_tasks,
-                )
-                queue_tasks = False
-                if int(result.get("processed") or 0) <= 0:
-                    break
-                if result.get("status") == "authentication_expired":
-                    break
-                await asyncio.sleep(0)
+            async with _scan_lock:
+                queue_tasks = True
+                while True:
+                    result = await run_residence_lookup_cycle(
+                        queue_tasks=queue_tasks,
+                        full_scan=full_scan_due and queue_tasks,
+                    )
+                    queue_tasks = False
+                    if int(result.get("processed") or 0) <= 0:
+                        break
+                    if result.get("status") == "authentication_expired":
+                        break
+                    await asyncio.sleep(0)
             if full_scan_due:
                 next_full_scan_at = (
                     time.monotonic() + config.full_scan_interval_minutes * 60
