@@ -131,3 +131,27 @@ test('房屋详情按档案导入权限提供责任告知书图片预览', () =>
   assert.match(pageSource, /URL\.createObjectURL\(blob\)/)
   assert.match(pageSource, /Image src=\{certificatePreview\.url\}/)
 })
+
+test('房屋档案展示最近走访并按页读取历史走访和星级', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /registry\/properties\/\$\{id\}\/visits/)
+  assert.match(apiSource, /latest_visit_date: string \| null/)
+  assert.match(pageSource, /title: '最近走访日期'/)
+  const propertyColumns = pageSource.slice(
+    pageSource.indexOf('const propertyColumns'),
+    pageSource.indexOf('const personColumns'),
+  )
+  assert.doesNotMatch(propertyColumns, /累计 \$\{row\.visit_count\} 次/)
+  assert.match(propertyColumns, /title: '星级评定'/)
+  assert.match(pageSource, /历史走访与星级评定/)
+  assert.match(pageSource, /onChange: nextPage => void loadPropertyVisits\(nextPage\)/)
+  assert.match(pageSource, /title: '星级评定'/)
+})

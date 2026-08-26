@@ -3573,6 +3573,28 @@ export interface RegistryProperty {
   landlord_renter_relation_label: string
   actual_renter_status: 'confirmed' | 'unknown'
   responsibility_identity: string
+  visit_count: number
+  latest_visit_date: string | null
+  latest_star_rating: string | null
+  latest_star_rating_at: string | null
+}
+
+export interface RegistryPropertyVisit {
+  id: number
+  community: string
+  entry_method: string
+  address: string
+  operator_name: string
+  visited_at: string | null
+  business_date: string
+  room_check_count: number
+  added_count: number
+  changed_count: number
+  cancelled_count: number
+  star_rating: string | null
+  score: number | null
+  star_rated_at: string | null
+  star_rating_date: string | null
 }
 
 export interface RegistryPerson {
@@ -3724,6 +3746,14 @@ export const registryApi = {
   },
   async property(id: number) {
     return (await api.get(`/registry/properties/${id}`, activeRequest)).data
+  },
+  async propertyVisits(id: number, params: { page?: number; page_size?: number } = {}) {
+    return (await api.get(`/registry/properties/${id}/visits`, {
+      ...activeRequest,
+      params,
+    })).data as {
+      data: RegistryPropertyVisit[]; total: number; page: number; page_size: number
+    }
   },
   async certificateImage(propertyId: number, certificateId: number) {
     return (await api.get(

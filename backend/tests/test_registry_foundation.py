@@ -290,3 +290,16 @@ def test_property_detail_keeps_basic_view_permission():
         for dependency in route.dependant.dependencies
     }
     assert "require_registry_property_view" in dependency_names
+
+
+def test_property_visit_history_keeps_basic_view_permission():
+    route = next(
+        item for item in registry_extended_router.routes
+        if item.path == "/api/registry/properties/{property_id}/visits"
+        and "GET" in item.methods
+    )
+    dependency_names = {
+        dependency.call.__name__
+        for dependency in route.dependant.dependencies
+    }
+    assert "require_registry_property_view" in dependency_names
