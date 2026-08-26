@@ -158,6 +158,27 @@ test('已处理数据在任务工作台多选发布且卡片沿用流口任务�
   assert.doesNotMatch(batchSource, /publishSelectedPoliceDispatchTasks/)
 })
 
+test('业务数据导入支持单条全链条快捷下发并仍由发布工作台落表', () => {
+  const panelSource = readFileSync(
+    new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(panelSource, /快捷下发（全链条）/)
+  assert.match(panelSource, /适用于 1–2 条临时任务/)
+  assert.match(panelSource, /提交后只加入下发任务池，不会立即写入腾讯表/)
+  assert.match(panelSource, /createQuickPoliceDispatch/)
+  assert.match(panelSource, /getQuickDispatchOptions/)
+  assert.match(panelSource, /status=pending_publish&category=all/)
+  assert.match(clientSource, /api\.post\('\/police-dispatch\/quick-dispatch'/)
+  assert.match(clientSource, /api\.get\('\/police-dispatch\/quick-dispatch\/options'/)
+  assert.match(clientSource, /import_mode: 'raw' \| 'clean' \| 'processed' \| 'quick'/)
+})
+
 test('选中发布进入可离页恢复的后台任务并持续展示安全分类进度', () => {
   const workbenchSource = readFileSync(
     new URL('../src/pages/PoliceDispatchWorkbench.tsx', import.meta.url),

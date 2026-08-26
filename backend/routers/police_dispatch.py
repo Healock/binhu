@@ -8,6 +8,7 @@ import io
 import json
 import os
 import tempfile
+import uuid
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -63,6 +64,8 @@ from services.police_dispatch import (
     dispatch_field_roles,
     dispatch_values_from_raw,
     identity_digest,
+    IDENTITY_PATTERN,
+    normalize_identity,
     stable_json,
 )
 from services.police_dispatch_publish_jobs import (
@@ -158,6 +161,29 @@ class ConflictResolution(BaseModel):
     strategy: Literal["adopt_tencent", "overwrite_tencent"]
     expected_row_hash: str = Field(min_length=64, max_length=64)
     confirmation: str = Field(default="", max_length=50)
+
+
+class QuickDispatchCreate(BaseModel):
+    """单条临时全链条任务；只创建任务池记录，不直接写腾讯表。"""
+
+    source_name: str = Field(min_length=1, max_length=300)
+    community_id: int = Field(gt=0)
+    person_name: str = Field(min_length=1, max_length=200)
+    identity_number: str = Field(min_length=1, max_length=50)
+    phone: str = Field(min_length=1, max_length=200)
+    original_address: str = Field(min_length=1, max_length=1500)
+    registration_status: str = Field(min_length=1, max_length=100)
+    business_date: date
+    deadline_date: date | None = None
+    created_time: datetime | None = None
+
+    @field_validator(
+        "source_name", "person_name", "identity_number", "phone",
+        "original_address", "registration_status",
+    )
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return str(value).strip()
 
 
 def _clean_preview_token(file_sha256: str, filename: str, sheet_name: str, row_count: int) -> str:
@@ -371,6 +397,152 @@ async def get_import_profiles(
             payload["target_configured"] = len(spreadsheets) == 1
             data.append(payload)
     return {"data": data, "adapter_version": ADAPTER_VERSION}
+
+
+@router.get("/quick-dispatch/options")
+async def quick_dispatch_options(
+    _user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    """返回快捷下发可选的启用社区。"""
+    async with conn.cursor() as cur:
+        communities = await _communities(cur)
+    return {
+        "communities": [
+            {"id": item["id"], "name": item["name"]}
+            for item in communities if item.get("enabled")
+        ],
+    }
+
+
+@router.post("/quick-dispatch")
+async def create_quick_dispatch(
+    data: QuickDispatchCreate,
+    request: Request,
+    user: dict = Depends(require_police_dispatch),
+    conn=Depends(get_db),
+):
+    """创建一条临时全链条任务，交由既有发布工作台最终写入腾讯表。"""
+    identity_number = normalize_identity(data.identity_number)
+    if not IDENTITY_PATTERN.fullmatch(identity_number):
+        raise HTTPException(400, "身份证号格式不正确")
+    deadline = data.deadline_date or (data.business_date + timedelta(days=3))
+    if deadline < data.business_date:
+        raise HTTPException(400, "截止日期不能早于业务日期")
+    created = data.created_time or datetime.now()
+    created_text = created.strftime("%Y-%m-%d %H:%M:%S")
+    dispatch_date = data.business_date.strftime("%m-%d")
+    deadline_text = deadline.strftime("%m-%d")
+    raw_values = {
+        "来源": data.source_name,
+        "社区": "",
+        "姓名": data.person_name,
+        "身份证号": identity_number,
+        "电话号码": data.phone,
+        "地址": data.original_address,
+        "登记情况": data.registration_status,
+        "创建时间": created_text,
+    }
+    item = {
+        "source_name": data.source_name,
+        "community_name": "",
+        "person_name": data.person_name,
+        "identity_number": identity_number,
+        "phone": data.phone,
+        "original_address": data.original_address,
+        "registration_status": data.registration_status,
+        "created_time": created_text,
+    }
+    standard_values = _fullchain_standard_values(item)
+    standard_values.update({
+        "下发日期": dispatch_date,
+        "截止日期": deadline_text,
+        "社区": "",
+    })
+    # 全链条业务主键使用“身份证号 + 电话号码 + 下发日期”；与发布工作台
+    # 读取腾讯来源时的 parser_business_key 保持一致，避免快捷任务被重复新增。
+    key_payload = "\x1f".join((identity_number, data.phone, dispatch_date))
+    business_key = hmac.new(
+        settings.registry_hmac_key.encode(), key_payload.encode(), sha256,
+    ).hexdigest()
+    batch_digest = sha256(f"quick:{uuid.uuid4().hex}".encode()).hexdigest()
+    reviewer_name = str(
+        user.get("display_name")
+        or (user.get("member") or {}).get("name")
+        or user.get("username")
+        or ""
+    )[:100]
+
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            communities = await _communities(cur)
+            community = next(
+                (item for item in communities
+                 if int(item["id"]) == data.community_id and item.get("enabled")),
+                None,
+            )
+            if not community:
+                raise HTTPException(400, "请选择启用中的社区")
+            community_name = str(community["name"])
+            raw_values["社区"] = community_name
+            standard_values["社区"] = community_name
+            await cur.execute("""
+                INSERT INTO _police_dispatch_batches (
+                    file_name, file_sha256, sheet_name, import_mode, status,
+                    total_count, counts_json, imported_by, business_type,
+                    import_profile, adapter_version, target_parser, business_date,
+                    source_summary_json, storage_key
+                ) VALUES (%s,%s,%s,'quick','ready_to_publish',1,JSON_OBJECT(),%s,
+                          'fullchain','quick_dispatch',%s,'全链条',%s,%s,'')
+            """, (
+                f"快捷下发-{data.business_date.isoformat()}", batch_digest,
+                "快捷下发", user["id"], ADAPTER_VERSION, data.business_date,
+                stable_json({"source": "quick", "row_count": 1}),
+            ))
+            batch_id = int(cur.lastrowid)
+            await cur.execute("""
+                INSERT INTO _police_dispatch_tasks (
+                    batch_id, source_row, source_name, person_name, identity_number,
+                    identity_hash, phone, original_address, source_created_time,
+                    raw_values_json, suggested_action, suggested_community_id,
+                    suggestion_reason, allocation_mode, final_action,
+                    final_community_id, review_note, reviewed_by, reviewer_name,
+                    reviewed_at, task_status, publish_status, standard_values_json,
+                    business_key_hmac, validation_issues_json
+                ) VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s,'dispatch',%s,%s,
+                          'quick_dispatch','dispatch',%s,%s,%s,%s,UTC_TIMESTAMP(),
+                          'pending_publish','pending',%s,%s,JSON_ARRAY())
+            """, (
+                batch_id, data.source_name, data.person_name, identity_number,
+                identity_digest(identity_number), data.phone, data.original_address,
+                created_text, stable_json(raw_values), data.community_id,
+                "快捷下发：已由创建人确认，等待发布", data.community_id,
+                "快捷下发", user["id"], reviewer_name,
+                stable_json(standard_values), business_key,
+            ))
+            task_id = int(cur.lastrowid)
+            await _refresh_batch_status(cur, batch_id)
+            payload = await _batch_payload(cur, batch_id)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    await record_admin_audit(
+        user,
+        "police_dispatch.quick_create",
+        target_type="police_dispatch_batch",
+        target_name=str(batch_id),
+        detail={"row_count": 1, "business_type": "fullchain"},
+        **request_audit_fields(request),
+    )
+    return {
+        "status": "success",
+        "message": "快捷下发任务已加入任务池，请到发布工作台完成发布",
+        "batch": payload,
+        "task_id": task_id,
+    }
 
 
 @router.post("/imports/preview")
