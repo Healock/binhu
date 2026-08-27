@@ -2754,6 +2754,11 @@ def _publish_values(task: dict[str, Any], community: str, publish_date) -> dict[
         values = {str(key): str(value or "") for key, value in standard.items()}
         if "社区" in values:
             values["社区"] = community
+        if "地址" in values:
+            values["地址"] = build_publish_address(
+                task.get("original_address") or values.get("地址", ""),
+                task.get("transfer_note", ""),
+            )
         if not values.get("下发日期") and "下发日期" in values:
             values["下发日期"] = publish_date.strftime("%m-%d")
         if not values.get("下发时间") and "下发时间" in values:

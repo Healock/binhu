@@ -555,7 +555,14 @@ def apply_preprocessing_suggestions(
 def build_publish_address(original_address: str, transfer_note: str) -> str:
     address = normalize_space(original_address)
     note = normalize_space(transfer_note)
-    return f"{address}；移交反馈：{note}" if note else address
+    if not note:
+        return address
+    # Rebuild an existing suffix instead of appending another copy when a
+    # previously normalized address is passed back through the publisher.
+    marker = "；移交反馈："
+    if marker in address:
+        address = address.split(marker, 1)[0].rstrip()
+    return f"{address}{marker}{note}"
 
 
 def publish_business_key(identity_number: str, phone: str, dispatch_date: str) -> str:
