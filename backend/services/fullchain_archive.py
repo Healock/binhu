@@ -89,15 +89,34 @@ def parse_police_raw(content: bytes, filename: str) -> dict[str, Any]:
     }
 
 
-def build_archive_workbook(rows: list[dict[str, Any]], export_id: int, exported_at: datetime) -> bytes:
+def build_archive_workbook(
+    rows: list[dict[str, Any]],
+    export_id: int,
+    exported_at: datetime,
+    *,
+    parser_type: str = "全链条",
+) -> bytes:
     workbook = Workbook()
     summary = workbook.active
     summary.title = "汇总"
-    summary.append(["全链条反馈归档"])
+    summary.append([f"{parser_type}反馈归档"])
     summary.append(["导出编号", export_id])
     summary.append(["导出时间", exported_at.strftime("%Y-%m-%d %H:%M:%S")])
     summary.append(["总数", len(rows)])
-    headers = ["来源行", "来源", "姓名", "身份证号", "电话号码", "地址", "登记情况", "核查结果", "归档类别"]
+    headers = [
+        "来源行", "来源", "姓名", "身份证号", "电话号码", "地址", "登记情况",
+        "核查结果", "归档类别", "初步研判", "初步研判处理人", "初步研判时间",
+        "第一次复核反馈", "第一次反馈人", "第一次反馈时间", "深度研判",
+        "深度研判处理人", "深度研判时间", "第二次复核反馈", "第二次反馈人",
+        "第二次反馈时间", "自动流转记录",
+    ]
+    detail_keys = (
+        "physical_row", "source", "name", "identity", "phone", "address",
+        "registration", "result", "category", "initial_review", "initial_actor",
+        "initial_at", "first_feedback", "first_feedback_actor", "first_feedback_at",
+        "deep_review", "deep_actor", "deep_at", "second_feedback",
+        "second_feedback_actor", "second_feedback_at", "automatic_events",
+    )
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         groups.setdefault(str(row.get("category") or "其他"), []).append(row)
@@ -105,7 +124,7 @@ def build_archive_workbook(rows: list[dict[str, Any]], export_id: int, exported_
         sheet = workbook.create_sheet(category[:31])
         sheet.append(headers)
         for item in items:
-            sheet.append([item.get(key, "") for key in ("physical_row", "source", "name", "identity", "phone", "address", "registration", "result", "category")])
+            sheet.append([item.get(key, "") for key in detail_keys])
     for sheet in workbook.worksheets:
         sheet.sheet_view.showGridLines = False
         for cell in sheet[1]:
@@ -119,7 +138,8 @@ def build_archive_workbook(rows: list[dict[str, Any]], export_id: int, exported_
                 if cell.column in {4, 5}:
                     cell.quotePrefix = True
         for column in range(1, sheet.max_column + 1):
-            sheet.column_dimensions[chr(64 + column)].width = 22
+            from openpyxl.utils import get_column_letter
+            sheet.column_dimensions[get_column_letter(column)].width = 22
     output = io.BytesIO()
     workbook.save(output)
     workbook.close()

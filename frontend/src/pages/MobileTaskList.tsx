@@ -26,7 +26,7 @@ import {
   type QmfStatusScanRun,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { canManageFullchainArchive, isFlowTaskElevated, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
+import { canManageFullchainArchive, isFlowTaskElevated, MOBILE_TASK_TYPES, UNVERIFIABLE_ARCHIVE_TYPES } from '../utils/mobileTaskRouting'
 import {
   formatMobileTaskDeadline,
   mobileTaskCanLaunchTelephone,
@@ -204,6 +204,14 @@ export default function MobileTaskList({
     : requestedScope === 'community' ? 'community' : 'mine'
   const requestedStatus = searchParams.get('status')
   const requestedReviewStage = searchParams.get('review_stage')
+  const selectableReviewStages: MobileTaskReviewStage[] = [
+    'waiting_analysis',
+    'analyzed',
+    'initial_pending',
+    'initial_extension',
+    'deep_pending',
+    'deep_extension',
+  ]
   const initialQmfFeedbackStates = readQmfFeedbackStates(searchParams)
   const [status, setStatus] = useState<MobileTaskStatus>(
     analysisOnly
@@ -216,7 +224,9 @@ export default function MobileTaskList({
   )
   const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>(
     analysisOnly
-      ? 'waiting_analysis'
+      ? selectableReviewStages.includes(requestedReviewStage as MobileTaskReviewStage)
+        ? requestedReviewStage as MobileTaskReviewStage
+        : 'initial_pending'
       : ['waiting_analysis', 'analyzed'].includes(requestedReviewStage || '')
       ? requestedReviewStage as MobileTaskReviewStage
       : 'all',
@@ -279,7 +289,7 @@ export default function MobileTaskList({
   const canStartQmfScan = Boolean(user?.permissions.includes('qmf.registration.execute'))
   const canUseFullchainArchive = Boolean(
     !analysisOnly
-      && parserType === '全链条'
+      && UNVERIFIABLE_ARCHIVE_TYPES.has(parserType)
       && canManageFullchainArchive(
         user?.member?.position,
         user?.role,
@@ -838,8 +848,10 @@ export default function MobileTaskList({
           <div className={`mobile-task-priority-grid${analysisOnly ? ' mobile-task-analysis-stage-grid' : ''}`} aria-label={analysisOnly ? '研判阶段筛选' : '任务快捷筛选'}>
             {(analysisOnly
               ? [
-                { key: 'waiting_analysis', label: '待研判', count: facets.priority_counts.waiting_analysis },
-                { key: 'analyzed', label: '已研判', count: facets.priority_counts.analyzed },
+                { key: 'initial_pending', label: '初步待研判', count: facets.review_stage_counts?.initial_pending || 0 },
+                { key: 'initial_extension', label: '初步复核中', count: facets.review_stage_counts?.initial_extension || 0 },
+                { key: 'deep_pending', label: '深度待研判', count: facets.review_stage_counts?.deep_pending || 0 },
+                { key: 'deep_extension', label: '深度复核中', count: facets.review_stage_counts?.deep_extension || 0 },
                 { key: 'all', label: '全部', count: facets.total },
               ]
               : PRIORITY_CARDS.map(card => ({
@@ -901,8 +913,10 @@ export default function MobileTaskList({
               value={reviewStage}
               options={[
                 { label: '全部复核', value: 'all' },
-                { label: '等待研判', value: 'waiting_analysis' },
-                { label: '已研判', value: 'analyzed' },
+                { label: '初步待研判', value: 'initial_pending' },
+                { label: '初步复核中', value: 'initial_extension' },
+                { label: '深度待研判', value: 'deep_pending' },
+                { label: '深度复核中', value: 'deep_extension' },
               ]}
               onChange={value => setReviewStage(value as MobileTaskReviewStage)}
               placeholder="复核阶段"
@@ -1026,7 +1040,7 @@ export default function MobileTaskList({
         </section>
       )}
 
-      {canUseFullchainArchive && <FullchainArchivePanel />}
+      {canUseFullchainArchive && <FullchainArchivePanel parserType={parserType} />}
 
       {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       {sourceMessage && <Alert type="warning" showIcon message={sourceMessage} />}
@@ -1115,6 +1129,12 @@ export default function MobileTaskList({
                   {(task.needs_review
                     || task.review_stage === 'waiting_analysis'
                     || task.review_stage === 'analyzed'
+                    || task.review_stage === 'initial_pending'
+                    || task.review_stage === 'initial_extension'
+                    || task.review_stage === 'deep_pending'
+                    || task.review_stage === 'deep_extension'
+                    || task.review_stage === 'final_unverifiable'
+                    || task.review_stage === 'source_exception'
                     || task.conflict
                     || task.source_count > 1
                     || task.pending_sync
@@ -1126,6 +1146,12 @@ export default function MobileTaskList({
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
                       {task.review_stage === 'waiting_analysis' && <Tag color="volcano">等待研判</Tag>}
                       {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
+                      {task.review_stage === 'initial_pending' && <Tag color="volcano">初步待研判</Tag>}
+                      {task.review_stage === 'initial_extension' && <Tag color="gold">初步复核中</Tag>}
+                      {task.review_stage === 'deep_pending' && <Tag color="purple">深度待研判</Tag>}
+                      {task.review_stage === 'deep_extension' && <Tag color="geekblue">深度复核中</Tag>}
+                      {task.review_stage === 'final_unverifiable' && <Tag color="red">最终无法核实</Tag>}
+                      {task.review_stage === 'source_exception' && <Tag color="red">流程已暂停</Tag>}
                       {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
                       {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
                       {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
@@ -1202,7 +1228,25 @@ export default function MobileTaskList({
                       )}
                     </dl>
                   )}
-                  {task.review_stage === 'analyzed' && task.summary.analysis && (
+                  {task.review_flow && !['resolved', 'archived'].includes(task.review_flow.state) && (
+                    <div className="grid gap-1 rounded-lg border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/30 dark:text-amber-100">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
+                        <span>{task.review_flow.state_label}</span>
+                        {task.review_flow.review_due_date && <span>复核截止：{task.review_flow.review_due_date}</span>}
+                        {['initial_extension', 'deep_extension'].includes(task.review_flow.state) && (
+                          <span>本轮反馈：{task.review_flow.feedback_submitted ? '已记录' : '未记录'}</span>
+                        )}
+                      </div>
+                      {task.review_flow.state === 'source_exception' ? (
+                        <span>来源信息发生变化，自动流转已经暂停，请由基础管控复核。</span>
+                      ) : task.review_flow.state === 'final_unverifiable' ? (
+                        <span>已形成最终无法核实，等待在当前业务中导出归档。</span>
+                      ) : (
+                        <strong>结果已核实时请立即修改核查结果，不要只填写二次反馈。</strong>
+                      )}
+                    </div>
+                  )}
+                  {['analyzed', 'initial_extension', 'deep_pending', 'deep_extension'].includes(task.review_stage) && task.summary.analysis && (
                     <div className="mobile-task-analysis">
                       <div className="mobile-task-analysis__label">研判结果</div>
                       <div className="mobile-task-analysis__value">{task.summary.analysis}</div>

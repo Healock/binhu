@@ -1071,7 +1071,51 @@ export type MobileTaskStatus =
   | 'all'
 export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
 export type MobileTaskSyncState = '' | 'pending' | 'retry' | 'conflict'
-export type MobileTaskReviewStage = 'all' | 'waiting_analysis' | 'analyzed'
+export type MobileTaskReviewStage =
+  | 'all'
+  | 'waiting_analysis'
+  | 'analyzed'
+  | 'initial_pending'
+  | 'initial_extension'
+  | 'deep_pending'
+  | 'deep_extension'
+  | 'final_unverifiable'
+  | 'source_exception'
+
+export interface MobileTaskReviewEvent {
+  stage: string
+  action: string
+  outcome: string
+  text?: string
+  actor_user_id?: number | null
+  automatic: boolean
+  safe_reason_code: string
+  created_at: string | null
+}
+
+export interface MobileTaskReviewFlow {
+  id: number
+  parser_type: string
+  row_key: string
+  cycle_no: number
+  source_id: number | null
+  source_revision: number
+  source_row_hash: string
+  state: string
+  state_label: string
+  flow_version: number
+  review_due_date: string | null
+  original_deadline: string
+  previous_deadline: string
+  feedback_submitted: boolean
+  safe_reason_code: string
+  last_action_at: string | null
+  resolved_at: string | null
+  finalized_at: string | null
+  archived_at: string | null
+  updated_at: string | null
+  events?: MobileTaskReviewEvent[]
+}
 export type MobileTaskPriority =
   | 'all'
   | 'analyzed'
@@ -1135,7 +1179,8 @@ export interface MobileTaskItem {
   inspector: string
   state: MobileTaskState
   needs_review: boolean
-  review_stage: '' | 'waiting_analysis' | 'analyzed'
+  review_stage: Exclude<MobileTaskReviewStage, 'all'> | ''
+  review_flow?: MobileTaskReviewFlow | null
   photo_fetched: boolean
   source_count: number
   conflict: boolean
@@ -1247,6 +1292,7 @@ export interface MobileTaskFilterOption {
 export interface MobileTaskFacets {
   total: number
   priority_counts: Record<Exclude<MobileTaskPriority, 'all'>, number>
+  review_stage_counts?: Record<'initial_pending' | 'initial_extension' | 'deep_pending' | 'deep_extension', number>
   status_counts: Record<MobileTaskState, number>
   registration_review_count: number
   qmf_feedback_counts: Record<QmfFeedbackState, number>
@@ -1263,7 +1309,8 @@ export interface MobileTaskSource {
   editable_fields: string[]
   state: MobileTaskState
   needs_review: boolean
-  review_stage: '' | 'waiting_analysis' | 'analyzed'
+  review_stage: Exclude<MobileTaskReviewStage, 'all'> | ''
+  review_flow?: MobileTaskReviewFlow | null
   sync_state: MobileTaskSyncState
   sync_fields: Array<{
     field: string
@@ -2104,6 +2151,32 @@ export async function updateMobileTaskAnalysis(
 }> {
   const { data } = await api.patch(
     `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
+    payload,
+  )
+  return data
+}
+
+export async function decideMobileTaskUnverifiableReview(
+  parserType: string,
+  sourceId: number,
+  payload: {
+    stage: 'initial_pending' | 'deep_pending'
+    outcome: 'success' | 'failure'
+    opinion: string
+    flow_version: number
+    expected_revision: number
+    expected_row_hash: string
+  },
+): Promise<{
+  values: Record<string, string>
+  row_key: string
+  revision: number
+  pending_sync: boolean
+  sync_state: MobileTaskSyncState
+  message: string
+}> {
+  const { data } = await api.patch(
+    `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/source-rows/${sourceId}/decision`,
     payload,
   )
   return data
@@ -3463,6 +3536,7 @@ export interface FullchainArchiveCandidate {
 export interface FullchainArchiveExport {
   id: number
   export_no: string
+  parser_type?: string
   status: 'queued' | 'running' | 'completed' | 'partial' | 'failed'
   phase: string
   file_name: string
@@ -3481,6 +3555,8 @@ export interface FullchainArchiveExport {
     category: string
     status: 'queued' | 'success' | 'conflict' | 'error'
     error_code: string
+    external_delete_state: 'pending' | 'deleting' | 'deleted'
+    external_deleted_at: string | null
   }>
 }
 
@@ -3518,6 +3594,7 @@ export function fullchainPoliceRawDownloadUrl(id: number) {
 }
 
 export async function searchFullchainArchiveCandidates(params: {
+  parser_type?: string
   stages?: Array<'direct' | 'review' | 'registered'>
   keyword?: string
   page?: number
@@ -3528,6 +3605,7 @@ export async function searchFullchainArchiveCandidates(params: {
 }
 
 export async function selectFullchainArchiveCandidates(params: {
+  parser_type?: string
   stages?: Array<'direct' | 'review' | 'registered'>
   keyword?: string
 }) {
@@ -3536,6 +3614,7 @@ export async function selectFullchainArchiveCandidates(params: {
 }
 
 export async function saveFullchainArchiveReview(payload: {
+  parser_type?: string
   row_key: string
   decision: 'transfer_internal' | 'transfer_external' | 'keep' | 'archive'
   note?: string
@@ -3544,18 +3623,21 @@ export async function saveFullchainArchiveReview(payload: {
   return data as { message: string }
 }
 
-export async function previewFullchainArchiveExport(sourceIds: number[]) {
-  const { data } = await api.post('/police-dispatch/fullchain-archive/exports/preview', sourceIds)
+export async function previewFullchainArchiveExport(sourceIds: number[], parserType = '全链条') {
+  const { data } = await api.post(`/police-dispatch/fullchain-archive/exports/preview?parser_type=${encodeURIComponent(parserType)}`, sourceIds)
   return data as { total: number; categories: Record<string, number>; rows: Array<{ source_id: number; name: string; result: string; category: string; reason: string }>; preview_token: string }
 }
 
-export async function createFullchainArchiveExport(sourceIds: number[], previewToken: string) {
-  const { data } = await api.post('/police-dispatch/fullchain-archive/exports', { source_ids: sourceIds, preview_token: previewToken })
+export async function createFullchainArchiveExport(sourceIds: number[], previewToken: string, parserType = '全链条') {
+  const { data } = await api.post(`/police-dispatch/fullchain-archive/exports?parser_type=${encodeURIComponent(parserType)}`, { source_ids: sourceIds, preview_token: previewToken })
   return data as { message: string; export: FullchainArchiveExport }
 }
 
-export async function listFullchainArchiveExports() {
-  const { data } = await api.get('/police-dispatch/fullchain-archive/exports', passiveRequest)
+export async function listFullchainArchiveExports(parserType?: string) {
+  const { data } = await api.get('/police-dispatch/fullchain-archive/exports', {
+    ...passiveRequest,
+    params: parserType ? { parser_type: parserType } : undefined,
+  })
   return data as { data: FullchainArchiveExport[] }
 }
 

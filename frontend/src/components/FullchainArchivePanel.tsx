@@ -24,7 +24,11 @@ const STAGES = [
   { value: 'registered', label: '已登记比对' },
 ] as const
 
-export default function FullchainArchivePanel() {
+interface FullchainArchivePanelProps {
+  parserType?: string
+}
+
+export default function FullchainArchivePanel({ parserType = '全链条' }: FullchainArchivePanelProps) {
   const { systemTimezone } = useAuth()
   const [rows, setRows] = useState<FullchainArchiveCandidate[]>([])
   const [exports, setExports] = useState<FullchainArchiveExport[]>([])
@@ -44,7 +48,7 @@ export default function FullchainArchivePanel() {
     const requestId = ++candidateRequestId.current
     setLoading(true)
     try {
-      const candidateResult = await searchFullchainArchiveCandidates({ stages, keyword, page, page_size: pageSize })
+      const candidateResult = await searchFullchainArchiveCandidates({ parser_type: parserType, stages, keyword, page, page_size: pageSize })
       if (requestId !== candidateRequestId.current) return
       setRows(candidateResult.data)
       setTotal(candidateResult.total)
@@ -56,11 +60,11 @@ export default function FullchainArchivePanel() {
     } finally {
       if (requestId === candidateRequestId.current) setLoading(false)
     }
-  }, [keyword, page, pageSize, stages])
+  }, [keyword, page, pageSize, parserType, stages])
   const loadExports = useCallback(async () => {
-    try { setExports((await listFullchainArchiveExports()).data) }
+    try { setExports((await listFullchainArchiveExports(parserType)).data) }
     catch (reason: unknown) { setError(apiErrorMessage(reason, '反馈归档历史读取失败')) }
-  }, [])
+  }, [parserType])
   const load = useCallback(async () => {
     await Promise.all([loadCandidates(), loadExports()])
   }, [loadCandidates, loadExports])
@@ -75,21 +79,22 @@ export default function FullchainArchivePanel() {
   useEffect(() => {
     setPage(1)
     setSelected([])
-  }, [keyword, stages])
+  }, [keyword, parserType, stages])
 
   const reviewOptions = useCallback((row: FullchainArchiveCandidate) => {
     if (row.result === '移交') return [{ value: 'transfer_internal', label: '确认为所内移交' }, { value: 'transfer_external', label: '确认为所外移交并可归档' }]
-    return [{ value: 'keep', label: '保留在任务池' }, { value: 'archive', label: '允许反馈归档' }]
-  }, [])
+    if (parserType === '全链条' && row.result === '移交（所内）') return [{ value: 'keep', label: '保留在任务池' }, { value: 'archive', label: '允许反馈归档' }]
+    return []
+  }, [parserType])
   const saveReview = useCallback(async (row: FullchainArchiveCandidate, decision: 'transfer_internal' | 'transfer_external' | 'keep' | 'archive') => {
-    try { await saveFullchainArchiveReview({ row_key: row.row_key, decision }); message.success('审核决定已保存'); await load() }
+    try { await saveFullchainArchiveReview({ parser_type: parserType, row_key: row.row_key, decision }); message.success('审核决定已保存'); await load() }
     catch (reason: unknown) { message.error(apiErrorMessage(reason, '审核决定保存失败')) }
-  }, [load])
+  }, [load, parserType])
   const confirmExport = async () => {
     const ids = selected.map(Number)
     if (!ids.length) return
     try {
-      const preview = await previewFullchainArchiveExport(ids)
+      const preview = await previewFullchainArchiveExport(ids, parserType)
       Modal.confirm({
         title: `确认导出并归档 ${preview.total} 条数据？`,
         width: 680,
@@ -114,7 +119,7 @@ export default function FullchainArchivePanel() {
         okText: '确认导出并归档', cancelText: '取消',
         onOk: async () => {
           try {
-            const result = await createFullchainArchiveExport(ids, preview.preview_token)
+            const result = await createFullchainArchiveExport(ids, preview.preview_token, parserType)
             message.success(result.message)
             setSelected([])
             await load()
@@ -130,7 +135,7 @@ export default function FullchainArchivePanel() {
   const selectAllEligible = async () => {
     setSelectingAll(true)
     try {
-      const result = await selectFullchainArchiveCandidates({ stages, keyword })
+      const result = await selectFullchainArchiveCandidates({ parser_type: parserType, stages, keyword })
       setSelected(result.source_ids)
       message.success(`已选择当前筛选下全部 ${result.total} 条可选数据`)
     } catch (reason: unknown) {
@@ -146,11 +151,16 @@ export default function FullchainArchivePanel() {
     { title: '截止日期', dataIndex: 'deadline', width: 110 },
     { title: '说明', dataIndex: 'reason', ellipsis: true },
     { title: '归档类别', dataIndex: 'category', width: 130, render: value => value ? <Tag color="green">{value}</Tag> : <Tag color="orange">待审核</Tag> },
-    { title: '审核决定', width: 210, render: (_, row) => row.stage === 'review' ? <Select className="w-full" value={row.decision || undefined} placeholder="请选择处理方式" options={reviewOptions(row)} onChange={value => void saveReview(row, value)} /> : '-' },
+    { title: '审核决定', width: 210, render: (_, row) => {
+      const options = reviewOptions(row)
+      return row.stage === 'review' && options.length
+        ? <Select className="w-full" value={row.decision || undefined} placeholder="请选择处理方式" options={options} onChange={value => void saveReview(row, value)} />
+        : '-'
+    } },
   ], [reviewOptions, saveReview])
 
   return (
-    <Panel title="反馈导出与归档" description="第一阶段仅支持全链条。导出文件永久保留；腾讯整行删除在后台执行，并逐条显示进度和冲突。" padded={false}>
+    <Panel title={`${parserType}反馈导出与归档`} description="最终无法核实数据须经预览确认后导出；导出文件永久保留，腾讯整行删除在后台执行，并逐条显示进度和冲突。" padded={false}>
       <div className="grid gap-5 p-5">
         {error && <Alert type="error" showIcon message={error} />}
         <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(260px,1fr)_auto]">
@@ -207,6 +217,14 @@ export default function FullchainArchivePanel() {
                 { title: '来源编号', dataIndex: 'source_id', width: 120 },
                 { title: '归档类别', dataIndex: 'category', width: 160 },
                 { title: '处理状态', dataIndex: 'status', width: 120, render: value => value === 'conflict' ? '冲突' : value === 'error' ? '失败' : '等待处理' },
+                {
+                  title: '腾讯删除',
+                  dataIndex: 'external_delete_state',
+                  width: 130,
+                  render: value => value === 'deleted'
+                    ? '已确认删除'
+                    : value === 'deleting' ? '结果待确认' : '尚未删除',
+                },
                 { title: '安全错误码', dataIndex: 'error_code' },
               ]}
             />,

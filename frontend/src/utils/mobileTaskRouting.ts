@@ -8,6 +8,14 @@ export const FLOW_TASK_ELEVATED_POSITIONS = new Set([
 ])
 export const POLICE_DISPATCH_TASK_POSITIONS = new Set(['基础管控', '中队长'])
 export const FULLCHAIN_ARCHIVE_POSITIONS = new Set(['基础管控', '中队长', '所队领导'])
+export const UNVERIFIABLE_ARCHIVE_TYPES = new Set([
+  '全链条',
+  '出租房屋核查',
+  '寄递业',
+  '疑似返苏',
+  '苏州涉警',
+  '交通涉警',
+])
 
 export const MOBILE_TASK_TYPES = [
   '全链条',

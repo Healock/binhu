@@ -88,7 +88,19 @@ async def finalize_source_projection(
             )
             await mark_writebacks_synced(cur, spreadsheet["id"])
             await rebuild_projection(cur, spreadsheet["parser_type"])
+            from services.unverifiable_review import (
+                reconcile_unverifiable_source_contexts,
+            )
+
+            await reconcile_unverifiable_source_contexts(
+                cur, spreadsheet["parser_type"]
+            )
         await conn.commit()
+        # 同步完成后立即唤醒两级研判对账；定时器仍作为兜底，避免必须
+        # 等待下一轮五分钟扫描才能识别正式结果或来源变化。
+        from services.unverifiable_review import wake_unverifiable_review_scheduler
+
+        wake_unverifiable_review_scheduler()
     except Exception:
         await conn.rollback()
         raise

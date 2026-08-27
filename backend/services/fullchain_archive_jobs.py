@@ -11,6 +11,7 @@ from routers.query import _oauth_client, _refresh_spreadsheet, _writeback_enable
 from services.online_source import acquire_sheet_lock, resolve_source_columns, source_row_hash
 from services.parsers import get_parser
 from services.schema_compat import get_database_column_map, quote_identifier
+from services.unverifiable_review import FINAL_UNVERIFIABLE, mark_flow_archived, supports_unverifiable_review
 
 
 _tasks: set[asyncio.Task] = set()
@@ -55,35 +56,38 @@ async def get_archive_export(export_id: int) -> dict[str, Any] | None:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute("""
-                SELECT id,export_no,status,phase,file_name,storage_key,file_sha256,
+                SELECT id,export_no,parser_type,status,phase,file_name,storage_key,file_sha256,
                        total_count,success_count,conflict_count,error_count,
                        categories_json,error_message,requested_by,created_at,
                        started_at,finished_at,updated_at
                 FROM _fullchain_archive_exports WHERE id=%s
-            """, (export_id,))
+        """, (export_id,))
             row = await cur.fetchone()
             if not row:
                 return None
             await cur.execute("""
                 SELECT source_id,category,status,error_code
+                       ,external_delete_state,external_deleted_at
                 FROM _fullchain_archive_export_items
                 WHERE export_id=%s ORDER BY source_id
             """, (export_id,))
             item_rows = await cur.fetchall()
     import json
     return {
-        "id": int(row[0]), "export_no": str(row[1]), "status": str(row[2]),
-        "phase": str(row[3]), "file_name": str(row[4]), "storage_key": str(row[5]),
-        "file_sha256": str(row[6]), "total_count": int(row[7] or 0),
-        "success_count": int(row[8] or 0), "conflict_count": int(row[9] or 0),
-        "error_count": int(row[10] or 0), "categories": json.loads(row[11] or "{}"),
-        "error_message": str(row[12] or ""), "requested_by": row[13],
-        "created_at": _iso(row[14]), "started_at": _iso(row[15]),
-        "finished_at": _iso(row[16]), "updated_at": _iso(row[17]),
+        "id": int(row[0]), "export_no": str(row[1]), "parser_type": str(row[2] or "全链条"),
+        "status": str(row[3]), "phase": str(row[4]), "file_name": str(row[5]), "storage_key": str(row[6]),
+        "file_sha256": str(row[7]), "total_count": int(row[8] or 0),
+        "success_count": int(row[9] or 0), "conflict_count": int(row[10] or 0),
+        "error_count": int(row[11] or 0), "categories": json.loads(row[12] or "{}"),
+        "error_message": str(row[13] or ""), "requested_by": row[14],
+        "created_at": _iso(row[15]), "started_at": _iso(row[16]),
+        "finished_at": _iso(row[17]), "updated_at": _iso(row[18]),
         "items": [
             {
                 "source_id": int(item[0]), "category": str(item[1]),
                 "status": str(item[2]), "error_code": str(item[3] or ""),
+                "external_delete_state": str(item[4] or "pending"),
+                "external_deleted_at": _iso(item[5]),
             }
             for item in item_rows
         ],
@@ -106,6 +110,8 @@ def _safe_error_code(exc: Exception, fallback: str) -> str:
         "spreadsheet_unavailable",
         "source_row_changed",
         "platform_archive_failed",
+        "external_delete_outcome_unknown",
+        "cache_refresh_pending",
     }
     return code if code in allowed else fallback
 
@@ -142,11 +148,116 @@ async def _stage_platform_archive(
         )
 
 
+async def _delete_source_row_once(
+    conn,
+    client,
+    *,
+    export_id: int,
+    source_id: int,
+    parser_type: str,
+    spreadsheet: dict[str, Any],
+    sheet_id: str,
+    physical_row: int,
+    expected_revision: int,
+    expected_hash: str,
+    source_columns: list[str],
+    parser,
+    external_delete_state: str,
+) -> None:
+    """腾讯整行删除只允许发送一次，并在发送前后持久化状态。"""
+    if external_delete_state == "deleting":
+        # 服务可能恰好在外部请求返回前中断。此时无法证明腾讯是否已经删除，
+        # 禁止再次按旧物理行发送删除请求，避免伤及已经顶上来的下一行。
+        raise RuntimeError("external_delete_outcome_unknown")
+    if external_delete_state == "deleted":
+        return
+    if external_delete_state != "pending":
+        raise RuntimeError("external_delete_outcome_unknown")
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT physical_row,revision,row_hash FROM _online_source_rows "
+            "WHERE id=%s AND parser_type=%s",
+            (source_id, parser_type),
+        )
+        current_source = await cur.fetchone()
+    if (
+        not current_source
+        or int(current_source[0]) != int(physical_row)
+        or int(current_source[1]) != int(expected_revision)
+        or str(current_source[2]) != str(expected_hash)
+    ):
+        raise RuntimeError("source_row_changed")
+
+    live = await client.read_source_row(
+        spreadsheet["file_id"], sheet_id, int(physical_row), source_columns
+    )
+    values = parser.normalize_source_row(live["values"])
+    if source_row_hash(values) != str(expected_hash):
+        raise RuntimeError("source_row_changed")
+
+    async with conn.cursor() as cur:
+        await cur.execute("""
+            UPDATE _fullchain_archive_export_items
+            SET external_delete_state='deleting',error_code=''
+            WHERE export_id=%s AND source_id=%s
+              AND external_delete_state='pending'
+        """, (export_id, int(source_id)))
+        if cur.rowcount != 1:
+            raise RuntimeError("external_delete_outcome_unknown")
+    # 持久化“请求即将发出”。若进程在请求过程中中断，恢复任务只报告
+    # 结果不确定，绝不会按旧物理行再次删除。
+    await conn.commit()
+    await client.batch_update(
+        spreadsheet["file_id"],
+        [client.build_delete_row_request(sheet_id, int(physical_row))],
+    )
+    async with conn.cursor() as cur:
+        await cur.execute("""
+            UPDATE _fullchain_archive_export_items
+            SET external_delete_state='deleted',external_deleted_at=UTC_TIMESTAMP()
+            WHERE export_id=%s AND source_id=%s
+              AND external_delete_state='deleting'
+        """, (export_id, int(source_id)))
+        if cur.rowcount != 1:
+            # 外部删除已经发送，但确认状态没有安全落库。此时只能暂停并人工
+            # 对账，不能继续本地归档，更不能再次发送删除。
+            raise RuntimeError("external_delete_outcome_unknown")
+    await conn.commit()
+
+
+async def _commit_platform_archive(
+    conn,
+    parser,
+    *,
+    export_id: int,
+    source_id: int,
+    parser_type: str,
+    row_key: str,
+    values: dict[str, str],
+) -> None:
+    """把历史写入、当前表移除、流程归档和条目成功原子提交。"""
+    await conn.begin()
+    try:
+        await _stage_platform_archive(conn, parser, export_id, row_key, values)
+        async with conn.cursor() as cur:
+            if supports_unverifiable_review(parser_type):
+                await mark_flow_archived(cur, parser_type, row_key, export_id)
+            await _mark_item(cur, export_id, source_id, "success")
+        await conn.commit()
+    except Exception as exc:
+        await conn.rollback()
+        raise RuntimeError("platform_archive_failed") from exc
+
+
 async def run_fullchain_archive_export(export_id: int) -> None:
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            await cur.execute("SELECT parser_type FROM _fullchain_archive_exports WHERE id=%s", (export_id,))
+            export_row = await cur.fetchone()
+            export_parser_type = str((export_row or ("全链条",))[0] or "全链条")
             await cur.execute("""
                 UPDATE _fullchain_archive_exports
                 SET status='running',phase='deleting',started_at=COALESCE(started_at,UTC_TIMESTAMP())
@@ -154,9 +265,10 @@ async def run_fullchain_archive_export(export_id: int) -> None:
             """, (export_id,))
             await cur.execute("""
                 SELECT item.source_id,item.spreadsheet_id,item.sheet_id,item.physical_row,
-                       item.expected_revision,item.expected_row_hash,source.values_json,
+                       item.expected_revision,item.expected_row_hash,
+                       COALESCE(source.values_json,item.source_values_json),
                        item.row_key,source.parser_type,spreadsheet.file_id,spreadsheet.data_sheet_id,
-                       spreadsheet.header_row,spreadsheet.name
+                       spreadsheet.header_row,spreadsheet.name,item.external_delete_state
                 FROM _fullchain_archive_export_items item
                 LEFT JOIN _online_source_rows source ON source.id=item.source_id
                 LEFT JOIN _config_spreadsheets spreadsheet ON spreadsheet.id=item.spreadsheet_id
@@ -184,12 +296,14 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                     spreadsheet_row = await cur.fetchone()
                 if not spreadsheet_row or not spreadsheet_row[2]:
                     raise RuntimeError("spreadsheet_unavailable")
+                if str(spreadsheet_row[5] or "") != export_parser_type:
+                    raise RuntimeError("spreadsheet_unavailable")
                 spreadsheet = {
                     "id": int(spreadsheet_row[0]), "name": str(spreadsheet_row[1]),
                     "file_id": str(spreadsheet_row[2]), "data_sheet_id": str(spreadsheet_row[3]),
                     "header_row": int(spreadsheet_row[4] or 1), "parser_type": str(spreadsheet_row[5]),
                 }
-                parser = get_parser("全链条")
+                parser = get_parser(export_parser_type)
                 async with conn.cursor() as cur:
                     client = await _oauth_client(cur)
                 source_columns = await resolve_source_columns(client, spreadsheet, parser)
@@ -197,48 +311,34 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                 for row in items:
                     source_id, _, _, physical_row, revision, expected_hash = row[:6]
                     try:
-                        async with conn.cursor() as cur:
-                            await cur.execute(
-                                "SELECT physical_row,revision,row_hash FROM _online_source_rows WHERE id=%s AND parser_type='全链条'",
-                                (source_id,),
-                            )
-                            current_source = await cur.fetchone()
-                        if (
-                            not current_source
-                            or int(current_source[0]) != int(physical_row)
-                            or int(current_source[1]) != int(revision)
-                            or str(current_source[2]) != str(expected_hash)
-                        ):
-                            raise RuntimeError("source_row_changed")
-                        live = await client.read_source_row(
-                            spreadsheet["file_id"], sheet_id, int(physical_row), source_columns
+                        delete_state = str(row[13] or "pending")
+                        await _delete_source_row_once(
+                            conn,
+                            client,
+                            export_id=export_id,
+                            source_id=int(source_id),
+                            parser_type=export_parser_type,
+                            spreadsheet=spreadsheet,
+                            sheet_id=sheet_id,
+                            physical_row=int(physical_row),
+                            expected_revision=int(revision),
+                            expected_hash=str(expected_hash),
+                            source_columns=source_columns,
+                            parser=parser,
+                            external_delete_state=delete_state,
                         )
-                        values = parser.normalize_source_row(live["values"])
-                        if source_row_hash(values) != str(expected_hash):
-                            raise RuntimeError("source_row_changed")
-                        # 先删除腾讯物理行，确认外部操作成功后再提交本地历史归档。
-                        # 外部 API 不参与 MySQL 事务；腾讯失败时保留当前来源行，
-                        # 避免任务在外部未删除时从平台当前列表静默消失。
-                        await client.batch_update(
-                            spreadsheet["file_id"],
-                            [client.build_delete_row_request(sheet_id, int(physical_row))],
-                        )
+                        if row[6] is None:
+                            raise RuntimeError("platform_archive_failed")
                         import json
-                        await conn.begin()
-                        try:
-                            await _stage_platform_archive(
-                                conn,
-                                parser,
-                                export_id,
-                                str(row[7]),
-                                json.loads(row[6] or "{}"),
-                            )
-                            await conn.commit()
-                        except Exception as exc:
-                            await conn.rollback()
-                            raise RuntimeError("platform_archive_failed") from exc
-                        async with conn.cursor() as cur:
-                            await _mark_item(cur, export_id, int(source_id), "success")
+                        await _commit_platform_archive(
+                            conn,
+                            parser,
+                            export_id=export_id,
+                            source_id=int(source_id),
+                            parser_type=export_parser_type,
+                            row_key=str(row[7]),
+                            values=json.loads(row[6] or "{}"),
+                        )
                         successful_source_ids.append(int(source_id))
                         success += 1
                     except Exception as exc:
@@ -388,11 +488,25 @@ async def recover_interrupted_fullchain_exports() -> int:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute("""
-                UPDATE _fullchain_archive_exports SET status='partial',phase='finished',
-                    error_message='服务重启，已保留导出文件；来源行需重新核对',finished_at=UTC_TIMESTAMP()
+                UPDATE _fullchain_archive_exports SET status='queued',phase='queued',
+                    error_message='服务重启，正在安全恢复归档任务',finished_at=NULL
                 WHERE status='running'
             """)
             interrupted = int(cur.rowcount or 0)
+            await cur.execute("""
+                UPDATE _fullchain_archive_exports export_run
+                SET export_run.status='queued',export_run.phase='queued',
+                    export_run.error_message='腾讯删除已确认，正在恢复平台归档',
+                    export_run.finished_at=NULL
+                WHERE export_run.status='partial'
+                  AND EXISTS (
+                    SELECT 1 FROM _fullchain_archive_export_items item
+                    WHERE item.export_id=export_run.id
+                      AND item.status<>'success'
+                      AND item.external_delete_state='deleted'
+                  )
+            """)
+            interrupted += int(cur.rowcount or 0)
             await cur.execute("""
                 SELECT id FROM _fullchain_archive_exports
                 WHERE status='queued' AND phase IN ('queued','waiting_lock')

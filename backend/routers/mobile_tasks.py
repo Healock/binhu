@@ -54,6 +54,20 @@ from services.qmf_config import load_qmf_config
 from services.qmf_runs import WRITE_STEP_KEYS, parse_steps, utc_text
 from services.task_workflow import MOBILE_TASK_TYPES, SUMMARY_TASK_TYPES, TASK_WORKFLOWS
 from services.task_graph import online_task_blocked
+from services.unverifiable_review import (
+    ACTIVE_STATES as UNVERIFIABLE_ACTIVE_STATES,
+    DEEP_EXTENSION,
+    DEEP_PENDING,
+    FINAL_UNVERIFIABLE,
+    INITIAL_EXTENSION,
+    INITIAL_PENDING,
+    STATE_LABELS as UNVERIFIABLE_STATE_LABELS,
+    apply_decision,
+    prepare_decision,
+    review_events_for_flow,
+    review_flows_by_rows,
+    supports_unverifiable_review,
+)
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
 from services.watch_matching import task_watch_payload
@@ -89,7 +103,10 @@ TaskStatus = Literal[
     "completed",
     "all",
 ]
-ReviewStage = Literal["all", "waiting_analysis", "analyzed"]
+ReviewStage = Literal[
+    "all", "waiting_analysis", "analyzed",
+    "initial_pending", "initial_extension", "deep_pending", "deep_extension",
+]
 Priority = Literal[
     "all",
     "analyzed",
@@ -350,6 +367,17 @@ class TaskBatchUpdate(BaseModel):
     expected_revision: int = Field(gt=0)
     registration_property_id: int | None = Field(default=None, gt=0)
     registration_property_version: int | None = Field(default=None, gt=0)
+
+
+class UnverifiableDecision(BaseModel):
+    """Structured two-stage decision for an unresolved task."""
+
+    stage: Literal["initial_pending", "deep_pending"]
+    outcome: Literal["success", "failure"]
+    opinion: str = Field(min_length=1, max_length=2000)
+    flow_version: int = Field(gt=0)
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
 
 
 class RegistrationManualConfirm(BaseModel):
@@ -725,6 +753,13 @@ def _require_analysis_user(user: dict) -> dict:
     return _require_task_edit_user(user)
 
 
+def _require_unverifiable_reviewer(user: dict) -> dict:
+    position = str((user.get("member") or {}).get("position") or "").strip()
+    if not (is_flow_task_admin(user) or position in {"基础管控", "中队长", "所队领导"}):
+        raise HTTPException(403, "只有基础管控及以上岗位可以处理两级研判")
+    return _require_task_edit_user(user)
+
+
 def _can_assign_tasks(context: dict) -> bool:
     return bool(context.get("admin_mode")) or context.get("position") == "组长"
 
@@ -764,6 +799,34 @@ def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
     workflow = TASK_WORKFLOWS[parser_type]
     if stage == "all":
         return "1=1"
+    if supports_unverifiable_review(parser_type):
+        structured = {
+            "waiting_analysis": (INITIAL_PENDING,),
+            "analyzed": (INITIAL_EXTENSION, DEEP_PENDING, DEEP_EXTENSION),
+            "initial_pending": (INITIAL_PENDING,),
+            "initial_extension": (INITIAL_EXTENSION,),
+            "deep_pending": (DEEP_PENDING,),
+            "deep_extension": (DEEP_EXTENSION,),
+        }.get(stage)
+        if structured:
+            state_sql = ",".join("'" + value.replace("'", "''") + "'" for value in structured)
+            # 保留旧的文本判定作为无流程历史数据的兼容回退。
+            analysis = " OR ".join(
+                f"{_json_field(field)}<>''" for field in workflow.analysis_fields
+            ) or "0"
+            unable = f"{_json_field(workflow.result_field)} LIKE '%%无法核实%%'"
+            legacy = (
+                f"({unable} AND NOT ({analysis}))"
+                if stage in {"waiting_analysis", "initial_pending"}
+                else f"({unable} AND ({analysis}))"
+            )
+            return (
+                f"(EXISTS (SELECT 1 FROM _unverifiable_review_flows flow "
+                f"WHERE flow.parser_type=projection.parser_type "
+                f"AND flow.row_key=projection.row_key AND flow.state IN ({state_sql})) "
+                f"OR ({legacy} AND NOT EXISTS (SELECT 1 FROM _unverifiable_review_flows flow2 "
+                "WHERE flow2.parser_type=projection.parser_type AND flow2.row_key=projection.row_key)))"
+            )
     if workflow.valid_results:
         return "1=0"
     analysis = " OR ".join(
@@ -1067,7 +1130,9 @@ def _analysis_stage_condition(
 ) -> tuple[str, list[str]]:
     conditions: list[str] = []
     params: list[str] = []
-    stages = (stage,) if stage != "all" else ("waiting_analysis", "analyzed")
+    stages = (stage,) if stage != "all" else (
+        "initial_pending", "initial_extension", "deep_pending", "deep_extension"
+    )
     for parser_type in parser_types:
         stage_conditions = [
             _review_stage_condition(parser_type, current_stage)
@@ -1134,21 +1199,24 @@ def _analysis_task_where(
 
 def _analysis_order(data: AnalysisTaskSearch) -> str:
     parser_types = list(dict.fromkeys(data.parser_types))
-    analyzed: list[str] = []
-    waiting: list[str] = []
+    stage_predicates: dict[str, list[str]] = {
+        "initial_pending": [],
+        "initial_extension": [],
+        "deep_pending": [],
+        "deep_extension": [],
+    }
     for parser_type in parser_types:
-        analyzed.append(
-            f"(projection.parser_type='{parser_type}' AND "
-            f"{_review_stage_condition(parser_type, 'analyzed')})"
-        )
-        waiting.append(
-            f"(projection.parser_type='{parser_type}' AND "
-            f"{_review_stage_condition(parser_type, 'waiting_analysis')})"
-        )
-    stage_order = (
-        "CASE WHEN " + " OR ".join(analyzed) + " THEN 0 "
-        "WHEN " + " OR ".join(waiting) + " THEN 1 ELSE 2 END"
-    )
+        for stage in stage_predicates:
+            stage_predicates[stage].append(
+                f"(projection.parser_type='{parser_type}' AND "
+                f"{_review_stage_condition(parser_type, stage)})"
+            )
+    stage_order = "CASE "
+    for index, stage in enumerate(stage_predicates):
+        predicates = stage_predicates[stage]
+        if predicates:
+            stage_order += f"WHEN {' OR '.join(predicates)} THEN {index} "
+    stage_order += "ELSE 4 END"
     if data.sort == "updated_asc":
         return f"{stage_order}, projection.updated_at ASC, projection.row_key"
     if data.sort == "updated_desc":
@@ -1277,13 +1345,18 @@ async def _list_analysis_tasks_data(
             base_params,
         )
         facets["total"] = int((await cur.fetchone())[0] or 0)
-        for stage, key in (("waiting_analysis", "waiting_analysis"), ("analyzed", "analyzed")):
+        for stage, key in (
+            ("initial_pending", "initial_pending"),
+            ("initial_extension", "initial_extension"),
+            ("deep_pending", "deep_pending"),
+            ("deep_extension", "deep_extension"),
+        ):
             stage_where, stage_params = _analysis_task_where(context, base_data, review_stage=stage)
             await cur.execute(
                 f"SELECT COUNT(*) FROM _online_source_projection AS projection WHERE {stage_where}",
                 stage_params,
             )
-            facets["priority_counts"][key] = int((await cur.fetchone())[0] or 0)
+            facets["review_stage_counts"][key] = int((await cur.fetchone())[0] or 0)
         await cur.execute(
             f"""
             SELECT projection.task_state, COUNT(*)
@@ -1309,6 +1382,9 @@ async def _list_analysis_tasks_data(
             [*query_params, data.page_size, (data.page - 1) * data.page_size],
         )
         rows = await cur.fetchall()
+        review_by_row = await review_flows_by_rows(
+            cur, [(str(row[0]), str(row[1])) for row in rows]
+        )
         watch_by_parser: dict[str, dict[str, dict]] = {}
         for parser_type in parser_types:
             keys = [str(row[1]) for row in rows if str(row[0]) == parser_type]
@@ -1328,6 +1404,7 @@ async def _list_analysis_tasks_data(
                 watch_by_parser.get(str(row[0]), {}).get(str(row[1])),
                 str(row[1]) in photo_fetched.get(str(row[0]), set()),
                 str(row[5] or ""),
+                review_flow=review_by_row.get((str(row[0]), str(row[1]))),
             )
             for row in rows
         ],
@@ -1527,10 +1604,13 @@ def _task_record(
     qmf_status: dict | None = None,
     residence_status: dict | None = None,
     registration_link: dict | None = None,
+    review_flow: dict | None = None,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
     watch = watch or {}
+    structured_stage = str((review_flow or {}).get("state") or "")
+    structured_active = structured_stage in UNVERIFIABLE_ACTIVE_STATES
     return {
         "task_key": f"{parser_type}:{row_key}",
         "row_key": str(row_key),
@@ -1544,7 +1624,8 @@ def _task_record(
             source_count=int(source_count or 0),
             conflict=bool(conflict),
         ),
-        "review_stage": workflow.review_stage(normalized),
+        "review_stage": structured_stage if structured_active else workflow.review_stage(normalized),
+        "review_flow": review_flow,
         "source_count": int(source_count or 0),
         "conflict": bool(conflict),
         "pending_sync": bool(pending),
@@ -1647,6 +1728,11 @@ def _empty_facets() -> dict:
     return {
         "total": 0,
         "priority_counts": {key: 0 for key in PRIORITY_KEYS},
+        "review_stage_counts": {
+            key: 0 for key in (
+                "initial_pending", "initial_extension", "deep_pending", "deep_extension",
+            )
+        },
         "status_counts": {key: 0 for key in ("unchecked", "checked", "completed")},
         "registration_review_count": 0,
         "qmf_feedback_counts": {
@@ -1904,6 +1990,9 @@ async def _list_mobile_tasks_data(
             parser_type,
             [str(row[0]) for row in rows],
         )
+        review_by_row = await review_flows_by_rows(
+            cur, [(parser_type, str(row[0])) for row in rows]
+        )
         watch_by_row = await task_watch_payload(
             cur,
             parser_type,
@@ -1934,6 +2023,7 @@ async def _list_mobile_tasks_data(
                 ),
                 residence_status=residence_by_row.get(str(row[0])),
                 registration_link=registration_by_row.get(str(row[0])),
+                review_flow=review_by_row.get((parser_type, str(row[0]))),
             )
             for row in rows
         ],
@@ -2287,7 +2377,11 @@ async def _mobile_task_detail_data(
     include_photo_requests: bool = True,
 ) -> dict:
     if analysis_mode:
-        user = _require_analysis_user(user)
+        user = (
+            _require_unverifiable_reviewer(user)
+            if supports_unverifiable_review(parser_type)
+            else _require_analysis_user(user)
+        )
     capability_user = _task_capability_user(user)
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
@@ -2312,11 +2406,19 @@ async def _mobile_task_detail_data(
         if not parent_row:
             raise HTTPException(404, "任务不存在或不属于当前社区")
         parent_values = json_value(parent_row[0], {})
+        review_by_row = await review_flows_by_rows(cur, [(parser_type, row_key)])
+        review_flow = review_by_row.get((parser_type, row_key))
+        if review_flow:
+            review_flow["events"] = await review_events_for_flow(cur, int(review_flow["id"]))
         if not analysis_mode:
             dependency_blocked = await online_task_blocked(cur, parser_type, row_key)
-        if analysis_mode and TASK_WORKFLOWS[parser_type].review_stage(
-            parent_values
-        ) not in {"waiting_analysis", "analyzed"}:
+        if analysis_mode and not (
+            review_flow and review_flow.get("state") in {
+                INITIAL_PENDING, INITIAL_EXTENSION, DEEP_PENDING, DEEP_EXTENSION,
+            }
+        ) and TASK_WORKFLOWS[parser_type].review_stage(parent_values) not in {
+            "waiting_analysis", "analyzed"
+        }:
             raise HTTPException(404, "该任务当前不属于网格核查研判范围")
         await cur.execute(
             f"""
@@ -2434,6 +2536,7 @@ async def _mobile_task_detail_data(
                         (registration_link or {}).get("status") or ""
                     ),
                 ),
+                review_flow=review_flow,
             )
             editable_fields = (
                 list(capabilities["editable_fields"])
@@ -2452,12 +2555,17 @@ async def _mobile_task_detail_data(
                 )
             analysis_fields = set(TASK_WORKFLOWS[parser_type].analysis_fields)
             if analysis_mode:
-                editable_fields = [
-                    field for field in analysis_fields
-                    if field in parser.COLUMNS
-                ] if source_task["review_stage"] in {
-                    "waiting_analysis", "analyzed"
-                } else []
+                if supports_unverifiable_review(parser_type):
+                    # 两级研判只能通过带流程版本、来源版本和行哈希的
+                    # 结构化决定接口提交，禁止旧客户端继续自由编辑“研判”列。
+                    editable_fields = []
+                else:
+                    editable_fields = [
+                        field for field in analysis_fields
+                        if field in parser.COLUMNS
+                    ] if source_task["review_stage"] in {
+                        "waiting_analysis", "analyzed",
+                    } else []
             else:
                 editable_fields = [
                     field for field in editable_fields
@@ -2478,6 +2586,7 @@ async def _mobile_task_detail_data(
                 "state": source_task["state"],
                 "needs_review": source_task["needs_review"],
                 "review_stage": source_task["review_stage"],
+                "review_flow": review_flow,
                 "sync_state": local_sync_state(source_changes),
                 "sync_fields": [
                     {
@@ -2543,6 +2652,7 @@ async def _mobile_task_detail_data(
             ),
             residence_status=residence_by_row.get(row_key),
             registration_link=registration_link,
+            review_flow=review_flow,
         ),
         "workflow": {
             "label": workflow.label,
@@ -2572,6 +2682,7 @@ async def _mobile_task_detail_data(
         "qmf_status": qmf_by_row.get(row_key),
         "residence_status": residence_by_row.get(row_key),
         "registration_link": registration_link,
+        "review_flow": review_flow,
         "registration_manual_confirm_allowed": can_confirm_registration(user),
         "sources": sources,
     }
@@ -2672,6 +2783,98 @@ async def get_mobile_task_analysis_detail(
     )
 
 
+@router.patch("/analysis/{parser_type}/source-rows/{source_id}/decision")
+async def decide_mobile_task_unverifiable_review(
+    parser_type: str,
+    source_id: int,
+    data: UnverifiableDecision,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """提交结构化初步/深度研判决定，并原子写入延时截止日期。"""
+    if not supports_unverifiable_review(parser_type):
+        raise HTTPException(400, "该业务不支持无法核实两级研判")
+    scoped_user = _require_unverifiable_reviewer(user)
+    workflow = TASK_WORKFLOWS[parser_type]
+    analysis_field = next(
+        (field for field in workflow.analysis_fields if field), ""
+    )
+    secondary_field = next(
+        (field for field in workflow.secondary_fields if field), ""
+    )
+    deadline_field = workflow.date_fields[0] if workflow.date_fields else ""
+    if not analysis_field:
+        raise HTTPException(400, "该业务没有可填写的研判字段")
+    prepared_holder: dict = {}
+
+    def validate_source(current: dict) -> None:
+        if not is_unverifiable_result(current.get(workflow.result_field)):
+            raise HTTPException(409, "该任务当前已不是无法核实，请刷新后重试")
+
+    async def transaction_prepare(*, cur, source, current_values, changes):
+        del changes
+        if int(source.get("revision") or 0) != data.expected_revision:
+            raise HTTPException(409, "腾讯来源版本已经变化，请刷新后重试")
+        prepared = await prepare_decision(
+            cur,
+            parser_type=parser_type,
+            source=source,
+            current_values=current_values,
+            stage=data.stage,
+            outcome=data.outcome,
+            opinion=data.opinion,
+            expected_flow_version=data.flow_version,
+            expected_row_hash=data.expected_row_hash,
+        )
+        prepared_holder["value"] = prepared
+        result = {analysis_field: prepared["summary"]}
+        if prepared["due_date"] and deadline_field:
+            result[deadline_field] = prepared["due_date"].isoformat()
+        if prepared["next_state"] in {
+            INITIAL_EXTENSION, DEEP_PENDING, DEEP_EXTENSION,
+        } and secondary_field:
+            # 腾讯字段只展示当前阶段的反馈；上一阶段原文已由结构化事件保留。
+            result[secondary_field] = ""
+        return result
+
+    async def transaction_callback(*, cur, source, before, after, row_key_before, row_key_after, revision):
+        del before, after, row_key_before, row_key_after
+        prepared = prepared_holder.get("value")
+        if not prepared:
+            raise HTTPException(409, "研判决定未准备完成，请刷新后重试")
+        prepared_holder["applied"] = await apply_decision(
+            cur,
+            prepared=prepared,
+            source=source,
+            revision=revision,
+            actor_user_id=int(scoped_user.get("id") or 0),
+        )
+
+    result = await queue_source_fields(
+        parser_type=parser_type,
+        source_id=source_id,
+        changes={analysis_field: data.opinion.strip()},
+        base_values={analysis_field: ""},
+        expected_revision=data.expected_revision,
+        request=request,
+        user=scoped_user,
+        conn=conn,
+        explicit_text_edit=True,
+        allowed_columns={
+            field for field in (analysis_field, deadline_field, secondary_field)
+            if field
+        },
+        current_values_validator=validate_source,
+        redact_audit_values=True,
+        audit_action="unverifiable_review_decision",
+        transaction_prepare=transaction_prepare,
+        transaction_callback=transaction_callback,
+        record_unverifiable_save=False,
+    )
+    return {**result, "review_flow": prepared_holder.get("applied")}
+
+
 @router.patch("/analysis/{parser_type}/source-rows/{source_id}")
 async def update_mobile_task_analysis(
     parser_type: str,
@@ -2683,6 +2886,8 @@ async def update_mobile_task_analysis(
 ):
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    if supports_unverifiable_review(parser_type):
+        raise HTTPException(410, "无法核实任务请使用结构化研判决定接口")
     scoped_user = _require_analysis_user(user)
     parser = get_parser(parser_type)
     analysis_fields = {

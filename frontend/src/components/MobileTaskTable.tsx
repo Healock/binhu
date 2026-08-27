@@ -339,6 +339,30 @@ export default function MobileTaskTable({
     const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
     const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
 
+    if (analysisMode && task.review_flow) {
+      return (
+        <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}>
+          <div className="grid min-w-0 gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Tag color={task.review_flow.state === 'source_exception' ? 'red' : 'blue'}>
+                {task.review_flow.state_label}
+              </Tag>
+              {task.review_flow.review_due_date && <span>复核截止：{task.review_flow.review_due_date}</span>}
+              {['initial_extension', 'deep_extension'].includes(task.review_flow.state) && (
+                <span>本轮反馈：{task.review_flow.feedback_submitted ? '已记录' : '未记录'}</span>
+              )}
+            </div>
+            <span className="text-xs text-[var(--app-text-secondary)]">
+              两级研判必须在详情中选择成功或失败并填写意见，表格内不提供自由文字保存。
+            </span>
+          </div>
+          <div className="mobile-task-table-inline-actions">
+            <Button size="small" type="primary" onClick={() => onOpen(task)}>进入研判详情</Button>
+          </div>
+        </div>
+      )
+    }
+
     if (!item) {
       return (
         <div
@@ -696,25 +720,44 @@ export default function MobileTaskTable({
     {
       title: '状态',
       key: 'state',
-      width: 190,
+      width: 250,
       responsivePriority: 'always',
       render: (_, task) => {
         const state = STATE_LABELS[task.state]
         return (
-          <div className="flex flex-wrap gap-1">
-            <Tag color={state.color}>{state.text}</Tag>
-            {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
-            {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
-            {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
-            {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
-            {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
-            {task.sync_state === 'pending' && <Tag color="blue">待同步</Tag>}
-            {task.watch_marks?.map(mark => (
-              <Tag key={`${task.task_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
-            ))}
-            {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
-            <ResidenceRegistrationStatus status={task.residence_status} compact />
-            <RegistrationLinkStatus link={task.registration_link} compact />
+          <div className="grid gap-2">
+            <div className="flex flex-wrap gap-1">
+              <Tag color={state.color}>{state.text}</Tag>
+              {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
+              {task.review_stage === 'analyzed' && <Tag color="purple">已研判</Tag>}
+              {task.review_stage === 'initial_pending' && <Tag color="volcano">初步待研判</Tag>}
+              {task.review_stage === 'initial_extension' && <Tag color="gold">初步复核中</Tag>}
+              {task.review_stage === 'deep_pending' && <Tag color="purple">深度待研判</Tag>}
+              {task.review_stage === 'deep_extension' && <Tag color="geekblue">深度复核中</Tag>}
+              {task.review_stage === 'final_unverifiable' && <Tag color="red">最终无法核实</Tag>}
+              {task.review_stage === 'source_exception' && <Tag color="red">流程已暂停</Tag>}
+              {(task.conflict || task.source_count > 1) && <Tag color="red">来源异常</Tag>}
+              {task.sync_state === 'conflict' && <Tag color="red">同步冲突</Tag>}
+              {task.sync_state === 'retry' && <Tag color="orange">同步重试</Tag>}
+              {task.sync_state === 'pending' && <Tag color="blue">待同步</Tag>}
+              {task.watch_marks?.map(mark => (
+                <Tag key={`${task.task_key}-${mark.category_id}`} color={mark.color}>{mark.name}</Tag>
+              ))}
+              {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
+              <ResidenceRegistrationStatus status={task.residence_status} compact />
+              <RegistrationLinkStatus link={task.registration_link} compact />
+            </div>
+            {task.review_flow && !['resolved', 'archived'].includes(task.review_flow.state) && (
+              <div className="grid gap-0.5 rounded border border-amber-300/70 bg-amber-50/80 px-2 py-1.5 text-xs leading-5 text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/30 dark:text-amber-100">
+                {task.review_flow.review_due_date && <span>复核截止：{task.review_flow.review_due_date}</span>}
+                {['initial_extension', 'deep_extension'].includes(task.review_flow.state) && (
+                  <span>本轮反馈：{task.review_flow.feedback_submitted ? '已记录' : '未记录'}</span>
+                )}
+                {!['final_unverifiable', 'source_exception'].includes(task.review_flow.state) && (
+                  <strong>核实后请立即修改核查结果</strong>
+                )}
+              </div>
+            )}
           </div>
         )
       },
@@ -726,10 +769,10 @@ export default function MobileTaskTable({
     [columns, responsiveLayout.mode],
   )
   const tableScrollWidth = responsiveLayout.isCompact
-    ? 900
+    ? 960
     : responsiveLayout.isStandard
-      ? 1330
-      : 1440
+      ? 1390
+      : 1500
 
   return (
     <div ref={tableRef} className="app-card mobile-task-table overflow-hidden">
