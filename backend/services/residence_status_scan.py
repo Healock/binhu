@@ -33,6 +33,7 @@ from services.task_registration import (
     address_hmac,
     enqueue_automatic_registration_confirmation,
     is_pending_registration,
+    mark_registration_confirmation_failed,
     registration_context_reason,
     registration_match_context,
     update_registration_match,
@@ -573,24 +574,35 @@ async def _process_one(
                                 observed_address_hmac=observed,
                             )
                             if confirmed:
+                                await cur.execute("SAVEPOINT registration_confirmation_enqueue")
                                 try:
                                     await enqueue_automatic_registration_confirmation(
                                         conn,
                                         parser_type=parser_type,
                                         row_key=row_key,
                                     )
-                                except ValueError as exc:
-                                    await update_registration_match(
+                                except Exception as exc:
+                                    await cur.execute(
+                                        "ROLLBACK TO SAVEPOINT registration_confirmation_enqueue"
+                                    )
+                                    await mark_registration_confirmation_failed(
                                         cur,
                                         parser_type=parser_type,
                                         row_key=row_key,
-                                        link=link,
-                                        scan_token=scan_token,
-                                        matched=False,
-                                        reason_code="source_changed",
+                                        source_id=int(link["source_id"]),
+                                        property_id=int(link["property_id"]),
                                     )
                                     await conn.commit()
-                                    return "review_required", str(exc)
+                                    error_code = (
+                                        "source_changed"
+                                        if isinstance(exc, ValueError)
+                                        else "confirmation_enqueue_failed"
+                                    )
+                                    return "review_required", error_code
+                                else:
+                                    await cur.execute(
+                                        "RELEASE SAVEPOINT registration_confirmation_enqueue"
+                                    )
                             await conn.commit()
                             if confirmed:
                                 from services.online_local_writeback import (

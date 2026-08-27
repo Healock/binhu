@@ -50,6 +50,7 @@ REVIEW_REASON_LABELS = {
     "source_ambiguous": "任务来源不唯一",
     "lookup_failed": "居住证平台查询失败",
     "writeback_pending": "已确认，等待同步腾讯表格",
+    "confirmation_enqueue_failed": "自动确认未能进入写回队列，请重新复核",
 }
 
 
@@ -683,6 +684,72 @@ async def update_registration_match(
         reason_code=reason_code,
     )
     return status == "confirmation_pending"
+
+
+async def mark_registration_confirmation_failed(
+    cur,
+    *,
+    parser_type: str,
+    row_key: str,
+    source_id: int,
+    property_id: int,
+    reason_code: str = "confirmation_enqueue_failed",
+) -> bool:
+    """Atomically return a failed confirmation enqueue to manual review."""
+    await cur.execute(
+        """
+        UPDATE _task_registration_links
+        SET status='review_required',reason_code=%s,match_count=0,
+            last_address_hmac='',last_scan_token='',confirmed_at=NULL,
+            updated_at=UTC_TIMESTAMP()
+        WHERE parser_type=%s AND row_key=%s AND source_id=%s AND property_id=%s
+          AND status IN ('awaiting_match','matched_once','review_required','confirmation_pending')
+        """,
+        (reason_code[:64], parser_type, row_key, source_id, property_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    await record_registration_event(
+        cur,
+        parser_type=parser_type,
+        row_key=row_key,
+        source_id=source_id,
+        property_id=property_id,
+        event_type="registration_confirmation_enqueue_failed",
+        reason_code=reason_code,
+    )
+    return True
+
+
+async def refresh_registration_source_context_after_writeback(
+    cur,
+    *,
+    parser_type: str,
+    source_id: int,
+    previous_revision: int,
+    previous_row_hash: str,
+    current_revision: int,
+    current_row_hash: str,
+) -> bool:
+    """Advance a link only across the exact source writeback it expected."""
+    await cur.execute(
+        """
+        UPDATE _task_registration_links
+        SET source_revision=%s,source_row_hash=%s,updated_at=UTC_TIMESTAMP()
+        WHERE parser_type=%s AND source_id=%s
+          AND source_revision=%s AND source_row_hash=%s
+          AND status IN ('awaiting_match','matched_once','review_required','confirmation_pending')
+        """,
+        (
+            current_revision,
+            current_row_hash,
+            parser_type,
+            source_id,
+            previous_revision,
+            previous_row_hash,
+        ),
+    )
+    return cur.rowcount == 1
 
 
 async def enqueue_automatic_registration_confirmation(

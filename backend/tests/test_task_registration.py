@@ -12,8 +12,10 @@ from services.task_registration import (
     ensure_missing_registration_review,
     is_pending_registration,
     is_registration_task,
+    mark_registration_confirmation_failed,
     registration_task_state,
     registration_context_reason,
+    refresh_registration_source_context_after_writeback,
     select_registration_property,
     update_registration_match,
 )
@@ -154,6 +156,46 @@ class TaskRegistrationRulesTests(unittest.TestCase):
 
 
 class TaskRegistrationMatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmation_enqueue_failure_returns_pending_state_to_review(self):
+        cursor = type("Cursor", (), {"execute": AsyncMock(), "rowcount": 1})()
+
+        changed = await mark_registration_confirmation_failed(
+            cursor,
+            parser_type="全链条",
+            row_key="row-key",
+            source_id=11,
+            property_id=23,
+        )
+
+        self.assertTrue(changed)
+        reset_sql = cursor.execute.await_args_list[0].args[0]
+        self.assertIn("status='review_required'", reset_sql)
+        self.assertIn("'confirmation_pending'", reset_sql)
+        self.assertEqual(
+            cursor.execute.await_args_list[0].args[1][0],
+            "confirmation_enqueue_failed",
+        )
+
+    async def test_expected_writeback_advances_registration_source_context(self):
+        cursor = type("Cursor", (), {"execute": AsyncMock(), "rowcount": 1})()
+
+        changed = await refresh_registration_source_context_after_writeback(
+            cursor,
+            parser_type="全链条",
+            source_id=11,
+            previous_revision=5,
+            previous_row_hash="a" * 64,
+            current_revision=6,
+            current_row_hash="b" * 64,
+        )
+
+        self.assertTrue(changed)
+        sql, params = cursor.execute.await_args.args
+        self.assertIn("source_revision=%s,source_row_hash=%s", sql)
+        self.assertIn("source_revision=%s AND source_row_hash=%s", sql)
+        self.assertEqual(params[:2], (6, "b" * 64))
+        self.assertEqual(params[-2:], (5, "a" * 64))
+
     async def test_reselecting_same_property_after_review_refreshes_source_context(self):
         cursor = type(
             "Cursor",

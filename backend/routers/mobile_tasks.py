@@ -68,6 +68,7 @@ from services.task_registration import (
     cancel_registration_link,
     is_registration_task,
     migrate_registration_link,
+    refresh_registration_source_context_after_writeback,
     registration_links_by_rows,
     select_registration_property,
     validate_registration_property,
@@ -541,10 +542,17 @@ def _registration_update_hooks(
     prepared: dict = {}
 
     async def transaction_prepare(*, cur, source, current_values, changes):
+        current_result = str(current_values.get(workflow.result_field) or "").strip()
         after = dict(current_values)
         after.update(changes)
         result = str(after.get(workflow.result_field) or "").strip()
-        if result == "已登记":
+        submitted_result = (
+            str(changes.get(workflow.result_field) or "").strip()
+            if workflow.result_field in changes
+            else None
+        )
+        result_changed = submitted_result is not None and submitted_result != current_result
+        if submitted_result == "已登记" and current_result != "已登记":
             raise HTTPException(
                 403,
                 "不能直接选择已登记；请等待居住证自动比对或由有权人员复核确认",
@@ -556,11 +564,30 @@ def _registration_update_hooks(
         )
         existing = links.get(str(source["row_key"]))
         prepared["existing"] = existing
-        prepared["pending"] = result == "待登记"
         if result != "待登记":
             if data.registration_property_id:
                 raise HTTPException(400, "只有待登记结果可以关联拟登记房屋")
+            prepared["action"] = (
+                "cancel"
+                if current_result == "待登记" and result_changed
+                else "preserve"
+            )
             return {}
+
+        if (
+            existing
+            and existing.get("status") == "legacy_completed"
+            and current_result == "待登记"
+            and not result_changed
+            and not data.registration_property_id
+        ):
+            # Historical rows keep their completed compatibility state when
+            # another field is edited.  They are not forced into the new
+            # property-selection contract retroactively.
+            prepared["action"] = "preserve"
+            return {}
+
+        prepared["action"] = "pending"
 
         if data.registration_property_id:
             try:
@@ -589,7 +616,10 @@ def _registration_update_hooks(
         *, cur, source, before, after, row_key_before, row_key_after, revision,
     ):
         del before
-        if prepared.get("pending"):
+        action = prepared.get("action")
+        if action == "preserve":
+            return
+        if action == "pending":
             await cur.execute(
                 "SELECT COALESCE(identity_hmac,''),community "
                 "FROM _online_source_projection WHERE parser_type=%s AND row_key=%s",
@@ -637,7 +667,21 @@ def _registration_update_hooks(
                     task_community=str(projection_context[1] or ""),
                     user_id=int(user.get("id")) if user.get("id") else None,
                 )
-        else:
+            else:
+                # A normal edit on an already-linked pending task advances the
+                # local source revision before Tencent is contacted.  Carry
+                # the link across that exact expected revision so the scanner
+                # cannot mistake our own queued edit for an external change.
+                await refresh_registration_source_context_after_writeback(
+                    cur,
+                    parser_type=parser_type,
+                    source_id=int(source["id"]),
+                    previous_revision=int(source["revision"]),
+                    previous_row_hash=str(source["row_hash"] or ""),
+                    current_revision=int(revision),
+                    current_row_hash=str(source["row_hash"] or ""),
+                )
+        elif action == "cancel":
             await cancel_registration_link(
                 cur,
                 parser_type=parser_type,
