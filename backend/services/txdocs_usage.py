@@ -3,6 +3,7 @@
 import asyncio
 from collections import deque
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from database import db_manager
 
@@ -15,9 +16,13 @@ _WORKER_TASK: asyncio.Task | None = None
 
 def classify_txdocs_endpoint(url: str) -> str:
     """Collapse request URLs so file, sheet and range identifiers are not stored."""
-    path, _, query = str(url or "").partition("?")
+    parsed = urlsplit(str(url or ""))
+    path = parsed.path
+    query = parsed.query
     if path.endswith("/batchUpdate"):
         return "batch_update"
+    if path.endswith(":clear"):
+        return "range_clear"
     if path.startswith("/files/") and "concise=1" in query:
         return "file_info"
     if path.startswith("/files/"):

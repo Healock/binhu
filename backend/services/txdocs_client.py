@@ -10,6 +10,7 @@ import asyncio
 import json
 import httpx
 from typing import Optional
+from urllib.parse import quote
 from config import settings
 from services.txdocs_usage import classify_txdocs_endpoint, record_txdocs_request
 
@@ -668,6 +669,35 @@ class TxDocsClient:
             headers=self._headers(),
             json={"requests": requests},
         )
+
+    async def clear_range(
+        self,
+        file_id: str,
+        sheet_id: str,
+        range_str: str,
+    ) -> dict:
+        """使用腾讯官方清空接口移除单元格内容，并保留原有格式。"""
+        encoded_file_id = quote(str(file_id), safe="$")
+        encoded_range = quote(f"{sheet_id}!{range_str}", safe="!:$")
+        url = (
+            "https://docs.qq.com/openapi/sheetbook/v2/"
+            f"{encoded_file_id}/values/{encoded_range}:clear"
+        )
+        return await self._request_with_retry(
+            "POST",
+            url,
+            headers=self._headers(),
+        )
+
+    async def clear_cell(
+        self,
+        file_id: str,
+        sheet_id: str,
+        physical_row: int,
+        column_index: int,
+    ) -> dict:
+        cell = f"{column_letter(column_index)}{physical_row}"
+        return await self.clear_range(file_id, sheet_id, f"{cell}:{cell}")
 
     def build_update_range_request(
         self,

@@ -814,13 +814,18 @@ async def update_source_fields(
             )
 
         requests = []
+        clear_columns: list[int] = []
         try:
             for column in ordered_columns:
                 metadata = current["cell_meta"].get(column) or {"type": "text"}
+                column_index = source_columns.index(column)
+                if not normalized_changes[column]:
+                    clear_columns.append(column_index)
+                    continue
                 requests.append(client.build_update_cell_request(
                     source["sheet_id"],
                     source["physical_row"],
-                    source_columns.index(column),
+                    column_index,
                     normalized_changes[column],
                     metadata,
                     column,
@@ -832,7 +837,15 @@ async def update_source_fields(
             raise HTTPException(400, str(exc)) from exc
 
         try:
-            await client.batch_update(source["spreadsheet"]["file_id"], requests)
+            if requests:
+                await client.batch_update(source["spreadsheet"]["file_id"], requests)
+            for column_index in clear_columns:
+                await client.clear_cell(
+                    source["spreadsheet"]["file_id"],
+                    source["sheet_id"],
+                    source["physical_row"],
+                    column_index,
+                )
             verified_raw = await client.read_source_row(
                 source["spreadsheet"]["file_id"],
                 source["sheet_id"],
