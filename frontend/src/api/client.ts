@@ -3062,6 +3062,14 @@ export async function getPoliceImportProfiles(): Promise<{ data: PoliceImportPro
 }
 
 export async function getQuickDispatchOptions(): Promise<{
+  businesses: Array<{
+    key: string
+    label: string
+    target_parser: string
+    business_type: PoliceDispatchBatch['business_type']
+    police_subtype: PoliceDispatchBatch['police_subtype']
+    fields: Array<{ key: string; label: string; required: boolean; type: 'text' | 'textarea' | 'registration'; placeholder?: string }>
+  }>
   communities: Array<{ id: number; name: string }>
 }> {
   const { data } = await api.get('/police-dispatch/quick-dispatch/options')
@@ -3069,13 +3077,15 @@ export async function getQuickDispatchOptions(): Promise<{
 }
 
 export interface QuickDispatchPayload {
-  source_name: string
-  community_id: number
-  person_name: string
-  identity_number: string
-  phone: string
-  original_address: string
-  registration_status: string
+  profile?: string
+  fields?: Record<string, string>
+  source_name?: string
+  community_id?: number
+  person_name?: string
+  identity_number?: string
+  phone?: string
+  original_address?: string
+  registration_status?: string
   business_date: string
   deadline_date?: string
   created_time?: string
