@@ -640,6 +640,17 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_venue_photo_retention (retention_until, deleted_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _venue_form_tokens (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            venue_id BIGINT NOT NULL,
+            token_hmac CHAR(64) NOT NULL,
+            issued_at DATETIME NOT NULL,
+            consumed_at DATETIME DEFAULT NULL,
+            UNIQUE KEY uk_venue_form_token (token_hmac),
+            INDEX idx_venue_form_token_expiry (issued_at, consumed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
 
 
 async def ensure_workflow_schema(cur) -> None:

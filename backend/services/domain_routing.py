@@ -39,7 +39,7 @@ TABLE_DOMAINS: dict[str, tuple[str, str]] = {
     )},
     **{table: ("REGISTRY_ADDRESS_DOMAIN_ACTIVE", settings.MYSQL_REGISTRY_DB) for table in (
         "_police_address_entries", "_police_address_sources", "_police_address_imports",
-        "_police_address_import_conflicts", "_venue_codes", "_venue_visits", "_venue_visit_photos",
+        "_police_address_import_conflicts", "_venue_codes", "_venue_visits", "_venue_visit_photos", "_venue_form_tokens",
     )},
 }
 

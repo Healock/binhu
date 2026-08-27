@@ -28,6 +28,7 @@ async def cleanup_expired_venue_data() -> int:
                 await cur.execute("UPDATE _venue_visit_photos SET deleted_at=UTC_TIMESTAMP() WHERE id=%s", (visit_id,))
                 removed += 1
             await cur.execute("UPDATE _venue_visits SET deleted_at=UTC_TIMESTAMP() WHERE retention_until<=UTC_TIMESTAMP() AND deleted_at IS NULL")
+            await cur.execute("DELETE FROM _venue_form_tokens WHERE issued_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)")
         await conn.commit()
     finally:
         pool.release(conn)

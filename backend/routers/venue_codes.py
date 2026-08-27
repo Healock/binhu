@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import io
 import secrets
 import time
@@ -33,6 +34,7 @@ _PHOTO_MAGIC = {
     "image/png": (b"\x89PNG\r\n\x1a\n",),
     "image/webp": (b"RIFF",),
 }
+_FORM_TOKEN_SUFFIX_LENGTH = 22
 
 
 async def get_venue_db():
@@ -80,6 +82,34 @@ def _check_form_token(value: str, venue_id: int) -> bool:
         return int(raw_id) == venue_id and abs(int(time.time()) - issued) <= 900 and hmac.compare_digest(sig, expected)
     except (ValueError, TypeError, UnicodeError):
         return False
+
+
+async def _issue_form_token(conn, venue_id: int) -> str:
+    issued = int(time.time())
+    for _ in range(3):
+        token = _form_token(venue_id, issued) + secrets.token_urlsafe(16)
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO _venue_form_tokens (venue_id,token_hmac,issued_at) VALUES (%s,%s,UTC_TIMESTAMP())",
+                    (venue_id, _token_digest(f"form:{token}")),
+                )
+            return token
+        except Exception:
+            issued += 1
+    raise HTTPException(503, "登记页面令牌生成失败，请稍后重试")
+
+
+async def _consume_form_token(conn, value: str, venue_id: int) -> bool:
+    signed_token = value[:-_FORM_TOKEN_SUFFIX_LENGTH]
+    if len(value) <= _FORM_TOKEN_SUFFIX_LENGTH or not _check_form_token(signed_token, venue_id):
+        return False
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE _venue_form_tokens SET consumed_at=UTC_TIMESTAMP() WHERE venue_id=%s AND token_hmac=%s AND consumed_at IS NULL AND issued_at>=DATE_SUB(UTC_TIMESTAMP(), INTERVAL 15 MINUTE)",
+            (venue_id, _token_digest(f"form:{value}")),
+        )
+        return cur.rowcount == 1
 
 
 def _rate_limit(key: str, limit: int = 10, window: int = 60) -> None:
@@ -225,8 +255,9 @@ async def public_venue_form(token: str, conn=Depends(get_venue_db)):
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "场所不存在或二维码已停用")
-    form_token = _form_token(int(row[0]), int(time.time()))
-    return HTMLResponse(f"""<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'><title>场所登记</title><h2>{str(row[1])}</h2><form method='post' action='/api/public/venue-visits' enctype='multipart/form-data'><input type='hidden' name='venue_id' value='{int(row[0])}'><input type='hidden' name='form_token' value='{form_token}'><label>姓名<input name='name' required maxlength='100'></label><br><label>公民身份号码<input name='identity_number' required maxlength='18'></label><br><label>手机号<input name='phone' required maxlength='20'></label><br><label>地址<input name='address' required maxlength='500'></label><br><label>照片<input type='file' name='photo' accept='image/jpeg,image/png,image/webp' required></label><br><button type='submit'>提交登记</button></form>""")
+    form_token = await _issue_form_token(conn, int(row[0]))
+    venue_name = html.escape(str(row[1]), quote=True)
+    return HTMLResponse(f"""<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'><title>场所登记</title><h2>{venue_name}</h2><form method='post' action='/api/public/venue-visits' enctype='multipart/form-data'><input type='hidden' name='venue_id' value='{int(row[0])}'><input type='hidden' name='form_token' value='{html.escape(form_token, quote=True)}'><label>姓名<input name='name' required maxlength='100'></label><br><label>公民身份号码<input name='identity_number' required maxlength='18'></label><br><label>手机号<input name='phone' required maxlength='20'></label><br><label>地址<input name='address' required maxlength='500'></label><br><label>照片<input type='file' name='photo' accept='image/jpeg,image/png,image/webp' required></label><br><button type='submit'>提交登记</button></form>""")
 
 
 @router.get("/api/public/venue-codes/{token}")
@@ -238,7 +269,7 @@ async def public_venue_info(token: str, conn=Depends(get_venue_db)):
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "场所不存在或二维码已停用")
-    return {"venue_id": int(row[0]), "name": str(row[1]), "form_token": _form_token(int(row[0]), int(time.time()))}
+    return {"venue_id": int(row[0]), "name": str(row[1]), "form_token": await _issue_form_token(conn, int(row[0]))}
 
 
 @router.post("/api/public/venue-visits")
@@ -246,13 +277,18 @@ async def public_submit_venue_visit(request: Request, venue_id: int = Form(...),
     client_ip = request.client.host if request.client else "unknown"
     _rate_limit(f"venue:{venue_id}:ip:{client_ip}")
     _rate_limit(f"venue:{venue_id}:device:{hashlib.sha256((request.headers.get('user-agent', '') + '|' + client_ip).encode()).hexdigest()}")
-    if not _check_form_token(form_token, venue_id):
+    if not await _consume_form_token(conn, form_token, venue_id):
         raise HTTPException(400, "登记页面已过期，请重新扫码")
     identity = normalize_identity(identity_number); phone_norm = normalize_phone(phone)
     if not (len(identity) == 18 and identity[:17].isdigit() and (identity[17].isdigit() or identity[17] == "X")):
         raise HTTPException(422, "公民身份号码格式无效")
     if not (len(phone_norm) == 11 and phone_norm.isdigit() and phone_norm[0] == "1"):
         raise HTTPException(422, "手机号格式无效")
+    name = name.strip(); address = address.strip()
+    if not name:
+        raise HTTPException(422, "姓名不能为空")
+    if not address:
+        raise HTTPException(422, "地址不能为空")
     photo_data = await photo.read(settings.VENUE_PHOTO_MAX_BYTES + 1)
     mime, size, digest = _validate_photo(photo.filename or "photo", photo.content_type or "", photo_data)
     identity_hmac, _ = hmac_digest(identity, kind="identity"); phone_hmac, _ = hmac_digest(phone_norm, kind="phone")
@@ -266,7 +302,7 @@ async def public_submit_venue_visit(request: Request, venue_id: int = Form(...),
             await cur.execute("SELECT id FROM _venue_codes WHERE id=%s AND status='active'", (venue_id,))
             venue = await cur.fetchone()
             if not venue: raise HTTPException(404, "场所不存在或二维码已停用")
-            await cur.execute("INSERT INTO _venue_visits (venue_id,encrypted_name,encrypted_identity,identity_hmac,encrypted_phone,phone_hmac,encrypted_address,source_ip_hash,retention_until) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (venue_id, encrypt_secret(name.strip()), encrypt_secret(identity), identity_hmac, encrypt_secret(phone_norm), phone_hmac, encrypt_secret(address.strip()), hashlib.sha256(f"{settings.registry_hmac_key}:{client_ip}".encode()).hexdigest(), retention))
+            await cur.execute("INSERT INTO _venue_visits (venue_id,encrypted_name,encrypted_identity,identity_hmac,encrypted_phone,phone_hmac,encrypted_address,source_ip_hash,retention_until) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (venue_id, encrypt_secret(name), encrypt_secret(identity), identity_hmac, encrypt_secret(phone_norm), phone_hmac, encrypt_secret(address), hashlib.sha256(f"{settings.registry_hmac_key}:{client_ip}".encode()).hexdigest(), retention))
             visit_id = int(cur.lastrowid)
             await cur.execute("INSERT INTO _venue_visit_photos (visit_id,storage_key,mime_type,size_bytes,sha256,retention_until) VALUES (%s,%s,%s,%s,%s,%s)", (visit_id, storage_key, mime, size, digest, retention))
     except Exception:
