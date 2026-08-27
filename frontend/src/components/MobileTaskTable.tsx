@@ -17,13 +17,16 @@ import {
   formatMobileTaskDeadline,
   mergeMobileTaskSaveValues,
   mobileTaskEditorFields,
+  mobileTaskCurrentAddressLabel,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
   mobileTaskSurfaceTone,
+  mobileTaskUsesRegistrationClosure,
 } from '../utils/mobileTasks'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import QmfFeedbackStatus from './QmfFeedbackStatus'
 import ResidenceRegistrationStatus from './ResidenceRegistrationStatus'
+import RegistrationLinkStatus from './RegistrationLinkStatus'
 import { getResponsiveColumns, type ResponsiveColumns } from './responsiveTable'
 
 const STATE_LABELS = {
@@ -358,7 +361,10 @@ export default function MobileTaskTable({
           className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}
         >
           <div className="mobile-task-table-inline-fields">
-            <div className="mobile-task-table-inline-readonly"><span>现住址</span><strong>{task.summary.current_address || '未填写'}</strong></div>
+            <div className="mobile-task-table-inline-readonly">
+              <span>{mobileTaskCurrentAddressLabel(task.parser_type, task.summary.result || '')}</span>
+              <strong>{task.summary.current_address || '未填写'}</strong>
+            </div>
             <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
             <div className="mobile-task-table-inline-readonly">
               <span>研判</span>
@@ -394,10 +400,17 @@ export default function MobileTaskTable({
           <div className="mobile-task-table-inline-fields">
             {fields.map(field => {
               const metadata = source.cell_meta[field] || { type: 'text' }
-              const options = metadata.options?.map(option => ({
-                value: String(option.text),
-                label: String(option.text),
-              })) || []
+              const registrationResultField = mobileTaskUsesRegistrationClosure(task.parser_type)
+                && field === detail.workflow.result_field
+              const options = metadata.options
+                ?.filter(option => (
+                  !registrationResultField
+                  || !['已登记', '待登记'].includes(String(option.text))
+                ))
+                .map(option => ({
+                  value: String(option.text),
+                  label: String(option.text),
+                })) || []
               return (
                 <label
                   key={field}
@@ -405,20 +418,31 @@ export default function MobileTaskTable({
                 >
                   <span>{field === '核查人' ? '任务分配' : field}</span>
                   {metadata.type === 'select' || field === '核查人' ? (
-                    <Select
-                      allowClear
-                      showSearch
-                      size="small"
-                      placeholder="请选择"
-                      disabled={selectionMode || savingRowKey === task.task_key}
-                      value={values[field] || undefined}
-                      options={options}
-                      onChange={value => setEditorValues(current => ({
-                        ...current,
-                        [task.task_key]: { ...values, [field]: value || '' },
-                      }))}
-                      onBlur={() => void saveField(task, item, field, values[field] || '')}
-                    />
+                    <div className="grid gap-1">
+                      <Select
+                        allowClear
+                        showSearch
+                        size="small"
+                        placeholder="请选择"
+                        disabled={selectionMode || savingRowKey === task.task_key}
+                        value={values[field] || undefined}
+                        options={options}
+                        onChange={value => setEditorValues(current => ({
+                          ...current,
+                          [task.task_key]: { ...values, [field]: value || '' },
+                        }))}
+                        onBlur={() => void saveField(task, item, field, values[field] || '')}
+                      />
+                      {registrationResultField && (
+                        <button
+                          type="button"
+                          className="justify-self-start text-xs text-[var(--app-primary)] hover:underline"
+                          onClick={() => onOpen(task)}
+                        >
+                          待登记需进入详情选择拟登记房屋
+                        </button>
+                      )}
+                    </div>
                   ) : (
                     <Input.TextArea
                       size="small"
@@ -604,6 +628,7 @@ export default function MobileTaskTable({
             ))}
             {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
             <ResidenceRegistrationStatus status={task.residence_status} compact />
+            <RegistrationLinkStatus link={task.registration_link} compact />
           </div>
         )
       },

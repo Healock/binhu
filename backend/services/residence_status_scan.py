@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,15 @@ from services.residence_platform_config import (
 from services.police_dispatch import normalize_community_label
 from services.parsers import get_parser
 from services.task_workflow import MOBILE_TASK_TYPES, TASK_WORKFLOWS
+from services.task_registration import (
+    address_hmac,
+    enqueue_automatic_registration_confirmation,
+    is_pending_registration,
+    registration_context_reason,
+    registration_match_context,
+    update_registration_match,
+)
+from services.registry_import import normalize_address
 
 if TYPE_CHECKING:
     from services.external_acquisition_jobs import JobContext
@@ -39,6 +49,20 @@ _wake_event = asyncio.Event()
 _force_full_scan_requested = False
 _community_login_locks: dict[str, asyncio.Lock] = {}
 _scan_lock = asyncio.Lock()
+
+
+def registration_address_match_result(
+    normalized_address: str,
+    *,
+    matching_property_count: int,
+    other_property_count: int,
+) -> tuple[bool, str]:
+    """Classify an exact property-address lookup without persisting the address."""
+    if not normalized_address or matching_property_count < 1:
+        return False, "address_mismatch"
+    if other_property_count > 0:
+        return False, "address_ambiguous"
+    return True, ""
 
 
 @dataclass(frozen=True)
@@ -126,16 +150,32 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
                 SELECT parser_type,row_key,values_json,COALESCE(identity_hmac,'')
                 FROM _online_source_projection
                 WHERE parser_type IN ({parser_placeholders})
-                """,
-                MOBILE_TASK_TYPES,
+            """,
+            MOBILE_TASK_TYPES,
             )
             rows = await cur.fetchall()
+            registration_rows: dict[tuple[str, str], str] = {}
+            if rows:
+                await cur.execute(
+                    "SELECT parser_type,row_key,status FROM _task_registration_links "
+                    "WHERE property_id IS NOT NULL AND status NOT IN ('cancelled','legacy_completed','confirmed')"
+                )
+                registration_rows = {
+                    (str(parser), str(row_key)): str(status or "")
+                    for parser, row_key, status in await cur.fetchall()
+                }
             queued = 0
             for parser_type, row_key, raw_values, identity_hmac in rows:
                 identity = _identity(str(parser_type), raw_values)
                 valid = valid_identity(identity)
                 status = "pending" if valid else "error"
                 error_code = "" if valid else "invalid_identity"
+                registration_status = registration_rows.get((str(parser_type), str(row_key)), "")
+                if force and registration_status == "confirmed":
+                    # A finalized task no longer participates in the
+                    # automatic-registration matching loop.  Keep its prior
+                    # residence lookup state intact during a full scan.
+                    continue
                 if force:
                     await cur.execute(
                         """
@@ -151,20 +191,27 @@ async def queue_due_residence_tasks(*, force: bool = False) -> int:
                     )
                     queued += int(valid)
                     continue
+                repeat_registration = (
+                    (str(parser_type), str(row_key)) in registration_rows
+                    and is_pending_registration(str(parser_type), _values(raw_values))
+                )
                 await cur.execute(
                     """
                     INSERT INTO _residence_registration_status
                         (parser_type,row_key,identity_hmac,status,error_code)
                     VALUES (%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE
-                        status=IF(identity_hmac<>VALUES(identity_hmac),'pending',status),
+                        status=IF(identity_hmac<>VALUES(identity_hmac),'pending',
+                                  IF(%s=1,'pending',status)),
                         error_code=IF(identity_hmac<>VALUES(identity_hmac),'',error_code),
-                        checked_at=IF(identity_hmac<>VALUES(identity_hmac),NULL,checked_at),
-                        last_attempt_at=IF(identity_hmac<>VALUES(identity_hmac),NULL,last_attempt_at),
-                        duration_ms=IF(identity_hmac<>VALUES(identity_hmac),NULL,duration_ms),
+                        checked_at=IF(identity_hmac<>VALUES(identity_hmac) OR %s=1,NULL,checked_at),
+                        last_attempt_at=IF(identity_hmac<>VALUES(identity_hmac) OR %s=1,NULL,last_attempt_at),
+                        duration_ms=IF(identity_hmac<>VALUES(identity_hmac) OR %s=1,NULL,duration_ms),
                         identity_hmac=VALUES(identity_hmac)
                     """,
-                    (parser_type, row_key, identity_hmac, status, error_code),
+                    (parser_type, row_key, identity_hmac, status, error_code,
+                     int(repeat_registration), int(repeat_registration),
+                     int(repeat_registration), int(repeat_registration)),
                 )
                 queued += int(valid)
         await conn.commit()
@@ -331,6 +378,24 @@ async def _lookup_detail_target(
     return await client.lookup_detail(target.identity)
 
 
+async def _lookup_registration_address_target(
+    config: ResidencePlatformConfig,
+    target: ResidenceLookupTarget,
+) -> tuple[str, str, str]:
+    client = await _community_client(config, target.community_code)
+    try:
+        return await client.lookup_registration_address(target.identity)
+    except ResidencePlatformError as exc:
+        if exc.code != "authentication_expired":
+            raise
+    client = await _community_client(
+        config,
+        target.community_code,
+        rejected_token=client.config.access_token,
+    )
+    return await client.lookup_registration_address(target.identity)
+
+
 async def residence_detail_for_values(
     conn,
     parser_type: str,
@@ -415,11 +480,125 @@ async def _save_result(
 async def _process_one(
     config: ResidencePlatformConfig,
     item: tuple[str, str, str],
+    *,
+    scan_token: str,
 ) -> tuple[str, str]:
     parser_type, row_key, identity_hmac = item
     started = time.perf_counter()
     try:
         target = await _load_current_target(parser_type, row_key, identity_hmac)
+        if parser_type in TASK_WORKFLOWS and parser_type != "疑似未注销模型三":
+            pool = _pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT values_json FROM _online_source_projection "
+                        "WHERE parser_type=%s AND row_key=%s",
+                        (parser_type, row_key),
+                    )
+                    projection = await cur.fetchone()
+                    values = _values(projection[0]) if projection else {}
+                    if is_pending_registration(parser_type, values):
+                        link = await registration_match_context(cur, parser_type, row_key)
+                        if link and link.get("property_id"):
+                            context_reason = registration_context_reason(link)
+                            if context_reason:
+                                await update_registration_match(
+                                    cur, parser_type=parser_type, row_key=row_key,
+                                    link=link, scan_token=scan_token,
+                                    matched=False, reason_code=context_reason,
+                                )
+                                await conn.commit()
+                                return "review_required", context_reason
+                            try:
+                                state, registered_address, registration_code = (
+                                    await _lookup_registration_address_target(config, target)
+                                )
+                            except Exception:  # external details must not reach logs/events
+                                await update_registration_match(
+                                    cur, parser_type=parser_type, row_key=row_key,
+                                    link=link, scan_token=scan_token,
+                                    matched=False, reason_code="lookup_failed",
+                                )
+                                await conn.commit()
+                                return "review_required", "lookup_failed"
+                            if state != "registered" or registration_code == "1":
+                                reason = "registration_cancelled" if registration_code == "1" else "registration_missing"
+                                await update_registration_match(
+                                    cur, parser_type=parser_type, row_key=row_key,
+                                    link=link, scan_token=scan_token,
+                                    matched=False, reason_code=reason,
+                                )
+                                await conn.commit()
+                                return "review_required", reason
+                            normalized = normalize_address(registered_address)
+                            observed = address_hmac(registered_address)
+                            registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+                            await cur.execute(
+                                f"""
+                                SELECT COUNT(DISTINCT property.id),
+                                       COUNT(DISTINCT CASE WHEN property.id<>%s THEN property.id END)
+                                FROM `{registry}`.registry_properties AS property
+                                WHERE property.status='active'
+                                  AND property.community_id=%s
+                                  AND (
+                                    property.normalized_address=%s
+                                    OR EXISTS (
+                                      SELECT 1 FROM `{registry}`.registry_address_aliases AS alias
+                                      WHERE alias.property_id=property.id
+                                        AND alias.enabled=1
+                                        AND alias.normalized_alias=%s
+                                    )
+                                    OR EXISTS (
+                                      SELECT 1 FROM `{registry}`.registry_property_address_versions AS version
+                                      WHERE version.property_id=property.id
+                                        AND version.normalized_address=%s
+                                    )
+                                  )
+                                """,
+                                (link["property_id"], link["community_id"], normalized, normalized, normalized),
+                            )
+                            matching_count, other_count = await cur.fetchone()
+                            matched, match_reason = registration_address_match_result(
+                                normalized,
+                                matching_property_count=int(matching_count or 0),
+                                other_property_count=int(other_count or 0),
+                            )
+                            link["observed_address_hmac"] = observed
+                            confirmed = await update_registration_match(
+                                cur, parser_type=parser_type, row_key=row_key,
+                                link=link, scan_token=scan_token,
+                                matched=matched,
+                                reason_code=match_reason,
+                                observed_address_hmac=observed,
+                            )
+                            if confirmed:
+                                try:
+                                    await enqueue_automatic_registration_confirmation(
+                                        conn,
+                                        parser_type=parser_type,
+                                        row_key=row_key,
+                                    )
+                                except ValueError as exc:
+                                    await update_registration_match(
+                                        cur,
+                                        parser_type=parser_type,
+                                        row_key=row_key,
+                                        link=link,
+                                        scan_token=scan_token,
+                                        matched=False,
+                                        reason_code="source_changed",
+                                    )
+                                    await conn.commit()
+                                    return "review_required", str(exc)
+                            await conn.commit()
+                            if confirmed:
+                                from services.online_local_writeback import (
+                                    launch_local_change_processing,
+                                )
+
+                                launch_local_change_processing(int(link["source_id"]))
+                            return "confirmation_pending" if confirmed else "matched_once", ""
         result = await _lookup_target(config, target)
         await _save_result(
             parser_type,
@@ -454,6 +633,7 @@ async def run_residence_lookup_cycle(
     *,
     queue_tasks: bool = True,
     full_scan: bool = False,
+    scan_token: str | None = None,
 ) -> dict[str, int | str]:
     pool = _pool()
     async with pool.acquire() as conn:
@@ -466,10 +646,11 @@ async def run_residence_lookup_cycle(
     if not items:
         return {"processed": 0, "status": "idle"}
     semaphore = asyncio.Semaphore(LOOKUP_CONCURRENCY)
+    cycle_token = scan_token or str(uuid.uuid4())
 
     async def guarded(item):
         async with semaphore:
-            return await _process_one(config, item)
+            return await _process_one(config, item, scan_token=cycle_token)
 
     outcomes = await asyncio.gather(*(guarded(item) for item in items))
     success_count = sum(not error_code for _, error_code in outcomes)
@@ -509,8 +690,12 @@ async def run_residence_full_scan_job(context: "JobContext") -> dict[str, Any]:
         success_count = 0
         error_count = 0
         stopped_for_authentication = False
+        scan_token = str(uuid.uuid4())
         while True:
-            result = await run_residence_lookup_cycle(queue_tasks=False)
+            result = await run_residence_lookup_cycle(
+                queue_tasks=False,
+                scan_token=scan_token,
+            )
             batch_count = int(result.get("processed") or 0)
             if batch_count <= 0:
                 break
@@ -562,11 +747,13 @@ async def run_residence_lookup_scheduler() -> None:
                 and (force_full_scan or time.monotonic() >= next_full_scan_at)
             )
             async with _scan_lock:
+                scan_token = str(uuid.uuid4())
                 queue_tasks = True
                 while True:
                     result = await run_residence_lookup_cycle(
                         queue_tasks=queue_tasks,
                         full_scan=full_scan_due and queue_tasks,
+                        scan_token=scan_token,
                     )
                     queue_tasks = False
                     if int(result.get("processed") or 0) <= 0:

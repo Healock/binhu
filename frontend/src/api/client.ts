@@ -1066,6 +1066,7 @@ export type MobileTaskStatus =
   | 'unchecked'
   | 'checked'
   | 'review'
+  | 'registration_review'
   | 'completed'
   | 'all'
 export type MobileTaskState = 'unchecked' | 'checked' | 'completed'
@@ -1145,6 +1146,7 @@ export interface MobileTaskItem {
   first_dispatch_at: string | null
   qmf_status: MobileTaskQmfStatus | null
   residence_status?: MobileTaskResidenceStatus | null
+  registration_link?: MobileTaskRegistrationLink | null
 }
 
 export type ResidenceRegistrationState =
@@ -1161,6 +1163,33 @@ export interface MobileTaskResidenceStatus {
   last_attempt_at: string | null
   error_code: string
   duration_ms?: number | null
+}
+
+export interface MobileTaskRegistrationProperty {
+  id: number
+  natural_address: string
+  building: string
+  room: string
+  normalized_address: string
+  status: string
+  version: number
+  community_id: number | null
+  community_name: string
+}
+
+export interface MobileTaskRegistrationLink {
+  source_id: number | null
+  property_id: number | null
+  property_version: number | null
+  status: string
+  reason_code: string
+  reason: string
+  match_count: number
+  selected_at: string | null
+  confirmed_at: string | null
+  manual_confirmed_at?: string | null
+  manual_reason: string
+  property: MobileTaskRegistrationProperty | null
 }
 
 export interface ResidenceRegistrationDetail {
@@ -1219,6 +1248,7 @@ export interface MobileTaskFacets {
   total: number
   priority_counts: Record<Exclude<MobileTaskPriority, 'all'>, number>
   status_counts: Record<MobileTaskState, number>
+  registration_review_count: number
   qmf_feedback_counts: Record<QmfFeedbackState, number>
 }
 
@@ -1248,6 +1278,8 @@ export interface MobileTaskDetailData {
   task: MobileTaskItem
   qmf_status?: MobileTaskQmfStatus | null
   residence_status?: MobileTaskResidenceStatus | null
+  registration_link?: MobileTaskRegistrationLink | null
+  registration_manual_confirm_allowed?: boolean
   workflow: {
     label: string
     result_field: string
@@ -1971,6 +2003,8 @@ export async function updateMobileTask(
     changes: Record<string, string>
     base_values?: Record<string, string>
     expected_revision: number
+    registration_property_id?: number
+    registration_property_version?: number
   },
 ): Promise<{
   values: Record<string, string>
@@ -1985,6 +2019,44 @@ export async function updateMobileTask(
   const { data } = await api.patch(
     `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
     payload,
+  )
+  return data
+}
+
+export async function searchRegistrationProperties(
+  keyword: string,
+  communityName = '',
+): Promise<{ data: MobileTaskRegistrationProperty[]; total: number }> {
+  const { data } = await api.post('/registry/properties/search', {
+    keyword,
+    community_name: communityName,
+    status: 'active',
+    page: 1,
+    page_size: 20,
+  }, activeRequest)
+  return data
+}
+
+export async function manuallyConfirmRegistration(
+  parserType: string,
+  rowKey: string,
+  payload: {
+    reason: 'address_mismatch' | 'address_ambiguous'
+    note?: string
+    expected_revision: number
+  },
+): Promise<{
+  values: Record<string, string>
+  row_key: string
+  revision: number
+  pending_sync: boolean
+  sync_state: MobileTaskSyncState
+  message: string
+}> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/registration/confirm`,
+    payload,
+    activeRequest,
   )
   return data
 }

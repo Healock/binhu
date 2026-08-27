@@ -949,6 +949,10 @@ async def queue_source_fields(
     allowed_columns: set[str] | None = None,
     current_values_validator=None,
     redact_audit_values: bool = False,
+    registration_mode: bool = False,
+    audit_action: str = "update",
+    transaction_prepare=None,
+    transaction_callback=None,
 ) -> dict:
     """先保存平台有效值，再由后台按字段安全写回腾讯。"""
     if parser_type not in QUERY_TYPES:
@@ -984,6 +988,26 @@ async def queue_source_fields(
             )
             if current_values_validator is not None:
                 current_values_validator(current_values)
+            if transaction_prepare is not None:
+                prepared_changes = await transaction_prepare(
+                    cur=cur,
+                    source=source,
+                    current_values=current_values,
+                    changes=dict(normalized_changes),
+                )
+                if prepared_changes:
+                    normalized_changes.update({
+                        str(column): str(value or "").strip()
+                        for column, value in prepared_changes.items()
+                    })
+                if len(normalized_changes) > 5:
+                    raise HTTPException(400, "一次最多保存 5 个字段")
+                unknown = [
+                    column for column in normalized_changes
+                    if column not in parser.COLUMNS
+                ]
+                if unknown:
+                    raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
             inspector_context = await inspector_option_context(cur, user)
             metadata = await _managed_column_metadata(
                 cur,
@@ -1031,6 +1055,25 @@ async def queue_source_fields(
             }
             after = dict(current_values)
             after.update(normalized_changes)
+            if not registration_mode:
+                from services.task_registration import is_registration_task
+
+                workflow = TASK_WORKFLOWS.get(parser_type)
+                if workflow and is_registration_task(parser_type):
+                    submitted_result = (
+                        str(normalized_changes.get(workflow.result_field) or "").strip()
+                        if workflow.result_field in normalized_changes else ""
+                    )
+                    if submitted_result == "已登记":
+                        raise HTTPException(
+                            403,
+                            "已登记只能由居住证比对闭环或有权复核人员确认",
+                        )
+                    if submitted_result == "待登记":
+                        raise HTTPException(
+                            400,
+                            "待登记必须从指令核查页面选择唯一拟登记房屋后统一保存",
+                        )
             try:
                 await validate_row_changes(
                     cur, user, parser, current_values, after, ordered_columns
@@ -1080,7 +1123,7 @@ async def queue_source_fields(
             audit_id = await _insert_writeback_audit(
                 cur,
                 user=user,
-                action="update",
+                action=audit_action,
                 parser_type=parser_type,
                 spreadsheet_id=source["spreadsheet_id"],
                 sheet_id=source["sheet_id"],
@@ -1099,6 +1142,20 @@ async def queue_source_fields(
                 user=user,
                 audit_id=audit_id,
             )
+            if transaction_callback is not None:
+                await transaction_callback(
+                    cur=cur,
+                    source=source,
+                    before=current_values,
+                    after=after,
+                    row_key_before=str(source["row_key"]),
+                    row_key_after=str(new_key),
+                    revision=revision,
+                )
+                # enqueue_local_changes rebuilds once before the registration
+                # link is changed.  Rebuild again so task_state and task graph
+                # observe the association atomically in this same transaction.
+                await rebuild_projection(cur, parser_type, reconcile_graph=False)
             await reconcile_online_task_graph(
                 cur,
                 parser_type=parser_type,

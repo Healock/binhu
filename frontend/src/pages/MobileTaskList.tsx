@@ -30,9 +30,11 @@ import { canManageFullchainArchive, isFlowTaskElevated, MOBILE_TASK_TYPES } from
 import {
   formatMobileTaskDeadline,
   mobileTaskCanLaunchTelephone,
+  mobileTaskCurrentAddressLabel,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
   mobileTaskSurfaceTone,
+  mobileTaskUsesRegistrationClosure,
 } from '../utils/mobileTasks'
 import {
   clearMobileTaskListRestoration,
@@ -48,6 +50,7 @@ import MobileTaskTable from '../components/MobileTaskTable'
 import MobileTaskAssignmentWorkbench from '../components/MobileTaskAssignmentWorkbench'
 import QmfFeedbackStatus, { QMF_FEEDBACK_OPTIONS } from '../components/QmfFeedbackStatus'
 import ResidenceRegistrationStatus from '../components/ResidenceRegistrationStatus'
+import RegistrationLinkStatus from '../components/RegistrationLinkStatus'
 import FullchainArchivePanel from '../components/FullchainArchivePanel'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -106,6 +109,7 @@ const EMPTY_FACETS: MobileTaskFacets = {
     completed: 0,
   },
   status_counts: { unchecked: 0, checked: 0, completed: 0 },
+  registration_review_count: 0,
   qmf_feedback_counts: {
     not_scanned: 0,
     stale: 0,
@@ -206,7 +210,7 @@ export default function MobileTaskList({
       ? 'all'
       : initialQmfFeedbackStates.length
         ? 'completed'
-      : ['pending', 'unchecked', 'checked', 'review', 'completed', 'all'].includes(requestedStatus || '')
+      : ['pending', 'unchecked', 'checked', 'review', 'registration_review', 'completed', 'all'].includes(requestedStatus || '')
       ? requestedStatus as MobileTaskStatus
       : 'pending',
   )
@@ -880,7 +884,16 @@ export default function MobileTaskList({
           <div className="mobile-task-more-grid">
             {!analysisOnly && <Select
               value={status}
-              options={STATUS_OPTIONS}
+              options={[
+                ...STATUS_OPTIONS.slice(0, 3),
+                ...(mobileTaskUsesRegistrationClosure(parserType)
+                  ? [{
+                      label: `登记复核（${facets.registration_review_count}）`,
+                      value: 'registration_review' as MobileTaskStatus,
+                    }]
+                  : []),
+                ...STATUS_OPTIONS.slice(3),
+              ]}
               onChange={value => setStatus(value as MobileTaskStatus)}
               placeholder="精确任务状态"
             />}
@@ -1107,6 +1120,7 @@ export default function MobileTaskList({
                     || task.pending_sync
                     || Boolean(task.watch_marks?.length)
                     || Boolean(task.qmf_status)
+                    || Boolean(task.registration_link)
                     || task.residence_status?.state === 'first_registration') && (
                     <div className="mobile-task-item-card__flags">
                       {task.needs_review && <Tag color="warning" icon={<ExclamationCircleOutlined />}>需复核</Tag>}
@@ -1121,6 +1135,7 @@ export default function MobileTaskList({
                       ))}
                       {task.qmf_status && <QmfFeedbackStatus status={task.qmf_status} compact />}
                       <ResidenceRegistrationStatus status={task.residence_status} compact />
+                      <RegistrationLinkStatus link={task.registration_link} compact />
                     </div>
                   )}
                   {(primaryPhone || task.summary.identity_number || primaryAddress) && (
@@ -1171,7 +1186,11 @@ export default function MobileTaskList({
                       )}
                       {primaryAddress && (
                         <div className="mobile-task-item-card__key-row mobile-task-item-card__key-row--address">
-                          <dt>{currentAddress ? '现住址' : '地址'}</dt>
+                          <dt>
+                            {currentAddress
+                              ? mobileTaskCurrentAddressLabel(task.parser_type, task.summary.result || '')
+                              : '地址'}
+                          </dt>
                           <dd className="mobile-task-item-card__key-text" title={primaryAddress}>{primaryAddress}</dd>
                         </div>
                       )}

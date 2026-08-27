@@ -32,6 +32,7 @@ from services.domain_routing import DomainRoutingCursor
 from services.qmf_runs import ensure_qmf_registration_schema
 from services.qmf_status_scan import ensure_qmf_status_scan_schema
 from services.residence_status_scan import ensure_residence_status_schema
+from services.task_registration import ensure_task_registration_schema
 from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
@@ -2658,6 +2659,7 @@ class DatabaseManager:
                 await ensure_qmf_registration_schema(cur)
                 await ensure_qmf_status_scan_schema(cur)
                 await ensure_residence_status_schema(cur)
+                await ensure_task_registration_schema(cur)
                 await ensure_administrative_area_schema(cur)
                 await ensure_bootstrap_admin(cur)
 

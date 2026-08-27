@@ -136,6 +136,11 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(VALID_IDENTITY, rendered)
             self.assertNotIn("姓名", rendered)
             self.assertNotIn("地址", rendered)
+        scan_tokens = {
+            call.kwargs["scan_token"]
+            for call in cycles.await_args_list
+        }
+        self.assertEqual(len(scan_tokens), 1)
 
     async def test_manual_full_scan_fails_safely_when_not_configured(self):
         context = type("Context", (), {"update": AsyncMock()})()

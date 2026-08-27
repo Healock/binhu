@@ -161,6 +161,14 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             task_state("全链条", {"核查结果": "待登记"}),
+            "checked",
+        )
+        self.assertEqual(
+            task_state(
+                "全链条",
+                {"核查结果": "待登记"},
+                registration_status="legacy_completed",
+            ),
             "completed",
         )
 

@@ -59,6 +59,8 @@ def writeback_cell_metadata(
         known_texts.add(text)
 
     for text in workflow.result_options:
+        if text == "已登记":
+            continue
         if text not in known_texts:
             options.append({"id": text, "text": text})
             known_texts.add(text)
@@ -669,6 +671,11 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                 }
                 for audit_id in audit_ids:
                     await cur.execute(
+                        "SELECT action,parser_type,row_key_after FROM _online_writeback_audit WHERE id=%s",
+                        (audit_id,),
+                    )
+                    audit_row = await cur.fetchone()
+                    await cur.execute(
                         "SELECT status FROM _online_local_changes WHERE audit_id=%s",
                         (audit_id,),
                     )
@@ -689,6 +696,18 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                         "WHERE id=%s",
                         (status, status, audit_id),
                     )
+                    if audit_row and str(audit_row[0] or "") in {
+                        "auto_registration", "manual_registration",
+                    } and status in {"synced", "conflict"}:
+                        from services.task_registration import finalize_registration_writeback
+                        await finalize_registration_writeback(
+                            cur,
+                            parser_type=str(audit_row[1] or source["parser_type"]),
+                            row_key=str(audit_row[2] or source["row_key"]),
+                            source_id=source_id,
+                            succeeded=status == "synced",
+                            reason_code="writeback_conflict" if status == "conflict" else "writeback_failed",
+                        )
                 await rebuild_projection(cur, source["parser_type"])
             await conn.commit()
         except Exception:
