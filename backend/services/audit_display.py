@@ -98,6 +98,7 @@ ACTION_LABELS: dict[str, str] = {
     "code_summary.export": "导出平安码与管家码汇总",
     "police_dispatch.feedback.export": "导出下发反馈表",
     "mobile_tasks.bulk_assign": "批量分配核查人",
+    "mobile_tasks.self_claim": "自主领取核查任务",
     "qmf_registration.preview": "全民防模型三只读预演",
     "qmf_registration.config.update": "修改全民防封闭测试配置",
     "qmf_registration.prepare": "准备全民防模型三真实登记",

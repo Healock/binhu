@@ -17,6 +17,7 @@ from routers.mobile_tasks import (
     EMPTY_FILTER_VALUE,
     InlineEditorRequest,
     TaskSearch,
+    TaskBatchUpdate,
     _address_order,
     _assignment_candidate,
     _analysis_stage_condition,
@@ -35,6 +36,7 @@ from routers.mobile_tasks import (
     _task_photo_results,
     _task_filter_options,
     _validate_assignment,
+    claim_mobile_task,
     is_flow_task_admin,
     is_flow_task_elevated,
     require_flow_user,
@@ -620,6 +622,97 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
             {"现住址": "长板一号"},
         )
         cursor.execute.assert_not_awaited()
+
+    async def test_group_member_claims_unassigned_task_and_saves_edit_together(self):
+        queued = {
+            "values": {"核查人": "组员甲", "核查结果": "已登记"},
+            "row_key": "row-1",
+            "revision": 8,
+            "pending_sync": True,
+        }
+        request = MagicMock()
+        request.headers = {}
+        request.client = None
+        user = {
+            "id": 7,
+            "username": "member-a",
+            "permissions": ["online.raw.edit"],
+            "member": {"name": "组员甲", "position": "组员"},
+            "community_names": ["长板"],
+        }
+        queue_mock = AsyncMock(return_value=queued)
+        with (
+            patch(
+                "routers.mobile_tasks._flow_context",
+                AsyncMock(return_value={
+                    "name": "组员甲",
+                    "position": "组员",
+                    "community": "长板",
+                    "community_values": ["长板"],
+                    "admin_mode": False,
+                }),
+            ),
+            patch("routers.mobile_tasks.queue_source_fields", queue_mock),
+            patch("routers.mobile_tasks.record_admin_audit", AsyncMock()),
+        ):
+            result = await claim_mobile_task(
+                "全链条",
+                12,
+                TaskBatchUpdate(
+                    changes={"核查结果": "已登记"},
+                    base_values={"核查结果": ""},
+                    expected_revision=7,
+                ),
+                request,
+                user,
+                object(),
+            )
+
+        kwargs = queue_mock.await_args.kwargs
+        self.assertEqual(
+            kwargs["changes"],
+            {"核查人": "组员甲", "核查结果": "已登记"},
+        )
+        self.assertEqual(
+            kwargs["base_values"],
+            {"核查人": "", "核查结果": ""},
+        )
+        kwargs["current_values_validator"]({"核查人": ""})
+        with self.assertRaises(HTTPException) as raised:
+            kwargs["current_values_validator"]({"核查人": "其他组员"})
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(result["message"], "已领取任务并保存，正在同步腾讯表格")
+
+    async def test_only_group_member_can_self_claim_task(self):
+        request = MagicMock()
+        request.headers = {}
+        request.client = None
+        with patch(
+            "routers.mobile_tasks._flow_context",
+            AsyncMock(return_value={
+                "name": "组长甲",
+                "position": "组长",
+                "community": "长板",
+                "community_values": ["长板"],
+                "admin_mode": False,
+            }),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await claim_mobile_task(
+                    "全链条",
+                    12,
+                    TaskBatchUpdate(
+                        changes={"核查结果": "已登记"},
+                        expected_revision=7,
+                    ),
+                    request,
+                    {
+                        "permissions": ["online.raw.edit"],
+                        "member": {"name": "组长甲", "position": "组长"},
+                    },
+                    object(),
+                )
+        self.assertEqual(raised.exception.status_code, 403)
 
 
 class MobileTaskResidenceDetailTests(unittest.IsolatedAsyncioTestCase):

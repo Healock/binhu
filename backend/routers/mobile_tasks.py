@@ -2551,6 +2551,62 @@ async def update_mobile_task(
     )
 
 
+@router.post("/{parser_type}/source-rows/{source_id}/claim")
+async def claim_mobile_task(
+    parser_type: str,
+    source_id: int,
+    data: TaskBatchUpdate,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """Let a group member claim an unassigned task while saving their edit."""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if context.get("admin_mode") or context.get("position") != "组员":
+        raise HTTPException(403, "只有组员可以自主领取未分配任务")
+    if not data.changes:
+        raise HTTPException(400, "请先填写需要保存的核查内容")
+    if "核查人" in data.changes:
+        raise HTTPException(400, "领取人由当前登录账号自动确定")
+    analysis_fields = set(TASK_WORKFLOWS[parser_type].analysis_fields)
+    if any(field in analysis_fields for field in data.changes):
+        raise HTTPException(403, "请从研判页面修改研判内容")
+
+    inspector = str(context["name"] or "").strip()
+
+    def validate_unassigned(current: dict) -> None:
+        if str(current.get("核查人") or "").strip():
+            raise HTTPException(409, "该任务已被领取，请刷新后重试")
+
+    result = await queue_source_fields(
+        parser_type=parser_type,
+        source_id=source_id,
+        changes={"核查人": inspector, **data.changes},
+        base_values={**data.base_values, "核查人": ""},
+        expected_revision=data.expected_revision,
+        request=request,
+        user=user,
+        conn=conn,
+        explicit_text_edit=True,
+        current_values_validator=validate_unassigned,
+    )
+    await record_admin_audit(
+        user,
+        "mobile_tasks.self_claim",
+        target_type="mobile_task",
+        target_name=f"{parser_type}:{source_id}",
+        detail={"columns": list(data.changes)},
+        **request_audit_fields(request),
+    )
+    return {
+        **result,
+        "message": "已领取任务并保存，正在同步腾讯表格",
+    }
+
+
 @router.post("/{parser_type}/source-rows/{source_id}/resolve-sync-conflict")
 async def resolve_mobile_task_sync_conflict(
     parser_type: str,

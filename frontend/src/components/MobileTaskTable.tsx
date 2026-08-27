@@ -2,10 +2,11 @@ import {
   CopyOutlined,
   ExclamationCircleOutlined,
 } from '@ant-design/icons'
-import { Button, Input, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
+import { Button, Input, Modal, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
 import {
   getMobileTaskInlineEditors,
+  claimMobileTask,
   updateMobileTask,
   updateMobileTaskAnalysis,
   type MobileTaskInlineEditorItem,
@@ -35,6 +36,7 @@ interface MobileTaskTableProps {
   rows: MobileTaskItem[]
   loading: boolean
   analysisMode?: boolean
+  canClaimUnassigned?: boolean
   selectionMode: boolean
   selectedRowKeys: Key[]
   canSelect: (task: MobileTaskItem) => boolean
@@ -55,6 +57,7 @@ export default function MobileTaskTable({
   rows,
   loading,
   analysisMode = false,
+  canClaimUnassigned = false,
   selectionMode,
   selectedRowKeys,
   canSelect,
@@ -75,6 +78,7 @@ export default function MobileTaskTable({
   const editorObserverRef = useRef<IntersectionObserver | null>(null)
   const pendingEditorKeysRef = useRef<Set<string>>(new Set())
   const editorFlushTimerRef = useRef<number | null>(null)
+  const claimPromptKeysRef = useRef<Set<string>>(new Set())
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
     [rows],
@@ -217,13 +221,16 @@ export default function MobileTaskTable({
     task: MobileTaskItem,
     item: MobileTaskInlineEditorItem,
     changes: Record<string, string>,
+    claim = false,
   ) => {
     const detail = item.detail
     const source = detail?.sources[0]
     if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return
     setSavingRowKey(task.task_key)
     try {
-      const updater = analysisMode ? updateMobileTaskAnalysis : updateMobileTask
+      const updater = claim
+        ? claimMobileTask
+        : analysisMode ? updateMobileTaskAnalysis : updateMobileTask
       const result = await updater(task.parser_type, source.id, {
         changes,
         base_values: Object.fromEntries(
@@ -273,9 +280,44 @@ export default function MobileTaskTable({
       { ...source.values, [field]: value },
       [field],
     )
-    if (Object.keys(changes).length) {
+    if (!Object.keys(changes).length) return
+    const shouldClaim = canClaimUnassigned
+      && !analysisMode
+      && !String(task.inspector || source.values['核查人'] || '').trim()
+    if (!shouldClaim) {
       await saveEditor(task, item, changes)
+      return
     }
+    if (claimPromptKeysRef.current.has(task.task_key)) return
+    claimPromptKeysRef.current.add(task.task_key)
+    const confirmed = await new Promise<boolean>(resolve => {
+      let settled = false
+      const finish = (value: boolean) => {
+        if (settled) return
+        settled = true
+        resolve(value)
+      }
+      Modal.confirm({
+        title: '该任务暂未分配核查人，是否领取任务？',
+        okText: '领取并保存',
+        cancelText: '取消',
+        onOk: () => finish(true),
+        onCancel: () => finish(false),
+        afterClose: () => finish(false),
+      })
+    })
+    claimPromptKeysRef.current.delete(task.task_key)
+    if (!confirmed) {
+      setEditorValues(current => ({
+        ...current,
+        [task.task_key]: {
+          ...(current[task.task_key] || source.values),
+          [field]: source.values[field] || '',
+        },
+      }))
+      return
+    }
+    await saveEditor(task, item, changes, true)
   }
 
   const renderExpandedRow = (task: MobileTaskItem) => {

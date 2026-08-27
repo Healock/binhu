@@ -1038,6 +1038,7 @@ export default function MobileTaskList({
                 rows={rows}
                 loading={loading}
                 analysisMode={analysisOnly}
+                canClaimUnassigned={!analysisOnly && user?.member?.position === '组员'}
                 selectionMode={false}
                 selectedRowKeys={[]}
                 canSelect={() => false}
