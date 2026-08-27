@@ -12,9 +12,11 @@ import zhCN from 'antd/locale/zh_CN'
 import { useAuth } from '../context/AuthContext'
 import {
   applyThemeToDocument,
+  getSafeLocalStorage,
   normalizeThemeMode,
   readStoredThemeMode,
   resolveThemeMode,
+  systemPrefersDark,
   THEME_MEDIA_QUERY,
   THEME_STORAGE_KEY,
 } from '../utils/themeMode'
@@ -122,29 +124,34 @@ export default function AppThemeProvider({
   children: ReactNode
 }) {
   const { user } = useAuth()
-  const [systemPrefersDark, setSystemPrefersDark] = useState(() => (
-    window.matchMedia(THEME_MEDIA_QUERY).matches
-  ))
-  const storedMode = readStoredThemeMode(window.localStorage)
+  const [prefersDark, setPrefersDark] = useState(systemPrefersDark)
+  const storedMode = readStoredThemeMode(getSafeLocalStorage())
   const selectedMode = normalizeThemeMode(user?.theme_mode ?? storedMode)
-  const resolvedMode = resolveThemeMode(selectedMode, systemPrefersDark)
+  const resolvedMode = resolveThemeMode(selectedMode, prefersDark)
 
   useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined
     const media = window.matchMedia(THEME_MEDIA_QUERY)
     const handleChange = (event: MediaQueryListEvent) => {
-      setSystemPrefersDark(event.matches)
+      setPrefersDark(event.matches)
     }
-    setSystemPrefersDark(media.matches)
-    media.addEventListener('change', handleChange)
-    return () => media.removeEventListener('change', handleChange)
+    setPrefersDark(media.matches)
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', handleChange)
+      return () => media.removeEventListener('change', handleChange)
+    }
+    media.addListener(handleChange)
+    return () => media.removeListener(handleChange)
   }, [])
 
   useEffect(() => {
     if (!user?.theme_mode) return
-    window.localStorage.setItem(
-      THEME_STORAGE_KEY,
-      normalizeThemeMode(user.theme_mode),
-    )
+    try {
+      getSafeLocalStorage().setItem(
+        THEME_STORAGE_KEY,
+        normalizeThemeMode(user.theme_mode),
+      )
+    } catch (_error) {}
   }, [user?.theme_mode])
 
   useLayoutEffect(() => {
