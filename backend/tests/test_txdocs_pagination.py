@@ -480,6 +480,44 @@ class TxDocsPaginationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await http.aclose()
 
+    async def test_clear_cell_uses_official_single_cell_clear_endpoint(self):
+        requests = []
+
+        async def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={"ret": 0, "msg": "Succeed"})
+
+        http = httpx.AsyncClient(
+            base_url="https://docs.qq.com/openapi/spreadsheet/v3",
+            transport=httpx.MockTransport(handler),
+        )
+        client = TxDocsClient("client", "token", "user", http_client=http)
+        recorder = AsyncMock()
+        try:
+            with patch(
+                "services.txdocs_client.record_txdocs_request",
+                new=recorder,
+            ):
+                await client.clear_cell("file$id", "sheet id", 12, 11)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].method, "POST")
+            self.assertEqual(
+                requests[0].url.path,
+                "/openapi/sheetbook/v2/file$id/values/sheet id!L12:L12:clear",
+            )
+            self.assertEqual(requests[0].content, b"")
+            recorder.assert_awaited_once_with(
+                request_source="unknown",
+                method="POST",
+                endpoint="range_clear",
+                success=True,
+                retry=False,
+                http_status=200,
+                error_code=None,
+            )
+        finally:
+            await http.aclose()
+
     async def test_read_source_rows_uses_one_contiguous_range_request(self):
         client = TxDocsClient("client", "token", "user")
         client.read_range = AsyncMock(return_value=make_response(2, 3))
