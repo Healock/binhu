@@ -1789,6 +1789,92 @@ html.desktop-shell .ant-notification-topRight {
   transform: none !important;
 }
 
+.mobile-task-table-personnel {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.mobile-task-table-personnel__row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.mobile-task-table-personnel__row dt,
+.mobile-task-table-personnel__row dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.mobile-task-table-personnel__row dt {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 22px;
+}
+
+.mobile-task-table-personnel__row dd {
+  color: var(--app-text-strong);
+  font-size: 13px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.mobile-task-table-personnel__name {
+  display: inline;
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--app-text-strong);
+  font: inherit;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: left;
+}
+
+.mobile-task-table-personnel__name:hover,
+.mobile-task-table-personnel__name:focus-visible {
+  color: var(--app-primary);
+}
+
+.mobile-task-table-personnel__copy.ant-btn {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  min-height: 22px;
+  justify-content: flex-start;
+  padding: 0;
+  line-height: 22px;
+  white-space: normal;
+}
+
+.mobile-task-table-personnel__copy.ant-btn > span:not(.anticon) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mobile-task-table-personnel__phones {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 2px;
+}
+
+.mobile-task-table-personnel__row--address dd {
+  font-weight: 600;
+}
+
 .mobile-task-table-inline-editor {
   display: flex;
   width: 100%;
@@ -1839,10 +1925,11 @@ html.desktop-shell .ant-notification-topRight {
 
 .mobile-task-table-inline-field > span {
   padding-left: 2px;
-  color: var(--app-text-muted);
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 17px;
+  color: var(--app-text-strong);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 19px;
+  letter-spacing: 0.01em;
 }
 
 .mobile-task-table-inline-field .ant-select,
@@ -1863,6 +1950,39 @@ html.desktop-shell .ant-notification-topRight {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-primary) 14%, transparent) !important;
 }
 
+.mobile-task-table-inline-field--attention > span {
+  color: var(--app-warning);
+}
+
+.mobile-task-table-inline-field--attention .ant-select-selector {
+  border-color: color-mix(in srgb, var(--app-warning) 58%, var(--app-border)) !important;
+  background: color-mix(in srgb, var(--app-warning) 8%, var(--app-surface)) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-warning) 12%, transparent);
+}
+
+.mobile-task-table-inline-guidance {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 1px 2px 0;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.mobile-task-table-inline-guidance .anticon {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  color: var(--app-warning);
+}
+
+.mobile-task-table-inline-guidance--active {
+  color: var(--app-warning);
+  font-weight: 700;
+}
+
 .mobile-task-table-inline-readonly {
   display: flex;
   min-width: 0;
@@ -1873,10 +1993,11 @@ html.desktop-shell .ant-notification-topRight {
 }
 
 .mobile-task-table-inline-readonly > span {
-  color: var(--app-text-muted);
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 17px;
+  color: var(--app-text-strong);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 19px;
+  letter-spacing: 0.01em;
 }
 
 .mobile-task-table-inline-readonly > strong {

@@ -333,6 +333,8 @@ export default function MobileTaskTable({
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
     const editorLoading = loadingEditorKeys.has(task.task_key)
+    const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
+    const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
 
     if (!item) {
       return (
@@ -398,10 +400,14 @@ export default function MobileTaskTable({
                 value: String(option.text),
                 label: String(option.text),
               })) || []
+              const isSecondaryFeedback = field === '二次反馈'
+              const needsResultUpdate = field === '核查结果'
+                && resultNeedsSecondaryFollowup
+                && hasSecondaryFeedback
               return (
                 <label
                   key={field}
-                  className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}`}
+                  className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}${needsResultUpdate ? ' mobile-task-table-inline-field--attention' : ''}`}
                 >
                   <span>{field === '核查人' ? '任务分配' : field}</span>
                   {metadata.type === 'select' || field === '核查人' ? (
@@ -433,6 +439,19 @@ export default function MobileTaskTable({
                       onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
                   )}
+                  {isSecondaryFeedback && resultNeedsSecondaryFollowup && (
+                    <div
+                      className={`mobile-task-table-inline-guidance${hasSecondaryFeedback ? ' mobile-task-table-inline-guidance--active' : ''}`}
+                      aria-live={hasSecondaryFeedback ? 'polite' : undefined}
+                    >
+                      <ExclamationCircleOutlined />
+                      <span>
+                        {hasSecondaryFeedback
+                          ? '已填写二次反馈，请现在将“核查结果”修改为最终结果。'
+                          : '二次核查完成后，请务必将“核查结果”修改为最终结果。'}
+                      </span>
+                    </div>
+                  )}
                 </label>
               )
             })}
@@ -452,7 +471,72 @@ export default function MobileTaskTable({
     )
   }
 
+  const compactPersonnelColumns: ResponsiveColumns<MobileTaskItem> = responsiveLayout.isCompact ? [{
+    title: '人员信息',
+    key: 'compact_personnel',
+    fixed: 'left',
+    width: 360,
+    responsivePriority: 'always',
+    render: (_, task) => {
+      const phones = mobileTaskPhoneOptions(task.summary.phone)
+      return (
+        <dl className="mobile-task-table-personnel">
+          <div className="mobile-task-table-personnel__row">
+            <dt>姓名</dt>
+            <dd>
+              <button
+                type="button"
+                className="mobile-task-table-personnel__name"
+                onClick={() => onOpen(task)}
+              >
+                {task.summary.title || '未填写姓名'}
+              </button>
+            </dd>
+          </div>
+          <div className="mobile-task-table-personnel__row">
+            <dt>身份证号</dt>
+            <dd>
+              {task.summary.identity_number ? (
+                <Button
+                  type="link"
+                  size="small"
+                  className="mobile-task-table-personnel__copy"
+                  icon={<CopyOutlined />}
+                  onClick={() => onCopy(task.summary.identity_number, '身份证号')}
+                >
+                  {task.summary.identity_number}
+                </Button>
+              ) : <span className="text-[var(--app-text-muted)]">未填写</span>}
+            </dd>
+          </div>
+          <div className="mobile-task-table-personnel__row">
+            <dt>手机号</dt>
+            <dd className="mobile-task-table-personnel__phones">
+              {phones.length ? phones.map(phone => (
+                <Button
+                  key={phone}
+                  type="link"
+                  size="small"
+                  className="mobile-task-table-personnel__copy"
+                  icon={<CopyOutlined />}
+                  onClick={() => onCopy(phone, '手机号')}
+                >
+                  {phone}
+                </Button>
+              )) : <span className="text-[var(--app-text-muted)]">未填写</span>}
+            </dd>
+          </div>
+          <div className="mobile-task-table-personnel__row mobile-task-table-personnel__row--address">
+            <dt>原地址</dt>
+            <dd>{task.summary.original_address || '未填写'}</dd>
+          </div>
+        </dl>
+      )
+    },
+  }] : []
+
   const columns: ResponsiveColumns<MobileTaskItem> = [
+    ...compactPersonnelColumns,
     {
       title: '截止日期',
       key: 'deadline',
@@ -499,82 +583,84 @@ export default function MobileTaskTable({
           : <span className="text-[var(--app-text-muted)]">未填写</span>
       },
     }] : []),
-    {
-      title: '姓名',
-      key: 'name',
-      width: 110,
-      responsivePriority: 'always',
-      render: (_, task) => (
-        <button
-          type="button"
-          className="block max-w-full truncate text-left font-medium text-[var(--app-text-strong)] hover:text-[var(--app-primary)]"
-          title={task.summary.title}
-          onClick={() => onOpen(task)}
-        >
-          {task.summary.title || '未填写姓名'}
-        </button>
-      ),
-    },
-    {
-      title: '身份证号码',
-      key: 'identity_number',
-      width: 190,
-      responsivePriority: 'wide',
-      render: (_, task) => task.summary.identity_number ? (
-        <Button
-          type="link"
-          size="small"
-          className="h-auto max-w-full p-0 text-xs"
-          icon={<CopyOutlined />}
-          onClick={() => onCopy(task.summary.identity_number, '身份证号')}
-        >
-          <span className="truncate">{task.summary.identity_number}</span>
-        </Button>
-      ) : <span className="text-[var(--app-text-muted)]">未填写</span>,
-    },
-    {
-      title: '电话',
-      key: 'phone',
-      width: 150,
-      responsivePriority: 'standard',
-      render: (_, task) => {
-        const phones = mobileTaskPhoneOptions(task.summary.phone)
-        const visiblePhones = phones.slice(0, 3)
-        if (!visiblePhones.length) return <span className="text-[var(--app-text-muted)]">未填写</span>
-        return (
-          <div className="flex flex-col items-start">
-            {visiblePhones.map(phone => (
-              <Button
-                key={phone}
-                type="link"
-                size="small"
-                className="h-auto max-w-full p-0"
-                icon={<CopyOutlined />}
-                onClick={() => onCopy(phone, '手机号')}
-              >
-                <span className="truncate">{phone}</span>
-              </Button>
-            ))}
-            {phones.length > visiblePhones.length && (
-              <span className="pl-5 text-xs text-[var(--app-text-secondary)]">
-                +{phones.length - visiblePhones.length}
-              </span>
-            )}
-          </div>
-        )
+    ...(!responsiveLayout.isCompact ? [
+      {
+        title: '姓名',
+        key: 'name',
+        width: 110,
+        responsivePriority: 'always' as const,
+        render: (_: unknown, task: MobileTaskItem) => (
+          <button
+            type="button"
+            className="block max-w-full truncate text-left font-medium text-[var(--app-text-strong)] hover:text-[var(--app-primary)]"
+            title={task.summary.title}
+            onClick={() => onOpen(task)}
+          >
+            {task.summary.title || '未填写姓名'}
+          </button>
+        ),
       },
-    },
-    {
-      title: '地址',
-      key: 'address',
-      width: 250,
-      responsivePriority: 'always',
-      ellipsis: true,
-      render: (_, task) => {
-        const address = task.summary.original_address || '未填写'
-        return <Tooltip title={address}><span>{address}</span></Tooltip>
+      {
+        title: '身份证号码',
+        key: 'identity_number',
+        width: 190,
+        responsivePriority: 'always' as const,
+        render: (_: unknown, task: MobileTaskItem) => task.summary.identity_number ? (
+          <Button
+            type="link"
+            size="small"
+            className="h-auto max-w-full p-0 text-xs"
+            icon={<CopyOutlined />}
+            onClick={() => onCopy(task.summary.identity_number, '身份证号')}
+          >
+            <span className="truncate">{task.summary.identity_number}</span>
+          </Button>
+        ) : <span className="text-[var(--app-text-muted)]">未填写</span>,
       },
-    },
+      {
+        title: '电话',
+        key: 'phone',
+        width: 150,
+        responsivePriority: 'always' as const,
+        render: (_: unknown, task: MobileTaskItem) => {
+          const phones = mobileTaskPhoneOptions(task.summary.phone)
+          const visiblePhones = phones.slice(0, 3)
+          if (!visiblePhones.length) return <span className="text-[var(--app-text-muted)]">未填写</span>
+          return (
+            <div className="flex flex-col items-start">
+              {visiblePhones.map(phone => (
+                <Button
+                  key={phone}
+                  type="link"
+                  size="small"
+                  className="h-auto max-w-full p-0"
+                  icon={<CopyOutlined />}
+                  onClick={() => onCopy(phone, '手机号')}
+                >
+                  <span className="truncate">{phone}</span>
+                </Button>
+              ))}
+              {phones.length > visiblePhones.length && (
+                <span className="pl-5 text-xs text-[var(--app-text-secondary)]">
+                  +{phones.length - visiblePhones.length}
+                </span>
+              )}
+            </div>
+          )
+        },
+      },
+      {
+        title: '地址',
+        key: 'address',
+        width: 250,
+        responsivePriority: 'always' as const,
+        ellipsis: true,
+        render: (_: unknown, task: MobileTaskItem) => {
+          const address = task.summary.original_address || '未填写'
+          return <Tooltip title={address}><span>{address}</span></Tooltip>
+        },
+      },
+    ] : []),
     {
       title: '登记情况',
       dataIndex: ['summary', 'registration_status'],
@@ -615,9 +701,9 @@ export default function MobileTaskTable({
     [columns, responsiveLayout.mode],
   )
   const tableScrollWidth = responsiveLayout.isCompact
-    ? 860
+    ? 900
     : responsiveLayout.isStandard
-      ? 1140
+      ? 1330
       : 1440
 
   return (
