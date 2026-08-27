@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 $source = (Resolve-Path (Join-Path $PSScriptRoot '..\launcher\BinhuWin7Launcher.cpp')).Path
+$resourceSource = (Resolve-Path (Join-Path $PSScriptRoot '..\launcher\BinhuWin7Launcher.rc')).Path
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 $desktopRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $repoRoot = (Resolve-Path (Join-Path $desktopRoot '..')).Path
@@ -50,15 +51,18 @@ $sdkLib = @(
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $exe = Join-Path $output 'BinhuWin7Launcher.exe'
 $object = Join-Path $output 'BinhuWin7Launcher.obj'
+$resource = Join-Path $output 'BinhuWin7Launcher.res'
 $command = @(
     "`"$vcvars`""
     "set `"PATH=$sdkBin;!PATH!`""
     "set `"LIB=$sdkLib;!LIB!`""
     "set `"INCLUDE=$sdkInclude;!INCLUDE!`""
-    "cl.exe /nologo /utf-8 /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE /Fo`"$object`" /Fe`"$exe`" `"$source`" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib"
+    "rc.exe /nologo /fo`"$resource`" `"$resourceSource`""
+    "cl.exe /nologo /utf-8 /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE /Fo`"$object`" /Fe`"$exe`" `"$source`" `"$resource`" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib ole32.lib"
 ) -join ' && '
 & cmd.exe /d /v:on /s /c $command
 if ($LASTEXITCODE -ne 0) { throw "Win7 launcher compilation failed with exit code $LASTEXITCODE." }
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Launcher was not produced: $exe" }
+Remove-Item -LiteralPath $object, $resource -Force -ErrorAction SilentlyContinue
 
 Write-Host "Win7 launcher: $exe"

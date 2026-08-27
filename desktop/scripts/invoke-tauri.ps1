@@ -104,5 +104,6 @@ if ($Action -eq 'Build') {
     New-Item -ItemType Directory -Force -Path $publishRoot | Out-Null
     Get-ChildItem -LiteralPath $publishRoot -Force | Remove-Item -Recurse -Force
     Copy-Item -LiteralPath $builtExecutable -Destination (Join-Path $publishRoot 'BinhuWin10.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $tauriRoot 'src-tauri\icons\icon.ico') -Destination (Join-Path $publishRoot 'BinhuWin10.ico') -Force
     Write-Host $publishRoot
 }

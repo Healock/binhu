@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <tlhelp32.h>
 
 #include <string>
@@ -9,6 +10,7 @@ namespace {
 
 constexpr wchar_t kAfterUpdateArgument[] = L"--binhu-after-update";
 constexpr DWORD kUpdaterExitTimeoutMs = 30 * 1000;
+constexpr wchar_t kProductName[] = L"滨湖智慧平台";
 
 std::wstring quote(const std::wstring& value) {
     return L"\"" + value + L"\"";
@@ -24,7 +26,58 @@ std::wstring module_directory() {
 }
 
 void show_error(const wchar_t* message) {
-    MessageBoxW(nullptr, message, L"滨湖智慧平台", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    MessageBoxW(nullptr, message, kProductName, MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+}
+
+bool write_shortcut(const std::wstring& shortcut_path,
+                    const std::wstring& target_path,
+                    const std::wstring& working_directory) {
+    IShellLinkW* shell_link = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_IShellLinkW, reinterpret_cast<void**>(&shell_link)))) {
+        return false;
+    }
+
+    const bool configured = SUCCEEDED(shell_link->SetPath(target_path.c_str())) &&
+                            SUCCEEDED(shell_link->SetWorkingDirectory(working_directory.c_str())) &&
+                            SUCCEEDED(shell_link->SetDescription(kProductName)) &&
+                            SUCCEEDED(shell_link->SetIconLocation(target_path.c_str(), 0));
+    if (!configured) {
+        shell_link->Release();
+        return false;
+    }
+
+    IPersistFile* persist_file = nullptr;
+    const bool persisted = SUCCEEDED(shell_link->QueryInterface(
+        IID_IPersistFile, reinterpret_cast<void**>(&persist_file))) &&
+                           SUCCEEDED(persist_file->Save(shortcut_path.c_str(), TRUE));
+    if (persist_file) persist_file->Release();
+    shell_link->Release();
+    return persisted;
+}
+
+void ensure_shortcuts(const std::wstring& launcher_path,
+                      const std::wstring& working_directory) {
+    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return;
+
+    wchar_t desktop_path[MAX_PATH] = {};
+    wchar_t programs_path[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr,
+                                   SHGFP_TYPE_CURRENT, desktop_path)) &&
+        SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROGRAMS, nullptr,
+                                   SHGFP_TYPE_CURRENT, programs_path))) {
+        const std::wstring desktop(desktop_path);
+        const std::wstring programs(programs_path);
+        const bool desktop_written = write_shortcut(
+            desktop + L"\\" + kProductName + L".lnk", launcher_path, working_directory);
+        const bool programs_written = write_shortcut(
+            programs + L"\\" + kProductName + L".lnk", launcher_path, working_directory);
+
+        if (desktop_written) DeleteFileW((desktop + L"\\BinhuDesktop.lnk").c_str());
+        if (programs_written) DeleteFileW((programs + L"\\BinhuDesktop.lnk").c_str());
+    }
+
+    CoUninitialize();
 }
 
 DWORD parent_process_id() {
@@ -101,6 +154,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         show_error(L"客户端运行时不完整。请重新安装滨湖智慧平台。");
         return 13;
     }
+
+    const std::wstring launcher_path = app_directory + L"\\BinhuWin7Launcher.exe";
+    ensure_shortcuts(launcher_path, app_directory);
 
     std::wstring command = quote(loader) + L" " + quote(electron) + L" --disable-direct-composition";
     std::vector<wchar_t> mutable_command(command.begin(), command.end());

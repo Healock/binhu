@@ -1,7 +1,23 @@
 const { VelopackApp } = require('velopack')
 let velopackRestarted = false
+function removeBrandedShortcuts() {
+  const path = require('node:path')
+  const fs = require('node:fs')
+  const profile = process.env.USERPROFILE
+  if (!profile) return
+  const locations = [
+    path.join(profile, 'Desktop'),
+    path.join(profile, 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+  ]
+  for (const location of locations) {
+    for (const name of ['滨湖智慧平台.lnk', 'BinhuDesktop.lnk']) {
+      try { fs.unlinkSync(path.join(location, name)) } catch (_error) {}
+    }
+  }
+}
 VelopackApp.build()
   .setAutoApplyOnStartup(false)
+  .onBeforeUninstallFastCallback(removeBrandedShortcuts)
   .onRestarted(() => { velopackRestarted = true })
   .run()
 
