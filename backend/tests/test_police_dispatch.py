@@ -573,6 +573,7 @@ def test_duplicate_group_marks_exact_and_conflicting_rows():
 def test_publish_address_rebuilds_from_original_without_touching_analysis():
     assert build_publish_address("原地址", "完整原文") == "原地址；移交反馈：完整原文"
     assert build_publish_address("原地址；移交反馈：旧值", "") == "原地址；移交反馈：旧值"
+    assert build_publish_address("原地址；移交反馈：旧值", "新值") == "原地址；移交反馈：新值"
 
 
 def test_publish_values_freeze_text_dates_and_leave_analysis_blank():
@@ -594,6 +595,32 @@ def test_publish_values_freeze_text_dates_and_leave_analysis_blank():
     assert values["研判"] == ""
     assert values["身份证号"] == "32050020000101001X"
     assert values["电话号码"] == "18800000001"
+
+
+def test_publish_values_rebuilds_address_for_standard_values_with_transfer_note():
+    values = _publish_values({
+        "standard_values": {
+            "下发日期": "08-25",
+            "社区": "长板",
+            "地址": "原地址",
+            "姓名": "甲",
+            "身份证号": "32050020000101001X",
+        },
+        "original_address": "原地址",
+        "transfer_note": "示例移交备注",
+    }, "长板", date(2026, 8, 25))
+
+    assert values["地址"] == "原地址；移交反馈：示例移交备注"
+
+
+def test_publish_values_standard_address_does_not_duplicate_transfer_suffix():
+    values = _publish_values({
+        "standard_values": {"地址": "原地址；移交反馈：旧值"},
+        "original_address": "原地址；移交反馈：旧值",
+        "transfer_note": "新值",
+    }, "", date(2026, 8, 25))
+
+    assert values["地址"] == "原地址；移交反馈：新值"
 
 
 def test_publish_comparison_columns_follow_current_tencent_layout():

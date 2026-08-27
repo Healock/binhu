@@ -3,6 +3,7 @@ package com.bhzh.binhu.android
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebView
@@ -10,6 +11,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.webkit.WebViewCompat
 
 class MainActivity : TauriActivity() {
   override val handleBackNavigation: Boolean = true
@@ -35,6 +37,11 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    val provider = WebViewCompat.getCurrentWebViewPackage(this)
+    Log.i(
+      "BinhuWebView",
+      "provider=${provider?.packageName ?: "unknown"} version=${provider?.versionName ?: "unknown"}"
+    )
     webView.settings.apply {
       useWideViewPort = false
       loadWithOverviewMode = false

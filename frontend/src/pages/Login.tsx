@@ -16,12 +16,14 @@ import {
   readRememberedUsernames,
   storeRememberedUsername,
 } from '../utils/rememberedUsername'
+import { getSafeLocalStorage } from '../utils/themeMode'
 
 export default function Login() {
   const { login, clientVersion } = useAuth()
   const navigate = useNavigate()
-  const [initialUsernames] = useState(() => readRememberedUsernames(window.localStorage))
-  const [initialUsername] = useState(() => readRememberedUsername(window.localStorage))
+  const storage = getSafeLocalStorage()
+  const [initialUsernames] = useState(() => readRememberedUsernames(storage))
+  const [initialUsername] = useState(() => readRememberedUsername(storage))
   const [rememberedUsernames, setRememberedUsernames] = useState(initialUsernames)
   const [username, setUsername] = useState(initialUsername)
   const [password, setPassword] = useState('')
@@ -70,10 +72,10 @@ export default function Login() {
       const normalizedUsername = username.trim()
       await login(normalizedUsername, password)
       if (rememberUsername) {
-        storeRememberedUsername(window.localStorage, normalizedUsername)
-        setRememberedUsernames(readRememberedUsernames(window.localStorage))
+        storeRememberedUsername(storage, normalizedUsername)
+        setRememberedUsernames(readRememberedUsernames(storage))
       } else {
-        clearRememberedUsername(window.localStorage)
+        clearRememberedUsername(storage)
         setRememberedUsernames([])
       }
       navigate('/', { replace: true })
@@ -199,7 +201,7 @@ export default function Login() {
                   const checked = event.target.checked
                   setRememberUsername(checked)
                   if (!checked) {
-                    clearRememberedUsername(window.localStorage)
+                    clearRememberedUsername(storage)
                     setRememberedUsernames([])
                   }
                 }}

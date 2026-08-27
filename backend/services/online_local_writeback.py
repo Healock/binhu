@@ -122,6 +122,49 @@ def split_remote_changes(
     return safe, conflicts
 
 
+async def _write_safe_changes(
+    client: TxDocsClient,
+    source: dict[str, Any],
+    columns: list[str],
+    raw: dict[str, Any],
+    changes: list[dict[str, Any]],
+) -> bool:
+    """写入已通过并发校验的字段；空值必须使用官方清空接口。"""
+    requests: list[dict[str, Any]] = []
+    clear_columns: list[int] = []
+    for change in changes:
+        field = str(change["field_name"])
+        if change["remote_value"] == change["local_value"]:
+            continue
+        column_index = columns.index(field)
+        if not change["local_value"]:
+            clear_columns.append(column_index)
+            continue
+        metadata = writeback_cell_metadata(
+            str(source["parser_type"]),
+            field,
+            (raw.get("cell_meta") or {}).get(field),
+        )
+        requests.append(client.build_update_cell_request(
+            str(source["sheet_id"]),
+            int(source["physical_row"]),
+            column_index,
+            str(change["local_value"]),
+            metadata,
+            field,
+        ))
+    if requests:
+        await client.batch_update(str(source["file_id"]), requests)
+    for column_index in clear_columns:
+        await client.clear_cell(
+            str(source["file_id"]),
+            str(source["sheet_id"]),
+            int(source["physical_row"]),
+            column_index,
+        )
+    return bool(requests or clear_columns)
+
+
 def validate_remote_source_identity(
     parser,
     changes: list[dict[str, Any]],
@@ -575,26 +618,7 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
             )
             remote_values = parser.normalize_source_row(raw["values"])
             safe, conflicts = split_remote_changes(remote_values, processing)
-        requests = []
-        for change in safe:
-            field = change["field_name"]
-            if change["remote_value"] == change["local_value"]:
-                continue
-            metadata = writeback_cell_metadata(
-                source["parser_type"],
-                field,
-                (raw.get("cell_meta") or {}).get(field),
-            )
-            requests.append(client.build_update_cell_request(
-                source["sheet_id"],
-                source["physical_row"],
-                columns.index(field),
-                change["local_value"],
-                metadata,
-                field,
-            ))
-        if requests:
-            await client.batch_update(source["file_id"], requests)
+        if await _write_safe_changes(client, source, columns, raw, safe):
             raw = await client.read_source_row(
                 source["file_id"], source["sheet_id"], source["physical_row"], columns
             )

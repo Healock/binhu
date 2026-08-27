@@ -38,6 +38,7 @@ from services.online_source import (
 from services.online_local_writeback import (
     SourceRowRelocatedError,
     _retry_error_details,
+    _write_safe_changes,
     local_sync_state,
     overlay_local_values,
     split_remote_changes,
@@ -491,6 +492,49 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(effective["现住址"], "平台地址")
         self.assertEqual(effective["核查结果"], "已登记")
         self.assertEqual(local_sync_state(changes), "conflict")
+
+    async def test_pending_blank_select_uses_clear_while_text_uses_batch_update(self):
+        client = AsyncMock(spec=TxDocsClient)
+        client.build_update_cell_request.return_value = {"updateRangeRequest": {}}
+        source = {
+            "parser_type": "全链条",
+            "file_id": "file",
+            "sheet_id": "sheet",
+            "physical_row": 12,
+        }
+        columns = ["现住址", "核查结果"]
+        raw = {
+            "cell_meta": {
+                "现住址": {"type": "text"},
+                "核查结果": {
+                    "type": "select",
+                    "options": [{"id": "done", "text": "已登记"}],
+                },
+            },
+        }
+        changes = [
+            {
+                "field_name": "现住址",
+                "remote_value": "旧地址",
+                "local_value": "平台地址",
+            },
+            {
+                "field_name": "核查结果",
+                "remote_value": "已登记",
+                "local_value": "",
+            },
+        ]
+
+        wrote = await _write_safe_changes(client, source, columns, raw, changes)
+
+        self.assertTrue(wrote)
+        client.build_update_cell_request.assert_called_once_with(
+            "sheet", 12, 0, "平台地址", {"type": "text"}, "现住址"
+        )
+        client.batch_update.assert_awaited_once_with(
+            "file", [{"updateRangeRequest": {}}]
+        )
+        client.clear_cell.assert_awaited_once_with("file", "sheet", 12, 1)
 
     async def test_source_data_version_contains_no_business_content(self):
         cursor = AsyncMock()
@@ -946,6 +990,70 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             [11, 12, 14],
         )
         cache_update.assert_awaited_once()
+
+    async def test_direct_blank_edit_uses_clear_without_empty_batch_update(self):
+        parser = get_parser("全链条")
+        cached = {column: "" for column in parser.COLUMNS}
+        cached.update({
+            "社区": "长板",
+            "身份证号": "1",
+            "电话号码": "2",
+            "下发日期": "3",
+            "核查结果": "已登记",
+        })
+        verified = {**cached, "核查结果": ""}
+        cursor = BatchUpdateCursor(cached)
+        conn = FakeConnection(cursor)
+        client = AsyncMock()
+        client.read_source_row.side_effect = [
+            {
+                "values": cached,
+                "cell_meta": {
+                    "核查结果": {
+                        "type": "select",
+                        "options": [{"id": "done", "text": "已登记"}],
+                    },
+                },
+            },
+            {"values": verified, "cell_meta": {}},
+        ]
+        metadata = {
+            column: ({
+                "type": "select",
+                "options": [{"id": "done", "text": "已登记"}],
+            } if column == "核查结果" else {"type": "text"})
+            for column in parser.COLUMNS
+        }
+        request = Request({
+            "type": "http", "method": "PATCH", "path": "/", "headers": [],
+            "scheme": "http", "server": ("test", 80), "client": ("127.0.0.1", 1),
+        })
+
+        with patch("routers.query._oauth_client", AsyncMock(return_value=client)), \
+             patch("routers.query.resolve_source_columns", AsyncMock(return_value=parser.COLUMNS)), \
+             patch("routers.query.inspector_option_context", AsyncMock(return_value={})), \
+             patch("routers.query._managed_column_metadata", AsyncMock(return_value=metadata)), \
+             patch("routers.query.validate_row_changes", AsyncMock()), \
+             patch("routers.query._insert_writeback_audit", AsyncMock(return_value=31)), \
+             patch("routers.query._update_writeback_audit", AsyncMock()), \
+             patch("routers.query.update_cached_source_row", AsyncMock(return_value=("row-key", 2))), \
+             patch("routers.query.record_admin_audit", AsyncMock()):
+            result = await update_source_fields(
+                parser_type="全链条",
+                source_id=1,
+                changes={"核查结果": ""},
+                expected_revision=1,
+                request=request,
+                user=make_user("组员", communities=["长板"]),
+                conn=conn,
+            )
+
+        self.assertTrue(result["pending_sync"])
+        client.clear_cell.assert_awaited_once_with(
+            "file", "sheet", 10, parser.COLUMNS.index("核查结果")
+        )
+        client.batch_update.assert_not_awaited()
+        client.build_update_cell_request.assert_not_called()
 
     async def test_area_accepts_multiple_leaders(self):
         cursor = SqlAwareCursor()

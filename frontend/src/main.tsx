@@ -7,9 +7,10 @@ import 'dayjs/locale/zh-cn'
 import App from './App'
 import {
   applyThemeToDocument,
+  getSafeLocalStorage,
   readStoredThemeMode,
   resolveThemeMode,
-  THEME_MEDIA_QUERY,
+  systemPrefersDark,
 } from './utils/themeMode'
 import './index.css'
 
@@ -40,8 +41,8 @@ if (
 }
 
 applyThemeToDocument(resolveThemeMode(
-  readStoredThemeMode(window.localStorage),
-  window.matchMedia(THEME_MEDIA_QUERY).matches,
+  readStoredThemeMode(getSafeLocalStorage()),
+  systemPrefersDark(),
 ))
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -51,3 +52,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </React.StrictMode>,
 )
+
+// Remove the non-React startup screen only after the first render is queued.
+// It remains visible when the entry bundle fails, so old WebViews show a
+// useful diagnostic instead of an empty page.
+window.setTimeout(() => {
+  document.getElementById('binhu-startup')?.remove()
+}, 0)

@@ -3,11 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/startup-guard.css" />
+    <script src="/startup-guard.js"></script>
     <script src="/legacy-polyfills.js"></script>
     <title>滨湖智慧平台</title>
   </head>
   <body class="bg-gray-50">
-    <div id="root"></div>
+    <div id="root">
+      <main id="binhu-startup" class="binhu-startup" aria-live="polite">
+        <div class="binhu-startup__panel">
+          <div class="binhu-startup__spinner" aria-hidden="true"></div>
+          <h1>滨湖智慧平台</h1>
+          <p id="binhu-startup-message">正在启动应用...</p>
+          <p id="binhu-startup-detail" class="binhu-startup__detail" hidden></p>
+          <button id="binhu-startup-retry" type="button" hidden>重新加载</button>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
