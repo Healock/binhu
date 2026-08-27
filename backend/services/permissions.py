@@ -46,6 +46,9 @@ WORKFLOW_TICKET_MANAGE = "workflow.ticket.manage"
 WORKFLOW_CONFIG_MANAGE = "workflow.config.manage"
 WORKFLOW_ATTACHMENT_VIEW = "workflow.attachment.view"
 QMF_REGISTRATION_EXECUTE = "qmf.registration.execute"
+VENUE_VIEW = "venue.view"
+VENUE_MANAGE = "venue.manage"
+VENUE_EXPORT = "venue.export"
 
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
@@ -88,6 +91,9 @@ PERMISSION_CATALOG = [
     (WORKFLOW_CONFIG_MANAGE, "平台管理", "配置和发布工单流程"),
     (WORKFLOW_ATTACHMENT_VIEW, "业务操作", "查看工单附件"),
     (QMF_REGISTRATION_EXECUTE, "业务操作", "执行全民防单条登记"),
+    (VENUE_VIEW, "基础资料", "查看场所码和登记记录"),
+    (VENUE_MANAGE, "基础资料", "管理场所码和二维码"),
+    (VENUE_EXPORT, "业务操作", "导出场所码登记记录"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}

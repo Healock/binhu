@@ -585,6 +585,61 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_watch_task_date (first_dispatch_at, snapshot_status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _venue_codes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(200) NOT NULL,
+            venue_type VARCHAR(80) NOT NULL DEFAULT '',
+            address VARCHAR(500) NOT NULL DEFAULT '',
+            community_id BIGINT DEFAULT NULL,
+            community_name_snapshot VARCHAR(200) NOT NULL DEFAULT '',
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            token_hmac CHAR(64) NOT NULL,
+            encrypted_token TEXT NOT NULL,
+            created_by BIGINT DEFAULT NULL,
+            updated_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_venue_token_hmac (token_hmac),
+            INDEX idx_venue_status (status),
+            INDEX idx_venue_community (community_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _venue_visits (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            venue_id BIGINT NOT NULL,
+            encrypted_name TEXT NOT NULL,
+            encrypted_identity TEXT NOT NULL,
+            identity_hmac CHAR(64) NOT NULL,
+            encrypted_phone TEXT NOT NULL,
+            phone_hmac CHAR(64) NOT NULL,
+            encrypted_address TEXT NOT NULL,
+            submitted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            source VARCHAR(30) NOT NULL DEFAULT 'public_qr',
+            source_ip_hash CHAR(64) NOT NULL DEFAULT '',
+            retention_until DATETIME NOT NULL,
+            deleted_at DATETIME DEFAULT NULL,
+            INDEX idx_venue_visit_venue_time (venue_id, submitted_at),
+            INDEX idx_venue_visit_identity (identity_hmac),
+            INDEX idx_venue_visit_retention (retention_until, deleted_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _venue_visit_photos (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            visit_id BIGINT NOT NULL,
+            storage_key VARCHAR(500) NOT NULL,
+            mime_type VARCHAR(100) NOT NULL,
+            size_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            sha256 CHAR(64) NOT NULL,
+            retention_until DATETIME NOT NULL,
+            deleted_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_venue_visit_photo (visit_id),
+            INDEX idx_venue_photo_retention (retention_until, deleted_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
 
 
 async def ensure_workflow_schema(cur) -> None:
