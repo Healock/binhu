@@ -7,10 +7,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'rea
 import {
   getMobileTaskInlineEditors,
   claimMobileTask,
+  searchRegistrationProperties,
   updateMobileTask,
   updateMobileTaskAnalysis,
   type MobileTaskInlineEditorItem,
   type MobileTaskItem,
+  type MobileTaskRegistrationProperty,
 } from '../api/client'
 import {
   buildMobileTaskChanges,
@@ -19,10 +21,12 @@ import {
   mobileTaskEditorFields,
   mobileTaskCurrentAddressLabel,
   mobileTaskPhoneOptions,
+  mobileTaskResultOptions,
   mobileTaskSourceTags,
   mobileTaskSurfaceTone,
   mobileTaskUsesRegistrationClosure,
 } from '../utils/mobileTasks'
+import { getCompactPersonnelPresentation } from '../utils/mobileTaskTableLayout'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import QmfFeedbackStatus from './QmfFeedbackStatus'
 import ResidenceRegistrationStatus from './ResidenceRegistrationStatus'
@@ -34,6 +38,20 @@ const STATE_LABELS = {
   checked: { text: '待补结果', color: 'orange' },
   completed: { text: '已完成', color: 'green' },
 } as const
+
+interface InlineRegistrationPropertyState {
+  loading: boolean
+  options: MobileTaskRegistrationProperty[]
+  selectedId?: number
+}
+
+function registrationPropertyAddress(property: MobileTaskRegistrationProperty) {
+  return `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim()
+}
+
+function registrationPropertyLabel(property: MobileTaskRegistrationProperty) {
+  return registrationPropertyAddress(property)
+}
 
 interface MobileTaskTableProps {
   rows: MobileTaskItem[]
@@ -71,8 +89,10 @@ export default function MobileTaskTable({
 }: MobileTaskTableProps) {
   const tableRef = useRef<HTMLDivElement>(null)
   const responsiveLayout = useResponsiveLayout(tableRef)
+  const compactPersonnelPresentation = getCompactPersonnelPresentation(responsiveLayout.width)
   const [editorItems, setEditorItems] = useState<Record<string, MobileTaskInlineEditorItem>>({})
   const [editorValues, setEditorValues] = useState<Record<string, Record<string, string>>>({})
+  const [registrationProperties, setRegistrationProperties] = useState<Record<string, InlineRegistrationPropertyState>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [savingRowKey, setSavingRowKey] = useState('')
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
@@ -82,6 +102,8 @@ export default function MobileTaskTable({
   const pendingEditorKeysRef = useRef<Set<string>>(new Set())
   const editorFlushTimerRef = useRef<number | null>(null)
   const claimPromptKeysRef = useRef<Set<string>>(new Set())
+  const registrationSearchSequenceRef = useRef<Record<string, number>>({})
+  const registrationResultDraftRef = useRef<Record<string, string>>({})
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
     [rows],
@@ -189,6 +211,9 @@ export default function MobileTaskTable({
     }
     setEditorItems({})
     setEditorValues({})
+    setRegistrationProperties({})
+    registrationSearchSequenceRef.current = {}
+    registrationResultDraftRef.current = {}
     setLoadingEditorKeys(new Set())
     return () => {
       pendingEditorKeysRef.current.clear()
@@ -225,6 +250,7 @@ export default function MobileTaskTable({
     item: MobileTaskInlineEditorItem,
     changes: Record<string, string>,
     claim = false,
+    registrationProperty?: { id: number; version: number },
   ) => {
     const detail = item.detail
     const source = detail?.sources[0]
@@ -240,6 +266,10 @@ export default function MobileTaskTable({
           Object.keys(changes).map(field => [field, source.values[field] || '']),
         ),
         expected_revision: source.revision,
+        ...(registrationProperty ? {
+          registration_property_id: registrationProperty.id,
+          registration_property_version: registrationProperty.version,
+        } : {}),
       })
       const savedValues = mergeMobileTaskSaveValues(
         source.values,
@@ -258,11 +288,34 @@ export default function MobileTaskTable({
         },
       }))
       setEditorValues(current => ({ ...current, [task.task_key]: savedValues }))
+      if (registrationProperty) {
+        setRegistrationProperties(current => ({
+          ...current,
+          [task.task_key]: {
+            ...(current[task.task_key] || { loading: false, options: [] }),
+            selectedId: registrationProperty.id,
+          },
+        }))
+      }
       message.success(result.message)
       await onSaved()
     } catch (reason: any) {
       message.error(errorMessage(reason, '保存失败，请稍后重试'))
-      if ([409, 502, 503].includes(Number(reason?.response?.status))) {
+      if (registrationProperty) {
+        const existingProperty = detail?.registration_link?.property
+        setEditorValues(current => ({
+          ...current,
+          [task.task_key]: { ...source.values },
+        }))
+        setRegistrationProperties(current => ({
+          ...current,
+          [task.task_key]: {
+            ...(current[task.task_key] || { loading: false, options: [] }),
+            selectedId: existingProperty?.id,
+          },
+        }))
+      }
+      if (registrationProperty || [409, 502, 503].includes(Number(reason?.response?.status))) {
         await requestEditors([task.task_key], true)
       }
     } finally {
@@ -270,28 +323,12 @@ export default function MobileTaskTable({
     }
   }
 
-  const saveField = async (
-    task: MobileTaskItem,
-    item: MobileTaskInlineEditorItem,
-    field: string,
-    value: string,
-  ) => {
-    const source = item.detail?.sources[0]
-    if (!source) return
-    const changes = buildMobileTaskChanges(
-      source.values,
-      { ...source.values, [field]: value },
-      [field],
-    )
-    if (!Object.keys(changes).length) return
+  const confirmClaim = async (task: MobileTaskItem, sourceValues: Record<string, string>) => {
     const shouldClaim = canClaimUnassigned
       && !analysisMode
-      && !String(task.inspector || source.values['核查人'] || '').trim()
-    if (!shouldClaim) {
-      await saveEditor(task, item, changes)
-      return
-    }
-    if (claimPromptKeysRef.current.has(task.task_key)) return
+      && !String(task.inspector || sourceValues['核查人'] || '').trim()
+    if (!shouldClaim) return false
+    if (claimPromptKeysRef.current.has(task.task_key)) return null
     claimPromptKeysRef.current.add(task.task_key)
     const confirmed = await new Promise<boolean>(resolve => {
       let settled = false
@@ -310,7 +347,25 @@ export default function MobileTaskTable({
       })
     })
     claimPromptKeysRef.current.delete(task.task_key)
-    if (!confirmed) {
+    return confirmed ? true : null
+  }
+
+  const saveField = async (
+    task: MobileTaskItem,
+    item: MobileTaskInlineEditorItem,
+    field: string,
+    value: string,
+  ) => {
+    const source = item.detail?.sources[0]
+    if (!source) return
+    const changes = buildMobileTaskChanges(
+      source.values,
+      { ...source.values, [field]: value },
+      [field],
+    )
+    if (!Object.keys(changes).length) return
+    const claim = await confirmClaim(task, source.values)
+    if (claim === null) {
       setEditorValues(current => ({
         ...current,
         [task.task_key]: {
@@ -320,7 +375,97 @@ export default function MobileTaskTable({
       }))
       return
     }
-    await saveEditor(task, item, changes, true)
+    await saveEditor(task, item, changes, claim)
+  }
+
+  const searchRegistrationProperty = async (task: MobileTaskItem, keyword: string) => {
+    const normalized = keyword.trim()
+    const sequence = (registrationSearchSequenceRef.current[task.task_key] || 0) + 1
+    registrationSearchSequenceRef.current[task.task_key] = sequence
+    if (!normalized) {
+      setRegistrationProperties(current => ({
+        ...current,
+        [task.task_key]: { ...(current[task.task_key] || {}), loading: false, options: [] },
+      }))
+      return
+    }
+    setRegistrationProperties(current => ({
+      ...current,
+      [task.task_key]: { ...(current[task.task_key] || { options: [] }), loading: true },
+    }))
+    try {
+      const result = await searchRegistrationProperties(normalized, task.community)
+      if (registrationSearchSequenceRef.current[task.task_key] !== sequence) return
+      setRegistrationProperties(current => ({
+        ...current,
+        [task.task_key]: {
+          ...(current[task.task_key] || {}),
+          loading: false,
+          options: result.data || [],
+        },
+      }))
+    } catch {
+      if (registrationSearchSequenceRef.current[task.task_key] !== sequence) return
+      setRegistrationProperties(current => ({
+        ...current,
+        [task.task_key]: { ...(current[task.task_key] || {}), loading: false, options: [] },
+      }))
+      message.error({
+        key: `mobile-task-registration-property-${task.task_key}`,
+        content: '房屋档案搜索失败，请稍后重试',
+      })
+    }
+  }
+
+  const saveRegistrationProperty = async (
+    task: MobileTaskItem,
+    item: MobileTaskInlineEditorItem,
+    property: MobileTaskRegistrationProperty,
+  ) => {
+    const detail = item.detail
+    const source = detail?.sources[0]
+    if (!detail || !source) return
+    const resultField = detail.workflow.result_field
+    const address = registrationPropertyAddress(property)
+    const nextValues = {
+      ...source.values,
+      ...(editorValues[task.task_key] || {}),
+      [resultField]: '待登记',
+      现住址: address,
+    }
+    const changes = buildMobileTaskChanges(
+      source.values,
+      nextValues,
+      [resultField, '现住址'],
+    )
+    if (!address) {
+      message.warning('所选房屋缺少规范地址，请先维护房屋档案')
+      return
+    }
+    setEditorValues(current => ({
+      ...current,
+      [task.task_key]: nextValues,
+    }))
+    setRegistrationProperties(current => ({
+      ...current,
+      [task.task_key]: {
+        ...(current[task.task_key] || { loading: false, options: [property] }),
+        selectedId: property.id,
+      },
+    }))
+    const claim = await confirmClaim(task, source.values)
+    if (claim === null) {
+      setEditorValues(current => ({ ...current, [task.task_key]: { ...source.values } }))
+      setRegistrationProperties(current => ({
+        ...current,
+        [task.task_key]: {
+          ...(current[task.task_key] || { loading: false, options: [] }),
+          selectedId: undefined,
+        },
+      }))
+      return
+    }
+    await saveEditor(task, item, changes, claim, { id: property.id, version: property.version })
   }
 
   const renderExpandedRow = (task: MobileTaskItem) => {
@@ -338,6 +483,15 @@ export default function MobileTaskTable({
     const editorLoading = loadingEditorKeys.has(task.task_key)
     const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
     const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
+    const registrationResult = String(values[detail?.workflow.result_field || ''] || '').trim()
+    const registrationPropertyState = registrationProperties[task.task_key]
+    const linkedRegistrationProperty = detail?.registration_link?.property || null
+    const availableRegistrationProperties = [
+      ...(linkedRegistrationProperty ? [linkedRegistrationProperty] : []),
+      ...(registrationPropertyState?.options || []),
+    ].filter((property, index, properties) => (
+      properties.findIndex(item => item.id === property.id) === index
+    ))
 
     if (!item) {
       return (
@@ -402,17 +556,19 @@ export default function MobileTaskTable({
           <div className="mobile-task-table-inline-fields">
             {fields.map(field => {
               const metadata = source.cell_meta[field] || { type: 'text' }
+              const resultField = field === detail.workflow.result_field
               const registrationResultField = mobileTaskUsesRegistrationClosure(task.parser_type)
-                && field === detail.workflow.result_field
-              const options = metadata.options
-                ?.filter(option => (
-                  !registrationResultField
-                  || !['已登记', '待登记'].includes(String(option.text))
-                ))
+                && resultField
+              const registrationAddressField = mobileTaskUsesRegistrationClosure(task.parser_type)
+                && field === '现住址'
+                && registrationResult === '待登记'
+              const options = (resultField
+                ? mobileTaskResultOptions(metadata.options, registrationResultField)
+                : metadata.options || [])
                 .map(option => ({
                   value: String(option.text),
                   label: String(option.text),
-                })) || []
+                }))
               const isSecondaryFeedback = field === '二次反馈'
               const needsResultUpdate = field === '核查结果'
                 && resultNeedsSecondaryFollowup
@@ -422,8 +578,36 @@ export default function MobileTaskTable({
                   key={field}
                   className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}${needsResultUpdate ? ' mobile-task-table-inline-field--attention' : ''}`}
                 >
-                  <span>{field === '核查人' ? '任务分配' : field}</span>
-                  {metadata.type === 'select' || field === '核查人' ? (
+                  <span>
+                    {field === '核查人'
+                      ? '任务分配'
+                      : mobileTaskUsesRegistrationClosure(task.parser_type) && field === '现住址'
+                        ? mobileTaskCurrentAddressLabel(task.parser_type, registrationResult)
+                        : field}
+                  </span>
+                  {registrationAddressField ? (
+                    <div className="grid gap-1">
+                      <Select
+                        showSearch
+                        filterOption={false}
+                        size="small"
+                        placeholder="搜索并选择辖区档案中的唯一房屋"
+                        disabled={selectionMode || savingRowKey === task.task_key}
+                        loading={registrationPropertyState?.loading}
+                        value={registrationPropertyState?.selectedId ?? linkedRegistrationProperty?.id}
+                        options={availableRegistrationProperties.map(property => ({
+                          value: property.id,
+                          label: registrationPropertyLabel(property),
+                        }))}
+                        onSearch={keyword => void searchRegistrationProperty(task, keyword)}
+                        onChange={value => {
+                          const property = availableRegistrationProperties.find(item => item.id === value)
+                          if (property) void saveRegistrationProperty(task, item, property)
+                        }}
+                      />
+                      <span className="mobile-task-table-inline-hint">选定房屋后，待登记结果和现住址会一次保存。</span>
+                    </div>
+                  ) : metadata.type === 'select' || field === '核查人' ? (
                     <div className="grid gap-1">
                       <Select
                         allowClear
@@ -433,20 +617,34 @@ export default function MobileTaskTable({
                         disabled={selectionMode || savingRowKey === task.task_key}
                         value={values[field] || undefined}
                         options={options}
-                        onChange={value => setEditorValues(current => ({
-                          ...current,
-                          [task.task_key]: { ...values, [field]: value || '' },
-                        }))}
-                        onBlur={() => void saveField(task, item, field, values[field] || '')}
+                        onChange={value => {
+                          setEditorValues(current => ({
+                            ...current,
+                            [task.task_key]: { ...values, [field]: value || '' },
+                          }))
+                          if (registrationResultField) {
+                            registrationResultDraftRef.current[task.task_key] = String(value || '')
+                          }
+                          if (registrationResultField && value !== '待登记') {
+                            setRegistrationProperties(current => ({
+                              ...current,
+                              [task.task_key]: {
+                                ...(current[task.task_key] || { loading: false, options: [] }),
+                                selectedId: undefined,
+                              },
+                            }))
+                          }
+                        }}
+                        onBlur={() => {
+                          const value = registrationResultField
+                            ? registrationResultDraftRef.current[task.task_key] ?? values[field] ?? ''
+                            : values[field] || ''
+                          if (registrationResultField && String(value).trim() === '待登记') return
+                          void saveField(task, item, field, value)
+                        }}
                       />
-                      {registrationResultField && (
-                        <button
-                          type="button"
-                          className="justify-self-start text-xs text-[var(--app-primary)] hover:underline"
-                          onClick={() => onOpen(task)}
-                        >
-                          待登记需进入详情选择拟登记房屋
-                        </button>
+                      {registrationResultField && registrationResult === '待登记' && (
+                        <span className="mobile-task-table-inline-hint">请在左侧“现住址”中搜索并选择房屋。</span>
                       )}
                     </div>
                   ) : (
@@ -499,12 +697,12 @@ export default function MobileTaskTable({
     title: '人员信息',
     key: 'compact_personnel',
     fixed: 'left',
-    width: 360,
+    width: compactPersonnelPresentation.columnWidth,
     responsivePriority: 'always',
     render: (_, task) => {
       const phones = mobileTaskPhoneOptions(task.summary.phone)
       return (
-        <dl className="mobile-task-table-personnel">
+        <dl className={`mobile-task-table-personnel mobile-task-table-personnel--${compactPersonnelPresentation.layout}`}>
           <div className="mobile-task-table-personnel__row">
             <dt>姓名</dt>
             <dd>
@@ -726,7 +924,7 @@ export default function MobileTaskTable({
     [columns, responsiveLayout.mode],
   )
   const tableScrollWidth = responsiveLayout.isCompact
-    ? 900
+    ? compactPersonnelPresentation.tableScrollWidth
     : responsiveLayout.isStandard
       ? 1330
       : 1440

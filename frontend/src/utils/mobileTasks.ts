@@ -240,5 +240,17 @@ export function mobileTaskUsesRegistrationClosure(parserType: string) {
 
 export function mobileTaskCurrentAddressLabel(parserType: string, result: string) {
   if (!mobileTaskUsesRegistrationClosure(parserType)) return '现住址'
-  return result.trim() === '待登记' ? '拟登记住址' : '核查补充信息'
+  return result.trim() === '待登记' ? '现住址' : '核查补充信息'
+}
+
+export function mobileTaskResultOptions(
+  options: Array<{ id?: string; text: string }> = [],
+  registrationClosure = false,
+) {
+  return options.filter(option => {
+    const text = String(option.text || '').trim()
+    if (text === '移交') return false
+    if (registrationClosure && text === '已登记') return false
+    return true
+  })
 }
