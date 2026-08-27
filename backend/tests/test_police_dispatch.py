@@ -54,6 +54,7 @@ from routers.police_dispatch import (
     _search_tasks,
     _task_counts,
     _verify_clean_preview_token,
+    _quick_dispatch_profiles,
     create_quick_dispatch,
     delete_batch,
     delete_address,
@@ -92,6 +93,21 @@ def test_quick_dispatch_routes_are_registered_and_reject_invalid_identity_before
     )
     with pytest.raises(HTTPException, match="身份证号格式不正确"):
         asyncio.run(create_quick_dispatch(payload, MagicMock(), {"id": 1}, None))
+
+
+def test_quick_dispatch_profiles_cover_all_supported_business_tables():
+    profiles = _quick_dispatch_profiles()
+    assert set(profiles) == {
+        "fullchain_processed", "rental_processed", "suspect_return_processed",
+        "police_internal_processed", "police_suzhou_processed", "police_traffic_processed",
+        "delivery_processed",
+    }
+    assert profiles["rental_processed"]["target_parser"] == "出租房屋核查"
+    assert profiles["suspect_return_processed"]["target_parser"] == "疑似返苏"
+    assert profiles["delivery_processed"]["target_parser"] == "寄递业"
+    for profile in profiles.values():
+        assert profile["fields"]
+        assert all(field["key"] and field["label"] for field in profile["fields"])
 
 
 def test_clean_preview_token_binds_file_and_metadata():

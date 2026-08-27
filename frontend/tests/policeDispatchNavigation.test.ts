@@ -158,7 +158,7 @@ test('已处理数据在任务工作台多选发布且卡片沿用流口任务�
   assert.doesNotMatch(batchSource, /publishSelectedPoliceDispatchTasks/)
 })
 
-test('业务数据导入支持单条全链条快捷下发并仍由发布工作台落表', () => {
+test('业务数据导入支持多业务表快捷下发并仍由发布工作台落表', () => {
   const panelSource = readFileSync(
     new URL('../src/components/PoliceDispatchPanel.tsx', import.meta.url),
     'utf8',
@@ -168,7 +168,12 @@ test('业务数据导入支持单条全链条快捷下发并仍由发布工作�
     'utf8',
   )
 
-  assert.match(panelSource, /快捷下发（全链条）/)
+  assert.match(panelSource, /快捷下发/)
+  assert.doesNotMatch(panelSource, /快捷下发（全链条）/)
+  assert.match(panelSource, /quickBusinesses/)
+  assert.match(panelSource, /selectedQuickBusiness\.fields\.map/)
+  assert.match(panelSource, /profile: String\(values\.profile \|\| quickProfile\)/)
+  assert.match(panelSource, /quickProfile/)
   assert.match(panelSource, /适用于 1–2 条临时任务/)
   assert.match(panelSource, /提交后只加入下发任务池，不会立即写入腾讯表/)
   assert.match(panelSource, /createQuickPoliceDispatch/)

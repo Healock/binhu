@@ -164,15 +164,17 @@ class ConflictResolution(BaseModel):
 
 
 class QuickDispatchCreate(BaseModel):
-    """单条临时全链条任务；只创建任务池记录，不直接写腾讯表。"""
+    """单条临时任务；按已确认的业务表适配器创建，不直接写腾讯表。"""
 
-    source_name: str = Field(min_length=1, max_length=300)
-    community_id: int = Field(gt=0)
-    person_name: str = Field(min_length=1, max_length=200)
-    identity_number: str = Field(min_length=1, max_length=50)
-    phone: str = Field(min_length=1, max_length=200)
-    original_address: str = Field(min_length=1, max_length=1500)
-    registration_status: str = Field(min_length=1, max_length=100)
+    profile: str = Field(default="fullchain_processed", max_length=80)
+    fields: dict[str, str] = Field(default_factory=dict, max_length=80)
+    source_name: str = Field(default="", max_length=300)
+    community_id: int | None = Field(default=None, gt=0)
+    person_name: str = Field(default="", max_length=200)
+    identity_number: str = Field(default="", max_length=50)
+    phone: str = Field(default="", max_length=200)
+    original_address: str = Field(default="", max_length=1500)
+    registration_status: str = Field(default="", max_length=100)
     business_date: date
     deadline_date: date | None = None
     created_time: datetime | None = None
@@ -404,14 +406,59 @@ async def quick_dispatch_options(
     _user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
-    """返回快捷下发可选的启用社区。"""
+    """返回快捷下发可选业务表及启用社区。"""
+    quick_profiles = _quick_dispatch_profiles()
     async with conn.cursor() as cur:
         communities = await _communities(cur)
     return {
+        "businesses": [dict({"key": key}, **value) for key, value in quick_profiles.items()],
         "communities": [
             {"id": item["id"], "name": item["name"]}
             for item in communities if item.get("enabled")
         ],
+    }
+
+
+def _quick_dispatch_profiles() -> dict[str, dict[str, Any]]:
+    """返回快捷下发支持的业务表及其真实字段。"""
+    text = lambda key, label, required=False, placeholder="": {
+        "key": key, "label": label, "required": required, "type": "text", "placeholder": placeholder,
+    }
+    area = lambda key, label, required=False, placeholder="": {
+        "key": key, "label": label, "required": required, "type": "textarea", "placeholder": placeholder,
+    }
+    registration = lambda key, label="登记情况", required=False: {
+        "key": key, "label": label, "required": required, "type": "registration",
+    }
+    return {
+        "fullchain_processed": {
+            "label": "全链条", "target_parser": "全链条", "business_type": "fullchain", "police_subtype": "",
+            "fields": [text("来源", "来源", True, "例如：基础管控临时指令"), text("姓名", "姓名", True), text("身份证号", "身份证号", True), text("电话号码", "电话号码", True), area("地址", "地址", True), registration("登记情况", required=True)],
+        },
+        "rental_processed": {
+            "label": "出租房屋核查", "target_parser": "出租房屋核查", "business_type": "rental", "police_subtype": "",
+            "fields": [text("姓名", "姓名", True), text("身份证号", "身份证号", True), text("手机号码", "手机号码", True), area("房屋地址", "房屋地址", True), text("入住方式", "入住方式", False, "自购、房东出租、中介出租等")],
+        },
+        "police_internal_processed": {
+            "label": "所内涉警", "target_parser": "涉警统计", "business_type": "police", "police_subtype": "internal",
+            "fields": [text("序号", "接警编号/序号", True), area("简要警情及处理结果", "简要警情及处理结果", True), text("是否开户", "是否开户"), area("现住址", "现住址"), text("房屋属性", "房屋属性"), text("居住时间", "居住时间"), text("房东信息", "房东信息"), text("二房东信息", "二房东信息"), area("备注", "备注"), text("房东是否处罚", "房东是否处罚")],
+        },
+        "police_suzhou_processed": {
+            "label": "苏州涉警", "target_parser": "苏州涉警", "business_type": "police", "police_subtype": "suzhou",
+            "fields": [text("姓名", "姓名", True), text("身份证号", "身份证号", True), text("联系号码", "联系号码", True), area("疑似现住址", "疑似现住址", True), text("接警编号", "接警编号"), text("出警日期", "出警日期"), text("出警类别", "出警类别"), area("出警内容", "出警内容"), text("出警单位", "出警单位"), text("参考派出所", "参考派出所"), area("备注", "备注")],
+        },
+        "police_traffic_processed": {
+            "label": "交通涉警", "target_parser": "交通涉警", "business_type": "police", "police_subtype": "traffic",
+            "fields": [text("姓名", "姓名", True), text("身份证号", "身份证号", True), text("联系号码", "联系号码", True), area("地址1", "地址1", True), area("备注", "备注")],
+        },
+        "delivery_processed": {
+            "label": "寄递业", "target_parser": "寄递业", "business_type": "delivery", "police_subtype": "",
+            "fields": [text("姓名", "姓名", True), text("身份证号", "身份证号", True), area("地址1", "地址1", True), text("手机号码", "手机号码", True), text("参考姓名", "参考姓名"), text("参考身份证号码", "参考身份证号码")],
+        },
+        "suspect_return_processed": {
+            "label": "疑似返苏", "target_parser": "疑似返苏", "business_type": "suspect_return", "police_subtype": "",
+            "fields": [text("姓名", "姓名", True), text("身份证号码", "身份证号码", True), text("联系号码", "联系号码", True), area("高频抓拍小区", "高频抓拍小区", True)],
+        },
     }
 
 
@@ -422,9 +469,35 @@ async def create_quick_dispatch(
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
-    """创建一条临时全链条任务，交由既有发布工作台最终写入腾讯表。"""
-    identity_number = normalize_identity(data.identity_number)
-    if not IDENTITY_PATTERN.fullmatch(identity_number):
+    """创建一条临时业务任务，交由既有发布工作台最终写入腾讯表。"""
+    profile = _quick_dispatch_profiles().get(data.profile)
+    if not profile:
+        raise HTTPException(400, "不支持的快捷下发业务表")
+    target_parser = str(profile["target_parser"])
+    parser = get_parser(target_parser)
+    allowed = set(parser.COLUMNS) | {"来源"}
+    provided = {str(key): normalize_space(value) for key, value in (data.fields or {}).items() if str(key) in allowed}
+    if data.profile == "fullchain_processed" and not provided:
+        provided = {
+            "来源": data.source_name, "姓名": data.person_name,
+            "身份证号": data.identity_number, "电话号码": data.phone,
+            "地址": data.original_address, "登记情况": data.registration_status,
+        }
+    required_fields = {
+        "fullchain_processed": ("姓名", "身份证号", "电话号码", "地址", "登记情况"),
+        "rental_processed": ("姓名", "身份证号", "手机号码", "房屋地址"),
+        "police_internal_processed": ("序号", "简要警情及处理结果"),
+        "police_suzhou_processed": ("姓名", "身份证号", "联系号码", "疑似现住址"),
+        "police_traffic_processed": ("姓名", "身份证号", "联系号码", "地址1"),
+        "delivery_processed": ("姓名", "身份证号", "地址1", "手机号码"),
+        "suspect_return_processed": ("姓名", "身份证号码", "联系号码", "高频抓拍小区"),
+    }[data.profile]
+    missing = [field for field in required_fields if not provided.get(field)]
+    if missing:
+        raise HTTPException(400, f"快捷下发缺少必要字段：{'、'.join(missing)}")
+    identity_field = "身份证号" if "身份证号" in provided else "身份证号码"
+    identity_number = normalize_identity(provided.get(identity_field, ""))
+    if identity_number and not IDENTITY_PATTERN.fullmatch(identity_number):
         raise HTTPException(400, "身份证号格式不正确")
     deadline = data.deadline_date or (data.business_date + timedelta(days=3))
     if deadline < data.business_date:
@@ -433,38 +506,28 @@ async def create_quick_dispatch(
     created_text = created.strftime("%Y-%m-%d %H:%M:%S")
     dispatch_date = data.business_date.strftime("%m-%d")
     deadline_text = deadline.strftime("%m-%d")
-    raw_values = {
-        "来源": data.source_name,
-        "社区": "",
-        "姓名": data.person_name,
-        "身份证号": identity_number,
-        "电话号码": data.phone,
-        "地址": data.original_address,
-        "登记情况": data.registration_status,
-        "创建时间": created_text,
-    }
-    item = {
-        "source_name": data.source_name,
-        "community_name": "",
-        "person_name": data.person_name,
-        "identity_number": identity_number,
-        "phone": data.phone,
-        "original_address": data.original_address,
-        "registration_status": data.registration_status,
-        "created_time": created_text,
-    }
-    standard_values = _fullchain_standard_values(item)
-    standard_values.update({
-        "下发日期": dispatch_date,
-        "截止日期": deadline_text,
-        "社区": "",
-    })
-    # 全链条业务主键使用“身份证号 + 电话号码 + 下发日期”；与发布工作台
-    # 读取腾讯来源时的 parser_business_key 保持一致，避免快捷任务被重复新增。
-    key_payload = "\x1f".join((identity_number, data.phone, dispatch_date))
-    business_key = hmac.new(
-        settings.registry_hmac_key.encode(), key_payload.encode(), sha256,
-    ).hexdigest()
+    raw_values = dict(provided)
+    standard_values = {column: "" for column in parser.COLUMNS}
+    standard_values.update(provided)
+    for key in ("下发日期", "下发时间"):
+        if key in standard_values:
+            standard_values[key] = dispatch_date
+    for key in ("截止日期", "截止时间"):
+        if key in standard_values:
+            standard_values[key] = deadline_text
+    if "创建时间" in standard_values and not standard_values["创建时间"]:
+        standard_values["创建时间"] = created_text
+    if "日期" in standard_values and not standard_values["日期"]:
+        standard_values["日期"] = data.business_date.isoformat()
+    person_name = standard_values.get("姓名", "")
+    phone = standard_values.get("电话号码") or standard_values.get("手机号码") or standard_values.get("联系号码") or ""
+    original_address = standard_values.get("地址") or standard_values.get("房屋地址") or standard_values.get("地址1") or standard_values.get("疑似现住址") or standard_values.get("简要警情及处理结果") or ""
+    source_name = provided.get("来源") or data.source_name or str(profile["label"])
+    created_value = standard_values.get("创建时间") or standard_values.get("下发日期") or standard_values.get("下发时间") or standard_values.get("日期") or created_text
+    key_fields = parser_business_key_fields(parser, standard_values)
+    if any(not normalize_space(standard_values.get(field, "")) for field in key_fields):
+        raise HTTPException(400, f"快捷下发缺少业务主键字段：{'、'.join(key_fields)}")
+    business_key = parser_business_key(parser, standard_values)
     batch_digest = sha256(f"quick:{uuid.uuid4().hex}".encode()).hexdigest()
     reviewer_name = str(
         user.get("display_name")
@@ -479,7 +542,7 @@ async def create_quick_dispatch(
             communities = await _communities(cur)
             community = next(
                 (item for item in communities
-                 if int(item["id"]) == data.community_id and item.get("enabled")),
+                if data.community_id and int(item["id"]) == data.community_id and item.get("enabled")),
                 None,
             )
             if not community:
@@ -491,14 +554,15 @@ async def create_quick_dispatch(
                 INSERT INTO _police_dispatch_batches (
                     file_name, file_sha256, sheet_name, import_mode, status,
                     total_count, counts_json, imported_by, business_type,
-                    import_profile, adapter_version, target_parser, business_date,
+                    police_subtype, import_profile, adapter_version, target_parser, business_date,
                     source_summary_json, storage_key
                 ) VALUES (%s,%s,%s,'quick','ready_to_publish',1,JSON_OBJECT(),%s,
-                          'fullchain','quick_dispatch',%s,'全链条',%s,%s,'')
+                          %s,%s,'quick_dispatch',%s,%s,%s,%s,'')
             """, (
-                f"快捷下发-{data.business_date.isoformat()}", batch_digest,
-                "快捷下发", user["id"], ADAPTER_VERSION, data.business_date,
-                stable_json({"source": "quick", "row_count": 1}),
+                f"快捷下发-{profile['label']}-{data.business_date.isoformat()}", batch_digest,
+                "快捷下发", user["id"], str(profile["business_type"]), str(profile["police_subtype"]),
+                ADAPTER_VERSION, target_parser, data.business_date,
+                stable_json({"source": "quick", "row_count": 1, "profile": data.profile}),
             ))
             batch_id = int(cur.lastrowid)
             await cur.execute("""
@@ -514,9 +578,9 @@ async def create_quick_dispatch(
                           'quick_dispatch','dispatch',%s,%s,%s,%s,UTC_TIMESTAMP(),
                           'pending_publish','pending',%s,%s,JSON_ARRAY())
             """, (
-                batch_id, data.source_name, data.person_name, identity_number,
-                identity_digest(identity_number), data.phone, data.original_address,
-                created_text, stable_json(raw_values), data.community_id,
+                batch_id, source_name, person_name, identity_number,
+                identity_digest(identity_number), phone, original_address,
+                created_value, stable_json(raw_values), data.community_id,
                 "快捷下发：已由创建人确认，等待发布", data.community_id,
                 "快捷下发", user["id"], reviewer_name,
                 stable_json(standard_values), business_key,
@@ -534,7 +598,7 @@ async def create_quick_dispatch(
         "police_dispatch.quick_create",
         target_type="police_dispatch_batch",
         target_name=str(batch_id),
-        detail={"row_count": 1, "business_type": "fullchain"},
+        detail={"row_count": 1, "business_type": str(profile["business_type"]), "target_parser": target_parser},
         **request_audit_fields(request),
     )
     return {
