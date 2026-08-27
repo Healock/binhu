@@ -57,7 +57,11 @@ from services.task_graph import online_task_blocked
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
 from services.watch_matching import task_watch_payload
-from services.residence_status_scan import residence_status_by_rows
+from services.residence_platform import ResidencePlatformError
+from services.residence_status_scan import (
+    residence_detail_for_values,
+    residence_status_by_rows,
+)
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
@@ -2462,6 +2466,48 @@ async def update_mobile_task_analysis(
         current_values_validator=validate_analysis_source,
         redact_audit_values=True,
     )
+
+
+@router.get("/{parser_type}/{row_key}/residence-detail")
+async def get_mobile_task_residence_detail(
+    parser_type: str,
+    row_key: str,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    detail = await _mobile_task_detail_data(
+        parser_type,
+        row_key,
+        user,
+        conn,
+        include_photo_requests=False,
+    )
+    residence_status = detail.get("residence_status") or {}
+    if residence_status.get("state") != "registered":
+        raise HTTPException(409, "该任务尚无可展示的居住证登记资料")
+    sources = detail.get("sources") or []
+    if detail["task"].get("conflict") or len(sources) != 1:
+        raise HTTPException(409, "该任务来源不唯一，暂不能读取居住证人员资料")
+    source = sources[0]
+    if not source.get("source_available"):
+        raise HTTPException(409, "该任务来源已变化，请刷新后重试")
+    try:
+        return await residence_detail_for_values(
+            conn,
+            parser_type,
+            source.get("values") or {},
+        )
+    except ResidencePlatformError as exc:
+        status_code = 409 if exc.code in {
+            "detail_not_registered",
+            "invalid_identity",
+            "community_missing",
+            "community_not_found",
+            "community_ambiguous",
+            "community_code_missing",
+            "session_not_ready",
+        } else 502
+        raise HTTPException(status_code, str(exc)) from exc
 
 
 @router.get("/{parser_type}/{row_key}")

@@ -28,6 +28,7 @@ from routers.mobile_tasks import (
     _review_stage_condition,
     _flow_context,
     _mobile_task_inline_editors_data,
+    get_mobile_task_residence_detail,
     _scope_where,
     _source_in_community,
     _task_photo_fetched_rows,
@@ -561,6 +562,7 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         )
         cursor.execute.assert_not_awaited()
 
+
     async def test_only_leader_can_reassign_mobile_task(self):
         cursor = MagicMock()
         with self.assertRaises(HTTPException) as raised:
@@ -618,6 +620,78 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
             {"现住址": "长板一号"},
         )
         cursor.execute.assert_not_awaited()
+
+
+class MobileTaskResidenceDetailTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registered_task_reads_detail_from_the_single_authorized_source(self):
+        task_detail = {
+            "task": {"conflict": False},
+            "residence_status": {"state": "registered"},
+            "sources": [{
+                "source_available": True,
+                "values": {"身份证号": "fixture-identity", "社区": "冬梅"},
+            }],
+        }
+        projected = {
+            "state": "registered",
+            "registered_address": "虚构地址",
+            "photo_data_url": "",
+        }
+        with patch(
+            "routers.mobile_tasks._mobile_task_detail_data",
+            new=AsyncMock(return_value=task_detail),
+        ) as detail_mock, patch(
+            "routers.mobile_tasks.residence_detail_for_values",
+            new=AsyncMock(return_value=projected),
+        ) as residence_mock:
+            result = await get_mobile_task_residence_detail(
+                "流口指令核查",
+                "row-key",
+                user={"id": 7},
+                conn=object(),
+            )
+
+        self.assertEqual(result, projected)
+        self.assertFalse(detail_mock.await_args.kwargs["include_photo_requests"])
+        self.assertEqual(
+            residence_mock.await_args.args[2],
+            {"身份证号": "fixture-identity", "社区": "冬梅"},
+        )
+
+    async def test_non_registered_or_ambiguous_task_never_queries_person_detail(self):
+        residence_mock = AsyncMock()
+        with patch(
+            "routers.mobile_tasks.residence_detail_for_values",
+            residence_mock,
+        ):
+            for detail in (
+                {
+                    "task": {"conflict": False},
+                    "residence_status": {"state": "first_registration"},
+                    "sources": [{"source_available": True, "values": {}}],
+                },
+                {
+                    "task": {"conflict": True},
+                    "residence_status": {"state": "registered"},
+                    "sources": [
+                        {"source_available": True, "values": {}},
+                        {"source_available": True, "values": {}},
+                    ],
+                },
+            ):
+                with self.subTest(detail=detail), patch(
+                    "routers.mobile_tasks._mobile_task_detail_data",
+                    new=AsyncMock(return_value=detail),
+                ):
+                    with self.assertRaises(HTTPException) as raised:
+                        await get_mobile_task_residence_detail(
+                            "流口指令核查",
+                            "row-key",
+                            user={"id": 7},
+                            conn=object(),
+                        )
+                    self.assertEqual(raised.exception.status_code, 409)
+        residence_mock.assert_not_awaited()
 
 
 class PhotoResultCursor:

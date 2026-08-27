@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
+  getMobileTaskResidenceDetail,
   getQmfLegacyStatus,
   getQmfRegistrationRun,
   executeQmfRegistration,
@@ -38,6 +39,7 @@ import {
   type QmfLegacyStatus,
   type QmfPrepareResult,
   type QmfRegistrationRun,
+  type ResidenceRegistrationDetail as ResidenceDetail,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -58,6 +60,7 @@ import {
 import MobilePhonePicker from '../components/MobilePhonePicker'
 import QmfFeedbackStatus from '../components/QmfFeedbackStatus'
 import ResidenceRegistrationStatus from '../components/ResidenceRegistrationStatus'
+import ResidenceRegistrationDetail from '../components/ResidenceRegistrationDetail'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
@@ -150,6 +153,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [qmfLegacyStatus, setQmfLegacyStatus] = useState<QmfLegacyStatus | null>(null)
   const [qmfLegacyStatusLoading, setQmfLegacyStatusLoading] = useState(false)
   const [qmfLegacyStatusError, setQmfLegacyStatusError] = useState('')
+  const [residenceDetail, setResidenceDetail] = useState<ResidenceDetail | null>(null)
+  const [residenceDetailLoading, setResidenceDetailLoading] = useState(false)
+  const [residenceDetailError, setResidenceDetailError] = useState('')
   const qmfPreviewRequestActive = useRef(false)
 
   const selectedSource = useMemo(
@@ -212,6 +218,29 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }, [mode, parserType, rowKey, selectSource])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    if (data?.task.residence_status?.state !== 'registered') {
+      setResidenceDetail(null)
+      setResidenceDetailError('')
+      setResidenceDetailLoading(false)
+      return
+    }
+    let cancelled = false
+    setResidenceDetail(null)
+    setResidenceDetailError('')
+    setResidenceDetailLoading(true)
+    void getMobileTaskResidenceDetail(parserType, rowKey).then(result => {
+      if (!cancelled) setResidenceDetail(result)
+    }).catch(reason => {
+      if (!cancelled) {
+        setResidenceDetailError(detailError(reason, '居住证人员资料暂时无法读取'))
+      }
+    }).finally(() => {
+      if (!cancelled) setResidenceDetailLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [data?.task.residence_status?.state, parserType, rowKey])
 
   useEffect(() => {
     if (
@@ -812,14 +841,25 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       )}
 
       {data.task.residence_status && (
-        <section className="app-card flex flex-wrap items-center justify-between gap-3 p-4">
-          <div>
-            <h2 className="font-semibold text-[var(--app-text-strong)]">居住证登记核对</h2>
-            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
-              后台按身份证号只读查询“人员登记、注销”；明确没有登记资料时标记为首次登记。
-            </p>
+        <section className="app-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-[var(--app-text-strong)]">居住证登记核对</h2>
+              <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+                后台按身份证号只读查询“人员登记、注销”；已有登记资料时在此实时读取详情。
+              </p>
+            </div>
+            <ResidenceRegistrationStatus status={data.task.residence_status} />
           </div>
-          <ResidenceRegistrationStatus status={data.task.residence_status} />
+          {data.task.residence_status.state === 'registered' && (
+            <div className="mt-5 border-t border-[var(--app-border)] pt-5">
+              <ResidenceRegistrationDetail
+                detail={residenceDetail}
+                loading={residenceDetailLoading}
+                error={residenceDetailError}
+              />
+            </div>
+          )}
         </section>
       )}
 

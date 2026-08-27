@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import json
 import os
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -13,7 +15,11 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from services.residence_platform import (  # noqa: E402
     ResidencePlatformClient,
     ResidencePlatformError,
+    _photo_data_url,
+    calculate_age,
     classify_floating_response,
+    nation_label,
+    registration_status,
 )
 from services.residence_platform_config import (  # noqa: E402
     ResidencePlatformConfig,
@@ -262,6 +268,99 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
             for request in requests
             for marker in ("save", "add", "delete", "cancel", "upload")
         ))
+
+    async def test_lookup_detail_projects_whitelisted_fields_and_validates_photo(self):
+        requests: list[httpx.Request] = []
+        jpeg = b"\xff\xd8\xfffixture-jpeg"
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            body = json.loads(request.content.decode("utf-8"))
+            if request.url.path.endswith("/szjzz/searchIsck"):
+                self.assertEqual(body, {"sfzh": VALID_IDENTITY, "xzqh": "320584"})
+                return httpx.Response(200, json={"success": True, "code": 200, "result": None})
+            if request.url.path.endswith("/szjzz/searchzzrk"):
+                return httpx.Response(200, json={
+                    "success": True,
+                    "code": 200,
+                    "message": "查询成功",
+                    "result": {
+                        "birth": "invalid-upstream-birth",
+                        "nation": "01",
+                        "hjdz": "110105",
+                        "hjdzxz": "虚构户籍地址",
+                        "jlx_dictText": "虚构街道",
+                        "mph": "88号",
+                        "rysfzx": "0",
+                        "rygxsj": "2026-08-20 08:00:00",
+                        "fixture_secret_field": "must-not-be-returned",
+                    },
+                })
+            if request.url.path.endswith("/szjzz/searchPhoto"):
+                self.assertEqual(body, {"sfzh": VALID_IDENTITY})
+                return httpx.Response(200, json={
+                    "success": True,
+                    "code": 200,
+                    "result": {"图象数据": base64.b64encode(jpeg).decode("ascii")},
+                })
+            return httpx.Response(404)
+
+        detail = await ResidencePlatformClient(
+            config(),
+            transport=httpx.MockTransport(handler),
+        ).lookup_detail(VALID_IDENTITY)
+
+        self.assertEqual(detail.birth_date, "1949-12-31")
+        self.assertEqual(detail.ethnicity, "汉族")
+        self.assertEqual(detail.registered_address, "虚构街道88号")
+        self.assertEqual(detail.registration_status_text, "未注销")
+        self.assertEqual(detail.photo_state, "available")
+        self.assertTrue(detail.photo_data_url.startswith("data:image/jpeg;base64,"))
+        self.assertEqual(
+            [request.url.path.rsplit("/grandlynn-boot", 1)[-1] for request in requests],
+            ["/szjzz/searchIsck", "/szjzz/searchzzrk", "/szjzz/searchPhoto"],
+        )
+        self.assertFalse(hasattr(detail, "fixture_secret_field"))
+
+    def test_demographic_and_registration_mappings_are_explicit(self):
+        self.assertEqual(nation_label("1"), "汉族")
+        self.assertEqual(nation_label("99"), "未说明民族")
+        self.assertEqual(nation_label("88"), "民族代码 88")
+        self.assertEqual(registration_status("0"), ("active", "未注销"))
+        self.assertEqual(registration_status("1"), ("cancelled", "已注销"))
+        self.assertEqual(registration_status("9"), ("unknown", "状态待核对"))
+
+    def test_age_uses_birthday_boundary_and_handles_leap_day(self):
+        self.assertEqual(calculate_age("2000-08-27", today=date(2026, 8, 27)), 26)
+        self.assertEqual(calculate_age("2000-08-28", today=date(2026, 8, 27)), 25)
+        self.assertEqual(calculate_age("2000-02-29", today=date(2026, 2, 28)), 25)
+        self.assertEqual(calculate_age("2000-02-29", today=date(2026, 3, 1)), 26)
+        self.assertIsNone(calculate_age("invalid", today=date(2026, 8, 27)))
+
+    def test_photo_parser_accepts_png_whitespace_and_rejects_invalid_files(self):
+        png = b"\x89PNG\r\n\x1a\nfixture-png"
+        encoded = base64.b64encode(png).decode("ascii")
+        spaced = f"{encoded[:6]}\r\n{encoded[6:]}"
+        data_url, state, error_code = _photo_data_url({
+            "success": True,
+            "code": 200,
+            "result": {"图象数据": spaced},
+        })
+        self.assertEqual((state, error_code), ("available", ""))
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+
+        for raw, expected in (
+            ("", ("missing", "")),
+            ("not-base64", ("error", "photo_base64_invalid")),
+            (base64.b64encode(b"plain text").decode("ascii"), ("error", "photo_type_invalid")),
+        ):
+            with self.subTest(raw=raw):
+                _, actual_state, actual_error = _photo_data_url({
+                    "success": True,
+                    "code": 200,
+                    "result": {"图象数据": raw},
+                })
+                self.assertEqual((actual_state, actual_error), expected)
 
     async def test_http_failure_and_business_failure_never_become_first_registration(self):
         async def http_failure(_request: httpx.Request) -> httpx.Response:

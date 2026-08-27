@@ -1163,6 +1163,21 @@ export interface MobileTaskResidenceStatus {
   duration_ms?: number | null
 }
 
+export interface ResidenceRegistrationDetail {
+  state: 'registered'
+  registered_address: string
+  household_address: string
+  birth_date: string
+  age: number | null
+  ethnicity: string
+  registration_status: 'active' | 'cancelled' | 'unknown'
+  registration_status_text: string
+  updated_at: string
+  photo_data_url: string
+  photo_state: 'available' | 'missing' | 'error'
+  photo_error_code: string
+}
+
 export type QmfFeedbackState =
   | 'not_scanned'
   | 'stale'
@@ -1800,6 +1815,17 @@ export async function getMobileTaskDetail(
 ): Promise<MobileTaskDetailData> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}`,
+    activeRequest,
+  )
+  return data
+}
+
+export async function getMobileTaskResidenceDetail(
+  parserType: string,
+  rowKey: string,
+): Promise<ResidenceRegistrationDetail> {
+  const { data } = await api.get(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/residence-detail`,
     activeRequest,
   )
   return data

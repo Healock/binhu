@@ -144,8 +144,22 @@ def choose_administrative_area(
 
 
 async def resolve_identity_area(cur, identity: str) -> AdministrativeArea | None:
-    code = identity[:6]
-    birth_year = int(identity[6:10])
+    return await resolve_area_code(
+        cur,
+        identity[:6],
+        reference_year=int(identity[6:10]),
+    )
+
+
+async def resolve_area_code(
+    cur,
+    code: str,
+    *,
+    reference_year: int,
+) -> AdministrativeArea | None:
+    normalized_code = str(code or "").strip()
+    if len(normalized_code) != 6 or not normalized_code.isdigit():
+        return None
     await cur.execute(
         """
         SELECT source_row, code, name, level, province, city, parent_code,
@@ -154,10 +168,10 @@ async def resolve_identity_area(cur, identity: str) -> AdministrativeArea | None
         WHERE code=%s
         ORDER BY source_row
         """,
-        (code,),
+        (normalized_code,),
     )
     rows = [AdministrativeArea(*row) for row in await cur.fetchall()]
-    return choose_administrative_area(rows, birth_year=birth_year)
+    return choose_administrative_area(rows, birth_year=reference_year)
 
 
 async def ensure_administrative_area_schema(cur) -> None:
