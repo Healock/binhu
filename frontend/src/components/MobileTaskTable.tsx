@@ -333,6 +333,8 @@ export default function MobileTaskTable({
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
     const editorLoading = loadingEditorKeys.has(task.task_key)
+    const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
+    const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
 
     if (!item) {
       return (
@@ -398,10 +400,14 @@ export default function MobileTaskTable({
                 value: String(option.text),
                 label: String(option.text),
               })) || []
+              const isSecondaryFeedback = field === '二次反馈'
+              const needsResultUpdate = field === '核查结果'
+                && resultNeedsSecondaryFollowup
+                && hasSecondaryFeedback
               return (
                 <label
                   key={field}
-                  className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}`}
+                  className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}${needsResultUpdate ? ' mobile-task-table-inline-field--attention' : ''}`}
                 >
                   <span>{field === '核查人' ? '任务分配' : field}</span>
                   {metadata.type === 'select' || field === '核查人' ? (
@@ -432,6 +438,19 @@ export default function MobileTaskTable({
                       }))}
                       onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
+                  )}
+                  {isSecondaryFeedback && resultNeedsSecondaryFollowup && (
+                    <div
+                      className={`mobile-task-table-inline-guidance${hasSecondaryFeedback ? ' mobile-task-table-inline-guidance--active' : ''}`}
+                      aria-live={hasSecondaryFeedback ? 'polite' : undefined}
+                    >
+                      <ExclamationCircleOutlined />
+                      <span>
+                        {hasSecondaryFeedback
+                          ? '已填写二次反馈，请现在将“核查结果”修改为最终结果。'
+                          : '二次核查完成后，请务必将“核查结果”修改为最终结果。'}
+                      </span>
+                    </div>
                   )}
                 </label>
               )
