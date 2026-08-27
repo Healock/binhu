@@ -9,6 +9,10 @@ const statusSource = readFileSync(
 const listSource = readFileSync(new URL('../src/pages/MobileTaskList.tsx', import.meta.url), 'utf8')
 const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
 const detailSource = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
+const registrationDetailSource = readFileSync(
+  new URL('../src/components/ResidenceRegistrationDetail.tsx', import.meta.url),
+  'utf8',
+)
 const settingsSource = readFileSync(new URL('../src/pages/SystemSettings.tsx', import.meta.url), 'utf8')
 const communitiesSource = readFileSync(new URL('../src/pages/Communities.tsx', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
@@ -24,6 +28,18 @@ test('card table and detail all render the shared residence status component', (
   assert.match(listSource, /<ResidenceRegistrationStatus status=\{task\.residence_status\} compact/)
   assert.match(tableSource, /<ResidenceRegistrationStatus status=\{task\.residence_status\} compact/)
   assert.match(detailSource, /<ResidenceRegistrationStatus status=\{data\.task\.residence_status\}/)
+})
+
+test('registered tasks load and render the whitelisted residence person detail', () => {
+  assert.match(detailSource, /data\?\.task\.residence_status\?\.state !== 'registered'/)
+  assert.match(detailSource, /getMobileTaskResidenceDetail\(parserType, rowKey\)/)
+  assert.match(detailSource, /<ResidenceRegistrationDetail/)
+  for (const label of ['注销状态', '年龄 / 出生日期', '民族', '系统登记住址', '户籍地址']) {
+    assert.match(registrationDetailSource, new RegExp(label))
+  }
+  assert.match(registrationDetailSource, /detail\.photo_data_url/)
+  assert.match(registrationDetailSource, /暂无照片/)
+  assert.match(registrationDetailSource, /md:grid-cols/)
 })
 
 test('the residence status tooltip shows the measured lookup duration', () => {

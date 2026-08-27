@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Any
 
 from services.qmf_registration import normalize_identity, valid_identity
 from services.qmf_community import normalize_qmf_community_code, valid_qmf_community_code
-from services.residence_platform import ResidencePlatformClient, ResidencePlatformError
+from services.administrative_areas import resolve_area_code
+from services.residence_platform import (
+    ResidencePlatformClient,
+    ResidencePlatformError,
+    ResidenceRegistrationDetail,
+)
 from services.residence_platform_config import (
     ResidenceCommunitySession,
     ResidencePlatformConfig,
@@ -306,6 +311,79 @@ async def _lookup_target(
         rejected_token=client.config.access_token,
     )
     return await client.lookup(target.identity)
+
+
+async def _lookup_detail_target(
+    config: ResidencePlatformConfig,
+    target: ResidenceLookupTarget,
+) -> ResidenceRegistrationDetail:
+    client = await _community_client(config, target.community_code)
+    try:
+        return await client.lookup_detail(target.identity)
+    except ResidencePlatformError as exc:
+        if exc.code != "authentication_expired":
+            raise
+    client = await _community_client(
+        config,
+        target.community_code,
+        rejected_token=client.config.access_token,
+    )
+    return await client.lookup_detail(target.identity)
+
+
+async def residence_detail_for_values(
+    conn,
+    parser_type: str,
+    raw_values: Any,
+) -> dict[str, Any]:
+    """Read one task's residence detail without persisting personal fields."""
+    values = _values(raw_values)
+    identity = _identity(parser_type, values)
+    if not valid_identity(identity):
+        raise ResidencePlatformError("invalid_identity", "身份证号码无效")
+    parser = get_parser(parser_type)
+    async with conn.cursor() as cur:
+        community_code = await _resolve_community_code(
+            cur,
+            parser.community_value(values),
+        )
+    config = await load_residence_config(conn)
+    if not config.session_ready:
+        raise ResidencePlatformError("session_not_ready", "居住证平台配置尚未就绪")
+
+    detail = await _lookup_detail_target(
+        config,
+        ResidenceLookupTarget(identity=identity, community_code=community_code),
+    )
+    household_area = None
+    reference_year = int(detail.birth_date[:4]) if detail.birth_date else int(identity[6:10])
+    async with conn.cursor() as cur:
+        household_area = await resolve_area_code(
+            cur,
+            detail.household_area_code,
+            reference_year=reference_year,
+        )
+    area_label = household_area.full_name if household_area else ""
+    if not area_label and detail.household_area_code:
+        area_label = detail.household_area_code
+    household_address = detail.household_detail
+    if area_label and not household_address.startswith(area_label):
+        household_address = f"{area_label}{household_address}"
+
+    return {
+        "state": "registered",
+        "registered_address": detail.registered_address,
+        "household_address": household_address,
+        "birth_date": detail.birth_date,
+        "age": detail.age,
+        "ethnicity": detail.ethnicity,
+        "registration_status": detail.registration_status,
+        "registration_status_text": detail.registration_status_text,
+        "updated_at": detail.updated_at,
+        "photo_data_url": detail.photo_data_url,
+        "photo_state": detail.photo_state,
+        "photo_error_code": detail.photo_error_code,
+    }
 
 
 async def _save_result(
