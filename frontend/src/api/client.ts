@@ -1963,6 +1963,31 @@ export async function updateMobileTask(
   return data
 }
 
+export async function claimMobileTask(
+  parserType: string,
+  sourceId: number,
+  payload: {
+    changes: Record<string, string>
+    base_values?: Record<string, string>
+    expected_revision: number
+  },
+): Promise<{
+  values: Record<string, string>
+  row_key: string
+  revision: number
+  pending_sync: boolean
+  sync_state: MobileTaskSyncState
+  message: string
+  warnings?: string[]
+  inspector_mismatch?: boolean
+}> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}/claim`,
+    payload,
+  )
+  return data
+}
+
 export async function updateMobileTaskAnalysis(
   parserType: string,
   sourceId: number,
