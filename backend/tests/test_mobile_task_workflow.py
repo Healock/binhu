@@ -28,6 +28,7 @@ from routers.mobile_tasks import (
     _priority_bucket,
     _review_stage_condition,
     _flow_context,
+    _registration_update_hooks,
     _mobile_task_inline_editors_data,
     get_mobile_task_residence_detail,
     _scope_where,
@@ -161,6 +162,14 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             task_state("全链条", {"核查结果": "待登记"}),
+            "checked",
+        )
+        self.assertEqual(
+            task_state(
+                "全链条",
+                {"核查结果": "待登记"},
+                registration_status="legacy_completed",
+            ),
             "completed",
         )
 
@@ -574,6 +583,147 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
                 {"核查人": "组员甲"},
             )
         self.assertEqual(raised.exception.status_code, 403)
+
+
+class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
+    def _data(self, changes):
+        return TaskBatchUpdate(changes=changes, expected_revision=7)
+
+    async def test_existing_registered_task_can_edit_another_field(self):
+        prepare, callback, registration_mode = _registration_update_hooks(
+            "全链条",
+            self._data({"核查人": "组员甲"}),
+            {"id": 7},
+        )
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        with patch(
+            "routers.mobile_tasks.registration_links_by_rows",
+            AsyncMock(return_value={}),
+        ):
+            extra = await prepare(
+                cur=cursor,
+                source={"id": 11, "row_key": "row-key"},
+                current_values={"核查结果": "已登记", "核查人": "组员乙"},
+                changes={"核查人": "组员甲"},
+            )
+            await callback(
+                cur=cursor,
+                source={"id": 11, "row_hash": "a" * 64},
+                before={},
+                after={"核查结果": "已登记", "核查人": "组员甲"},
+                row_key_before="row-key",
+                row_key_after="row-key",
+                revision=8,
+            )
+        self.assertTrue(registration_mode)
+        self.assertEqual(extra, {})
+        cursor.execute.assert_not_awaited()
+
+    async def test_direct_transition_to_registered_is_still_blocked(self):
+        prepare, _, _ = _registration_update_hooks(
+            "全链条",
+            self._data({"核查结果": "已登记"}),
+            {"id": 7},
+        )
+        with self.assertRaises(HTTPException) as raised:
+            await prepare(
+                cur=MagicMock(),
+                source={"id": 11, "row_key": "row-key"},
+                current_values={"核查结果": "待登记"},
+                changes={"核查结果": "已登记"},
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_legacy_pending_task_can_edit_without_selecting_property(self):
+        prepare, callback, _ = _registration_update_hooks(
+            "全链条",
+            self._data({"核查人": "组员甲"}),
+            {"id": 7},
+        )
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        with patch(
+            "routers.mobile_tasks.registration_links_by_rows",
+            AsyncMock(return_value={
+                "row-key": {
+                    "status": "legacy_completed",
+                    "property_id": None,
+                    "source_id": 11,
+                }
+            }),
+        ):
+            extra = await prepare(
+                cur=cursor,
+                source={"id": 11, "row_key": "row-key"},
+                current_values={"核查结果": "待登记", "核查人": "组员乙"},
+                changes={"核查人": "组员甲"},
+            )
+            await callback(
+                cur=cursor,
+                source={"id": 11, "row_hash": "a" * 64},
+                before={},
+                after={"核查结果": "待登记", "核查人": "组员甲"},
+                row_key_before="row-key",
+                row_key_after="row-key",
+                revision=8,
+            )
+        self.assertEqual(extra, {})
+        cursor.execute.assert_not_awaited()
+
+    async def test_linked_pending_edit_advances_expected_local_revision(self):
+        prepare, callback, _ = _registration_update_hooks(
+            "全链条",
+            self._data({"核查人": "组员甲"}),
+            {"id": 7},
+        )
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=("identity", "长板"))
+        existing = {
+            "status": "matched_once",
+            "property_id": 23,
+            "source_id": 11,
+        }
+        with (
+            patch(
+                "routers.mobile_tasks.registration_links_by_rows",
+                AsyncMock(return_value={"row-key": existing}),
+            ),
+            patch(
+                "routers.mobile_tasks.refresh_registration_source_context_after_writeback",
+                AsyncMock(return_value=True),
+            ) as refresh_mock,
+        ):
+            await prepare(
+                cur=cursor,
+                source={"id": 11, "row_key": "row-key"},
+                current_values={"核查结果": "待登记", "核查人": "组员乙"},
+                changes={"核查人": "组员甲"},
+            )
+            await callback(
+                cur=cursor,
+                source={
+                    "id": 11,
+                    "revision": 7,
+                    "row_hash": "a" * 64,
+                },
+                before={},
+                after={"核查结果": "待登记", "核查人": "组员甲"},
+                row_key_before="row-key",
+                row_key_after="row-key",
+                revision=8,
+            )
+
+        refresh_mock.assert_awaited_once_with(
+            cursor,
+            parser_type="全链条",
+            source_id=11,
+            previous_revision=7,
+            previous_row_hash="a" * 64,
+            current_revision=8,
+            current_row_hash="a" * 64,
+        )
 
     async def test_leader_can_only_assign_active_member_in_same_community(self):
         cursor = MagicMock()

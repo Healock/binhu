@@ -61,7 +61,21 @@ from services.residence_platform import ResidencePlatformError
 from services.residence_status_scan import (
     residence_detail_for_values,
     residence_status_by_rows,
+    wake_residence_lookup_scheduler,
 )
+from services.task_registration import (
+    REGISTRATION_TASK_TYPES,
+    cancel_registration_link,
+    is_registration_task,
+    migrate_registration_link,
+    refresh_registration_source_context_after_writeback,
+    registration_links_by_rows,
+    select_registration_property,
+    validate_registration_property,
+    record_registration_event,
+)
+from services.residence_platform_config import load_residence_config
+from services.residence_status_scan import _load_current_target, _lookup_registration_address_target
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
@@ -71,6 +85,7 @@ TaskStatus = Literal[
     "unchecked",
     "checked",
     "review",
+    "registration_review",
     "completed",
     "all",
 ]
@@ -333,6 +348,14 @@ class TaskBatchUpdate(BaseModel):
     changes: dict[str, str]
     base_values: dict[str, str] = Field(default_factory=dict)
     expected_revision: int = Field(gt=0)
+    registration_property_id: int | None = Field(default=None, gt=0)
+    registration_property_version: int | None = Field(default=None, gt=0)
+
+
+class RegistrationManualConfirm(BaseModel):
+    reason: Literal["address_mismatch", "address_ambiguous"]
+    note: str = Field(default="", max_length=500)
+    expected_revision: int = Field(gt=0)
 
 
 class SyncConflictResolution(BaseModel):
@@ -494,6 +517,182 @@ def is_flow_task_elevated(user: dict) -> bool:
     )
 
 
+REGISTRATION_CONFIRM_POSITIONS = {"基础管控", "中队长", "所队领导"}
+
+
+def can_confirm_registration(user: dict) -> bool:
+    position = str((user.get("member") or {}).get("position") or "").strip()
+    return is_flow_task_admin(user) or position in REGISTRATION_CONFIRM_POSITIONS
+
+
+def _registration_update_hooks(
+    parser_type: str,
+    data: TaskBatchUpdate,
+    user: dict,
+):
+    """Build transaction hooks for an atomic result/property save."""
+    if not is_registration_task(parser_type):
+        if data.registration_property_id or data.registration_property_version:
+            raise HTTPException(400, "该业务不支持拟登记房屋关联")
+        return None, None, False
+    if bool(data.registration_property_id) != bool(data.registration_property_version):
+        raise HTTPException(422, "房屋编号和房屋版本必须同时提交")
+
+    workflow = TASK_WORKFLOWS[parser_type]
+    prepared: dict = {}
+
+    async def transaction_prepare(*, cur, source, current_values, changes):
+        current_result = str(current_values.get(workflow.result_field) or "").strip()
+        after = dict(current_values)
+        after.update(changes)
+        result = str(after.get(workflow.result_field) or "").strip()
+        submitted_result = (
+            str(changes.get(workflow.result_field) or "").strip()
+            if workflow.result_field in changes
+            else None
+        )
+        result_changed = submitted_result is not None and submitted_result != current_result
+        if submitted_result == "已登记" and current_result != "已登记":
+            raise HTTPException(
+                403,
+                "不能直接选择已登记；请等待居住证自动比对或由有权人员复核确认",
+            )
+        links = await registration_links_by_rows(
+            cur,
+            parser_type,
+            [str(source["row_key"])],
+        )
+        existing = links.get(str(source["row_key"]))
+        prepared["existing"] = existing
+        if result != "待登记":
+            if data.registration_property_id:
+                raise HTTPException(400, "只有待登记结果可以关联拟登记房屋")
+            prepared["action"] = (
+                "cancel"
+                if current_result == "待登记" and result_changed
+                else "preserve"
+            )
+            return {}
+
+        if (
+            existing
+            and existing.get("status") == "legacy_completed"
+            and current_result == "待登记"
+            and not result_changed
+            and not data.registration_property_id
+        ):
+            # Historical rows keep their completed compatibility state when
+            # another field is edited.  They are not forced into the new
+            # property-selection contract retroactively.
+            prepared["action"] = "preserve"
+            return {}
+
+        prepared["action"] = "pending"
+
+        if data.registration_property_id:
+            try:
+                property_row = await validate_registration_property(
+                    cur,
+                    property_id=int(data.registration_property_id),
+                    expected_version=int(data.registration_property_version or 0),
+                    task_community=get_parser(parser_type).community_value(after),
+                )
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            prepared["property"] = property_row
+            return {"现住址": property_row["address"]}
+
+        existing_usable = bool(
+            existing
+            and existing.get("property_id")
+            and int(existing.get("source_id") or 0) == int(source["id"])
+            and existing.get("status") not in {"cancelled", "legacy_completed"}
+        )
+        if not existing_usable:
+            raise HTTPException(422, "选择待登记时必须同时选择唯一的拟登记房屋")
+        return {}
+
+    async def transaction_callback(
+        *, cur, source, before, after, row_key_before, row_key_after, revision,
+    ):
+        del before
+        action = prepared.get("action")
+        if action == "preserve":
+            return
+        if action == "pending":
+            await cur.execute(
+                "SELECT COALESCE(identity_hmac,''),community "
+                "FROM _online_source_projection WHERE parser_type=%s AND row_key=%s",
+                (parser_type, row_key_after),
+            )
+            projection_context = await cur.fetchone()
+            if not projection_context:
+                raise HTTPException(409, "任务投影已变化，请刷新后重试")
+            if row_key_before != row_key_after and not prepared.get("property"):
+                try:
+                    await migrate_registration_link(
+                        cur,
+                        parser_type=parser_type,
+                        row_key_before=row_key_before,
+                        row_key_after=row_key_after,
+                        source_id=int(source["id"]),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+            property_row = prepared.get("property")
+            if property_row:
+                if row_key_before != row_key_after:
+                    existing = prepared.get("existing")
+                    if existing:
+                        try:
+                            await migrate_registration_link(
+                                cur,
+                                parser_type=parser_type,
+                                row_key_before=row_key_before,
+                                row_key_after=row_key_after,
+                                source_id=int(source["id"]),
+                            )
+                        except ValueError as exc:
+                            raise HTTPException(409, str(exc)) from exc
+                await select_registration_property(
+                    cur,
+                    parser_type=parser_type,
+                    row_key=row_key_after,
+                    source_id=int(source["id"]),
+                    property_id=int(property_row["id"]),
+                    property_version=int(property_row["version"]),
+                    source_revision=int(revision),
+                    source_row_hash=str(source["row_hash"] or ""),
+                    identity_hmac=str(projection_context[0] or ""),
+                    task_community=str(projection_context[1] or ""),
+                    user_id=int(user.get("id")) if user.get("id") else None,
+                )
+            else:
+                # A normal edit on an already-linked pending task advances the
+                # local source revision before Tencent is contacted.  Carry
+                # the link across that exact expected revision so the scanner
+                # cannot mistake our own queued edit for an external change.
+                await refresh_registration_source_context_after_writeback(
+                    cur,
+                    parser_type=parser_type,
+                    source_id=int(source["id"]),
+                    previous_revision=int(source["revision"]),
+                    previous_row_hash=str(source["row_hash"] or ""),
+                    current_revision=int(revision),
+                    current_row_hash=str(source["row_hash"] or ""),
+                )
+        elif action == "cancel":
+            await cancel_registration_link(
+                cur,
+                parser_type=parser_type,
+                row_key=row_key_before,
+                source_id=int(source["id"]),
+                user_id=int(user.get("id")) if user.get("id") else None,
+            )
+
+    return transaction_prepare, transaction_callback, True
+
+
 def _require_task_edit_user(user: dict) -> dict:
     if not (
         has_permission(user, ONLINE_RAW_EDIT)
@@ -545,7 +744,20 @@ def _review_condition(parser_type: str) -> str:
         conditions.append(
             f"({_json_field(workflow.result_field)} LIKE '%%无法核实%%')"
         )
+    if is_registration_task(parser_type):
+        conditions.append(_registration_review_condition(parser_type))
     return "(" + " OR ".join(conditions) + ")"
+
+
+def _registration_review_condition(parser_type: str) -> str:
+    if not is_registration_task(parser_type):
+        return "1=0"
+    return (
+        "EXISTS (SELECT 1 FROM _task_registration_links AS registration_link "
+        "WHERE registration_link.parser_type=projection.parser_type "
+        "AND registration_link.row_key=projection.row_key "
+        "AND registration_link.status='review_required')"
+    )
 
 
 def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
@@ -802,6 +1014,8 @@ def _task_where(
         where_parts.append("projection.task_state='completed'")
     elif data.status == "review":
         where_parts.append(review_condition)
+    elif data.status == "registration_review":
+        where_parts.append(_registration_review_condition(parser_type))
     if data.review_stage != "all":
         where_parts.append(_review_stage_condition(parser_type, data.review_stage))
     community_condition, community_params = _multi_filter_condition(
@@ -1216,6 +1430,12 @@ async def _aggregate_live(
                COUNT(*),
                SUM(CASE WHEN projection.conflict=1
                               OR projection.source_count>1
+                              OR EXISTS (
+                                  SELECT 1 FROM _task_registration_links registration_link
+                                  WHERE registration_link.parser_type=projection.parser_type
+                                    AND registration_link.row_key=projection.row_key
+                                    AND registration_link.status='review_required'
+                              )
                               OR (projection.parser_type IN (
                                       '全链条','出租房屋核查','寄递业'
                                   ) AND {_json_field('核查结果')}
@@ -1306,6 +1526,7 @@ def _task_record(
     sync_state: str = "",
     qmf_status: dict | None = None,
     residence_status: dict | None = None,
+    registration_link: dict | None = None,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
@@ -1341,6 +1562,7 @@ def _task_record(
         "first_dispatch_at": _iso_utc(watch.get("first_dispatch_at")),
         "qmf_status": qmf_status,
         "residence_status": residence_status,
+        "registration_link": registration_link,
     }
 
 
@@ -1426,6 +1648,7 @@ def _empty_facets() -> dict:
         "total": 0,
         "priority_counts": {key: 0 for key in PRIORITY_KEYS},
         "status_counts": {key: 0 for key in ("unchecked", "checked", "completed")},
+        "registration_review_count": 0,
         "qmf_feedback_counts": {
             key: 0 for key in (
                 "not_scanned", "stale", "pending", "completed_match",
@@ -1465,6 +1688,13 @@ async def _task_facets(cur, parser_type: str, where_sql: str, params: list) -> d
     for state, count in await cur.fetchall():
         if str(state) in facets["status_counts"]:
             facets["status_counts"][str(state)] = int(count or 0)
+    if is_registration_task(parser_type):
+        await cur.execute(
+            f"SELECT COUNT(*) FROM _online_source_projection AS projection "
+            f"WHERE {where_sql} AND {_registration_review_condition(parser_type)}",
+            params,
+        )
+        facets["registration_review_count"] = int((await cur.fetchone())[0] or 0)
     if parser_type == MODEL_THREE_PARSER:
         await cur.execute(
             f"""
@@ -1669,6 +1899,11 @@ async def _list_mobile_tasks_data(
         rows = await cur.fetchall()
         qmf_by_row = await _qmf_status_by_rows(cur, parser_type, rows)
         residence_by_row = await residence_status_by_rows(cur, parser_type, rows)
+        registration_by_row = await registration_links_by_rows(
+            cur,
+            parser_type,
+            [str(row[0]) for row in rows],
+        )
         watch_by_row = await task_watch_payload(
             cur,
             parser_type,
@@ -1698,6 +1933,7 @@ async def _list_mobile_tasks_data(
                     else None
                 ),
                 residence_status=residence_by_row.get(str(row[0])),
+                registration_link=registration_by_row.get(str(row[0])),
             )
             for row in rows
         ],
@@ -2118,6 +2354,12 @@ async def _mobile_task_detail_data(
             parser_type,
             [(row_key, parent_row[0])],
         )
+        registration_by_row = await registration_links_by_rows(
+            cur,
+            parser_type,
+            [row_key],
+        )
+        registration_link = registration_by_row.get(row_key)
 
         sources = []
         for (
@@ -2150,6 +2392,17 @@ async def _mobile_task_detail_data(
                 spreadsheet_id=int(spreadsheet_id),
                 sheet_id=str(sheet_id),
             )
+            workflow = TASK_WORKFLOWS[parser_type]
+            if is_registration_task(parser_type) and workflow.result_field in parser.COLUMNS:
+                metadata[workflow.result_field] = {
+                    "type": "select",
+                    "multiple": False,
+                    "options": [
+                        {"id": option, "text": option}
+                        for option in workflow.result_options
+                        if option != "已登记"
+                    ],
+                }
             raw_community = parser.community_value(values)
             formal_community = (
                 (assignment_context or {}).get("community_aliases", {})
@@ -2175,7 +2428,12 @@ async def _mobile_task_detail_data(
                 1,
                 False,
                 bool(str(parent_row[3] or "")),
-                TASK_WORKFLOWS[parser_type].state(values),
+                TASK_WORKFLOWS[parser_type].state(
+                    values,
+                    registration_status=str(
+                        (registration_link or {}).get("status") or ""
+                    ),
+                ),
             )
             editable_fields = (
                 list(capabilities["editable_fields"])
@@ -2284,6 +2542,7 @@ async def _mobile_task_detail_data(
                 else None
             ),
             residence_status=residence_by_row.get(row_key),
+            registration_link=registration_link,
         ),
         "workflow": {
             "label": workflow.label,
@@ -2312,6 +2571,8 @@ async def _mobile_task_detail_data(
         "qmf_feedback": qmf_feedback,
         "qmf_status": qmf_by_row.get(row_key),
         "residence_status": residence_by_row.get(row_key),
+        "registration_link": registration_link,
+        "registration_manual_confirm_allowed": can_confirm_registration(user),
         "sources": sources,
     }
 
@@ -2520,6 +2781,123 @@ async def get_mobile_task_detail(
     return await _mobile_task_detail_data(parser_type, row_key, user, conn)
 
 
+@router.post("/{parser_type}/{row_key}/registration/confirm")
+async def manually_confirm_registration(
+    parser_type: str,
+    row_key: str,
+    data: RegistrationManualConfirm,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """高权限人工确认登记，仅限居住证有效但自动匹配需复核的任务。"""
+    if parser_type not in REGISTRATION_TASK_TYPES:
+        raise HTTPException(400, "该业务不支持登记闭环")
+    if not can_confirm_registration(user):
+        raise HTTPException(403, "只有基础管控及以上岗位可以人工确认登记")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    config = await load_residence_config(conn)
+    if not config.session_ready:
+        raise HTTPException(409, "居住证平台配置尚未就绪，不能人工确认")
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT link.status,link.reason_code,link.source_id,projection.identity_hmac,"
+            "projection.community,projection.source_count "
+            "FROM _task_registration_links AS link "
+            "JOIN _online_source_projection AS projection "
+            "ON projection.parser_type=link.parser_type AND projection.row_key=link.row_key "
+            "WHERE link.parser_type=%s AND link.row_key=%s",
+            (parser_type, row_key),
+        )
+        link = await cur.fetchone()
+        if not link or str(link[0] or "") != "review_required" or str(link[1] or "") not in {
+            "address_mismatch", "address_ambiguous"
+        }:
+            raise HTTPException(409, "该任务当前不满足人工确认条件")
+        if int(link[5] or 0) != 1:
+            raise HTTPException(409, "任务来源不唯一，不能人工确认")
+        community_values = context.get("community_values")
+        if community_values is not None and str(link[4] or "") not in set(community_values):
+            raise HTTPException(403, "无权复核该社区任务")
+        expected_hmac = str(link[3] or "")
+        await cur.execute(
+            "SELECT values_json,revision FROM _online_source_rows "
+            "WHERE id=%s AND parser_type=%s AND row_key=%s",
+            (int(link[2]), parser_type, row_key),
+        )
+        source_row = await cur.fetchone()
+        if not source_row:
+            raise HTTPException(404, "任务来源已不存在")
+        current_source_values = json_value(source_row[0], {})
+        current_revision = int(source_row[1])
+    await conn.rollback()
+    if data.expected_revision != current_revision:
+        raise HTTPException(409, "任务来源已变化，请刷新后重试")
+    try:
+        target = await _load_current_target(parser_type, row_key, expected_hmac)
+        state, _address, registration_code = await _lookup_registration_address_target(config, target)
+    except Exception as exc:
+        raise HTTPException(502, "居住证平台查询失败，不能人工确认") from exc
+    if state != "registered" or registration_code == "1":
+        raise HTTPException(409, "居住证登记无效或已注销，不能人工确认")
+
+    async def confirm_prepare(*, cur, source, current_values, changes):
+        del changes
+        workflow = TASK_WORKFLOWS[parser_type]
+        if str(current_values.get(workflow.result_field) or "").strip() != "待登记":
+            raise HTTPException(409, "任务当前已不是待登记，请刷新后重试")
+        await cur.execute(
+            "SELECT status,reason_code,source_id,property_id "
+            "FROM _task_registration_links WHERE parser_type=%s AND row_key=%s FOR UPDATE",
+            (parser_type, row_key),
+        )
+        current_link = await cur.fetchone()
+        if (
+            not current_link
+            or str(current_link[0] or "") != "review_required"
+            or str(current_link[1] or "") not in {"address_mismatch", "address_ambiguous"}
+            or int(current_link[2] or 0) != int(source["id"])
+            or current_link[3] is None
+        ):
+            raise HTTPException(409, "登记复核状态已变化，请刷新后重试")
+        return {}
+
+    async def confirm_callback(*, cur, source, before, after, row_key_before, row_key_after, revision):
+        del source, before, after, revision
+        await cur.execute(
+            "UPDATE _task_registration_links SET status='confirmation_pending',reason_code='',"
+            "confirmed_by=%s,manual_confirmed_at=UTC_TIMESTAMP(),confirmed_at=NULL,"
+            "manual_reason=%s,manual_note=%s "
+            "WHERE parser_type=%s AND row_key=%s AND source_id=%s AND status='review_required'",
+            (int(user.get("id")), data.reason, data.note[:500], parser_type, row_key_after, int(link[2])),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(409, "登记复核状态已变化，请刷新后重试")
+        await record_registration_event(
+            cur, parser_type=parser_type, row_key=row_key_after,
+            source_id=int(link[2]), event_type="manual_registration_confirmed",
+            reason_code=data.reason, actor_user_id=int(user.get("id")),
+        )
+
+    result = await queue_source_fields(
+        parser_type=parser_type,
+        source_id=int(link[2]),
+        changes={TASK_WORKFLOWS[parser_type].result_field: "已登记"},
+        base_values={TASK_WORKFLOWS[parser_type].result_field: str(current_source_values.get(TASK_WORKFLOWS[parser_type].result_field) or "")},
+        request=request, user=user, conn=conn, explicit_text_edit=False,
+        registration_mode=True, audit_action="manual_registration",
+        transaction_prepare=confirm_prepare,
+        transaction_callback=confirm_callback,
+    )
+    await record_admin_audit(
+        user, "mobile_tasks.registration.manual_confirm",
+        target_type="mobile_task", target_name=f"{parser_type}:{row_key}",
+        detail={"reason": data.reason}, **request_audit_fields(request),
+    )
+    return result
+
+
 @router.patch("/{parser_type}/source-rows/{source_id}")
 async def update_mobile_task(
     parser_type: str,
@@ -2538,7 +2916,10 @@ async def update_mobile_task(
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
         await _validate_assignment(cur, context, data.changes)
-    return await queue_source_fields(
+    transaction_prepare, transaction_callback, registration_mode = (
+        _registration_update_hooks(parser_type, data, user)
+    )
+    result = await queue_source_fields(
         parser_type=parser_type,
         source_id=source_id,
         changes=data.changes,
@@ -2548,7 +2929,13 @@ async def update_mobile_task(
         user=user,
         conn=conn,
         explicit_text_edit=True,
+        registration_mode=registration_mode,
+        transaction_prepare=transaction_prepare,
+        transaction_callback=transaction_callback,
     )
+    if registration_mode:
+        wake_residence_lookup_scheduler()
+    return result
 
 
 @router.post("/{parser_type}/source-rows/{source_id}/claim")
@@ -2576,6 +2963,9 @@ async def claim_mobile_task(
         raise HTTPException(403, "请从研判页面修改研判内容")
 
     inspector = str(context["name"] or "").strip()
+    transaction_prepare, transaction_callback, registration_mode = (
+        _registration_update_hooks(parser_type, data, user)
+    )
 
     def validate_unassigned(current: dict) -> None:
         if str(current.get("核查人") or "").strip():
@@ -2592,7 +2982,12 @@ async def claim_mobile_task(
         conn=conn,
         explicit_text_edit=True,
         current_values_validator=validate_unassigned,
+        registration_mode=registration_mode,
+        transaction_prepare=transaction_prepare,
+        transaction_callback=transaction_callback,
     )
+    if registration_mode:
+        wake_residence_lookup_scheduler()
     await record_admin_audit(
         user,
         "mobile_tasks.self_claim",

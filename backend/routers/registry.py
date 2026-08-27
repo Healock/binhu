@@ -62,6 +62,7 @@ class RegistrySearch(BaseModel):
 class PropertySearch(BaseModel):
     keyword: str = Field(default="", max_length=200)
     community_id: int | None = None
+    community_name: str = Field(default="", max_length=200)
     housing_category: Literal["", "rental", "self_owned", "other", "unmarked"] = ""
     certificate_status: Literal[
         "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
@@ -315,6 +316,20 @@ async def _property_search_result(
     if data.community_id is not None:
         where.append("property.community_id=%s")
         params.append(data.community_id)
+    elif data.community_name.strip():
+        online_schema = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
+        async with conn.cursor() as community_cur:
+            await community_cur.execute(
+                f"""SELECT DISTINCT community.id FROM `{online_schema}`._communities community
+                   LEFT JOIN `{online_schema}`._community_aliases alias ON alias.community_id=community.id
+                   WHERE community.is_active=1 AND (community.name=%s OR alias.alias=%s)""",
+                (data.community_name.strip(), data.community_name.strip()),
+            )
+            community_ids = [int(row[0]) for row in await community_cur.fetchall()]
+        if not community_ids:
+            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+        where.append("property.community_id IN (" + ",".join(["%s"] * len(community_ids)) + ")")
+        params.extend(community_ids)
     if data.status:
         where.append("property.status=%s")
         params.append(data.status)

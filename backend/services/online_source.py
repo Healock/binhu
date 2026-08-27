@@ -9,6 +9,10 @@ from typing import Any
 
 from services.parsers import get_parser
 from services.task_workflow import TASK_WORKFLOWS, task_state
+from services.task_registration import (
+    ensure_missing_registration_review,
+    registration_links_by_rows,
+)
 from services.task_graph import reconcile_projection_task_graph
 from services.watch_matching import (
     parse_dispatch_time,
@@ -148,7 +152,8 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         str(row[0]): row[1] for row in await cur.fetchall() if row[1]
     }
     await cur.execute(
-        "SELECT source.id, source.row_key, source.values_json "
+        "SELECT source.id, source.row_key, source.values_json, "
+        "source.revision, source.row_hash "
         "FROM _online_source_rows AS source WHERE source.parser_type=%s"
         f"{logical_source_sql_filter(parser_type)} "
         "ORDER BY spreadsheet_id, physical_row",
@@ -168,12 +173,18 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         for source_id, field_name, local_value in await cur.fetchall():
             local_by_source[int(source_id)][str(field_name)] = str(local_value or "")
     grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for source_id, row_key, raw_values in source_records:
+    source_contexts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for source_id, row_key, raw_values, revision, row_hash in source_records:
         values = json_value(raw_values, {})
         values.update(local_by_source.get(int(source_id), {}))
         grouped[str(row_key)].append({
             column: str(values.get(column, "") or "").strip()
             for column in parser.COLUMNS
+        })
+        source_contexts[str(row_key)].append({
+            "id": int(source_id),
+            "revision": int(revision),
+            "row_hash": str(row_hash or ""),
         })
 
     await cur.execute(
@@ -215,6 +226,7 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         })
 
     projection_rows = []
+    merged_rows: dict[str, tuple[dict[str, str], bool]] = {}
     for row_key, source_rows in grouped.items():
         parent = dict(source_rows[0])
         conflict = False
@@ -226,6 +238,26 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
                 conflict = True
                 continue
             parent = merged
+        merged_rows[row_key] = (parent, conflict)
+        identity_hmac = projection_identity(parser_type, parent, parser.COLUMNS)
+        await ensure_missing_registration_review(
+            cur,
+            parser_type=parser_type,
+            row_key=row_key,
+            values=parent,
+            source_contexts=source_contexts.get(row_key, []),
+            identity_hmac=identity_hmac,
+            task_community=parser.community_value(parent),
+        )
+
+    registration_links = await registration_links_by_rows(
+        cur,
+        parser_type,
+        list(grouped),
+    )
+
+    for row_key, source_rows in grouped.items():
+        parent, conflict = merged_rows[row_key]
         projection_rows.append((
             parser_type,
             row_key,
@@ -247,7 +279,13 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
                 ])),
                 previous_first_dispatch.get(row_key),
             ),
-            task_state(parser_type, parent),
+            task_state(
+                parser_type,
+                parent,
+                registration_status=str(
+                    (registration_links.get(row_key) or {}).get("status") or ""
+                ),
+            ),
             len(source_rows),
             int(conflict),
             "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS),

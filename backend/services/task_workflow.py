@@ -22,8 +22,22 @@ class TaskWorkflow:
     result_options: tuple[str, ...] = ()
     include_in_summary: bool = True
 
-    def state(self, values: dict[str, str]) -> str:
+    def state(
+        self,
+        values: dict[str, str],
+        *,
+        registration_status: str = "",
+    ) -> str:
         """返回 unchecked、checked 或 completed。"""
+        from services.task_registration import registration_task_state
+
+        registration_state = registration_task_state(
+            self.parser_type,
+            values,
+            registration_status,
+        )
+        if registration_state:
+            return registration_state
         result = str(values.get(self.result_field, "") or "").strip()
         if self.valid_results:
             return "completed" if result in self.valid_results else "unchecked"
@@ -122,6 +136,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         secondary_fields=("二次反馈",),
         result_options=(
             "已登记",
+            "待登记",
             "离苏",
             "常口",
             "无需登记，原因写备注",
@@ -141,6 +156,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         secondary_fields=("二次反馈",),
         result_options=(
             "已登记",
+            "待登记",
             "离苏",
             "无需登记，原因后面备注好",
             "移交，后面移交哪个社区备注好",
@@ -173,6 +189,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         secondary_fields=("二次核查结果",),
         result_options=(
             "已登记",
+            "待登记",
             "无需登记",
             "无需登记，原因写备注",
             "移交",
@@ -193,7 +210,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         source_fields=("出警内容", "出警类别", "出警单位"),
         secondary_fields=("二次反馈",),
         result_options=(
-            "已登记", "离苏", "常口", "无需登记，原因写备注",
+            "已登记", "待登记", "离苏", "常口", "无需登记，原因写备注",
             "移交，移交哪个社区写备注", "无法核实",
         ),
         include_in_summary=False,
@@ -209,7 +226,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         identity_fields=("身份证号",),
         secondary_fields=("二次反馈",),
         result_options=(
-            "已登记", "离苏", "常口", "无需登记，原因写备注",
+            "已登记", "待登记", "离苏", "常口", "无需登记，原因写备注",
             "移交，移交哪个社区写备注", "无法核实",
         ),
         include_in_summary=False,
@@ -224,6 +241,14 @@ SUMMARY_TASK_TYPES = tuple(
 )
 
 
-def task_state(parser_type: str, values: dict[str, str]) -> str:
+def task_state(
+    parser_type: str,
+    values: dict[str, str],
+    *,
+    registration_status: str = "",
+) -> str:
     workflow = TASK_WORKFLOWS.get(parser_type)
-    return workflow.state(values) if workflow else ""
+    return (
+        workflow.state(values, registration_status=registration_status)
+        if workflow else ""
+    )

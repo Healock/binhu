@@ -399,3 +399,28 @@ class ResidencePlatformClient:
             photo_state=photo_state,
             photo_error_code=photo_error_code,
         )
+
+    async def lookup_registration_address(self, identity: str) -> tuple[str, str, str]:
+        """Read only the registration state and address; never requests a photo."""
+        if not self.config.session_ready:
+            raise ResidencePlatformError("session_not_ready", "居住证平台尚未登录")
+        body = {"sfzh": identity, "xzqh": self.config.organization_code[:6]}
+        resident_payload = await self._post_readonly(SEARCH_RESIDENT_PATH, body)
+        if _is_authentication_response(resident_payload):
+            raise ResidencePlatformError("authentication_expired", "居住证平台登录已失效")
+        floating_payload = await self._post_readonly(SEARCH_FLOATING_PATH, body)
+        classified = classify_floating_response(floating_payload)
+        if classified.error_code == "authentication_expired":
+            raise ResidencePlatformError("authentication_expired", "居住证平台登录已失效")
+        raw = floating_payload.get("result") if isinstance(floating_payload, dict) else None
+        address = ""
+        if isinstance(raw, dict):
+            address = "".join(
+                part.strip() for part in (
+                    str(raw.get("jlx_dictText") or ""),
+                    str(raw.get("mph") or ""),
+                ) if part.strip()
+            )
+        return classified.state, address, str(
+            (raw or {}).get("rysfzx") or ""
+        ) if isinstance(raw, dict) else ""

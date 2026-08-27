@@ -15,6 +15,8 @@ import {
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
   mobileTaskSurfaceTone,
+  mobileTaskCurrentAddressLabel,
+  mobileTaskUsesRegistrationClosure,
   sortMobileTaskBusinesses,
 } from '../src/utils/mobileTasks.ts'
 import {
@@ -392,8 +394,75 @@ test('已研判任务在列表和详情直接显示研判结果', () => {
 test('全链条新增待登记结果保留为正式任务选项', () => {
   assert.equal(
     mobileTaskSourceState('全链条', '核查结果', { 核查结果: '待登记' }),
-    'completed',
+    'checked',
   )
+})
+
+test('待登记不会被前端误判为已完成', () => {
+  for (const parserType of ['全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警']) {
+    assert.equal(
+      mobileTaskSourceState(parserType, '核查结果', { 核查结果: '待登记', 现住址: '拟登记地址' }),
+      'checked',
+      parserType,
+    )
+  }
+})
+
+test('详情页按待登记状态动态显示拟登记住址或核查补充信息', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /mobileTaskCurrentAddressLabel\(/)
+  assert.match(detailSource, /mobileTaskUsesRegistrationClosure\(parserType\)/)
+  assert.doesNotMatch(detailSource, /parserType !== '疑似未注销模型三'/)
+})
+
+test('六类闭环业务统一使用动态住址标题', () => {
+  assert.equal(mobileTaskCurrentAddressLabel('全链条', '待登记'), '拟登记住址')
+  assert.equal(mobileTaskCurrentAddressLabel('全链条', '无法核实'), '核查补充信息')
+  assert.equal(mobileTaskCurrentAddressLabel('疑似未注销模型三', '待登记'), '现住址')
+})
+
+test('登记房屋闭环只用于六类指令核查业务', () => {
+  for (const parserType of ['全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警']) {
+    assert.equal(mobileTaskUsesRegistrationClosure(parserType), true)
+  }
+  assert.equal(mobileTaskUsesRegistrationClosure('疑似未注销模型三'), false)
+  assert.equal(mobileTaskUsesRegistrationClosure('未知业务'), false)
+})
+
+test('表格行内编辑不允许脱离房屋选择器保存待登记', () => {
+  const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
+  assert.match(tableSource, /\['已登记', '待登记'\]\.includes\(String\(option\.text\)\)/)
+  assert.match(tableSource, /待登记需进入详情选择拟登记房屋/)
+})
+
+test('任务列表和详情展示登记比对阶段与复核原因', () => {
+  const listSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const statusSource = readFileSync(
+    new URL('../src/components/RegistrationLinkStatus.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(listSource, /RegistrationLinkStatus link=\{task\.registration_link\}/)
+  assert.match(tableSource, /RegistrationLinkStatus link=\{task\.registration_link\}/)
+  assert.match(detailSource, /拟登记住址关联/)
+  assert.match(detailSource, /两个独立扫描周期/)
+  assert.match(statusSource, /登记待复核/)
+  assert.match(statusSource, /已匹配一次/)
+  assert.match(listSource, /登记复核（\$\{facets\.registration_review_count\}）/)
+  assert.match(listSource, /registration_review/)
 })
 
 test('任务详情直接展示身份证号、手机号、来源和地址', () => {
@@ -458,7 +527,7 @@ test('任务卡片使用可读密度、完整身份证主体和来源标签云',
   assert.match(pageSource, /mobile-task-item-card__key-info/)
   assert.match(pageSource, /task\.summary\.current_address/)
   assert.match(pageSource, /task\.summary\.original_address/)
-  assert.match(pageSource, /currentAddress \? '现住址' : '地址'/)
+  assert.match(pageSource, /mobileTaskCurrentAddressLabel\(task\.parser_type, task\.summary\.result \|\| ''\)/)
   assert.match(pageSource, /mobile-task-item-card__key-row--old-address/)
   assert.match(pageSource, /<dt>原地址<\/dt>/)
   assert.match(pageSource, /mobile-task-item-card__flags/)
@@ -625,7 +694,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /mobileTaskEditorFields/)
   assert.match(tableSource, /placeholder="请选择"/)
   assert.match(tableSource, /placeholder=\{field === '入住方式' \? '自购、房东出租、中介出租等' : '请输入'\}/)
-  assert.match(tableSource, />现住址</)
+  assert.match(tableSource, /mobileTaskCurrentAddressLabel\(task\.parser_type, task\.summary\.result \|\| ''\)/)
   assert.match(tableSource, />核查结果</)
   assert.match(tableSource, />研判</)
   assert.match(tableSource, />二次反馈</)
@@ -838,14 +907,15 @@ test('流口任务不再提供待同步筛选入口，但保留任务级同步�
   assert.doesNotMatch(styles, /\.mobile-task-priority-grid\s*\{[\s\S]*?repeat\(7,/)
 })
 
-test('mobile task choice fields disable search on mobile', () => {
+test('普通选择字段在手机端关闭搜索，房屋关联仍允许模糊查找', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
   assert.match(detailSource, /const mobile = useMobileViewport\(\)/)
   assert.match(detailSource, /showSearch=\{!mobile\}/)
-  assert.equal(detailSource.includes('\n                        showSearch\n'), false)
+  assert.match(detailSource, /placeholder="搜索并选择辖区档案中的唯一房屋"/)
+  assert.match(detailSource, /onSearch=\{value => void loadRegistrationProperties\(value\)\}/)
 })
 
 test('全民防只保留单条登记入口并在内部完成登记前核对', () => {

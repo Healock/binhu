@@ -107,6 +107,9 @@ export function mobileTaskSourceState(
       ? 'completed'
       : 'unchecked'
   }
+  // “待登记”只是网格员已完成现场核查、等待房屋关联和居住证二次确认，
+  // 不能提前计入已完成；否则列表、完成率和任务图会把它误判为完成。
+  if (result === '待登记') return 'checked'
   if (result) return 'completed'
   return (values.现住址 || '').trim() ? 'checked' : 'unchecked'
 }
@@ -221,4 +224,21 @@ export function sortMobileTaskBusinesses(
     || right.pending - left.pending
     || left.label.localeCompare(right.label, 'zh-CN')
   ))
+}
+export const MOBILE_TASK_REGISTRATION_TYPES = new Set([
+  '全链条',
+  '出租房屋核查',
+  '寄递业',
+  '疑似返苏',
+  '苏州涉警',
+  '交通涉警',
+])
+
+export function mobileTaskUsesRegistrationClosure(parserType: string) {
+  return MOBILE_TASK_REGISTRATION_TYPES.has(parserType)
+}
+
+export function mobileTaskCurrentAddressLabel(parserType: string, result: string) {
+  if (!mobileTaskUsesRegistrationClosure(parserType)) return '现住址'
+  return result.trim() === '待登记' ? '拟登记住址' : '核查补充信息'
 }

@@ -143,7 +143,13 @@ class ProjectionCursor:
     async def fetchall(self):
         if self.mode == "sources":
             return [
-                (index, row_key, values_json)
+                (
+                    index,
+                    row_key,
+                    values_json,
+                    1,
+                    source_row_hash(json.loads(values_json)),
+                )
                 for index, (row_key, values_json) in enumerate(self.source_rows, 1)
             ]
         if self.mode == "pending":
@@ -260,7 +266,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["text"] for item in metadata["write_options"]],
             [
-                "已登记",
+                "待登记",
                 "离苏",
                 "常口",
                 "无需登记，原因写备注",
@@ -269,7 +275,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         client = TxDocsClient("client", "token", "user")
-        for result in ("已登记", "常口"):
+        for result in ("待登记", "常口"):
             with self.subTest(result=result):
                 request = client.build_update_cell_request(
                     "sheet", 47, 9, result, metadata, "核查结果"

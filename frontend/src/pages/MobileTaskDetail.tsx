@@ -24,11 +24,13 @@ import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
   getMobileTaskResidenceDetail,
+  manuallyConfirmRegistration,
   getQmfLegacyStatus,
   getQmfRegistrationRun,
   executeQmfRegistration,
   prepareQmfRegistration,
   retryQmfTencentMarker,
+  searchRegistrationProperties,
   resolveMobileTaskSyncConflict,
   updateMobileTask,
   updateMobileTaskAnalysis,
@@ -50,17 +52,20 @@ import {
   buildMobileTaskChanges,
   mergeMobileTaskSaveValues,
   mobileTaskCanLaunchTelephone,
+  mobileTaskCurrentAddressLabel,
   mobileTaskEditorFields,
   mobileTaskPhoneOptions,
   mobileTaskSourceTags,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
+  mobileTaskUsesRegistrationClosure,
 } from '../utils/mobileTasks'
 import MobilePhonePicker from '../components/MobilePhonePicker'
 import QmfFeedbackStatus from '../components/QmfFeedbackStatus'
 import ResidenceRegistrationStatus from '../components/ResidenceRegistrationStatus'
 import ResidenceRegistrationDetail from '../components/ResidenceRegistrationDetail'
+import RegistrationLinkStatus from '../components/RegistrationLinkStatus'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
@@ -131,6 +136,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const formatSystemTime = useSystemTime()
   const { recordActivity, user } = useAuth()
   const { parserType = '', rowKey = '' } = useParams()
+  const registrationClosureEnabled = mobileTaskUsesRegistrationClosure(parserType)
   const [searchParams] = useSearchParams()
   const readonlyView = searchParams.get('readonly') === '1'
   const [data, setData] = useState<MobileTaskDetailData | null>(null)
@@ -156,6 +162,21 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [residenceDetail, setResidenceDetail] = useState<ResidenceDetail | null>(null)
   const [residenceDetailLoading, setResidenceDetailLoading] = useState(false)
   const [residenceDetailError, setResidenceDetailError] = useState('')
+  const [registrationProperties, setRegistrationProperties] = useState<Array<{
+    id: number
+    natural_address: string
+    building: string
+    room: string
+    version: number
+    community_name: string
+  }>>([])
+  const [registrationPropertyId, setRegistrationPropertyId] = useState<number | undefined>()
+  const [registrationPropertyVersion, setRegistrationPropertyVersion] = useState<number | undefined>()
+  const [registrationPropertyLoading, setRegistrationPropertyLoading] = useState(false)
+  const [manualConfirmOpen, setManualConfirmOpen] = useState(false)
+  const [manualConfirmReason, setManualConfirmReason] = useState<'address_mismatch' | 'address_ambiguous'>('address_mismatch')
+  const [manualConfirmNote, setManualConfirmNote] = useState('')
+  const [manualConfirming, setManualConfirming] = useState(false)
   const qmfPreviewRequestActive = useRef(false)
 
   const selectedSource = useMemo(
@@ -208,7 +229,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         ? await getMobileTaskAnalysisDetail(parserType, rowKey)
         : await getMobileTaskDetail(parserType, rowKey)
       setData(result)
+      const link = result.registration_link || result.task.registration_link
       const source = result.sources.find(item => item.id === preferredSourceId) || result.sources[0]
+      const pendingRegistration = Boolean(
+        source
+        && mobileTaskUsesRegistrationClosure(parserType)
+        && (source.values[result.workflow.result_field] || '').trim() === '待登记',
+      )
+      setRegistrationPropertyId(pendingRegistration ? link?.property_id || undefined : undefined)
+      setRegistrationPropertyVersion(pendingRegistration ? link?.property_version || undefined : undefined)
+      setRegistrationProperties(pendingRegistration && link?.property ? [link.property] : [])
       if (source) selectSource(source)
     } catch (reason: any) {
       setError(detailError(reason, '任务详情读取失败'))
@@ -323,6 +353,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           Object.keys(changes).map(field => [field, selectedSource.values[field] || '']),
         ),
         expected_revision: selectedSource.revision,
+        ...(registrationPropertyId && registrationPropertyVersion
+          ? {
+              registration_property_id: registrationPropertyId,
+              registration_property_version: registrationPropertyVersion,
+            }
+          : {}),
       })
       const savedValues = mergeMobileTaskSaveValues(
         selectedSource.values,
@@ -384,6 +420,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         } : source),
       } : current)
       setFormValues(savedValues)
+      // 保存“待登记”后，服务端会同时创建/更新房屋关联。重新读取一次详情，
+      // 确保比对阶段、房屋版本和 registration_link 与服务端一致。
+      await load(selectedSource.id)
       setSavedMessage(result.message)
     } catch (reason: any) {
       const status = reason?.response?.status
@@ -391,6 +430,53 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       if (status === 409 || status === 502) await load(selectedSource.id)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const loadRegistrationProperties = async (keyword: string) => {
+    if (!data || !keyword.trim()) {
+      setRegistrationProperties([])
+      return
+    }
+    setRegistrationPropertyLoading(true)
+    try {
+      const result = await searchRegistrationProperties(keyword, data.task.community)
+      setRegistrationProperties(result.data || [])
+    } catch {
+      setRegistrationProperties([])
+    } finally {
+      setRegistrationPropertyLoading(false)
+    }
+  }
+
+  const openManualRegistrationConfirm = () => {
+    if (!registrationLink || !selectedSource) return
+    setManualConfirmReason(
+      registrationLink.reason_code === 'address_ambiguous'
+        ? 'address_ambiguous'
+        : 'address_mismatch',
+    )
+    setManualConfirmNote('')
+    setManualConfirmOpen(true)
+  }
+
+  const confirmManualRegistration = async () => {
+    if (!selectedSource || manualConfirming) return
+    setManualConfirming(true)
+    setError('')
+    try {
+      const result = await manuallyConfirmRegistration(parserType, rowKey, {
+        reason: manualConfirmReason,
+        note: manualConfirmNote.trim(),
+        expected_revision: selectedSource.revision,
+      })
+      message.success(result.message || '已提交登记复核')
+      setManualConfirmOpen(false)
+      await load(selectedSource.id)
+    } catch (reason: any) {
+      setError(detailError(reason, '人工确认登记失败'))
+    } finally {
+      setManualConfirming(false)
     }
   }
 
@@ -624,6 +710,13 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     : data.task.summary.analysis
   const phoneOptions = mobileTaskPhoneOptions(phone)
   const phoneDisplay = phoneOptions.length > 0 ? phoneOptions.join('、') : phone
+  const registrationPending = registrationClosureEnabled
+    && selectedSource
+    && (selectedSource.values[data.workflow.result_field] || '').trim() === '待登记'
+  const currentAddressLabel = mobileTaskCurrentAddressLabel(
+    parserType,
+    registrationPending ? '待登记' : selectedSource?.values[data.workflow.result_field] || '',
+  )
   const sourceTags = mobileTaskSourceTags(source)
   const syncState = selectedSource?.sync_state || data.task.sync_state
   const syncLabel = syncState ? SYNC_LABELS[syncState] : null
@@ -635,13 +728,14 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       ? [{ label: currentAddress ? '原地址' : '地址', value: originalAddress, wide: true, copyValue: originalAddress, copyLabel: currentAddress ? '原地址' : '地址' }]
       : []),
     ...(currentAddress
-      ? [{ label: '现住址', value: currentAddress, wide: true, copyValue: currentAddress, copyLabel: '现住址' }]
+      ? [{ label: currentAddressLabel, value: currentAddress, wide: true, copyValue: currentAddress, copyLabel: currentAddressLabel }]
       : []),
     ...(!originalAddress && !currentAddress
       ? [{ label: '地址', value: '未填写', wide: true }]
       : []),
   ]
   const latestQmfRun = qmfRun || data.qmf_registration?.latest_run || null
+  const registrationLink = data.registration_link || data.task.registration_link || null
   const canReprepareQmfRun = qmfRunCanReprepare(qmfRun)
   const shouldResumeQmfRun = Boolean(
     latestQmfRun
@@ -863,6 +957,65 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         </section>
       )}
 
+      {registrationClosureEnabled && registrationLink && (
+        <section className="app-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-[var(--app-text-strong)]">拟登记住址关联</h2>
+              <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+                仅在居住证连续两个独立扫描周期精确匹配同一套有效房屋后，才会自动转为已登记。
+              </p>
+            </div>
+            <RegistrationLinkStatus link={registrationLink} />
+          </div>
+          {registrationLink.property ? (
+            <Descriptions
+              className="mt-4"
+              size="small"
+              column={1}
+              bordered
+              items={[
+                {
+                  key: 'property',
+                  label: '关联房屋',
+                  children: [
+                    registrationLink.property.community_name,
+                    registrationLink.property.natural_address,
+                    registrationLink.property.building,
+                    registrationLink.property.room,
+                  ].filter(Boolean).join(' '),
+                },
+                {
+                  key: 'match',
+                  label: '比对进度',
+                  children: `${registrationLink.match_count || 0} 次连续匹配${registrationLink.confirmed_at ? ` · ${registrationLink.confirmed_at}` : ''}`,
+                },
+                ...(registrationLink.reason ? [{
+                  key: 'reason',
+                  label: '当前说明',
+                  children: registrationLink.reason,
+                }] : []),
+              ]}
+            />
+          ) : (
+            <Alert className="mt-4" type="warning" showIcon message="尚未关联辖区档案房屋" description="选择“待登记”时必须从当前任务社区的房屋档案中明确选择一套房屋。" />
+          )}
+          {data.registration_manual_confirm_allowed
+            && registrationLink.status === 'review_required'
+            && ['address_mismatch', 'address_ambiguous'].includes(registrationLink.reason_code)
+            && selectedSource && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3">
+              <div className="text-xs text-[var(--app-text-secondary)]">
+                居住证已有有效登记，但自动地址匹配需要人工复核；确认后仍需后台写回腾讯表格。
+              </div>
+              <Button type="primary" onClick={openManualRegistrationConfirm}>
+                人工确认已登记
+              </Button>
+            </div>
+          )}
+        </section>
+      )}
+
       {mode === 'tasks' && data.qmf_registration?.visible && (
         <div className="space-y-2">
           {qmfLegacyStatusLoading && <Alert type="info" showIcon message="正在复核全民防反馈状态" />}
@@ -1013,12 +1166,48 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     className={`block${field === '核查反馈' ? ' mobile-task-detail-editor-field--compact' : ''}`}
                   >
                     <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">
-                      {field === '核查人' ? '任务分配' : field}
+                      {field === '核查人'
+                        ? '任务分配'
+                        : registrationClosureEnabled && field === '现住址'
+                          ? mobileTaskCurrentAddressLabel(
+                            parserType,
+                            formValues[data.workflow.result_field] || '',
+                          )
+                          : field}
                     </span>
                     {field === '核查人' && (
                       <span className="mb-2 block text-xs text-[var(--app-text-secondary)]">选择任务所属社区的在岗组员，保存后即完成转派</span>
                     )}
-                    {metadata.type === 'select' || field === '核查人' ? (
+                    {registrationClosureEnabled && field === '现住址'
+                      && data.workflow.result_field
+                      && (formValues[data.workflow.result_field] || '').trim() === '待登记' ? (
+                      <Select
+                        showSearch
+                        allowClear
+                        filterOption={false}
+                        className="w-full"
+                        size="large"
+                        loading={registrationPropertyLoading}
+                        value={registrationPropertyId}
+                        placeholder="搜索并选择辖区档案中的唯一房屋"
+                        options={registrationProperties.map(property => ({
+                          value: property.id,
+                          label: `${property.community_name || ''} ${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim(),
+                        }))}
+                        onSearch={value => void loadRegistrationProperties(value)}
+                        onChange={value => {
+                          const property = registrationProperties.find(item => item.id === value)
+                          setRegistrationPropertyId(value || undefined)
+                          setRegistrationPropertyVersion(property?.version)
+                          if (property) {
+                            setFormValues(current => ({
+                              ...current,
+                              现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`,
+                            }))
+                          }
+                        }}
+                      />
+                    ) : metadata.type === 'select' || field === '核查人' ? (
                       <Select
                         allowClear
                         showSearch={!mobile}
@@ -1026,7 +1215,13 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         size="large"
                         value={formValues[field] || undefined}
                         options={options}
-                        onChange={value => setFormValues(current => ({ ...current, [field]: value || '' }))}
+                        onChange={value => {
+                          setFormValues(current => ({ ...current, [field]: value || '' }))
+                          if (field === data.workflow.result_field && value !== '待登记') {
+                            setRegistrationPropertyId(undefined)
+                            setRegistrationPropertyVersion(undefined)
+                          }
+                        }}
                       />
                     ) : (
                       <Input.TextArea
@@ -1071,6 +1266,47 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           }]}
         />
       )}
+
+      <Modal
+        open={manualConfirmOpen}
+        title="人工确认登记"
+        confirmLoading={manualConfirming}
+        okText="确认并提交"
+        cancelText="取消"
+        onCancel={() => { if (!manualConfirming) setManualConfirmOpen(false) }}
+        onOk={() => void confirmManualRegistration()}
+      >
+        <div className="grid gap-4">
+          <Alert
+            type="warning"
+            showIcon
+            message="请确认你已核对居住证有效登记"
+            description="人工确认只允许用于地址不一致或同地址多套房屋的复核场景；系统仍会记录原因并等待腾讯写回结果。"
+          />
+          <label className="grid gap-1.5">
+            <span className="text-sm font-medium text-[var(--app-text)]">确认原因</span>
+            <Select
+              value={manualConfirmReason}
+              options={[
+                { value: 'address_mismatch', label: '地址与房屋档案不一致，但已人工核对' },
+                { value: 'address_ambiguous', label: '同地址存在多套房屋，已人工确认唯一房屋' },
+              ]}
+              onChange={value => setManualConfirmReason(value)}
+            />
+          </label>
+          <label className="grid gap-1.5">
+            <span className="text-sm font-medium text-[var(--app-text)]">复核备注（可选）</span>
+            <Input.TextArea
+              maxLength={500}
+              showCount
+              autoSize={{ minRows: 3, maxRows: 6 }}
+              value={manualConfirmNote}
+              onChange={event => setManualConfirmNote(event.target.value)}
+              placeholder="填写必要的复核说明，不要粘贴身份证号、手机号或居住证返回原文"
+            />
+          </label>
+        </div>
+      </Modal>
 
       <Modal
         open={photoRequestOpen}

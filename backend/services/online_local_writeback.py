@@ -59,6 +59,8 @@ def writeback_cell_metadata(
         known_texts.add(text)
 
     for text in workflow.result_options:
+        if text == "已登记":
+            continue
         if text not in known_texts:
             options.append({"id": text, "text": text})
             known_texts.add(text)
@@ -667,6 +669,25 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                         conflict_count += 1
                     else:
                         superseded_audits.add(int(item["audit_id"]))
+                await cur.execute(
+                    "SELECT revision,row_hash,values_json FROM _online_source_rows "
+                    "WHERE id=%s FOR UPDATE",
+                    (source_id,),
+                )
+                source_before = await cur.fetchone()
+                if not source_before:
+                    raise LookupError("来源行已经变化")
+                previous_revision = int(source_before[0])
+                previous_row_hash = str(source_before[1] or "")
+                expected_values = json_value(source_before[2], {})
+                for item in verified_safe:
+                    expected_values[str(item["field_name"])] = str(
+                        item["local_value"] or ""
+                    )
+                expected_writeback_only = (
+                    not conflict_items
+                    and source_row_hash(expected_values) == source_row_hash(remote_values)
+                )
                 metadata = {
                     column: (raw.get("cell_meta") or {}).get(column, {"type": "text"})
                     for column in parser.COLUMNS
@@ -687,11 +708,35 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                         source_id,
                     ),
                 )
+                await cur.execute(
+                    "SELECT revision,row_hash FROM _online_source_rows WHERE id=%s",
+                    (source_id,),
+                )
+                source_after = await cur.fetchone()
+                if expected_writeback_only and source_after:
+                    from services.task_registration import (
+                        refresh_registration_source_context_after_writeback,
+                    )
+
+                    await refresh_registration_source_context_after_writeback(
+                        cur,
+                        parser_type=source["parser_type"],
+                        source_id=source_id,
+                        previous_revision=previous_revision,
+                        previous_row_hash=previous_row_hash,
+                        current_revision=int(source_after[0]),
+                        current_row_hash=str(source_after[1] or ""),
+                    )
                 audit_ids = {
                     int(item["audit_id"])
                     for item in processing
                 }
                 for audit_id in audit_ids:
+                    await cur.execute(
+                        "SELECT action,parser_type,row_key_after FROM _online_writeback_audit WHERE id=%s",
+                        (audit_id,),
+                    )
+                    audit_row = await cur.fetchone()
                     await cur.execute(
                         "SELECT status FROM _online_local_changes WHERE audit_id=%s",
                         (audit_id,),
@@ -713,6 +758,18 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                         "WHERE id=%s",
                         (status, status, audit_id),
                     )
+                    if audit_row and str(audit_row[0] or "") in {
+                        "auto_registration", "manual_registration",
+                    } and status in {"synced", "conflict"}:
+                        from services.task_registration import finalize_registration_writeback
+                        await finalize_registration_writeback(
+                            cur,
+                            parser_type=str(audit_row[1] or source["parser_type"]),
+                            row_key=str(audit_row[2] or source["row_key"]),
+                            source_id=source_id,
+                            succeeded=status == "synced",
+                            reason_code="writeback_conflict" if status == "conflict" else "writeback_failed",
+                        )
                 await rebuild_projection(cur, source["parser_type"])
             await conn.commit()
         except Exception:
