@@ -10,7 +10,12 @@ from typing import Any
 
 from database import db_manager
 from routers.query import _oauth_client, _refresh_spreadsheet, _writeback_enabled
-from services.online_source import acquire_sheet_lock, resolve_source_columns, source_row_hash
+from services.online_source import (
+    acquire_sheet_lock,
+    rebuild_projection,
+    resolve_source_columns,
+    source_row_hash,
+)
 from services.parsers import get_parser
 from services.schema_compat import get_database_column_map, quote_identifier
 from services.unverifiable_review import FINAL_UNVERIFIABLE, mark_flow_archived, supports_unverifiable_review
@@ -57,6 +62,8 @@ _ALLOWED_ERROR_CODES = {
     "external_delete_outcome_unknown",
     "cache_refresh_pending",
     "reconciled_by_sync",
+    "archive_content_conflict",
+    "current_row_changed_after_external_delete",
 }
 
 
@@ -262,6 +269,401 @@ async def _stage_platform_archive(
             ) from exc
 
 
+def _normalized_snapshot(parser, values: Any) -> dict[str, str]:
+    if not isinstance(values, dict) or any(column not in values for column in parser.COLUMNS):
+        raise ArchiveStageError("source_snapshot_missing", "source_snapshot")
+    normalized = parser.normalize_source_row(values)
+    return {column: str(normalized.get(column) or "") for column in parser.COLUMNS}
+
+
+def _snapshot_digest(parser, values: dict[str, str]) -> str:
+    return source_row_hash(_normalized_snapshot(parser, values))
+
+
+async def _platform_rows_for_reconciliation(conn, parser, row_key: str):
+    current_map = await get_database_column_map(conn, parser.table_name, parser)
+    archive_table = f"OnlineDataArchive.{parser.table_name}_archive"
+    archive_map = await get_database_column_map(conn, archive_table, parser)
+    try:
+        current_columns = [quote_identifier(current_map[column]) for column in parser.COLUMNS]
+        archive_columns = [quote_identifier(archive_map[column]) for column in parser.COLUMNS]
+    except KeyError as exc:
+        raise ArchiveStageError(
+            "archive_schema_mismatch",
+            "reconcile_schema",
+            fingerprint=_error_fingerprint("archive_schema_mismatch", "reconcile_schema", exc),
+        ) from exc
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"SELECT {', '.join(current_columns)} FROM {quote_identifier(parser.table_name)} "
+            "WHERE _row_key=%s FOR UPDATE",
+            (row_key,),
+        )
+        current_row = await cur.fetchone()
+        await cur.execute(
+            f"SELECT {', '.join(archive_columns)},_archive_reason FROM {archive_table} "
+            "WHERE _row_key=%s ORDER BY _archived_at DESC",
+            (row_key,),
+        )
+        archive_rows = await cur.fetchall()
+    current = (
+        {column: str(current_row[index] or "") for index, column in enumerate(parser.COLUMNS)}
+        if current_row else None
+    )
+    archives = [
+        (
+            {column: str(row[index] or "") for index, column in enumerate(parser.COLUMNS)},
+            str(row[len(parser.COLUMNS)] or ""),
+        )
+        for row in archive_rows
+    ]
+    return current, archives
+
+
+async def _remove_current_platform_row(conn, parser, row_key: str) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"DELETE FROM {quote_identifier(parser.table_name)} WHERE _row_key=%s",
+            (row_key,),
+        )
+        if cur.rowcount not in {0, 1}:
+            raise ArchiveStageError("current_row_remove_failed", "reconcile_current_remove")
+
+
+async def _insert_archive_from_snapshot(
+    conn,
+    parser,
+    *,
+    export_id: int,
+    row_key: str,
+    values: dict[str, str],
+) -> None:
+    archive_table = f"OnlineDataArchive.{parser.table_name}_archive"
+    column_map = await get_database_column_map(conn, archive_table, parser)
+    try:
+        columns = [quote_identifier(column_map[column]) for column in parser.COLUMNS]
+    except KeyError as exc:
+        raise ArchiveStageError(
+            "archive_schema_mismatch",
+            "reconcile_schema",
+            fingerprint=_error_fingerprint("archive_schema_mismatch", "reconcile_schema", exc),
+        ) from exc
+    archive_reason = f"fullchain_feedback_export:{export_id}"
+    params = [row_key] + [values[column] for column in parser.COLUMNS] + [archive_reason]
+    placeholders = ", ".join(["%s"] * len(params))
+    async with conn.cursor() as cur:
+        try:
+            await cur.execute(
+                f"INSERT INTO {archive_table} "
+                f"(_row_key,{', '.join(columns)},_archive_reason) VALUES ({placeholders})",
+                params,
+            )
+        except Exception as exc:
+            raise _classify_archive_error(
+                exc, stage="reconcile_archive_insert", fallback="archive_insert_failed"
+            ) from exc
+
+
+async def _lock_reconcile_source(
+    cur,
+    *,
+    source_id: int,
+    parser_type: str,
+    row_key: str,
+    expected_revision: int,
+    expected_hash: str,
+) -> bool:
+    await cur.execute(
+        "SELECT row_key,revision,row_hash FROM _online_source_rows "
+        "WHERE id=%s AND parser_type=%s FOR UPDATE",
+        (source_id, parser_type),
+    )
+    source = await cur.fetchone()
+    if not source:
+        return False
+    if (
+        str(source[0]) != row_key
+        or int(source[1]) != expected_revision
+        or str(source[2]) != expected_hash
+    ):
+        raise ArchiveStageError(
+            "current_row_changed_after_external_delete", "reconcile_source"
+        )
+    return True
+
+
+async def _reconcile_deleted_archive_item(conn, item: tuple) -> str:
+    (
+        export_id,
+        source_id,
+        parser_type,
+        row_key,
+        expected_revision,
+        expected_hash,
+        source_values_json,
+    ) = item
+    parser = get_parser(str(parser_type))
+    try:
+        import json
+        raw_snapshot = (
+            source_values_json
+            if isinstance(source_values_json, dict)
+            else json.loads(source_values_json or "{}")
+        )
+        snapshot = _normalized_snapshot(parser, raw_snapshot)
+    except ArchiveStageError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise ArchiveStageError(
+            "source_snapshot_missing",
+            "source_snapshot",
+            fingerprint=_error_fingerprint("source_snapshot_missing", "source_snapshot", exc),
+        ) from exc
+    snapshot_hash = _snapshot_digest(parser, snapshot)
+
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT external_delete_state,status FROM _fullchain_archive_export_items "
+                "WHERE export_id=%s AND source_id=%s FOR UPDATE",
+                (export_id, source_id),
+            )
+            state = await cur.fetchone()
+            if not state or str(state[0]) != "deleted" or str(state[1]) == "success":
+                await conn.rollback()
+                return "skipped"
+            await cur.execute(
+                "UPDATE _fullchain_archive_export_items "
+                "SET reconcile_state='reconciling',reconcile_attempts=reconcile_attempts+1,"
+                "platform_archive_state='archiving',last_attempt_at=UTC_TIMESTAMP() "
+                "WHERE export_id=%s AND source_id=%s",
+                (export_id, source_id),
+            )
+            source_exists = await _lock_reconcile_source(
+                cur,
+                source_id=int(source_id),
+                parser_type=str(parser_type),
+                row_key=str(row_key),
+                expected_revision=int(expected_revision),
+                expected_hash=str(expected_hash),
+            )
+
+        current, archives = await _platform_rows_for_reconciliation(
+            conn, parser, str(row_key)
+        )
+        matching_archive = any(
+            _snapshot_digest(parser, archived_values) == snapshot_hash
+            for archived_values, _reason in archives
+        )
+        if archives and not matching_archive:
+            raise ArchiveStageError("archive_content_conflict", "reconcile_archive_compare")
+        if current is not None and _snapshot_digest(parser, current) != snapshot_hash:
+            raise ArchiveStageError(
+                "current_row_changed_after_external_delete", "reconcile_current_compare"
+            )
+
+        if matching_archive:
+            # 正常同步已用 online_removed 原因归档时，保留该历史记录和原因；
+            # 若当前表仍残留完全相同的投影，只做平台侧清理。
+            if current is not None:
+                await _remove_current_platform_row(conn, parser, str(row_key))
+            resolution = "reconciled_by_sync"
+        elif current is not None:
+            await _stage_platform_archive(
+                conn, parser, int(export_id), str(row_key), snapshot
+            )
+            resolution = "reconciled_from_current"
+        else:
+            await _insert_archive_from_snapshot(
+                conn,
+                parser,
+                export_id=int(export_id),
+                row_key=str(row_key),
+                values=snapshot,
+            )
+            resolution = "reconciled_from_snapshot"
+
+        async with conn.cursor() as cur:
+            if supports_unverifiable_review(str(parser_type)):
+                try:
+                    await mark_flow_archived(
+                        cur, str(parser_type), str(row_key), int(export_id)
+                    )
+                except Exception as exc:
+                    fallback = (
+                        "review_flow_state_conflict"
+                        if str(exc).strip() == "review_flow_state_conflict"
+                        else "review_flow_archive_failed"
+                    )
+                    raise _classify_archive_error(
+                        exc, stage="review_flow_archive", fallback=fallback
+                    ) from exc
+            if source_exists:
+                await cur.execute(
+                    "DELETE FROM _online_source_rows WHERE id=%s AND parser_type=%s "
+                    "AND row_key=%s AND revision=%s AND row_hash=%s",
+                    (
+                        source_id,
+                        parser_type,
+                        row_key,
+                        expected_revision,
+                        expected_hash,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise ArchiveStageError(
+                        "current_row_changed_after_external_delete", "reconcile_source_remove"
+                    )
+            await cur.execute(
+                "UPDATE _fullchain_archive_export_items "
+                "SET status='success',error_code='',error_stage='',error_fingerprint='',"
+                "platform_archive_state='reconciled',reconcile_state=%s,"
+                "reconciled_at=UTC_TIMESTAMP(),last_attempt_at=UTC_TIMESTAMP() "
+                "WHERE export_id=%s AND source_id=%s",
+                (resolution, export_id, source_id),
+            )
+        await conn.commit()
+        return resolution
+    except Exception as exc:
+        try:
+            await conn.rollback()
+        except Exception:
+            pass
+        raise _classify_archive_error(
+            exc, stage="reconcile_platform", fallback="archive_insert_failed"
+        ) from exc
+
+
+async def _record_reconcile_failure(conn, item: tuple, exc: Exception) -> None:
+    export_id, source_id = int(item[0]), int(item[1])
+    error = _classify_archive_error(
+        exc, stage="reconcile_platform", fallback="archive_insert_failed"
+    )
+    async with conn.cursor() as cur:
+        await _mark_item(
+            cur,
+            export_id,
+            source_id,
+            "conflict",
+            error.code,
+            error_stage=error.stage,
+            platform_archive_state="failed",
+            error_fingerprint=error.fingerprint,
+        )
+        await cur.execute(
+            "UPDATE _fullchain_archive_export_items "
+            "SET reconcile_state='conflict',reconcile_attempts=reconcile_attempts+1 "
+            "WHERE export_id=%s AND source_id=%s",
+            (export_id, source_id),
+        )
+    await conn.commit()
+
+
+async def _refresh_export_counts(conn, export_ids: set[int]) -> None:
+    for export_id in sorted(export_ids):
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT SUM(status='success'),SUM(status='conflict'),SUM(status='error'),"
+                "SUM(status IN ('queued','running')) FROM _fullchain_archive_export_items "
+                "WHERE export_id=%s",
+                (export_id,),
+            )
+            row = await cur.fetchone()
+            success = int((row[0] if row else 0) or 0)
+            conflicts = int((row[1] if row else 0) or 0)
+            errors = int((row[2] if row else 0) or 0)
+            pending = int((row[3] if row else 0) or 0)
+            if pending:
+                await cur.execute(
+                    "UPDATE _fullchain_archive_exports SET success_count=%s,"
+                    "conflict_count=%s,error_count=%s WHERE id=%s",
+                    (success, conflicts, errors, export_id),
+                )
+                continue
+            status = "completed" if conflicts == 0 and errors == 0 else "partial"
+            await cur.execute(
+                "UPDATE _fullchain_archive_exports SET status=%s,phase='finished',"
+                "success_count=%s,conflict_count=%s,error_count=%s,error_message=%s,"
+                "finished_at=UTC_TIMESTAMP() WHERE id=%s",
+                (
+                    status,
+                    success,
+                    conflicts,
+                    errors,
+                    "" if status == "completed" else "平台归档对账仍有冲突，请按阶段明细核对",
+                    export_id,
+                ),
+            )
+
+
+async def reconcile_deleted_archive_items(export_id: int | None = None) -> int:
+    """仅用冻结快照和平台数据库补偿腾讯已确认删除的归档条目。"""
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    reconciled = 0
+    touched_parsers: set[str] = set()
+    export_ids: set[int] = set()
+    successful_items: set[tuple[int, int]] = set()
+    try:
+        async with conn.cursor() as cur:
+            sql = (
+                "SELECT item.export_id,item.source_id,item.parser_type,item.row_key,"
+                "item.expected_revision,item.expected_row_hash,item.source_values_json "
+                "FROM _fullchain_archive_export_items item "
+                "WHERE item.external_delete_state='deleted' "
+                "AND item.status IN ('queued','conflict','error')"
+            )
+            params: tuple[Any, ...] = ()
+            if export_id is not None:
+                sql += " AND item.export_id=%s"
+                params = (export_id,)
+            sql += " ORDER BY item.export_id,item.source_id"
+            await cur.execute(sql, params)
+            items = await cur.fetchall()
+        for item in items:
+            export_ids.add(int(item[0]))
+            touched_parsers.add(str(item[2]))
+            try:
+                result = await _reconcile_deleted_archive_item(conn, item)
+                if result != "skipped":
+                    reconciled += 1
+                    successful_items.add((int(item[0]), int(item[1])))
+            except Exception as exc:
+                await _record_reconcile_failure(conn, item, exc)
+        if touched_parsers:
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    for parser_type in sorted(touched_parsers):
+                        await rebuild_projection(cur, parser_type)
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                # 平台历史和当前表已经在逐条事务中安全提交；投影刷新失败时
+                # 把条目留给下一轮仅平台对账，不能重新进入腾讯删除路径。
+                async with conn.cursor() as cur:
+                    for item_export_id, item_source_id in sorted(successful_items):
+                        await _mark_item(
+                            cur,
+                            item_export_id,
+                            item_source_id,
+                            "conflict",
+                            "cache_refresh_pending",
+                            error_stage="cache_refresh",
+                            platform_archive_state="reconciled",
+                            error_fingerprint=_error_fingerprint(
+                                "cache_refresh_pending", "cache_refresh"
+                            ),
+                        )
+                await conn.commit()
+        await _refresh_export_counts(conn, export_ids)
+        await conn.commit()
+        return reconciled
+    finally:
+        pool.release(conn)
+
+
 async def _delete_source_row_once(
     conn,
     client,
@@ -430,6 +832,9 @@ async def _commit_platform_archive(
 
 
 async def run_fullchain_archive_export(export_id: int) -> None:
+    # 先处理腾讯已确认删除的条目；该路径不获取 OAuth、不读取腾讯，也不调用
+    # 删除接口。之后普通执行器只会看到尚未删除的条目。
+    await reconcile_deleted_archive_items(export_id)
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
@@ -452,6 +857,7 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                 LEFT JOIN _online_source_rows source ON source.id=item.source_id
                 LEFT JOIN _config_spreadsheets spreadsheet ON spreadsheet.id=item.spreadsheet_id
                 WHERE item.export_id=%s AND item.status <> 'success'
+                  AND item.external_delete_state <> 'deleted'
                 ORDER BY item.spreadsheet_id,item.sheet_id,item.physical_row DESC
             """, (export_id,))
             rows = await cur.fetchall()
@@ -623,6 +1029,10 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                     from services.online_source import release_sheet_lock
                     async with conn.cursor() as cur:
                         await release_sheet_lock(cur, spreadsheet_id)
+
+        # 腾讯删除后的刷新可能已经用 online_removed 原因完成平台历史归档；
+        # 在本轮结束前立刻对账一次，不要求等待服务重启。
+        await reconcile_deleted_archive_items(export_id)
 
         if lock_waiting:
             async with conn.cursor() as cur:

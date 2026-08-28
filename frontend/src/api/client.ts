@@ -3622,8 +3622,15 @@ export interface FullchainArchiveExport {
     category: string
     status: 'queued' | 'success' | 'conflict' | 'error'
     error_code: string
+    error_stage: string
     external_delete_state: 'pending' | 'deleting' | 'deleted'
     external_deleted_at: string | null
+    platform_archive_state: 'pending' | 'archiving' | 'archived' | 'failed' | 'reconciled'
+    reconcile_state: 'pending' | 'reconciling' | 'reconciled_by_sync' | 'reconciled_from_current' | 'reconciled_from_snapshot' | 'conflict'
+    reconcile_attempts: number
+    error_fingerprint: string
+    last_attempt_at: string | null
+    reconciled_at: string | null
   }>
 }
 

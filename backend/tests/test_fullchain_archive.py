@@ -28,8 +28,10 @@ from services.fullchain_archive_jobs import (
     _classify_archive_error,
     _commit_platform_archive,
     _delete_source_row_once,
+    _reconcile_deleted_archive_item,
     _safe_error_code,
     _stage_platform_archive,
+    reconcile_deleted_archive_items,
     recover_interrupted_fullchain_exports,
 )
 from services.report_builders.base import BaseReportBuilder
@@ -210,6 +212,22 @@ class _TransactionalConnection(_Connection):
 
     async def rollback(self):
         self.events.append("rollback")
+
+
+class _ReconcileItemCursor(_Cursor):
+    def __init__(self):
+        super().__init__()
+        self.rowcount = 1
+        self.last_sql = ""
+
+    async def execute(self, sql, params=()):
+        await super().execute(sql, params)
+        self.last_sql = " ".join(str(sql).split())
+
+    async def fetchone(self):
+        if "SELECT external_delete_state,status" in self.last_sql:
+            return ("deleted", "conflict")
+        return None
 
 
 class _AcquireContext:
@@ -536,6 +554,121 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(remove_error.exception.code, "current_row_remove_failed")
         self.assertEqual(remove_error.exception.stage, "current_row_remove")
+
+    @patch("services.fullchain_archive_jobs.mark_flow_archived", new_callable=AsyncMock)
+    @patch("services.fullchain_archive_jobs._lock_reconcile_source", new=AsyncMock(return_value=False))
+    @patch("services.fullchain_archive_jobs._remove_current_platform_row", new_callable=AsyncMock)
+    @patch("services.fullchain_archive_jobs._insert_archive_from_snapshot", new_callable=AsyncMock)
+    @patch("services.fullchain_archive_jobs._stage_platform_archive", new_callable=AsyncMock)
+    @patch("services.fullchain_archive_jobs.get_parser")
+    async def test_deleted_item_accepts_matching_sync_archive_without_redeleting(
+        self, get_parser, stage_archive, insert_snapshot, remove_current, mark_archived,
+    ):
+        parser = type(
+            "Parser",
+            (),
+            {
+                "COLUMNS": ["姓名"],
+                "normalize_source_row": staticmethod(
+                    lambda values: {"姓名": str(values.get("姓名") or "")}
+                ),
+            },
+        )()
+        get_parser.return_value = parser
+        conn = _TransactionalConnection(_ReconcileItemCursor())
+        item = (12, 7, "全链条", "a" * 32, 4, "b" * 64, '{"姓名":"甲"}')
+        with patch(
+            "services.fullchain_archive_jobs._platform_rows_for_reconciliation",
+            new=AsyncMock(return_value=(None, [({"姓名": "甲"}, "online_removed")])),
+        ):
+            result = await _reconcile_deleted_archive_item(conn, item)
+        self.assertEqual(result, "reconciled_by_sync")
+        self.assertEqual(conn.events, ["begin", "commit"])
+        stage_archive.assert_not_awaited()
+        insert_snapshot.assert_not_awaited()
+        remove_current.assert_not_awaited()
+        mark_archived.assert_awaited_once()
+        sql = "\n".join(statement for statement, _params in conn._cursor.executions)
+        self.assertIn("reconcile_state=%s", sql)
+        self.assertIn("status='success'", sql)
+
+    @patch("services.fullchain_archive_jobs.mark_flow_archived", new_callable=AsyncMock)
+    @patch("services.fullchain_archive_jobs._lock_reconcile_source", new=AsyncMock(return_value=False))
+    @patch("services.fullchain_archive_jobs._insert_archive_from_snapshot", new_callable=AsyncMock)
+    @patch("services.fullchain_archive_jobs.get_parser")
+    async def test_deleted_item_rebuilds_missing_history_from_frozen_snapshot(
+        self, get_parser, insert_snapshot, mark_archived,
+    ):
+        parser = type(
+            "Parser",
+            (),
+            {
+                "COLUMNS": ["姓名"],
+                "normalize_source_row": staticmethod(
+                    lambda values: {"姓名": str(values.get("姓名") or "")}
+                ),
+            },
+        )()
+        get_parser.return_value = parser
+        conn = _TransactionalConnection(_ReconcileItemCursor())
+        item = (12, 7, "全链条", "a" * 32, 4, "b" * 64, '{"姓名":"甲"}')
+        with patch(
+            "services.fullchain_archive_jobs._platform_rows_for_reconciliation",
+            new=AsyncMock(return_value=(None, [])),
+        ):
+            result = await _reconcile_deleted_archive_item(conn, item)
+        self.assertEqual(result, "reconciled_from_snapshot")
+        insert_snapshot.assert_awaited_once()
+        mark_archived.assert_awaited_once()
+
+    @patch("services.fullchain_archive_jobs._lock_reconcile_source", new=AsyncMock(return_value=False))
+    @patch("services.fullchain_archive_jobs.get_parser")
+    async def test_deleted_item_never_overwrites_changed_archive_or_current_row(self, get_parser):
+        parser = type(
+            "Parser",
+            (),
+            {
+                "COLUMNS": ["姓名"],
+                "normalize_source_row": staticmethod(
+                    lambda values: {"姓名": str(values.get("姓名") or "")}
+                ),
+            },
+        )()
+        get_parser.return_value = parser
+        item = (12, 7, "全链条", "a" * 32, 4, "b" * 64, '{"姓名":"甲"}')
+        cases = [
+            ((None, [({"姓名": "乙"}, "online_removed")]), "archive_content_conflict"),
+            (({"姓名": "乙"}, []), "current_row_changed_after_external_delete"),
+        ]
+        for platform_rows, code in cases:
+            with self.subTest(code=code):
+                conn = _TransactionalConnection(_ReconcileItemCursor())
+                with patch(
+                    "services.fullchain_archive_jobs._platform_rows_for_reconciliation",
+                    new=AsyncMock(return_value=platform_rows),
+                ):
+                    with self.assertRaises(ArchiveStageError) as raised:
+                        await _reconcile_deleted_archive_item(conn, item)
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(conn.events, ["begin", "rollback"])
+
+    async def test_reconcile_scan_only_selects_confirmed_deleted_items_and_never_uses_oauth(self):
+        class ReconcileScanCursor(_Cursor):
+            async def fetchall(self):
+                return []
+
+        cursor = ReconcileScanCursor()
+        conn = _TransactionalConnection(cursor)
+        pool = MagicMock()
+        pool.acquire = AsyncMock(return_value=conn)
+        with patch("services.fullchain_archive_jobs.db_manager.get_pool", return_value=pool), \
+             patch("services.fullchain_archive_jobs._oauth_client", new=AsyncMock()) as oauth:
+            self.assertEqual(await reconcile_deleted_archive_items(), 0)
+        oauth.assert_not_awaited()
+        pool.release.assert_called_once_with(conn)
+        sql = "\n".join(item[0] for item in cursor.executions)
+        self.assertIn("external_delete_state='deleted'", sql)
+        self.assertIn("status IN ('queued','conflict','error')", sql)
 
     async def test_recovery_requeues_running_and_confirmed_partial_exports(self):
         class RecoveryCursor(_Cursor):
