@@ -14,7 +14,6 @@ from services.qmf_config import load_qmf_config
 from services.qmf_registration import (
     MODEL_THREE_PARSER,
     normalize_identity,
-    normalize_qmf_result,
     valid_identity,
 )
 from services.qmf_status import (
@@ -25,6 +24,7 @@ from services.qmf_status import (
     STATUS_COMPLETED_MISMATCH,
     STATUS_NON_JURISDICTION,
     STATUS_UNAVAILABLE,
+    normalize_qmf_status_result,
 )
 from services.online_source import logical_source_sql_filter
 from services.task_graph import reconcile_projection_task_graph
@@ -475,12 +475,12 @@ async def _current_item_context(item: dict[str, Any]) -> tuple[str, str]:
         raise ValueError("source_changed")
     values = _json(row[2])
     identity = normalize_identity(values.get("身份证号"))
-    expected = normalize_qmf_result(values.get("核查结果"))
+    expected = normalize_qmf_status_result(values.get("核查结果"))
     if not valid_identity(identity):
         raise ValueError("identity_invalid")
     if not expected:
         raise ValueError("result_invalid")
-    if expected != normalize_qmf_result(item["expected_result"]):
+    if expected != normalize_qmf_status_result(item["expected_result"]):
         raise ValueError("source_changed")
     return identity, expected
 
@@ -578,7 +578,7 @@ async def persist_realtime_qmf_status(
                 int(source_revision),
                 str(source_row_hash or "")[:64],
                 identity_hmac[:64],
-                normalize_qmf_result(platform_result),
+                normalize_qmf_status_result(platform_result),
                 status.state,
                 status.result,
                 status.checked_at,
@@ -664,7 +664,7 @@ async def _finish_item(
                     item["parser_type"], item["row_key"], item["source_id"],
                     item["expected_revision"], item["expected_row_hash"],
                     item["identity_hmac"],
-                    normalize_qmf_result(item["expected_result"]), state,
+                    normalize_qmf_status_result(item["expected_result"]), state,
                     feedback_result, checked_at, origin, safe_code, run_id,
                     state, state,
                 ),

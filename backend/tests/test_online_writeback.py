@@ -298,10 +298,10 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [item["text"] for item in metadata["write_options"]],
-            ["近期返吴", "离吴", "在吴"],
+            ["近期返吴", "离吴", "在吴", "非本辖区"],
         )
         client = TxDocsClient("client", "token", "user")
-        for result in ("近期返吴", "离吴", "在吴"):
+        for result in ("近期返吴", "离吴", "在吴", "非本辖区"):
             with self.subTest(result=result):
                 request = client.build_update_cell_request(
                     "sheet", 8, 6, result, metadata, "核查结果"
@@ -1244,7 +1244,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [item["text"] for item in metadata["核查结果"]["options"]],
-            ["近期返吴", "离吴", "在吴"],
+            ["近期返吴", "离吴", "在吴", "非本辖区"],
         )
 
     async def test_suspect_return_hides_legacy_no_registration_option(self):

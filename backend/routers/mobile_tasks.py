@@ -46,10 +46,10 @@ from services.permissions import (
 from services.report_overview import SUMMARY_TYPE, get_online_overview
 from services.qmf_registration import (
     MODEL_THREE_PARSER,
-    normalize_qmf_result,
     preview_capability,
     registration_capability,
 )
+from services.qmf_status import normalize_qmf_status_result
 from services.qmf_config import load_qmf_config
 from services.qmf_runs import WRITE_STEP_KEYS, parse_steps, utc_text
 from services.task_workflow import MOBILE_TASK_TYPES, SUMMARY_TASK_TYPES, TASK_WORKFLOWS
@@ -972,7 +972,7 @@ async def _qmf_status_by_rows(
     now = datetime.utcnow()
     for row in await cur.fetchall():
         row_key = str(row[0])
-        platform_result = normalize_qmf_result(
+        platform_result = normalize_qmf_status_result(
             row_values.get(row_key, {}).get("核查结果")
         )
         stale = (
@@ -1004,7 +1004,7 @@ async def _qmf_status_by_rows(
     for row_key, values in row_values.items():
         result.setdefault(row_key, {
             "state": "not_scanned",
-            "platform_result": normalize_qmf_result(values.get("核查结果")),
+            "platform_result": normalize_qmf_status_result(values.get("核查结果")),
             "feedback_result": "",
             "checked_at": "",
             "origin": "",

@@ -290,6 +290,10 @@ test('来源行保存后立即按业务真实口径更新状态', () => {
     'completed',
   )
   assert.equal(
+    mobileTaskSourceState('疑似未注销模型三', '核查结果', { 核查结果: '非本辖区' }),
+    'completed',
+  )
+  assert.equal(
     mobileTaskSourceNeedsReview('核查结果', ['二次反馈'], { 核查结果: '无法核实' }),
     true,
   )

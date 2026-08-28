@@ -424,14 +424,16 @@ class QmfRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(capability["enabled"])
 
-        unsupported = preview_capability(
-            allowed=True,
-            parser_type="疑似未注销模型三",
-            source_count=1,
-            conflict=False,
-            values={"核查结果": "无法核实", "身份证号": VALID_IDENTITY},
-        )
-        self.assertFalse(unsupported["enabled"])
+        for result in ("无法核实", "非本辖区"):
+            with self.subTest(result=result):
+                unsupported = preview_capability(
+                    allowed=True,
+                    parser_type="疑似未注销模型三",
+                    source_count=1,
+                    conflict=False,
+                    values={"核查结果": result, "身份证号": VALID_IDENTITY},
+                )
+                self.assertFalse(unsupported["enabled"])
 
     async def test_preview_audit_records_only_safe_http_failure_context(self):
         request = Request({
