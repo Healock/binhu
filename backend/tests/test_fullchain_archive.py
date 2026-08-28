@@ -2,7 +2,8 @@ import io
 import json
 import os
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -13,21 +14,29 @@ from openpyxl import Workbook, load_workbook
 
 from routers.fullchain_archive import (
     CandidateSearch,
+    POLICE_RAW_RETIRED_MESSAGE,
     _candidate_rows,
     _filter_candidate_rows,
     _parse_deadline,
     _preview_token,
+    confirm_police_raw,
+    preview_police_raw,
     require_fullchain_archive,
 )
 from routers.police_dispatch import require_police_access
 from services.permissions import POLICE_DISPATCH_MANAGE
 from services.fullchain_archive import build_archive_workbook, parse_police_raw
+from services.fullchain_archive import (
+    REGISTRATION_ARCHIVE_RULE_VERSION,
+    registration_archive_ready,
+)
 from services.fullchain_archive_jobs import (
     ArchiveStageError,
     _acquire_sheet_lock_with_retry,
     _classify_archive_error,
     _commit_platform_archive,
     _delete_source_row_once,
+    _validate_registration_archive_evidence,
     _reconcile_deleted_archive_item,
     _safe_error_code,
     _stage_platform_archive,
@@ -48,6 +57,44 @@ def workbook_bytes(rows):
     workbook.save(output)
     workbook.close()
     return output.getvalue()
+
+
+def candidate_source_row(
+    values,
+    *,
+    source_id=7,
+    row_key="a" * 32,
+    revision=3,
+    row_hash="b" * 64,
+    identity_hmac="c" * 64,
+    source_count=1,
+    conflict=0,
+    decision="",
+    note="",
+    registration_status="",
+    confirmed_at=None,
+    registration_source_id=None,
+    registration_revision=None,
+    registration_row_hash="",
+    registration_identity_hmac="",
+    task_community="",
+    property_id=None,
+    property_version=None,
+    property_status=None,
+    current_property_version=None,
+    active_writeback=0,
+    active_archive=0,
+    community="长板社区",
+):
+    return (
+        source_id, row_key, revision, row_hash, 20, 4, "sheet-1",
+        json.dumps(values, ensure_ascii=False), identity_hmac, source_count,
+        conflict, decision, note, registration_status, confirmed_at,
+        registration_source_id, registration_revision, registration_row_hash,
+        registration_identity_hmac, task_community, property_id, property_version,
+        property_status, current_property_version, active_writeback, active_archive,
+        community,
+    )
 
 
 class FullchainArchiveTests(unittest.TestCase):
@@ -104,6 +151,31 @@ class FullchainArchiveTests(unittest.TestCase):
         item = {"source_id": 1, "revision": 1, "row_hash": "a" * 64, "category": "离苏"}
         changed = dict(item, revision=2)
         self.assertNotEqual(_preview_token([item]), _preview_token([changed]))
+
+    def test_registration_archive_uses_exact_24_hour_boundary(self):
+        confirmed = datetime(2026, 8, 28, 9, 30)
+        self.assertFalse(registration_archive_ready(
+            confirmed, now=confirmed + timedelta(hours=24) - timedelta(seconds=1)
+        ))
+        self.assertTrue(registration_archive_ready(
+            confirmed, now=confirmed + timedelta(hours=24)
+        ))
+
+    def test_registration_archive_evidence_columns_exist_in_bootstrap_and_runtime_schema(self):
+        backend_root = Path(__file__).parents[1]
+        init_sql = backend_root.joinpath("init.sql").read_text(encoding="utf-8")
+        runtime_schema = backend_root.joinpath("database.py").read_text(encoding="utf-8")
+        for column in (
+            "registration_confirmed_at",
+            "registration_status",
+            "registration_identity_hmac",
+            "registration_property_id",
+            "registration_property_version",
+            "candidate_rule_version",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, init_sql)
+                self.assertIn(column, runtime_schema)
 
     def test_transfer_options_are_split_but_legacy_value_remains_readable(self):
         options = TASK_WORKFLOWS["全链条"].result_options
@@ -250,6 +322,210 @@ class _Pool:
 
 
 class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_police_raw_write_endpoints_are_retired_but_explicit(self):
+        for endpoint in (preview_police_raw, confirm_police_raw):
+            with self.subTest(endpoint=endpoint.__name__):
+                with self.assertRaises(HTTPException) as raised:
+                    await endpoint(user={"id": 1})
+                self.assertEqual(raised.exception.status_code, 410)
+                self.assertEqual(raised.exception.detail, POLICE_RAW_RETIRED_MESSAGE)
+
+    async def test_registered_candidate_requires_confirmed_registration_evidence(self):
+        values = {
+            "姓名": "测试人员",
+            "身份证号": "TEST_IDENTITY_001",
+            "社区": "长板社区",
+            "核查结果": "已登记",
+        }
+        rows = await _candidate_rows(_SequenceCursor([[
+            candidate_source_row(values),
+        ], []]))
+
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["eligible"])
+        self.assertIn("历史已登记", rows[0]["reason"])
+
+    async def test_confirmed_registration_waits_a_full_24_hours(self):
+        values = {
+            "姓名": "测试人员",
+            "身份证号": "TEST_IDENTITY_001",
+            "社区": "长板社区",
+            "核查结果": "已登记",
+        }
+        confirmed_at = datetime.utcnow() - timedelta(hours=23, minutes=59)
+        source_row = candidate_source_row(
+            values,
+            registration_status="confirmed",
+            confirmed_at=confirmed_at,
+            registration_source_id=7,
+            registration_revision=3,
+            registration_row_hash="b" * 64,
+            registration_identity_hmac="c" * 64,
+            task_community="长板社区",
+            property_id=19,
+            property_version=2,
+            property_status="active",
+            current_property_version=2,
+        )
+
+        rows = await _candidate_rows(_SequenceCursor([[source_row], []]))
+
+        self.assertFalse(rows[0]["eligible"])
+        self.assertIn("完整保留 24 小时", rows[0]["reason"])
+        self.assertEqual(rows[0]["registration_status"], "confirmed")
+        self.assertIsNotNone(rows[0]["archive_available_at"])
+
+    async def test_confirmed_registration_is_eligible_after_24_hours(self):
+        values = {
+            "姓名": "测试人员",
+            "身份证号": "TEST_IDENTITY_001",
+            "社区": "长板社区",
+            "核查结果": "已登记",
+        }
+        confirmed_at = datetime.utcnow() - timedelta(hours=24, seconds=1)
+        source_row = candidate_source_row(
+            values,
+            registration_status="confirmed",
+            confirmed_at=confirmed_at,
+            registration_source_id=7,
+            registration_revision=3,
+            registration_row_hash="b" * 64,
+            registration_identity_hmac="c" * 64,
+            task_community="长板社区",
+            property_id=19,
+            property_version=2,
+            property_status="active",
+            current_property_version=2,
+        )
+        cursor = _SequenceCursor([[source_row], []])
+
+        rows = await _candidate_rows(cursor, include_source_values=True)
+
+        self.assertTrue(rows[0]["eligible"])
+        self.assertEqual(rows[0]["candidate_rule_version"], REGISTRATION_ARCHIVE_RULE_VERSION)
+        self.assertEqual(rows[0]["_registration_confirmed_at_db"], confirmed_at)
+        candidate_sql = cursor.executions[0][0]
+        self.assertNotIn("_fullchain_police_raw_identities", candidate_sql)
+        self.assertNotIn("_fullchain_police_raw_uploads", candidate_sql)
+
+    async def test_registration_candidate_rejects_changed_or_pending_context(self):
+        values = {
+            "姓名": "测试人员",
+            "身份证号": "TEST_IDENTITY_001",
+            "社区": "长板社区",
+            "核查结果": "已登记",
+        }
+        base = dict(
+            registration_status="confirmed",
+            confirmed_at=datetime.utcnow() - timedelta(hours=25),
+            registration_source_id=7,
+            registration_revision=3,
+            registration_row_hash="b" * 64,
+            registration_identity_hmac="c" * 64,
+            task_community="长板社区",
+            property_id=19,
+            property_version=2,
+            property_status="active",
+            current_property_version=2,
+        )
+        cases = {
+            "source": ({**base, "registration_revision": 2}, "来源版本"),
+            "identity": ({**base, "registration_identity_hmac": "d" * 64}, "核查对象"),
+            "community": ({**base, "task_community": "龙河社区"}, "任务社区"),
+            "property_status": ({**base, "property_status": "inactive"}, "房屋已停用"),
+            "property_version": ({**base, "current_property_version": 3}, "房屋档案已更新"),
+            "writeback": ({**base, "active_writeback": 1}, "待同步或冲突"),
+            "archive": ({**base, "active_archive": 1}, "其他未终结归档批次"),
+        }
+        for label, (kwargs, reason) in cases.items():
+            with self.subTest(label=label):
+                rows = await _candidate_rows(_SequenceCursor([[
+                    candidate_source_row(values, **kwargs),
+                ], []]))
+                self.assertFalse(rows[0]["eligible"])
+                self.assertIn(reason, rows[0]["reason"])
+
+    async def test_frozen_registration_evidence_is_rechecked_before_delete(self):
+        confirmed_at = datetime(2026, 8, 27, 8, 0)
+        matching = (
+            "confirmed", confirmed_at, 7, 3, "b" * 64, "c" * 64,
+            "长板社区", 19, 2, 3, "b" * 64, "c" * 64,
+            "长板社区", 1, 0, json.dumps({"核查结果": "已登记"}, ensure_ascii=False),
+            "active", 2, 1, 0,
+        )
+        await _validate_registration_archive_evidence(
+            _DeleteCursor(source_row=matching),
+            parser_type="全链条",
+            row_key="a" * 32,
+            source_id=7,
+            expected_revision=3,
+            expected_hash="b" * 64,
+            registration_confirmed_at=confirmed_at,
+            registration_status="confirmed",
+            registration_identity_hmac="c" * 64,
+            registration_property_id=19,
+            registration_property_version=2,
+            candidate_rule_version=REGISTRATION_ARCHIVE_RULE_VERSION,
+        )
+
+        changed = list(matching)
+        changed[17] = 3
+        with self.assertRaises(ArchiveStageError) as raised:
+            await _validate_registration_archive_evidence(
+                _DeleteCursor(source_row=tuple(changed)),
+                parser_type="全链条",
+                row_key="a" * 32,
+                source_id=7,
+                expected_revision=3,
+                expected_hash="b" * 64,
+                registration_confirmed_at=confirmed_at,
+                registration_status="confirmed",
+                registration_identity_hmac="c" * 64,
+                registration_property_id=19,
+                registration_property_version=2,
+                candidate_rule_version=REGISTRATION_ARCHIVE_RULE_VERSION,
+            )
+        self.assertEqual(raised.exception.code, "registration_archive_evidence_changed")
+        self.assertEqual(raised.exception.stage, "registration_evidence")
+
+    @patch(
+        "services.fullchain_archive_jobs._validate_registration_archive_evidence",
+        new=AsyncMock(side_effect=ArchiveStageError(
+            "registration_archive_evidence_changed", "registration_evidence"
+        )),
+    )
+    async def test_changed_registration_evidence_never_calls_tencent_delete(self):
+        conn = _TransactionalConnection(_DeleteCursor())
+        client = AsyncMock()
+
+        with self.assertRaises(ArchiveStageError):
+            await _delete_source_row_once(
+                conn,
+                client,
+                export_id=12,
+                source_id=7,
+                parser_type="全链条",
+                spreadsheet={"file_id": "file-1"},
+                sheet_id="sheet-1",
+                physical_row=20,
+                expected_revision=3,
+                expected_hash="b" * 64,
+                source_columns=["核查结果"],
+                parser=object(),
+                external_delete_state="pending",
+                row_key="a" * 32,
+                category="已登记",
+                registration_confirmed_at=datetime(2026, 8, 27, 8, 0),
+                registration_status="confirmed",
+                registration_identity_hmac="c" * 64,
+                registration_property_id=19,
+                registration_property_version=2,
+                candidate_rule_version=REGISTRATION_ARCHIVE_RULE_VERSION,
+            )
+
+        client.read_source_row.assert_not_awaited()
+        client.batch_update.assert_not_awaited()
+
     async def test_archive_lock_retries_until_previous_write_releases(self):
         attempts = []
 
@@ -274,17 +550,15 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(acquire.await_count, 3)
         self.assertEqual([call.args[0] for call in sleep.await_args_list], [1, 2])
 
-    @patch("routers.fullchain_archive._latest_raw_upload", new=AsyncMock(return_value=None))
     async def test_duplicate_projection_is_visible_but_cannot_archive(self):
         values = {
             "姓名": "测试人员",
             "身份证号": "320000199001010011",
             "核查结果": "离苏",
         }
-        cursor = _Cursor([(
-            7, "a" * 32, 3, "b" * 64, 20, 4, "sheet-1",
-            json.dumps(values, ensure_ascii=False), "c" * 64, 2, 1, "", "",
-        )])
+        cursor = _SequenceCursor([[candidate_source_row(
+            values, source_count=2, conflict=1,
+        )], []])
 
         rows = await _candidate_rows(cursor)
 
@@ -293,25 +567,17 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("重复或冲突来源行", rows[0]["reason"])
         self.assertNotIn("_source_values_json", rows[0])
 
-    @patch("routers.fullchain_archive._latest_raw_upload", new=AsyncMock(return_value=None))
     async def test_old_manual_archive_decision_cannot_bypass_two_stage_review(self):
         values = {"姓名": "测试人员", "核查结果": "无法核实", "截止日期": "2026-08-20"}
-        source_row = (
-            7, "a" * 32, 3, "b" * 64, 20, 4, "sheet-1",
-            json.dumps(values, ensure_ascii=False), "c" * 64, 1, 0, "archive", "",
-        )
+        source_row = candidate_source_row(values, decision="archive")
         rows = await _candidate_rows(_SequenceCursor([[source_row], []]))
         self.assertEqual(len(rows), 1)
         self.assertFalse(rows[0]["eligible"])
         self.assertIn("等待系统建立两级研判流程", rows[0]["reason"])
 
-    @patch("routers.fullchain_archive._latest_raw_upload", new=AsyncMock(return_value=None))
     async def test_only_final_unverifiable_flow_is_directly_exportable(self):
         values = {"姓名": "测试人员", "核查结果": "无法核实"}
-        source_row = (
-            7, "a" * 32, 3, "b" * 64, 20, 4, "sheet-1",
-            json.dumps(values, ensure_ascii=False), "c" * 64, 1, 0, "", "",
-        )
+        source_row = candidate_source_row(values)
         flow_row = (
             5, "全链条", "a" * 32, 1, 7, 3, "b" * 64,
             FINAL_UNVERIFIABLE, 4, None, "", "", 0, "", None,
@@ -330,12 +596,10 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
             values,
         )
 
-    @patch("routers.fullchain_archive._latest_raw_upload", new=AsyncMock(return_value=None))
     async def test_final_unverifiable_export_stops_when_source_snapshot_changed(self):
         values = {"姓名": "测试人员", "核查结果": "无法核实"}
-        source_row = (
-            7, "a" * 32, 4, "c" * 64, 20, 4, "sheet-1",
-            json.dumps(values, ensure_ascii=False), "d" * 64, 1, 0, "", "",
+        source_row = candidate_source_row(
+            values, revision=4, row_hash="c" * 64, identity_hmac="d" * 64,
         )
         stale_flow = (
             5, "全链条", "a" * 32, 1, 7, 3, "b" * 64,

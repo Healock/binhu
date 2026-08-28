@@ -12,11 +12,9 @@ import {
 import type { UploadFile, UploadProps } from 'antd'
 import { InboxOutlined, UploadOutlined } from '@ant-design/icons'
 import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
-import FullchainPoliceRawPanel from '../components/FullchainPoliceRawPanel'
 import AppTable from '../components/AppTable'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
-import { canManageFullchainArchive } from '../utils/mobileTaskRouting'
 import {
   formatUTCTime,
   getExternalAcquisitionRun,
@@ -48,14 +46,6 @@ function selectedUploadFile(file: File & { uid: string }): UploadFile {
 export default function DataUploadCenter() {
   const { user, systemTimezone } = useAuth()
   const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
-  const canUseFullchainArchive = Boolean(user && canManageFullchainArchive(
-    user.member?.position,
-    user.role,
-    user.permission_groups?.map(group => group.code),
-    user.permissions,
-    user.permission_scopes?.['police.dispatch.manage'],
-    user.data_scope,
-  ))
   const canManagePhotoImport = Boolean(
     (user?.permissions.includes('workflow.ticket.handle')
       && user.member?.position === '基础管控')
@@ -437,9 +427,6 @@ export default function DataUploadCenter() {
       )}
 
       <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
-
-      {canUseFullchainArchive && <FullchainPoliceRawPanel enabled />}
-
     </div>
   )
 }

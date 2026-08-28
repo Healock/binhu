@@ -1078,8 +1078,20 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 {
                   key: 'match',
                   label: '比对进度',
-                  children: `${registrationLink.match_count || 0} 次连续匹配${registrationLink.confirmed_at ? ` · ${registrationLink.confirmed_at}` : ''}`,
+                  children: `${registrationLink.match_count || 0} 次连续匹配`,
                 },
+                ...(registrationLink.confirmed_at ? [{
+                  key: 'confirmed_at',
+                  label: '已登记确认时间',
+                  children: formatSystemTime(registrationLink.confirmed_at),
+                }] : []),
+                ...(registrationLink.archive_available_at ? [{
+                  key: 'archive_available_at',
+                  label: '反馈归档保留期',
+                  children: registrationLink.archive_ready
+                    ? `已满足完整 24 小时保留期（${formatSystemTime(registrationLink.archive_available_at)}）`
+                    : `保留至 ${formatSystemTime(registrationLink.archive_available_at)}`,
+                }] : []),
                 ...(registrationLink.reason ? [{
                   key: 'reason',
                   label: '当前说明',
