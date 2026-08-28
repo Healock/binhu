@@ -111,6 +111,67 @@ class UnverifiableReviewTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             review.review_due_date(date(2026, 8, 27), review.FINAL_UNVERIFIABLE)
 
+    async def test_archive_without_review_flow_is_a_normal_terminal_case(self):
+        cursor = AsyncMock()
+        with patch.object(review, "_latest_flow", new=AsyncMock(return_value=None)), \
+             patch.object(review, "_event", new=AsyncMock()) as event:
+            await review.mark_flow_archived(cursor, "全链条", "a" * 32, 12)
+        cursor.execute.assert_not_awaited()
+        event.assert_not_awaited()
+
+    async def test_final_and_resolved_review_flows_can_follow_source_archive(self):
+        for state in (review.FINAL_UNVERIFIABLE, review.RESOLVED):
+            with self.subTest(state=state):
+                flow_row = (
+                    5, "全链条", "a" * 32, 1, 7, 3, "b" * 64,
+                    state, 4, None, "", "", 0, "", None,
+                    None, None, None, None,
+                )
+                cursor = AsyncMock()
+                with patch.object(review, "_latest_flow", new=AsyncMock(return_value=flow_row)), \
+                     patch.object(review, "_event", new=AsyncMock()) as event:
+                    await review.mark_flow_archived(cursor, "全链条", "a" * 32, 12)
+                cursor.execute.assert_awaited_once()
+                kwargs = event.await_args.kwargs
+                self.assertEqual(kwargs["stage"], state)
+                self.assertEqual(
+                    kwargs["safe_reason_code"],
+                    "resolved_source_archived" if state == review.RESOLVED else "",
+                )
+
+    async def test_archived_review_flow_is_idempotent(self):
+        flow_row = (
+            5, "全链条", "a" * 32, 1, 7, 3, "b" * 64,
+            review.ARCHIVED, 4, None, "", "", 0, "", None,
+            None, None, None, None,
+        )
+        cursor = AsyncMock()
+        with patch.object(review, "_latest_flow", new=AsyncMock(return_value=flow_row)), \
+             patch.object(review, "_event", new=AsyncMock()) as event:
+            await review.mark_flow_archived(cursor, "全链条", "a" * 32, 12)
+        cursor.execute.assert_not_awaited()
+        event.assert_not_awaited()
+
+    async def test_active_review_flow_blocks_archive_with_safe_code(self):
+        for state in (
+            review.INITIAL_PENDING,
+            review.INITIAL_EXTENSION,
+            review.DEEP_PENDING,
+            review.DEEP_EXTENSION,
+            review.SOURCE_EXCEPTION,
+        ):
+            with self.subTest(state=state):
+                flow_row = (
+                    5, "全链条", "a" * 32, 1, 7, 3, "b" * 64,
+                    state, 4, None, "", "", 0, "", None,
+                    None, None, None, None,
+                )
+                with patch.object(review, "_latest_flow", new=AsyncMock(return_value=flow_row)):
+                    with self.assertRaisesRegex(RuntimeError, "review_flow_state_conflict"):
+                        await review.mark_flow_archived(
+                            AsyncMock(), "全链条", "a" * 32, 12
+                        )
+
     async def test_prepare_decision_success_starts_initial_two_day_extension(self):
         flow = {
             "id": 7, "parser_type": "全链条", "row_key": "a" * 32,

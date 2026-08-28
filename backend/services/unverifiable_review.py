@@ -838,10 +838,17 @@ async def apply_decision(
 async def mark_flow_archived(cur, parser_type: str, row_key: str, export_id: int) -> None:
     flow = await _latest_flow(cur, parser_type, row_key, for_update=True)
     payload = _flow_payload(flow)
-    if payload and payload["state"] == ARCHIVED:
+    if not payload:
+        # 普通终态（离苏、无需登记等）没有“无法核实”研判流程，来源归档时
+        # 不应为了补造一条流程而阻断业务归档。
         return
-    if not payload or payload["state"] != FINAL_UNVERIFIABLE:
-        raise ValueError("unverifiable_flow_changed")
+    previous_state = payload["state"]
+    if previous_state == ARCHIVED:
+        return
+    if previous_state not in {FINAL_UNVERIFIABLE, RESOLVED}:
+        # 活动流程、来源异常和未知状态都必须留在任务池中人工核对，不能被
+        # 导出动作绕过状态机。
+        raise RuntimeError("review_flow_state_conflict")
     await cur.execute("""
         UPDATE _unverifiable_review_flows
         SET state=%s,flow_version=flow_version+1,archived_at=UTC_TIMESTAMP(),
@@ -849,10 +856,13 @@ async def mark_flow_archived(cur, parser_type: str, row_key: str, export_id: int
         WHERE id=%s
     """, (ARCHIVED, payload["id"]))
     await _event(
-        cur, flow_id=payload["id"], stage=FINAL_UNVERIFIABLE,
+        cur, flow_id=payload["id"], stage=previous_state,
         action="archive_exported", outcome=str(export_id), automatic=True,
         source_revision=payload["source_revision"],
         source_row_hash=payload["source_row_hash"],
+        safe_reason_code=(
+            "resolved_source_archived" if previous_state == RESOLVED else ""
+        ),
     )
 
 

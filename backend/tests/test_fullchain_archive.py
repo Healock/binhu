@@ -23,7 +23,9 @@ from routers.police_dispatch import require_police_access
 from services.permissions import POLICE_DISPATCH_MANAGE
 from services.fullchain_archive import build_archive_workbook, parse_police_raw
 from services.fullchain_archive_jobs import (
+    ArchiveStageError,
     _acquire_sheet_lock_with_retry,
+    _classify_archive_error,
     _commit_platform_archive,
     _delete_source_row_once,
     _safe_error_code,
@@ -121,6 +123,24 @@ class FullchainArchiveTests(unittest.TestCase):
             _safe_error_code(RuntimeError("upstream body with personal data"), "delete_failed"),
             "delete_failed",
         )
+
+    def test_database_transaction_errors_have_distinct_safe_codes(self):
+        cases = {
+            1213: "archive_transaction_deadlock",
+            1205: "archive_transaction_timeout",
+            2006: "archive_database_unavailable",
+        }
+        for errno, expected in cases.items():
+            with self.subTest(errno=errno):
+                error = _classify_archive_error(
+                    RuntimeError(errno, "sensitive database detail"),
+                    stage="archive_insert",
+                    fallback="archive_insert_failed",
+                )
+                self.assertEqual(error.code, expected)
+                self.assertEqual(error.stage, "archive_insert")
+                self.assertEqual(len(error.fingerprint), 64)
+                self.assertNotIn("sensitive", error.fingerprint)
 
 
 class _Cursor:
@@ -457,6 +477,65 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         stage_archive.assert_awaited_once()
         mark_archived.assert_awaited_once()
         mark_item.assert_awaited_once()
+
+    @patch("services.fullchain_archive_jobs._mark_item", new_callable=AsyncMock)
+    @patch(
+        "services.fullchain_archive_jobs.mark_flow_archived",
+        new=AsyncMock(side_effect=RuntimeError("review_flow_state_conflict")),
+    )
+    @patch("services.fullchain_archive_jobs._stage_platform_archive", new_callable=AsyncMock)
+    async def test_review_flow_conflict_is_not_flattened_to_platform_failure(
+        self, _stage_archive, _mark_item,
+    ):
+        conn = _TransactionalConnection(_Cursor())
+        with self.assertRaises(ArchiveStageError) as raised:
+            await _commit_platform_archive(
+                conn,
+                object(),
+                export_id=12,
+                source_id=7,
+                parser_type="全链条",
+                row_key="a" * 32,
+                values={},
+            )
+        self.assertEqual(raised.exception.code, "review_flow_state_conflict")
+        self.assertEqual(raised.exception.stage, "review_flow_archive")
+        self.assertEqual(conn.events, ["begin", "rollback"])
+
+    @patch(
+        "services.fullchain_archive_jobs.get_database_column_map",
+        new=AsyncMock(return_value={"姓名": "姓名"}),
+    )
+    async def test_archive_insert_and_current_remove_have_distinct_stages(self):
+        class StageCursor(_Cursor):
+            def __init__(self, fail_on: int | None = None, remove_rowcount: int = 1):
+                super().__init__()
+                self.fail_on = fail_on
+                self.remove_rowcount = remove_rowcount
+                self.rowcount = 1
+
+            async def execute(self, sql, params=()):
+                await super().execute(sql, params)
+                if self.fail_on == len(self.executions):
+                    raise RuntimeError("database detail")
+                self.rowcount = (
+                    self.remove_rowcount if "DELETE FROM `t_fullchain`" in sql else 1
+                )
+
+        parser = type("Parser", (), {"table_name": "t_fullchain", "COLUMNS": ["姓名"]})()
+        with self.assertRaises(ArchiveStageError) as insert_error:
+            await _stage_platform_archive(
+                _Connection(StageCursor(fail_on=2)), parser, 12, "a" * 32, {"姓名": "甲"}
+            )
+        self.assertEqual(insert_error.exception.code, "archive_insert_failed")
+        self.assertEqual(insert_error.exception.stage, "archive_insert")
+
+        with self.assertRaises(ArchiveStageError) as remove_error:
+            await _stage_platform_archive(
+                _Connection(StageCursor(remove_rowcount=0)), parser, 12, "a" * 32, {"姓名": "甲"}
+            )
+        self.assertEqual(remove_error.exception.code, "current_row_remove_failed")
+        self.assertEqual(remove_error.exception.stage, "current_row_remove")
 
     async def test_recovery_requeues_running_and_confirmed_partial_exports(self):
         class RecoveryCursor(_Cursor):

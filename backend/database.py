@@ -1378,8 +1378,16 @@ async def ensure_police_dispatch_schema(cur) -> None:
             error_code VARCHAR(100) NOT NULL DEFAULT '',
             external_delete_state VARCHAR(30) NOT NULL DEFAULT 'pending',
             external_deleted_at DATETIME DEFAULT NULL,
+            error_stage VARCHAR(40) NOT NULL DEFAULT '',
+            platform_archive_state VARCHAR(30) NOT NULL DEFAULT 'pending',
+            reconcile_state VARCHAR(40) NOT NULL DEFAULT 'pending',
+            reconcile_attempts INT NOT NULL DEFAULT 0,
+            error_fingerprint CHAR(64) NOT NULL DEFAULT '',
+            last_attempt_at DATETIME DEFAULT NULL,
+            reconciled_at DATETIME DEFAULT NULL,
             PRIMARY KEY (export_id, source_id),
-            INDEX idx_fullchain_archive_item_status (export_id, status)
+            INDEX idx_fullchain_archive_item_status (export_id, status),
+            INDEX idx_fullchain_archive_item_reconcile (external_delete_state,reconcile_state,status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     await _ensure_column(
@@ -1393,6 +1401,23 @@ async def ensure_police_dispatch_schema(cur) -> None:
     await _ensure_column(
         cur, "_fullchain_archive_export_items", "external_deleted_at",
         "DATETIME DEFAULT NULL AFTER external_delete_state",
+    )
+    for column_name, definition in {
+        "error_stage": "VARCHAR(40) NOT NULL DEFAULT '' AFTER external_deleted_at",
+        "platform_archive_state": "VARCHAR(30) NOT NULL DEFAULT 'pending' AFTER error_stage",
+        "reconcile_state": "VARCHAR(40) NOT NULL DEFAULT 'pending' AFTER platform_archive_state",
+        "reconcile_attempts": "INT NOT NULL DEFAULT 0 AFTER reconcile_state",
+        "error_fingerprint": "CHAR(64) NOT NULL DEFAULT '' AFTER reconcile_attempts",
+        "last_attempt_at": "DATETIME DEFAULT NULL AFTER error_fingerprint",
+        "reconciled_at": "DATETIME DEFAULT NULL AFTER last_attempt_at",
+    }.items():
+        await _ensure_column(cur, "_fullchain_archive_export_items", column_name, definition)
+    await _ensure_index(
+        cur,
+        "_fullchain_archive_export_items",
+        "idx_fullchain_archive_item_reconcile",
+        "INDEX `idx_fullchain_archive_item_reconcile` "
+        "(`external_delete_state`, `reconcile_state`, `status`)",
     )
 
     for table_name, columns in {

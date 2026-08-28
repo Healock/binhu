@@ -445,8 +445,16 @@ CREATE TABLE IF NOT EXISTS _fullchain_archive_export_items (
     error_code VARCHAR(100) NOT NULL DEFAULT '',
     external_delete_state VARCHAR(30) NOT NULL DEFAULT 'pending',
     external_deleted_at DATETIME DEFAULT NULL,
+    error_stage VARCHAR(40) NOT NULL DEFAULT '',
+    platform_archive_state VARCHAR(30) NOT NULL DEFAULT 'pending',
+    reconcile_state VARCHAR(40) NOT NULL DEFAULT 'pending',
+    reconcile_attempts INT NOT NULL DEFAULT 0,
+    error_fingerprint CHAR(64) NOT NULL DEFAULT '',
+    last_attempt_at DATETIME DEFAULT NULL,
+    reconciled_at DATETIME DEFAULT NULL,
     PRIMARY KEY (export_id, source_id),
-    INDEX idx_fullchain_archive_item_status (export_id, status)
+    INDEX idx_fullchain_archive_item_status (export_id, status),
+    INDEX idx_fullchain_archive_item_reconcile (external_delete_state,reconcile_state,status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _unverifiable_review_flows (
