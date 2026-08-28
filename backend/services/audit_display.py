@@ -90,6 +90,7 @@ ACTION_LABELS: dict[str, str] = {
     "residence_platform.scan.start": "启动居住证登记资料查询",
     "venue.create": "创建场所码",
     "venue.update": "修改场所码",
+    "venue.delete": "移除场所码",
     "venue.rotate_token": "轮换场所码二维码",
     "venue.export": "导出场所登记记录",
     "work_log.create": "创建工作日志",

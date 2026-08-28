@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Form, Input, Modal, Popconfirm, Space, Table, Tag, Upload, message } from 'antd'
-import { PlusOutlined, QrcodeOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons'
+import { DeleteOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons'
 import {
-  createVenueCode, exportVenueVisits, getVenueCodeQr, listVenueCodes, listVenueVisits,
+  createVenueCode, deleteVenueCode, exportVenueVisits, getVenueCodeQr, listVenueCodes, listVenueVisits,
   rotateVenueCodeToken, updateVenueCode, type VenueCodeItem, type VenueVisitItem,
 } from '../api/client'
 import { downloadBlob } from '../utils/fileDownload'
@@ -42,7 +42,39 @@ export default function VenueCodeManagement() {
   const columns = [
     { title: '场所名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'venue_type' }, { title: '地址', dataIndex: 'address' }, { title: '所属社区', dataIndex: 'community_name' },
     { title: '状态', dataIndex: 'status', render: (v: string) => <Tag color={v === 'active' ? 'success' : 'default'}>{v === 'active' ? '启用' : '停用'}</Tag> },
-    { title: '操作', render: (_: unknown, row: VenueCodeItem) => <Space><Button type="link" icon={<QrcodeOutlined />} onClick={async () => { const q = await getVenueCodeQr(row.id); Modal.info({ title: '场所二维码', content: <div className="grid justify-items-center gap-3"><AuthenticatedImage alt="场所二维码" src={q.image_url} style={{ width: 220, height: 220 }} /><p className="m-0 break-all">扫码地址：{q.url}</p></div> }) }}>二维码</Button>{canManage && <><Button type="link" onClick={() => { setEditing(row); form.setFieldsValue(row); setModalOpen(true) }}>编辑</Button><Popconfirm title="重新生成二维码？" onConfirm={async () => { await rotateVenueCodeToken(row.id); message.success('二维码已重新生成'); await load() }}><Button type="link">轮换</Button></Popconfirm></>}</Space> },
+    {
+      title: '操作',
+      render: (_: unknown, row: VenueCodeItem) => (
+        <Space wrap>
+          <Button type="link" icon={<QrcodeOutlined />} onClick={async () => {
+            const q = await getVenueCodeQr(row.id)
+            Modal.info({ title: '场所二维码', content: <div className="grid justify-items-center gap-3"><AuthenticatedImage alt="场所二维码" src={q.image_url} style={{ width: 220, height: 220 }} /><p className="m-0 break-all">扫码地址：{q.url}</p></div> })
+          }}>二维码</Button>
+          {canManage && <>
+            <Button type="link" onClick={() => { setEditing(row); form.setFieldsValue(row); setModalOpen(true) }}>编辑</Button>
+            <Popconfirm title="重新生成二维码？" onConfirm={async () => { await rotateVenueCodeToken(row.id); message.success('二维码已重新生成'); await load() }}><Button type="link">轮换</Button></Popconfirm>
+            <Popconfirm
+              title="移除这个场所？"
+              description="移除后二维码立即失效，既有登记记录仍按原期限保留。"
+              okText="移除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={async () => {
+                try {
+                  await deleteVenueCode(row.id)
+                  message.success('场所已移除')
+                  await load()
+                } catch (reason: any) {
+                  message.error(reason?.response?.data?.detail || '移除失败')
+                }
+              }}
+            >
+              <Button type="link" danger icon={<DeleteOutlined />}>移除</Button>
+            </Popconfirm>
+          </>}
+        </Space>
+      ),
+    },
   ]
   return <div className="app-page min-w-0"><PageHeader title="场所码管理" description="场所码与流口指令核查相互独立，仅用于匿名扫码登记。" />{error && <Alert type="error" showIcon message={error} />}<Panel title="场所目录" padded={false}><div className="p-4 flex justify-between"><span>共 {venues.length} 个场所</span><Space>{canExport && <Button icon={<DownloadOutlined />} onClick={exportRows}>导出登记记录</Button>}{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); form.setFieldsValue(emptyVenue); setModalOpen(true) }}>新增场所</Button>}<Button icon={<ReloadOutlined />} onClick={load}>刷新</Button></Space></div><Table rowKey="id" loading={loading} columns={columns} dataSource={venues} pagination={{ pageSize: 20 }} scroll={{ x: 900 }} /></Panel><Panel title="最近登记记录" padded={false}><Table rowKey="id" loading={loading} dataSource={visits} pagination={{ pageSize: 20 }} columns={[{ title: '场所', dataIndex: 'venue_name' }, { title: '姓名', dataIndex: 'name' }, { title: '身份证号', dataIndex: 'identity_number' }, { title: '手机号', dataIndex: 'phone' }, { title: '地址', dataIndex: 'address' }, { title: '登记时间', dataIndex: 'submitted_at' }]} scroll={{ x: 900 }} /></Panel><Modal title={editing ? '编辑场所' : '新增场所'} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={save}><Form form={form} layout="vertical"><Form.Item name="name" label="场所名称" rules={[{ required: true }]}><Input /></Form.Item><Form.Item name="venue_type" label="场所类型"><Input /></Form.Item><Form.Item name="address" label="地址"><Input /></Form.Item><Form.Item name="community_name" label="所属社区"><Input /></Form.Item><Form.Item name="status" label="状态"><Input /></Form.Item></Form></Modal></div>
 }
