@@ -3,12 +3,31 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { getResponsiveColumns } from '../src/components/responsiveTable.ts'
 import { getResponsiveLayoutMode } from '../src/hooks/useResponsiveLayout.ts'
+import { getCompactPersonnelPresentation } from '../src/utils/mobileTaskTableLayout.ts'
 
 test('响应式布局按实际容器宽度和视口高度分档', () => {
   assert.equal(getResponsiveLayoutMode(1199, 900), 'compact')
   assert.equal(getResponsiveLayoutMode(1400, 760), 'compact')
   assert.equal(getResponsiveLayoutMode(1400, 761), 'standard')
   assert.equal(getResponsiveLayoutMode(1600, 900), 'wide')
+})
+
+test('紧凑人员信息随容器继续缩小从 2x2 过渡到 4x1', () => {
+  assert.deepEqual(getCompactPersonnelPresentation(1100), {
+    layout: 'paired',
+    columnWidth: 520,
+    tableScrollWidth: 1020,
+  })
+  assert.deepEqual(getCompactPersonnelPresentation(900), {
+    layout: 'paired',
+    columnWidth: 520,
+    tableScrollWidth: 1020,
+  })
+  assert.deepEqual(getCompactPersonnelPresentation(899), {
+    layout: 'stacked',
+    columnWidth: 360,
+    tableScrollWidth: 900,
+  })
 })
 
 test('紧凑表格保留操作列并把低优先级列留给详情', () => {
@@ -85,10 +104,13 @@ test('任务分配和行内编辑在紧凑桌面宽度保持完整可操作', ()
   assert.match(taskTableSource, /mobile-task-table-personnel__[\s\S]*?task\.summary\.identity_number/)
   assert.match(taskTableSource, /mobileTaskPhoneOptions\(task\.summary\.phone\)/)
   assert.match(taskTableSource, /mobile-task-table-personnel__row--address[\s\S]*?task\.summary\.original_address/)
+  assert.match(taskTableSource, /getCompactPersonnelPresentation\(responsiveLayout\.width\)/)
+  assert.match(taskTableSource, /mobile-task-table-personnel--\$\{compactPersonnelPresentation\.layout\}/)
   assert.match(taskTableSource, /!responsiveLayout\.isCompact \? \[[\s\S]*?title: '姓名'[\s\S]*?title: '身份证号码'[\s\S]*?title: '电话'[\s\S]*?title: '地址'/)
   assert.doesNotMatch(taskTableSource, /key: 'identity_number'[\s\S]{0,120}responsivePriority: 'wide'/)
   assert.doesNotMatch(taskTableSource, /key: 'phone'[\s\S]{0,120}responsivePriority: 'standard'/)
   assert.match(styles, /\.mobile-task-table-personnel\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;[^}]*gap:\s*5px;/s)
+  assert.match(styles, /\.mobile-task-table-personnel--paired\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);[^}]*column-gap:\s*18px;/s)
   assert.match(styles, /\.mobile-task-table-personnel__row\s*\{[^}]*grid-template-columns:\s*64px minmax\(0, 1fr\);/s)
   assert.match(styles, /\.mobile-task-table-personnel__row dd\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/s)
   assert.match(styles, /\.mobile-task-table-personnel__phones\s*\{[^}]*flex-wrap:\s*wrap;/s)

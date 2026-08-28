@@ -2068,6 +2068,8 @@ export async function claimMobileTask(
     changes: Record<string, string>
     base_values?: Record<string, string>
     expected_revision: number
+    registration_property_id?: number
+    registration_property_version?: number
   },
 ): Promise<{
   values: Record<string, string>

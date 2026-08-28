@@ -55,6 +55,7 @@ import {
   mobileTaskCurrentAddressLabel,
   mobileTaskEditorFields,
   mobileTaskPhoneOptions,
+  mobileTaskResultOptions,
   mobileTaskSourceTags,
   mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
@@ -961,7 +962,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         <section className="app-card p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="font-semibold text-[var(--app-text-strong)]">拟登记住址关联</h2>
+              <h2 className="font-semibold text-[var(--app-text-strong)]">待登记房屋关联</h2>
               <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
                 仅在居住证连续两个独立扫描周期精确匹配同一套有效房屋后，才会自动转为已登记。
               </p>
@@ -1156,10 +1157,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             <div className="space-y-4">
               {visibleEditorFields.map(field => {
                 const metadata = selectedSource.cell_meta[field] || { type: 'text' }
-                const options = metadata.options?.map(option => ({
+                const resultField = field === data.workflow.result_field
+                const optionSource = resultField
+                  ? mobileTaskResultOptions(
+                    metadata.options,
+                    registrationClosureEnabled,
+                  )
+                  : metadata.options || []
+                const options = optionSource.map(option => ({
                   value: String(option.text),
                   label: String(option.text),
-                })) || []
+                }))
                 return (
                   <label
                     key={field}
@@ -1192,7 +1200,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         placeholder="搜索并选择辖区档案中的唯一房屋"
                         options={registrationProperties.map(property => ({
                           value: property.id,
-                          label: `${property.community_name || ''} ${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim(),
+                          label: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim(),
                         }))}
                         onSearch={value => void loadRegistrationProperties(value)}
                         onChange={value => {
