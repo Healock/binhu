@@ -30,3 +30,13 @@ test('场所二维码通过受认证 Blob 加载并允许 Tauri 显示 object UR
   assert.match(image, /useAuthenticatedImageUrl/)
   assert.match(tauri.app.security.csp, /img-src[^;]*blob:/)
 })
+
+test('场所管理提供带二次确认的软删除入口', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+
+  assert.match(page, /title="移除这个场所？"/)
+  assert.match(page, /既有登记记录仍按原期限保留/)
+  assert.match(page, /await deleteVenueCode\(row\.id\)/)
+  assert.match(client, /api\.delete\(`\/venue-codes\/\$\{id\}`\)/)
+})

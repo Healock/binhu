@@ -3,9 +3,11 @@ import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -19,6 +21,7 @@ from routers.venue_codes import (
     _public_venue_url,
     _token_digest,
     _validate_photo,
+    delete_venue,
     venue_qrcode,
 )
 
@@ -99,3 +102,42 @@ async def test_qrcode_png_encodes_the_same_absolute_public_url(monkeypatch):
 
     assert response.media_type == "image/png"
     assert encoded_values == ["https://portal.example.test/venue/public_token"]
+
+
+@pytest.mark.asyncio
+async def test_delete_venue_soft_deletes_without_removing_visit_history(monkeypatch):
+    statements: list[tuple[str, tuple]] = []
+
+    class FakeCursor:
+        rowcount = 1
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, query, params):
+            statements.append((query, params))
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    audit = AsyncMock()
+    monkeypatch.setattr(venue_codes, "record_admin_audit", audit)
+    request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1234)})
+
+    result = await delete_venue(
+        7,
+        request=request,
+        user={"id": 3, "username": "operator"},
+        conn=FakeConnection(),
+    )
+
+    assert result == {"message": "场所已移除"}
+    assert len(statements) == 1
+    assert "SET status='deleted'" in statements[0][0]
+    assert "_venue_visits" not in statements[0][0]
+    assert statements[0][1] == (3, 7)
+    audit.assert_awaited_once()

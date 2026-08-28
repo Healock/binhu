@@ -67,6 +67,9 @@ export async function createVenueCode(payload: Omit<VenueCodeItem, 'id' | 'creat
 export async function updateVenueCode(id: number, payload: Omit<VenueCodeItem, 'id' | 'created_at' | 'updated_at'>): Promise<void> {
   await api.put(`/venue-codes/${id}`, payload)
 }
+export async function deleteVenueCode(id: number): Promise<void> {
+  await api.delete(`/venue-codes/${id}`)
+}
 export async function rotateVenueCodeToken(id: number): Promise<{ token: string; url: string }> {
   return (await api.post(`/venue-codes/${id}/rotate-token`, {})).data
 }

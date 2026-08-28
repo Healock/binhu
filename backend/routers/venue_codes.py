@@ -201,6 +201,26 @@ async def update_venue(venue_id: int, data: VenueCreate, request: Request, user:
     return {"message": "场所已更新"}
 
 
+@admin_router.delete("/venue-codes/{venue_id}")
+async def delete_venue(venue_id: int, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE _venue_codes SET status='deleted',updated_by=%s WHERE id=%s AND status<>'deleted'",
+            (user["id"], venue_id),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(404, "场所不存在")
+    await record_admin_audit(
+        user,
+        "venue.delete",
+        target_type="venue",
+        target_name=str(venue_id),
+        detail={"history_retained": True},
+        **request_audit_fields(request),
+    )
+    return {"message": "场所已移除"}
+
+
 @admin_router.post("/venue-codes/{venue_id}/rotate-token")
 async def rotate_token(venue_id: int, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
     token = secrets.token_urlsafe(32)
