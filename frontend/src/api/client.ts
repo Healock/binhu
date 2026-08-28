@@ -2961,6 +2961,35 @@ export async function startQmfSourceSync(): Promise<{
   return (await api.post('/qmf-source/sync', {}, { ...activeRequest, timeout: 30_000 })).data
 }
 
+export interface SelfOwnedRosterResult {
+  batch_id: number
+  status: string
+  rule_version: string
+  workbook_count: number
+  total_rows: number
+  valid_rows: number
+  invalid_rows: number
+  duplicate_rows: number
+  matched_tasks: number
+  updated_tasks: number
+  skipped_tasks: number
+}
+
+export async function importModelThreeSelfOwnedRoster(file: File): Promise<SelfOwnedRosterResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/qmf-source/self-owned/import', formData, {
+    ...activeRequest,
+    timeout: 300_000,
+  })
+  return data.data
+}
+
+export async function getLatestModelThreeSelfOwnedRoster(): Promise<SelfOwnedRosterResult | null> {
+  const { data } = await api.get('/qmf-source/self-owned/latest', passiveRequest)
+  return data.data || null
+}
+
 export async function getCodeSummary(
   source: CodeSummarySource,
   startDate: string,

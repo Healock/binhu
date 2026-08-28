@@ -19,9 +19,12 @@ import {
   formatUTCTime,
   getExternalAcquisitionRun,
   getLatestExternalAcquisitionRun,
+  getLatestModelThreeSelfOwnedRoster,
+  importModelThreeSelfOwnedRoster,
   startQmfSourceSync,
   type PhotoImportBatch,
   type PhotoImportReconcileResult,
+  type SelfOwnedRosterResult,
   workflowApi,
 } from '../api/client'
 
@@ -63,6 +66,11 @@ export default function DataUploadCenter() {
   const [photoReconcile, setPhotoReconcile] = useState<PhotoImportReconcileResult | null>(null)
   const [qmfRun, setQmfRun] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
   const [qmfLoading, setQmfLoading] = useState(false)
+  const [selfOwnedFile, setSelfOwnedFile] = useState<File | null>(null)
+  const [selfOwnedFileList, setSelfOwnedFileList] = useState<UploadFile[]>([])
+  const [selfOwnedResult, setSelfOwnedResult] = useState<SelfOwnedRosterResult | null>(null)
+  const [selfOwnedLoading, setSelfOwnedLoading] = useState(false)
+  const [selfOwnedError, setSelfOwnedError] = useState('')
 
   const loadQmfRun = async () => {
     if (!canManageQmfSource) return
@@ -75,6 +83,10 @@ export default function DataUploadCenter() {
   }
 
   useEffect(() => { void loadQmfRun() }, [canManageQmfSource])
+  useEffect(() => {
+    if (!canManageQmfSource) return
+    void getLatestModelThreeSelfOwnedRoster().then(setSelfOwnedResult).catch(() => undefined)
+  }, [canManageQmfSource])
   useEffect(() => {
     if (!canManageQmfSource || !qmfRun || !['queued', 'running'].includes(qmfRun.status)) return
     const timer = window.setInterval(() => {
@@ -92,6 +104,33 @@ export default function DataUploadCenter() {
       Modal.error({ title: '全民防同步启动失败', content: error?.response?.data?.detail || '请稍后重试' })
     } finally {
       setQmfLoading(false)
+    }
+  }
+
+  const beforeSelfOwnedUpload: UploadProps['beforeUpload'] = file => {
+    setSelfOwnedError('')
+    setSelfOwnedResult(null)
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setSelfOwnedError('自购自住名单只支持 ZIP 文件')
+      return Upload.LIST_IGNORE
+    }
+    setSelfOwnedFile(file)
+    setSelfOwnedFileList([selectedUploadFile(file)])
+    return false
+  }
+
+  const handleSelfOwnedImport = async () => {
+    if (!selfOwnedFile) return
+    setSelfOwnedLoading(true)
+    setSelfOwnedError('')
+    try {
+      setSelfOwnedResult(await importModelThreeSelfOwnedRoster(selfOwnedFile))
+      setSelfOwnedFile(null)
+      setSelfOwnedFileList([])
+    } catch (error: any) {
+      setSelfOwnedError(error?.response?.data?.detail || '自购自住名单导入失败，请稍后重试')
+    } finally {
+      setSelfOwnedLoading(false)
     }
   }
 
@@ -257,6 +296,52 @@ export default function DataUploadCenter() {
                   <span>来源问题 {qmfRun.result.issue_count ?? 0} 条</span>
                 </div>
               )}
+            </div>
+          )}
+        </Panel>
+      )}
+
+      {canManageQmfSource && (
+        <Panel
+          title="模型三辅助证据：自购自住名单"
+          description="这是一份平台内维护的辅助证据名单。导入后仅匹配模型三任务，将空白或无法核实结果填为“近期返吴”，不会调用全民防写入接口。"
+        >
+          <Upload
+            accept=".zip"
+            maxCount={1}
+            fileList={selfOwnedFileList}
+            beforeUpload={beforeSelfOwnedUpload}
+            onRemove={() => {
+              setSelfOwnedFile(null)
+              setSelfOwnedFileList([])
+              setSelfOwnedError('')
+            }}
+            disabled={selfOwnedLoading}
+          >
+            <Button icon={<UploadOutlined />} disabled={selfOwnedLoading}>选择自购自住名单 ZIP</Button>
+          </Upload>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              type="primary"
+              loading={selfOwnedLoading}
+              disabled={!selfOwnedFile || selfOwnedLoading}
+              onClick={() => void handleSelfOwnedImport()}
+            >导入并套用近期返吴</Button>
+            <span className="text-xs text-[var(--app-text-secondary)]">按居民证号去重，仅保存安全摘要和身份 HMAC</span>
+          </div>
+          {selfOwnedError && <Alert className="mt-3" type="error" showIcon message={selfOwnedError} />}
+          {selfOwnedResult && (
+            <div className="mt-3 rounded-lg border border-[var(--app-border)] p-3 text-sm">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                <span>文件 {selfOwnedResult.workbook_count} 个</span>
+                <span>记录 {selfOwnedResult.total_rows} 条</span>
+                <span>有效 {selfOwnedResult.valid_rows} 条</span>
+                <span>无效 {selfOwnedResult.invalid_rows} 条</span>
+                <span>重复 {selfOwnedResult.duplicate_rows} 条</span>
+                <span>命中模型三 {selfOwnedResult.matched_tasks} 条</span>
+                <span className="font-medium text-green-600">已填近期返吴 {selfOwnedResult.updated_tasks} 条</span>
+                <span>保留原结果 {selfOwnedResult.skipped_tasks} 条</span>
+              </div>
             </div>
           )}
         </Panel>

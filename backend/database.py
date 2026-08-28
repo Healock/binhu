@@ -31,6 +31,7 @@ from services.domain_schema import ensure_registry_schema, ensure_workflow_schem
 from services.domain_routing import DomainRoutingCursor
 from services.qmf_runs import ensure_qmf_registration_schema
 from services.qmf_status_scan import ensure_qmf_status_scan_schema
+from services.model_three_self_owned import ensure_self_owned_schema
 from services.residence_status_scan import ensure_residence_status_schema
 from services.task_registration import ensure_task_registration_schema
 from services.unverifiable_review import ensure_unverifiable_review_schema
@@ -2726,6 +2727,7 @@ class DatabaseManager:
                 await ensure_work_activity_schema(cur)
                 await ensure_qmf_registration_schema(cur)
                 await ensure_qmf_status_scan_schema(cur)
+                await ensure_self_owned_schema(cur)
                 await ensure_residence_status_schema(cur)
                 await ensure_task_registration_schema(cur)
                 await ensure_unverifiable_review_schema(cur)
