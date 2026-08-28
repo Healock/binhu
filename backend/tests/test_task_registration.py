@@ -10,6 +10,7 @@ from services.task_registration import (
     REGISTRATION_TASK_TYPES,
     address_hmac,
     ensure_missing_registration_review,
+    finalize_registration_writeback,
     is_pending_registration,
     is_registration_task,
     mark_registration_confirmation_failed,
@@ -156,6 +157,53 @@ class TaskRegistrationRulesTests(unittest.TestCase):
 
 
 class TaskRegistrationMatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_successful_writeback_confirms_only_matching_source_context(self):
+        cursor = type(
+            "Cursor",
+            (),
+            {
+                "execute": AsyncMock(),
+                "fetchone": AsyncMock(return_value=(23, "confirmation_pending", 6, "b" * 64, 6, "b" * 64)),
+            },
+        )()
+
+        await finalize_registration_writeback(
+            cursor,
+            parser_type="全链条",
+            row_key="row-key",
+            source_id=11,
+            succeeded=True,
+        )
+
+        update_sql, update_params = cursor.execute.await_args_list[1].args
+        self.assertIn("COALESCE(confirmed_at,UTC_TIMESTAMP())", update_sql)
+        self.assertEqual(update_params[:3], ("confirmed", "", "confirmed"))
+
+    async def test_successful_writeback_with_stale_source_context_requires_review(self):
+        cursor = type(
+            "Cursor",
+            (),
+            {
+                "execute": AsyncMock(),
+                "fetchone": AsyncMock(return_value=(23, "confirmation_pending", 5, "a" * 64, 6, "b" * 64)),
+            },
+        )()
+
+        await finalize_registration_writeback(
+            cursor,
+            parser_type="全链条",
+            row_key="row-key",
+            source_id=11,
+            succeeded=True,
+        )
+
+        update_sql, update_params = cursor.execute.await_args_list[1].args
+        self.assertIn("confirmed_at=IF", update_sql)
+        self.assertEqual(update_params[:3], ("review_required", "source_changed", "review_required"))
+        event_params = cursor.execute.await_args_list[2].args[1]
+        self.assertEqual(event_params[4], "registration_writeback_failed")
+        self.assertEqual(event_params[5], "source_changed")
+
     async def test_confirmation_enqueue_failure_returns_pending_state_to_review(self):
         cursor = type("Cursor", (), {"execute": AsyncMock(), "rowcount": 1})()
 

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import defaultdict
 from hashlib import sha256
 from typing import Any
 
+from config import settings
 from database import db_manager
 from routers.query import _oauth_client, _refresh_spreadsheet, _writeback_enabled
 from services.online_source import (
@@ -16,6 +18,7 @@ from services.online_source import (
     resolve_source_columns,
     source_row_hash,
 )
+from services.fullchain_archive import REGISTRATION_ARCHIVE_RULE_VERSION
 from services.parsers import get_parser
 from services.schema_compat import get_database_column_map, quote_identifier
 from services.unverifiable_review import FINAL_UNVERIFIABLE, mark_flow_archived, supports_unverifiable_review
@@ -64,6 +67,7 @@ _ALLOWED_ERROR_CODES = {
     "reconciled_by_sync",
     "archive_content_conflict",
     "current_row_changed_after_external_delete",
+    "registration_archive_evidence_changed",
 }
 
 
@@ -664,6 +668,94 @@ async def reconcile_deleted_archive_items(export_id: int | None = None) -> int:
         pool.release(conn)
 
 
+async def _validate_registration_archive_evidence(
+    cur,
+    *,
+    parser_type: str,
+    row_key: str,
+    source_id: int,
+    expected_revision: int,
+    expected_hash: str,
+    registration_confirmed_at: Any,
+    registration_status: str,
+    registration_identity_hmac: str,
+    registration_property_id: int | None,
+    registration_property_version: int | None,
+    candidate_rule_version: str,
+) -> None:
+    """Recheck frozen registration evidence immediately before Tencent deletion."""
+    if (
+        candidate_rule_version != REGISTRATION_ARCHIVE_RULE_VERSION
+        or registration_status != "confirmed"
+        or registration_confirmed_at is None
+        or registration_property_id is None
+        or registration_property_version is None
+    ):
+        raise ArchiveStageError(
+            "registration_archive_evidence_changed", "registration_evidence"
+        )
+    registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+    await cur.execute(
+        f"""
+        SELECT link.status,link.confirmed_at,link.source_id,
+               link.source_revision,link.source_row_hash,link.identity_hmac,
+               link.task_community,link.property_id,link.property_version,
+               source.revision,source.row_hash,
+               projection.identity_hmac,projection.community,
+               projection.source_count,projection.conflict,projection.values_json,
+               property.status,property.current_version,
+               UTC_TIMESTAMP() >= DATE_ADD(link.confirmed_at, INTERVAL 24 HOUR),
+               EXISTS (
+                   SELECT 1 FROM _online_local_changes local_change
+                   WHERE local_change.source_id=source.id
+                     AND local_change.status IN ('pending','processing','retry','conflict')
+               )
+        FROM _task_registration_links link
+        JOIN _online_source_rows source
+          ON source.id=link.source_id AND source.parser_type=link.parser_type
+         AND source.row_key=link.row_key
+        JOIN _online_source_projection projection
+          ON projection.parser_type=link.parser_type AND projection.row_key=link.row_key
+        LEFT JOIN `{registry}`.registry_properties property
+          ON property.id=link.property_id
+        WHERE link.parser_type=%s AND link.row_key=%s
+        FOR UPDATE
+        """,
+        (parser_type, row_key),
+    )
+    row = await cur.fetchone()
+    try:
+        projection_values = json.loads(row[15] or "{}") if row else {}
+    except (TypeError, ValueError):
+        projection_values = {}
+    valid = bool(
+        row
+        and str(row[0] or "") == "confirmed"
+        and row[1] == registration_confirmed_at
+        and int(row[2] or 0) == source_id
+        and int(row[3] or 0) == expected_revision
+        and str(row[4] or "") == expected_hash
+        and str(row[5] or "") == registration_identity_hmac
+        and str(row[6] or "").strip() == str(row[12] or "").strip()
+        and int(row[7] or 0) == registration_property_id
+        and int(row[8] or 0) == registration_property_version
+        and int(row[9] or 0) == expected_revision
+        and str(row[10] or "") == expected_hash
+        and str(row[11] or "") == registration_identity_hmac
+        and int(row[13] or 0) == 1
+        and not bool(row[14])
+        and str(row[16] or "") == "active"
+        and int(row[17] or 0) == registration_property_version
+        and bool(row[18])
+        and not bool(row[19])
+        and str(projection_values.get("核查结果") or "").strip() == "已登记"
+    )
+    if not valid:
+        raise ArchiveStageError(
+            "registration_archive_evidence_changed", "registration_evidence"
+        )
+
+
 async def _delete_source_row_once(
     conn,
     client,
@@ -679,6 +771,14 @@ async def _delete_source_row_once(
     source_columns: list[str],
     parser,
     external_delete_state: str,
+    row_key: str = "",
+    category: str = "",
+    registration_confirmed_at: Any = None,
+    registration_status: str = "",
+    registration_identity_hmac: str = "",
+    registration_property_id: int | None = None,
+    registration_property_version: int | None = None,
+    candidate_rule_version: str = "",
 ) -> None:
     """腾讯整行删除只允许发送一次，并在发送前后持久化状态。"""
     if external_delete_state == "deleting":
@@ -691,6 +791,21 @@ async def _delete_source_row_once(
         raise RuntimeError("external_delete_outcome_unknown")
 
     async with conn.cursor() as cur:
+        if category == "已登记":
+            await _validate_registration_archive_evidence(
+                cur,
+                parser_type=parser_type,
+                row_key=row_key,
+                source_id=source_id,
+                expected_revision=expected_revision,
+                expected_hash=expected_hash,
+                registration_confirmed_at=registration_confirmed_at,
+                registration_status=registration_status,
+                registration_identity_hmac=registration_identity_hmac,
+                registration_property_id=registration_property_id,
+                registration_property_version=registration_property_version,
+                candidate_rule_version=candidate_rule_version,
+            )
         await cur.execute(
             "SELECT physical_row,revision,row_hash FROM _online_source_rows "
             "WHERE id=%s AND parser_type=%s",
@@ -852,7 +967,10 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                        item.expected_revision,item.expected_row_hash,
                        COALESCE(source.values_json,item.source_values_json),
                        item.row_key,source.parser_type,spreadsheet.file_id,spreadsheet.data_sheet_id,
-                       spreadsheet.header_row,spreadsheet.name,item.external_delete_state
+                       spreadsheet.header_row,spreadsheet.name,item.external_delete_state,
+                       item.category,item.registration_confirmed_at,item.registration_status,
+                       item.registration_identity_hmac,item.registration_property_id,
+                       item.registration_property_version,item.candidate_rule_version
                 FROM _fullchain_archive_export_items item
                 LEFT JOIN _online_source_rows source ON source.id=item.source_id
                 LEFT JOIN _config_spreadsheets spreadsheet ON spreadsheet.id=item.spreadsheet_id
@@ -911,6 +1029,18 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                             source_columns=source_columns,
                             parser=parser,
                             external_delete_state=delete_state,
+                            row_key=str(row[7]),
+                            category=str(row[14] or ""),
+                            registration_confirmed_at=row[15],
+                            registration_status=str(row[16] or ""),
+                            registration_identity_hmac=str(row[17] or ""),
+                            registration_property_id=(
+                                int(row[18]) if row[18] is not None else None
+                            ),
+                            registration_property_version=(
+                                int(row[19]) if row[19] is not None else None
+                            ),
+                            candidate_rule_version=str(row[20] or ""),
                         )
                         delete_state = "deleted"
                         if row[6] is None:

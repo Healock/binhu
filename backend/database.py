@@ -1373,6 +1373,12 @@ async def ensure_police_dispatch_schema(cur) -> None:
             expected_revision BIGINT NOT NULL,
             expected_row_hash CHAR(64) NOT NULL,
             source_values_json JSON DEFAULT NULL,
+            registration_confirmed_at DATETIME DEFAULT NULL,
+            registration_status VARCHAR(32) NOT NULL DEFAULT '',
+            registration_identity_hmac CHAR(64) NOT NULL DEFAULT '',
+            registration_property_id BIGINT DEFAULT NULL,
+            registration_property_version INT UNSIGNED DEFAULT NULL,
+            candidate_rule_version VARCHAR(32) NOT NULL DEFAULT '',
             category VARCHAR(40) NOT NULL,
             status VARCHAR(30) NOT NULL DEFAULT 'queued',
             error_code VARCHAR(100) NOT NULL DEFAULT '',
@@ -1394,6 +1400,15 @@ async def ensure_police_dispatch_schema(cur) -> None:
         cur, "_fullchain_archive_export_items", "source_values_json",
         "JSON DEFAULT NULL AFTER expected_row_hash",
     )
+    for column_name, definition in {
+        "registration_confirmed_at": "DATETIME DEFAULT NULL AFTER source_values_json",
+        "registration_status": "VARCHAR(32) NOT NULL DEFAULT '' AFTER registration_confirmed_at",
+        "registration_identity_hmac": "CHAR(64) NOT NULL DEFAULT '' AFTER registration_status",
+        "registration_property_id": "BIGINT DEFAULT NULL AFTER registration_identity_hmac",
+        "registration_property_version": "INT UNSIGNED DEFAULT NULL AFTER registration_property_id",
+        "candidate_rule_version": "VARCHAR(32) NOT NULL DEFAULT '' AFTER registration_property_version",
+    }.items():
+        await _ensure_column(cur, "_fullchain_archive_export_items", column_name, definition)
     await _ensure_column(
         cur, "_fullchain_archive_export_items", "external_delete_state",
         "VARCHAR(30) NOT NULL DEFAULT 'pending' AFTER error_code",

@@ -1,4 +1,4 @@
-"""全链条反馈导出、原始公安网数据比对和腾讯来源行归档。"""
+"""全链条反馈导出、历史公安网材料读取和腾讯来源行归档。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import io
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,26 @@ RAW_ALIASES = {
     "name": ("姓名", "人员姓名", "名字"),
     "result": ("核查结果", "反馈结果", "登记情况", "结果"),
 }
+
+
+REGISTRATION_ARCHIVE_RETENTION_HOURS = 24
+REGISTRATION_ARCHIVE_RULE_VERSION = "residence-confirmed-v1"
+
+
+def registration_archive_available_at(confirmed_at: datetime | None) -> datetime | None:
+    """Return the exact UTC instant when a confirmed registration may archive."""
+    if confirmed_at is None:
+        return None
+    return confirmed_at + timedelta(hours=REGISTRATION_ARCHIVE_RETENTION_HOURS)
+
+
+def registration_archive_ready(
+    confirmed_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    available_at = registration_archive_available_at(confirmed_at)
+    return available_at is not None and (now or datetime.utcnow()) >= available_at
 
 
 def archive_dir() -> Path:

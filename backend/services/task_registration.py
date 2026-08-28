@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from config import settings
@@ -288,6 +288,12 @@ async def registration_links_by_rows(
     for row in await cur.fetchall():
         status = str(row[4] or "awaiting_match")
         reason = str(row[5] or "")
+        confirmed_at = row[8] if isinstance(row[8], datetime) else None
+        archive_available_at = (
+            confirmed_at + timedelta(hours=24)
+            if parser_type == "全链条" and status == "confirmed" and confirmed_at
+            else None
+        )
         result[str(row[0])] = {
             "source_id": int(row[1]) if row[1] is not None else None,
             "property_id": int(row[2]) if row[2] is not None else None,
@@ -297,7 +303,13 @@ async def registration_links_by_rows(
             "reason": REVIEW_REASON_LABELS.get(reason, ""),
             "match_count": int(row[6] or 0),
             "selected_at": row[7].isoformat() + "Z" if isinstance(row[7], datetime) else None,
-            "confirmed_at": row[8].isoformat() + "Z" if isinstance(row[8], datetime) else None,
+            "confirmed_at": confirmed_at.isoformat() + "Z" if confirmed_at else None,
+            "archive_available_at": (
+                archive_available_at.isoformat() + "Z" if archive_available_at else None
+            ),
+            "archive_ready": bool(
+                archive_available_at and datetime.utcnow() >= archive_available_at
+            ),
             "manual_reason": str(row[9] or ""),
             "last_scan_token": str(row[10] or ""),
             "manual_confirmed_at": row[11].isoformat() + "Z" if isinstance(row[11], datetime) else None,
@@ -866,18 +878,30 @@ async def finalize_registration_writeback(
 ) -> None:
     """Move confirmation_pending to the terminal state after Tencent verification."""
     await cur.execute(
-        "SELECT property_id,status FROM _task_registration_links "
-        "WHERE parser_type=%s AND row_key=%s AND source_id=%s FOR UPDATE",
+        "SELECT link.property_id,link.status,link.source_revision,link.source_row_hash,"
+        "source.revision,source.row_hash FROM _task_registration_links link "
+        "LEFT JOIN _online_source_rows source ON source.id=link.source_id "
+        "AND source.parser_type=link.parser_type AND source.row_key=link.row_key "
+        "WHERE link.parser_type=%s AND link.row_key=%s AND link.source_id=%s FOR UPDATE",
         (parser_type, row_key, source_id),
     )
     row = await cur.fetchone()
     if not row or str(row[1] or "") not in {"confirmation_pending", "confirmed"}:
         return
-    status = "confirmed" if succeeded else "review_required"
-    reason = "" if succeeded else (reason_code or "writeback_pending")
+    source_context_matches = bool(
+        row[4] is not None
+        and int(row[2] or 0) == int(row[4] or 0)
+        and str(row[3] or "") == str(row[5] or "")
+    )
+    status = "confirmed" if succeeded and source_context_matches else "review_required"
+    reason = (
+        "" if status == "confirmed"
+        else "source_changed" if succeeded
+        else (reason_code or "writeback_pending")
+    )
     await cur.execute(
         "UPDATE _task_registration_links SET status=%s,reason_code=%s,"
-        "confirmed_at=IF(%s='confirmed',UTC_TIMESTAMP(),NULL) "
+        "confirmed_at=IF(%s='confirmed',COALESCE(confirmed_at,UTC_TIMESTAMP()),NULL) "
         "WHERE parser_type=%s AND row_key=%s AND source_id=%s",
         (status, reason[:64], status, parser_type, row_key, source_id),
     )
@@ -887,6 +911,10 @@ async def finalize_registration_writeback(
         row_key=row_key,
         source_id=source_id,
         property_id=int(row[0]) if row[0] is not None else None,
-        event_type="registration_confirmed" if succeeded else "registration_writeback_failed",
+        event_type=(
+            "registration_confirmed"
+            if status == "confirmed"
+            else "registration_writeback_failed"
+        ),
         reason_code=reason,
     )

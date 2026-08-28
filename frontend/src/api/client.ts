@@ -1296,6 +1296,8 @@ export interface MobileTaskRegistrationLink {
   match_count: number
   selected_at: string | null
   confirmed_at: string | null
+  archive_available_at?: string | null
+  archive_ready?: boolean
   manual_confirmed_at?: string | null
   manual_reason: string
   property: MobileTaskRegistrationProperty | null
@@ -3598,6 +3600,12 @@ export interface FullchainArchiveCandidate {
   review_note: string
   source_count: number
   conflict: boolean
+  registration_status: string
+  registration_confirmed_at: string | null
+  archive_available_at: string | null
+  registration_property_id: number | null
+  registration_property_version: number | null
+  candidate_rule_version: string
 }
 
 export interface FullchainArchiveExport {
@@ -3632,30 +3640,6 @@ export interface FullchainArchiveExport {
     last_attempt_at: string | null
     reconciled_at: string | null
   }>
-}
-
-export async function previewFullchainPoliceRaw(file: File) {
-  const form = new FormData()
-  form.append('file', file)
-  const { data } = await api.post('/police-dispatch/fullchain-archive/police-raw/preview', form, { timeout: 300000 })
-  return data as {
-    filename: string
-    file_sha256: string
-    sheet_name: string
-    row_count: number
-    invalid_count: number
-    duplicate_count: number
-    preview: Array<{ row: string; name: string; identity: string; result: string }>
-    preview_token: string
-  }
-}
-
-export async function confirmFullchainPoliceRaw(file: File, previewToken: string) {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('preview_token', previewToken)
-  const { data } = await api.post('/police-dispatch/fullchain-archive/police-raw/confirm', form, { timeout: 300000 })
-  return data as { id: number; message: string; row_count: number }
 }
 
 export async function listFullchainPoliceRawUploads() {

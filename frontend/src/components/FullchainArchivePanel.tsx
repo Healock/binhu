@@ -16,16 +16,18 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import FullchainPoliceRawPanel from './FullchainPoliceRawPanel'
 import { Panel } from './ui'
 
 const STAGES = [
   { value: 'direct', label: '可直接反馈' },
   { value: 'review', label: '待基础管控审核' },
-  { value: 'registered', label: '已登记比对' },
+  { value: 'registered', label: '已登记确认' },
 ] as const
 
 const ERROR_STAGE_LABELS: Record<string, string> = {
   external_delete: '腾讯删除',
+  registration_evidence: '登记确认复核',
   source_snapshot: '冻结快照',
   archive_schema: '归档结构',
   archive_insert: '历史写入',
@@ -46,6 +48,7 @@ const ERROR_STAGE_LABELS: Record<string, string> = {
 
 const ERROR_CODE_LABELS: Record<string, string> = {
   source_row_changed: '腾讯删除前来源已变化，未执行删除',
+  registration_archive_evidence_changed: '居住证确认、房屋或来源状态已变化，腾讯行未删除',
   source_snapshot_missing: '冻结快照缺失或不完整，无法安全补偿',
   archive_schema_mismatch: '归档表结构与当前业务不兼容',
   archive_insert_failed: '历史归档写入失败',
@@ -205,6 +208,18 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
     { title: '核查结果', dataIndex: 'result', width: 130, render: value => <Tag>{value}</Tag> },
     { title: '截止日期', dataIndex: 'deadline', width: 110 },
     { title: '说明', dataIndex: 'reason', ellipsis: true },
+    {
+      title: '已登记确认时间',
+      dataIndex: 'registration_confirmed_at',
+      width: 190,
+      render: value => value ? formatUTCTime(value, systemTimezone) : '-',
+    },
+    {
+      title: '归档保留期至',
+      dataIndex: 'archive_available_at',
+      width: 190,
+      render: value => value ? formatUTCTime(value, systemTimezone) : '-',
+    },
     { title: '归档类别', dataIndex: 'category', width: 130, render: value => value ? <Tag color="green">{value}</Tag> : <Tag color="orange">待审核</Tag> },
     { title: '审核决定', width: 210, render: (_, row) => {
       const options = reviewOptions(row)
@@ -212,7 +227,7 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
         ? <Select className="w-full" value={row.decision || undefined} placeholder="请选择处理方式" options={options} onChange={value => void saveReview(row, value)} />
         : '-'
     } },
-  ], [reviewOptions, saveReview])
+  ], [reviewOptions, saveReview, systemTimezone])
 
   return (
     <Panel title={`${parserType}反馈导出与归档`} description="最终无法核实数据须经预览确认后导出；导出文件永久保留，腾讯整行删除在后台执行，并逐条显示进度和冲突。" padded={false}>
@@ -236,7 +251,7 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
           loading={loading}
           dataSource={rows}
           columns={columns}
-          scroll={{ x: 1050 }}
+          scroll={{ x: 1430 }}
           rowSelection={{
             selectedRowKeys: selected,
             preserveSelectedRowKeys: true,
@@ -327,6 +342,7 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
             { title: '文件', width: 100, render: (_, item) => <Button type="link" href={fullchainArchiveDownloadUrl(item.id)}>下载</Button> },
           ]} />
         </div>}
+        {parserType === '全链条' && <FullchainPoliceRawPanel enabled />}
       </div>
     </Panel>
   )

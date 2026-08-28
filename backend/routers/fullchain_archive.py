@@ -1,4 +1,4 @@
-"""全链条公安网原始数据、反馈导出与归档管理。"""
+"""全链条反馈导出、归档管理和历史公安网材料只读访问。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import date, datetime
 from hashlib import sha256
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -20,10 +20,11 @@ from database import get_db
 from routers.police_dispatch import require_fullchain_archive
 from services.audit import record_admin_audit, request_audit_fields
 from services.fullchain_archive import (
-    MAX_POLICE_FILE_BYTES,
+    REGISTRATION_ARCHIVE_RULE_VERSION,
     archive_dir,
     build_archive_workbook,
-    parse_police_raw,
+    registration_archive_available_at,
+    registration_archive_ready,
 )
 from services.fullchain_archive_jobs import get_archive_export, launch_fullchain_archive_export
 from services.police_dispatch import stable_json
@@ -40,6 +41,7 @@ from services.unverifiable_review import (
 router = APIRouter(prefix="/api/police-dispatch/fullchain-archive", tags=["全链条反馈归档"])
 ARCHIVE_RESULTS = {"离苏", "无需登记", "移交（所外）"}
 REVIEW_RESULTS = {"移交", "移交（所内）"}
+POLICE_RAW_RETIRED_MESSAGE = "公安网原始数据比对功能已停用，已登记归档改由居住证自动确认。"
 
 
 class CandidateSearch(BaseModel):
@@ -64,7 +66,12 @@ class ExportSelection(BaseModel):
 
 def _preview_token(items: list[dict[str, Any]]) -> str:
     payload = stable_json([
-        [item["source_id"], item["revision"], item["row_hash"], item["category"]]
+        [
+            item["source_id"], item["revision"], item["row_hash"], item["category"],
+            item.get("registration_status", ""), item.get("registration_confirmed_at", ""),
+            item.get("registration_identity_hmac", ""), item.get("registration_property_id"),
+            item.get("registration_property_version"), item.get("candidate_rule_version", ""),
+        ]
         for item in sorted(items, key=lambda value: value["source_id"])
     ])
     return hmac.new(settings.registry_hmac_key.encode(), payload.encode(), sha256).hexdigest()
@@ -92,12 +99,6 @@ def _parse_deadline(value: str, today: date) -> date | None:
     return None
 
 
-async def _latest_raw_upload(cur) -> int | None:
-    await cur.execute("SELECT id FROM _fullchain_police_raw_uploads WHERE status='confirmed' ORDER BY id DESC LIMIT 1")
-    row = await cur.fetchone()
-    return int(row[0]) if row else None
-
-
 async def _candidate_rows(
     cur,
     parser_type: str = "全链条",
@@ -107,24 +108,52 @@ async def _candidate_rows(
 ) -> list[dict[str, Any]]:
     if parser_type not in TASK_WORKFLOWS or not supports_unverifiable_review(parser_type):
         raise HTTPException(400, "该业务不支持无法核实导出")
-    latest_upload = await _latest_raw_upload(cur)
     params: list[Any] = []
     where = ""
     if source_ids:
         placeholders = ",".join(["%s"] * len(source_ids))
         where = f" AND source.id IN ({placeholders})"
         params.extend(source_ids)
+    registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
     await cur.execute(f"""
         SELECT source.id,source.row_key,source.revision,source.row_hash,
                source.physical_row,source.spreadsheet_id,source.sheet_id,
                source.values_json,projection.identity_hmac,
                projection.source_count,projection.conflict,
-               review.decision,review.note
+               review.decision,review.note,
+               registration.status,registration.confirmed_at,
+               registration.source_id,registration.source_revision,
+               registration.source_row_hash,registration.identity_hmac,
+               registration.task_community,registration.property_id,
+               registration.property_version,property.status,
+               property.current_version,
+               EXISTS (
+                   SELECT 1 FROM _online_local_changes local_change
+                   WHERE local_change.source_id=source.id
+                     AND local_change.status IN ('pending','processing','retry','conflict')
+               ) AS has_active_writeback,
+               EXISTS (
+                   SELECT 1
+                   FROM _fullchain_archive_export_items other_item
+                   JOIN _fullchain_archive_exports other_export
+                     ON other_export.id=other_item.export_id
+                   WHERE other_item.source_id=source.id
+                     AND (
+                         other_export.status IN ('queued','running')
+                         OR other_item.external_delete_state IN ('deleting','deleted')
+                     )
+               ) AS has_active_archive,
+               projection.community
         FROM _online_source_rows source
         JOIN _online_source_projection projection
           ON projection.parser_type=source.parser_type AND projection.row_key=source.row_key
         LEFT JOIN _fullchain_archive_reviews review
           ON review.parser_type=source.parser_type AND review.row_key=source.row_key
+        LEFT JOIN _task_registration_links registration
+          ON registration.parser_type=source.parser_type
+         AND registration.row_key=source.row_key
+        LEFT JOIN `{registry}`.registry_properties property
+          ON property.id=registration.property_id
         WHERE source.parser_type=%s{where}
         ORDER BY source.id
     """, [parser_type, *params])
@@ -184,23 +213,49 @@ async def _candidate_rows(
             else:
                 reason = "等待系统建立两级研判流程"
         elif parser_type == "全链条" and result == "已登记":
-            stage, reason = "registered", "需与最近一次公安网原始数据比对"
-            if latest_upload and raw[8]:
-                await cur.execute(
-                    "SELECT 1 FROM _fullchain_police_raw_identities WHERE upload_id=%s AND identity_hmac=%s LIMIT 1",
-                    (latest_upload, raw[8]),
-                )
-                if not await cur.fetchone():
-                    category, eligible, reason = "已登记", True, "最近公安网原始数据已不再包含该人员"
-                else:
-                    reason = "最近公安网原始数据仍包含该人员，继续保留"
-            elif not latest_upload:
-                reason = "尚未确认公安网原始数据，不能判断是否已登记"
+            stage, category = "registered", "已登记"
+            registration_status = str(raw[13] or "")
+            confirmed_at = raw[14] if isinstance(raw[14], datetime) else None
+            if registration_status != "confirmed":
+                reason = "历史已登记，缺少居住证自动确认记录，待人工确认归档"
+            elif confirmed_at is None:
+                reason = "居住证自动确认时间缺失，待人工确认归档"
+            elif int(raw[15] or 0) != int(raw[0]):
+                reason = "确认后的任务来源已变化，需重新复核"
+            elif int(raw[16] or 0) != int(raw[2]) or str(raw[17] or "") != str(raw[3] or ""):
+                reason = "确认后的来源版本或内容已变化，需重新复核"
+            elif not raw[8] or str(raw[18] or "") != str(raw[8] or ""):
+                reason = "确认后的核查对象已变化，需重新复核"
+            elif str(raw[19] or "").strip() != str(raw[26] or "").strip():
+                reason = "确认后的任务社区已变化，需重新复核"
+            elif raw[20] is None:
+                reason = "确认记录缺少关联房屋，待人工复核"
+            elif str(raw[22] or "") != "active":
+                reason = "关联房屋已停用，需重新复核"
+            elif int(raw[21] or 0) != int(raw[23] or 0):
+                reason = "关联房屋档案已更新，需重新复核"
+            elif bool(raw[24]):
+                reason = "腾讯写回尚未完成或存在冲突，暂不能归档"
+            elif registration_archive_ready(confirmed_at):
+                eligible, reason = True, "居住证已自动确认，且已完整保留 24 小时"
+            else:
+                reason = "居住证已自动确认，需完整保留 24 小时后归档"
         if stage and (source_count != 1 or projection_conflict):
             eligible = False
             conflict_reason = "存在重复或冲突来源行，需先完成来源核查"
             reason = f"{reason}；{conflict_reason}" if reason else conflict_reason
+        if stage and bool(raw[24]):
+            eligible = False
+            pending_reason = "存在待同步或冲突修改，需先完成腾讯写回"
+            if pending_reason not in reason:
+                reason = f"{reason}；{pending_reason}" if reason else pending_reason
+        if stage and bool(raw[25]):
+            eligible = False
+            archive_reason = "已进入其他未终结归档批次，不能重复导出"
+            reason = f"{reason}；{archive_reason}" if reason else archive_reason
         if stage:
+            confirmed_at = raw[14] if isinstance(raw[14], datetime) else None
+            archive_available_at = registration_archive_available_at(confirmed_at)
             candidate = {
                 "source_id": int(raw[0]), "row_key": str(raw[1]), "revision": int(raw[2]),
                 "row_hash": str(raw[3]), "physical_row": int(raw[4]),
@@ -212,10 +267,20 @@ async def _candidate_rows(
                 "stage": stage, "category": category, "eligible": eligible,
                 "reason": reason, "decision": decision, "review_note": str(raw[12] or ""),
                 "source_count": source_count, "conflict": projection_conflict,
+                "registration_status": str(raw[13] or ""),
+                "registration_confirmed_at": confirmed_at.isoformat() + "Z" if confirmed_at else None,
+                "archive_available_at": archive_available_at.isoformat() + "Z" if archive_available_at else None,
+                "registration_identity_hmac": str(raw[18] or ""),
+                "registration_property_id": int(raw[20]) if raw[20] is not None else None,
+                "registration_property_version": int(raw[21]) if raw[21] is not None else None,
+                "candidate_rule_version": (
+                    REGISTRATION_ARCHIVE_RULE_VERSION if stage == "registered" else ""
+                ),
                 **export_review,
             }
             if include_source_values:
                 candidate["_source_values_json"] = stable_json(values)
+                candidate["_registration_confirmed_at_db"] = confirmed_at
             rows.append(candidate)
     return rows
 
@@ -235,84 +300,17 @@ def _filter_candidate_rows(rows: list[dict[str, Any]], data: CandidateSearch) ->
 
 
 @router.post("/police-raw/preview")
-async def preview_police_raw(file: UploadFile = File(...), user: dict = Depends(require_fullchain_archive)):
+async def preview_police_raw(user: dict = Depends(require_fullchain_archive)):
     del user
-    content = await file.read(MAX_POLICE_FILE_BYTES + 1)
-    if len(content) > MAX_POLICE_FILE_BYTES:
-        raise HTTPException(413, "公安网原始文件不能超过 30MB")
-    try:
-        result = parse_police_raw(content, file.filename or "")
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    token_payload = f"{result['file_sha256']}:{result['row_count']}:{result['sheet_name']}"
-    result["preview_token"] = hmac.new(settings.registry_hmac_key.encode(), token_payload.encode(), sha256).hexdigest()
-    result.pop("identity_hmacs", None)
-    return result
+    raise HTTPException(status_code=410, detail=POLICE_RAW_RETIRED_MESSAGE)
 
 
 @router.post("/police-raw/confirm")
 async def confirm_police_raw(
-    request: Request, file: UploadFile = File(...), preview_token: str = Form(...),
-    user: dict = Depends(require_fullchain_archive), conn=Depends(get_db),
+    user: dict = Depends(require_fullchain_archive),
 ):
-    content = await file.read(MAX_POLICE_FILE_BYTES + 1)
-    if len(content) > MAX_POLICE_FILE_BYTES:
-        raise HTTPException(413, "公安网原始文件不能超过 30MB")
-    try:
-        parsed = parse_police_raw(content, file.filename or "")
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    payload = f"{parsed['file_sha256']}:{parsed['row_count']}:{parsed['sheet_name']}"
-    expected = hmac.new(settings.registry_hmac_key.encode(), payload.encode(), sha256).hexdigest()
-    if not hmac.compare_digest(expected, preview_token):
-        raise HTTPException(409, "预览已经变化，请重新预览")
-    archive_path = archive_dir() / f"raw-{parsed['file_sha256']}.bin"
-    staged_path: str | None = None
-    created_final = False
-    if not archive_path.is_file():
-        with tempfile.NamedTemporaryFile(
-            dir=archive_dir(), prefix=f".raw-{parsed['file_sha256']}.", suffix=".tmp", delete=False
-        ) as staged:
-            staged.write(content)
-            staged_path = staged.name
-        os.replace(staged_path, archive_path)
-        staged_path = None
-        created_final = True
-    await conn.begin()
-    try:
-        async with conn.cursor() as cur:
-            await cur.execute("UPDATE _fullchain_police_raw_uploads SET status='superseded' WHERE status='confirmed'")
-            await cur.execute("""
-                INSERT INTO _fullchain_police_raw_uploads
-                (file_name,file_sha256,sheet_name,row_count,invalid_count,duplicate_count,storage_key,status,uploaded_by)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,'confirmed',%s)
-                ON DUPLICATE KEY UPDATE status='confirmed',storage_key=VALUES(storage_key),uploaded_by=VALUES(uploaded_by)
-            """, (parsed["filename"], parsed["file_sha256"], parsed["sheet_name"], parsed["row_count"], parsed["invalid_count"], parsed["duplicate_count"], f"raw-{parsed['file_sha256']}.bin", user["id"]))
-            upload_id = int(cur.lastrowid or 0)
-            if not upload_id:
-                await cur.execute("SELECT id FROM _fullchain_police_raw_uploads WHERE file_sha256=%s", (parsed["file_sha256"],))
-                upload_id = int((await cur.fetchone())[0])
-            await cur.execute("DELETE FROM _fullchain_police_raw_identities WHERE upload_id=%s", (upload_id,))
-            await cur.executemany(
-                "INSERT INTO _fullchain_police_raw_identities (upload_id,identity_hmac) VALUES (%s,%s)",
-                [(upload_id, digest) for digest in parsed["identity_hmacs"]],
-            )
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        if staged_path:
-            try:
-                os.unlink(staged_path)
-            except FileNotFoundError:
-                pass
-        if created_final:
-            try:
-                archive_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
-    await record_admin_audit(user, "fullchain.police_raw.confirm", target_type="fullchain_police_raw_upload", target_name=str(upload_id), detail={"row_count": parsed["row_count"], "file_sha256": parsed["file_sha256"]}, **request_audit_fields(request))
-    return {"id": upload_id, "message": "公安网原始数据已确认，可用于已登记比对", "row_count": parsed["row_count"]}
+    del user
+    raise HTTPException(status_code=410, detail=POLICE_RAW_RETIRED_MESSAGE)
 
 
 @router.get("/police-raw/uploads")
@@ -456,12 +454,18 @@ async def create_export(
             await cur.executemany("""
                 INSERT INTO _fullchain_archive_export_items
                 (export_id,parser_type,row_key,source_id,spreadsheet_id,sheet_id,
-                 physical_row,expected_revision,expected_row_hash,source_values_json,category)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 physical_row,expected_revision,expected_row_hash,source_values_json,
+                 registration_confirmed_at,registration_status,
+                 registration_identity_hmac,registration_property_id,
+                 registration_property_version,candidate_rule_version,category)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, [(
                 export_id, parser_type, row["row_key"], row["source_id"],
                 row["spreadsheet_id"], row["sheet_id"], row["physical_row"],
                 row["revision"], row["row_hash"], row["_source_values_json"],
+                row["_registration_confirmed_at_db"], row["registration_status"],
+                row["registration_identity_hmac"], row["registration_property_id"],
+                row["registration_property_version"], row["candidate_rule_version"],
                 row["category"],
             ) for row in eligible])
         await conn.commit()
