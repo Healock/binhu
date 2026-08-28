@@ -407,6 +407,7 @@ CREATE TABLE IF NOT EXISTS _fullchain_archive_reviews (
 CREATE TABLE IF NOT EXISTS _fullchain_archive_exports (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     export_no VARCHAR(40) NOT NULL UNIQUE,
+    parser_type VARCHAR(50) NOT NULL DEFAULT '全链条',
     status VARCHAR(30) NOT NULL DEFAULT 'queued',
     phase VARCHAR(30) NOT NULL DEFAULT 'queued',
     file_name VARCHAR(255) NOT NULL DEFAULT '',
@@ -424,7 +425,8 @@ CREATE TABLE IF NOT EXISTS _fullchain_archive_exports (
     finished_at DATETIME DEFAULT NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_fullchain_archive_export_time (created_at),
-    INDEX idx_fullchain_archive_export_status (status, created_at)
+    INDEX idx_fullchain_archive_export_status (status, created_at),
+    INDEX idx_fullchain_archive_export_parser (parser_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _fullchain_archive_export_items (
@@ -437,11 +439,60 @@ CREATE TABLE IF NOT EXISTS _fullchain_archive_export_items (
     physical_row INT NOT NULL,
     expected_revision BIGINT NOT NULL,
     expected_row_hash CHAR(64) NOT NULL,
+    source_values_json JSON DEFAULT NULL,
     category VARCHAR(40) NOT NULL,
     status VARCHAR(30) NOT NULL DEFAULT 'queued',
     error_code VARCHAR(100) NOT NULL DEFAULT '',
+    external_delete_state VARCHAR(30) NOT NULL DEFAULT 'pending',
+    external_deleted_at DATETIME DEFAULT NULL,
     PRIMARY KEY (export_id, source_id),
     INDEX idx_fullchain_archive_item_status (export_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _unverifiable_review_flows (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    parser_type VARCHAR(50) NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    cycle_no INT NOT NULL,
+    source_id BIGINT DEFAULT NULL,
+    source_revision BIGINT NOT NULL DEFAULT 0,
+    source_row_hash CHAR(64) NOT NULL DEFAULT '',
+    state VARCHAR(40) NOT NULL DEFAULT 'initial_pending',
+    flow_version BIGINT NOT NULL DEFAULT 1,
+    review_due_date DATE DEFAULT NULL,
+    original_deadline VARCHAR(100) NOT NULL DEFAULT '',
+    previous_deadline VARCHAR(100) NOT NULL DEFAULT '',
+    feedback_submitted TINYINT(1) NOT NULL DEFAULT 0,
+    safe_reason_code VARCHAR(100) NOT NULL DEFAULT '',
+    created_by INT DEFAULT NULL,
+    last_actor_id INT DEFAULT NULL,
+    last_action_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME DEFAULT NULL,
+    finalized_at DATETIME DEFAULT NULL,
+    archived_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_unverifiable_cycle (parser_type,row_key,cycle_no),
+    INDEX idx_unverifiable_state (state,review_due_date),
+    INDEX idx_unverifiable_source (source_id,state),
+    INDEX idx_unverifiable_row (parser_type,row_key,cycle_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _unverifiable_review_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    flow_id BIGINT NOT NULL,
+    stage VARCHAR(30) NOT NULL DEFAULT '',
+    action VARCHAR(50) NOT NULL,
+    outcome VARCHAR(30) NOT NULL DEFAULT '',
+    protected_text TEXT DEFAULT NULL,
+    actor_user_id INT DEFAULT NULL,
+    automatic TINYINT(1) NOT NULL DEFAULT 0,
+    source_revision BIGINT NOT NULL DEFAULT 0,
+    source_row_hash CHAR(64) NOT NULL DEFAULT '',
+    safe_reason_code VARCHAR(100) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_unverifiable_event_flow (flow_id,id),
+    INDEX idx_unverifiable_event_action (action,created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _qmf_status_scan_runs (

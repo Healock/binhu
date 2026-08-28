@@ -34,6 +34,7 @@ import {
   resolveMobileTaskSyncConflict,
   updateMobileTask,
   updateMobileTaskAnalysis,
+  decideMobileTaskUnverifiableReview,
   workflowApi,
   type MobileTaskDetailData,
   type MobileTaskQmfStatus,
@@ -92,6 +93,10 @@ const SYNC_LABELS = {
   conflict: { text: '同步冲突', color: 'red' },
 } as const
 
+const STRUCTURED_REVIEW_TYPES = new Set([
+  '全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警',
+])
+
 function firstValue(values: Record<string, string>, fields: string[]) {
   for (const field of fields) {
     if (values[field]?.trim()) return values[field].trim()
@@ -148,6 +153,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [resolvingConflict, setResolvingConflict] = useState('')
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
+  const [decisionOutcome, setDecisionOutcome] = useState<'success' | 'failure'>('success')
+  const [decisionOpinion, setDecisionOpinion] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
   const [photoSubmitting, setPhotoSubmitting] = useState(false)
   const [qmfPreviewOpen, setQmfPreviewOpen] = useState(false)
@@ -221,6 +228,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     setFormValues({ ...source.values })
     setSavedMessage('')
   }, [])
+
+  useEffect(() => {
+    if (!data || !selectedSource || mode !== 'analysis' || !STRUCTURED_REVIEW_TYPES.has(parserType)) return
+    const flow = data.task.review_flow
+    if (flow && (flow.state === 'initial_pending' || flow.state === 'deep_pending')) {
+      // 每一层研判都必须重新填写本阶段意见，不能把上一阶段意见当作默认值。
+      setDecisionOpinion('')
+    } else {
+      setDecisionOpinion('')
+    }
+  }, [data, mode, parserType, selectedSource])
 
   const load = useCallback(async (preferredSourceId?: number) => {
     setLoading(true)
@@ -429,6 +447,44 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       const status = reason?.response?.status
       setError(detailError(reason, '保存失败，请稍后重试'))
       if (status === 409 || status === 502) await load(selectedSource.id)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const submitStructuredDecision = async () => {
+    if (
+      interactionLocked
+      || !selectedSource
+      || !data
+      || !STRUCTURED_REVIEW_TYPES.has(parserType)
+    ) return
+    const flow = data.task.review_flow
+    if (!flow || !['initial_pending', 'deep_pending'].includes(flow.state)) {
+      setError('当前处于延时复核阶段，请等待系统到期后再处理')
+      return
+    }
+    if (!decisionOpinion.trim()) {
+      setError('请填写研判意见')
+      return
+    }
+    setSaving(true)
+    setError('')
+    setSavedMessage('')
+    try {
+      const result = await decideMobileTaskUnverifiableReview(parserType, selectedSource.id, {
+        stage: flow.state as 'initial_pending' | 'deep_pending',
+        outcome: decisionOutcome,
+        opinion: decisionOpinion.trim(),
+        flow_version: flow.flow_version,
+        expected_revision: selectedSource.revision,
+        expected_row_hash: selectedSource.row_hash,
+      })
+      setSavedMessage(result.message)
+      await load(selectedSource.id)
+    } catch (reason: any) {
+      setError(detailError(reason, '研判决定提交失败，请刷新后重试'))
+      if (reason?.response?.status === 409) await load(selectedSource.id)
     } finally {
       setSaving(false)
     }
@@ -737,6 +793,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   ]
   const latestQmfRun = qmfRun || data.qmf_registration?.latest_run || null
   const registrationLink = data.registration_link || data.task.registration_link || null
+  const reviewFlow = data.task.review_flow || null
   const canReprepareQmfRun = qmfRunCanReprepare(qmfRun)
   const shouldResumeQmfRun = Boolean(
     latestQmfRun
@@ -902,6 +959,31 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           </div>
         ))}
       </section>
+
+      {mode === 'tasks' && reviewFlow && !['resolved', 'archived'].includes(reviewFlow.state) && (
+        <Alert
+          type={reviewFlow.state === 'source_exception' || reviewFlow.state === 'final_unverifiable' ? 'warning' : 'info'}
+          showIcon
+          message={reviewFlow.state_label}
+          description={(
+            <div className="grid gap-2">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {reviewFlow.review_due_date && <span>复核截止：{reviewFlow.review_due_date}</span>}
+                {['initial_extension', 'deep_extension'].includes(reviewFlow.state) && (
+                  <span>本轮反馈：{reviewFlow.feedback_submitted ? '已记录' : '未记录'}</span>
+                )}
+              </div>
+              {reviewFlow.state === 'source_exception' ? (
+                <strong>来源信息发生变化，自动流转已经暂停，请联系基础管控复核。</strong>
+              ) : reviewFlow.state === 'final_unverifiable' ? (
+                <strong>该任务已形成最终无法核实，等待在当前业务的归档 Panel 中导出。</strong>
+              ) : (
+                <strong>核查对象一旦已经能够核实，请立即修改“核查结果”；不要只填写二次反馈，否则任务仍会按无法核实流程继续流转。</strong>
+              )}
+            </div>
+          )}
+        />
+      )}
 
       {data.qmf_feedback && (
         <Alert
@@ -1143,7 +1225,15 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             <div>
               <h2 className="font-semibold text-[var(--app-text-strong)]">{readonlyView ? '任务只读详情' : mode === 'analysis' ? '研判处理' : '核查处理'}</h2>
               <p className="mt-0.5 text-xs text-[var(--app-text-secondary)]">
-                {readonlyView ? '该任务属于依赖链中的其他负责人，仅供了解前置或后置关系' : mode === 'analysis' ? '填写或修改研判内容，清空后将重新回到待研判' : data.dependency_blocked ? '基础管控可同时研判；重新核实后可直接修改结果并保存' : '确认所有修改后统一保存'}
+                {readonlyView
+                  ? '该任务属于依赖链中的其他负责人，仅供了解前置或后置关系'
+                  : mode === 'analysis'
+                    ? STRUCTURED_REVIEW_TYPES.has(parserType)
+                      ? '按当前阶段选择研判成功或失败，并填写本阶段意见'
+                      : '填写或修改研判内容，清空后将重新回到待研判'
+                    : data.dependency_blocked
+                      ? '基础管控可同时研判；重新核实后可直接修改结果并保存'
+                      : '确认所有修改后统一保存'}
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">
@@ -1151,7 +1241,49 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </span>
           </div>
 
-          {visibleEditorFields.length === 0 ? (
+          {mode === 'analysis' && STRUCTURED_REVIEW_TYPES.has(parserType) ? (
+            <div className="space-y-4">
+              <Alert
+                type="info"
+                showIcon
+                message={data.task.review_flow?.state_label || '两级研判'}
+                description={data.task.review_flow?.review_due_date
+                  ? `系统计算的复核截止日期：${data.task.review_flow.review_due_date}，到期后自动进入下一阶段。`
+                  : '请明确选择研判成功或研判失败，并填写结构化意见。'}
+              />
+              {data.task.review_flow && ['initial_pending', 'deep_pending'].includes(data.task.review_flow.state) ? (
+                <>
+                  <Select
+                    className="w-full"
+                    size="large"
+                    value={decisionOutcome}
+                    options={[
+                      { value: 'success', label: '研判成功（进入延时复核）' },
+                      { value: 'failure', label: '研判失败（进入下一阶段）' },
+                    ]}
+                    onChange={value => setDecisionOutcome(value)}
+                  />
+                  <Input.TextArea
+                    rows={5}
+                    maxLength={2000}
+                    showCount
+                    value={decisionOpinion}
+                    placeholder="请填写本阶段研判意见（必填）"
+                    onChange={event => setDecisionOpinion(event.target.value)}
+                  />
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    loading={saving}
+                    disabled={!selectedSource.source_available || !decisionOpinion.trim()}
+                    onClick={() => void submitStructuredDecision()}
+                  >提交本阶段研判</Button>
+                </>
+              ) : (
+                <Alert type="warning" showIcon message="当前正在延时复核，暂不能重复提交研判决定" />
+              )}
+            </div>
+          ) : visibleEditorFields.length === 0 ? (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前任务没有可编辑字段" />
           ) : (
             <div className="space-y-4">

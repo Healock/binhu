@@ -148,6 +148,8 @@ class SourceReadSafetyTests(unittest.IsolatedAsyncioTestCase):
         mark = AsyncMock()
         rebuild = AsyncMock()
         reconcile = AsyncMock()
+        reconcile_reviews = AsyncMock()
+        wake_review = patch("services.unverifiable_review.wake_unverifiable_review_scheduler")
         with (
             patch("services.sync_engine.mark_writebacks_synced", mark),
             patch("services.sync_engine.rebuild_projection", rebuild),
@@ -155,6 +157,11 @@ class SourceReadSafetyTests(unittest.IsolatedAsyncioTestCase):
                 "services.sync_engine.reconcile_police_dispatch_publications",
                 reconcile,
             ),
+            patch(
+                "services.unverifiable_review.reconcile_unverifiable_source_contexts",
+                reconcile_reviews,
+            ),
+            wake_review as wake,
         ):
             await finalize_source_projection(
                 conn,
@@ -165,6 +172,8 @@ class SourceReadSafetyTests(unittest.IsolatedAsyncioTestCase):
         reconcile.assert_awaited_once()
         mark.assert_awaited_once()
         rebuild.assert_awaited_once()
+        reconcile_reviews.assert_awaited_once()
+        wake.assert_called_once_with()
 
     async def test_final_projection_refresh_rolls_back_as_one_unit(self):
         conn = TransactionConnection()

@@ -33,6 +33,7 @@ from services.qmf_runs import ensure_qmf_registration_schema
 from services.qmf_status_scan import ensure_qmf_status_scan_schema
 from services.residence_status_scan import ensure_residence_status_schema
 from services.task_registration import ensure_task_registration_schema
+from services.unverifiable_review import ensure_unverifiable_review_schema
 from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
@@ -1328,6 +1329,7 @@ async def ensure_police_dispatch_schema(cur) -> None:
         CREATE TABLE IF NOT EXISTS _fullchain_archive_exports (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             export_no VARCHAR(40) NOT NULL UNIQUE,
+            parser_type VARCHAR(50) NOT NULL DEFAULT '全链条',
             status VARCHAR(30) NOT NULL DEFAULT 'queued',
             phase VARCHAR(30) NOT NULL DEFAULT 'queued',
             file_name VARCHAR(255) NOT NULL DEFAULT '',
@@ -1345,9 +1347,20 @@ async def ensure_police_dispatch_schema(cur) -> None:
             finished_at DATETIME DEFAULT NULL,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_fullchain_archive_export_time (created_at),
-            INDEX idx_fullchain_archive_export_status (status, created_at)
+            INDEX idx_fullchain_archive_export_status (status, created_at),
+            INDEX idx_fullchain_archive_export_parser (parser_type, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur, "_fullchain_archive_exports", "parser_type",
+        "VARCHAR(50) NOT NULL DEFAULT '全链条' AFTER export_no",
+    )
+    await _ensure_index(
+        cur,
+        "_fullchain_archive_exports",
+        "idx_fullchain_archive_export_parser",
+        "INDEX `idx_fullchain_archive_export_parser` (`parser_type`, `created_at`)",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _fullchain_archive_export_items (
             export_id BIGINT NOT NULL,
@@ -1359,13 +1372,28 @@ async def ensure_police_dispatch_schema(cur) -> None:
             physical_row INT NOT NULL,
             expected_revision BIGINT NOT NULL,
             expected_row_hash CHAR(64) NOT NULL,
+            source_values_json JSON DEFAULT NULL,
             category VARCHAR(40) NOT NULL,
             status VARCHAR(30) NOT NULL DEFAULT 'queued',
             error_code VARCHAR(100) NOT NULL DEFAULT '',
+            external_delete_state VARCHAR(30) NOT NULL DEFAULT 'pending',
+            external_deleted_at DATETIME DEFAULT NULL,
             PRIMARY KEY (export_id, source_id),
             INDEX idx_fullchain_archive_item_status (export_id, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur, "_fullchain_archive_export_items", "source_values_json",
+        "JSON DEFAULT NULL AFTER expected_row_hash",
+    )
+    await _ensure_column(
+        cur, "_fullchain_archive_export_items", "external_delete_state",
+        "VARCHAR(30) NOT NULL DEFAULT 'pending' AFTER error_code",
+    )
+    await _ensure_column(
+        cur, "_fullchain_archive_export_items", "external_deleted_at",
+        "DATETIME DEFAULT NULL AFTER external_delete_state",
+    )
 
     for table_name, columns in {
         "_police_address_imports": {
@@ -2660,6 +2688,7 @@ class DatabaseManager:
                 await ensure_qmf_status_scan_schema(cur)
                 await ensure_residence_status_schema(cur)
                 await ensure_task_registration_schema(cur)
+                await ensure_unverifiable_review_schema(cur)
                 await ensure_administrative_area_schema(cur)
                 await ensure_bootstrap_admin(cur)
 

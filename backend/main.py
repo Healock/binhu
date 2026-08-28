@@ -84,6 +84,10 @@ from routers.external_acquisition import router as external_acquisition_router
 from routers.venue_codes import router as venue_public_router, admin_router as venue_admin_router
 from services.presence import run_presence_cleanup_scheduler
 from services.residence_status_scan import run_residence_lookup_scheduler
+from services.unverifiable_review import (
+    backfill_missing_unverifiable_flows,
+    run_unverifiable_review_scheduler,
+)
 from routers.presence import router as presence_router
 from services.venue_cleanup import run_venue_cleanup_scheduler
 
@@ -128,6 +132,13 @@ async def lifespan(app: FastAPI):
     recovered_external_jobs = await recover_interrupted_jobs()
     if recovered_external_jobs:
         print(f"[EXTERNAL] 已关闭 {recovered_external_jobs} 个外部获取遗留任务")
+    review_backfill = await backfill_missing_unverifiable_flows()
+    if review_backfill["initial_pending"] or review_backfill["source_exception"]:
+        print(
+            "[UNVERIFIABLE_REVIEW] 已接管历史无法核实任务："
+            f"待初步研判 {review_backfill['initial_pending']} 条，"
+            f"来源异常 {review_backfill['source_exception']} 条"
+        )
     scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
@@ -137,6 +148,7 @@ async def lifespan(app: FastAPI):
     qmf_status_scan_scheduler_task = asyncio.create_task(run_status_scan_scheduler())
     presence_cleanup_task = asyncio.create_task(run_presence_cleanup_scheduler())
     residence_lookup_task = asyncio.create_task(run_residence_lookup_scheduler())
+    unverifiable_review_task = asyncio.create_task(run_unverifiable_review_scheduler())
     venue_cleanup_task = asyncio.create_task(run_venue_cleanup_scheduler())
     try:
         yield
@@ -150,6 +162,7 @@ async def lifespan(app: FastAPI):
         qmf_status_scan_scheduler_task.cancel()
         presence_cleanup_task.cancel()
         residence_lookup_task.cancel()
+        unverifiable_review_task.cancel()
         venue_cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
@@ -169,6 +182,9 @@ async def lifespan(app: FastAPI):
             await presence_cleanup_task
         with suppress(asyncio.CancelledError):
             await residence_lookup_task
+        with suppress(asyncio.CancelledError):
+            await unverifiable_review_task
+            await unverifiable_review_task
         with suppress(asyncio.CancelledError):
             await venue_cleanup_task
         await stop_sync_tasks()

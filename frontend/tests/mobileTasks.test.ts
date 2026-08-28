@@ -426,10 +426,60 @@ test('已研判任务在列表和详情直接显示研判结果', () => {
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
-  assert.match(listSource, /task\.review_stage === 'analyzed' && task\.summary\.analysis/)
+  assert.match(listSource, /\['analyzed', 'initial_extension', 'deep_pending', 'deep_extension'\]\.includes\(task\.review_stage\) && task\.summary\.analysis/)
   assert.match(listSource, /研判结果/)
   assert.match(detailSource, /data\.workflow\.analysis_fields/)
   assert.match(detailSource, /研判结果/)
+})
+
+test('两级研判状态在卡片、表格和详情中直接提示复核信息', () => {
+  const listSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  for (const source of [listSource, tableSource, detailSource]) {
+    assert.match(source, /复核截止/)
+    assert.match(source, /本轮反馈/)
+  }
+  assert.match(listSource, /结果已核实时请立即修改核查结果/)
+  assert.match(tableSource, /核实后请立即修改核查结果/)
+  assert.match(detailSource, /不要只填写二次反馈/)
+})
+
+test('研判详情只提供结构化成功失败决定，不再自由保存研判文字', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /decideMobileTaskUnverifiableReview/)
+  assert.match(detailSource, /研判成功（进入延时复核）/)
+  assert.match(detailSource, /研判失败（进入下一阶段）/)
+  assert.match(detailSource, /提交本阶段研判/)
+  assert.match(tableSource, /两级研判必须在详情中选择成功或失败并填写意见/)
+  assert.match(tableSource, /进入研判详情/)
+})
+
+test('研判 URL 可以恢复四种两级研判阶段', () => {
+  const listSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  for (const stage of ['initial_pending', 'initial_extension', 'deep_pending', 'deep_extension']) {
+    assert.match(listSource, new RegExp(`'${stage}'`))
+  }
+  assert.match(listSource, /selectableReviewStages\.includes\(requestedReviewStage/)
 })
 
 test('全链条新增待登记结果保留为正式任务选项', () => {

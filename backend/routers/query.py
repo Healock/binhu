@@ -966,6 +966,7 @@ async def queue_source_fields(
     audit_action: str = "update",
     transaction_prepare=None,
     transaction_callback=None,
+    record_unverifiable_save: bool = True,
 ) -> dict:
     """先保存平台有效值，再由后台按字段安全写回腾讯。"""
     if parser_type not in QUERY_TYPES:
@@ -1169,6 +1170,25 @@ async def queue_source_fields(
                 # link is changed.  Rebuild again so task_state and task graph
                 # observe the association atomically in this same transaction.
                 await rebuild_projection(cur, parser_type, reconcile_graph=False)
+            # 结构化“无法核实”流程与所有普通任务保存共用同一事务。
+            # 延时期间的二次反馈、正式结果变化和新一轮无法核实都在这里留痕。
+            if record_unverifiable_save:
+                from services.unverifiable_review import record_task_save
+                try:
+                    await record_task_save(
+                        cur,
+                        parser_type=parser_type,
+                        source=source,
+                        before=current_values,
+                        after=after,
+                        changes=normalized_changes,
+                        row_key_after=str(new_key),
+                        revision=revision,
+                        actor_user_id=int(user.get("id")) if user.get("id") else None,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+            await rebuild_projection(cur, parser_type, reconcile_graph=False)
             await reconcile_online_task_graph(
                 cur,
                 parser_type=parser_type,

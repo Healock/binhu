@@ -717,6 +717,9 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                     from services.task_registration import (
                         refresh_registration_source_context_after_writeback,
                     )
+                    from services.unverifiable_review import (
+                        refresh_unverifiable_source_context,
+                    )
 
                     await refresh_registration_source_context_after_writeback(
                         cur,
@@ -724,6 +727,14 @@ async def _process_source(conn, source_id: int) -> tuple[int, int]:
                         source_id=source_id,
                         previous_revision=previous_revision,
                         previous_row_hash=previous_row_hash,
+                        current_revision=int(source_after[0]),
+                        current_row_hash=str(source_after[1] or ""),
+                    )
+                    await refresh_unverifiable_source_context(
+                        cur,
+                        source_id=source_id,
+                        parser_type=source["parser_type"],
+                        previous_revision=previous_revision,
                         current_revision=int(source_after[0]),
                         current_row_hash=str(source_after[1] or ""),
                     )
