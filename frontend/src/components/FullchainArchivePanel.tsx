@@ -24,6 +24,61 @@ const STAGES = [
   { value: 'registered', label: '已登记比对' },
 ] as const
 
+const ERROR_STAGE_LABELS: Record<string, string> = {
+  external_delete: '腾讯删除',
+  source_snapshot: '冻结快照',
+  archive_schema: '归档结构',
+  archive_insert: '历史写入',
+  current_row_remove: '当前数据移除',
+  review_flow_archive: '研判流程归档',
+  transaction_begin: '事务启动',
+  transaction_commit: '事务提交',
+  transaction_rollback: '事务回滚',
+  cache_refresh: '同步缓存刷新',
+  reconcile_source: '平台来源对账',
+  reconcile_schema: '对账结构检查',
+  reconcile_archive_compare: '历史内容对账',
+  reconcile_current_compare: '当前内容对账',
+  reconcile_current_remove: '当前数据清理',
+  reconcile_archive_insert: '平台补写历史',
+  reconcile_platform: '平台补偿',
+}
+
+const ERROR_CODE_LABELS: Record<string, string> = {
+  source_row_changed: '腾讯删除前来源已变化，未执行删除',
+  source_snapshot_missing: '冻结快照缺失或不完整，无法安全补偿',
+  archive_schema_mismatch: '归档表结构与当前业务不兼容',
+  archive_insert_failed: '历史归档写入失败',
+  current_row_remove_failed: '当前业务数据移除失败',
+  review_flow_state_conflict: '研判流程仍在处理中，禁止归档',
+  review_flow_archive_failed: '研判流程归档失败',
+  archive_transaction_deadlock: '数据库事务发生死锁，可安全重试平台步骤',
+  archive_transaction_timeout: '数据库事务等待超时，可安全重试平台步骤',
+  archive_database_unavailable: '数据库暂时不可用',
+  external_delete_rejected: '腾讯明确拒绝删除请求，未继续平台归档',
+  external_delete_outcome_unknown: '腾讯删除结果不确定，禁止自动重试删除',
+  cache_refresh_pending: '腾讯已删除且平台已归档，等待缓存刷新',
+  archive_content_conflict: '历史数据与导出冻结快照不一致，需人工核对',
+  current_row_changed_after_external_delete: '腾讯删除后平台当前数据已变化，禁止覆盖',
+}
+
+const PLATFORM_STATE_LABELS: Record<string, string> = {
+  pending: '等待平台归档',
+  archiving: '平台归档中',
+  archived: '平台已归档',
+  failed: '平台归档未完成',
+  reconciled: '平台对账已完成',
+}
+
+const RECONCILE_STATE_LABELS: Record<string, string> = {
+  pending: '尚未对账',
+  reconciling: '正在仅平台对账',
+  reconciled_by_sync: '已由同步归档并完成对账',
+  reconciled_from_current: '已从当前数据补偿归档',
+  reconciled_from_snapshot: '已从冻结快照补偿归档',
+  conflict: '平台对账冲突',
+}
+
 interface FullchainArchivePanelProps {
   parserType?: string
 }
@@ -207,16 +262,28 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
         {exports.length > 0 && <div className="grid gap-3">
           <strong>反馈归档历史</strong>
           <Table<FullchainArchiveExport> rowKey="id" size="small" dataSource={exports} pagination={false} scroll={{ x: 900 }} expandable={{
-            rowExpandable: item => item.items.some(detail => detail.status !== 'success'),
+            rowExpandable: item => item.items.some(detail => detail.status !== 'success' || detail.reconcile_state.startsWith('reconciled_')),
             expandedRowRender: item => <Table
               rowKey="source_id"
               size="small"
               pagination={false}
-              dataSource={item.items.filter(detail => detail.status !== 'success')}
+              dataSource={item.items.filter(detail => detail.status !== 'success' || detail.reconcile_state.startsWith('reconciled_'))}
+              scroll={{ x: 1080 }}
               columns={[
                 { title: '来源编号', dataIndex: 'source_id', width: 120 },
-                { title: '归档类别', dataIndex: 'category', width: 160 },
-                { title: '处理状态', dataIndex: 'status', width: 120, render: value => value === 'conflict' ? '冲突' : value === 'error' ? '失败' : '等待处理' },
+                { title: '归档类别', dataIndex: 'category', width: 130 },
+                {
+                  title: '处理状态',
+                  dataIndex: 'status',
+                  width: 120,
+                  render: value => value === 'success'
+                    ? '已完成'
+                    : value === 'conflict'
+                      ? '冲突'
+                      : value === 'error'
+                        ? '失败'
+                        : '等待处理',
+                },
                 {
                   title: '腾讯删除',
                   dataIndex: 'external_delete_state',
@@ -225,7 +292,30 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
                     ? '已确认删除'
                     : value === 'deleting' ? '结果待确认' : '尚未删除',
                 },
-                { title: '安全错误码', dataIndex: 'error_code' },
+                {
+                  title: '平台归档',
+                  dataIndex: 'platform_archive_state',
+                  width: 150,
+                  render: value => PLATFORM_STATE_LABELS[value] || value,
+                },
+                {
+                  title: '平台对账',
+                  dataIndex: 'reconcile_state',
+                  width: 210,
+                  render: value => RECONCILE_STATE_LABELS[value] || value,
+                },
+                {
+                  title: '失败阶段',
+                  dataIndex: 'error_stage',
+                  width: 150,
+                  render: value => value ? (ERROR_STAGE_LABELS[value] || value) : '-',
+                },
+                {
+                  title: '处理说明',
+                  dataIndex: 'error_code',
+                  width: 260,
+                  render: value => value ? (ERROR_CODE_LABELS[value] || value) : '-',
+                },
               ]}
             />,
           }} columns={[
