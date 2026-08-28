@@ -17,6 +17,7 @@ from services.permissions import (
     REGISTRY_PROPERTY_VIEW,
     REGISTRY_WATCH_MANAGE,
     REGISTRY_WATCH_VIEW,
+    has_permission,
     permitted_communities,
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
@@ -55,6 +56,7 @@ class RegistrySearch(BaseModel):
     name: str = Field(default="", max_length=100)
     identity_number: str = Field(default="", max_length=50)
     phone: str = Field(default="", max_length=200)
+    category_ids: list[int] = Field(default_factory=list, max_length=20)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=50, ge=1, le=200)
 
@@ -178,6 +180,69 @@ def _person_payload(row, include_identity: bool = True) -> dict:
     }
 
 
+async def _load_registry_person_categories(cur, person_ids: list[int], *, history: bool = False) -> dict[int, list[dict]]:
+    """Return tags through the explicit registry link, with an identity fallback for legacy rows."""
+    result: dict[int, list[dict]] = {int(person_id): [] for person_id in person_ids}
+    if not person_ids:
+        return result
+    placeholders = ",".join(["%s"] * len(person_ids))
+    current_clause = "" if history else (
+        "AND assignment.status='active' "
+        "AND assignment.valid_from<=UTC_TIMESTAMP() "
+        "AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP()) "
+        "AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP()) "
+        "AND category.is_active=1 "
+    )
+    await cur.execute(
+        "SELECT registry_person.id, assignment.id, category.id, category.code, category.name, "
+        "category.color, category.alert_level, assignment.valid_from, assignment.valid_to, "
+        "assignment.released_at, assignment.status, assignment.basis, assignment.source_type, assignment.source_ref "
+        "FROM registry_housing_people registry_person "
+        "JOIN watch_people watch_person ON (watch_person.registry_person_id=registry_person.id "
+        "OR (watch_person.registry_person_id IS NULL AND watch_person.identity_hmac=registry_person.identity_hmac)) "
+        "JOIN watch_assignments assignment ON assignment.person_id=watch_person.id "
+        "JOIN watch_categories category ON category.id=assignment.category_id "
+        f"WHERE registry_person.id IN ({placeholders}) {current_clause} "
+        "ORDER BY registry_person.id, category.sort_order, category.id, assignment.id DESC",
+        tuple(person_ids),
+    )
+    seen: set[tuple[int, int]] = set()
+    for row in await cur.fetchall():
+        registry_person_id = int(row[0])
+        assignment_id = int(row[1])
+        key = (registry_person_id, assignment_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result[registry_person_id].append({
+            "assignment_id": assignment_id,
+            "category_id": int(row[2]),
+            "category_code": str(row[3]),
+            "category_name": str(row[4]),
+            "color": str(row[5]),
+            "alert_level": str(row[6]),
+            "valid_from": row[7].isoformat() if row[7] else None,
+            "valid_to": row[8].isoformat() if row[8] else None,
+            "released_at": row[9].isoformat() if row[9] else None,
+            "status": str(row[10]),
+            "basis": str(row[11] or ""),
+            "source_type": str(row[12] or ""),
+            "source_ref": str(row[13] or ""),
+        })
+    return result
+
+
+def _registry_person_category_payload(item: dict) -> dict:
+    return {
+        "assignment_id": item["assignment_id"],
+        "id": item["category_id"],
+        "code": item["category_code"],
+        "name": item["category_name"],
+        "color": item["color"],
+        "alert_level": item["alert_level"],
+    }
+
+
 async def _watch_people_result(data: WatchPersonSearch, user: dict, conn) -> dict:
     allowed_names = _allowed_community_names(user, REGISTRY_WATCH_VIEW)
     where = ["watch_people.status='active'"]
@@ -227,7 +292,7 @@ async def _watch_people_result(data: WatchPersonSearch, user: dict, conn) -> dic
         await cur.execute(f"SELECT COUNT(*) FROM watch_people{clause}", tuple(params))
         total = int((await cur.fetchone())[0])
         await cur.execute(
-            "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at "
+            "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at, registry_person_id "
             f"FROM watch_people{clause} ORDER BY id DESC LIMIT %s OFFSET %s",
             tuple(params) + (data.page_size, offset),
         )
@@ -257,6 +322,8 @@ async def _watch_people_result(data: WatchPersonSearch, user: dict, conn) -> dic
     data_rows = []
     for row in rows:
         item = _person_payload(row, include_identity)
+        item["registry_person_id"] = int(row[8]) if row[8] is not None else None
+        item["is_registry_linked"] = row[8] is not None
         item["categories"] = categories_by_person.get(int(row[0]), [])
         data_rows.append(item)
     return {"total": total, "page": data.page, "page_size": data.page_size, "data": data_rows}
@@ -595,9 +662,15 @@ async def attach_property_person(
 async def list_housing_people(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    category_ids: list[int] = Query(default=[]),
     user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
     conn=Depends(get_registry_db),
 ):
+    if len(category_ids) > 20:
+        raise HTTPException(422, "人员标签筛选最多选择 20 项")
+    can_view_tags = has_permission(user, REGISTRY_WATCH_VIEW)
+    if category_ids and not can_view_tags:
+        raise HTTPException(403, "无权查看人员标签")
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
     relation_filter = ""
     relation_params: list[object] = []
@@ -611,6 +684,22 @@ async def list_housing_people(
             "AND prop.community_id IN (" + ",".join(["%s"] * len(allowed)) + "))"
         )
         relation_params.extend(allowed)
+    category_ids = list(dict.fromkeys(category_ids))
+    if category_ids:
+        placeholders = ",".join(["%s"] * len(category_ids))
+        relation_filter += (
+            " AND EXISTS (SELECT 1 FROM watch_people watch_person "
+            "JOIN watch_assignments assignment ON assignment.person_id=watch_person.id "
+            "JOIN watch_categories category ON category.id=assignment.category_id "
+            "WHERE (watch_person.registry_person_id=registry_housing_people.id "
+            "OR (watch_person.registry_person_id IS NULL AND watch_person.identity_hmac=registry_housing_people.identity_hmac)) "
+            f"AND assignment.category_id IN ({placeholders}) AND assignment.status='active' "
+            "AND assignment.valid_from<=UTC_TIMESTAMP() "
+            "AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP()) "
+            "AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP()) "
+            "AND category.is_active=1)"
+        )
+        relation_params.extend(category_ids)
     offset = (page - 1) * page_size
     async with conn.cursor() as cur:
         await cur.execute(
@@ -624,9 +713,18 @@ async def list_housing_people(
             tuple(relation_params) + (page_size, offset),
         )
         rows = await cur.fetchall()
+        categories_by_person = (
+            await _load_registry_person_categories(cur, [int(row[0]) for row in rows])
+            if can_view_tags else {}
+        )
     include_identity = user.get("role") == "super_admin"
     return {"total": total, "page": page, "page_size": page_size,
-            "data": [_person_payload(row, include_identity) for row in rows]}
+            "data": [{**_person_payload(row, include_identity),
+                      "categories": [
+                          _registry_person_category_payload(item)
+                          for item in categories_by_person.get(int(row[0]), [])
+                      ]}
+                     for row in rows]}
 
 
 @router.post("/people")
@@ -673,6 +771,9 @@ async def search_housing_people(
     user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
     conn=Depends(get_registry_db),
 ):
+    can_view_tags = has_permission(user, REGISTRY_WATCH_VIEW)
+    if data.category_ids and not can_view_tags:
+        raise HTTPException(403, "无权查看人员标签")
     where = ["status='active'"]
     params: list[object] = []
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
@@ -699,6 +800,22 @@ async def search_housing_people(
         digest, _ = hmac_digest(data.phone, kind="phone")
         where.append("EXISTS (SELECT 1 FROM registry_person_phones p WHERE p.person_id=registry_housing_people.id AND p.phone_hmac=%s)")
         params.append(digest)
+    category_ids = list(dict.fromkeys(data.category_ids))
+    if category_ids:
+        placeholders = ",".join(["%s"] * len(category_ids))
+        where.append(
+            "EXISTS (SELECT 1 FROM watch_people watch_person "
+            "JOIN watch_assignments assignment ON assignment.person_id=watch_person.id "
+            "JOIN watch_categories category ON category.id=assignment.category_id "
+            "WHERE (watch_person.registry_person_id=registry_housing_people.id "
+            "OR (watch_person.registry_person_id IS NULL AND watch_person.identity_hmac=registry_housing_people.identity_hmac)) "
+            f"AND assignment.category_id IN ({placeholders}) AND assignment.status='active' "
+            "AND assignment.valid_from<=UTC_TIMESTAMP() "
+            "AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP()) "
+            "AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP()) "
+            "AND category.is_active=1)"
+        )
+        params.extend(category_ids)
     clause = " AND ".join(where)
     offset = (data.page - 1) * data.page_size
     async with conn.cursor() as cur:
@@ -710,9 +827,18 @@ async def search_housing_people(
             tuple(params) + (data.page_size, offset),
         )
         rows = await cur.fetchall()
+        categories_by_person = (
+            await _load_registry_person_categories(cur, [int(row[0]) for row in rows])
+            if can_view_tags else {}
+        )
     include_identity = user.get("role") == "super_admin"
     return {"total": total, "page": data.page, "page_size": data.page_size,
-            "data": [_person_payload(row, include_identity) for row in rows]}
+            "data": [{**_person_payload(row, include_identity),
+                      "categories": [
+                          _registry_person_category_payload(item)
+                          for item in categories_by_person.get(int(row[0]), [])
+                      ]}
+                     for row in rows]}
 
 
 @router.get("/role-types")

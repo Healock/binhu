@@ -585,6 +585,37 @@ CREATE TABLE IF NOT EXISTS _qmf_status_snapshots (
     INDEX idx_qmf_status_snapshot_source (source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _qmf_self_owned_batches (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    file_name VARCHAR(255) NOT NULL DEFAULT '',
+    file_sha256 CHAR(64) NOT NULL,
+    rule_version VARCHAR(40) NOT NULL DEFAULT 'self-owned-v1',
+    status VARCHAR(20) NOT NULL DEFAULT 'completed',
+    workbook_count INT NOT NULL DEFAULT 0,
+    total_rows INT NOT NULL DEFAULT 0,
+    valid_rows INT NOT NULL DEFAULT 0,
+    invalid_rows INT NOT NULL DEFAULT 0,
+    duplicate_rows INT NOT NULL DEFAULT 0,
+    matched_tasks INT NOT NULL DEFAULT 0,
+    updated_tasks INT NOT NULL DEFAULT 0,
+    skipped_tasks INT NOT NULL DEFAULT 0,
+    created_by BIGINT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME DEFAULT NULL,
+    error_message VARCHAR(500) NOT NULL DEFAULT '',
+    UNIQUE KEY uk_qmf_self_owned_sha (file_sha256),
+    INDEX idx_qmf_self_owned_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _qmf_self_owned_identities (
+    batch_id BIGINT NOT NULL,
+    identity_hmac CHAR(64) NOT NULL,
+    identity_hmac_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (batch_id, identity_hmac),
+    INDEX idx_qmf_self_owned_identity (identity_hmac, batch_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _residence_registration_status (
     parser_type VARCHAR(50) NOT NULL,
     row_key CHAR(32) NOT NULL,

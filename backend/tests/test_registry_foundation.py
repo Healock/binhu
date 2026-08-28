@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -19,6 +21,7 @@ from services.permissions import (
     REGISTRY_PROPERTY_MANAGE,
     REGISTRY_PROPERTY_VIEW,
     REGISTRY_WATCH_MANAGE,
+    REGISTRY_WATCH_VIEW,
     WORKFLOW_TICKET_CREATE,
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
@@ -303,3 +306,96 @@ def test_property_visit_history_keeps_basic_view_permission():
         for dependency in route.dependant.dependencies
     }
     assert "require_registry_property_view" in dependency_names
+
+
+class _RegistryTagCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    async def execute(self, sql, params=()):
+        self.calls.append((sql, tuple(params)))
+
+    async def fetchall(self):
+        return self.rows
+
+
+@pytest.mark.asyncio
+async def test_registry_person_tags_use_explicit_link_with_legacy_hmac_fallback():
+    cursor = _RegistryTagCursor([
+        (
+            7, 21, 3, "self_owned", "自购自住", "#16a34a", "notice",
+            datetime(2026, 8, 1, 0, 0), None, None, "active", "资产导入", "registry", "batch:1",
+        ),
+    ])
+
+    result = await registry_router._load_registry_person_categories(cursor, [7])
+
+    sql, params = cursor.calls[0]
+    assert "watch_person.registry_person_id=registry_person.id" in sql
+    assert "watch_person.identity_hmac=registry_person.identity_hmac" in sql
+    assert "assignment.valid_from<=UTC_TIMESTAMP()" in sql
+    assert params == (7,)
+    assert result[7][0]["category_name"] == "自购自住"
+    assert registry_router._registry_person_category_payload(result[7][0]) == {
+        "assignment_id": 21,
+        "id": 3,
+        "code": "self_owned",
+        "name": "自购自住",
+        "color": "#16a34a",
+        "alert_level": "notice",
+    }
+
+
+def test_registry_person_tag_mutations_keep_watch_manage_permission():
+    for path in {
+        "/api/registry/people/{person_id}/tags",
+        "/api/registry/people/{person_id}/tags/{assignment_id}/release",
+    }:
+        route = next(
+            item for item in registry_extended_router.routes
+            if item.path == path and "POST" in item.methods
+        )
+        dependency_names = {
+            dependency.call.__name__
+            for dependency in route.dependant.dependencies
+        }
+        assert "require_registry_watch_manage" in dependency_names
+
+
+def test_registry_person_link_column_only_belongs_to_legacy_watch_people():
+    source = (Path(__file__).resolve().parents[1] / "services" / "domain_schema.py").read_text(encoding="utf-8")
+    housing = source.split("CREATE TABLE IF NOT EXISTS registry_housing_people", 1)[1].split(") ENGINE=", 1)[0]
+    watch = source.split("CREATE TABLE IF NOT EXISTS watch_people", 1)[1].split(") ENGINE=", 1)[0]
+    assert "registry_person_id" not in housing
+    assert "UNIQUE KEY uk_registry_housing_identity (identity_hmac)," in housing
+    assert "registry_person_id BIGINT DEFAULT NULL" in watch
+
+
+def test_registry_tag_permissions_remain_separate_from_property_permissions():
+    assert REGISTRY_WATCH_VIEW in ALL_PERMISSIONS
+    assert REGISTRY_WATCH_MANAGE in ALL_PERMISSIONS
+    assert REGISTRY_WATCH_MANAGE != REGISTRY_PROPERTY_MANAGE
+
+
+@pytest.mark.asyncio
+async def test_registry_person_tag_filter_cannot_reveal_tags_without_watch_view():
+    user = {"id": 7, "role": "user", "permissions": [REGISTRY_PROPERTY_VIEW]}
+
+    with pytest.raises(HTTPException) as list_error:
+        await registry_router.list_housing_people(
+            page=1,
+            page_size=50,
+            category_ids=[3],
+            user=user,
+            conn=None,
+        )
+    assert list_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as search_error:
+        await registry_router.search_housing_people(
+            registry_router.RegistrySearch(category_ids=[3]),
+            user=user,
+            conn=None,
+        )
+    assert search_error.value.status_code == 403

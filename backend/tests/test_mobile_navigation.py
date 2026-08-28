@@ -377,7 +377,6 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
                     "grid_members",
                     "communities",
                     "registry",
-                    "watch_people",
                 ],
             }, {
                 "id": "system",

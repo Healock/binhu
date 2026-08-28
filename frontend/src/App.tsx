@@ -39,7 +39,6 @@ import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import PublicProfile from './pages/PublicProfile'
 import RoleDashboard from './pages/RoleDashboard'
 import RegistryManagement from './pages/RegistryManagement'
-import WatchPeopleManagement from './pages/WatchPeopleManagement'
 import VenueCodeManagement, { PublicVenuePage } from './pages/VenueCodeManagement'
 import WorkflowTickets from './pages/WorkflowTickets'
 import AnalysisWorkbench from './pages/AnalysisWorkbench'
@@ -199,9 +198,7 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="registry.property.view" />}>
                 <Route path="/registry" element={<RegistryManagement />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="registry.watch.view" />}>
-                <Route path="/watch-people" element={<WatchPeopleManagement />} />
-              </Route>
+              <Route path="/watch-people" element={<Navigate to="/registry" replace />} />
               <Route element={<ProtectedRoute requirePermission="workflow.ticket.view" />}>
                 <Route path="/workflow" element={<WorkflowTickets />} />
               </Route>

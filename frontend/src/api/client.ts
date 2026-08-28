@@ -2961,6 +2961,35 @@ export async function startQmfSourceSync(): Promise<{
   return (await api.post('/qmf-source/sync', {}, { ...activeRequest, timeout: 30_000 })).data
 }
 
+export interface SelfOwnedRosterResult {
+  batch_id: number
+  status: string
+  rule_version: string
+  workbook_count: number
+  total_rows: number
+  valid_rows: number
+  invalid_rows: number
+  duplicate_rows: number
+  matched_tasks: number
+  updated_tasks: number
+  skipped_tasks: number
+}
+
+export async function importModelThreeSelfOwnedRoster(file: File): Promise<SelfOwnedRosterResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/qmf-source/self-owned/import', formData, {
+    ...activeRequest,
+    timeout: 300_000,
+  })
+  return data.data
+}
+
+export async function getLatestModelThreeSelfOwnedRoster(): Promise<SelfOwnedRosterResult | null> {
+  const { data } = await api.get('/qmf-source/self-owned/latest', passiveRequest)
+  return data.data || null
+}
+
 export async function getCodeSummary(
   source: CodeSummarySource,
   startDate: string,
@@ -4004,6 +4033,14 @@ export interface RegistryPerson {
   verification_status: string
   status: string
   updated_at: string | null
+  categories?: Array<{
+    assignment_id: number
+    id: number
+    code: string
+    name: string
+    color: string
+    alert_level: string
+  }>
 }
 
 export interface RegistryOrganization {
@@ -4088,6 +4125,8 @@ export interface WatchPerson {
   verification_status: string
   status: string
   created_at: string | null
+  registry_person_id?: number | null
+  is_registry_linked?: boolean
   categories: Array<Pick<WatchCategory, 'id' | 'code' | 'name' | 'color' | 'alert_level'>>
 }
 
@@ -4275,7 +4314,7 @@ export const registryApi = {
   async mergeHistory(params: { page?: number; page_size?: number } = {}) {
     return (await api.get('/registry/merges', { ...activeRequest, params })).data
   },
-  async people(params: { page?: number; page_size?: number } = {}) {
+  async people(params: { page?: number; page_size?: number; category_ids?: number[] } = {}) {
     return (await api.get('/registry/people', { ...activeRequest, params })).data as {
       data: RegistryPerson[]; total: number; page: number; page_size: number
     }
@@ -4299,6 +4338,12 @@ export const registryApi = {
   },
   async addPhone(id: number, payload: Record<string, unknown>) {
     return (await api.post(`/registry/people/${id}/phones`, payload)).data
+  },
+  async addPersonTag(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/people/${id}/tags`, payload, activeRequest)).data
+  },
+  async releasePersonTag(id: number, assignmentId: number) {
+    return (await api.post(`/registry/people/${id}/tags/${assignmentId}/release`, {}, activeRequest)).data
   },
   async organizations(params: { keyword?: string; page?: number; page_size?: number } = {}) {
     return (await api.get('/registry/organizations', { ...activeRequest, params })).data as {

@@ -467,6 +467,7 @@ async def ensure_registry_schema(cur) -> None:
             identity_number VARCHAR(50) DEFAULT NULL,
             identity_hmac CHAR(64) DEFAULT NULL,
             identity_hmac_version SMALLINT UNSIGNED DEFAULT NULL,
+            registry_person_id BIGINT DEFAULT NULL,
             is_temporary TINYINT(1) NOT NULL DEFAULT 0,
             verification_status VARCHAR(20) NOT NULL DEFAULT 'unverified',
             status VARCHAR(20) NOT NULL DEFAULT 'active',
@@ -479,9 +480,12 @@ async def ensure_registry_schema(cur) -> None:
                 ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_watch_identity (identity_hmac),
             INDEX idx_watch_name (name),
-            INDEX idx_watch_status (status, is_temporary)
+            INDEX idx_watch_status (status, is_temporary),
+            INDEX idx_watch_registry_person (registry_person_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(cur, "watch_people", "registry_person_id", "BIGINT DEFAULT NULL AFTER identity_hmac_version")
+    await _ensure_index(cur, "watch_people", "idx_watch_registry_person", "INDEX idx_watch_registry_person (registry_person_id)")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS watch_person_phones (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,

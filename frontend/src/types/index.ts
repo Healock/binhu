@@ -367,7 +367,6 @@ export type MobileNavigationItemId =
   | 'photo_tasks'
   | 'workflow_tickets'
   | 'registry'
-  | 'watch_people'
   | 'workflow_config'
   | 'grid_members'
   | 'communities'
