@@ -20,6 +20,7 @@ from services.photo_sheet_sync import (
     process_outbox_once,
     sync_online_once,
 )
+from services.local_source import local_data_source_enabled
 from services.external_acquisition_jobs import create_job
 
 
@@ -86,6 +87,8 @@ async def update_photo_sheet_config(
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
     conn=Depends(get_workflow_db),
 ):
+    if local_data_source_enabled() and (data.read_enabled or data.write_enabled):
+        raise HTTPException(409, "腾讯数据源已下线，不能启用调照片名单同步")
     file_url = data.file_url.strip()
     file_id = sheet_id = ""
     if file_url:
@@ -131,6 +134,8 @@ async def preview_photo_sheet(
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
     conn=Depends(get_workflow_db),
 ):
+    if local_data_source_enabled():
+        raise HTTPException(409, "腾讯数据源已下线，不能预览调照片名单")
     async def runner(job):
         pool = db_manager.get_pool("workflow")
         async with pool.acquire() as work_conn:
@@ -150,6 +155,8 @@ async def apply_photo_sheet_import(
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
     conn=Depends(get_workflow_db),
 ):
+    if local_data_source_enabled():
+        raise HTTPException(409, "腾讯数据源已下线，不能导入调照片名单")
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -178,6 +185,8 @@ async def run_photo_sheet_sync(
     full: bool = Query(default=False),
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
 ):
+    if local_data_source_enabled():
+        raise HTTPException(409, "腾讯数据源已下线，不能启动调照片同步")
     async def runner(job):
         await job.update(phase="outbox", message="正在处理待写回队列")
         outbox_result = await process_outbox_once()

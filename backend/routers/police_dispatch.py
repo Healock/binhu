@@ -39,6 +39,11 @@ from services.online_source import (
     resolve_source_columns,
 )
 from services.online_source import source_row_hash
+from services.local_source import (
+    create_local_source_row,
+    local_data_source_enabled,
+    local_sheet_id,
+)
 from services.parsers import get_parser
 from services.permissions import (
     POLICE_ADDRESS_MANAGE,
@@ -633,6 +638,24 @@ async def create_quick_dispatch(
             if existing:
                 return existing
         raise
+
+    if local_data_source_enabled():
+        local_result = await _execute_local_publish_selection(
+            batch_id,
+            TaskPublishSelection(task_ids=[task_id]),
+            request,
+            user,
+            conn,
+        )
+        async with conn.cursor() as cur:
+            payload = await _batch_payload(cur, batch_id)
+        return {
+            "status": "success" if not local_result["failed_count"] else "conflict",
+            "message": "快捷下发已写入本地任务池" if not local_result["failed_count"] else "快捷下发存在本地业务键冲突",
+            "batch": payload,
+            "task_id": task_id,
+            "publish": local_result,
+        }
 
     await record_admin_audit(
         user,
@@ -2465,13 +2488,28 @@ async def resolve_publish_conflict(
         if str(row[2]) != "conflict":
             raise HTTPException(409, "任务当前不处于内容冲突状态")
         if str(row[4] or "") != data.expected_row_hash:
-            raise HTTPException(409, "腾讯来源行已变化，请等待同步后刷新")
+            raise HTTPException(
+                409,
+                "本地来源记录已变化，请刷新后重试"
+                if local_data_source_enabled()
+                else "腾讯来源行已变化，请等待同步后刷新",
+            )
         if not row[3]:
-            raise HTTPException(409, "尚未定位腾讯来源行，请等待一次正常同步")
+            raise HTTPException(
+                409,
+                "尚未定位本地来源记录，请刷新后重试"
+                if local_data_source_enabled()
+                else "尚未定位腾讯来源行，请等待一次正常同步",
+            )
         parser = get_parser(str(row[9] or "全链条"))
         source = await _load_source_row(cur, parser.parser_type, int(row[3]))
         if source["row_hash"] != data.expected_row_hash:
-            raise HTTPException(409, "腾讯来源行已变化，请刷新后重新选择")
+            raise HTTPException(
+                409,
+                "本地来源记录已变化，请刷新后重新选择"
+                if local_data_source_enabled()
+                else "腾讯来源行已变化，请刷新后重新选择",
+            )
         batch_id = int(row[0])
         platform_values = json_value(row[6], {})
 
@@ -2497,7 +2535,12 @@ async def resolve_publish_conflict(
                     values.get("社区", ""), community_resolver(communities),
                 )
                 if not community or not community.get("enabled", False):
-                    raise HTTPException(409, "腾讯内容中的社区无法映射为启用中的正式社区")
+                    raise HTTPException(
+                        409,
+                        "本地现有记录中的社区无法映射为启用中的正式社区"
+                        if local_data_source_enabled()
+                        else "腾讯内容中的社区无法映射为启用中的正式社区",
+                    )
                 raw_values = json_value(row[5], {})
                 if parser.parser_type == "全链条":
                     roles = dispatch_field_roles(raw_values)
@@ -2532,7 +2575,7 @@ async def resolve_publish_conflict(
                         standard_values_json=%s,
                         final_action='dispatch', final_community_id=%s,
                         suggested_action='dispatch', suggested_community_id=%s,
-                        suggestion_reason='已采用腾讯现有内容', allocation_mode='matched',
+                        suggestion_reason=%s, allocation_mode='matched',
                         publish_status='success', task_status='completed',
                         publish_error='', conflict_values_json=NULL,
                         cache_pending=0, published_at=COALESCE(published_at, UTC_TIMESTAMP()),
@@ -2543,7 +2586,9 @@ async def resolve_publish_conflict(
                     replacements["identity"], identity_digest(replacements["identity"]),
                     replacements["phone"], replacements["address"],
                     replacements["created"], replacements["transfer_note"],
-                    stable_json(raw_values), stable_json(values), community["id"],
+                    stable_json(raw_values), stable_json(values),
+                    "已采用本地现有内容" if local_data_source_enabled() else "已采用腾讯现有内容",
+                    community["id"],
                     community["id"], task_id, data.expected_version,
                 ))
                 if cur.rowcount != 1:
@@ -2563,6 +2608,11 @@ async def resolve_publish_conflict(
             await conn.rollback()
             raise
     else:
+        if local_data_source_enabled():
+            raise HTTPException(
+                409,
+                "本地数据源不支持覆盖已有业务记录，请修改或撤回当前任务后重新发布",
+            )
         if data.confirmation != "覆盖腾讯内容":
             raise HTTPException(400, "请输入“覆盖腾讯内容”完成二次确认")
         async with conn.cursor() as cur:
@@ -2685,8 +2735,13 @@ async def resolve_publish_conflict(
         if str(platform_values.get(column, "") or "")
         != str(source["values"].get(column, "") or "")
     })
+    audit_action = (
+        "police_dispatch.conflict.adopt_local"
+        if local_data_source_enabled() and data.strategy == "adopt_tencent"
+        else f"police_dispatch.conflict.{data.strategy}"
+    )
     await record_admin_audit(
-        user, f"police_dispatch.conflict.{data.strategy}",
+        user, audit_action,
         target_type="police_dispatch_task", target_name=str(task_id),
         detail={
             "changed_fields": changed_fields,
@@ -2695,7 +2750,13 @@ async def resolve_publish_conflict(
         **request_audit_fields(request),
     )
     return {
-        "message": "已采用腾讯内容" if data.strategy == "adopt_tencent" else "已用平台内容覆盖腾讯现有行",
+        "message": (
+            "已采用本地现有内容"
+            if local_data_source_enabled() and data.strategy == "adopt_tencent"
+            else "已采用腾讯内容"
+            if data.strategy == "adopt_tencent"
+            else "已用平台内容覆盖腾讯现有行"
+        ),
         "cache_pending": cache_pending if data.strategy == "overwrite_tencent" else False,
     }
 
@@ -3020,6 +3081,161 @@ async def _mark_overwrite_uncertain(
     return True
 
 
+async def _execute_local_publish_selection(
+    batch_id: int,
+    data: TaskPublishSelection,
+    request: Request | None,
+    user: dict[str, Any],
+    conn,
+    *,
+    run_id: int | None = None,
+) -> dict[str, Any]:
+    """把已审核任务直接发布到本地业务表，不经过腾讯写回或回读。"""
+    selected_ids = data.task_ids
+    placeholders = ",".join(["%s"] * len(selected_ids))
+    pseudo_spreadsheet = {
+        "id": 0,
+        "data_sheet_id": local_sheet_id("local"),
+        "parser_type": "local",
+    }
+    success_count = 0
+    failed_count = 0
+    counts: dict[str, Any] = {}
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            batch = await _batch_payload(cur, batch_id)
+            parser = get_parser(batch.get("target_parser") or "全链条")
+            await cur.execute(f"""
+                SELECT task.id, task.source_row, task.source_name, task.person_name,
+                       task.identity_number, task.phone, task.original_address,
+                       task.source_created_time, task.transfer_note,
+                       task.raw_values_json, community.name,
+                       task.standard_values_json, task.business_key_hmac
+                FROM _police_dispatch_tasks AS task
+                JOIN _communities AS community ON community.id=task.final_community_id
+                WHERE task.batch_id=%s AND task.id IN ({placeholders})
+                  AND task.final_action='dispatch' AND task.task_status IN ('pending_publish','publish_failed')
+                  AND task.publish_status IN ('pending','publishing','retryable')
+                ORDER BY task.source_row, task.id
+                FOR UPDATE
+            """, [batch_id, *selected_ids])
+            rows = await cur.fetchall()
+            if len(rows) != len(selected_ids):
+                raise HTTPException(409, "部分所选任务已不可发布，请刷新列表后重新选择")
+            if run_id is not None:
+                await _set_publish_run_phase(cur, run_id, "writing_local")
+
+            publish_date = await get_business_date(cur)
+            for row in rows:
+                task = {
+                    "id": int(row[0]),
+                    "source_row": int(row[1]),
+                    "source_name": str(row[2] or ""),
+                    "person_name": str(row[3] or ""),
+                    "identity_number": str(row[4] or ""),
+                    "phone": str(row[5] or ""),
+                    "original_address": str(row[6] or ""),
+                    "created_time": str(row[7] or ""),
+                    "transfer_note": str(row[8] or ""),
+                    "registration_status": dispatch_values_from_raw(json_value(row[9], {})).get("registration_status", ""),
+                    "community": str(row[10] or ""),
+                    "standard_values": json_value(row[11], {}),
+                    "business_key_hmac": str(row[12] or ""),
+                }
+                values = _publish_values(task, task["community"], publish_date)
+                key = task.get("business_key_hmac") or parser_business_key(parser, values, legacy=True)
+                try:
+                    local_source = await create_local_source_row(
+                        cur,
+                        parser.parser_type,
+                        values,
+                        source_kind="local_dispatch",
+                        source_ref=f"police_dispatch_task:{task['id']}",
+                    )
+                except ValueError as exc:
+                    if str(exc) != "local_business_key_conflict":
+                        raise
+                    await cur.execute(
+                        "SELECT source.id, source.values_json, source.row_hash "
+                        "FROM _online_source_rows AS source "
+                        "WHERE source.spreadsheet_id=0 AND source.parser_type=%s "
+                        "AND source.row_key=%s AND source.archived_at IS NULL LIMIT 1 FOR UPDATE",
+                        (parser.parser_type, parser.make_row_key(values)),
+                    )
+                    conflict = await cur.fetchone()
+                    conflict_values = json_value(conflict[1], {}) if conflict else {}
+                    await _set_task_publish_state(
+                        cur, task_id=task["id"], status="conflict", business_key=key,
+                        error="本地业务表已存在相同业务主键但内容不同",
+                        linked_source_id=int(conflict[0]) if conflict else None,
+                        linked_row_hash=str(conflict[2] or "") if conflict else "",
+                        conflict_values=conflict_values,
+                    )
+                    await _save_publish_result(
+                        cur, task_id=task["id"], spreadsheet=pseudo_spreadsheet,
+                        business_key=key, request_values=values, status="conflict",
+                        physical_row=int(conflict[0]) if conflict else None,
+                        verified_values=conflict_values,
+                        row_hash=str(conflict[2] or "") if conflict else "",
+                        error_code="local_content_conflict",
+                        error_message="本地业务表已存在相同业务主键但内容不同",
+                    )
+                    await _set_publish_run_item(
+                        cur, run_id, task["id"], "conflict",
+                        physical_row=int(conflict[0]) if conflict else None,
+                        error_code="local_content_conflict",
+                    )
+                    failed_count += 1
+                    continue
+
+                await _set_task_publish_state(
+                    cur, task_id=task["id"], status="success", business_key=key,
+                    physical_row=local_source["local_task_id"],
+                    linked_source_id=local_source["id"],
+                    linked_row_hash=local_source["row_hash"],
+                )
+                await _save_publish_result(
+                    cur, task_id=task["id"], spreadsheet=pseudo_spreadsheet,
+                    business_key=key, request_values=values, status="success",
+                    physical_row=local_source["local_task_id"],
+                    verified_values=local_source["values"],
+                    row_hash=local_source["row_hash"],
+                )
+                await _set_publish_run_item(
+                    cur, run_id, task["id"], "success",
+                    physical_row=local_source["local_task_id"],
+                )
+                success_count += 1
+
+            await _refresh_publish_run_progress(cur, run_id)
+            counts = await _refresh_batch_status(cur, batch_id)
+            await cur.execute(
+                "UPDATE _police_dispatch_batches SET last_error=%s WHERE id=%s",
+                ("部分任务存在本地业务键冲突" if failed_count else "", batch_id),
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    await record_admin_audit(
+        user,
+        "police_dispatch.publish_local",
+        target_type="police_dispatch_batch",
+        target_name=str(batch_id),
+        detail={"selected": len(selected_ids), "success": success_count, "failed": failed_count},
+        result="partial" if failed_count else "success",
+        **(request_audit_fields(request) if request is not None else {}),
+    )
+    return {
+        "message": "本地发布完成" if not failed_count else "部分任务存在本地业务键冲突",
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "counts": counts,
+    }
+
+
 async def _execute_publish_selection(
     batch_id: int,
     data: TaskPublishSelection,
@@ -3029,6 +3245,10 @@ async def _execute_publish_selection(
     *,
     run_id: int | None = None,
 ):
+    if local_data_source_enabled():
+        return await _execute_local_publish_selection(
+            batch_id, data, request, user, conn, run_id=run_id,
+        )
     selected_ids = data.task_ids
     placeholders = ",".join(["%s"] * len(selected_ids))
     eligible_publish_status = (
@@ -3678,17 +3898,22 @@ async def publish_selected_tasks(
                 raise HTTPException(409, "发布任务正在创建，请稍后重试")
             batch = await _batch_payload(cur, batch_id)
             target_parser = str(batch.get("target_parser") or "全链条")
-            if not await _writeback_enabled(cur):
-                raise HTTPException(503, "在线回写已由超级管理员暂停")
-            spreadsheets = await _enabled_spreadsheets(cur, target_parser)
-            if len(spreadsheets) != 1:
-                raise HTTPException(409, f"{target_parser}业务没有唯一启用的腾讯来源表")
-            spreadsheet = spreadsheets[0]
+            local_mode = local_data_source_enabled()
+            if local_mode:
+                spreadsheets = []
+                publish_spreadsheet_id = 0
+            else:
+                if not await _writeback_enabled(cur):
+                    raise HTTPException(503, "在线回写已由超级管理员暂停")
+                spreadsheets = await _enabled_spreadsheets(cur, target_parser)
+                if len(spreadsheets) != 1:
+                    raise HTTPException(409, f"{target_parser}业务没有唯一启用的腾讯来源表")
+                publish_spreadsheet_id = int(spreadsheets[0]["id"])
             await cur.execute("""
                 SELECT id FROM _police_dispatch_publish_runs
                 WHERE spreadsheet_id=%s AND status IN ('pending','running')
                 ORDER BY id DESC LIMIT 1
-            """, (spreadsheet["id"],))
+            """, (publish_spreadsheet_id,))
             active = await cur.fetchone()
             if active:
                 raise HTTPException(
@@ -3737,7 +3962,7 @@ async def publish_selected_tasks(
                     requested_by,requested_username
                 ) VALUES (%s,%s,'pending','queued',%s,%s,%s)
             """, (
-                batch_id, spreadsheet["id"], len(selected_ids), user.get("id"),
+                batch_id, publish_spreadsheet_id, len(selected_ids), user.get("id"),
                 str(user.get("username") or "")[:50],
             ))
             run_id = int(cur.lastrowid)

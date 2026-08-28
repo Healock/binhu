@@ -219,6 +219,7 @@ async def _cached_result_options(
         SELECT cell_meta_json
         FROM _online_source_rows
         WHERE parser_type=%s
+          AND archived_at IS NULL
           AND JSON_LENGTH(JSON_EXTRACT(cell_meta_json, %s)) > 1
           {scope_sql}
         ORDER BY id DESC
@@ -499,7 +500,8 @@ async def _source_data_version(cur, parser_type: str) -> str:
         f"""
         SELECT COUNT(*), COALESCE(SUM(revision), 0), MAX(refreshed_at)
         FROM _online_source_rows AS source
-        WHERE source.parser_type=%s
+         WHERE source.parser_type=%s
+           AND source.archived_at IS NULL
         {logical_source_sql_filter(parser_type)}
         """,
         (parser_type,),
@@ -537,7 +539,8 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
         FROM _online_source_rows AS source
         LEFT JOIN _config_spreadsheets AS spreadsheet
           ON spreadsheet.id=source.spreadsheet_id
-        WHERE source.id=%s AND source.parser_type=%s
+         WHERE source.id=%s AND source.parser_type=%s
+           AND source.archived_at IS NULL
         """,
         (source_id, parser_type),
     )
@@ -809,7 +812,8 @@ async def _update_local_source_fields(
         if new_key != source["row_key"]:
             await cur.execute(
                 "SELECT id FROM _online_source_rows "
-                "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
+                "WHERE parser_type=%s AND row_key=%s AND id<>%s "
+                "AND archived_at IS NULL LIMIT 1",
                 (parser_type, new_key, source_id),
             )
             if await cur.fetchone():
@@ -817,6 +821,12 @@ async def _update_local_source_fields(
 
         # 同步更新对应的本地业务表和统一来源记录，整个过程在同一事务内完成。
         assignments = ", ".join(f"`{column}`=%s" for column in ordered_columns)
+        source_ref = f"{parser.table_name}:{source['physical_row']}"
+        await cur.execute(
+            "SELECT source_kind,source_ref FROM _online_source_rows WHERE id=%s FOR UPDATE",
+            (source_id,),
+        )
+        previous_source = await cur.fetchone()
         await cur.execute(
             f"UPDATE `{parser.table_name}` SET {assignments}, `_row_key`=%s, _last_updated_at=UTC_TIMESTAMP() "
             "WHERE _row_key=%s",
@@ -826,13 +836,21 @@ async def _update_local_source_fields(
             raise HTTPException(409, "本地任务已被删除或更新，请刷新后重试")
         await cur.execute(
             "UPDATE _online_source_rows SET row_key=%s,row_hash=%s,values_json=%s,"
-            "revision=revision+1,refreshed_at=UTC_TIMESTAMP(),source_kind='local_table' "
+            "revision=revision+1,refreshed_at=UTC_TIMESTAMP(),source_kind='local_table',source_ref=%s "
             "WHERE id=%s AND revision=%s",
-            (new_key, local_row_hash(after), stable_json(after), source_id, expected_revision),
+            (new_key, local_row_hash(after), stable_json(after), source_ref, source_id, expected_revision),
         )
         if cur.rowcount != 1:
             raise HTTPException(409, "该任务已被更新，请刷新后重试")
-        source_ref = f"{parser.table_name}:{source['physical_row']}"
+        if previous_source and (
+            str(previous_source[0] or "") != "local_table"
+            or str(previous_source[1] or "") != source_ref
+        ):
+            await cur.execute(
+                "UPDATE _local_source_records SET status='superseded',updated_at=UTC_TIMESTAMP() "
+                "WHERE source_kind=%s AND source_ref=%s",
+                (str(previous_source[0] or ""), str(previous_source[1] or "")),
+            )
         await cur.execute(
             "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
             "business_key=%s, values_json=%s, content_hash=%s, "
@@ -1872,9 +1890,10 @@ async def _projection_query(
                    source.cell_meta_json, source.physical_row
             FROM _online_source_projection AS projection
             LEFT JOIN _online_source_rows AS source
-              ON source.parser_type=projection.parser_type
-             AND source.row_key=projection.row_key
-             AND projection.source_count=1
+             ON source.parser_type=projection.parser_type
+              AND source.row_key=projection.row_key
+             AND source.archived_at IS NULL
+              AND projection.source_count=1
             {where}
             ORDER BY {sort_expression} {order}, projection.row_key
             LIMIT %s OFFSET %s
@@ -1884,7 +1903,7 @@ async def _projection_query(
         rows = await cur.fetchall()
         await cur.execute(
             "SELECT cell_meta_json FROM _online_source_rows "
-            "WHERE parser_type=%s ORDER BY id LIMIT 1",
+            "WHERE parser_type=%s AND archived_at IS NULL ORDER BY id LIMIT 1",
             (parser_type,),
         )
         metadata_row = await cur.fetchone()
@@ -1896,13 +1915,17 @@ async def _projection_query(
             source_metadata,
             inspector_context=inspector_context,
         )
-        await cur.execute(
-            "SELECT COUNT(*) FROM _online_writeback_audit "
-            "WHERE parser_type=%s AND sync_status='pending'",
-            (parser_type,),
-        )
-        pending_count = int((await cur.fetchone())[0] or 0)
-        enabled = await _writeback_enabled(cur)
+        if local_data_source_enabled():
+            pending_count = 0
+            enabled = True
+        else:
+            await cur.execute(
+                "SELECT COUNT(*) FROM _online_writeback_audit "
+                "WHERE parser_type=%s AND sync_status='pending'",
+                (parser_type,),
+            )
+            pending_count = int((await cur.fetchone())[0] or 0)
+            enabled = await _writeback_enabled(cur)
         data_version = await _source_data_version(cur, parser_type)
 
         data = []
@@ -1945,7 +1968,7 @@ async def _projection_query(
 
     row_manage_allowed = can_manage_rows(user)
     row_manage_message = ""
-    if row_manage_allowed and len(spreadsheets) != 1:
+    if row_manage_allowed and not local_data_source_enabled() and len(spreadsheets) != 1:
         row_manage_message = (
             f"当前业务有 {len(spreadsheets)} 个启用来源表，新增已禁用；"
             "每种业务必须恰好配置一个启用来源表。"
@@ -2075,6 +2098,7 @@ async def list_source_rows(
                    revision, row_hash
             FROM _online_source_rows AS source
             WHERE source.parser_type=%s AND source.row_key=%s
+              AND source.archived_at IS NULL
               {logical_source_sql_filter(parser_type)}
             ORDER BY spreadsheet_id, physical_row
             """,
@@ -2144,7 +2168,7 @@ async def create_source_row(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         try:
             formal = await validate_new_row_scope(cur, user, parser, values)
@@ -2156,7 +2180,8 @@ async def create_source_row(
         if local_data_source_enabled():
             new_key = parser.make_row_key(values)
             await cur.execute(
-                "SELECT id FROM _online_source_rows WHERE parser_type=%s AND row_key=%s LIMIT 1",
+                "SELECT id FROM _online_source_rows "
+                "WHERE parser_type=%s AND row_key=%s AND archived_at IS NULL LIMIT 1",
                 (parser_type, new_key),
             )
             if await cur.fetchone():
@@ -2197,6 +2222,18 @@ async def create_source_row(
                 ),
             )
             await rebuild_projection(cur, parser_type, reconcile_graph=False)
+            # The business-table auto-increment id is only the local physical
+            # row used by the compatibility layer.  API callers must receive
+            # the stable source-row id used by edit/detail endpoints.
+            await cur.execute(
+                "SELECT id, revision FROM _online_source_rows "
+                "WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s "
+                "AND archived_at IS NULL LIMIT 1",
+                (parser_type, new_key),
+            )
+            source_row = await cur.fetchone()
+            if not source_row:
+                raise HTTPException(500, "本地来源记录创建失败")
             await conn.commit()
             await record_admin_audit(
                 user,
@@ -2208,9 +2245,9 @@ async def create_source_row(
             )
             return {
                 "message": "已创建本地业务数据",
-                "source_id": physical_row,
+                "source_id": int(source_row[0]),
                 "row_key": new_key,
-                "revision": 1,
+                "revision": int(source_row[1] or 1),
                 "values": values,
             }
         spreadsheets = await _enabled_spreadsheets(cur, parser_type)

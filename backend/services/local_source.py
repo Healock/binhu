@@ -110,6 +110,171 @@ async def ensure_local_source_schema(cur) -> None:
     """)
 
 
+async def create_local_source_row(
+    cur,
+    parser_type: str,
+    values: dict[str, Any],
+    *,
+    source_kind: str = "local_dispatch",
+    source_ref: str,
+) -> dict[str, Any]:
+    """在本地业务表创建一条来源行，并同步来源投影与统一来源记录。
+
+    该函数是阶段二下发流程的唯一写入入口之一：业务表、来源投影和
+    ``_local_source_records`` 必须在调用方同一个事务中完成。相同业务键
+    且内容一致时返回已有记录；相同业务键但内容不同则抛出受控冲突，
+    不会悄悄覆盖网格员已经填写的字段。
+    """
+    parser = get_parser(parser_type)
+    normalized = {
+        column: str(values.get(column, "") or "").strip()
+        for column in parser.COLUMNS
+    }
+    parser.validate_new_row(normalized)
+    row_key = parser.make_row_key(normalized)
+    content_hash = local_row_hash(normalized)
+    table_name = parser.table_name.replace("`", "")
+
+    await cur.execute(
+        f"SELECT id, _row_key, "
+        + ", ".join(f"`{column}`" for column in parser.COLUMNS)
+        + f" FROM `{table_name}` WHERE `_row_key`=%s LIMIT 1 FOR UPDATE",
+        (row_key,),
+    )
+    existing = await cur.fetchone()
+    if existing:
+        existing_values = {
+            column: str(existing[index + 2] or "")
+            for index, column in enumerate(parser.COLUMNS)
+        }
+        existing_hash = local_row_hash(existing_values)
+        if existing_hash != content_hash:
+            raise ValueError("local_business_key_conflict")
+        local_task_id = int(existing[0])
+    else:
+        columns = ["_row_key", *parser.COLUMNS]
+        quoted = ", ".join(f"`{column}`" for column in columns)
+        placeholders = ", ".join(["%s"] * len(columns))
+        await cur.execute(
+            f"INSERT INTO `{table_name}` ({quoted}) VALUES ({placeholders})",
+            [row_key, *(normalized[column] for column in parser.COLUMNS)],
+        )
+        local_task_id = int(cur.lastrowid)
+
+    source_ref = str(source_ref or f"{table_name}:{local_task_id}")[:190]
+    await cur.execute(
+        "SELECT id, revision, row_key, row_hash FROM _online_source_rows "
+        "WHERE source_kind=%s AND source_ref=%s LIMIT 1 FOR UPDATE",
+        (source_kind, source_ref),
+    )
+    source_row = await cur.fetchone()
+    if source_row:
+        if str(source_row[2] or "") != row_key or str(source_row[3] or "") != content_hash:
+            raise ValueError("local_business_key_conflict")
+        source_id = int(source_row[0])
+        revision = int(source_row[1] or 1)
+        await cur.execute(
+            "UPDATE _online_source_rows SET spreadsheet_id=0, parser_type=%s, "
+            "sheet_id=%s, physical_row=%s, row_key=%s, row_hash=%s, "
+            "values_json=%s, revision=%s, source_kind=%s, source_ref=%s, "
+            "archived_at=NULL, refreshed_at=UTC_TIMESTAMP() WHERE id=%s",
+            (
+                parser_type, local_sheet_id(parser_type), local_task_id, row_key,
+                content_hash, stable_json(normalized), revision, source_kind,
+                source_ref, source_id,
+            ),
+        )
+    else:
+        await cur.execute(
+            "SELECT id FROM _online_source_rows "
+            "WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s "
+            "AND archived_at IS NULL LIMIT 1 FOR UPDATE",
+            (parser_type, row_key),
+        )
+        matching = await cur.fetchone()
+        if matching:
+            source_id = int(matching[0])
+            await cur.execute(
+                "SELECT row_hash, values_json, physical_row, source_ref, revision "
+                "FROM _online_source_rows "
+                "WHERE id=%s FOR UPDATE",
+                (source_id,),
+            )
+            matched_source = await cur.fetchone()
+            if not matched_source or str(matched_source[0] or "") != content_hash:
+                raise ValueError("local_business_key_conflict")
+            revision = int(matched_source[4] or 1)
+            previous_source_ref = str(matched_source[3] or "")[:190]
+            if previous_source_ref and previous_source_ref != source_ref:
+                # A mirrored legacy row can later become the source of a
+                # dispatch task.  Keep the new source reference authoritative
+                # and leave the old mirror record as an auditable superseded
+                # record instead of creating a second active source row.
+                await cur.execute(
+                    "UPDATE _local_source_records SET status='superseded',"
+                    "updated_at=UTC_TIMESTAMP() WHERE source_ref=%s",
+                    (previous_source_ref,),
+                )
+            await cur.execute(
+                "UPDATE _online_source_rows SET spreadsheet_id=0, parser_type=%s, "
+                "sheet_id=%s, physical_row=%s, row_key=%s, row_hash=%s, "
+                "values_json=%s, revision=%s, source_kind=%s, source_ref=%s, "
+                "archived_at=NULL, refreshed_at=UTC_TIMESTAMP() WHERE id=%s",
+                (
+                    parser_type, local_sheet_id(parser_type), local_task_id, row_key,
+                    content_hash, stable_json(normalized), revision, source_kind,
+                    source_ref, source_id,
+                ),
+            )
+        else:
+            await cur.execute(
+                "INSERT INTO _online_source_rows ("
+                "spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,"
+                "values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref"
+                ") VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),%s,%s)",
+                (
+                    parser_type, local_sheet_id(parser_type), local_task_id, row_key,
+                    content_hash, stable_json(normalized),
+                    stable_json({column: {"type": "text"} for column in parser.COLUMNS}),
+                    source_kind, source_ref,
+                ),
+            )
+            source_id = int(cur.lastrowid)
+
+    await cur.execute(
+        "SELECT id FROM _local_source_records "
+        "WHERE source_kind=%s AND source_ref=%s LIMIT 1 FOR UPDATE",
+        (source_kind, source_ref),
+    )
+    local_record = await cur.fetchone()
+    if local_record:
+        await cur.execute(
+            "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
+            "business_key=%s, values_json=%s, content_hash=%s, status='active', "
+            "archived_at=NULL, updated_at=UTC_TIMESTAMP() WHERE id=%s",
+            (
+                parser_type, local_task_id, row_key, stable_json(normalized),
+                content_hash, int(local_record[0]),
+            ),
+        )
+    else:
+        await cur.execute(
+            "INSERT INTO _local_source_records ("
+            "parser_type,local_task_id,business_key,source_kind,source_ref,"
+            "values_json,content_hash,status) VALUES (%s,%s,%s,%s,%s,%s,%s,'active')",
+            (
+                parser_type, local_task_id, row_key, source_kind, source_ref,
+                stable_json(normalized), content_hash,
+            ),
+        )
+    return {
+        "id": source_id,
+        "local_task_id": local_task_id,
+        "row_key": row_key,
+        "row_hash": content_hash,
+        "values": normalized,
+    }
+
 async def mirror_business_tables_to_local_sources(
     conn,
     parser_types: Iterable[str] | None = None,

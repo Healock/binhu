@@ -1423,7 +1423,12 @@ async def _list_analysis_tasks_data(
         if not all(ready_values):
             return {
                 "data": [], "total": 0, "page": data.page, "page_size": data.page_size,
-                "source_ready": False, "message": "部分业务表来源尚未建立，请等待一次正常同步",
+                "source_ready": False,
+                "message": (
+                    "部分业务表本地来源尚未建立"
+                    if local_data_source_enabled()
+                    else "部分业务表来源尚未建立，请等待一次正常同步"
+                ),
                 "facets": _empty_facets(), "priority_labels": PRIORITY_LABELS,
                 "filters": {"parser_types": parser_types, "scope": data.scope,
                     "review_stage": data.review_stage, "communities": data.communities,
@@ -2030,7 +2035,11 @@ async def _list_mobile_tasks_data(
                 "page": data.page,
                 "page_size": data.page_size,
                 "source_ready": False,
-                "message": "来源定位尚未建立，请等待一次正常同步",
+                "message": (
+                    "本地任务来源尚未建立"
+                    if local_data_source_enabled()
+                    else "来源定位尚未建立，请等待一次正常同步"
+                ),
                 "facets": _empty_facets(),
                 "priority_labels": PRIORITY_LABELS,
                 "filters": {
@@ -2244,7 +2253,7 @@ async def select_mobile_tasks_for_assignment(
 
     where_sql, query_params = _task_where(context, parser_type, data)
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         await cur.execute(
             f"""
@@ -2315,7 +2324,7 @@ async def get_mobile_task_assignment_workbench(
         "all" if context.get("admin_mode") else "community",
     )
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         await cur.execute(
             f"""
@@ -2475,7 +2484,12 @@ async def _mobile_task_detail_data(
     scope_where, scope_params = _scope_where(context, detail_scope)
     async with conn.cursor() as cur:
         if not await _task_source_ready(cur, parser_type):
-            raise HTTPException(409, "来源定位尚未建立，请等待一次正常同步")
+            raise HTTPException(
+                409,
+                "本地任务来源尚未建立"
+                if local_data_source_enabled()
+                else "来源定位尚未建立，请等待一次正常同步",
+            )
         await cur.execute(
             f"""
             SELECT values_json, source_count, conflict, pending_state, task_state
@@ -2518,7 +2532,7 @@ async def _mobile_task_detail_data(
         local_changes = await load_local_changes(
             cur, [int(row[0]) for row in raw_sources]
         )
-        enabled = await _writeback_enabled(cur)
+        enabled = local_data_source_enabled() or await _writeback_enabled(cur)
         assignment_context = (
             await inspector_option_context(cur, capability_user, assignment_only=True)
             if _can_assign_tasks(context) and (
@@ -3286,7 +3300,11 @@ async def claim_mobile_task(
     )
     return {
         **result,
-        "message": "已领取任务并保存，正在同步腾讯表格",
+        "message": (
+            "已领取任务并保存到本地任务池"
+            if local_data_source_enabled()
+            else "已领取任务并保存，正在同步腾讯表格"
+        ),
     }
 
 
@@ -3367,9 +3385,17 @@ async def resolve_mobile_task_sync_conflict(
         launch_local_change_processing(source_id)
     return {
         "message": (
-            "已采用平台值，正在重新同步腾讯表格"
+            (
+                "已采用平台值并保存到本地任务池"
+                if local_data_source_enabled()
+                else "已采用平台值，正在重新同步腾讯表格"
+            )
             if data.choice == "platform"
-            else "已采用腾讯值"
+            else (
+                "已采用本地任务值"
+                if local_data_source_enabled()
+                else "已采用腾讯值"
+            )
         ),
         **result,
     }
@@ -3413,7 +3439,7 @@ async def bulk_assign_mobile_tasks(
     source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
     skipped: list[dict[str, str]] = []
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         scope_where, scope_params = _scope_where(
             context,
@@ -3542,7 +3568,7 @@ async def bulk_assign_mobile_tasks(
                     400: "数据校验未通过",
                     403: "没有该任务的编辑权限",
                     409: "任务已变化，请刷新后重试",
-                    502: "腾讯回写校验失败",
+                    502: "本地任务保存校验失败" if local_data_source_enabled() else "腾讯回写校验失败",
                 }.get(exc.status_code, "保存失败")
                 failures.append({"row_key": row_key, "reason": reason})
                 break

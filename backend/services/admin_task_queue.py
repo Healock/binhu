@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from database import db_manager
+from services.local_source import local_data_source_enabled
 
 
 RECENT_WINDOW_MINUTES = 30
@@ -202,6 +203,15 @@ async def get_admin_task_queue_details(
     """返回固定白名单队列的脱敏问题明细。"""
     offset = (page - 1) * page_size
     if source == "online_writeback_queue":
+        if local_data_source_enabled():
+            return {
+                "source": source,
+                "page": page,
+                "page_size": page_size,
+                "total": 0,
+                "data": [],
+                "message": "本地数据源已启用，无腾讯字段回写队列",
+            }
         count_rows, rows = await asyncio.gather(
             _query_rows(
                 "online_data",
@@ -243,6 +253,15 @@ async def get_admin_task_queue_details(
                 "updated_at": _iso(row[7]),
             })
     elif source == "photo_writeback_queue":
+        if local_data_source_enabled():
+            return {
+                "source": source,
+                "page": page,
+                "page_size": page_size,
+                "total": 0,
+                "data": [],
+                "message": "本地数据源已启用，无腾讯照片名单回写队列",
+            }
         count_rows, rows = await asyncio.gather(
             _query_rows(
                 "workflow",
@@ -332,6 +351,8 @@ async def _external_jobs() -> list[dict[str, Any]]:
 
 
 async def _sync_jobs() -> list[dict[str, Any]]:
+    if local_data_source_enabled():
+        return []
     rows = await _rows("online_data", f"""
         SELECT id,status,trigger_source,phase,total_steps,completed_steps,
                total_rows,processed_rows,started_at,finished_at
@@ -350,7 +371,7 @@ async def _sync_jobs() -> list[dict[str, Any]]:
             source="online_sync",
             source_id=row[0],
             category="数据同步",
-            title="腾讯在线表同步",
+            title="在线数据同步",
             status=row[1],
             phase=row[3],
             current=current,
@@ -376,8 +397,8 @@ async def _dispatch_publish_jobs() -> list[dict[str, Any]]:
         _item(
             source="dispatch_publish",
             source_id=row[0],
-            category="发布与回写",
-            title="下发任务发布",
+            category="本地任务发布" if local_data_source_enabled() else "发布与回写",
+            title="本地任务发布" if local_data_source_enabled() else "下发任务发布",
             status=row[1],
             phase=row[2],
             current=row[4],
@@ -575,6 +596,8 @@ async def _backup_jobs() -> list[dict[str, Any]]:
 
 
 async def _writeback_queues() -> list[dict[str, Any]]:
+    if local_data_source_enabled():
+        return []
     online_rows, photo_rows = await asyncio.gather(
         _rows("online_data", """
             SELECT status,COUNT(*),MIN(created_at),MAX(updated_at)

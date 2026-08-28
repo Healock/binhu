@@ -154,7 +154,8 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
     await cur.execute(
         "SELECT source.id, source.row_key, source.values_json, "
         "source.revision, source.row_hash "
-        "FROM _online_source_rows AS source WHERE source.parser_type=%s"
+        "FROM _online_source_rows AS source WHERE source.parser_type=%s "
+        "AND source.archived_at IS NULL"
         f"{logical_source_sql_filter(parser_type)} "
         "ORDER BY spreadsheet_id, physical_row",
         (parser_type,),

@@ -229,6 +229,9 @@ async def create_sync_task(
     requested_by: int | None = None,
 ) -> tuple[int, str, str]:
     """创建同步任务；已有任务运行时返回 conflict。"""
+    from services.local_source import local_data_source_enabled
+    if local_data_source_enabled():
+        return 0, "disabled", "腾讯数据源已下线，无需创建同步任务"
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     task_id = 0
@@ -266,6 +269,13 @@ async def create_sync_task(
 
 async def claim_due_scheduled_task() -> int | None:
     """到点时原子领取一个自动同步任务。"""
+    from services.local_source import local_data_source_enabled
+
+    # Local data is authoritative after the cutover.  Do not even create a
+    # legacy scheduled-sync row; otherwise the task queue would show a fake
+    # Tencent synchronization job that can never run.
+    if local_data_source_enabled():
+        return None
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     task_id = None
@@ -324,6 +334,9 @@ async def claim_due_scheduled_task() -> int | None:
 
 
 def launch_sync_task(task_id: int) -> None:
+    from services.local_source import local_data_source_enabled
+    if local_data_source_enabled():
+        return
     task = asyncio.create_task(run_sync_task(task_id))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -340,6 +353,25 @@ async def stop_sync_tasks() -> None:
 
 async def run_sync_task(task_id: int) -> None:
     """执行任务，并在结束后重排下次同步和发送失败通知。"""
+    from services.local_source import local_data_source_enabled
+    if local_data_source_enabled():
+        pool = db_manager.get_pool("online_data")
+        conn = await pool.acquire()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE _sync_log
+                    SET status='failed', phase='finished', current_item=NULL,
+                        error_message='腾讯数据源已下线，旧同步任务已停用',
+                        finished_at=UTC_TIMESTAMP()
+                    WHERE id=%s AND status IN ('pending','running')
+                    """,
+                    (task_id,),
+                )
+        finally:
+            pool.release(conn)
+        return
     try:
         trigger_source = await _get_task_trigger_source(task_id)
         if trigger_source == "scheduled":

@@ -20,7 +20,10 @@ from services.task_registration import (
     select_registration_property,
     update_registration_match,
 )
-from services.residence_status_scan import registration_address_match_result
+from services.residence_status_scan import (
+    registration_address_match_result,
+    registration_confirmation_scan_state,
+)
 
 
 class RegistrationMatchCursor:
@@ -73,6 +76,20 @@ class TaskRegistrationRulesTests(unittest.TestCase):
         self.assertTrue(is_pending_registration("疑似返苏", {"核查反馈": "待登记"}))
         self.assertFalse(is_pending_registration("疑似返苏", {"核查结果": "待登记"}))
         self.assertFalse(is_pending_registration("疑似未注销模型三", {"核查结果": "待登记"}))
+
+    def test_local_confirmation_is_terminal_without_external_writeback(self):
+        self.assertEqual(
+            registration_confirmation_scan_state(True, local_source=True),
+            "confirmed",
+        )
+        self.assertEqual(
+            registration_confirmation_scan_state(True, local_source=False),
+            "confirmation_pending",
+        )
+        self.assertEqual(
+            registration_confirmation_scan_state(False, local_source=True),
+            "matched_once",
+        )
 
     def test_new_pending_registration_is_checked_but_legacy_row_stays_completed(self):
         values = {"核查结果": "待登记"}

@@ -51,6 +51,8 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.duplicate.resolve": "选择下发重复记录",
     "police_dispatch.bulk_review": "批量审核下发任务",
     "police_dispatch.conflict.adopt_tencent": "采用腾讯表格内容",
+    "police_dispatch.conflict.adopt_local": "采用本地现有内容",
+    "police_dispatch.publish_local": "发布到本地任务池",
     "police_dispatch.conflict.overwrite_tencent": "用平台内容覆盖腾讯表格",
     "police_dispatch.publish": "发布下发任务",
     "fullchain.police_raw.confirm": "确认全链条公安网原始数据",

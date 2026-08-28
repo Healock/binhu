@@ -14,6 +14,7 @@ from database import db_manager
 from config import settings
 from services.business_time import get_business_date_from_db
 from services.registry_security import hmac_digest
+from services.local_source import local_data_source_enabled
 from services.txdocs_client import TxDocsClient
 from services.workflow_support import platform_schema, queue_user_ids, workflow_notification
 
@@ -1184,6 +1185,15 @@ async def _process_completed(
 
 
 async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
+    if local_data_source_enabled():
+        # 本地来源切换后，照片工单只保留本地附件与任务流程；
+        # 不读取腾讯名单、不开 OAuth，也不创建任何外部写回请求。
+        return {
+            "processed": 0,
+            "failed": 0,
+            "paused": 0,
+            "disabled": True,
+        }
     pool = db_manager.get_pool("workflow")
     async with pool.acquire() as conn:
         await conn.begin()
@@ -1298,6 +1308,13 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
 
 
 async def process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
+    if local_data_source_enabled():
+        return {
+            "processed": 0,
+            "failed": 0,
+            "paused": 0,
+            "disabled": True,
+        }
     async with PHOTO_SHEET_OPERATION_LOCK:
         return await _process_outbox_once(limit, ticket_id=ticket_id)
 
@@ -1318,6 +1335,8 @@ async def _process_outbox_ticket(ticket_id: int) -> None:
 
 
 def launch_outbox_processing(ticket_id: int) -> None:
+    if local_data_source_enabled():
+        return
     task = asyncio.create_task(_process_outbox_ticket(ticket_id))
     _photo_sheet_background_tasks.add(task)
     task.add_done_callback(_photo_sheet_background_tasks.discard)
@@ -1360,6 +1379,8 @@ def _clear_daily_full_sync_task(task: asyncio.Task) -> None:
 
 def launch_daily_full_sync() -> bool:
     global _daily_full_sync_task
+    if local_data_source_enabled():
+        return False
     if _daily_full_sync_task is not None and not _daily_full_sync_task.done():
         return False
     task = asyncio.create_task(_run_daily_full_sync())
@@ -1655,6 +1676,15 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
 
 
 async def sync_online_once(*, full: bool = False, actor_user_id: int | None = None) -> dict:
+    if local_data_source_enabled():
+        return {
+            "created_tickets": 0,
+            "completed_tickets": 0,
+            "revised_count": 0,
+            "superseded_count": 0,
+            "source_missing_count": 0,
+            "disabled": True,
+        }
     async with PHOTO_SHEET_OPERATION_LOCK:
         return await _sync_online_once(full=full, actor_user_id=actor_user_id)
 

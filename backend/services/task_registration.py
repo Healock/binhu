@@ -49,8 +49,8 @@ REVIEW_REASON_LABELS = {
     "source_missing": "任务来源已删除",
     "source_ambiguous": "任务来源不唯一",
     "lookup_failed": "居住证平台查询失败",
-    "writeback_pending": "已确认，等待同步腾讯表格",
-    "confirmation_enqueue_failed": "自动确认未能进入写回队列，请重新复核",
+    "writeback_pending": "已确认，等待本地任务保存完成",
+    "confirmation_enqueue_failed": "自动确认未能保存到本地任务，请重新复核",
 }
 
 
