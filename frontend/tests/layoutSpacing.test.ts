@@ -145,6 +145,17 @@ test('移动端卡片列表使用父级 gap，避免卡片或表格贴在一起'
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.dashboard-mobile-detail-list,[\s\S]*?\.mobile-report-table__layout\s*\{[^}]*gap:\s*10px/s)
 })
 
+test('在线数据汇总统一显示上下两张完整表格', () => {
+  const dashboard = readFileSync(new URL('../src/pages/Dashboard.tsx', import.meta.url), 'utf8')
+  const mobileReport = readFileSync(new URL('../src/components/MobileReportTable.tsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(dashboard, /mobileReportSection|<Segmented/)
+  assert.doesNotMatch(mobileReport, /精简列表|viewMode|compact/)
+  assert.equal((dashboard.match(/<MobileReportTable/g) || []).length, 2)
+  assert.match(dashboard, /网格员汇总（\{inspectorTable\.data\.length\} 行）/)
+  assert.match(dashboard, /社区汇总（\{communityTable\.data\.length\} 个社区）/)
+})
+
 test('在线查询桌面端把数据范围控件放在工作表状态提示左侧', () => {
   const querySource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),
