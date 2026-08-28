@@ -99,3 +99,17 @@ def test_recovery_freezes_sending_items_and_only_retries_unsent_items():
     assert "task.publish_status='retryable'" in sql
     assert "status='failed',phase='finished'" in sql
     assert "WHERE batch.id=%s" in sql
+
+
+def test_local_recovery_never_marks_external_outcome_uncertain():
+    cursor = _Cursor()
+    pool = _Pool(_Conn(cursor))
+    with patch.object(jobs.db_manager, "get_pool", return_value=pool), \
+         patch.object(jobs, "local_data_source_enabled", return_value=True):
+        recovered = asyncio.run(jobs.recover_interrupted_police_publish_runs())
+
+    assert recovered == 1
+    sql = "\n".join(query for query, _params in cursor.queries)
+    assert "service_restarted_local" in sql
+    assert "服务重启，未完成的本地发布任务可安全重试" in sql
+    assert "腾讯请求可能已经送达" not in sql

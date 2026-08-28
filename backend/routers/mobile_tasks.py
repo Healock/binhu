@@ -70,6 +70,7 @@ from services.unverifiable_review import (
 )
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
+from services.local_source import local_data_source_enabled
 from services.watch_matching import task_watch_payload
 from services.residence_platform import ResidencePlatformError
 from services.residence_status_scan import (
@@ -137,6 +138,21 @@ QmfFeedbackState = Literal[
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
 MAX_BULK_ASSIGNMENT_CHUNK = 20
+
+
+async def _task_source_ready(cur, parser_type: str) -> bool:
+    """Local mode is ready when the local projection exists, not when a Tencent
+    spreadsheet configuration exists.  An empty local table is still a valid
+    ready state and should render an empty task pool rather than a sync error.
+    """
+    if local_data_source_enabled():
+        await cur.execute(
+            "SELECT 1 FROM _online_source_projection WHERE parser_type=%s LIMIT 1",
+            (parser_type,),
+        )
+        await cur.fetchone()
+        return True
+    return await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type))
 
 
 async def _qmf_registration_state(
@@ -1403,11 +1419,16 @@ async def _list_analysis_tasks_data(
     async with conn.cursor() as cur:
         ready_values = []
         for parser_type in parser_types:
-            ready_values.append(await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type)))
+            ready_values.append(await _task_source_ready(cur, parser_type))
         if not all(ready_values):
             return {
                 "data": [], "total": 0, "page": data.page, "page_size": data.page_size,
-                "source_ready": False, "message": "部分业务表来源尚未建立，请等待一次正常同步",
+                "source_ready": False,
+                "message": (
+                    "部分业务表本地来源尚未建立"
+                    if local_data_source_enabled()
+                    else "部分业务表来源尚未建立，请等待一次正常同步"
+                ),
                 "facets": _empty_facets(), "priority_labels": PRIORITY_LABELS,
                 "filters": {"parser_types": parser_types, "scope": data.scope,
                     "review_stage": data.review_stage, "communities": data.communities,
@@ -1568,8 +1589,7 @@ def _scope_where(
 async def _source_readiness(cur) -> dict[str, bool]:
     result: dict[str, bool] = {}
     for parser_type in MOBILE_TASK_TYPES:
-        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
-        result[parser_type] = await _source_ready(cur, spreadsheets)
+        result[parser_type] = await _task_source_ready(cur, parser_type)
     return result
 
 
@@ -2007,8 +2027,7 @@ async def _list_mobile_tasks_data(
         include_priority=False,
     )
     async with conn.cursor() as cur:
-        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
-        ready = await _source_ready(cur, spreadsheets)
+        ready = await _task_source_ready(cur, parser_type)
         if not ready:
             return {
                 "data": [],
@@ -2016,7 +2035,11 @@ async def _list_mobile_tasks_data(
                 "page": data.page,
                 "page_size": data.page_size,
                 "source_ready": False,
-                "message": "来源定位尚未建立，请等待一次正常同步",
+                "message": (
+                    "本地任务来源尚未建立"
+                    if local_data_source_enabled()
+                    else "来源定位尚未建立，请等待一次正常同步"
+                ),
                 "facets": _empty_facets(),
                 "priority_labels": PRIORITY_LABELS,
                 "filters": {
@@ -2138,7 +2161,7 @@ async def get_mobile_task_analysis_filter_options(
     )
     async with conn.cursor() as cur:
         ready = all([
-            await _source_ready(cur, await _enabled_spreadsheets(cur, value))
+            await _task_source_ready(cur, value)
             for value in parser_types
         ])
         if not ready:
@@ -2179,8 +2202,7 @@ async def get_mobile_task_filter_options(
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
-        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
-        if not await _source_ready(cur, spreadsheets):
+        if not await _task_source_ready(cur, parser_type):
             return {
                 "source_ready": False,
                 "communities": [],
@@ -2231,7 +2253,7 @@ async def select_mobile_tasks_for_assignment(
 
     where_sql, query_params = _task_where(context, parser_type, data)
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         await cur.execute(
             f"""
@@ -2302,7 +2324,7 @@ async def get_mobile_task_assignment_workbench(
         "all" if context.get("admin_mode") else "community",
     )
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         await cur.execute(
             f"""
@@ -2461,8 +2483,13 @@ async def _mobile_task_detail_data(
     detail_scope: FlowScope = "all" if context["admin_mode"] else "community"
     scope_where, scope_params = _scope_where(context, detail_scope)
     async with conn.cursor() as cur:
-        if not await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type)):
-            raise HTTPException(409, "来源定位尚未建立，请等待一次正常同步")
+        if not await _task_source_ready(cur, parser_type):
+            raise HTTPException(
+                409,
+                "本地任务来源尚未建立"
+                if local_data_source_enabled()
+                else "来源定位尚未建立，请等待一次正常同步",
+            )
         await cur.execute(
             f"""
             SELECT values_json, source_count, conflict, pending_state, task_state
@@ -2505,7 +2532,7 @@ async def _mobile_task_detail_data(
         local_changes = await load_local_changes(
             cur, [int(row[0]) for row in raw_sources]
         )
-        enabled = await _writeback_enabled(cur)
+        enabled = local_data_source_enabled() or await _writeback_enabled(cur)
         assignment_context = (
             await inspector_option_context(cur, capability_user, assignment_only=True)
             if _can_assign_tasks(context) and (
@@ -3273,7 +3300,11 @@ async def claim_mobile_task(
     )
     return {
         **result,
-        "message": "已领取任务并保存，正在同步腾讯表格",
+        "message": (
+            "已领取任务并保存到本地任务池"
+            if local_data_source_enabled()
+            else "已领取任务并保存，正在同步腾讯表格"
+        ),
     }
 
 
@@ -3354,9 +3385,17 @@ async def resolve_mobile_task_sync_conflict(
         launch_local_change_processing(source_id)
     return {
         "message": (
-            "已采用平台值，正在重新同步腾讯表格"
+            (
+                "已采用平台值并保存到本地任务池"
+                if local_data_source_enabled()
+                else "已采用平台值，正在重新同步腾讯表格"
+            )
             if data.choice == "platform"
-            else "已采用腾讯值"
+            else (
+                "已采用本地任务值"
+                if local_data_source_enabled()
+                else "已采用腾讯值"
+            )
         ),
         **result,
     }
@@ -3400,7 +3439,7 @@ async def bulk_assign_mobile_tasks(
     source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
     skipped: list[dict[str, str]] = []
     async with conn.cursor() as cur:
-        if not await _writeback_enabled(cur):
+        if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         scope_where, scope_params = _scope_where(
             context,
@@ -3529,7 +3568,7 @@ async def bulk_assign_mobile_tasks(
                     400: "数据校验未通过",
                     403: "没有该任务的编辑权限",
                     409: "任务已变化，请刷新后重试",
-                    502: "腾讯回写校验失败",
+                    502: "本地任务保存校验失败" if local_data_source_enabled() else "腾讯回写校验失败",
                 }.get(exc.status_code, "保存失败")
                 failures.append({"row_key": row_key, "reason": reason})
                 break

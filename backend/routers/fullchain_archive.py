@@ -36,6 +36,7 @@ from services.unverifiable_review import (
     review_flows_by_rows,
     supports_unverifiable_review,
 )
+from services.local_source import local_data_source_enabled
 
 
 router = APIRouter(prefix="/api/police-dispatch/fullchain-archive", tags=["全链条反馈归档"])
@@ -154,7 +155,7 @@ async def _candidate_rows(
          AND registration.row_key=source.row_key
         LEFT JOIN `{registry}`.registry_properties property
           ON property.id=registration.property_id
-        WHERE source.parser_type=%s{where}
+        WHERE source.parser_type=%s AND source.archived_at IS NULL{where}
         ORDER BY source.id
     """, [parser_type, *params])
     raw_rows = await cur.fetchall()
@@ -193,7 +194,11 @@ async def _candidate_rows(
                 )
             else:
                 stage = "review"
-                reason = "最终研判后的腾讯来源已变化，需重新对账后才能导出"
+                reason = (
+                    "最终研判后的本地任务来源已变化，请重新核对"
+                    if local_data_source_enabled()
+                    else "最终研判后的腾讯来源已变化，需重新对账后才能导出"
+                )
         elif result in ARCHIVE_RESULTS and parser_type == "全链条":
             category, stage, reason, eligible = result, "direct", "核查结果可直接反馈归档", True
         elif parser_type == "全链条" and result == "移交":

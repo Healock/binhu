@@ -66,6 +66,22 @@ def registration_address_match_result(
     return True, ""
 
 
+def registration_confirmation_scan_state(
+    confirmed: bool,
+    *,
+    local_source: bool,
+) -> str:
+    """Return the scan state after an exact residence-address match.
+
+    Local mode commits the terminal result in the same transaction.  The
+    legacy external-source mode still reports a pending state until its
+    asynchronous writer verifies the remote projection.
+    """
+    if not confirmed:
+        return "matched_once"
+    return "confirmed" if local_source else "confirmation_pending"
+
+
 @dataclass(frozen=True)
 class ResidenceLookupTarget:
     identity: str
@@ -610,7 +626,18 @@ async def _process_one(
                                 )
 
                                 launch_local_change_processing(int(link["source_id"]))
-                            return "confirmation_pending" if confirmed else "matched_once", ""
+                            # Local mode commits the result and registration link in
+                            # the same transaction.  There is no external writeback
+                            # to wait for, so report the terminal state immediately.
+                            from services.local_source import local_data_source_enabled
+
+                            return (
+                                registration_confirmation_scan_state(
+                                    confirmed,
+                                    local_source=local_data_source_enabled(),
+                                ),
+                                "",
+                            )
         result = await _lookup_target(config, target)
         await _save_result(
             parser_type,

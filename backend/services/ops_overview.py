@@ -15,6 +15,7 @@ from services.business_time import (
 from services.ops_client import get_container_overview
 from services.ops_database import get_database_overview, get_mysql_status
 from services.ops_redaction import redact_text
+from services.local_source import local_data_source_enabled
 
 
 SYNC_DAILY_WINDOW_DAYS = 14
@@ -287,35 +288,40 @@ async def build_operations_overview() -> dict:
                 time.min,
                 tzinfo=resolve_timezone(timezone_name),
             ).astimezone(timezone.utc).replace(tzinfo=None)
-            await cur.execute(
-                """
-                SELECT id, status, trigger_source, finished_at
-                FROM _sync_log ORDER BY id DESC LIMIT 1
-                """
-            )
-            sync_row = await cur.fetchone()
-            await cur.execute(
-                """
-                SELECT status, trigger_source, started_at, finished_at
-                FROM _sync_log
-                WHERE COALESCE(started_at, finished_at) >= %s
-                ORDER BY COALESCE(started_at, finished_at) DESC
-                """,
-                (first_day_utc,),
-            )
-            sync_rows = await cur.fetchall()
-            await cur.execute(
-                """
-                SELECT bucket_hour, request_source, endpoint, method,
-                       attempt_count, success_count, failure_count,
-                       retry_count, quota_exhausted_count
-                FROM _txdocs_api_usage_hourly
-                WHERE bucket_hour >= %s
-                ORDER BY bucket_hour DESC
-                """,
-                (first_day_utc,),
-            )
-            txdocs_usage_rows = await cur.fetchall()
+            if local_data_source_enabled():
+                sync_row = None
+                sync_rows = []
+                txdocs_usage_rows = []
+            else:
+                await cur.execute(
+                    """
+                    SELECT id, status, trigger_source, finished_at
+                    FROM _sync_log ORDER BY id DESC LIMIT 1
+                    """
+                )
+                sync_row = await cur.fetchone()
+                await cur.execute(
+                    """
+                    SELECT status, trigger_source, started_at, finished_at
+                    FROM _sync_log
+                    WHERE COALESCE(started_at, finished_at) >= %s
+                    ORDER BY COALESCE(started_at, finished_at) DESC
+                    """,
+                    (first_day_utc,),
+                )
+                sync_rows = await cur.fetchall()
+                await cur.execute(
+                    """
+                    SELECT bucket_hour, request_source, endpoint, method,
+                           attempt_count, success_count, failure_count,
+                           retry_count, quota_exhausted_count
+                    FROM _txdocs_api_usage_hourly
+                    WHERE bucket_hour >= %s
+                    ORDER BY bucket_hour DESC
+                    """,
+                    (first_day_utc,),
+                )
+                txdocs_usage_rows = await cur.fetchall()
             await cur.execute(
                 """
                 SELECT id, status, finished_at, size_bytes
@@ -323,13 +329,16 @@ async def build_operations_overview() -> dict:
                 """
             )
             backup_row = await cur.fetchone()
-            await cur.execute(
-                """
-                SELECT expires_at
-                FROM _config_oauth_tokens ORDER BY id DESC LIMIT 1
-                """
-            )
-            oauth_row = await cur.fetchone()
+            if local_data_source_enabled():
+                oauth_row = None
+            else:
+                await cur.execute(
+                    """
+                    SELECT expires_at
+                    FROM _config_oauth_tokens ORDER BY id DESC LIMIT 1
+                    """
+                )
+                oauth_row = await cur.fetchone()
     finally:
         pool.release(conn)
 

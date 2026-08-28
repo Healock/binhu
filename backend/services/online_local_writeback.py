@@ -7,6 +7,11 @@ from contextlib import suppress
 from typing import Any
 
 from database import db_manager
+from services.local_source import (
+    local_data_source_enabled,
+    local_row_hash,
+    local_sheet_id,
+)
 from services.online_source import (
     acquire_sheet_lock,
     json_value,
@@ -257,6 +262,124 @@ async def _refresh_audit_status(cur, audit_ids: set[int]) -> None:
         )
 
 
+async def apply_local_system_changes(
+    cur,
+    *,
+    source: dict[str, Any],
+    changes: dict[str, str],
+    user: dict[str, Any] | None = None,
+    action: str = "system_local_update",
+) -> tuple[int, int, dict[str, str], str]:
+    """Apply a trusted server-side change directly to the local task source.
+
+    This is intentionally separate from the Tencent writeback queue.  System
+    workflows such as automatic residence confirmation and overdue review
+    transitions still need the same optimistic-lock, projection and audit
+    semantics as a user edit, but must not create a pending external write.
+    The caller owns the surrounding transaction and commits it after any
+    workflow state updates are complete.
+    """
+    if not local_data_source_enabled():
+        raise RuntimeError("local_data_source_disabled")
+    parser_type = str(source.get("spreadsheet", {}).get("parser_type") or "")
+    parser = get_parser(parser_type)
+    source_id = int(source["id"])
+    expected_revision = int(source.get("revision") or 0)
+    current = {
+        column: str((source.get("values") or {}).get(column) or "")
+        for column in parser.COLUMNS
+    }
+    normalized = {
+        str(field): str(value or "").strip()
+        for field, value in changes.items()
+    }
+    unknown = [field for field in normalized if field not in parser.COLUMNS]
+    if unknown:
+        raise ValueError(f"字段不存在：{'、'.join(unknown)}")
+    changed = [field for field in parser.COLUMNS if field in normalized and current.get(field, "") != normalized[field]]
+    if not changed:
+        raise ValueError("本地任务当前值未发生变化")
+    after = dict(current)
+    after.update({field: normalized[field] for field in changed})
+    new_key = parser.make_row_key(after)
+    old_key = str(source.get("row_key") or "")
+    if new_key != old_key:
+        await cur.execute(
+            "SELECT id FROM _online_source_rows "
+            "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
+            (parser_type, new_key, source_id),
+        )
+        if await cur.fetchone():
+            raise ValueError("修改后会形成重复业务主键")
+
+    table_name = parser.table_name.replace("`", "")
+    physical_id = int(source.get("physical_row") or 0)
+    assignments = ", ".join(f"`{field}`=%s" for field in changed)
+    await cur.execute(
+        f"UPDATE `{table_name}` SET {assignments}, `_row_key`=%s, "
+        "_last_updated_at=UTC_TIMESTAMP() WHERE id=%s AND `_row_key`=%s",
+        [*(after[field] for field in changed), new_key, physical_id, old_key],
+    )
+    if cur.rowcount != 1:
+        raise ValueError("本地任务已被删除或更新")
+    content_hash = local_row_hash(after)
+    await cur.execute(
+        "UPDATE _online_source_rows SET spreadsheet_id=0, sheet_id=%s, "
+        "physical_row=%s, row_key=%s, row_hash=%s, values_json=%s, "
+        "revision=revision+1, source_kind='local_table', source_ref=%s, "
+        "archived_at=NULL, refreshed_at=UTC_TIMESTAMP() "
+        "WHERE id=%s AND revision=%s",
+        (
+            local_sheet_id(parser_type), physical_id, new_key, content_hash,
+            stable_json(after), f"{table_name}:{physical_id}", source_id,
+            expected_revision,
+        ),
+    )
+    if cur.rowcount != 1:
+        raise ValueError("本地来源版本已变化")
+    next_revision = expected_revision + 1
+    await cur.execute(
+        "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
+        "business_key=%s, values_json=%s, content_hash=%s, revision=%s, "
+        "status='active', archived_at=NULL, updated_at=UTC_TIMESTAMP() "
+        "WHERE source_kind='local_table' AND source_ref=%s",
+        (
+            parser_type, physical_id, new_key, stable_json(after), content_hash,
+            next_revision, f"{table_name}:{physical_id}",
+        ),
+    )
+    if cur.rowcount == 0:
+        await cur.execute(
+            "INSERT INTO _local_source_records "
+            "(parser_type,local_task_id,business_key,source_kind,source_ref,"
+            "values_json,content_hash,revision,status) VALUES "
+            "(%s,%s,%s,'local_table',%s,%s,%s,%s,'active')",
+            (
+                parser_type, physical_id, new_key, f"{table_name}:{physical_id}",
+                stable_json(after), content_hash, next_revision,
+            ),
+        )
+    actor = user or {"id": 0, "username": "system"}
+    await cur.execute(
+        """
+        INSERT INTO _online_writeback_audit
+            (user_id,username,action,parser_type,spreadsheet_id,sheet_id,
+             physical_row,column_name,row_key_before,row_key_after,
+             before_values,after_values,sync_status)
+        VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,'local')
+        """,
+        (
+            int(actor.get("id") or 0), str(actor.get("username") or "system")[:50],
+            action, parser_type, local_sheet_id(parser_type), physical_id,
+            "、".join(changed), old_key, new_key, stable_json(current),
+            stable_json(after),
+        ),
+    )
+    audit_id = int(cur.lastrowid)
+    await rebuild_projection(cur, parser_type)
+    return audit_id, next_revision, after, new_key
+
+
 async def enqueue_local_changes(
     conn,
     *,
@@ -265,6 +388,8 @@ async def enqueue_local_changes(
     user: dict,
     audit_id: int,
 ) -> int:
+    if local_data_source_enabled():
+        raise RuntimeError("local_data_source_requires_direct_transaction")
     source_id = int(source["id"])
     affected_audits = {int(audit_id)}
     async with conn.cursor() as cur:
@@ -372,6 +497,11 @@ async def enqueue_local_changes(
 
 
 async def source_sync_payload(cur, source_id: int) -> dict[str, Any]:
+    if local_data_source_enabled():
+        # Legacy change rows can remain as read-only migration material.  They
+        # must not leak Tencent terminology or appear as active conflicts once
+        # the local source is authoritative.
+        return {"state": "", "fields": []}
     grouped = await load_local_changes(cur, [source_id])
     changes = grouped.get(source_id, [])
     return {
@@ -396,6 +526,8 @@ async def resolve_source_conflict(
     choice: str,
     fields: list[str],
 ) -> dict[str, Any]:
+    if local_data_source_enabled():
+        raise ValueError("本地数据源已启用，不再处理腾讯同步冲突")
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -821,6 +953,8 @@ async def process_local_changes_once(
     limit: int = 20,
     source_id: int | None = None,
 ) -> dict[str, int]:
+    if local_data_source_enabled():
+        return {"processed": 0, "synced": 0, "conflicts": 0}
     async with _PROCESS_LOCK:
         pool = db_manager.get_pool("online_data")
         async with pool.acquire() as conn:
@@ -862,12 +996,17 @@ async def _process_source_background(source_id: int) -> None:
 
 
 def launch_local_change_processing(source_id: int) -> None:
+    if local_data_source_enabled():
+        return
     task = asyncio.create_task(_process_source_background(source_id))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 async def run_online_writeback_scheduler() -> None:
+    if local_data_source_enabled():
+        print("[ONLINE_WRITEBACK] 腾讯表写回已下线，跳过后台写回任务")
+        return
     while True:
         try:
             await process_local_changes_once()

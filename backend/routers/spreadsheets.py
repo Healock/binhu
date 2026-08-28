@@ -4,6 +4,7 @@ import re
 from urllib.parse import urlparse, parse_qs
 from fastapi import APIRouter, Depends, HTTPException, Request
 from database import get_db
+from config import settings
 from deps import require_super_admin
 from schemas.spreadsheet import SpreadsheetCreate, SpreadsheetUpdate, SpreadsheetResponse
 from services.parsers import SUPPORTED_TYPES
@@ -100,6 +101,8 @@ async def save_spreadsheets_config(
 
     payload: {"configs": {"全链条": "https://...", "出租房屋核查": "https://...", ...}}
     """
+    if settings.LOCAL_DATA_SOURCE_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯表已下线，不能修改在线表格配置")
     configs = payload.get("configs", {})
     async with conn.cursor() as cur:
         for parser_type in FIXED_TYPES:
@@ -150,6 +153,8 @@ async def create_spreadsheet(
     conn=Depends(get_db),
 ):
     """添加在线表格（自动从URL解析file_id和子表ID）"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯表已下线，不能新增在线表格")
     parsed = parse_tencent_doc_url(data.url)
     file_id = data.file_id or parsed["file_id"]
     data_sheet_id = parsed["data_sheet_id"] if data.data_sheet_id == "000001" else data.data_sheet_id
@@ -204,6 +209,8 @@ async def update_spreadsheet(
     conn=Depends(get_db),
 ):
     """更新在线表格"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯表已下线，不能修改在线表格")
     updates = {}
     if data.name is not None:
         updates["name"] = data.name
@@ -254,6 +261,8 @@ async def delete_spreadsheet(
     conn=Depends(get_db),
 ):
     """删除在线表格"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯表已下线，不能删除在线表格配置")
     async with conn.cursor() as cur:
         await cur.execute("DELETE FROM _config_spreadsheets WHERE id = %s", (spreadsheet_id,))
         if cur.rowcount == 0:

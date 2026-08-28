@@ -22,6 +22,7 @@ from services.fullchain_archive import REGISTRATION_ARCHIVE_RULE_VERSION
 from services.parsers import get_parser
 from services.schema_compat import get_database_column_map, quote_identifier
 from services.unverifiable_review import FINAL_UNVERIFIABLE, mark_flow_archived, supports_unverifiable_review
+from services.local_source import local_data_source_enabled
 
 
 _tasks: set[asyncio.Task] = set()
@@ -946,6 +947,110 @@ async def _commit_platform_archive(
         raise error from exc
 
 
+async def _run_local_archive_export(conn, export_id: int) -> None:
+    """本地数据源模式下完成导出后的归档，不访问腾讯或外部表格。"""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT parser_type FROM _fullchain_archive_exports WHERE id=%s",
+            (export_id,),
+        )
+        export_row = await cur.fetchone()
+        if not export_row:
+            return
+        parser_type = str(export_row[0] or "全链条")
+        parser = get_parser(parser_type)
+        await cur.execute("""
+            UPDATE _fullchain_archive_exports
+            SET status='running',phase='archiving',
+                started_at=COALESCE(started_at,UTC_TIMESTAMP())
+            WHERE id=%s AND status IN ('queued','waiting_lock')
+        """, (export_id,))
+        await cur.execute("""
+            SELECT item.source_id,item.row_key,item.expected_revision,item.expected_row_hash,
+                   COALESCE(source.values_json,item.source_values_json),source.source_kind,
+                   source.source_ref
+            FROM _fullchain_archive_export_items item
+            LEFT JOIN _online_source_rows source ON source.id=item.source_id
+            WHERE item.export_id=%s AND item.status <> 'success'
+            ORDER BY item.source_id
+        """, (export_id,))
+        rows = await cur.fetchall()
+    for row in rows:
+        source_id = int(row[0])
+        try:
+            try:
+                values = json.loads(row[4] or "{}") if isinstance(row[4], str) else (row[4] or {})
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError("platform_archive_failed") from exc
+            if not values:
+                raise RuntimeError("platform_archive_failed")
+            # Lock and validate the source in the same transaction as archive
+            # insertion/deletion.  Otherwise an edit can land between the
+            # optimistic check and the archive commit.
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT revision,row_hash,archived_at FROM _online_source_rows "
+                        "WHERE id=%s AND parser_type=%s FOR UPDATE",
+                        (source_id, parser_type),
+                    )
+                    source = await cur.fetchone()
+                    if (
+                        not source
+                        or source[2] is not None
+                        or int(source[0]) != int(row[2])
+                        or str(source[1] or "") != str(row[3] or "")
+                    ):
+                        raise RuntimeError("source_row_changed")
+                    await _stage_platform_archive(
+                        conn, parser, export_id, str(row[1]), values
+                    )
+                    await cur.execute(
+                        "UPDATE _online_source_rows SET archived_at=UTC_TIMESTAMP() WHERE id=%s",
+                        (source_id,),
+                    )
+                    await cur.execute(
+                        "UPDATE _local_source_records SET status='archived',archived_at=UTC_TIMESTAMP(), "
+                        "updated_at=UTC_TIMESTAMP() WHERE source_kind=%s AND source_ref=%s",
+                        (str(row[5] or "local_table"), str(row[6] or "")),
+                    )
+                    from services.online_source import rebuild_projection
+                    await rebuild_projection(cur, parser_type, reconcile_graph=False)
+                    if supports_unverifiable_review(parser_type):
+                        await mark_flow_archived(cur, parser_type, str(row[1]), export_id)
+                    await _mark_item(cur, export_id, source_id, "success")
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        except Exception as exc:
+            code = _safe_error_code(exc, "local_archive_failed")
+            async with conn.cursor() as cur:
+                await _mark_item(cur, export_id, source_id, "conflict", code)
+
+    async with conn.cursor() as cur:
+        await cur.execute("""
+            SELECT SUM(status='success'),SUM(status='conflict'),SUM(status='error')
+            FROM _fullchain_archive_export_items WHERE export_id=%s
+        """, (export_id,))
+        counts = await cur.fetchone()
+        success = int((counts[0] if counts else 0) or 0)
+        conflicts = int((counts[1] if counts else 0) or 0)
+        errors = int((counts[2] if counts else 0) or 0)
+        status = "completed" if conflicts == 0 and errors == 0 else "partial"
+        await cur.execute("""
+            UPDATE _fullchain_archive_exports SET status=%s,phase='finished',
+                success_count=%s,conflict_count=%s,error_count=%s,
+                error_message=%s,finished_at=UTC_TIMESTAMP()
+            WHERE id=%s
+        """, (
+            status, success, conflicts, errors,
+            "部分本地任务未能安全归档，请按冲突明细重新核对" if status != "completed" else "",
+            export_id,
+        ))
+
+
 async def run_fullchain_archive_export(export_id: int) -> None:
     # 先处理腾讯已确认删除的条目；该路径不获取 OAuth、不读取腾讯，也不调用
     # 删除接口。之后普通执行器只会看到尚未删除的条目。
@@ -953,6 +1058,9 @@ async def run_fullchain_archive_export(export_id: int) -> None:
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
+        if local_data_source_enabled():
+            await _run_local_archive_export(conn, export_id)
+            return
         async with conn.cursor() as cur:
             await cur.execute("SELECT parser_type FROM _fullchain_archive_exports WHERE id=%s", (export_id,))
             export_row = await cur.fetchone()

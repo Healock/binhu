@@ -111,6 +111,7 @@ export default function DataQuery() {
     Record<string, QuerySheetFilterCriteria>
   >({})
   const [pendingCount, setPendingCount] = useState(0)
+  const [dataSourceMode, setDataSourceMode] = useState<'local' | 'tencent'>('local')
   const [addOpen, setAddOpen] = useState(false)
   const [addValues, setAddValues] = useState<Record<string, string>>({})
   const [adding, setAdding] = useState(false)
@@ -209,6 +210,7 @@ export default function DataQuery() {
       setCanAdd(Boolean(result.can_add))
       setRequiredFields(result.required_fields || [])
       setPendingCount(Number(result.pending_count || 0))
+      setDataSourceMode(result.data_source_mode === 'tencent' ? 'tencent' : 'local')
       dataVersionRef.current = String(result.data_version || '')
       setRefreshAvailable(false)
       setMobilePage(current => Math.min(
@@ -229,6 +231,7 @@ export default function DataQuery() {
       setDependentOptions(undefined)
       setRequiredFields([])
       setPendingCount(0)
+      setDataSourceMode('local')
       setScopeMessage('')
       setRowManageMessage('')
       setSelectedSheetRow(null)
@@ -366,7 +369,7 @@ export default function DataQuery() {
       for (const change of changes) {
         const sourceId = Number(change.row.__source_id)
         const initialRevision = Number(change.row.__revision)
-        if (!sourceId || !initialRevision) throw new Error('缺少腾讯来源行版本')
+        if (!sourceId || !initialRevision) throw new Error('缺少本地任务版本')
         const expectedRevision = revisions.get(sourceId) || initialRevision
         const result = await updateQuerySourceCell(selectedType, sourceId, {
           column: change.column,
@@ -391,8 +394,8 @@ export default function DataQuery() {
         completed += 1
       }
       messageApi.success(changes.length > 1
-        ? `已保存 ${changes.length} 个单元格，平台数据已更新，腾讯表格将在后台同步`
-        : '已保存，平台数据已更新，腾讯表格将在后台同步')
+        ? `已保存 ${changes.length} 个单元格${dataSourceMode === 'local' ? '到本地任务池' : '，平台数据已同步并写回腾讯表格'}`
+        : (dataSourceMode === 'local' ? '已保存到本地任务池' : '已保存，平台数据已同步并写回腾讯表格'))
       if (newlyPendingSourceIds.size > 0) {
         setPendingCount(current => current + newlyPendingSourceIds.size)
       }
@@ -402,7 +405,7 @@ export default function DataQuery() {
       await fetchData()
       throw requestError
     }
-  }, [fetchData, messageApi, selectedType])
+  }, [dataSourceMode, fetchData, messageApi, selectedType])
 
   const openAdd = () => {
     setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
@@ -474,7 +477,7 @@ export default function DataQuery() {
           },
         ),
       )
-      messageApi.success('修改已保存，平台数据已更新，腾讯表格将在后台同步')
+      messageApi.success(dataSourceMode === 'local' ? '修改已保存到本地任务池' : '修改已保存，平台数据已同步并写回腾讯表格')
       setDrawerOpen(false)
       await fetchData()
     } catch (requestError) {
@@ -537,10 +540,12 @@ export default function DataQuery() {
       {messageContext}
       <PageHeader
         title="在线数据查询"
-        description="当前数据可按岗位和社区权限安全回写腾讯表格；归档数据保持只读"
+        description={dataSourceMode === 'local'
+          ? '当前数据由本地任务池提供，按岗位和社区权限安全编辑；归档数据保持只读'
+          : '当前数据可按岗位和社区权限安全回写腾讯表格；归档数据保持只读'}
         actions={(
           <Space wrap>
-            {pendingCount > 0 && <Tag color="gold">{pendingCount} 项待同步</Tag>}
+            {dataSourceMode === 'tencent' && pendingCount > 0 && <Tag color="gold">{pendingCount} 项待同步</Tag>}
             <Tag color="blue">共 {total} 条</Tag>
           </Space>
         )}
@@ -608,7 +613,7 @@ export default function DataQuery() {
           description="你正在编辑或有未保存草稿，系统暂不自动刷新。保存或清空后会自动载入最新数据。"
         />
       )}
-      {source === 'online' && sourceReady && pendingCount > 0 && (
+      {source === 'online' && dataSourceMode === 'tencent' && sourceReady && pendingCount > 0 && (
         <Alert
           type="warning"
           showIcon
@@ -616,7 +621,7 @@ export default function DataQuery() {
           description="其他平台用户会直接看到最新内容；下一次正常同步后，归档和日报也会更新。"
         />
       )}
-      {source === 'online' && sourceReady && !writebackEnabled && (
+      {source === 'online' && dataSourceMode === 'tencent' && sourceReady && !writebackEnabled && (
         <Alert type="warning" showIcon message="超级管理员已暂停在线回写，当前页面只读" />
       )}
 

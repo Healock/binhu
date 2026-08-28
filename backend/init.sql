@@ -345,8 +345,32 @@ CREATE TABLE IF NOT EXISTS _online_source_rows (
     cell_meta_json JSON NOT NULL,
     revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
     refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    source_kind VARCHAR(40) NOT NULL DEFAULT 'tencent_legacy',
+    source_ref VARCHAR(190) NOT NULL DEFAULT '',
+    archived_at DATETIME DEFAULT NULL,
     UNIQUE KEY uk_online_source_position (spreadsheet_id, sheet_id, physical_row),
-    INDEX idx_online_source_business (parser_type, row_key, spreadsheet_id)
+    INDEX idx_online_source_business (parser_type, row_key, spreadsheet_id),
+    INDEX idx_local_source_kind (source_kind, parser_type, row_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _local_source_records (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    parser_type VARCHAR(50) NOT NULL,
+    local_task_id BIGINT DEFAULT NULL,
+    business_key CHAR(32) NOT NULL,
+    source_kind VARCHAR(40) NOT NULL,
+    source_ref VARCHAR(190) NOT NULL,
+    values_json JSON NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    archived_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_local_source_ref (source_kind, source_ref),
+    INDEX idx_local_source_business (parser_type, business_key),
+    INDEX idx_local_source_status (status, parser_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _online_source_projection (

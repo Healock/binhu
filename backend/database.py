@@ -38,6 +38,7 @@ from services.unverifiable_review import ensure_unverifiable_review_schema
 from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
+from services.local_source import ensure_local_source_schema, run_local_source_migration
 
 # 数据库名称映射
 DB_NAMES = {
@@ -2723,6 +2724,9 @@ class DatabaseManager:
                 """)
                 await ensure_permission_schema(cur)
                 await ensure_online_editor_schema(cur)
+                await ensure_local_source_schema(cur)
+                if settings.LOCAL_DATA_SOURCE_ENABLED:
+                    await run_local_source_migration(conn)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
                 await ensure_qmf_registration_schema(cur)

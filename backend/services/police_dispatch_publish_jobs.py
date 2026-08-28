@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from database import db_manager
+from services.local_source import local_data_source_enabled
 
 
 _background_tasks: set[asyncio.Task] = set()
@@ -93,6 +94,75 @@ async def recover_interrupted_police_publish_runs() -> int:
                 "WHERE status IN ('pending','running') ORDER BY id"
             )
             runs = [(int(row[0]), int(row[1])) for row in await cur.fetchall()]
+            if local_data_source_enabled():
+                # Local publishing is transactional: there is no external
+                # request whose outcome can be uncertain.  Any item left in
+                # the in-flight states after a restart can therefore be
+                # safely retried, while already committed task states remain
+                # authoritative.
+                for run_id, batch_id in runs:
+                    await cur.execute("""
+                        UPDATE _police_dispatch_publish_run_items AS item
+                        JOIN _police_dispatch_tasks AS task ON task.id=item.task_id
+                        SET item.status=CASE task.publish_status
+                                WHEN 'success' THEN 'success'
+                                WHEN 'conflict' THEN 'conflict'
+                                WHEN 'retryable' THEN 'retryable'
+                                ELSE 'retryable' END,
+                            item.error_code=CASE
+                                WHEN task.publish_status='success' THEN ''
+                                WHEN task.publish_status='conflict' THEN 'local_content_conflict'
+                                ELSE 'service_restarted_local' END
+                        WHERE item.run_id=%s
+                    """, (run_id,))
+                    await cur.execute("""
+                        UPDATE _police_dispatch_tasks AS task
+                        JOIN _police_dispatch_publish_run_items AS item
+                          ON item.task_id=task.id AND item.run_id=%s
+                        SET task.publish_status='retryable',task.task_status='pending_publish',
+                            task.publish_error='服务重启，未完成的本地发布任务可安全重试',
+                            task.version=task.version+1
+                        WHERE item.status='retryable' AND task.publish_status='publishing'
+                    """, (run_id,))
+                    await cur.execute("""
+                        UPDATE _police_dispatch_publish_runs AS run SET
+                            status='failed',phase='finished',
+                            processed_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                                             WHERE run_id=run.id AND status<>'queued'),
+                            success_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                                           WHERE run_id=run.id AND status='success'),
+                            conflict_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                                            WHERE run_id=run.id AND status='conflict'),
+                            reconciliation_count=0,
+                            retryable_count=(SELECT COUNT(*) FROM _police_dispatch_publish_run_items
+                                             WHERE run_id=run.id AND status='retryable'),
+                            error_code='service_restarted_local',
+                            error_message='服务重启，未完成的本地发布任务可安全重试',
+                            finished_at=UTC_TIMESTAMP()
+                        WHERE run.id=%s
+                    """, (run_id,))
+                    await cur.execute("""
+                        UPDATE _police_dispatch_batches AS batch SET
+                            status=CASE
+                                WHEN EXISTS (
+                                    SELECT 1 FROM _police_dispatch_tasks task
+                                    WHERE task.batch_id=batch.id AND task.task_status='pending_review'
+                                ) THEN 'reviewing'
+                                WHEN EXISTS (
+                                    SELECT 1 FROM _police_dispatch_tasks task
+                                    WHERE task.batch_id=batch.id AND task.publish_status='conflict'
+                                ) THEN 'reconciling'
+                                WHEN EXISTS (
+                                    SELECT 1 FROM _police_dispatch_tasks task
+                                    WHERE task.batch_id=batch.id
+                                      AND task.publish_status IN ('pending','publishing','retryable')
+                                ) THEN 'ready_to_publish'
+                                ELSE 'completed' END,
+                            last_error='服务重启，未完成的本地发布任务可安全重试',
+                            completed_at=NULL
+                        WHERE batch.id=%s
+                    """, (batch_id,))
+                return len(runs)
             for run_id, batch_id in runs:
                 await cur.execute("""
                     UPDATE _police_dispatch_publish_run_items AS item

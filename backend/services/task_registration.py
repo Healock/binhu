@@ -49,8 +49,8 @@ REVIEW_REASON_LABELS = {
     "source_missing": "任务来源已删除",
     "source_ambiguous": "任务来源不唯一",
     "lookup_failed": "居住证平台查询失败",
-    "writeback_pending": "已确认，等待同步腾讯表格",
-    "confirmation_enqueue_failed": "自动确认未能进入写回队列，请重新复核",
+    "writeback_pending": "已确认，等待本地任务保存完成",
+    "confirmation_enqueue_failed": "自动确认未能保存到本地任务，请重新复核",
 }
 
 
@@ -772,6 +772,96 @@ async def enqueue_automatic_registration_confirmation(
     user_id: int = 0,
 ) -> int:
     """Queue the final 已登记 writeback without exposing a privileged edit API."""
+    from services.local_source import local_data_source_enabled, local_sheet_id
+    if local_data_source_enabled():
+        from services.online_local_writeback import apply_local_system_changes
+        from services.online_source import json_value
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT source.id, source.revision, source.values_json, source.row_hash,
+                       source.physical_row, source.row_key,
+                       projection.identity_hmac, projection.community
+                FROM _online_source_rows AS source
+                JOIN _online_source_projection AS projection
+                  ON projection.parser_type=source.parser_type
+                 AND projection.row_key=source.row_key
+                WHERE source.parser_type=%s AND source.row_key=%s
+                  AND source.spreadsheet_id=0
+                  AND source.archived_at IS NULL
+                FOR UPDATE
+                """,
+                (parser_type, row_key),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise ValueError("任务来源不唯一或已不存在")
+            source = {
+                "id": int(row[0]),
+                "revision": int(row[1]),
+                "values": json_value(row[2], {}),
+                "row_hash": str(row[3] or ""),
+                "physical_row": int(row[4]),
+                "row_key": str(row[5]),
+                "spreadsheet_id": 0,
+                "sheet_id": local_sheet_id(parser_type),
+                "spreadsheet": {"parser_type": parser_type},
+            }
+            await cur.execute(
+                "SELECT source_id,source_revision,source_row_hash,property_id,"
+                "property_version,identity_hmac,task_community,status "
+                "FROM _task_registration_links WHERE parser_type=%s AND row_key=%s FOR UPDATE",
+                (parser_type, row_key),
+            )
+            link = await cur.fetchone()
+            if not link or str(link[7] or "") != "confirmation_pending":
+                raise ValueError("登记确认状态已变化")
+            if int(link[0] or 0) != source["id"] or str(link[5] or "") != str(row[6] or ""):
+                raise ValueError("任务来源或核查对象已变化")
+            if link[1] is not None and int(link[1]) != source["revision"]:
+                raise ValueError("任务来源版本已变化")
+            if str(link[2] or "") and str(link[2] or "") != source["row_hash"]:
+                raise ValueError("任务来源内容已变化")
+            if str(link[6] or "").strip() != str(row[7] or "").strip():
+                raise ValueError("任务所属社区已变化")
+            registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+            await cur.execute(
+                f"SELECT status,current_version FROM `{registry}`.registry_properties WHERE id=%s",
+                (int(link[3]),),
+            )
+            property_row = await cur.fetchone()
+            if not property_row or str(property_row[0] or "") != "active" or int(property_row[1] or 0) != int(link[4] or 0):
+                raise ValueError("关联房屋已变化")
+            workflow = TASK_WORKFLOWS.get(parser_type)
+            values = {str(key): str(value or "") for key, value in source["values"].items()}
+            if not workflow or values.get(workflow.result_field, "").strip() != "待登记":
+                raise ValueError("任务结果已变化，不能自动确认")
+            audit_id, revision, _, _ = await apply_local_system_changes(
+                cur,
+                source=source,
+                changes={workflow.result_field: "已登记"},
+                user={"id": user_id, "username": "system"},
+                action="auto_registration",
+            )
+            await cur.execute(
+                "UPDATE _task_registration_links SET status='confirmed',reason_code='',"
+                "confirmed_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() "
+                "WHERE parser_type=%s AND row_key=%s AND source_id=%s",
+                (parser_type, row_key, source["id"]),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("登记关联已变化")
+            await record_registration_event(
+                cur,
+                parser_type=parser_type,
+                row_key=row_key,
+                source_id=source["id"],
+                property_id=int(link[3]),
+                event_type="registration_confirmed",
+            )
+            return audit_id
+
     from services.online_local_writeback import (
         enqueue_local_changes,
         load_local_changes,
