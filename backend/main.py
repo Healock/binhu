@@ -81,6 +81,7 @@ from services.qmf_status_scan import (
 )
 from services.external_acquisition_jobs import recover_interrupted_jobs, stop_external_acquisition_tasks
 from routers.external_acquisition import router as external_acquisition_router
+from routers.venue_codes import router as venue_public_router, admin_router as venue_admin_router
 from services.presence import run_presence_cleanup_scheduler
 from services.residence_status_scan import run_residence_lookup_scheduler
 from services.unverifiable_review import (
@@ -88,6 +89,7 @@ from services.unverifiable_review import (
     run_unverifiable_review_scheduler,
 )
 from routers.presence import router as presence_router
+from services.venue_cleanup import run_venue_cleanup_scheduler
 
 
 @asynccontextmanager
@@ -147,6 +149,7 @@ async def lifespan(app: FastAPI):
     presence_cleanup_task = asyncio.create_task(run_presence_cleanup_scheduler())
     residence_lookup_task = asyncio.create_task(run_residence_lookup_scheduler())
     unverifiable_review_task = asyncio.create_task(run_unverifiable_review_scheduler())
+    venue_cleanup_task = asyncio.create_task(run_venue_cleanup_scheduler())
     try:
         yield
     finally:
@@ -160,6 +163,7 @@ async def lifespan(app: FastAPI):
         presence_cleanup_task.cancel()
         residence_lookup_task.cancel()
         unverifiable_review_task.cancel()
+        venue_cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
@@ -180,6 +184,9 @@ async def lifespan(app: FastAPI):
             await residence_lookup_task
         with suppress(asyncio.CancelledError):
             await unverifiable_review_task
+            await unverifiable_review_task
+        with suppress(asyncio.CancelledError):
+            await venue_cleanup_task
         await stop_sync_tasks()
         await stop_backup_tasks()
         await stop_photo_sheet_tasks()
@@ -252,6 +259,8 @@ app.include_router(residence_platform_router, dependencies=auth_dep)
 app.include_router(task_graph_router, dependencies=auth_dep)
 app.include_router(qmf_source_router, dependencies=auth_dep)
 app.include_router(external_acquisition_router, dependencies=auth_dep)
+app.include_router(venue_admin_router, dependencies=auth_dep)
+app.include_router(venue_public_router)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
 app.include_router(users_router, dependencies=auth_dep)

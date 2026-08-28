@@ -314,6 +314,7 @@ export type PermissionCode =
   | 'workflow.ticket.create' | 'workflow.ticket.view'
   | 'workflow.ticket.handle' | 'workflow.ticket.manage'
   | 'workflow.config.manage' | 'workflow.attachment.view'
+  | 'venue.view' | 'venue.manage' | 'venue.export'
 export type TableDisplayMode = 'table' | 'card'
 export type TaskDisplayMode = 'table' | 'card'
 export type ReportColumnMode = 'two' | 'three'
@@ -375,6 +376,7 @@ export type MobileNavigationItemId =
   | 'permission_groups'
   | 'settings'
   | 'operations'
+  | 'venue'
 
 export interface MobileDockGroupConfig {
   id: MobileNavigationGroupId

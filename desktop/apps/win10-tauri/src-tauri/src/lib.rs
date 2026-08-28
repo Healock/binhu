@@ -17,6 +17,144 @@ const UPDATE_URL: &str = "https://47.100.44.36/updates/win10-x64/";
 const POLICY_URL: &str = "https://47.100.44.36/updates/win10-x64/policy.stable.json";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
+#[cfg(windows)]
+pub fn ensure_windows_shortcuts() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        IShellLinkW, SHGetFolderPathW, ShellLink, CSIDL_DESKTOPDIRECTORY, CSIDL_PROGRAMS,
+    };
+
+    fn wide(value: &std::path::Path) -> Vec<u16> {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    fn write_shortcut(
+        shortcut: &std::path::Path,
+        target: &std::path::Path,
+        working_directory: &std::path::Path,
+        icon: &std::path::Path,
+    ) -> bool {
+        let shortcut_w = wide(shortcut);
+        let target_w = wide(target);
+        let working_w = wide(working_directory);
+        let icon_w = wide(icon);
+        let product_w: Vec<u16> = "滨湖智慧平台"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let shell_link: IShellLinkW =
+                match CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                };
+            if shell_link.SetPath(PCWSTR(target_w.as_ptr())).is_err()
+                || shell_link
+                    .SetWorkingDirectory(PCWSTR(working_w.as_ptr()))
+                    .is_err()
+                || shell_link
+                    .SetDescription(PCWSTR(product_w.as_ptr()))
+                    .is_err()
+                || shell_link
+                    .SetIconLocation(PCWSTR(icon_w.as_ptr()), 0)
+                    .is_err()
+            {
+                return false;
+            }
+            let persist_file: IPersistFile = match shell_link.cast() {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+            persist_file.Save(PCWSTR(shortcut_w.as_ptr()), true).is_ok()
+        }
+    }
+
+    fn shell_folder(csidl: u32) -> Option<std::path::PathBuf> {
+        let mut path = [0u16; 260];
+        unsafe { SHGetFolderPathW(None, csidl as i32, None, 0, &mut path) }.ok()?;
+        let length = path.iter().position(|value| *value == 0)?;
+        Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &path[..length],
+        )))
+    }
+
+    let Some(desktop) = shell_folder(CSIDL_DESKTOPDIRECTORY) else {
+        return;
+    };
+    let Some(start_menu) = shell_folder(CSIDL_PROGRAMS) else {
+        return;
+    };
+    let Ok(target) = std::env::current_exe() else {
+        return;
+    };
+    let Some(working_directory) = target.parent() else {
+        return;
+    };
+    let icon = working_directory.join("BinhuWin10.ico");
+    let icon = if icon.is_file() { icon } else { target.clone() };
+    if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+        return;
+    }
+    let desktop_written = write_shortcut(
+        &desktop.join("滨湖智慧平台.lnk"),
+        &target,
+        working_directory,
+        &icon,
+    );
+    let start_menu_written = write_shortcut(
+        &start_menu.join("滨湖智慧平台.lnk"),
+        &target,
+        working_directory,
+        &icon,
+    );
+    if desktop_written {
+        let _ = fs::remove_file(desktop.join("BinhuDesktop.lnk"));
+    }
+    if start_menu_written {
+        let _ = fs::remove_file(start_menu.join("BinhuDesktop.lnk"));
+    }
+    unsafe { CoUninitialize() };
+}
+
+#[cfg(not(windows))]
+pub fn ensure_windows_shortcuts() {}
+
+#[cfg(windows)]
+pub fn remove_windows_shortcuts() {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::UI::Shell::{SHGetFolderPathW, CSIDL_DESKTOPDIRECTORY, CSIDL_PROGRAMS};
+
+    let shell_folder = |csidl: u32| {
+        let mut path = [0u16; 260];
+        unsafe { SHGetFolderPathW(None, csidl as i32, None, 0, &mut path) }.ok()?;
+        let length = path.iter().position(|value| *value == 0)?;
+        Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &path[..length],
+        )))
+    };
+    let locations = [
+        shell_folder(CSIDL_DESKTOPDIRECTORY),
+        shell_folder(CSIDL_PROGRAMS),
+    ];
+    for location in locations {
+        let Some(location) = location else { continue };
+        let _ = std::fs::remove_file(location.join("滨湖智慧平台.lnk"));
+        let _ = std::fs::remove_file(location.join("BinhuDesktop.lnk"));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn remove_windows_shortcuts() {}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopUpdateState {

@@ -16,6 +16,7 @@ import {
   mobileTaskSourceState,
   mobileTaskSurfaceTone,
   mobileTaskCurrentAddressLabel,
+  mobileTaskResultOptions,
   mobileTaskUsesRegistrationClosure,
   sortMobileTaskBusinesses,
 } from '../src/utils/mobileTasks.ts'
@@ -133,6 +134,46 @@ test('批量保存只提交实际变化且不自动补造字段', () => {
     { 核查人: '甲', 现住址: '长板一号', 核查结果: '', 研判: '不可编辑' },
     ['核查人', '现住址', '核查结果'],
   ), { 现住址: '长板一号' })
+})
+
+test('登记闭环的地址标题和核查结果选项使用统一口径', () => {
+  assert.equal(mobileTaskCurrentAddressLabel('全链条', ''), '核查补充信息')
+  assert.equal(mobileTaskCurrentAddressLabel('全链条', '待登记'), '现住址')
+  assert.equal(mobileTaskCurrentAddressLabel('疑似未注销模型三', '待登记'), '现住址')
+
+  const options = [
+    { id: 'legacy-transfer', text: '移交' },
+    { id: 'internal-transfer', text: '移交（所内）' },
+    { id: 'external-transfer', text: '移交（所外）' },
+    { id: 'registered', text: '已登记' },
+    { id: 'pending-registration', text: '待登记' },
+  ]
+  assert.deepEqual(
+    mobileTaskResultOptions(options, true).map(option => option.text),
+    ['移交（所内）', '移交（所外）', '待登记'],
+  )
+})
+
+test('行内待登记直接搜索任务社区房屋并原子保存', () => {
+  const source = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /searchRegistrationProperties\(normalized, task\.community\)/)
+  assert.match(source, /\[resultField\]: '待登记'[\s\S]*?现住址: address/)
+  assert.match(source, /registration_property_id: registrationProperty\.id/)
+  assert.match(source, /registration_property_version: registrationProperty\.version/)
+  assert.match(source, /function registrationPropertyLabel\([\s\S]*?return registrationPropertyAddress\(property\)/)
+  assert.doesNotMatch(source, /return `\$\{property\.community_name \|\| ''\} \$\{registrationPropertyAddress\(property\)\}`\.trim\(\)/)
+  assert.match(source, /选定房屋后，待登记结果和现住址会一次保存/)
+  assert.doesNotMatch(source, /待登记需进入详情/)
+
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /label: `\$\{property\.natural_address \|\| ''\}\$\{property\.building \|\| ''\}\$\{property\.room \|\| ''\}`\.trim\(\)/)
+  assert.doesNotMatch(detailSource, /label: `\$\{property\.community_name \|\| ''\} /)
 })
 
 test('任务详情保存合并响应时保留下拉结果并把选项 ID 还原为文本', () => {
@@ -458,7 +499,7 @@ test('待登记不会被前端误判为已完成', () => {
   }
 })
 
-test('详情页按待登记状态动态显示拟登记住址或核查补充信息', () => {
+test('详情页按待登记状态动态显示现住址或核查补充信息', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
@@ -469,7 +510,7 @@ test('详情页按待登记状态动态显示拟登记住址或核查补充信�
 })
 
 test('六类闭环业务统一使用动态住址标题', () => {
-  assert.equal(mobileTaskCurrentAddressLabel('全链条', '待登记'), '拟登记住址')
+  assert.equal(mobileTaskCurrentAddressLabel('全链条', '待登记'), '现住址')
   assert.equal(mobileTaskCurrentAddressLabel('全链条', '无法核实'), '核查补充信息')
   assert.equal(mobileTaskCurrentAddressLabel('疑似未注销模型三', '待登记'), '现住址')
 })
@@ -482,10 +523,13 @@ test('登记房屋闭环只用于六类指令核查业务', () => {
   assert.equal(mobileTaskUsesRegistrationClosure('未知业务'), false)
 })
 
-test('表格行内编辑不允许脱离房屋选择器保存待登记', () => {
+test('表格行内编辑允许待登记但必须与房屋一次保存', () => {
   const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
-  assert.match(tableSource, /\['已登记', '待登记'\]\.includes\(String\(option\.text\)\)/)
-  assert.match(tableSource, /待登记需进入详情选择拟登记房屋/)
+  assert.match(tableSource, /mobileTaskResultOptions\(metadata\.options, registrationResultField\)/)
+  assert.match(tableSource, /searchRegistrationProperties\(normalized, task\.community\)/)
+  assert.match(tableSource, /registration_property_id: registrationProperty\.id/)
+  assert.match(tableSource, /registration_property_version: registrationProperty\.version/)
+  assert.doesNotMatch(tableSource, /待登记需进入详情/)
 })
 
 test('任务列表和详情展示登记比对阶段与复核原因', () => {
@@ -507,7 +551,7 @@ test('任务列表和详情展示登记比对阶段与复核原因', () => {
   )
   assert.match(listSource, /RegistrationLinkStatus link=\{task\.registration_link\}/)
   assert.match(tableSource, /RegistrationLinkStatus link=\{task\.registration_link\}/)
-  assert.match(detailSource, /拟登记住址关联/)
+  assert.match(detailSource, /待登记房屋关联/)
   assert.match(detailSource, /两个独立扫描周期/)
   assert.match(statusSource, /登记待复核/)
   assert.match(statusSource, /已匹配一次/)
@@ -729,7 +773,8 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /claimMobileTask/)
   assert.match(tableSource, /该任务暂未分配核查人，是否领取任务？/)
   assert.match(tableSource, /okText: '领取并保存'/)
-  assert.match(tableSource, /await saveEditor\(task, item, changes, true\)/)
+  assert.match(tableSource, /const claim = await confirmClaim\(task, source\.values\)/)
+  assert.match(tableSource, /await saveEditor\(task, item, changes, claim\)/)
   assert.match(tableSource, /\[field\]: source\.values\[field\] \|\| ''/)
   assert.match(pageSource, /canClaimUnassigned=\{!analysisOnly && user\?\.member\?\.position === '组员'\}/)
   assert.match(clientSource, /source-rows\/\$\{sourceId\}\/claim/)

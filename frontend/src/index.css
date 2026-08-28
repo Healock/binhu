@@ -1797,6 +1797,17 @@ html.desktop-shell .ant-notification-topRight {
   padding: 2px 0;
 }
 
+.mobile-task-table-personnel--paired {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 18px;
+  row-gap: 8px;
+}
+
+.mobile-task-table-personnel--paired .mobile-task-table-personnel__row {
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 6px;
+}
+
 .mobile-task-table-personnel__row {
   display: grid;
   min-width: 0;
@@ -1981,6 +1992,13 @@ html.desktop-shell .ant-notification-topRight {
 .mobile-task-table-inline-guidance--active {
   color: var(--app-warning);
   font-weight: 700;
+}
+
+.mobile-task-table-inline-hint {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
 }
 
 .mobile-task-table-inline-readonly {

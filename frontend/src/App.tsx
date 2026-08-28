@@ -40,6 +40,7 @@ import PublicProfile from './pages/PublicProfile'
 import RoleDashboard from './pages/RoleDashboard'
 import RegistryManagement from './pages/RegistryManagement'
 import WatchPeopleManagement from './pages/WatchPeopleManagement'
+import VenueCodeManagement, { PublicVenuePage } from './pages/VenueCodeManagement'
 import WorkflowTickets from './pages/WorkflowTickets'
 import AnalysisWorkbench from './pages/AnalysisWorkbench'
 import WorkflowConfig from './pages/WorkflowConfig'
@@ -137,6 +138,7 @@ function App() {
           {/* 登录页不套 Layout */}
           <Route path="/login" element={<Login />} />
           <Route path="/offline" element={<OfflineMode />} />
+          <Route path="/venue/:token" element={<PublicVenuePage />} />
 
           {/* 其他页面需要登录 */}
           <Route element={<ProtectedRoute />}>
@@ -190,6 +192,9 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="police.address.manage" />}>
                 <Route path="/police-addresses" element={<PoliceAddressManagement />} />
+              </Route>
+              <Route element={<ProtectedRoute requirePermission="venue.view" />}>
+                <Route path="/venue-codes" element={<VenueCodeManagement />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="registry.property.view" />}>
                 <Route path="/registry" element={<RegistryManagement />} />
