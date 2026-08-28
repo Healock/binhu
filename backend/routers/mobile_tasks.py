@@ -1610,7 +1610,13 @@ def _task_record(
     normalized = {key: str(value or "") for key, value in values.items()}
     watch = watch or {}
     structured_stage = str((review_flow or {}).get("state") or "")
-    structured_active = structured_stage in UNVERIFIABLE_ACTIVE_STATES
+    # 正式结果已经完成后，旧的无法核实流程只作为历史记录保留，不能
+    # 再把任务标成“流程已暂停”。来源异常仍可通过独立的来源/同步标记
+    # 展示，不影响已完成状态的主口径。
+    structured_active = (
+        structured_stage in UNVERIFIABLE_ACTIVE_STATES
+        and task_state_value != "completed"
+    )
     return {
         "task_key": f"{parser_type}:{row_key}",
         "row_key": str(row_key),

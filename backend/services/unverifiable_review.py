@@ -629,6 +629,7 @@ async def reconcile_unverifiable_source_contexts(
         DEEP_PENDING,
         DEEP_EXTENSION,
         FINAL_UNVERIFIABLE,
+        SOURCE_EXCEPTION,
     ]
     parser_clause = ""
     if parser_type:
@@ -647,7 +648,7 @@ async def reconcile_unverifiable_source_contexts(
         LEFT JOIN _online_source_projection projection
           ON projection.parser_type=flow.parser_type
          AND projection.row_key=flow.row_key
-        WHERE flow.state IN (%s,%s,%s,%s,%s){parser_clause}
+        WHERE flow.state IN (%s,%s,%s,%s,%s,%s){parser_clause}
         ORDER BY flow.id
         FOR UPDATE
         """,
@@ -655,6 +656,49 @@ async def reconcile_unverifiable_source_contexts(
     )
     paused = 0
     for row in await cur.fetchall():
+        # 腾讯物理行被删除后，在线同步会保留带有平台本地修改的来源快照
+        # （physical_row < 0），这样滨湖平台仍可继续保存核查结果和推进
+        # 两级研判。只要当前投影仍然唯一且没有内容冲突，删除腾讯行不应
+        # 把平台内的流程强制暂停；后续写回队列会单独记录 source_missing。
+        source_missing_but_platform_snapshot = (
+            row[6] is None
+            and int(row[10] or 0) == 1
+            and not bool(row[11])
+        )
+        if source_missing_but_platform_snapshot:
+            if str(row[1]) == SOURCE_EXCEPTION:
+                # 之前已因来源删除而暂停的流程，恢复到暂停前最后一个
+                # 结构化阶段。历史事件是平台保存的安全快照，不读取或
+                # 记录腾讯原始内容，因此可以幂等地恢复本地流程。
+                await cur.execute(
+                    "SELECT stage FROM _unverifiable_review_events "
+                    "WHERE flow_id=%s AND action<>'automatic_transition_paused' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (int(row[0]),),
+                )
+                previous = await cur.fetchone()
+                restored_state = str(previous[0] or "") if previous else INITIAL_PENDING
+                if restored_state not in {
+                    INITIAL_PENDING, INITIAL_EXTENSION, DEEP_PENDING,
+                    DEEP_EXTENSION, FINAL_UNVERIFIABLE,
+                }:
+                    restored_state = INITIAL_PENDING
+                await cur.execute(
+                    "UPDATE _unverifiable_review_flows "
+                    "SET state=%s,flow_version=flow_version+1,safe_reason_code='',"
+                    "last_action_at=UTC_TIMESTAMP() WHERE id=%s AND state=%s",
+                    (restored_state, int(row[0]), SOURCE_EXCEPTION),
+                )
+                if cur.rowcount == 1:
+                    await _event(
+                        cur,
+                        flow_id=int(row[0]),
+                        stage=restored_state,
+                        action="automatic_transition_resumed",
+                        automatic=True,
+                        safe_reason_code="source_missing_ignored",
+                    )
+            continue
         source_valid = (
             row[6] is not None
             and int(row[2] or 0) == int(row[6] or 0)
@@ -664,7 +708,7 @@ async def reconcile_unverifiable_source_contexts(
             and int(row[10] or 0) == 1
             and not bool(row[11])
         )
-        if source_valid:
+        if source_valid or source_missing_but_platform_snapshot:
             continue
         await cur.execute(
             """
