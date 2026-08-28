@@ -78,7 +78,9 @@ const PRIORITY_OPTIONS = [
 ] satisfies Array<{ label: string; value: MobileTaskPriority }>
 
 const SORT_OPTIONS = [
-  { label: '默认优先级', value: 'priority' },
+  { label: '默认（状态 + 地址）', value: 'priority' },
+  { label: '地址升序', value: 'address_asc' },
+  { label: '身份证号升序', value: 'identity_asc' },
   { label: '最近更新', value: 'updated_desc' },
   { label: '最早更新', value: 'updated_asc' },
 ] satisfies Array<{ label: string; value: MobileTaskSort }>
@@ -931,7 +933,7 @@ export default function MobileTaskList({
               value={sort}
               options={SORT_OPTIONS}
               onChange={value => setSort(value as MobileTaskSort)}
-              placeholder="更新时间"
+              placeholder="排序方式"
             />
             <Select
               mode="multiple"
@@ -1072,6 +1074,8 @@ export default function MobileTaskList({
                 onSelect={() => undefined}
                 onOpen={openTask}
                 onCopy={(value, label) => void copyValue(value, label)}
+                sort={sort}
+                onSortChange={setSort}
                 onSaved={() => load(page, false, true)}
               />
             </div>

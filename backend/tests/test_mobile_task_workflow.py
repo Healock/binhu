@@ -19,12 +19,15 @@ from routers.mobile_tasks import (
     TaskSearch,
     TaskBatchUpdate,
     _address_order,
+    _analysis_order,
     _assignment_candidate,
     _analysis_stage_condition,
     _analysis_task_where,
     _balanced_assignment_plan,
     _bulk_assignment_result,
+    _identity_order,
     _multi_filter_condition,
+    _original_address_order,
     _priority_bucket,
     _review_stage_condition,
     _flow_context,
@@ -36,6 +39,7 @@ from routers.mobile_tasks import (
     _task_photo_fetched_rows,
     _task_photo_results,
     _task_filter_options,
+    _task_order,
     _validate_assignment,
     claim_mobile_task,
     is_flow_task_admin,
@@ -412,6 +416,10 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(request.communities, ["长板", EMPTY_FILTER_VALUE])
         self.assertEqual(request.sort, "updated_asc")
 
+    def test_task_search_accepts_address_and_identity_sorting(self):
+        self.assertEqual(TaskSearch(sort="address_asc").sort, "address_asc")
+        self.assertEqual(TaskSearch(sort="identity_asc").sort, "identity_asc")
+
     def test_multiselect_where_contains_only_requested_values_and_empty_bucket(self):
         where, params = _multi_filter_condition(
             "community", ["长板", EMPTY_FILTER_VALUE, "长板"]
@@ -446,6 +454,43 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertIn("地址", sql)
         self.assertIn("REGEXP_REPLACE", sql)
         self.assertIn("CASE WHEN", sql)
+
+    def test_identity_order_uses_business_identity_fields_and_empty_last(self):
+        sql = _identity_order("疑似返苏")
+        self.assertIn("身份证号码", sql)
+        self.assertIn("REGEXP_REPLACE", sql)
+        self.assertIn("CASE WHEN", sql)
+
+    def test_explicit_address_sort_matches_the_visible_original_address_column(self):
+        sql = _original_address_order("全链条")
+        self.assertIn("地址", sql)
+        self.assertNotIn("现住址", sql)
+        self.assertTrue(_task_order("全链条", "address_asc").endswith(
+            "projection.row_key"
+        ))
+
+    def test_identity_sort_uses_visible_address_as_stable_tiebreaker(self):
+        sql = _task_order("出租房屋核查", "identity_asc")
+        self.assertIn("身份证号", sql)
+        self.assertIn("房屋地址", sql)
+        self.assertNotIn("现住址", sql)
+
+    def test_analysis_field_sort_uses_each_business_contract(self):
+        address_sql = _analysis_order(AnalysisTaskSearch(
+            parser_types=["全链条", "疑似返苏"],
+            sort="address_asc",
+        ))
+        identity_sql = _analysis_order(AnalysisTaskSearch(
+            parser_types=["全链条", "疑似返苏"],
+            sort="identity_asc",
+        ))
+        self.assertIn("projection.parser_type='全链条'", address_sql)
+        self.assertNotIn("现住址", address_sql)
+        self.assertIn("地址", address_sql)
+        self.assertIn("高频抓拍小区", address_sql)
+        self.assertIn("身份证号", identity_sql)
+        self.assertIn("身份证号码", identity_sql)
+        self.assertTrue(identity_sql.endswith("projection.row_key"))
 
 
 class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):

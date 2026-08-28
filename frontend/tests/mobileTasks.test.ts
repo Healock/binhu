@@ -972,6 +972,34 @@ test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更�
   assert.equal(pageSource.includes("next.set('keyword'"), false)
 })
 
+test('流口任务支持按地址或身份证号对完整结果排序', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const clientSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /默认（状态 \+ 地址）/)
+  assert.match(pageSource, /地址升序[\s\S]*?address_asc/)
+  assert.match(pageSource, /身份证号升序[\s\S]*?identity_asc/)
+  assert.match(pageSource, /placeholder="排序方式"/)
+  assert.match(pageSource, /sort=\{sort\}/)
+  assert.match(pageSource, /onSortChange=\{setSort\}/)
+  assert.match(tableSource, /title: '身份证号码'[\s\S]*?sorter: true[\s\S]*?sort === 'identity_asc'/)
+  assert.match(tableSource, /title: '地址'[\s\S]*?sorter: true[\s\S]*?sort === 'address_asc'/)
+  assert.match(tableSource, /activeSorter\.columnKey === 'identity_number'[\s\S]*?onSortChange\('identity_asc'\)/)
+  assert.match(tableSource, /activeSorter\.columnKey === 'address'[\s\S]*?onSortChange\('address_asc'\)/)
+  assert.match(clientSource, /MobileTaskSort =[\s\S]*?'address_asc'[\s\S]*?'identity_asc'/)
+  assert.match(clientSource, /sort: params\.sort \|\| 'priority'/)
+})
+
 test('流口任务数量卡顺序固定为已研判优先、已完成沉底', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
