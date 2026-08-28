@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
+from config import settings
 from deps import get_current_user, require_permission, require_super_admin
 from schemas.sync import SyncStatusResponse, SyncTriggerResponse
 from services.permissions import ONLINE_SUMMARY_VIEW, SYNC_TRIGGER
@@ -34,6 +35,12 @@ async def trigger_sync(
     user: dict = Depends(require_admin),
 ):
     """由管理员或超级管理员触发全量同步。"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
+        return SyncTriggerResponse(
+            task_id=0,
+            status="disabled",
+            message="腾讯数据源已下线，当前业务数据由本地任务池提供",
+        )
     task_id, status, message = await create_sync_task(
         "manual",
         requested_by=user["id"],
@@ -111,6 +118,9 @@ async def sync_status(
 @router.get("/schedule")
 async def read_schedule(user: dict = Depends(require_super_admin)):
     """超级管理员读取定时同步配置。"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
+        return {"enabled": False, "interval_minutes": 0, "disabled": True,
+                "message": "腾讯数据源已下线"}
     return await get_schedule()
 
 
@@ -121,6 +131,8 @@ async def save_schedule(
     user: dict = Depends(require_super_admin),
 ):
     """超级管理员保存定时同步配置。"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯数据源已下线，不能配置同步")
     try:
         schedule = await update_schedule(
             payload.enabled,

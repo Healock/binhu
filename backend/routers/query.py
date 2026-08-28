@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
+from config import settings
 from deps import require_admin_account, require_permission, require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.data_scope import community_names_for_scopes
@@ -35,6 +36,13 @@ from services.online_source import (
     source_row_hash,
     stable_json,
     update_cached_source_row,
+)
+from services.local_source import (
+    local_data_source_enabled,
+    local_sheet_id,
+    local_row_hash,
+    local_source_migration_status,
+    local_source_migration_issues,
 )
 from services.online_local_writeback import (
     enqueue_local_changes,
@@ -436,6 +444,8 @@ def _append_grid_filters(
 
 
 async def _writeback_enabled(cur) -> bool:
+    if local_data_source_enabled():
+        return True
     await cur.execute(
         "SELECT config_value FROM _system_config "
         "WHERE config_key='online_writeback_enabled'"
@@ -525,7 +535,7 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
                spreadsheet.data_sheet_id, spreadsheet.header_row,
                spreadsheet.enabled
         FROM _online_source_rows AS source
-        JOIN _config_spreadsheets AS spreadsheet
+        LEFT JOIN _config_spreadsheets AS spreadsheet
           ON spreadsheet.id=source.spreadsheet_id
         WHERE source.id=%s AND source.parser_type=%s
         """,
@@ -534,7 +544,7 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
     row = await cur.fetchone()
     if not row:
         raise HTTPException(409, "来源行已经变化，请刷新后重试")
-    if not row[13]:
+    if int(row[1]) != 0 and not row[13]:
         raise HTTPException(409, "该来源表已经停用")
     return {
         "id": int(row[0]),
@@ -548,9 +558,9 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
         "revision": int(row[8]),
         "spreadsheet": {
             "id": int(row[1]),
-            "name": str(row[9]),
-            "file_id": str(row[10]),
-            "data_sheet_id": str(row[11]),
+            "name": str(row[9] or "本地业务数据"),
+            "file_id": str(row[10] or ""),
+            "data_sheet_id": str(row[11] or local_sheet_id(parser_type)),
             "header_row": int(row[12] or 1),
             "parser_type": parser_type,
         },
@@ -633,6 +643,297 @@ async def _update_writeback_audit(
     )
 
 
+async def _update_local_source_fields(
+    *,
+    parser_type: str,
+    source_id: int,
+    changes: dict[str, str],
+    expected_revision: int,
+    request: Request,
+    user: dict,
+    conn,
+    explicit_text_edit: bool = False,
+    allowed_columns: set[str] | None = None,
+    current_values_validator=None,
+    redact_audit_values: bool = False,
+    system_managed_columns: set[str] | None = None,
+    base_values: dict[str, str] | None = None,
+    registration_mode: bool = False,
+    audit_action: str = "local_update",
+    transaction_prepare=None,
+    transaction_callback=None,
+    record_unverifiable_save: bool = True,
+) -> dict:
+    """本地数据源的事务更新路径，不访问腾讯文档。"""
+    parser = get_parser(parser_type)
+    normalized_changes = {
+        str(column): str(value or "").strip()
+        for column, value in changes.items()
+    }
+    if not normalized_changes:
+        raise HTTPException(400, "没有需要保存的修改")
+    if len(normalized_changes) > 5:
+        raise HTTPException(400, "一次最多保存 5 个字段")
+    unknown = [column for column in normalized_changes if column not in parser.COLUMNS]
+    if unknown:
+        raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
+    if allowed_columns is not None and any(column not in allowed_columns for column in normalized_changes):
+        raise HTTPException(400, "提交包含当前入口不允许修改的字段")
+    if system_managed_columns is not None and (
+        allowed_columns != system_managed_columns
+        or set(normalized_changes) != system_managed_columns
+    ):
+        raise RuntimeError("system-managed edit must use an exact field whitelist")
+    ordered_columns = [column for column in parser.COLUMNS if column in normalized_changes]
+
+    async with conn.cursor() as cur:
+        source = await _load_source_row(cur, parser_type, source_id)
+        if source["spreadsheet_id"] != 0:
+            # 迁移窗口前已存在的来源行按其缓存物理位置惰性切换到本地表。
+            # 不读取或写入腾讯，只把本地业务表设为唯一来源。
+            await cur.execute(
+                f"SELECT id FROM `{parser.table_name}` WHERE id=%s LIMIT 1",
+                (source["physical_row"],),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(409, "该任务尚未迁移到本地数据源")
+            await cur.execute(
+                "UPDATE _online_source_rows SET spreadsheet_id=0, sheet_id=%s, "
+                "physical_row=%s, source_kind='local_table', source_ref=%s "
+                "WHERE id=%s",
+                (
+                    local_sheet_id(parser_type),
+                    source["physical_row"],
+                    f"{parser.table_name}:{source['physical_row']}",
+                    source_id,
+                ),
+            )
+            source = await _load_source_row(cur, parser_type, source_id)
+        if source["revision"] != expected_revision:
+            raise HTTPException(409, "该任务已被更新，请刷新后重试")
+        current_values = {
+            column: str(source["values"].get(column, "") or "")
+            for column in parser.COLUMNS
+        }
+        if transaction_prepare is not None:
+            prepared_changes = await transaction_prepare(
+                cur=cur,
+                source=source,
+                current_values=current_values,
+                changes=dict(normalized_changes),
+            )
+            if prepared_changes:
+                normalized_changes.update({
+                    str(column): str(value or "").strip()
+                    for column, value in prepared_changes.items()
+                })
+            unknown = [column for column in normalized_changes if column not in parser.COLUMNS]
+            if unknown:
+                raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
+        if current_values_validator is not None:
+            current_values_validator(current_values)
+        inspector_context = await inspector_option_context(cur, user)
+        metadata = await _managed_column_metadata(
+            cur,
+            parser,
+            source.get("cell_meta") or {},
+            spreadsheet_id=0,
+            sheet_id=local_sheet_id(parser_type),
+            inspector_context=inspector_context,
+        )
+        if source["revision"] != expected_revision:
+            submitted_base = {
+                str(field): str(value or "").strip()
+                for field, value in (base_values or {}).items()
+            }
+            changed_since_load = [
+                field for field in normalized_changes
+                if field not in submitted_base
+                or not _same_value(
+                    current_values.get(field, ""),
+                    submitted_base[field],
+                    _physical_cell_type(metadata.get(field)),
+                )
+            ]
+            if changed_since_load:
+                raise HTTPException(409, {
+                    "message": "所编辑字段已被其他平台用户更新，请重新确认",
+                    "columns": changed_since_load,
+                })
+        ordered_columns = [
+            column for column in parser.COLUMNS
+            if column in normalized_changes
+            and not _same_value(
+                current_values.get(column, ""),
+                normalized_changes[column],
+                _physical_cell_type(metadata.get(column)),
+            )
+        ]
+        if not ordered_columns:
+            raise HTTPException(400, "提交值与平台当前值相同，无需保存")
+        normalized_changes = {column: normalized_changes[column] for column in ordered_columns}
+        after = dict(current_values)
+        after.update(normalized_changes)
+        if not registration_mode:
+            from services.task_registration import is_registration_task
+            workflow = TASK_WORKFLOWS.get(parser_type)
+            if workflow and is_registration_task(parser_type):
+                submitted_result = (
+                    str(normalized_changes.get(workflow.result_field) or "").strip()
+                    if workflow.result_field in normalized_changes else ""
+                )
+                if submitted_result == "已登记":
+                    raise HTTPException(403, "已登记只能由居住证比对闭环或有权复核人员确认")
+                if submitted_result == "待登记":
+                    raise HTTPException(400, "待登记必须从指令核查页面选择唯一拟登记房屋后统一保存")
+        if system_managed_columns is None:
+            try:
+                await validate_row_changes(cur, user, parser, current_values, after, ordered_columns)
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+        if "核查人" in ordered_columns:
+            try:
+                validate_inspector_assignment(
+                    inspector_context,
+                    parser.community_value(after),
+                    after.get("核查人"),
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        if any(column in set(parser.get_business_key()) for column in ordered_columns):
+            try:
+                parser.validate_existing_row_key(after)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        new_key = parser.make_row_key(after)
+        if new_key != source["row_key"]:
+            await cur.execute(
+                "SELECT id FROM _online_source_rows "
+                "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
+                (parser_type, new_key, source_id),
+            )
+            if await cur.fetchone():
+                raise HTTPException(409, "修改后会形成重复业务主键，请先处理重复任务")
+
+        # 同步更新对应的本地业务表和统一来源记录，整个过程在同一事务内完成。
+        assignments = ", ".join(f"`{column}`=%s" for column in ordered_columns)
+        await cur.execute(
+            f"UPDATE `{parser.table_name}` SET {assignments}, `_row_key`=%s, _last_updated_at=UTC_TIMESTAMP() "
+            "WHERE _row_key=%s",
+            [*(after[column] for column in ordered_columns), new_key, source["row_key"]],
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(409, "本地任务已被删除或更新，请刷新后重试")
+        await cur.execute(
+            "UPDATE _online_source_rows SET row_key=%s,row_hash=%s,values_json=%s,"
+            "revision=revision+1,refreshed_at=UTC_TIMESTAMP(),source_kind='local_table' "
+            "WHERE id=%s AND revision=%s",
+            (new_key, local_row_hash(after), stable_json(after), source_id, expected_revision),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(409, "该任务已被更新，请刷新后重试")
+        source_ref = f"{parser.table_name}:{source['physical_row']}"
+        await cur.execute(
+            "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
+            "business_key=%s, values_json=%s, content_hash=%s, "
+            "revision=revision+1, status='active', archived_at=NULL, "
+            "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
+            (
+                parser_type, int(source["physical_row"]), new_key,
+                stable_json(after), local_row_hash(after), source_ref,
+            ),
+        )
+        if cur.rowcount == 0:
+            await cur.execute(
+                "INSERT INTO _local_source_records ("
+                "parser_type,local_task_id,business_key,source_kind,source_ref,"
+                "values_json,content_hash,status,revision) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active',%s)",
+                (
+                    parser_type, int(source["physical_row"]), new_key, source_ref,
+                    stable_json(after), local_row_hash(after), expected_revision + 1,
+                ),
+            )
+        audit_id = await _insert_writeback_audit(
+            cur,
+            user=user,
+            action=audit_action,
+            parser_type=parser_type,
+            spreadsheet_id=0,
+            sheet_id=local_sheet_id(parser_type),
+            physical_row=source["physical_row"],
+            column_name="、".join(ordered_columns),
+            row_key_before=source["row_key"],
+            row_key_after=new_key,
+            before_values=None if redact_audit_values else current_values,
+            after_values=None if redact_audit_values else after,
+            sync_status="local",
+        )
+        if transaction_callback is not None:
+            await transaction_callback(
+                cur=cur,
+                source=source,
+                before=current_values,
+                after=after,
+                row_key_before=str(source["row_key"]),
+                row_key_after=str(new_key),
+                revision=expected_revision + 1,
+            )
+        if record_unverifiable_save:
+            from services.unverifiable_review import record_task_save
+            try:
+                await record_task_save(
+                    cur,
+                    parser_type=parser_type,
+                    source=source,
+                    before=current_values,
+                    after=after,
+                    changes=normalized_changes,
+                    row_key_after=str(new_key),
+                    revision=expected_revision + 1,
+                    actor_user_id=int(user.get("id")) if user.get("id") else None,
+                )
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        await rebuild_projection(cur, parser_type, reconcile_graph=False)
+        await reconcile_online_task_graph(
+            cur,
+            parser_type=parser_type,
+            row_key_before=str(source["row_key"]),
+            row_key_after=str(new_key),
+            before=current_values,
+            after=after,
+            actor_user_id=int(user.get("id")) if user.get("id") else None,
+            event_type="online_task_save",
+        )
+        await conn.commit()
+        await record_admin_audit(
+            user,
+            "online.local_update",
+            target_type="local_source_row",
+            target_name=f"{parser_type}:{source_id}",
+            detail={"source_id": source_id, "columns": ordered_columns},
+            **request_audit_fields(request),
+        )
+        if is_actual_online_work(ordered_columns):
+            await record_work_activity(user, ONLINE_TASK_UPDATE, event_key=f"local:{audit_id}")
+        warnings = []
+        if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
+            inspector_context,
+            parser.community_value(after),
+            after.get("核查人"),
+        ):
+            warnings.append("核查人与当前社区不一致")
+        return {
+            "message": "已保存到本地业务数据",
+            "values": after,
+            "row_key": new_key,
+            "revision": expected_revision + 1,
+            "pending_sync": False,
+            "warnings": warnings,
+            "inspector_mismatch": bool(warnings),
+        }
+
+
 async def update_source_fields(
     *,
     parser_type: str,
@@ -651,6 +952,21 @@ async def update_source_fields(
     """在一把工作表锁内批量校验、写入并回读同一腾讯来源行。"""
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if local_data_source_enabled():
+        return await _update_local_source_fields(
+            parser_type=parser_type,
+            source_id=source_id,
+            changes=changes,
+            expected_revision=expected_revision,
+            request=request,
+            user=user,
+            conn=conn,
+            explicit_text_edit=explicit_text_edit,
+            allowed_columns=allowed_columns,
+            current_values_validator=current_values_validator,
+            redact_audit_values=redact_audit_values,
+            system_managed_columns=system_managed_columns,
+        )
     parser = get_parser(parser_type)
     normalized_changes = {
         str(column): str(value or "").strip()
@@ -975,6 +1291,26 @@ async def queue_source_fields(
     """先保存平台有效值，再由后台按字段安全写回腾讯。"""
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if local_data_source_enabled():
+        return await _update_local_source_fields(
+            parser_type=parser_type,
+            source_id=source_id,
+            changes=changes,
+            expected_revision=expected_revision,
+            request=request,
+            user=user,
+            conn=conn,
+            explicit_text_edit=explicit_text_edit,
+            allowed_columns=allowed_columns,
+            current_values_validator=current_values_validator,
+            redact_audit_values=redact_audit_values,
+            base_values=base_values,
+            registration_mode=registration_mode,
+            audit_action=audit_action,
+            transaction_prepare=transaction_prepare,
+            transaction_callback=transaction_callback,
+            record_unverifiable_save=record_unverifiable_save,
+        )
     parser = get_parser(parser_type)
     normalized_changes = {
         str(column): str(value or "").strip()
@@ -1260,6 +1596,34 @@ async def get_query_types(
     return {"data": QUERY_TYPES}
 
 
+@router.get("/migration/status")
+async def get_local_migration_status(
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    """返回本地来源迁移快照状态，不暴露外部凭据或原始数据。"""
+    del user
+    return await local_source_migration_status(conn)
+
+
+@router.get("/migration/issues")
+async def get_local_migration_issues(
+    parser_type: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    """Return the safe migration issue list for the cutover review window."""
+    del user
+    return await local_source_migration_issues(
+        conn,
+        parser_type=parser_type,
+        page=page,
+        page_size=page_size,
+    )
+
+
 @router.get("/writeback/audit")
 async def list_writeback_audit(
     page: int = Query(1, ge=1),
@@ -1412,6 +1776,7 @@ async def _legacy_query(
             {"field": column, **column_metadata[column]} for column in columns
         ],
         "source_ready": False,
+        "data_source_mode": "local" if local_data_source_enabled() else "tencent",
         "writeback_enabled": False,
         "can_add": False,
         "required_fields": new_row_required_fields(parser),
@@ -1597,8 +1962,9 @@ async def _projection_query(
             for column in columns
         ],
         "source_ready": True,
+        "data_source_mode": "local" if local_data_source_enabled() else "tencent",
         "writeback_enabled": enabled,
-        "can_add": bool(enabled and len(spreadsheets) == 1 and row_manage_allowed),
+        "can_add": bool(enabled and row_manage_allowed),
         "required_fields": new_row_required_fields(parser),
         "pending_count": pending_count,
         "data_version": data_version,
@@ -1642,6 +2008,20 @@ async def query_data(
     if not isinstance(user, dict):
         user = {"data_scope": "all", "permission_scopes": {}}
     if source == "online":
+        if local_data_source_enabled():
+            return await _projection_query(
+                parser_type=parser_type,
+                page=page,
+                page_size=page_size,
+                keyword=keyword,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                filters=filters,
+                grid_filters=grid_filters,
+                user=user,
+                conn=conn,
+                spreadsheets=[],
+            )
         async with conn.cursor() as cur:
             spreadsheets = await _enabled_spreadsheets(cur, parser_type)
             ready = await _source_ready(cur, spreadsheets)
@@ -1773,6 +2153,66 @@ async def create_source_row(
             raise HTTPException(status, str(exc)) from exc
         if formal:
             values[parser.COMMUNITY_COLUMN] = formal
+        if local_data_source_enabled():
+            new_key = parser.make_row_key(values)
+            await cur.execute(
+                "SELECT id FROM _online_source_rows WHERE parser_type=%s AND row_key=%s LIMIT 1",
+                (parser_type, new_key),
+            )
+            if await cur.fetchone():
+                raise HTTPException(409, "本地任务池中已经存在相同业务主键")
+            await cur.execute(
+                f"INSERT INTO `{parser.table_name}` (_row_key, "
+                + ", ".join(f"`{column}`" for column in parser.COLUMNS)
+                + ") VALUES ("
+                + ", ".join(["%s"] * (len(parser.COLUMNS) + 1))
+                + ")",
+                [new_key, *[values[column] for column in parser.COLUMNS]],
+            )
+            physical_row = int(cur.lastrowid)
+            await cur.execute(
+                "INSERT INTO _online_source_rows ("
+                "spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,"
+                "values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref"
+                ") VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),'local_table',%s)",
+                (
+                    parser_type,
+                    local_sheet_id(parser_type),
+                    physical_row,
+                    new_key,
+                    local_row_hash(values),
+                    stable_json(values),
+                    stable_json({column: {"type": "text"} for column in parser.COLUMNS}),
+                    f"{parser.table_name}:{physical_row}",
+                ),
+            )
+            await cur.execute(
+                "INSERT INTO _local_source_records ("
+                "parser_type,local_task_id,business_key,source_kind,source_ref,"
+                "values_json,content_hash,status) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active')",
+                (
+                    parser_type, physical_row, new_key,
+                    f"{parser.table_name}:{physical_row}",
+                    stable_json(values), local_row_hash(values),
+                ),
+            )
+            await rebuild_projection(cur, parser_type, reconcile_graph=False)
+            await conn.commit()
+            await record_admin_audit(
+                user,
+                "online.local_create",
+                target_type="local_source_row",
+                target_name=f"{parser_type}:{physical_row}",
+                detail={"parser_type": parser_type},
+                **request_audit_fields(request),
+            )
+            return {
+                "message": "已创建本地业务数据",
+                "source_id": physical_row,
+                "row_key": new_key,
+                "revision": 1,
+                "values": values,
+            }
         spreadsheets = await _enabled_spreadsheets(cur, parser_type)
         if len(spreadsheets) != 1:
             raise HTTPException(409, "该业务没有唯一启用的腾讯来源表，暂时不能新增")
@@ -1900,6 +2340,47 @@ async def delete_source_row(
     if not can_manage_rows(user):
         raise HTTPException(403, "当前岗位不能新增或删除腾讯原始行")
     parser = get_parser(parser_type)
+    if local_data_source_enabled():
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                source = await _load_source_row(cur, parser_type, source_id)
+                if source["revision"] != expected_revision:
+                    raise HTTPException(409, "该任务已被更新，请刷新后重试")
+                archive_columns = ["_row_key", *parser.COLUMNS]
+                quoted = ", ".join(f"`{column}`" for column in archive_columns)
+                await cur.execute(
+                    f"INSERT INTO OnlineDataArchive.`{parser.table_name}_archive` ({quoted}) "
+                    f"SELECT {quoted} FROM `{parser.table_name}` WHERE id=%s",
+                    (source["physical_row"],),
+                )
+                if cur.rowcount != 1:
+                    raise HTTPException(404, "本地任务不存在或已归档")
+                await cur.execute(
+                    f"DELETE FROM `{parser.table_name}` WHERE id=%s",
+                    (source["physical_row"],),
+                )
+                await cur.execute(
+                    "UPDATE _local_source_records SET status='archived', archived_at=UTC_TIMESTAMP(), "
+                    "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
+                    (f"{parser.table_name}:{source['physical_row']}",),
+                )
+                await cur.execute("DELETE FROM _online_local_changes WHERE source_id=%s", (source_id,))
+                await cur.execute("DELETE FROM _online_source_rows WHERE id=%s", (source_id,))
+                await rebuild_projection(cur, parser_type, reconcile_graph=False)
+                await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        await record_admin_audit(
+            user,
+            "online.local_delete",
+            target_type="local_source_row",
+            target_name=f"{parser_type}:{source_id}",
+            detail={"source_id": source_id},
+            **request_audit_fields(request),
+        )
+        return {"message": "已归档并从本地任务池移除", "pending_sync": False}
     async with conn.cursor() as cur:
         if not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")

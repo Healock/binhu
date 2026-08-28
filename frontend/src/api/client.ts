@@ -1043,6 +1043,7 @@ export interface QueryResponse {
   columns: string[]
   column_meta: QueryColumnMeta[]
   source_ready: boolean
+  data_source_mode?: 'local' | 'tencent'
   writeback_enabled: boolean
   can_add: boolean
   required_fields: string[]

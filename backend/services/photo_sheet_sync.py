@@ -1710,6 +1710,10 @@ async def run_photo_sheet_maintenance_once() -> dict:
 
 async def run_photo_sheet_scheduler() -> None:
     """独立运行照片名单维护，避免第三方超时拖慢工单提醒。"""
+    from services.local_source import local_data_source_enabled
+    if local_data_source_enabled():
+        print("[PHOTO_SHEET] 腾讯调照片名单已下线，跳过外部同步任务")
+        return
     while True:
         try:
             await run_photo_sheet_maintenance_once()

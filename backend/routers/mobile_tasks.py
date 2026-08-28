@@ -70,6 +70,7 @@ from services.unverifiable_review import (
 )
 from services.audit import record_admin_audit, request_audit_fields
 from config import settings
+from services.local_source import local_data_source_enabled
 from services.watch_matching import task_watch_payload
 from services.residence_platform import ResidencePlatformError
 from services.residence_status_scan import (
@@ -137,6 +138,21 @@ QmfFeedbackState = Literal[
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
 MAX_BULK_ASSIGNMENT_CHUNK = 20
+
+
+async def _task_source_ready(cur, parser_type: str) -> bool:
+    """Local mode is ready when the local projection exists, not when a Tencent
+    spreadsheet configuration exists.  An empty local table is still a valid
+    ready state and should render an empty task pool rather than a sync error.
+    """
+    if local_data_source_enabled():
+        await cur.execute(
+            "SELECT 1 FROM _online_source_projection WHERE parser_type=%s LIMIT 1",
+            (parser_type,),
+        )
+        await cur.fetchone()
+        return True
+    return await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type))
 
 
 async def _qmf_registration_state(
@@ -1403,7 +1419,7 @@ async def _list_analysis_tasks_data(
     async with conn.cursor() as cur:
         ready_values = []
         for parser_type in parser_types:
-            ready_values.append(await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type)))
+            ready_values.append(await _task_source_ready(cur, parser_type))
         if not all(ready_values):
             return {
                 "data": [], "total": 0, "page": data.page, "page_size": data.page_size,
@@ -1568,8 +1584,7 @@ def _scope_where(
 async def _source_readiness(cur) -> dict[str, bool]:
     result: dict[str, bool] = {}
     for parser_type in MOBILE_TASK_TYPES:
-        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
-        result[parser_type] = await _source_ready(cur, spreadsheets)
+        result[parser_type] = await _task_source_ready(cur, parser_type)
     return result
 
 
@@ -2007,8 +2022,7 @@ async def _list_mobile_tasks_data(
         include_priority=False,
     )
     async with conn.cursor() as cur:
-        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
-        ready = await _source_ready(cur, spreadsheets)
+        ready = await _task_source_ready(cur, parser_type)
         if not ready:
             return {
                 "data": [],
@@ -2138,7 +2152,7 @@ async def get_mobile_task_analysis_filter_options(
     )
     async with conn.cursor() as cur:
         ready = all([
-            await _source_ready(cur, await _enabled_spreadsheets(cur, value))
+            await _task_source_ready(cur, value)
             for value in parser_types
         ])
         if not ready:
@@ -2179,8 +2193,7 @@ async def get_mobile_task_filter_options(
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
-        spreadsheets = await _enabled_spreadsheets(cur, parser_type)
-        if not await _source_ready(cur, spreadsheets):
+        if not await _task_source_ready(cur, parser_type):
             return {
                 "source_ready": False,
                 "communities": [],
@@ -2461,7 +2474,7 @@ async def _mobile_task_detail_data(
     detail_scope: FlowScope = "all" if context["admin_mode"] else "community"
     scope_where, scope_params = _scope_where(context, detail_scope)
     async with conn.cursor() as cur:
-        if not await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type)):
+        if not await _task_source_ready(cur, parser_type):
             raise HTTPException(409, "来源定位尚未建立，请等待一次正常同步")
         await cur.execute(
             f"""

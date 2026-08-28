@@ -713,6 +713,8 @@ async def save_oauth(
     user: dict = Depends(require_super_admin),
 ):
     """保存 OAuth 凭据（超管）"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯表已下线，OAuth 配置已停用")
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
@@ -743,6 +745,8 @@ async def test_oauth(
     user: dict = Depends(require_super_admin),
 ):
     """测试 OAuth 凭据（超管）"""
+    if settings.LOCAL_DATA_SOURCE_ENABLED:
+        raise HTTPException(status_code=410, detail="腾讯表已下线，OAuth 测试已停用")
     import httpx
     try:
         async with httpx.AsyncClient() as client:

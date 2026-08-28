@@ -2,10 +2,15 @@
 
 import asyncio
 
+from config import settings
 from services.sync_tasks import claim_due_scheduled_task, launch_sync_task
 
 
 async def run_sync_scheduler() -> None:
+    from services.local_source import local_data_source_enabled
+    if local_data_source_enabled():
+        print("[SCHEDULER] 腾讯表同步已下线，跳过在线表定时任务")
+        return
     while True:
         try:
             task_id = await claim_due_scheduled_task()

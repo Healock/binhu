@@ -1428,6 +1428,12 @@ async def prepare_qmf_registration(
 ):
     started_at = time.monotonic()
     try:
+        if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
+            raise QmfPreviewError(
+                "tencent_data_source_disabled",
+                "腾讯表已下线，全民防登记仅保留外部只读查询",
+                410,
+            )
         runtime_config = await load_qmf_config(conn)
         if not runtime_config.registration_configured:
             raise QmfPreviewError(
@@ -1602,6 +1608,8 @@ async def execute_qmf_registration(
     user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
+    if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
+        raise HTTPException(410, "腾讯表已下线，全民防登记写入已停用")
     config = await load_qmf_config(conn)
     run = await _claim_run(conn, run_id, user=user, config=config)
     try:

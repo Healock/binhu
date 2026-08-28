@@ -877,9 +877,34 @@ async def _system_enqueue(
     # Keep this service importable during database bootstrap.  The database
     # module imports ``ensure_unverifiable_review_schema`` before db_manager is
     # initialized, while the writeback service itself imports database.
-    from services.online_local_writeback import enqueue_local_changes
+    from services.local_source import local_data_source_enabled, local_sheet_id
+    from services.online_local_writeback import (
+        apply_local_system_changes,
+        enqueue_local_changes,
+    )
 
     source_id, row_key, revision, row_hash, physical_row, spreadsheet_id, sheet_id, values_json = source_row[:8]
+    if local_data_source_enabled():
+        source = {
+            "id": int(source_id),
+            "row_key": str(row_key),
+            "row_hash": str(row_hash or ""),
+            "revision": int(revision),
+            "physical_row": int(physical_row),
+            "spreadsheet_id": 0,
+            "sheet_id": local_sheet_id(parser_type),
+            "values": json_value(values_json, {}),
+            "spreadsheet": {"parser_type": parser_type},
+        }
+        _, next_revision, _, _ = await apply_local_system_changes(
+            cur,
+            source=source,
+            changes=changes,
+            user={"id": 0, "username": "system"},
+            action="review_advance",
+        )
+        return next_revision
+
     await cur.execute(
         "SELECT id,name,file_id,data_sheet_id,header_row,parser_type "
         "FROM _config_spreadsheets WHERE id=%s",
