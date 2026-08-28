@@ -2,9 +2,49 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  fetchAuthenticatedImageBlob,
   fetchWithAuth,
   resetUnauthorizedRedirectForTests,
 } from '../src/api/client.ts'
+
+test('authenticated images are fetched as private blobs with credentials', async () => {
+  installBrowserState(true)
+  resetUnauthorizedRedirectForTests()
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (_input: unknown, init: RequestInit) => {
+      assert.equal(init.credentials, 'include')
+      const headers = new Headers(init.headers)
+      assert.equal(headers.get('X-Binhu-Client-Platform'), 'windows')
+      return new Response(new Uint8Array([137, 80, 78, 71]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      })
+    },
+  })
+
+  const blob = await fetchAuthenticatedImageBlob('/api/auth/avatar/7')
+
+  assert.equal(blob.type, 'image/png')
+  assert.equal(blob.size, 4)
+})
+
+test('authenticated image loader rejects non-image responses', async () => {
+  installBrowserState()
+  resetUnauthorizedRedirectForTests()
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => new Response('gateway response', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    }),
+  })
+
+  await assert.rejects(
+    fetchAuthenticatedImageBlob('/api/auth/avatar/7'),
+    /不是图片/,
+  )
+})
 
 function installBrowserState(nativeDesktop = false) {
   const values = new Map<string, string>()

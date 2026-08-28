@@ -99,7 +99,14 @@ def overlay_local_values(
 
 
 def local_sync_state(changes: list[dict[str, Any]]) -> str:
-    statuses = {str(change.get("status") or "") for change in changes}
+    visible_changes = [
+        change for change in changes
+        if not (
+            str(change.get("status") or "") == "conflict"
+            and str(change.get("error_code") or "") == "source_missing"
+        )
+    ]
+    statuses = {str(change.get("status") or "") for change in visible_changes}
     if "conflict" in statuses:
         return "conflict"
     if "retry" in statuses:

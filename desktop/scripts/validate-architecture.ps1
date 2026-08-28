@@ -71,6 +71,9 @@ $tauriCsp = [string]$tauriConfig.app.security.csp
 if ($tauriCsp -notmatch "connect-src[^;]*\bhttp://tauri\.localhost") {
     throw 'Tauri CSP must allow the bundled release-notes.json same-origin request.'
 }
+if ($tauriCsp -notmatch "img-src[^;]*\bblob:") {
+    throw 'Tauri CSP must allow authenticated image object URLs.'
+}
 $repoRoot = (Resolve-Path (Join-Path $root '..')).Path
 $titleBar = Get-Content (Join-Path $repoRoot 'frontend\src\components\DesktopTitleBar.tsx') -Raw
 foreach ($control in @('window-minimize-button', 'window-maximize-button', 'window-close-button')) {

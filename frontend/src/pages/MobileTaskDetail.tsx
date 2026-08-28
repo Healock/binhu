@@ -45,6 +45,7 @@ import {
   type ResidenceRegistrationDetail as ResidenceDetail,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import UnverifiableReviewNotice from '../components/UnverifiableReviewNotice'
 import {
   confirmPendingNavigation,
   setPendingNavigationChanges,
@@ -968,28 +969,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       </section>
 
       {mode === 'tasks' && data.task.state !== 'completed' && reviewFlow && !['resolved', 'archived'].includes(reviewFlow.state) && (
-        <Alert
-          type={reviewFlow.state === 'source_exception' || reviewFlow.state === 'final_unverifiable' ? 'warning' : 'info'}
-          showIcon
-          message={reviewFlow.state_label}
-          description={(
-            <div className="grid gap-2">
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {reviewFlow.review_due_date && <span>复核截止：{reviewFlow.review_due_date}</span>}
-                {['initial_extension', 'deep_extension'].includes(reviewFlow.state) && (
-                  <span>本轮反馈：{reviewFlow.feedback_submitted ? '已记录' : '未记录'}</span>
-                )}
-              </div>
-              {reviewFlow.state === 'source_exception' ? (
-                <strong>来源信息发生变化，自动流转已经暂停，请联系基础管控复核。</strong>
-              ) : reviewFlow.state === 'final_unverifiable' ? (
-                <strong>该任务已形成最终无法核实，等待在当前业务的归档 Panel 中导出。</strong>
-              ) : (
-                <strong>核查对象一旦已经能够核实，请立即修改“核查结果”；不要只填写二次反馈，否则任务仍会按无法核实流程继续流转。</strong>
-              )}
-            </div>
-          )}
-        />
+        <UnverifiableReviewNotice flow={reviewFlow} showStateLabel detailed />
       )}
 
       {data.qmf_feedback && (

@@ -8,7 +8,7 @@ import { Panel } from './ui'
 import {
   confirmPoliceDispatchImport, getPoliceImportProfiles, listPoliceDispatchBatches,
   policeDispatchFeedbackUrl, policeDispatchSourceFileUrl, previewPoliceDispatchImport,
-  createQuickPoliceDispatch, getQuickDispatchOptions,
+  apiErrorMessage, createQuickPoliceDispatch, getQuickDispatchOptions,
   type PoliceDispatchBatch, type PoliceImportPreview, type PoliceImportProfile,
 } from '../api/client'
 
@@ -167,6 +167,7 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
     if (quickSubmittingRef.current) return
     quickSubmittingRef.current = true
     setQuickLoading(true)
+    setError('')
     try {
       const result = await createQuickPoliceDispatch({
         request_id: quickRequestIdRef.current,
@@ -183,9 +184,10 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
       quickRequestIdRef.current = createQuickDispatchRequestId()
       await load(1)
       navigate(`/police-tasks?batch=${result.batch.id}&status=pending_publish&category=all`)
-    } catch (reason: any) {
-      const detail = reason?.response?.data?.detail
-      message.error({ key: 'quick-dispatch-submit', content: detail || '快捷下发失败' })
+    } catch (reason: unknown) {
+      const detail = apiErrorMessage(reason, '快捷下发失败，请稍后重试')
+      setError(detail)
+      message.error({ key: 'quick-dispatch-submit', content: detail })
     } finally {
       quickSubmittingRef.current = false
       setQuickLoading(false)

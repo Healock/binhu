@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Alert, Avatar, Button, Descriptions, Select, Skeleton, Tag, Upload, message } from 'antd'
+import { Alert, Button, Descriptions, Select, Skeleton, Tag, Upload, message } from 'antd'
 import { UploadOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, type PublicProfile } from '../types'
 import { getPublicProfile, uploadAvatar } from '../api/client'
 import { PageHeader, Panel } from '../components/ui'
 import ContributionCalendar from '../components/ContributionCalendar'
+import { AuthenticatedAvatar } from '../components/AuthenticatedImage'
 
 function errorMessage(error: any, fallback = '操作失败'): string {
   const detail = error?.response?.data?.detail
@@ -90,13 +91,13 @@ export default function Profile() {
           description="姓名用于平台显示，用户名只用于登录。"
         >
           <div className="profile-avatar-editor">
-            <Avatar
+            <AuthenticatedAvatar
               size={72}
-              src={user.avatar_url || undefined}
+              src={user.avatar_url}
               icon={<UserOutlined />}
             >
               {getUserDisplayName(user).slice(0, 1)}
-            </Avatar>
+            </AuthenticatedAvatar>
             <div className="profile-avatar-editor__content">
               <div className="font-medium">个人头像</div>
               <div className="text-sm text-[var(--app-text-secondary)]">支持 JPG、PNG、WebP 或 HEIC，最大 5MB</div>

@@ -47,9 +47,14 @@ test('desktop clients resolve private avatar paths against the configured API se
 
 test('账号区域优先显示已上传头像并保留默认图标兜底', () => {
   const layout = readFileSync(new URL('../src/components/Layout.tsx', import.meta.url), 'utf8')
-  assert.match(layout, /<Avatar[\s\S]*src=\{user\.avatar_url \|\| undefined\}/)
+  const authenticatedImage = readFileSync(new URL('../src/components/AuthenticatedImage.tsx', import.meta.url), 'utf8')
+  const authenticatedImageHook = readFileSync(new URL('../src/hooks/useAuthenticatedImageUrl.ts', import.meta.url), 'utf8')
+  assert.match(layout, /<AuthenticatedAvatar[\s\S]*src=\{user\.avatar_url\}/)
   assert.match(layout, /icon=\{<UserOutlined \/>\}/)
   assert.match(layout, /getUserDisplayName\(user\)\.slice\(0, 1\)/)
+  assert.match(authenticatedImage, /useAuthenticatedImageUrl/)
+  assert.match(authenticatedImageHook, /URL\.createObjectURL/)
+  assert.match(authenticatedImageHook, /URL\.revokeObjectURL/)
 })
 
 test('热力图只接收所选年度日期并保留年度边界', () => {

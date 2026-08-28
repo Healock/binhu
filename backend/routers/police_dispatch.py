@@ -58,6 +58,7 @@ from services.police_dispatch import (
     normalize_space,
     parse_dispatch_workbook,
     parser_business_key,
+    parser_business_key_fields,
     publish_business_key,
     resolve_community,
     community_resolver,
