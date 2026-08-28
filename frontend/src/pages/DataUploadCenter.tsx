@@ -303,8 +303,8 @@ export default function DataUploadCenter() {
 
       {canManageQmfSource && (
         <Panel
-          title="模型三辅助证据：自购自住名单"
-          description="这是一份平台内维护的辅助证据名单。导入后仅匹配模型三任务，将空白或无法核实结果填为“近期返吴”，不会调用全民防写入接口。"
+          title="辖区资产：自购自住人员"
+          description="用于维护辖区内自购自住房屋居住人员基础资料。导入后会同步更新匹配的模型三平台核查结果，将空白或无法核实结果填为“近期返吴”，不会调用全民防写入接口。"
         >
           <Upload
             accept=".zip"
@@ -326,7 +326,7 @@ export default function DataUploadCenter() {
               loading={selfOwnedLoading}
               disabled={!selfOwnedFile || selfOwnedLoading}
               onClick={() => void handleSelfOwnedImport()}
-            >导入并套用近期返吴</Button>
+            >导入并更新平台核查结果</Button>
             <span className="text-xs text-[var(--app-text-secondary)]">按居民证号去重，仅保存安全摘要和身份 HMAC</span>
           </div>
           {selfOwnedError && <Alert className="mt-3" type="error" showIcon message={selfOwnedError} />}

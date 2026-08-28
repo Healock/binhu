@@ -48,7 +48,7 @@ async def import_self_owned_roster(
     user: dict = Depends(require_permission(SYNC_TRIGGER)),
     conn=Depends(get_db),
 ):
-    """导入模型三自购自住辅助名单，并在平台内套用近期返吴结果。"""
+    """导入辖区自购自住人员资产资料，并更新平台内匹配任务。"""
     if not (file.filename or "").lower().endswith(".zip"):
         raise HTTPException(400, "自购自住名单只支持 ZIP 文件")
     try:
@@ -68,7 +68,7 @@ async def import_self_owned_roster(
         user,
         "qmf.self_owned.import",
         target_type="qmf_self_owned_batch",
-        target_name="模型三自购自住辅助名单",
+        target_name="辖区自购自住人员资产资料",
         detail={
             "batch_id": result["batch_id"],
             "total_rows": result["total_rows"],
