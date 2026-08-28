@@ -1173,7 +1173,12 @@ export type MobileTaskPriority =
   | 'ordinary'
   | 'waiting_analysis'
   | 'completed'
-export type MobileTaskSort = 'priority' | 'updated_desc' | 'updated_asc'
+export type MobileTaskSort =
+  | 'priority'
+  | 'address_asc'
+  | 'identity_asc'
+  | 'updated_desc'
+  | 'updated_asc'
 
 export interface MobileTaskBusinessSummary {
   parser_type: string

@@ -116,7 +116,13 @@ Priority = Literal[
     "waiting_analysis",
     "completed",
 ]
-SortMode = Literal["priority", "updated_desc", "updated_asc"]
+SortMode = Literal[
+    "priority",
+    "address_asc",
+    "identity_asc",
+    "updated_desc",
+    "updated_asc",
+]
 AssignmentMode = Literal["single", "balanced"]
 QmfFeedbackState = Literal[
     "not_scanned",
@@ -877,11 +883,53 @@ def _priority_order(parser_type: str) -> str:
     )
 
 
-def _address_order(parser_type: str) -> str:
-    fields = TASK_WORKFLOWS[parser_type].address_fields
+def _field_order(fields: tuple[str, ...]) -> str:
     candidates = ", ".join(f"NULLIF({_json_field(field)}, '')" for field in fields)
     raw_value = f"COALESCE({candidates}, '')" if candidates else "''"
     normalized = f"LOWER(REGEXP_REPLACE({raw_value}, '[[:space:]]+', ''))"
+    return f"CASE WHEN {normalized}='' THEN 1 ELSE 0 END, {normalized}"
+
+
+def _address_order(parser_type: str) -> str:
+    return _field_order(TASK_WORKFLOWS[parser_type].address_fields)
+
+
+def _identity_order(parser_type: str) -> str:
+    return _field_order(TASK_WORKFLOWS[parser_type].identity_fields)
+
+
+def _original_address_fields(parser_type: str) -> tuple[str, ...]:
+    fields = tuple(
+        field
+        for field in TASK_WORKFLOWS[parser_type].address_fields
+        if field != "现住址"
+    )
+    return fields or TASK_WORKFLOWS[parser_type].address_fields
+
+
+def _original_address_order(parser_type: str) -> str:
+    return _field_order(_original_address_fields(parser_type))
+
+
+def _analysis_field_order(parser_types: list[str], field_name: str) -> str:
+    field_cases: list[str] = []
+    for parser_type in parser_types:
+        workflow = TASK_WORKFLOWS[parser_type]
+        fields = (
+            _original_address_fields(parser_type)
+            if field_name == "original_address_fields"
+            else getattr(workflow, field_name)
+        )
+        candidates = ", ".join(
+            f"NULLIF({_json_field(field)}, '')" for field in fields
+        )
+        value = f"COALESCE({candidates}, '')" if candidates else "''"
+        safe_parser_type = parser_type.replace("'", "''")
+        field_cases.append(
+            f"WHEN projection.parser_type='{safe_parser_type}' THEN {value}"
+        )
+    raw_value = "CASE " + " ".join(field_cases) + " ELSE '' END"
+    normalized = f"LOWER(REGEXP_REPLACE(({raw_value}), '[[:space:]]+', ''))"
     return f"CASE WHEN {normalized}='' THEN 1 ELSE 0 END, {normalized}"
 
 
@@ -1217,11 +1265,43 @@ def _analysis_order(data: AnalysisTaskSearch) -> str:
         if predicates:
             stage_order += f"WHEN {' OR '.join(predicates)} THEN {index} "
     stage_order += "ELSE 4 END"
+    if data.sort == "address_asc":
+        return (
+            f"{stage_order}, "
+            f"{_analysis_field_order(parser_types, 'original_address_fields')}, "
+            "projection.row_key"
+        )
+    if data.sort == "identity_asc":
+        return (
+            f"{stage_order}, "
+            f"{_analysis_field_order(parser_types, 'identity_fields')}, "
+            f"{_analysis_field_order(parser_types, 'original_address_fields')}, "
+            "projection.row_key"
+        )
     if data.sort == "updated_asc":
         return f"{stage_order}, projection.updated_at ASC, projection.row_key"
     if data.sort == "updated_desc":
         return f"{stage_order}, projection.updated_at DESC, projection.row_key"
     return f"{stage_order}, projection.updated_at DESC, projection.row_key"
+
+
+def _task_order(parser_type: str, sort: SortMode) -> str:
+    completed_last = "CASE WHEN projection.task_state='completed' THEN 1 ELSE 0 END"
+    if sort == "updated_asc":
+        return f"{completed_last}, projection.updated_at ASC, projection.row_key"
+    if sort == "updated_desc":
+        return f"{completed_last}, projection.updated_at DESC, projection.row_key"
+    if sort == "address_asc":
+        return f"{_original_address_order(parser_type)}, projection.row_key"
+    if sort == "identity_asc":
+        return (
+            f"{_identity_order(parser_type)}, "
+            f"{_original_address_order(parser_type)}, projection.row_key"
+        )
+    return (
+        f"{_priority_order(parser_type)}, {_address_order(parser_type)}, "
+        "projection.updated_at DESC, projection.row_key"
+    )
 
 
 async def _analysis_filter_options(
@@ -1953,23 +2033,7 @@ async def _list_mobile_tasks_data(
         )
         total = int((await cur.fetchone())[0] or 0)
         facets = await _task_facets(cur, parser_type, base_where, base_params)
-        completed_last = (
-            "CASE WHEN projection.task_state='completed' THEN 1 ELSE 0 END"
-        )
-        if data.sort == "updated_asc":
-            order_sql = (
-                f"{completed_last}, projection.updated_at ASC, projection.row_key"
-            )
-        elif data.sort == "updated_desc":
-            order_sql = (
-                f"{completed_last}, projection.updated_at DESC, projection.row_key"
-            )
-        else:
-            order_sql = (
-                f"{_priority_order(parser_type)}, "
-                f"{_address_order(parser_type)}, "
-                "projection.updated_at DESC, projection.row_key"
-            )
+        order_sql = _task_order(parser_type, data.sort)
         await cur.execute(
             f"""
             SELECT projection.row_key, projection.values_json,

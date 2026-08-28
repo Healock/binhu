@@ -13,6 +13,7 @@ import {
   type MobileTaskInlineEditorItem,
   type MobileTaskItem,
   type MobileTaskRegistrationProperty,
+  type MobileTaskSort,
 } from '../api/client'
 import {
   buildMobileTaskChanges,
@@ -64,6 +65,8 @@ interface MobileTaskTableProps {
   onSelect: (task: MobileTaskItem, selected: boolean) => void
   onOpen: (task: MobileTaskItem) => void
   onCopy: (value: string, label: '身份证号' | '手机号') => void
+  sort: MobileTaskSort
+  onSortChange: (sort: MobileTaskSort) => void
   onSaved: () => Promise<void> | void
 }
 
@@ -85,6 +88,8 @@ export default function MobileTaskTable({
   onSelect,
   onOpen,
   onCopy,
+  sort,
+  onSortChange,
   onSaved,
 }: MobileTaskTableProps) {
   const tableRef = useRef<HTMLDivElement>(null)
@@ -851,6 +856,9 @@ export default function MobileTaskTable({
         key: 'identity_number',
         width: 190,
         responsivePriority: 'always' as const,
+        sorter: true,
+        sortDirections: ['ascend'] as const,
+        sortOrder: sort === 'identity_asc' ? 'ascend' as const : null,
         render: (_: unknown, task: MobileTaskItem) => task.summary.identity_number ? (
           <Button
             type="link"
@@ -901,6 +909,9 @@ export default function MobileTaskTable({
         width: 250,
         responsivePriority: 'always' as const,
         ellipsis: true,
+        sorter: true,
+        sortDirections: ['ascend'] as const,
+        sortOrder: sort === 'address_asc' ? 'ascend' as const : null,
         render: (_: unknown, task: MobileTaskItem) => {
           const address = task.summary.original_address || '未填写'
           return <Tooltip title={address}><span>{address}</span></Tooltip>
@@ -995,6 +1006,16 @@ export default function MobileTaskTable({
           expandedRowRender: renderExpandedRow,
         }}
         pagination={false}
+        onChange={(_, __, sorter) => {
+          const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter
+          if (activeSorter.order !== 'ascend') {
+            onSortChange('priority')
+          } else if (activeSorter.columnKey === 'identity_number') {
+            onSortChange('identity_asc')
+          } else if (activeSorter.columnKey === 'address') {
+            onSortChange('address_asc')
+          }
+        }}
         onRow={task => ({
           'data-mobile-task-row-key': task.task_key,
           className: [
