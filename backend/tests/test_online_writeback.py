@@ -902,36 +902,28 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(projection_values["登记情况"], "已登记")
         self.assertIn("已登记", cursor.many_rows[0][10])
 
-    async def test_external_change_returns_409_and_refreshes_cache(self):
-        parser = get_parser("全链条")
-        cached = {column: "" for column in parser.COLUMNS}
-        cached.update({"社区": "长板", "身份证号": "1", "电话号码": "2", "下发日期": "3"})
-        external = {**cached, "现住址": "他人刚刚修改"}
-        cursor = ConflictCursor(cached)
-        conn = FakeConnection(cursor)
-        client = AsyncMock()
-        client.resolve_column_layout.return_value = parser.source_column_layouts()[0]
-        client.read_source_row.return_value = {
-            "values": external,
-            "cell_meta": {},
-        }
+    async def test_external_tencent_change_does_not_block_platform_edit(self):
+        conn = FakeConnection(ConflictCursor({}))
         request = Request({
             "type": "http", "method": "PATCH", "path": "/", "headers": [],
             "scheme": "http", "server": ("test", 80), "client": ("127.0.0.1", 1),
         })
+        queued = {
+            "message": "已保存到滨湖平台，正在后台同步腾讯表格",
+            "values": {"现住址": "我的修改"},
+            "row_key": "row-key",
+            "revision": 2,
+            "pending_sync": True,
+        }
+        with patch("routers.query.queue_source_fields", AsyncMock(return_value=queued)) as queue:
+            result = await update_source_cell(
+                "全链条", 1,
+                CellUpdate(column="现住址", value="我的修改", expected_revision=1),
+                request, make_user("组员", communities=["长板"]), conn,
+            )
 
-        with patch("routers.query._oauth_client", AsyncMock(return_value=client)), \
-             patch("routers.query._refresh_spreadsheet", AsyncMock()) as refresh:
-            with self.assertRaises(HTTPException) as raised:
-                await update_source_cell(
-                    "全链条", 1,
-                    CellUpdate(column="现住址", value="我的修改", expected_revision=1),
-                    request, make_user("组员", communities=["长板"]), conn,
-                )
-
-        self.assertEqual(raised.exception.status_code, 409)
-        refresh.assert_awaited_once()
-        client.close.assert_awaited_once()
+        self.assertTrue(result["pending_sync"])
+        queue.assert_awaited_once()
 
     async def test_mobile_batch_update_uses_one_request_and_one_cache_revision(self):
         parser = get_parser("全链条")

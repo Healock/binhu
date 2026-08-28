@@ -391,8 +391,8 @@ export default function DataQuery() {
         completed += 1
       }
       messageApi.success(changes.length > 1
-        ? `已保存 ${changes.length} 个单元格，平台数据已同步并写回腾讯表格`
-        : '已保存，平台数据已同步并写回腾讯表格')
+        ? `已保存 ${changes.length} 个单元格，平台数据已更新，腾讯表格将在后台同步`
+        : '已保存，平台数据已更新，腾讯表格将在后台同步')
       if (newlyPendingSourceIds.size > 0) {
         setPendingCount(current => current + newlyPendingSourceIds.size)
       }
@@ -474,7 +474,7 @@ export default function DataQuery() {
           },
         ),
       )
-      messageApi.success('修改已保存，平台数据已同步并写回腾讯表格')
+      messageApi.success('修改已保存，平台数据已更新，腾讯表格将在后台同步')
       setDrawerOpen(false)
       await fetchData()
     } catch (requestError) {
