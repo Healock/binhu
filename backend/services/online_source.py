@@ -405,6 +405,33 @@ async def replace_source_cache(
             matched, incoming_only, existing_only = match_source_cache_rows(
                 existing, prepared
             )
+            # 无法核实两级研判是平台内的独立流程。即使当前没有待写回
+            # 字段，腾讯物理行被删除也不能丢掉仍在进行中的本地任务；
+            # 保留来源快照（physical_row=-id）后，投影和流程仍可继续，
+            # 直到正式结果提交或流程归档。
+            active_flow_source_ids: set[int] = set()
+            if existing_ids and parser_type in {
+                "全链条", "出租房屋核查", "寄递业", "疑似返苏",
+                "苏州涉警", "交通涉警",
+            }:
+                placeholders = ", ".join(["%s"] * len(existing_ids))
+                await cur.execute(
+                    f"""
+                    SELECT source_id
+                    FROM _unverifiable_review_flows
+                    WHERE parser_type=%s
+                      AND source_id IN ({placeholders})
+                      AND state IN (
+                          'initial_pending','initial_extension','deep_pending',
+                          'deep_extension','final_unverifiable','source_exception'
+                      )
+                    FOR UPDATE
+                    """,
+                    [parser_type, *existing_ids],
+                )
+                active_flow_source_ids = {
+                    int(row[0]) for row in await cur.fetchall() if row[0] is not None
+                }
             if existing_ids:
                 await cur.execute(
                     "UPDATE _online_source_rows SET physical_row=-id "
@@ -497,7 +524,7 @@ async def replace_source_cache(
                         """,
                         (old["id"],),
                     )
-                else:
+                elif old["id"] not in active_flow_source_ids:
                     await cur.execute(
                         "DELETE FROM _online_source_rows WHERE id=%s",
                         (old["id"],),

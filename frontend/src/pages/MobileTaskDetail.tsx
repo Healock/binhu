@@ -776,8 +776,15 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   )
   const sourceTags = mobileTaskSourceTags(source)
   const syncState = selectedSource?.sync_state || data.task.sync_state
-  const syncLabel = syncState ? SYNC_LABELS[syncState] : null
-  const conflictFields = selectedSource?.sync_fields.filter(item => item.status === 'conflict') || []
+  const sourceMissingFields = selectedSource?.sync_fields.filter(
+    item => item.status === 'conflict' && item.error_code === 'source_missing',
+  ) || []
+  const conflictFields = selectedSource?.sync_fields.filter(
+    item => item.status === 'conflict' && item.error_code !== 'source_missing',
+  ) || []
+  const syncLabel = sourceMissingFields.length > 0 && conflictFields.length === 0
+    ? { text: '腾讯来源已删除（平台继续）', color: 'blue' as const }
+    : syncState ? SYNC_LABELS[syncState] : null
   const detailFacts = [
     { label: '身份证号', value: identityNumber || '未填写', copyValue: identityNumber, copyLabel: '身份证号' },
     { label: '手机号', value: phoneDisplay || '未填写', phones: phoneOptions },
@@ -960,7 +967,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         ))}
       </section>
 
-      {mode === 'tasks' && reviewFlow && !['resolved', 'archived'].includes(reviewFlow.state) && (
+      {mode === 'tasks' && data.task.state !== 'completed' && reviewFlow && !['resolved', 'archived'].includes(reviewFlow.state) && (
         <Alert
           type={reviewFlow.state === 'source_exception' || reviewFlow.state === 'final_unverifiable' ? 'warning' : 'info'}
           showIcon
@@ -1121,6 +1128,15 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           showIcon
           message={`该任务包含 ${data.task.source_count} 条腾讯原始行`}
           description="请先选择具体来源，再分别核对和保存。每次保存只修改当前选中的原始行。"
+        />
+      )}
+
+      {sourceMissingFields.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message="腾讯来源行已删除，滨湖平台继续保留并处理当前任务"
+          description="这不会暂停本地核查、研判或任务流程。平台后续修改会保留在滨湖平台中，不会尝试覆盖已删除的腾讯行。"
         />
       )}
 

@@ -5,6 +5,38 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def canonical_result_option(parser_type: str, value: str) -> str:
+    """Return the user-facing canonical label for a historical result value."""
+    text = str(value or "").strip()
+    if parser_type == "疑似返苏" and text == "无需登记，原因写备注":
+        return "无需登记"
+    return text
+
+
+def canonical_result_options(
+    parser_type: str,
+    options: list[dict] | tuple[dict, ...],
+) -> list[dict]:
+    """Deduplicate select options after applying historical label aliases."""
+    result: list[dict] = []
+    seen: set[str] = set()
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        option_id = str(option.get("id") or "").strip()
+        text = canonical_result_option(
+            parser_type, str(option.get("text") or "").strip()
+        )
+        if not option_id or not text or text in seen:
+            continue
+        normalized = dict(option)
+        normalized["id"] = option_id
+        normalized["text"] = text
+        result.append(normalized)
+        seen.add(text)
+    return result
+
+
 @dataclass(frozen=True)
 class TaskWorkflow:
     parser_type: str
@@ -191,7 +223,6 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
             "已登记",
             "待登记",
             "无需登记",
-            "无需登记，原因写备注",
             "移交",
             "移交，移交哪个社区写备注",
             "无法核实",

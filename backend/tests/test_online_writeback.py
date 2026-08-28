@@ -1255,6 +1255,29 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             ["近期返吴", "离吴", "在吴"],
         )
 
+    async def test_suspect_return_hides_legacy_no_registration_option(self):
+        parser = get_parser("疑似返苏")
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {"核查反馈": {
+                "type": "select",
+                "options": [
+                    {"id": "short", "text": "无需登记"},
+                    {"id": "legacy", "text": "无需登记，原因写备注"},
+                ],
+            }},
+        )
+
+        self.assertEqual(
+            [item["text"] for item in metadata["核查反馈"]["options"]],
+            ["无需登记", "已登记", "待登记", "移交", "移交，移交哪个社区写备注", "无法核实", "离苏"],
+        )
+        self.assertEqual(
+            [item["text"] for item in metadata["核查反馈"]["write_options"]],
+            ["无需登记", "已登记", "待登记", "移交", "移交，移交哪个社区写备注", "无法核实", "离苏"],
+        )
+
 
     async def test_business_fallback_options_validate_select_text_writeback(self):
         parser = get_parser("\u5168\u94fe\u6761")

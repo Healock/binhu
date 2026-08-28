@@ -17,7 +17,10 @@ from services.online_source import (
     stable_json,
 )
 from services.parsers import get_parser
-from services.task_workflow import TASK_WORKFLOWS
+from services.task_workflow import (
+    TASK_WORKFLOWS,
+    canonical_result_option,
+)
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
 
@@ -49,7 +52,9 @@ def writeback_cell_metadata(
         if not isinstance(option, dict):
             continue
         option_id = str(option.get("id") or "").strip()
-        text = str(option.get("text") or "").strip()
+        text = canonical_result_option(
+            parser_type, str(option.get("text") or "").strip()
+        )
         if not option_id or not text or text in known_texts:
             continue
         normalized = dict(option)
@@ -59,6 +64,7 @@ def writeback_cell_metadata(
         known_texts.add(text)
 
     for text in workflow.result_options:
+        text = canonical_result_option(parser_type, text)
         if text == "已登记":
             continue
         if text not in known_texts:

@@ -50,7 +50,7 @@ from services.permissions import (
     ONLINE_RAW_VIEW,
 )
 from services.schema_compat import get_database_column_map, quote_identifier
-from services.task_workflow import TASK_WORKFLOWS
+from services.task_workflow import TASK_WORKFLOWS, canonical_result_options
 from services.task_graph import reconcile_online_task_graph
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 from services.work_activity import (
@@ -308,6 +308,7 @@ async def _managed_column_metadata(
                 spreadsheet_id=spreadsheet_id,
                 sheet_id=sheet_id,
             )
+        options = canonical_result_options(parser.parser_type, options)
         if not options:
             options = [
                 {"id": text, "text": text}

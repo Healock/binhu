@@ -181,7 +181,11 @@ class MobileTaskWorkflowTests(unittest.TestCase):
 
     def test_suspect_return_uses_feedback_as_result(self):
         self.assertIn("离苏", TASK_WORKFLOWS["疑似返苏"].result_options)
-        self.assertIn("无需登记，原因写备注", TASK_WORKFLOWS["疑似返苏"].result_options)
+        self.assertIn("无需登记", TASK_WORKFLOWS["疑似返苏"].result_options)
+        self.assertNotIn(
+            "无需登记，原因写备注",
+            TASK_WORKFLOWS["疑似返苏"].result_options,
+        )
         self.assertIn("移交，移交哪个社区写备注", TASK_WORKFLOWS["疑似返苏"].result_options)
         self.assertEqual(
             task_state("疑似返苏", {"核查结果": "已登记"}),
@@ -191,6 +195,29 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             task_state("疑似返苏", {"核查反馈": "移交"}),
             "completed",
         )
+
+    def test_suspect_return_merges_short_and_long_no_registration_result(self):
+        from services.parsers.suspect_return import SuspectReturnParser
+
+        parser = SuspectReturnParser()
+        previous = {"身份证号码": "1", "联系号码": "2", "核查反馈": "无需登记"}
+        incoming = {
+            "身份证号码": "1",
+            "联系号码": "2",
+            "核查反馈": "无需登记，原因写备注",
+        }
+        merged = parser.merge_duplicate_row(previous, incoming)
+        self.assertIsNotNone(merged)
+        self.assertEqual(merged["核查反馈"], "无需登记，原因写备注")
+
+    def test_suspect_return_keeps_real_result_conflicts(self):
+        from services.parsers.suspect_return import SuspectReturnParser
+
+        parser = SuspectReturnParser()
+        self.assertIsNone(parser.merge_duplicate_row(
+            {"身份证号码": "1", "联系号码": "2", "核查反馈": "无需登记"},
+            {"身份证号码": "1", "联系号码": "2", "核查反馈": "离苏"},
+        ))
 
     def test_unrevoked_only_accepts_defined_results(self):
         self.assertEqual(
