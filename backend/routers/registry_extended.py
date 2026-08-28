@@ -15,7 +15,13 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from deps import require_permission
-from routers.registry import _allowed_community_ids, _allowed_community_names, get_registry_db
+from routers.registry import (
+    _allowed_community_ids,
+    _allowed_community_names,
+    _load_registry_person_categories,
+    _registry_person_category_payload,
+    get_registry_db,
+)
 from services.audit import record_admin_audit, request_audit_fields
 from services.permissions import (
     REGISTRY_IMPORT_MANAGE,
@@ -23,6 +29,7 @@ from services.permissions import (
     REGISTRY_PROPERTY_VIEW,
     REGISTRY_WATCH_MANAGE,
     REGISTRY_WATCH_VIEW,
+    has_permission,
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.watch_matching import backfill_assignment_snapshots
@@ -426,6 +433,13 @@ class WatchAssignmentUpdate(BaseModel):
     released_at: datetime | None = None
     basis: str = Field(default="", max_length=1000)
     status: Literal["active", "released", "inactive"] = "active"
+
+
+class RegistryPersonAssignmentCreate(BaseModel):
+    category_id: int = Field(gt=0)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    basis: str = Field(default="", max_length=1000)
 
 
 async def _apply_candidate_payload(
@@ -997,6 +1011,7 @@ async def get_housing_person_detail(
     user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
     conn=Depends(get_registry_db),
 ):
+    can_view_tags = has_permission(user, REGISTRY_WATCH_VIEW)
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
     async with conn.cursor() as cur:
         if allowed is not None:
@@ -1031,6 +1046,14 @@ async def get_housing_person_detail(
             (person_id,),
         )
         properties = await cur.fetchall()
+        current_tags = (
+            await _load_registry_person_categories(cur, [person_id])
+            if can_view_tags else {}
+        )
+        tag_history = (
+            await _load_registry_person_categories(cur, [person_id], history=True)
+            if can_view_tags else {}
+        )
     include_identity = _can_view_identity(user)
     return {
         "id": int(row[0]), "name": row[1],
@@ -1049,6 +1072,189 @@ async def get_housing_person_detail(
              "role_name": item[3], "valid_from": _iso(item[4]), "valid_to": _iso(item[5]),
              "verified": bool(item[6])} for item in properties
         ],
+        "tag_assignments": tag_history.get(person_id, []),
+        "categories": [
+            _registry_person_category_payload(item)
+            for item in current_tags.get(person_id, [])
+        ],
+    }
+
+
+@router.post("/people/{person_id}/tags")
+async def add_housing_person_tag(
+    person_id: int,
+    data: RegistryPersonAssignmentCreate,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_WATCH_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    """Maintain a person's watch tag from the main registry while preserving legacy rows."""
+    if data.valid_to and data.valid_from and data.valid_to < data.valid_from:
+        raise HTTPException(422, "标签结束时间不能早于生效时间")
+    valid_from = data.valid_from or datetime.utcnow()
+    backfill_required = False
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, name, identity_number, identity_hmac, identity_hmac_version "
+                "FROM registry_housing_people WHERE id=%s AND status='active' FOR UPDATE",
+                (person_id,),
+            )
+            registry_person = await cur.fetchone()
+            if not registry_person:
+                raise HTTPException(404, "辖区人员档案不存在")
+            await _housing_person_scope(cur, person_id, user, REGISTRY_WATCH_MANAGE)
+            await cur.execute(
+                "SELECT id FROM watch_categories WHERE id=%s AND is_active=1",
+                (data.category_id,),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(404, "标签分类不存在或已停用")
+            identity_hmac = registry_person[3]
+            watch_query = (
+                "SELECT id FROM watch_people WHERE registry_person_id=%s "
+                "OR (registry_person_id IS NULL AND identity_hmac=%s) "
+                "ORDER BY registry_person_id IS NULL, id LIMIT 1 FOR UPDATE"
+            )
+            await cur.execute(watch_query, (person_id, identity_hmac))
+            watch_person = await cur.fetchone()
+            if watch_person:
+                watch_person_id = int(watch_person[0])
+                await cur.execute(
+                    "UPDATE watch_people SET registry_person_id=COALESCE(registry_person_id,%s), "
+                    "name=%s, updated_by=%s WHERE id=%s",
+                    (person_id, registry_person[1], user["id"], watch_person_id),
+                )
+            else:
+                await cur.execute(
+                    "INSERT INTO watch_people "
+                    "(name, identity_number, identity_hmac, identity_hmac_version, registry_person_id, created_by, updated_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (registry_person[1], registry_person[2], registry_person[3], registry_person[4],
+                     person_id, user["id"], user["id"]),
+                )
+                watch_person_id = int(cur.lastrowid)
+            await cur.execute(
+                "SELECT id FROM watch_assignments WHERE person_id=%s AND category_id=%s "
+                "AND status='active' AND released_at IS NULL "
+                "AND valid_from<=UTC_TIMESTAMP() AND (valid_to IS NULL OR valid_to>=UTC_TIMESTAMP())",
+                (watch_person_id, data.category_id),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                assignment_id = int(existing[0])
+                idempotent = True
+            else:
+                await cur.execute(
+                    "INSERT INTO watch_assignments "
+                    "(person_id, category_id, valid_from, valid_to, basis, source_type, source_ref, created_by, updated_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (watch_person_id, data.category_id, valid_from, data.valid_to, data.basis.strip(),
+                     "registry", f"registry-person:{person_id}", user["id"], user["id"]),
+                )
+                assignment_id = int(cur.lastrowid)
+                idempotent = False
+                await cur.execute(
+                    "INSERT INTO watch_assignment_versions (assignment_id, version_no, snapshot_json, changed_by) "
+                    "VALUES (%s,1,%s,%s)",
+                    (assignment_id, "{}", user["id"]),
+                )
+                backfill_required = True
+        if backfill_required:
+            await backfill_assignment_snapshots(conn, assignment_id)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "registry.person.tag.create",
+        target_type="registry_housing_person",
+        target_name=str(person_id),
+        detail={"category_id": data.category_id, "idempotent": idempotent},
+        **request_audit_fields(request),
+    )
+    return {
+        "id": assignment_id,
+        "message": "该人员已拥有此标签" if idempotent else "人员标签已添加",
+        "idempotent": idempotent,
+    }
+
+
+@router.post("/people/{person_id}/tags/{assignment_id}/release")
+async def release_housing_person_tag(
+    person_id: int,
+    assignment_id: int,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_WATCH_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    """Release a linked personnel tag without exposing the legacy management page."""
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id FROM registry_housing_people WHERE id=%s AND status='active' FOR UPDATE",
+                (person_id,),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(404, "辖区人员档案不存在")
+            await _housing_person_scope(cur, person_id, user, REGISTRY_WATCH_MANAGE)
+            await cur.execute(
+                "SELECT assignment.person_id, assignment.category_id, assignment.source_type, "
+                "assignment.source_ref, assignment.status, assignment.valid_from, assignment.valid_to, "
+                "assignment.released_at, assignment.basis "
+                "FROM watch_assignments assignment "
+                "JOIN watch_people watch_person ON watch_person.id=assignment.person_id "
+                "JOIN registry_housing_people registry_person ON registry_person.id=%s "
+                "WHERE assignment.id=%s AND (watch_person.registry_person_id=registry_person.id "
+                "OR (watch_person.registry_person_id IS NULL AND watch_person.identity_hmac IS NOT NULL "
+                "AND watch_person.identity_hmac=registry_person.identity_hmac)) FOR UPDATE",
+                (person_id, assignment_id),
+            )
+            before = await cur.fetchone()
+            if not before:
+                raise HTTPException(404, "人员标签不存在")
+            if before[4] == "released" or before[7] is not None:
+                idempotent = True
+            else:
+                idempotent = False
+                await cur.execute(
+                    "SELECT COALESCE(MAX(version_no),0)+1 FROM watch_assignment_versions WHERE assignment_id=%s",
+                    (assignment_id,),
+                )
+                version_no = int((await cur.fetchone())[0])
+                snapshot = {
+                    "person_id": before[0], "category_id": before[1], "source_type": before[2],
+                    "source_ref": before[3], "status": before[4], "valid_from": _iso(before[5]),
+                    "valid_to": _iso(before[6]), "released_at": _iso(before[7]), "basis": before[8],
+                }
+                await cur.execute(
+                    "INSERT INTO watch_assignment_versions (assignment_id, version_no, snapshot_json, changed_by) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (assignment_id, version_no, json.dumps(snapshot, ensure_ascii=False), user["id"]),
+                )
+                await cur.execute(
+                    "UPDATE watch_assignments SET released_at=UTC_TIMESTAMP(), status='released', updated_by=%s "
+                    "WHERE id=%s",
+                    (user["id"], assignment_id),
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "registry.person.tag.release",
+        target_type="registry_housing_person",
+        target_name=str(person_id),
+        detail={"assignment_id": assignment_id, "idempotent": idempotent},
+        **request_audit_fields(request),
+    )
+    return {
+        "message": "人员标签已解除" if not idempotent else "人员标签已处于解除状态",
+        "idempotent": idempotent,
     }
 
 

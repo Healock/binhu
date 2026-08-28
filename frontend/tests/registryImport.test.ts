@@ -155,3 +155,33 @@ test('房屋档案展示最近走访并按页读取历史走访和星级', () =>
   assert.match(pageSource, /onChange: nextPage => void loadPropertyVisits\(nextPage\)/)
   assert.match(pageSource, /title: '星级评定'/)
 })
+
+test('人员标签整合到人员档案并保留独立权限和历史', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+  const appSource = readFileSync(
+    new URL('../src/App.tsx', import.meta.url),
+    'utf8',
+  )
+  const navigationSource = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /registry\.watch\.view/)
+  assert.match(pageSource, /registry\.watch\.manage/)
+  assert.match(pageSource, /按人员标签筛选/)
+  assert.match(pageSource, /title="人员标签"/)
+  assert.match(pageSource, /标签历史|tag_assignments/)
+  assert.match(pageSource, /releasePersonTag/)
+  assert.match(apiSource, /people\/\$\{id\}\/tags\/\$\{assignmentId\}\/release/)
+  assert.match(appSource, /path="\/watch-people" element=\{<Navigate to="\/registry" replace \/>\}/)
+  assert.doesNotMatch(appSource, /import WatchPeopleManagement/)
+  assert.doesNotMatch(navigationSource, /id: 'watch_people'/)
+})

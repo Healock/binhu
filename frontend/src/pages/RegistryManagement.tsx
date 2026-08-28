@@ -22,11 +22,12 @@ import {
   type RegistryPerson,
   type RegistryProperty,
   type RegistryPropertyVisit,
+  type WatchCategory,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
 type TabKey = 'properties' | 'people' | 'organizations' | 'merges' | 'candidates' | 'conflicts' | 'issues' | 'imports'
-type ModalKind = 'property' | 'person' | 'organization' | 'phone' | 'alias' | 'personRelation' | 'organizationRelation' | 'merge'
+type ModalKind = 'property' | 'person' | 'organization' | 'phone' | 'alias' | 'personRelation' | 'organizationRelation' | 'merge' | 'personTag'
 
 const housingCategoryOptions = [
   { value: '', label: '全部住房类型' },
@@ -111,6 +112,8 @@ export default function RegistryManagement() {
   const [selected, setSelected] = useState<any>(null)
   const [detailKind, setDetailKind] = useState<'property' | 'person' | 'organization' | null>(null)
   const [roleTypes, setRoleTypes] = useState<Array<{ id: number; name: string; subject_type: 'person' | 'organization'; is_active: boolean }>>([])
+  const [watchCategories, setWatchCategories] = useState<WatchCategory[]>([])
+  const [categoryIds, setCategoryIds] = useState<number[]>([])
   const [detail, setDetail] = useState<any>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [propertyVisits, setPropertyVisits] = useState<RegistryPropertyVisit[]>([])
@@ -125,6 +128,8 @@ export default function RegistryManagement() {
   const [form] = Form.useForm()
   const canManage = user?.permissions?.includes('registry.property.manage')
   const canReview = user?.permissions?.includes('registry.import.manage')
+  const canViewTags = Boolean(user?.permissions?.includes('registry.watch.view'))
+  const canManageTags = Boolean(user?.permissions?.includes('registry.watch.manage'))
 
   useEffect(() => () => {
     if (certificatePreview?.url) URL.revokeObjectURL(certificatePreview.url)
@@ -175,9 +180,9 @@ export default function RegistryManagement() {
         setTotal(response.total)
       }
       if (tab === 'people') {
-        const response = debouncedKeyword
-          ? await registryApi.searchPeople({ name: debouncedKeyword, page: 1, page_size: 100 })
-          : await registryApi.people({ page_size: 100 })
+        const response = debouncedKeyword || categoryIds.length > 0
+          ? await registryApi.searchPeople({ name: debouncedKeyword, category_ids: categoryIds, page: 1, page_size: 100 })
+          : await registryApi.people({ category_ids: categoryIds, page_size: 100 })
         if (requestId !== listRequestId.current) return
         setPeople(response.data)
         setTotal(response.total)
@@ -233,11 +238,17 @@ export default function RegistryManagement() {
   useEffect(() => {
     void getGridCommunities().then(items => setCommunities(items.filter(item => item.is_active))).catch(() => undefined)
     void registryApi.roleTypes().then(response => setRoleTypes(response.data.filter(item => item.is_active))).catch(() => undefined)
-  }, [])
+    if (canViewTags) {
+      void registryApi.watchCategories().then(response => setWatchCategories(response.data.filter(item => item.is_active))).catch(() => undefined)
+    } else {
+      setWatchCategories([])
+      setCategoryIds([])
+    }
+  }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, page, pageSize])
 
   const applyCertificateRun = (run: RegistryCertificateSourceRun, announce = false) => {
     const previousStatus = certificateRunRef.current?.status
@@ -288,11 +299,12 @@ export default function RegistryManagement() {
   const communityOptions = useMemo(() => communities.map(item => ({ value: item.id, label: item.name })), [communities])
 
   const openCreate = (kind: ModalKind) => {
-    setSelected(null)
+    if (kind !== 'personTag') setSelected(null)
     form.resetFields()
     if (kind === 'property') form.setFieldsValue({ status: 'active' })
     if (kind === 'person') form.setFieldsValue({ verification_status: 'unverified', is_temporary: false })
     if (kind === 'organization') form.setFieldsValue({ organization_type: 'other' })
+    if (kind === 'personTag') form.setFieldsValue({ category_id: undefined, basis: '' })
     setModal(kind)
   }
 
@@ -384,17 +396,32 @@ export default function RegistryManagement() {
         await registryApi.addPropertyOrganizationRelation(selected.id, values)
       } else if (modal === 'merge' && selected) {
         await registryApi.mergePerson(selected.id, values)
+      } else if (modal === 'personTag' && selected) {
+        await registryApi.addPersonTag(selected.id, values)
       }
       message.success('保存成功')
       setModal(null)
       await load()
       if (detailOpen && selected && detailKind === 'property' && ['alias', 'personRelation', 'organizationRelation'].includes(modal || '')) setDetail(await registryApi.property(selected.id))
       if (detailOpen && selected && detailKind === 'person' && modal === 'phone') setDetail(await registryApi.person(selected.id))
+      if (detailOpen && selected && detailKind === 'person' && modal === 'personTag') setDetail(await registryApi.person(selected.id))
       if (detailOpen && selected && detailKind === 'organization' && modal === 'organizationRelation') setDetail(await registryApi.organization(selected.id))
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const releasePersonTag = async (row: any) => {
+    if (!selected?.id || !row?.assignment_id) return
+    try {
+      await registryApi.releasePersonTag(selected.id, row.assignment_id)
+      message.success('标签已解除')
+      if (selected?.id && detailKind === 'person') setDetail(await registryApi.person(selected.id))
+      await load()
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '标签解除失败')
     }
   }
 
@@ -532,12 +559,19 @@ export default function RegistryManagement() {
   const personColumns: TableColumnsType<RegistryPerson> = [
     { title: '姓名', dataIndex: 'name', width: 130 },
     ...(user?.role === 'super_admin' ? [{ title: '身份证号', dataIndex: 'identity_number', width: 210, render: (value: string) => value || '未登记' }] : []),
+    ...(canViewTags ? [{
+      title: '人员标签', dataIndex: 'categories', width: 260,
+      render: (values: RegistryPerson['categories']) => values?.length
+        ? <Space size={[4, 4]} wrap>{values.map(item => <Tag key={item.assignment_id} color={item.color}>{item.name}</Tag>)}</Space>
+        : <span className="text-[var(--app-text-secondary)]">暂无有效标签</span>,
+    }] : []),
     { title: '核实状态', dataIndex: 'verification_status', width: 110 },
     { title: '临时档案', dataIndex: 'is_temporary', width: 100, render: value => value ? <Tag color="gold">是</Tag> : '否' },
     { title: '状态', dataIndex: 'status', width: 90 },
     { title: '操作', key: 'actions', width: 250, render: (_, row) => <Space>
       <Button size="small" onClick={() => openDetail('person', row)}>详情</Button>
       {canManage && <Button size="small" onClick={() => openEdit('person', row)}>编辑</Button>}
+      {canManageTags && <Button size="small" onClick={() => { setSelected(row); openCreate('personTag') }}>加标签</Button>}
       {canManage && <Button size="small" onClick={() => { setSelected(row); form.resetFields(); setModal('merge') }}>合并</Button>}
     </Space> },
   ]
@@ -662,7 +696,19 @@ export default function RegistryManagement() {
       className="w-full md:w-36"
     />
   </> : ['people', 'organizations'].includes(tab)
-    ? renderSearchInput(tab === 'people' ? '搜索人员姓名' : '搜索机构名称')
+    ? <>
+      {renderSearchInput(tab === 'people' ? '搜索人员姓名' : '搜索机构名称')}
+      {tab === 'people' && canViewTags && <Select
+        mode="multiple"
+        allowClear
+        value={categoryIds}
+        onChange={value => setCategoryIds(value)}
+        options={watchCategories.map(item => ({ value: item.id, label: item.name }))}
+        maxTagCount="responsive"
+        placeholder="按人员标签筛选"
+        className="w-full md:w-72"
+      />}
+    </>
     : undefined
 
   const toolbarNotice = tab === 'issues' ? <Alert
@@ -739,6 +785,7 @@ export default function RegistryManagement() {
             setTab(value as TabKey)
             setKeyword('')
             setCommunityId(undefined)
+            setCategoryIds([])
             setHousingCategory('')
             setCertificateStatus('')
             setPage(1)
@@ -835,7 +882,7 @@ export default function RegistryManagement() {
         </div>
       </Panel>
 
-      <Modal open={Boolean(modal)} title={modal === 'property' ? `${selected ? '编辑' : '新增'}房屋档案` : modal === 'person' ? `${selected ? '编辑' : '新增'}辖区人员` : modal === 'organization' ? `${selected ? '编辑' : '新增'}机构档案` : modal === 'phone' ? '添加联系电话' : modal === 'alias' ? '添加地址别名' : modal === 'personRelation' ? '添加房屋人员关系' : modal === 'organizationRelation' ? '添加房屋机构关系' : '合并人员档案'} onCancel={() => setModal(null)} onOk={() => void save()} confirmLoading={saving} destroyOnClose>
+      <Modal open={Boolean(modal)} title={modal === 'property' ? `${selected ? '编辑' : '新增'}房屋档案` : modal === 'person' ? `${selected ? '编辑' : '新增'}辖区人员` : modal === 'organization' ? `${selected ? '编辑' : '新增'}机构档案` : modal === 'phone' ? '添加联系电话' : modal === 'alias' ? '添加地址别名' : modal === 'personRelation' ? '添加房屋人员关系' : modal === 'organizationRelation' ? '添加房屋机构关系' : modal === 'personTag' ? `为${selected?.name || '人员'}添加标签` : '合并人员档案'} onCancel={() => setModal(null)} onOk={() => void save()} confirmLoading={saving} destroyOnClose>
         <Form form={form} layout="vertical" preserve={false}>
           {modal === 'property' && <>
             <Form.Item name="community_id" label="社区" rules={[{ required: true }]}><Select showSearch options={communityOptions} /></Form.Item>
@@ -851,6 +898,13 @@ export default function RegistryManagement() {
             <Form.Item name="name" label="姓名" rules={[{ required: true }]}><Input /></Form.Item>
             <Form.Item name="identity_number" label="身份证号"><Input /></Form.Item>
             <Form.Item name="verification_status" label="核实状态"><Select options={[{ value: 'unverified', label: '未核实' }, { value: 'pending', label: '待核实' }, { value: 'verified', label: '已核实' }]} /></Form.Item>
+          </>}
+          {modal === 'personTag' && <>
+            <Alert type="info" showIcon message="标签将直接归档到该人员" description="标签仍保留有效期和历史版本，并继续用于在线任务识别。" />
+            <Form.Item name="category_id" label="标签分类" rules={[{ required: true, message: '请选择标签分类' }]}>
+              <Select showSearch optionFilterProp="label" options={watchCategories.map(item => ({ value: item.id, label: item.name }))} />
+            </Form.Item>
+            <Form.Item name="basis" label="依据"><Input.TextArea rows={3} placeholder="可填写来源或核实依据" /></Form.Item>
           </>}
           {modal === 'organization' && <>
             <Form.Item name="name" label="机构名称" rules={[{ required: true }]}><Input /></Form.Item>
@@ -938,6 +992,33 @@ export default function RegistryManagement() {
             </div>
           </section>}
           <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'person' && canViewTags && <Panel
+            title="人员标签"
+            extra={canManageTags ? <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate('personTag')}>添加标签</Button> : undefined}
+          >
+            <Space direction="vertical" className="w-full" size="middle">
+              <Space size={[4, 4]} wrap>
+                {(detail.categories || []).length
+                  ? detail.categories.map((item: any) => <Tag key={item.assignment_id} color={item.color}>{item.name}</Tag>)
+                  : <span className="text-[var(--app-text-secondary)]">暂无有效标签</span>}
+              </Space>
+              {(detail.tag_assignments || []).length > 0 && <AppTable
+                rowKey="assignment_id"
+                size="small"
+                pagination={false}
+                dataSource={detail.tag_assignments}
+                columns={[
+                  { title: '标签', dataIndex: 'category_name', render: (value: string, row: any) => <Tag color={row.color}>{value}</Tag> },
+                  { title: '生效时间', dataIndex: 'valid_from', width: 170, render: value => value ? formatUTCTime(value, systemTimezone) : '-' },
+                  { title: '结束/解除', width: 170, render: (_: unknown, row: any) => row.released_at || row.valid_to ? formatUTCTime(row.released_at || row.valid_to, systemTimezone) : '持续有效' },
+                  { title: '状态', dataIndex: 'status', width: 90, render: value => value === 'active' ? <Tag color="green">有效</Tag> : <Tag>{value}</Tag> },
+                  { title: '依据', dataIndex: 'basis', ellipsis: true },
+                  { title: '操作', width: 90, render: (_: unknown, row: any) => canManageTags && row.status === 'active' && !row.released_at && <Popconfirm title="确认解除该标签？" onConfirm={() => void releasePersonTag(row)}><Button type="link" size="small">解除</Button></Popconfirm> },
+                ]}
+                scroll={{ x: 800 }}
+              />}
+            </Space>
+          </Panel>}
           {detailKind === 'property' && <Panel title="历史走访与星级评定" extra={<Tag color={propertyVisitTotal ? 'blue' : 'default'}>{propertyVisitTotal} 次走访</Tag>}>
             <AppTable
               rowKey="id"

@@ -234,14 +234,6 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         permission: 'registry.property.view',
       },
       {
-        id: 'watch_people',
-        path: '/watch-people',
-        label: '人员标签',
-        shortLabel: '人员标签',
-        icon: 'tags',
-        permission: 'registry.watch.view',
-      },
-      {
         id: 'users',
         path: '/users',
         label: '用户管理',

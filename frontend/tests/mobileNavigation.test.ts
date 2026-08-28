@@ -514,3 +514,20 @@ test('工单流程配置只从设置页进入，不再出现在主侧边栏导�
   assert.doesNotMatch(navigation, /id: 'workflow_config'/)
   assert.match(settings, /path: '\/settings\/workflow', label: '工单流程配置'/)
 })
+
+test('人员标签不再作为独立导航项，旧 Dock 配置会自动清理', () => {
+  const source = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+  const config = normalizeMobileDockConfig({
+    version: 2,
+    groups: [{ id: 'resources', items: ['registry', 'watch_people' as any] }],
+  }, 'admin', ['registry.property.view', 'registry.watch.view'])
+
+  assert.doesNotMatch(source, /id: 'watch_people'/)
+  assert.deepEqual(
+    config.groups.find(group => group.id === 'resources')?.items,
+    ['registry'],
+  )
+})

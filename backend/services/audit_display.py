@@ -129,6 +129,8 @@ ACTION_LABELS: dict[str, str] = {
     "registry.alias.status": "修改地址别名状态",
     "registry.person.create": "辖区人员档案创建",
     "registry.person.update": "修改辖区人员档案",
+    "registry.person.tag.create": "从人员档案新增标签",
+    "registry.person.tag.release": "从人员档案解除标签",
     "registry.person.merge": "合并辖区人员档案",
     "registry.person.merge_undo": "撤销辖区人员合并",
     "registry.phone.create": "新增辖区人员联系电话",

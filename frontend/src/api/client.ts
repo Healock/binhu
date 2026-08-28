@@ -4033,6 +4033,14 @@ export interface RegistryPerson {
   verification_status: string
   status: string
   updated_at: string | null
+  categories?: Array<{
+    assignment_id: number
+    id: number
+    code: string
+    name: string
+    color: string
+    alert_level: string
+  }>
 }
 
 export interface RegistryOrganization {
@@ -4306,7 +4314,7 @@ export const registryApi = {
   async mergeHistory(params: { page?: number; page_size?: number } = {}) {
     return (await api.get('/registry/merges', { ...activeRequest, params })).data
   },
-  async people(params: { page?: number; page_size?: number } = {}) {
+  async people(params: { page?: number; page_size?: number; category_ids?: number[] } = {}) {
     return (await api.get('/registry/people', { ...activeRequest, params })).data as {
       data: RegistryPerson[]; total: number; page: number; page_size: number
     }
@@ -4330,6 +4338,12 @@ export const registryApi = {
   },
   async addPhone(id: number, payload: Record<string, unknown>) {
     return (await api.post(`/registry/people/${id}/phones`, payload)).data
+  },
+  async addPersonTag(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/registry/people/${id}/tags`, payload, activeRequest)).data
+  },
+  async releasePersonTag(id: number, assignmentId: number) {
+    return (await api.post(`/registry/people/${id}/tags/${assignmentId}/release`, {}, activeRequest)).data
   },
   async organizations(params: { keyword?: string; page?: number; page_size?: number } = {}) {
     return (await api.get('/registry/organizations', { ...activeRequest, params })).data as {
