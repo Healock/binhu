@@ -293,6 +293,22 @@ export async function fetchWithAuth(
   return response
 }
 
+export async function fetchAuthenticatedImageBlob(input: RequestInfo | URL): Promise<Blob> {
+  const response = await fetchWithAuth(
+    input,
+    { method: 'GET' },
+    { markActivity: false },
+  )
+  if (!response.ok) {
+    throw new Error(`图片读取失败（${response.status}）`)
+  }
+  const blob = await response.blob()
+  if (!blob.type.startsWith('image/')) {
+    throw new Error('服务器返回的不是图片')
+  }
+  return blob
+}
+
 api.interceptors.request.use((config) => {
   const deviceHeaders = getClientDeviceHeaders()
   config.headers.set('X-Binhu-Client-Platform', deviceHeaders['X-Binhu-Client-Platform'])

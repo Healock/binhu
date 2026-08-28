@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Avatar, Drawer, Input, List, Popover, Tag } from 'antd'
+import { Drawer, Input, List, Popover, Tag } from 'antd'
 import { TeamOutlined, UserOutlined } from '@ant-design/icons'
 import { getPresenceUsers, sendPresenceHeartbeat } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import useMobileViewport from '../hooks/useMobileViewport'
 import type { PresenceUser } from '../types'
+import { AuthenticatedAvatar } from './AuthenticatedImage'
 
 const CLIENT_STORAGE_KEY = 'binhu_presence_client_id'
 const HEARTBEAT_INTERVAL_MS = 30_000
@@ -58,9 +59,9 @@ function PresenceUsersPanel({ users }: { users: PresenceUser[] }) {
             <List.Item>
               <List.Item.Meta
                 avatar={(
-                  <Avatar src={item.avatar_url || undefined} icon={<UserOutlined />}>
+                  <AuthenticatedAvatar src={item.avatar_url} icon={<UserOutlined />}>
                     {item.display_name.slice(0, 1)}
-                  </Avatar>
+                  </AuthenticatedAvatar>
                 )}
                 title={item.display_name}
                 description={(

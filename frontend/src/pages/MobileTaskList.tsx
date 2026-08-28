@@ -51,6 +51,7 @@ import MobileTaskAssignmentWorkbench from '../components/MobileTaskAssignmentWor
 import QmfFeedbackStatus, { QMF_FEEDBACK_OPTIONS } from '../components/QmfFeedbackStatus'
 import ResidenceRegistrationStatus from '../components/ResidenceRegistrationStatus'
 import RegistrationLinkStatus from '../components/RegistrationLinkStatus'
+import UnverifiableReviewNotice from '../components/UnverifiableReviewNotice'
 import FullchainArchivePanel from '../components/FullchainArchivePanel'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -1233,22 +1234,7 @@ export default function MobileTaskList({
                     </dl>
                   )}
                   {task.review_flow && !['resolved', 'archived'].includes(task.review_flow.state) && (
-                    <div className="grid gap-1 rounded-lg border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/30 dark:text-amber-100">
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
-                        <span>{task.review_flow.state_label}</span>
-                        {task.review_flow.review_due_date && <span>复核截止：{task.review_flow.review_due_date}</span>}
-                        {['initial_extension', 'deep_extension'].includes(task.review_flow.state) && (
-                          <span>本轮反馈：{task.review_flow.feedback_submitted ? '已记录' : '未记录'}</span>
-                        )}
-                      </div>
-                      {task.review_flow.state === 'source_exception' ? (
-                        <span>来源信息发生变化，自动流转已经暂停，请由基础管控复核。</span>
-                      ) : task.review_flow.state === 'final_unverifiable' ? (
-                        <span>已形成最终无法核实，等待在当前业务中导出归档。</span>
-                      ) : (
-                        <strong>结果已核实时请立即修改核查结果，不要只填写二次反馈。</strong>
-                      )}
-                    </div>
+                    <UnverifiableReviewNotice flow={task.review_flow} showStateLabel />
                   )}
                   {['analyzed', 'initial_extension', 'deep_pending', 'deep_extension'].includes(task.review_stage) && task.summary.analysis && (
                     <div className="mobile-task-analysis">

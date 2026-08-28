@@ -7832,6 +7832,48 @@ html[data-theme='dark'] .dock-config-drag-handle:hover {
 html[data-theme='dark'] .fullscreen-notice { background: rgb(2 6 23 / 0.62); }
 html[data-theme='dark'] .fullscreen-notice__panel { box-shadow: 0 24px 70px rgb(0 0 0 / 0.48); }
 
+.mobile-task-review-notice {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 6px 0 6px 9px;
+  border-left: 3px solid color-mix(in srgb, var(--app-warning) 70%, transparent);
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mobile-task-review-notice--terminal {
+  border-left-color: color-mix(in srgb, var(--app-danger) 65%, transparent);
+}
+
+.mobile-task-review-notice__meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+}
+
+.mobile-task-review-notice__stage {
+  color: var(--app-text-strong);
+  font-weight: 600;
+}
+
+.mobile-task-review-notice__reminder {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  color: var(--app-warning);
+  cursor: help;
+  font-weight: 600;
+}
+
+.mobile-task-review-notice__message {
+  color: var(--app-text-secondary);
+}
+
 @media (max-width: 640px) {
   .fullscreen-notice { padding: 12px; }
   .fullscreen-notice__panel { max-height: calc(100vh - 24px); padding: 24px 20px; border-radius: 14px; }

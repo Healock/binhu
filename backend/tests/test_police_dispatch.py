@@ -124,6 +124,70 @@ def test_existing_quick_dispatch_returns_original_batch_and_task(monkeypatch):
     assert cursor.execute.await_args.args[1] == ("a" * 64,)
 
 
+def test_quick_dispatch_creates_batch_and_task_through_full_transaction(monkeypatch):
+    cursor = AsyncMock()
+    cursor.lastrowid = 0
+    executed_sql: list[str] = []
+
+    async def execute(query, _params=None):
+        normalized = " ".join(str(query).split())
+        executed_sql.append(normalized)
+        if "INSERT INTO _police_dispatch_batches" in normalized:
+            cursor.lastrowid = 91
+        elif "INSERT INTO _police_dispatch_tasks" in normalized:
+            cursor.lastrowid = 92
+
+    cursor.execute.side_effect = execute
+    connection = MagicMock()
+    connection.begin = AsyncMock()
+    connection.commit = AsyncMock()
+    connection.rollback = AsyncMock()
+    connection.cursor.return_value.__aenter__ = AsyncMock(return_value=cursor)
+    connection.cursor.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    monkeypatch.setattr("routers.police_dispatch._existing_quick_dispatch", AsyncMock(return_value=None))
+    monkeypatch.setattr("routers.police_dispatch._communities", AsyncMock(return_value=[{
+        "id": 3, "name": "测试社区", "enabled": True,
+    }]))
+    monkeypatch.setattr("routers.police_dispatch._refresh_batch_status", AsyncMock())
+    monkeypatch.setattr("routers.police_dispatch._batch_payload", AsyncMock(return_value={
+        "id": 91, "counts": {"pending_publish": 1},
+    }))
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", AsyncMock())
+    monkeypatch.setattr("routers.police_dispatch.request_audit_fields", lambda _request: {})
+
+    payload = QuickDispatchCreate(
+        request_id="quick-dispatch-test-transaction-0001",
+        profile="fullchain_processed",
+        fields={
+            "来源": "临时指令",
+            "姓名": "测试人员",
+            "身份证号": "32050020000101001X",
+            "电话号码": "18800000001",
+            "地址": "测试地址",
+            "登记情况": "流口未登记",
+        },
+        community_id=3,
+        business_date=date(2026, 8, 28),
+    )
+
+    result = asyncio.run(create_quick_dispatch(
+        payload,
+        MagicMock(),
+        {"id": 7, "username": "tester", "display_name": "测试人员"},
+        connection,
+    ))
+
+    assert result["status"] == "success"
+    assert result["batch"]["id"] == 91
+    assert result["task_id"] == 92
+    assert any("INSERT INTO _police_dispatch_batches" in query for query in executed_sql)
+    assert any("INSERT INTO _police_dispatch_tasks" in query for query in executed_sql)
+    connection.begin.assert_awaited_once()
+    connection.commit.assert_awaited_once()
+    connection.rollback.assert_not_awaited()
+
+
 def test_quick_dispatch_profiles_cover_all_supported_business_tables():
     profiles = _quick_dispatch_profiles()
     assert set(profiles) == {

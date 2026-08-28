@@ -32,6 +32,7 @@ import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import QmfFeedbackStatus from './QmfFeedbackStatus'
 import ResidenceRegistrationStatus from './ResidenceRegistrationStatus'
 import RegistrationLinkStatus from './RegistrationLinkStatus'
+import UnverifiableReviewNotice from './UnverifiableReviewNotice'
 import { getResponsiveColumns, type ResponsiveColumns } from './responsiveTable'
 
 const STATE_LABELS = {
@@ -957,15 +958,7 @@ export default function MobileTaskTable({
               <RegistrationLinkStatus link={task.registration_link} compact />
             </div>
             {task.review_flow && !['resolved', 'archived'].includes(task.review_flow.state) && (
-              <div className="grid gap-0.5 rounded border border-amber-300/70 bg-amber-50/80 px-2 py-1.5 text-xs leading-5 text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/30 dark:text-amber-100">
-                {task.review_flow.review_due_date && <span>复核截止：{task.review_flow.review_due_date}</span>}
-                {['initial_extension', 'deep_extension'].includes(task.review_flow.state) && (
-                  <span>本轮反馈：{task.review_flow.feedback_submitted ? '已记录' : '未记录'}</span>
-                )}
-                {!['final_unverifiable', 'source_exception'].includes(task.review_flow.state) && (
-                  <strong>核实后请立即修改核查结果</strong>
-                )}
-              </div>
+              <UnverifiableReviewNotice flow={task.review_flow} />
             )}
           </div>
         )

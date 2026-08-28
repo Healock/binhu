@@ -449,13 +449,17 @@ test('两级研判状态在卡片、表格和详情中直接提示复核信息',
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
+  const noticeSource = readFileSync(
+    new URL('../src/components/UnverifiableReviewNotice.tsx', import.meta.url),
+    'utf8',
+  )
   for (const source of [listSource, tableSource, detailSource]) {
-    assert.match(source, /复核截止/)
-    assert.match(source, /本轮反馈/)
+    assert.match(source, /UnverifiableReviewNotice/)
   }
-  assert.match(listSource, /结果已核实时请立即修改核查结果/)
-  assert.match(tableSource, /核实后请立即修改核查结果/)
-  assert.match(detailSource, /不要只填写二次反馈/)
+  assert.match(noticeSource, /复核截止/)
+  assert.match(noticeSource, /本轮反馈/)
+  assert.match(noticeSource, /核实后请及时更新核查结果/)
+  assert.match(noticeSource, /只填写二次反馈不会结束无法核实流程/)
 })
 
 test('研判详情只提供结构化成功失败决定，不再自由保存研判文字', () => {

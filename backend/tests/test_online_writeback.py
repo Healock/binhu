@@ -493,6 +493,24 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(effective["核查结果"], "已登记")
         self.assertEqual(local_sync_state(changes), "conflict")
 
+    def test_source_missing_only_does_not_surface_as_sync_conflict(self):
+        self.assertEqual(local_sync_state([{
+            "field_name": "核查结果",
+            "local_value": "无法核实",
+            "status": "conflict",
+            "error_code": "source_missing",
+        }]), "")
+
+        self.assertEqual(local_sync_state([
+            {"status": "conflict", "error_code": "source_missing"},
+            {"status": "retry", "error_code": "txdocs_api_failed"},
+        ]), "retry")
+
+        self.assertEqual(local_sync_state([
+            {"status": "conflict", "error_code": "source_missing"},
+            {"status": "conflict", "error_code": "remote_changed"},
+        ]), "conflict")
+
     async def test_pending_blank_select_uses_clear_while_text_uses_batch_update(self):
         client = AsyncMock(spec=TxDocsClient)
         client.build_update_cell_request.return_value = {"updateRangeRequest": {}}

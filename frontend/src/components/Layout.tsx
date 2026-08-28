@@ -7,7 +7,7 @@ import {
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Alert, Avatar, Button, Popover } from 'antd'
+import { Alert, Button, Popover } from 'antd'
 import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, ROLE_LABELS } from '../types'
 import {
@@ -23,6 +23,7 @@ import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
 import OnlinePresenceIndicator from './OnlinePresenceIndicator'
 import AdminTaskQueueFloat from './AdminTaskQueueFloat'
+import { AuthenticatedAvatar } from './AuthenticatedImage'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import useMobileViewport from '../hooks/useMobileViewport'
@@ -169,9 +170,9 @@ export default function Layout() {
               aria-label="打开账号菜单"
               className="mobile-account-trigger ml-auto flex shrink-0 items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
             >
-              <Avatar size={24} src={user.avatar_url || undefined} icon={<UserOutlined />}>
+              <AuthenticatedAvatar size={24} src={user.avatar_url} icon={<UserOutlined />}>
                 {getUserDisplayName(user).slice(0, 1)}
-              </Avatar>
+              </AuthenticatedAvatar>
               <span className="hidden sm:inline">{getUserDisplayName(user)}</span>
             </button>
           </Popover>
@@ -261,14 +262,14 @@ export default function Layout() {
         {user && (
           <div className="app-sidebar__footer shrink-0 border-t border-slate-200 p-3">
             <div className="app-sidebar__footer-main flex items-center gap-2.5 px-1 py-1">
-              <Avatar
+              <AuthenticatedAvatar
                 size={36}
-                src={user.avatar_url || undefined}
+                src={user.avatar_url}
                 icon={<UserOutlined />}
                 className="shrink-0 bg-slate-100 text-slate-600"
               >
                 {getUserDisplayName(user).slice(0, 1)}
-              </Avatar>
+              </AuthenticatedAvatar>
               <button
                 type="button"
                 onClick={() => {
