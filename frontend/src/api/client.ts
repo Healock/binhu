@@ -70,8 +70,18 @@ export async function updateVenueCode(id: number, payload: Omit<VenueCodeItem, '
 export async function rotateVenueCodeToken(id: number): Promise<{ token: string; url: string }> {
   return (await api.post(`/venue-codes/${id}/rotate-token`, {})).data
 }
+export function resolveVenueCodeQrImageUrl(
+  imageUrl: string | null | undefined,
+  apiBaseUrl = configuredApiBaseUrl,
+): string | undefined {
+  return resolveApiAssetUrl(imageUrl, apiBaseUrl) || undefined
+}
 export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem; token: string; url: string; image_url?: string }> {
-  return (await api.get(`/venue-codes/${id}/qrcode`)).data
+  const data = (await api.get(`/venue-codes/${id}/qrcode`)).data
+  return {
+    ...data,
+    image_url: resolveVenueCodeQrImageUrl(data.image_url),
+  }
 }
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data
