@@ -172,6 +172,8 @@ class Settings(BaseSettings):
     USER_AVATAR_DIR: str = "../user-avatars"
     FULLCHAIN_ARCHIVE_DIR: str = "../fullchain-archives"
     POLICE_DISPATCH_IMPORT_DIR: str = "../police-dispatch-imports"
+    VENUE_PHOTO_DIR: str = "../venue-photos"
+    VENUE_PHOTO_MAX_BYTES: int = 5 * 1024 * 1024
     FULLCHAIN_ARCHIVE_MAX_ROWS: int = 5000
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 

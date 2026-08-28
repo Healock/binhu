@@ -34,6 +34,55 @@ function normalizeUserAssets(user: User): User {
   }
 }
 
+export interface VenueCodeItem {
+  id: number
+  name: string
+  venue_type: string
+  address: string
+  community_id: number | null
+  community_name: string
+  status: 'active' | 'inactive'
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface VenueVisitItem {
+  id: number
+  venue_id: number
+  venue_name: string
+  name: string
+  identity_number: string
+  phone: string
+  address: string
+  submitted_at: string | null
+  photo: { mime_type: string; size_bytes: number } | null
+}
+
+export async function listVenueCodes(): Promise<{ data: VenueCodeItem[] }> {
+  return (await api.get('/venue-codes')).data
+}
+export async function createVenueCode(payload: Omit<VenueCodeItem, 'id' | 'created_at' | 'updated_at'>): Promise<{ id: number; token: string; url: string }> {
+  return (await api.post('/venue-codes', payload)).data
+}
+export async function updateVenueCode(id: number, payload: Omit<VenueCodeItem, 'id' | 'created_at' | 'updated_at'>): Promise<void> {
+  await api.put(`/venue-codes/${id}`, payload)
+}
+export async function rotateVenueCodeToken(id: number): Promise<{ token: string; url: string }> {
+  return (await api.post(`/venue-codes/${id}/rotate-token`, {})).data
+}
+export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem; token: string; url: string; image_url?: string }> {
+  return (await api.get(`/venue-codes/${id}/qrcode`)).data
+}
+export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
+  return (await api.get('/venue-visits', { params })).data
+}
+export async function exportVenueVisits(params: Record<string, unknown> = {}): Promise<Blob> {
+  return (await api.get('/venue-visits/export', { params, responseType: 'blob' })).data
+}
+export async function getPublicVenueInfo(token: string): Promise<{ venue_id: number; name: string; form_token: string }> {
+  return (await api.get(`/public/venue-codes/${encodeURIComponent(token)}`)).data
+}
+
 export interface MaintenanceStatus {
   enabled: boolean
   active: boolean

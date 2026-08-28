@@ -12,4 +12,5 @@ xlrd==2.0.1
 python-multipart==0.0.32
 defusedxml==0.7.1
 Pillow==12.2.0
+qrcode==8.2
 WeasyPrint==69.0

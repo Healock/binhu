@@ -218,6 +218,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         permission: 'police.address.manage',
       },
       {
+        id: 'venue',
+        path: '/venue-codes',
+        label: '场所码管理',
+        shortLabel: '场所码',
+        icon: 'resources',
+        permission: 'venue.view',
+      },
+      {
         id: 'registry',
         path: '/registry',
         label: '辖区档案',
