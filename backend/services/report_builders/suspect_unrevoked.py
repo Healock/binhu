@@ -1,7 +1,7 @@
 """疑似未注销模型三日报生成器。
 
-模型三没有“现住址”这一中间核查字段，核查结果只有：
-近期返吴、在吴、离吴。因此结果为空时算未核查，出现任一有效结果时算已完成，
+模型三没有“现住址”这一中间核查字段，核查结果包括：
+近期返吴、在吴、离吴、非本辖区。因此结果为空时算未核查，出现任一有效结果时算已完成，
 “已核查”固定为 0。
 
 历史错拼值“近期反吴”继续按已完成兼容，但不再作为新选项展示。
@@ -16,7 +16,7 @@ class SuspectUnrevokedBuilder(BaseReportBuilder):
     table_suffix = "suspectUnrevoked"
     community_column = "下发社区"
     result_column = "核查结果"
-    valid_results = ("近期返吴", "近期反吴", "在吴", "离吴")
+    valid_results = ("近期返吴", "近期反吴", "在吴", "离吴", "非本辖区")
     see_base_keywords = list(valid_results)
 
     def ledger_state_sql(self, alias: str) -> str:

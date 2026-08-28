@@ -18,6 +18,7 @@ from services.qmf_status import (
 )
 from services.qmf_status_scan import (
     SCAN_CONCURRENCY,
+    _current_item_context,
     create_status_scan_run,
     ensure_qmf_status_scan_schema,
     maybe_launch_scheduled_scan,
@@ -160,6 +161,54 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(insert_params[7], STATUS_COMPLETED_MATCH)
         self.assertEqual(insert_params[10], "legacy_manual_or_other")
 
+    async def test_non_jurisdiction_is_persisted_as_a_completed_match(self):
+        cursor = _Cursor([("c" * 64,)])
+        await persist_realtime_qmf_status(
+            _Connection(cursor),
+            parser_type="疑似未注销模型三",
+            row_key="a" * 32,
+            source_id=21,
+            source_revision=4,
+            source_row_hash="b" * 64,
+            platform_result="非本辖区",
+            status=QmfLegacyStatus(
+                state=STATUS_COMPLETED_MATCH,
+                result="非本辖区",
+                result_text="非本辖区（无法提交）",
+                checked_at="2026-08-20 16:19:46",
+            ),
+        )
+
+        insert_params = cursor.statements[-1][1]
+        self.assertEqual(insert_params[6], "非本辖区")
+        self.assertEqual(insert_params[7], STATUS_COMPLETED_MATCH)
+
+    async def test_source_revalidation_accepts_non_jurisdiction(self):
+        identity = "11010519491231002" + "X"
+        cursor = _Cursor([(
+            4,
+            "b" * 64,
+            json.dumps({"身份证号": identity, "核查结果": "非本辖区"}),
+            "completed",
+            1,
+            0,
+            "c" * 64,
+        )])
+        item = {
+            "source_id": 21,
+            "parser_type": "疑似未注销模型三",
+            "row_key": "a" * 32,
+            "expected_revision": 4,
+            "expected_row_hash": "b" * 64,
+            "identity_hmac": "c" * 64,
+            "expected_result": "非本辖区",
+        }
+        with patch("services.qmf_status_scan._pool", return_value=_Pool(cursor)):
+            self.assertEqual(
+                await _current_item_context(item),
+                (identity, "非本辖区"),
+            )
+
     async def test_realtime_unavailable_does_not_replace_snapshot(self):
         cursor = _Cursor()
         await persist_realtime_qmf_status(
@@ -297,6 +346,24 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
             source_rows,
         )
         self.assertEqual(failed["row-a"]["state"], "error")
+
+        non_jurisdiction_rows = [(
+            "row-b",
+            json.dumps({"核查结果": "非本辖区"}),
+        )]
+        non_jurisdiction_snapshot = (
+            "row-b", 11, 1, "b" * 64, "非本辖区",
+            "completed_match", "非本辖区", "2026-08-20 16:19:46",
+            "legacy_manual_or_other", "",
+            datetime.utcnow(), 11, 1, "b" * 64,
+        )
+        non_jurisdiction = await _qmf_status_by_rows(
+            _Cursor([non_jurisdiction_snapshot]),
+            "疑似未注销模型三",
+            non_jurisdiction_rows,
+        )
+        self.assertEqual(non_jurisdiction["row-b"]["state"], "completed_match")
+        self.assertEqual(non_jurisdiction["row-b"]["platform_result"], "非本辖区")
 
 
 if __name__ == "__main__":

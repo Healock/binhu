@@ -214,8 +214,12 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             "completed",
         )
         self.assertEqual(
+            task_state("疑似未注销模型三", {"核查结果": "非本辖区"}),
+            "completed",
+        )
+        self.assertEqual(
             TASK_WORKFLOWS["疑似未注销模型三"].result_options,
-            ("近期返吴", "离吴", "在吴"),
+            ("近期返吴", "离吴", "在吴", "非本辖区"),
         )
 
     def test_unverifiable_always_needs_review_and_uses_analysis_stage(self):

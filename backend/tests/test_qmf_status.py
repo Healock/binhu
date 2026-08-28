@@ -20,6 +20,7 @@ from services.qmf_status import (
     STATUS_UNKNOWN_RESULT,
     STATUS_NON_JURISDICTION,
     normalize_legacy_result,
+    normalize_qmf_status_result,
 )
 
 
@@ -61,6 +62,12 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalize_legacy_result("2", "非本辖区（无法提交）"), (STATUS_UNKNOWN_RESULT, ""))
         self.assertEqual(normalize_legacy_result("5", "其他"), (STATUS_UNKNOWN_RESULT, ""))
         self.assertEqual(normalize_legacy_result("9", "其他"), (STATUS_UNKNOWN_RESULT, ""))
+
+    def test_status_result_normalization_adds_non_jurisdiction_without_expanding_writes(self):
+        self.assertEqual(normalize_qmf_status_result("非本辖区"), "非本辖区")
+        self.assertEqual(normalize_qmf_status_result("非本辖区（无法提交）"), "非本辖区")
+        self.assertEqual(normalize_qmf_status_result("离吴"), "离开不返吴")
+        self.assertEqual(normalize_qmf_status_result("其他"), "")
 
     def test_management_code_and_display_text_are_cross_checked(self):
         expected_by_code = {
@@ -183,6 +190,36 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
 
         missing = await query(None, total=0)
         self.assertEqual(missing.state, STATUS_NOT_FOUND)
+
+    async def test_non_jurisdiction_matches_only_the_new_platform_result(self):
+        async def query(expected_result):
+            async def handler(_request: httpx.Request) -> httpx.Response:
+                return httpx.Response(200, json={
+                    "code": 200,
+                    "data": {
+                        "total": 1,
+                        "list": [response_row(code="5", text="非本辖区（无法提交）")],
+                    },
+                })
+
+            config = QmfStatusConfig(**{
+                **status_config().__dict__,
+                "authorization": "fixture-token",
+            })
+            return await QmfLegacyStatusClient(
+                config=config,
+                transport=httpx.MockTransport(handler),
+            ).query(identity=VALID_IDENTITY, expected_result=expected_result)
+
+        matched = await query("非本辖区")
+        self.assertEqual(matched.state, STATUS_COMPLETED_MATCH)
+        self.assertEqual(matched.result, "非本辖区")
+        self.assertEqual(matched.result_text, "非本辖区（无法提交）")
+        self.assertTrue(matched.matches_platform_result)
+
+        existing_result = await query("离吴")
+        self.assertEqual(existing_result.state, STATUS_NON_JURISDICTION)
+        self.assertIsNone(existing_result.matches_platform_result)
 
     async def test_ambiguous_station_unknown_and_invalid_shape_stop_safely(self):
         async def query(payload):

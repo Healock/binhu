@@ -32,6 +32,7 @@ STATUS_STATION_MISMATCH = "station_mismatch"
 STATUS_UNKNOWN_RESULT = "unknown_result"
 STATUS_NON_JURISDICTION = "non_jurisdiction"
 STATUS_UNAVAILABLE = "unavailable"
+RESULT_NON_JURISDICTION = "非本辖区"
 
 _RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
 _MAX_ATTEMPTS = 2
@@ -110,6 +111,18 @@ def _non_jurisdiction_result(value: Any) -> bool:
         "非本辖区",
         "非本辖区(无法提交)",
     }
+
+
+def normalize_qmf_status_result(value: Any) -> str:
+    """Normalize results accepted by read-only status reconciliation.
+
+    ``非本辖区`` is a valid terminal result in the Binhu task workflow, but it
+    is intentionally excluded from the registration writer's result mapping.
+    """
+    normalized = normalize_qmf_result(value)
+    if normalized:
+        return normalized
+    return RESULT_NON_JURISDICTION if _non_jurisdiction_result(value) else ""
 
 
 def _business_payload(response: httpx.Response) -> Any:
@@ -247,7 +260,7 @@ class QmfLegacyStatusSession:
         expected_result: str,
     ) -> QmfLegacyStatus:
         normalized_identity = normalize_identity(identity)
-        normalized_expected = normalize_qmf_result(expected_result)
+        normalized_expected = normalize_qmf_status_result(expected_result)
         if not normalized_identity or not normalized_expected:
             return QmfLegacyStatus(
                 state=STATUS_UNAVAILABLE,
@@ -416,6 +429,15 @@ class QmfLegacyStatusClient:
                 matches_platform_result=None,
             )
         if result_state == STATUS_NON_JURISDICTION:
+            if normalized_expected == RESULT_NON_JURISDICTION:
+                return QmfLegacyStatus(
+                    state=STATUS_COMPLETED_MATCH,
+                    result=RESULT_NON_JURISDICTION,
+                    result_text="非本辖区（无法提交）",
+                    checked_at=checked_at,
+                    station=station,
+                    matches_platform_result=True,
+                )
             return QmfLegacyStatus(
                 state=STATUS_NON_JURISDICTION,
                 result="非本辖区（无法提交）",
