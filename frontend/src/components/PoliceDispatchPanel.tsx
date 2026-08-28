@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Card, Form, Input, Modal, Progress, Segmented, Select, Space, Statistic, Tag, Upload, message } from 'antd'
 import type { TableColumnsType, UploadFile, UploadProps } from 'antd'
 import { DownloadOutlined, ExportOutlined, InboxOutlined, PlusOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
@@ -35,6 +35,13 @@ function localDate(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
+function createQuickDispatchRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `quick-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+}
+
 export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const navigate = useNavigate()
   const [profiles, setProfiles] = useState<PoliceImportProfile[]>([])
@@ -60,6 +67,8 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   const [quickBusinesses, setQuickBusinesses] = useState<Awaited<ReturnType<typeof getQuickDispatchOptions>>['businesses']>([])
   const [quickProfile, setQuickProfile] = useState('fullchain_processed')
   const [quickForm] = Form.useForm()
+  const quickSubmittingRef = useRef(false)
+  const quickRequestIdRef = useRef(createQuickDispatchRequestId())
   const selectedQuickBusiness = useMemo(
     () => quickBusinesses.find(item => item.key === quickProfile) || quickBusinesses[0],
     [quickBusinesses, quickProfile],
@@ -134,6 +143,8 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
 
   const openQuickDispatch = async () => {
     if (!enabled) return
+    quickSubmittingRef.current = false
+    quickRequestIdRef.current = createQuickDispatchRequestId()
     setQuickOpen(true)
     quickForm.setFieldsValue({ business_date: businessDate, profile: quickProfile })
     if (quickCommunities.length && quickBusinesses.length) return
@@ -153,9 +164,12 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
   }
 
   const submitQuickDispatch = async (values: Record<string, any>) => {
+    if (quickSubmittingRef.current) return
+    quickSubmittingRef.current = true
     setQuickLoading(true)
     try {
       const result = await createQuickPoliceDispatch({
+        request_id: quickRequestIdRef.current,
         profile: String(values.profile || quickProfile),
         fields: Object.fromEntries(Object.entries(values.fields || {}).map(([key, value]) => [key, String(value || '').trim()])),
         community_id: Number(values.community_id),
@@ -163,15 +177,19 @@ export default function PoliceDispatchPanel({ enabled }: { enabled: boolean }) {
         deadline_date: values.deadline_date ? String(values.deadline_date) : undefined,
         created_time: values.created_time ? String(values.created_time).replace('T', ' ') : undefined,
       })
-      message.success(result.message)
+      message.success({ key: 'quick-dispatch-submit', content: result.message })
       setQuickOpen(false)
       quickForm.resetFields()
+      quickRequestIdRef.current = createQuickDispatchRequestId()
       await load(1)
       navigate(`/police-tasks?batch=${result.batch.id}&status=pending_publish&category=all`)
     } catch (reason: any) {
       const detail = reason?.response?.data?.detail
-      message.error(detail || '快捷下发失败')
-    } finally { setQuickLoading(false) }
+      message.error({ key: 'quick-dispatch-submit', content: detail || '快捷下发失败' })
+    } finally {
+      quickSubmittingRef.current = false
+      setQuickLoading(false)
+    }
   }
 
   const columns: TableColumnsType<PoliceDispatchBatch> = [

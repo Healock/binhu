@@ -3334,6 +3334,7 @@ export async function getQuickDispatchOptions(): Promise<{
 }
 
 export interface QuickDispatchPayload {
+  request_id: string
   profile?: string
   fields?: Record<string, string>
   source_name?: string
@@ -3349,7 +3350,7 @@ export interface QuickDispatchPayload {
 }
 
 export async function createQuickPoliceDispatch(payload: QuickDispatchPayload): Promise<{
-  status: 'success'
+  status: 'success' | 'duplicate'
   message: string
   batch: PoliceDispatchBatch
   task_id: number
