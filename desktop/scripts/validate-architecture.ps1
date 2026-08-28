@@ -14,6 +14,7 @@ foreach ($path in @(
     'apps\win7-electron\src\updater.js',
     'apps\win7-electron\scripts\assemble-app.ps1',
     'apps\win7-vxkex\launcher\BinhuWin7Launcher.cpp',
+    'apps\win7-vxkex\launcher\BinhuWin7Launcher.rc',
     'apps\win10-tauri\src-tauri\tauri.conf.json',
     'apps\win10-tauri\installer\BinhuWin10Bootstrap.iss',
     'apps\win10-tauri\scripts\build-installer.ps1',
@@ -92,13 +93,17 @@ if ($win10.packageId -ne 'com.bhzh.binhu.win10.x64' -or $win10.runtimeId -ne 'wi
 $win7Installer = Get-Content (Join-Path $root 'apps\win7-vxkex\installer\BinhuWin7VxKex.iss') -Raw
 if ($win7Installer -notmatch 'ConfigureVxKexFor' -or
     $win7Installer -notmatch 'VxKexLdr\.exe' -or
-    $win7Installer -notmatch 'Binhu-Velopack-Setup\.exe') {
+    $win7Installer -notmatch 'Binhu-Velopack-Setup\.exe' -or
+    $win7Installer -notmatch '\{userdesktop\}\\\{#AppName\}' -or
+    $win7Installer -notmatch 'BinhuWin7Launcher\.exe') {
     throw 'Win7 first-install bootstrapper must run the Velopack setup through VxKex.'
 }
 $win10Installer = Get-Content (Join-Path $root 'apps\win10-tauri\installer\BinhuWin10Bootstrap.iss') -Raw
 if ($win10Installer -notmatch 'MicrosoftEdgeWebView2Setup\.exe' -or
     $win10Installer -notmatch 'Binhu-Velopack-Setup\.exe' -or
-    $win10Installer -notmatch '/silent /install') {
+    $win10Installer -notmatch '/silent /install' -or
+    $win10Installer -notmatch '\{userdesktop\}\\\{#AppName\}' -or
+    $win10Installer -notmatch 'BinhuWin10\.exe') {
     throw 'Win10 first-install bootstrapper must install WebView2 before Velopack.'
 }
 $electronUpdater = Get-Content (Join-Path $root 'apps\win7-electron\src\updater.js') -Raw
@@ -118,9 +123,13 @@ foreach ($api in @('getUpdateStatus', 'checkForUpdates', 'downloadUpdate', 'rest
     if ($preload -notmatch $api -or $bridge -notmatch $api) { throw "Desktop update API is missing: $api" }
 }
 $launcher = Get-Content (Join-Path $root 'apps\win7-vxkex\launcher\BinhuWin7Launcher.cpp') -Raw
-if ($launcher -notmatch 'VxKexLdr\.exe' -or $launcher -notmatch 'BinhuWin7\.exe') {
+if ($launcher -notmatch 'VxKexLdr\.exe' -or $launcher -notmatch 'BinhuWin7\.exe' -or
+    $launcher -notmatch 'IShellLinkW' -or $launcher -notmatch 'kProductName' -or
+    $launcher -notmatch '\.lnk') {
     throw 'Win7 launcher must start the packaged Electron runtime through VxKex.'
 }
+$launcherResource = Get-Content (Join-Path $root 'apps\win7-vxkex\launcher\BinhuWin7Launcher.rc') -Raw
+if ($launcherResource -notmatch 'icon\.ico') { throw 'Win7 launcher resource must embed the application icon.' }
 if ($launcher -notmatch '--binhu-after-update' -or
     $launcher -notmatch 'WaitForSingleObject') {
     throw 'Win7 launcher must wait for Velopack to exit before starting the updated Electron runtime.'

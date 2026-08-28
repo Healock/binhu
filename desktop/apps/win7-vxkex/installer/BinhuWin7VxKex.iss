@@ -50,9 +50,22 @@ VersionInfoCompany={#AppPublisher}
 Source: "{#VxKexInstaller}"; DestName: "VxKex-Setup.exe"; Flags: dontcopy
 Source: "{#VelopackSetup}"; DestName: "Binhu-Velopack-Setup.exe"; Flags: dontcopy
 
+[Icons]
+Name: "{userdesktop}\{#AppName}"; Filename: "{localappdata}\Bhzh\BinhuWin7\current\BinhuWin7Launcher.exe"; WorkingDir: "{localappdata}\Bhzh\BinhuWin7\current"; IconFilename: "{localappdata}\Bhzh\BinhuWin7\current\BinhuWin7Launcher.exe"; IconIndex: 0
+Name: "{userappdata}\Microsoft\Windows\Start Menu\Programs\{#AppName}"; Filename: "{localappdata}\Bhzh\BinhuWin7\current\BinhuWin7Launcher.exe"; WorkingDir: "{localappdata}\Bhzh\BinhuWin7\current"; IconFilename: "{localappdata}\Bhzh\BinhuWin7\current\BinhuWin7Launcher.exe"; IconIndex: 0
+
 [Code]
 var
   VxKexRestartRequired: Boolean;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    DeleteFile(ExpandConstant('{userdesktop}\BinhuDesktop.lnk'));
+    DeleteFile(ExpandConstant('{userappdata}\Microsoft\Windows\Start Menu\Programs\BinhuDesktop.lnk'));
+  end;
+end;
 
 function GetVxKexDirectory(): String;
 begin
