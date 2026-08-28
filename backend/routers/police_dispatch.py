@@ -8,7 +8,6 @@ import io
 import json
 import os
 import tempfile
-import uuid
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -56,6 +55,7 @@ from services.police_dispatch import (
     build_feedback_workbook,
     build_publish_address,
     normalize_lookup,
+    normalize_space,
     parse_dispatch_workbook,
     parser_business_key,
     publish_business_key,
@@ -166,6 +166,11 @@ class ConflictResolution(BaseModel):
 class QuickDispatchCreate(BaseModel):
     """单条临时任务；按已确认的业务表适配器创建，不直接写腾讯表。"""
 
+    request_id: str = Field(
+        min_length=16,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
     profile: str = Field(default="fullchain_processed", max_length=80)
     fields: dict[str, str] = Field(default_factory=dict, max_length=80)
     source_name: str = Field(default="", max_length=300)
@@ -186,6 +191,32 @@ class QuickDispatchCreate(BaseModel):
     @classmethod
     def strip_text(cls, value: str) -> str:
         return str(value).strip()
+
+
+def _quick_dispatch_digest(user_id: int, request_id: str) -> str:
+    return sha256(f"quick:{user_id}:{request_id}".encode("utf-8")).hexdigest()
+
+
+async def _existing_quick_dispatch(cur, batch_digest: str) -> dict[str, Any] | None:
+    await cur.execute("""
+        SELECT b.id, t.id
+        FROM _police_dispatch_batches b
+        LEFT JOIN _police_dispatch_tasks t ON t.batch_id=b.id
+        WHERE b.import_profile='quick_dispatch' AND b.file_sha256=%s
+        ORDER BY t.id
+        LIMIT 1
+    """, (batch_digest,))
+    row = await cur.fetchone()
+    if not row:
+        return None
+    if row[1] is None:
+        raise HTTPException(409, "快捷下发请求正在处理中，请稍后重试")
+    return {
+        "status": "duplicate",
+        "message": "该快捷下发请求已处理，已返回原任务",
+        "batch": await _batch_payload(cur, int(row[0])),
+        "task_id": int(row[1]),
+    }
 
 
 def _clean_preview_token(file_sha256: str, filename: str, sheet_name: str, row_count: int) -> str:
@@ -528,7 +559,7 @@ async def create_quick_dispatch(
     if any(not normalize_space(standard_values.get(field, "")) for field in key_fields):
         raise HTTPException(400, f"快捷下发缺少业务主键字段：{'、'.join(key_fields)}")
     business_key = parser_business_key(parser, standard_values)
-    batch_digest = sha256(f"quick:{uuid.uuid4().hex}".encode()).hexdigest()
+    batch_digest = _quick_dispatch_digest(int(user["id"]), data.request_id)
     reviewer_name = str(
         user.get("display_name")
         or (user.get("member") or {}).get("name")
@@ -539,6 +570,10 @@ async def create_quick_dispatch(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            existing = await _existing_quick_dispatch(cur, batch_digest)
+            if existing:
+                await conn.commit()
+                return existing
             communities = await _communities(cur)
             community = next(
                 (item for item in communities
@@ -589,8 +624,13 @@ async def create_quick_dispatch(
             await _refresh_batch_status(cur, batch_id)
             payload = await _batch_payload(cur, batch_id)
         await conn.commit()
-    except Exception:
+    except Exception as exc:
         await conn.rollback()
+        if getattr(exc, "args", [None])[0] == 1062:
+            async with conn.cursor() as cur:
+                existing = await _existing_quick_dispatch(cur, batch_digest)
+            if existing:
+                return existing
         raise
 
     await record_admin_audit(

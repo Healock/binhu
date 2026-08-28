@@ -55,6 +55,8 @@ from routers.police_dispatch import (
     _task_counts,
     _verify_clean_preview_token,
     _quick_dispatch_profiles,
+    _quick_dispatch_digest,
+    _existing_quick_dispatch,
     create_quick_dispatch,
     delete_batch,
     delete_address,
@@ -82,6 +84,7 @@ def test_quick_dispatch_routes_are_registered_and_reject_invalid_identity_before
     assert route_methods["/api/police-dispatch/quick-dispatch"] == {"POST"}
 
     payload = QuickDispatchCreate(
+        request_id="quick-dispatch-test-0001",
         source_name="临时指令",
         community_id=1,
         person_name="测试人员",
@@ -93,6 +96,32 @@ def test_quick_dispatch_routes_are_registered_and_reject_invalid_identity_before
     )
     with pytest.raises(HTTPException, match="身份证号格式不正确"):
         asyncio.run(create_quick_dispatch(payload, MagicMock(), {"id": 1}, None))
+
+
+def test_quick_dispatch_request_digest_is_stable_per_user_and_request():
+    first = _quick_dispatch_digest(1, "quick-dispatch-test-0001")
+
+    assert first == _quick_dispatch_digest(1, "quick-dispatch-test-0001")
+    assert first != _quick_dispatch_digest(1, "quick-dispatch-test-0002")
+    assert first != _quick_dispatch_digest(2, "quick-dispatch-test-0001")
+
+
+def test_existing_quick_dispatch_returns_original_batch_and_task(monkeypatch):
+    cursor = AsyncMock()
+    cursor.fetchone.return_value = (12, 34)
+    batch_payload = AsyncMock(return_value={"id": 12, "counts": {"total": 1}})
+    monkeypatch.setattr("routers.police_dispatch._batch_payload", batch_payload)
+
+    result = asyncio.run(_existing_quick_dispatch(cursor, "a" * 64))
+
+    assert result == {
+        "status": "duplicate",
+        "message": "该快捷下发请求已处理，已返回原任务",
+        "batch": {"id": 12, "counts": {"total": 1}},
+        "task_id": 34,
+    }
+    batch_payload.assert_awaited_once_with(cursor, 12)
+    assert cursor.execute.await_args.args[1] == ("a" * 64,)
 
 
 def test_quick_dispatch_profiles_cover_all_supported_business_tables():
