@@ -27,6 +27,17 @@ def _xlsx_bytes(rows):
     return output.getvalue()
 
 
+def _xlsx_bytes_with_name(rows):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["姓名", "居民证号"])
+    for row in rows:
+        sheet.append(row)
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def _zip_bytes(files):
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -59,6 +70,14 @@ class ModelThreeSelfOwnedTests(unittest.TestCase):
         content = _zip_bytes({"bad.xlsx": _xlsx_bytes([["社区", "", "", ""]])})
         with self.assertRaisesRegex(SelfOwnedImportError, "没有有效身份证"):
             parse_self_owned_zip(content)
+
+    def test_keeps_optional_names_for_personnel_archive(self):
+        content = _zip_bytes({
+            "named.xlsx": _xlsx_bytes_with_name([["张三", "11010519491231002X"]]),
+        })
+        parsed = parse_self_owned_zip(content)
+        self.assertEqual(len(parsed.names), 1)
+        self.assertEqual(parsed.names[0][1], "张三")
 
     def test_only_blank_or_unverifiable_result_can_be_filled(self):
         self.assertTrue(should_apply_self_owned_result("", False))

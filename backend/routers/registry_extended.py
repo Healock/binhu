@@ -2771,7 +2771,7 @@ async def get_watch_person_detail(
     async with conn.cursor() as cur:
         await _watch_person_scope(cur, person_id, user)
         await cur.execute(
-            "SELECT id, name, identity_number, verification_status, status, source_type, created_at, updated_at "
+            "SELECT id, name, identity_number, verification_status, status, source_type, created_at, updated_at, registry_person_id "
             "FROM watch_people WHERE id=%s",
             (person_id,),
         )
@@ -2799,6 +2799,8 @@ async def get_watch_person_detail(
         "identity_number": (row[2] or "") if user.get("role") == "super_admin" else "",
         "verification_status": row[3], "status": row[4], "source_type": row[5],
         "created_at": _iso(row[6]), "updated_at": _iso(row[7]),
+        "registry_person_id": int(row[8]) if row[8] is not None else None,
+        "is_registry_linked": row[8] is not None,
         "assignments": [
             {"id": int(item[0]), "category_id": int(item[1]), "category_name": item[2],
              "color": item[3], "alert_level": item[4], "valid_from": _iso(item[5]),

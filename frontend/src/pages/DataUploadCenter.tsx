@@ -304,7 +304,7 @@ export default function DataUploadCenter() {
       {canManageQmfSource && (
         <Panel
           title="辖区资产：自购自住人员"
-          description="用于维护辖区内自购自住房屋居住人员基础资料。导入后会同步更新匹配的模型三平台核查结果，将空白或无法核实结果填为“近期返吴”，不会调用全民防写入接口。"
+          description="用于维护辖区内自购自住房屋居住人员基础资料。导入后会进入辖区人员档案，并自动挂上“自购自住”人员标签；同时将匹配的模型三空白或无法核实结果填为“近期返吴”，不会调用全民防写入接口。"
         >
           <Upload
             accept=".zip"

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Any
@@ -44,6 +45,7 @@ class ParsedSelfOwned:
     duplicate_rows: int
     identities: tuple[tuple[str, int], ...]
     workbook_count: int
+    names: tuple[tuple[str, str], ...] = ()
 
 
 def _text(value: Any) -> str:
@@ -65,6 +67,7 @@ def parse_self_owned_zip(content: bytes) -> ParsedSelfOwned:
         raise SelfOwnedImportError("自购自住名单 ZIP 超过 100MB")
 
     identities: dict[str, int] = {}
+    names: dict[str, str] = {}
     total_rows = invalid_rows = duplicate_rows = 0
     workbook_count = 0
     try:
@@ -120,6 +123,11 @@ def parse_self_owned_zip(content: bytes) -> ParsedSelfOwned:
                             duplicate_rows += 1
                             continue
                         identities[digest] = version
+                        name_index = _header_index(headers, "姓名", "居民姓名", "人员姓名")
+                        if name_index is not None and name_index < len(row):
+                            name = _text(row[name_index])[:100]
+                            if name:
+                                names[digest] = name
             finally:
                 workbook.close()
     if not identities:
@@ -131,6 +139,7 @@ def parse_self_owned_zip(content: bytes) -> ParsedSelfOwned:
         invalid_rows=invalid_rows,
         duplicate_rows=duplicate_rows,
         identities=tuple(sorted(identities.items())),
+        names=tuple(sorted(names.items())),
         workbook_count=workbook_count,
     )
 
@@ -239,6 +248,97 @@ async def apply_self_owned_import(conn, *, parsed: ParsedSelfOwned, file_name: s
                 (MODEL_THREE_PARSER, batch_id),
             )
             matched = await cur.fetchall()
+            # 资产资料同时进入辖区人员档案和人员标签库。标签表保留原有
+            # person_id 语义，通过 registry_person_id 建立可追溯关联。
+            await cur.execute(
+                "SELECT id FROM watch_categories WHERE code=%s AND is_active=1 FOR UPDATE",
+                ("self_owned_resident",),
+            )
+            category_row = await cur.fetchone()
+            if not category_row:
+                raise SelfOwnedImportError("自购自住人员标签分类未初始化")
+            self_owned_category_id = int(category_row[0])
+            identity_names: dict[str, str] = dict(parsed.names)
+            await cur.execute(
+                "SELECT projection.identity_hmac, projection.values_json "
+                "FROM _online_source_projection AS projection "
+                "JOIN _qmf_self_owned_identities AS roster ON roster.identity_hmac=projection.identity_hmac "
+                "WHERE projection.parser_type=%s AND roster.batch_id=%s",
+                (MODEL_THREE_PARSER, batch_id),
+            )
+            for digest, raw_values in await cur.fetchall():
+                values = raw_values if isinstance(raw_values, dict) else json.loads(raw_values or "{}")
+                name = str(values.get("姓名") or values.get("name") or "").strip()
+                if digest and name:
+                    identity_names.setdefault(digest, name[:100])
+            registry_people_created = registry_people_reused = 0
+            tag_people_created = tag_people_reused = tag_assignments_created = 0
+            now = datetime.utcnow()
+            for digest, _version in parsed.identities:
+                display_name = identity_names.get(digest) or "自购自住人员"
+                await cur.execute(
+                    "SELECT id, name FROM registry_housing_people WHERE identity_hmac=%s FOR UPDATE",
+                    (digest,),
+                )
+                registry_row = await cur.fetchone()
+                if registry_row:
+                    registry_person_id = int(registry_row[0])
+                    registry_people_reused += 1
+                else:
+                    await cur.execute(
+                        "INSERT INTO registry_housing_people "
+                        "(name, identity_number, identity_hmac, identity_hmac_version, verification_status, "
+                        "source_type, source_ref, created_by, updated_by) "
+                        "VALUES (%s,NULL,%s,%s,'verified','self_owned_asset',%s,%s,%s)",
+                        (display_name, digest, _version, f"batch:{batch_id}", user_id, user_id),
+                    )
+                    registry_person_id = int(cur.lastrowid)
+                    registry_people_created += 1
+                await cur.execute(
+                    "SELECT id, status FROM watch_people WHERE identity_hmac=%s FOR UPDATE",
+                    (digest,),
+                )
+                watch_row = await cur.fetchone()
+                if watch_row:
+                    watch_person_id = int(watch_row[0])
+                    tag_people_reused += 1
+                    await cur.execute(
+                        "UPDATE watch_people SET registry_person_id=COALESCE(registry_person_id,%s) "
+                        "WHERE id=%s",
+                        (registry_person_id, watch_person_id),
+                    )
+                else:
+                    await cur.execute(
+                        "INSERT INTO watch_people "
+                        "(name, identity_number, identity_hmac, identity_hmac_version, registry_person_id, "
+                        "verification_status, source_type, source_ref, created_by, updated_by) "
+                        "VALUES (%s,NULL,%s,%s,%s,'verified','self_owned_asset',%s,%s,%s)",
+                        (display_name, digest, _version, registry_person_id, f"batch:{batch_id}", user_id, user_id),
+                    )
+                    watch_person_id = int(cur.lastrowid)
+                    tag_people_created += 1
+                await cur.execute(
+                    "SELECT id FROM watch_assignments WHERE person_id=%s AND category_id=%s "
+                    "AND status='active' AND valid_from<=UTC_TIMESTAMP() "
+                    "AND (valid_to IS NULL OR valid_to>=UTC_TIMESTAMP()) "
+                    "AND (released_at IS NULL OR released_at>UTC_TIMESTAMP()) LIMIT 1 FOR UPDATE",
+                    (watch_person_id, self_owned_category_id),
+                )
+                if not await cur.fetchone() and str(watch_row[1] if watch_row else "active") == "active":
+                    await cur.execute(
+                        "INSERT INTO watch_assignments "
+                        "(person_id, category_id, valid_from, source_type, source_ref, basis, created_by, updated_by) "
+                        "VALUES (%s,%s,%s,'self_owned_asset',%s,%s,%s,%s)",
+                        (watch_person_id, self_owned_category_id, now, f"batch:{batch_id}",
+                         "辖区资产资料：自购自住", user_id, user_id),
+                    )
+                    assignment_id = int(cur.lastrowid)
+                    await cur.execute(
+                        "INSERT INTO watch_assignment_versions "
+                        "(assignment_id, version_no, snapshot_json, changed_by) VALUES (%s,1,%s,%s)",
+                        (assignment_id, "{}", user_id),
+                    )
+                    tag_assignments_created += 1
             updated = skipped = 0
             for row_key, raw_values in matched:
                 values = raw_values if isinstance(raw_values, dict) else json.loads(raw_values or "{}")
@@ -295,4 +395,9 @@ async def apply_self_owned_import(conn, *, parsed: ParsedSelfOwned, file_name: s
         "matched_tasks": len(matched),
         "updated_tasks": updated,
         "skipped_tasks": skipped,
+        "registry_people_created": registry_people_created,
+        "registry_people_reused": registry_people_reused,
+        "tag_people_created": tag_people_created,
+        "tag_people_reused": tag_people_reused,
+        "tag_assignments_created": tag_assignments_created,
     }

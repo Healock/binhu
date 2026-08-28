@@ -4117,6 +4117,8 @@ export interface WatchPerson {
   verification_status: string
   status: string
   created_at: string | null
+  registry_person_id?: number | null
+  is_registry_linked?: boolean
   categories: Array<Pick<WatchCategory, 'id' | 'code' | 'name' | 'color' | 'alert_level'>>
 }
 

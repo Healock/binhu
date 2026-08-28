@@ -13,11 +13,13 @@ from services.registry_security import normalize_identity, normalize_phone
 
 CORE_WATCH_CATEGORIES = (
     ("通勤人员", "通勤人员", "#1677ff", "notice", 10),
+    ("self_owned_resident", "自购自住", "#52c41a", "notice", 15),
     ("五失人员", "五失人员", "#fa8c16", "warning", 20),
     ("重点人员", "重点人员", "#f5222d", "critical", 30),
     ("精障人员", "精障人员", "#722ed1", "warning", 40),
 )
-CORE_CATEGORY_CODES = {item[0] for item in CORE_WATCH_CATEGORIES}
+# 该分类由辖区资产导入自动挂标，不作为普通人员标签名单的手工导入选项。
+CORE_CATEGORY_CODES = {item[0] for item in CORE_WATCH_CATEGORIES if item[0] != "self_owned_resident"}
 
 IDENTITY_PATTERN = re.compile(r"^(?:\d{15}|\d{17}[0-9X])$")
 IDENTITY_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)

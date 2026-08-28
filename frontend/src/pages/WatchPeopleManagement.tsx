@@ -219,6 +219,10 @@ export default function WatchPeopleManagement() {
         ? <Space size={[4, 4]} wrap>{values.map(item => <Tag key={item.id} color={item.color}>{item.name}</Tag>)}</Space>
         : <span className="text-slate-400">暂无有效标签</span>,
     },
+    {
+      title: '档案链路', dataIndex: 'is_registry_linked', width: 150, responsivePriority: 'standard',
+      render: (linked: boolean) => linked ? <Tag color="green">已关联人员档案</Tag> : <span className="text-slate-400">标签独立档案</span>,
+    },
     { title: '核实状态', dataIndex: 'verification_status', width: 110, responsivePriority: 'always' },
     {
       title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always',
@@ -265,7 +269,7 @@ export default function WatchPeopleManagement() {
     <div className="space-y-4">
       <PageHeader
         title="人员标签"
-        description="维护通勤人员、五失人员、重点人员和精障人员数据库；任务按身份证精确命中，标签只用于识别与筛选，不改变任务完成口径。"
+        description="维护人员标签数据库；自购自住人员由辖区资产资料自动挂标，任务按身份证精确命中，标签只用于识别与筛选，不改变任务完成口径。"
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
@@ -284,8 +288,8 @@ export default function WatchPeopleManagement() {
           notice={tab === 'people' ? <Alert
             type="info"
             showIcon
-            message="四类特殊人员统一维护"
-            description="当前核心分类为通勤人员、五失人员、重点人员、精障人员。同一人员可以拥有多个标签，同一分类只保留一条当前有效标签。"
+            message="人员标签统一维护"
+            description="当前支持通勤人员、五失人员、重点人员、精障人员和自购自住。同一人员可以拥有多个标签，同一分类只保留一条当前有效标签。"
           /> : undefined}
           filters={<>
             <Input
@@ -353,6 +357,7 @@ export default function WatchPeopleManagement() {
             ...(user?.role === 'super_admin' ? [{ key: 'identity', label: '身份证号', children: personDetail.identity_number || '未登记' }] : []),
             { key: 'status', label: '状态', children: personDetail.status },
             { key: 'verify', label: '核实状态', children: personDetail.verification_status },
+            { key: 'registry', label: '辖区人员档案', children: personDetail.is_registry_linked ? `已关联（${personDetail.registry_person_id}）` : '未关联' },
           ]} /></section>
           <section className="watch-person-detail__section"><div className="flex items-center justify-between gap-3"><h3 className="font-semibold">标签历史</h3>{canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('assignment')}>新增标签</Button>}</div>
           <AppTable rowKey="id" size="small" pagination={false} dataSource={personDetail.assignments || []} columns={[

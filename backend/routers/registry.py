@@ -227,7 +227,7 @@ async def _watch_people_result(data: WatchPersonSearch, user: dict, conn) -> dic
         await cur.execute(f"SELECT COUNT(*) FROM watch_people{clause}", tuple(params))
         total = int((await cur.fetchone())[0])
         await cur.execute(
-            "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at "
+            "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at, registry_person_id "
             f"FROM watch_people{clause} ORDER BY id DESC LIMIT %s OFFSET %s",
             tuple(params) + (data.page_size, offset),
         )
@@ -257,6 +257,8 @@ async def _watch_people_result(data: WatchPersonSearch, user: dict, conn) -> dic
     data_rows = []
     for row in rows:
         item = _person_payload(row, include_identity)
+        item["registry_person_id"] = int(row[8]) if row[8] is not None else None
+        item["is_registry_linked"] = row[8] is not None
         item["categories"] = categories_by_person.get(int(row[0]), [])
         data_rows.append(item)
     return {"total": total, "page": data.page, "page_size": data.page_size, "data": data_rows}
