@@ -7,7 +7,6 @@ import {
   Empty,
   message,
   Pagination,
-  Segmented,
   Select,
   Skeleton,
   Table,
@@ -149,7 +148,6 @@ export default function Dashboard() {
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [overviewError, setOverviewError] = useState('')
   const [msg, setMsg] = useState('')
-  const [mobileReportSection, setMobileReportSection] = useState<'inspector' | 'community'>('inspector')
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
   const [exporting, setExporting] = useState(false)
@@ -257,14 +255,8 @@ export default function Dashboard() {
         }
       : { columns: [], data: [] }
   )
-  const mobileTable = mobileReportSection === 'inspector'
-    ? inspectorTable
-    : communityTable
-  const mobileTitleColumns = mobileReportSection === 'inspector'
-    ? ['社区', '姓名']
-    : ['社区']
-  const inspectorTitle = isSummary ? '总汇总 · 网格员明细' : '核查人明细统计'
-  const communityTitle = isSummary ? '总汇总 · 社区汇总' : '社区汇总统计'
+  const inspectorTitle = '网格员汇总'
+  const communityTitle = '社区汇总'
   const availableRange = overview?.available_start_date
     && overview?.available_end_date
     ? `${overview.available_start_date} 至 ${overview.available_end_date}`
@@ -661,39 +653,42 @@ export default function Dashboard() {
       ) : (
         <>
           <div className="dashboard-mobile-report-list md:hidden">
-            <Segmented
-              block
-              value={mobileReportSection}
-              onChange={value => setMobileReportSection(value as 'inspector' | 'community')}
-              options={[
-                {
-                  label: `网格员 ${inspectorTable.data.length}`,
-                  value: 'inspector',
-                },
-                {
-                  label: `社区 ${communityTable.data.length}`,
-                  value: 'community',
-                },
-              ]}
-            />
-            <MobileReportTable
-              columns={mobileTable?.columns || []}
-              rows={mobileTable?.data || []}
-              titleColumns={mobileTitleColumns}
-              resetKey={`${mobileReportSection}-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-              fullColumns={reportTableColumns(
-                mobileTable?.columns || [],
-                mobileTable?.data || [],
-              )}
-              fullSummary={reportTableSummary(mobileTable?.columns || [])}
-              rowKey={(row, index) => (
-                row.id
-                || (mobileReportSection === 'inspector'
-                  ? `${row.社区}-${row.姓名}-${index}`
-                  : row.社区)
-                || index
-              )}
-            />
+            <section className="space-y-3">
+              <h2 className="px-1 text-sm font-semibold text-gray-700">
+                网格员汇总（{inspectorTable.data.length} 行）
+                {isRange && <span className="ml-2 font-normal text-gray-400">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+              </h2>
+              <MobileReportTable
+                columns={inspectorTable.columns || []}
+                rows={inspectorTable.data || []}
+                titleColumns={['社区', '姓名']}
+                resetKey={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+                fullColumns={reportTableColumns(
+                  inspectorTable.columns || [],
+                  inspectorTable.data || [],
+                )}
+                fullSummary={reportTableSummary(inspectorTable.columns || [])}
+                rowKey={(row, index) => row.id || `${row.社区}-${row.姓名}-${index}`}
+              />
+            </section>
+            <section className="space-y-3">
+              <h2 className="px-1 text-sm font-semibold text-gray-700">
+                社区汇总（{communityTable.data.length} 个社区）
+                {isRange && <span className="ml-2 font-normal text-gray-400">{rangeInfo?.start} 至 {rangeInfo?.end} 聚合</span>}
+              </h2>
+              <MobileReportTable
+                columns={communityTable.columns || []}
+                rows={communityTable.data || []}
+                titleColumns={['社区']}
+                resetKey={`community-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
+                fullColumns={reportTableColumns(
+                  communityTable.columns || [],
+                  communityTable.data || [],
+                )}
+                fullSummary={reportTableSummary(communityTable.columns || [])}
+                rowKey={(row, index) => row.id || `${row.社区}-${index}`}
+              />
+            </section>
           </div>
 
           <div className="hidden space-y-6 md:block">
