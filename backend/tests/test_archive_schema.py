@@ -67,3 +67,23 @@ def test_init_sql_declares_every_registered_archive_table():
             f"CREATE TABLE IF NOT EXISTS {archive_table} "
             f"LIKE OnlineData.{source_table};"
         ) in init_sql
+
+
+def test_fullchain_archive_recovery_columns_are_declared_compatibly():
+    backend_dir = Path(__file__).parents[1]
+    init_sql = (backend_dir / "init.sql").read_text(encoding="utf-8")
+    database_source = (backend_dir / "database.py").read_text(encoding="utf-8")
+    for column in (
+        "error_stage",
+        "platform_archive_state",
+        "reconcile_state",
+        "reconcile_attempts",
+        "error_fingerprint",
+        "last_attempt_at",
+        "reconciled_at",
+    ):
+        assert column in init_sql
+        # 启动兼容迁移使用 _ensure_column，因此重复执行不会重复添加字段。
+        assert f'"{column}"' in database_source
+    assert "idx_fullchain_archive_item_reconcile" in init_sql
+    assert "idx_fullchain_archive_item_reconcile" in database_source
