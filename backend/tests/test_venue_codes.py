@@ -1,12 +1,26 @@
 import os
 import sys
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from routers.venue_codes import _check_form_token, _form_token, _token_digest, _validate_photo
+from config import settings
+import routers.venue_codes as venue_codes
+from routers.venue_codes import (
+    _check_form_token,
+    _form_token,
+    _public_venue_url,
+    _token_digest,
+    _validate_photo,
+    venue_qrcode,
+)
 
 
 def test_venue_token_is_signed_and_expires():
@@ -20,3 +34,68 @@ def test_venue_token_is_signed_and_expires():
 def test_photo_magic_validation():
     mime, size, digest = _validate_photo("a.jpg", "image/jpeg", b"\xff\xd8\xff" + b"x")
     assert mime == "image/jpeg" and size == 4 and len(digest) == 64
+
+
+def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test/")
+
+    assert _public_venue_url("token_value") == "https://portal.example.test/venue/token_value"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "",
+        "/relative",
+        "http://portal.example.test",
+        "https://user:pass@portal.example.test",
+        "https://portal.example.test?next=other",
+    ],
+)
+def test_public_venue_url_rejects_missing_or_unsafe_configuration(monkeypatch, base_url):
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", base_url)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _public_venue_url("token")
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_qrcode_png_encodes_the_same_absolute_public_url(monkeypatch):
+    encoded_values: list[str] = []
+
+    class FakeImage:
+        def save(self, output: BytesIO, format: str) -> None:
+            assert format == "PNG"
+            output.write(b"png")
+
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, _query, _params):
+            return None
+
+        async def fetchone(self):
+            return (7, "测试场所", "", "", None, "", "active", "digest", "encrypted", 1, None, None)
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test")
+    monkeypatch.setattr(venue_codes, "decrypt_secret", lambda _value: "public_token")
+    monkeypatch.setitem(
+        sys.modules,
+        "qrcode",
+        SimpleNamespace(make=lambda value: encoded_values.append(value) or FakeImage()),
+    )
+
+    response = await venue_qrcode(7, format="png", user={}, conn=FakeConnection())
+
+    assert response.media_type == "image/png"
+    assert encoded_values == ["https://portal.example.test/venue/public_token"]

@@ -11,6 +11,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
@@ -64,6 +65,29 @@ def _now() -> datetime:
 
 def _token_digest(token: str) -> str:
     return hmac.new(settings.registry_hmac_key.encode(), f"venue-token:{token}".encode(), hashlib.sha256).hexdigest()
+
+
+def _public_venue_url(token: str) -> str:
+    base_url = str(settings.PUBLIC_WEB_BASE_URL or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(503, "场所码公开访问地址尚未配置")
+
+    parsed = urlsplit(base_url)
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    is_safe_scheme = parsed.scheme == "https" or (
+        parsed.scheme == "http" and parsed.hostname in local_hosts
+    )
+    if (
+        not is_safe_scheme
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(503, "场所码公开访问地址配置无效")
+
+    return f"{base_url}/venue/{quote(token, safe='')}"
 
 
 def _form_token(venue_id: int, issued: int) -> str:
@@ -159,11 +183,12 @@ async def list_venues(user: dict = Depends(require_permission(VENUE_VIEW)), conn
 @admin_router.post("/venue-codes")
 async def create_venue(data: VenueCreate, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
     token = secrets.token_urlsafe(32)
+    public_url = _public_venue_url(token)
     async with conn.cursor() as cur:
         await cur.execute("INSERT INTO _venue_codes (name,venue_type,address,community_id,community_name_snapshot,status,token_hmac,encrypted_token,created_by,updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (data.name.strip(), data.venue_type.strip(), data.address.strip(), data.community_id, data.community_name.strip(), data.status, _token_digest(token), encrypt_secret(token), user["id"], user["id"]))
         venue_id = int(cur.lastrowid)
     await record_admin_audit(user, "venue.create", target_type="venue", target_name=str(venue_id), detail={"status": data.status}, **request_audit_fields(request))
-    return {"id": venue_id, "token": token, "url": f"/venue/{token}"}
+    return {"id": venue_id, "token": token, "url": public_url}
 
 
 @admin_router.put("/venue-codes/{venue_id}")
@@ -179,12 +204,13 @@ async def update_venue(venue_id: int, data: VenueCreate, request: Request, user:
 @admin_router.post("/venue-codes/{venue_id}/rotate-token")
 async def rotate_token(venue_id: int, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
     token = secrets.token_urlsafe(32)
+    public_url = _public_venue_url(token)
     async with conn.cursor() as cur:
         await cur.execute("UPDATE _venue_codes SET token_hmac=%s,encrypted_token=%s,updated_by=%s WHERE id=%s AND status<>'deleted'", (_token_digest(token), encrypt_secret(token), user["id"], venue_id))
         if cur.rowcount != 1:
             raise HTTPException(404, "场所不存在")
     await record_admin_audit(user, "venue.rotate_token", target_type="venue", target_name=str(venue_id), **request_audit_fields(request))
-    return {"token": token, "url": f"/venue/{token}"}
+    return {"token": token, "url": public_url}
 
 
 @admin_router.get("/venue-codes/{venue_id}/qrcode")
@@ -195,7 +221,7 @@ async def venue_qrcode(venue_id: int, format: str = Query(default="json", patter
     if not row:
         raise HTTPException(404, "场所不存在")
     token = decrypt_secret(row[8])
-    url = f"/venue/{token}"
+    url = _public_venue_url(token)
     if format == "png":
         try:
             import qrcode

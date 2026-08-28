@@ -144,6 +144,9 @@ class Settings(BaseSettings):
     # 暂时关闭以便灰度回退到旧的单会话行为。
     MULTI_DEVICE_SESSION_ENABLED: bool = False
     CORS_ALLOWED_ORIGINS: str = ""
+    # Browser-reachable origin used in public QR codes. Keep this separate
+    # from container/API addresses so mobile scanners receive a complete URL.
+    PUBLIC_WEB_BASE_URL: str = ""
 
     @field_validator("SESSION_COOKIE_SAMESITE")
     @classmethod
