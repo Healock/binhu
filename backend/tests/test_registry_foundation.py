@@ -376,3 +376,26 @@ def test_registry_tag_permissions_remain_separate_from_property_permissions():
     assert REGISTRY_WATCH_VIEW in ALL_PERMISSIONS
     assert REGISTRY_WATCH_MANAGE in ALL_PERMISSIONS
     assert REGISTRY_WATCH_MANAGE != REGISTRY_PROPERTY_MANAGE
+
+
+@pytest.mark.asyncio
+async def test_registry_person_tag_filter_cannot_reveal_tags_without_watch_view():
+    user = {"id": 7, "role": "user", "permissions": [REGISTRY_PROPERTY_VIEW]}
+
+    with pytest.raises(HTTPException) as list_error:
+        await registry_router.list_housing_people(
+            page=1,
+            page_size=50,
+            category_ids=[3],
+            user=user,
+            conn=None,
+        )
+    assert list_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as search_error:
+        await registry_router.search_housing_people(
+            registry_router.RegistrySearch(category_ids=[3]),
+            user=user,
+            conn=None,
+        )
+    assert search_error.value.status_code == 403
