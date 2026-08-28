@@ -263,8 +263,8 @@ export default function Dashboard() {
   const mobileTitleColumns = mobileReportSection === 'inspector'
     ? ['社区', '姓名']
     : ['社区']
-  const inspectorTitle = isSummary ? '总汇总 · 网格员明细' : '核查人明细统计'
-  const communityTitle = isSummary ? '总汇总 · 社区汇总' : '社区汇总统计'
+  const inspectorTitle = '网格员汇总'
+  const communityTitle = '社区汇总'
   const availableRange = overview?.available_start_date
     && overview?.available_end_date
     ? `${overview.available_start_date} 至 ${overview.available_end_date}`
