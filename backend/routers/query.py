@@ -681,8 +681,6 @@ async def update_source_fields(
         if not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         source = await _load_source_row(cur, parser_type, source_id)
-        if source["revision"] != expected_revision:
-            raise HTTPException(409, "该行已被更新，请刷新后重试")
         if not await acquire_sheet_lock(cur, source["spreadsheet_id"], timeout=2):
             raise HTTPException(409, "该表格正在同步或被他人编辑，请稍后重试")
 
@@ -713,9 +711,14 @@ async def update_source_fields(
         current_values = current["values"]
         if current_values_validator is not None:
             current_values_validator(current_values)
-        if source_row_hash(current_values) != source["row_hash"]:
+        # Tencent revisions can advance independently of platform edits.  Keep
+        # the physical-row identity guard, but do not block on ordinary mirror
+        # field changes.
+        if parser.make_row_key(current_values) != parser.make_row_key(
+            source["values"]
+        ):
             await _refresh_spreadsheet(conn, client, source["spreadsheet"])
-            raise HTTPException(409, "腾讯表格已被其他人修改，已刷新来源行")
+            raise HTTPException(409, "腾讯表格业务主键已变化，已刷新来源行")
 
         async with conn.cursor() as cur:
             inspector_context = await inspector_option_context(cur, user)
@@ -993,8 +996,6 @@ async def queue_source_fields(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
-            if not await _writeback_enabled(cur):
-                raise HTTPException(503, "在线回写已由超级管理员暂停")
             source = await _load_source_row(cur, parser_type, source_id)
             grouped = await load_local_changes(cur, [source_id])
             current_values = overlay_local_values(
@@ -1045,12 +1046,23 @@ async def queue_source_fields(
                         _physical_cell_type(metadata.get(field)),
                     )
                 ]
-                if changed_since_load:
+                platform_changed_fields = {
+                    str(item["field_name"])
+                    for item in grouped.get(source_id, [])
+                    if str(item.get("status") or "") in {
+                        "pending", "processing", "retry", "conflict"
+                    }
+                }
+                changed_by_platform = [
+                    field for field in changed_since_load
+                    if field in platform_changed_fields
+                ]
+                if changed_by_platform:
                     raise HTTPException(
                         409,
                         {
                             "message": "所编辑字段已被其他平台用户更新，请重新确认",
-                            "columns": changed_since_load,
+                            "columns": changed_by_platform,
                         },
                     )
             ordered_columns = [
@@ -1716,10 +1728,13 @@ async def update_source_cell(
     user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
     conn=Depends(get_db),
 ):
-    return await update_source_fields(
+    # Platform edits are committed locally first; Tencent remains a queued
+    # compatibility mirror and must not block ordinary cell editing.
+    return await queue_source_fields(
         parser_type=parser_type,
         source_id=source_id,
         changes={data.column: data.value},
+        base_values=None,
         expected_revision=data.expected_revision,
         request=request,
         user=user,
