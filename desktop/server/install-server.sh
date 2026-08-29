@@ -35,6 +35,26 @@ find_android_tool() {
   done | sort -Vr | head -n 1
 }
 
+reject_crlf() {
+  carriage_return=$(printf '\r')
+  for path in "$@"; do
+    [ -f "$path" ] || { echo "Required server asset is missing: $path" >&2; exit 1; }
+    if LC_ALL=C grep -q "$carriage_return" "$path"; then
+      echo "Refusing to install a Linux asset with CRLF line endings: $path" >&2
+      exit 1
+    fi
+  done
+}
+
+reject_crlf \
+  binhu-renew-ip-certificate \
+  binhu-obtain-ip-certificate \
+  binhu-record-ip-certificate-failure \
+  systemd/binhu-ip-cert-renew.service \
+  systemd/binhu-ip-cert-renew-failed.service \
+  systemd/binhu-ip-cert-renew.timer \
+  nginx/binhu-updates-acme.inc
+
 [ -r /etc/os-release ] || { echo '/etc/os-release is required' >&2; exit 1; }
 # shellcheck source=/dev/null
 . /etc/os-release
@@ -102,7 +122,9 @@ chown root:root /usr/local/libexec/binhu-update-gateway
 chmod 0755 /usr/local/libexec/binhu-update-gateway
 install -o root -g root -m 0755 binhu-renew-ip-certificate /usr/local/sbin/binhu-renew-ip-certificate
 install -o root -g root -m 0755 binhu-obtain-ip-certificate /usr/local/sbin/binhu-obtain-ip-certificate
+install -o root -g root -m 0755 binhu-record-ip-certificate-failure /usr/local/sbin/binhu-record-ip-certificate-failure
 install -o root -g root -m 0644 systemd/binhu-ip-cert-renew.service /etc/systemd/system/binhu-ip-cert-renew.service
+install -o root -g root -m 0644 systemd/binhu-ip-cert-renew-failed.service /etc/systemd/system/binhu-ip-cert-renew-failed.service
 install -o root -g root -m 0644 systemd/binhu-ip-cert-renew.timer /etc/systemd/system/binhu-ip-cert-renew.timer
 
 ssh_dir=/var/lib/binhu-update-publish/.ssh

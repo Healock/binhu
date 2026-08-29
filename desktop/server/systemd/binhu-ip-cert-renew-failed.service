@@ -1,0 +1,6 @@
+[Unit]
+Description=Record a failed Binhu update IP certificate renewal
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/sbin/binhu-record-ip-certificate-failure

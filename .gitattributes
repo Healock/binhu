@@ -8,3 +8,7 @@
 deploy/binhu-nginx-profile text eol=lf
 deploy/binhu-deploy text eol=lf
 deploy/binhu-deploy-gateway text eol=lf
+desktop/server/binhu-obtain-ip-certificate text eol=lf
+desktop/server/binhu-renew-ip-certificate text eol=lf
+desktop/server/binhu-record-ip-certificate-failure text eol=lf
+desktop/server/nginx/binhu-updates-acme.inc text eol=lf

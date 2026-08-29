@@ -90,8 +90,22 @@ twice-daily renewal timer.
 
 The renewal job uses `certbot renew`, reloads Nginx only after a successful
 certificate deployment, and logs a critical syslog message after two
-consecutive failures. Production monitoring must route that message to an
-operator.
+consecutive failures. The systemd failure handler records failures even when
+the renewal executable cannot start. The timer already adds a randomized
+delay, so Certbot's additional renewal sleep is disabled. Production
+monitoring must route the critical message to an operator.
+
+Every executable or parsed Linux asset in this directory must use LF line
+endings. The installer rejects CRLF before changing server files, including
+extensionless certificate scripts that are not covered by a generic `*.sh`
+rule. After installing an update, verify both the unit and the public endpoint:
+
+```sh
+systemctl start binhu-ip-cert-renew.service
+systemctl status binhu-ip-cert-renew.service --no-pager -l
+systemctl status binhu-ip-cert-renew.timer --no-pager -l
+curl --fail --silent --show-error https://47.100.44.36/updates/win10-x64/releases.stable.json >/dev/null
+```
 
 ## 4. Configure GitHub
 
