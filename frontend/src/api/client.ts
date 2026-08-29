@@ -233,13 +233,16 @@ export function handleUnauthorized(detail?: unknown): void {
   window.location.href = '/login'
 }
 
-export function handleMaintenance(detail?: unknown): void {
-  if (window.location.pathname.includes('/login') || unauthorizedRedirectStarted) {
-    return
-  }
+export function handleMaintenance(detail?: unknown): boolean {
   const payload = detail && typeof detail === 'object'
     ? detail as { code?: unknown; message?: unknown }
     : null
+  if (payload?.code !== 'maintenance_mode') {
+    return false
+  }
+  if (window.location.pathname.includes('/login') || unauthorizedRedirectStarted) {
+    return true
+  }
   const message = typeof payload?.message === 'string'
     ? payload.message
     : '平台正在维护中，请稍后再试'
@@ -249,6 +252,7 @@ export function handleMaintenance(detail?: unknown): void {
     message,
   }))
   window.location.href = '/login'
+  return true
 }
 
 export async function fetchWithAuth(

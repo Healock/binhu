@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Form, Input, Modal, Popconfirm, Space, Table, Tag, Upload, message } from 'antd'
 import { DeleteOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons'
 import {
-  createVenueCode, deleteVenueCode, exportVenueVisits, getVenueCodeQr, listVenueCodes, listVenueVisits,
+  apiErrorMessage, createVenueCode, deleteVenueCode, exportVenueVisits, getVenueCodeQr, listVenueCodes, listVenueVisits,
   rotateVenueCodeToken, updateVenueCode, type VenueCodeItem, type VenueVisitItem,
 } from '../api/client'
 import { downloadBlob } from '../utils/fileDownload'
@@ -22,6 +22,7 @@ export default function VenueCodeManagement() {
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
+  const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
   const load = async () => {
     setLoading(true); setError('')
@@ -39,6 +40,20 @@ export default function VenueCodeManagement() {
     } catch (e: any) { message.error(e?.response?.data?.detail || '保存失败') }
   }
   const exportRows = async () => { try { const blob = await exportVenueVisits(); await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.xlsx`) } catch (e: any) { message.error(e?.response?.data?.detail || '导出失败') } }
+  const showVenueQr = async (row: VenueCodeItem) => {
+    setQrLoadingId(row.id)
+    try {
+      const q = await getVenueCodeQr(row.id)
+      Modal.info({
+        title: '场所二维码',
+        content: <div className="grid justify-items-center gap-3"><AuthenticatedImage alt="场所二维码" src={q.image_url} style={{ width: 220, height: 220 }} /><p className="m-0 break-all">扫码地址：{q.url}</p></div>,
+      })
+    } catch (reason: unknown) {
+      message.error(apiErrorMessage(reason, '二维码读取失败，请稍后重试'))
+    } finally {
+      setQrLoadingId(current => current === row.id ? null : current)
+    }
+  }
   const columns = [
     { title: '场所名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'venue_type' }, { title: '地址', dataIndex: 'address' }, { title: '所属社区', dataIndex: 'community_name' },
     { title: '状态', dataIndex: 'status', render: (v: string) => <Tag color={v === 'active' ? 'success' : 'default'}>{v === 'active' ? '启用' : '停用'}</Tag> },
@@ -46,10 +61,7 @@ export default function VenueCodeManagement() {
       title: '操作',
       render: (_: unknown, row: VenueCodeItem) => (
         <Space wrap>
-          <Button type="link" icon={<QrcodeOutlined />} onClick={async () => {
-            const q = await getVenueCodeQr(row.id)
-            Modal.info({ title: '场所二维码', content: <div className="grid justify-items-center gap-3"><AuthenticatedImage alt="场所二维码" src={q.image_url} style={{ width: 220, height: 220 }} /><p className="m-0 break-all">扫码地址：{q.url}</p></div> })
-          }}>二维码</Button>
+          <Button type="link" icon={<QrcodeOutlined />} loading={qrLoadingId === row.id} onClick={() => void showVenueQr(row)}>二维码</Button>
           {canManage && <>
             <Button type="link" onClick={() => { setEditing(row); form.setFieldsValue(row); setModalOpen(true) }}>编辑</Button>
             <Popconfirm title="重新生成二维码？" onConfirm={async () => { await rotateVenueCodeToken(row.id); message.success('二维码已重新生成'); await load() }}><Button type="link">轮换</Button></Popconfirm>
