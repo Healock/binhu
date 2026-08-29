@@ -411,6 +411,135 @@ async def mirror_business_tables_to_local_sources(
     return counts
 
 
+async def cleanup_duplicate_local_sources(conn, *, apply: bool = False) -> dict[str, Any]:
+    """Audit and optionally merge identical active local sources.
+
+    The cleanup is deliberately conservative: rows with different content hashes
+    remain active and continue to surface as source exceptions.  Identical rows
+    keep the oldest source as the canonical identity; duplicate rows are marked
+    superseded/archived so their audit history remains available.
+    """
+    from services.online_source import rebuild_projection
+
+    result: dict[str, Any] = {
+        "groups": 0,
+        "identical_groups": 0,
+        "conflict_groups": 0,
+        "merged_rows": 0,
+        "conflicts": [],
+        "dry_run": not apply,
+    }
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id,parser_type,row_key,row_hash,revision,source_ref FROM _online_source_rows "
+            "WHERE spreadsheet_id=0 AND archived_at IS NULL "
+            "ORDER BY parser_type,row_key,id FOR UPDATE"
+        )
+        rows = await cur.fetchall()
+        groups: dict[tuple[str, str], list[tuple]] = {}
+        for row in rows:
+            groups.setdefault((str(row[1]), str(row[2])), []).append(row)
+        result["groups"] = sum(1 for values in groups.values() if len(values) > 1)
+        touched: set[str] = set()
+
+        async def table_exists(name: str) -> bool:
+            await cur.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() "
+                "AND table_name=%s LIMIT 1",
+                (name,),
+            )
+            return bool(await cur.fetchone())
+
+        # Discover references instead of keeping a brittle hand-maintained list.
+        # Several workflow tables are created by optional modules and their names
+        # differ across older deployments.  Every source_id foreign reference in
+        # this database is safe to repoint; the source tables themselves are
+        # explicitly excluded below.
+        await cur.execute(
+            "SELECT DISTINCT c.table_name FROM information_schema.columns c "
+            "WHERE c.table_schema=DATABASE() AND c.column_name='source_id'"
+        )
+        existing_reference_tables = {
+            str(row[0]) for row in await cur.fetchall()
+            if str(row[0]) not in {
+                "_online_source_rows", "_local_source_records",
+                "_local_source_migration_issues",
+            }
+        }
+        for (parser_type, row_key), source_rows in groups.items():
+            if len(source_rows) <= 1:
+                continue
+            hashes = {str(row[3] or "") for row in source_rows}
+            if len(hashes) != 1:
+                result["conflict_groups"] += 1
+                result["conflicts"].append({
+                    "parser_type": parser_type,
+                    "row_key": row_key,
+                    "source_ids": [int(row[0]) for row in source_rows],
+                    "count": len(source_rows),
+                })
+                continue
+            result["identical_groups"] += 1
+            canonical = source_rows[0]
+            canonical_ref = str(canonical[5] or "")
+            if not apply:
+                continue
+            for duplicate_row in source_rows[1:]:
+                duplicate_id = int(duplicate_row[0])
+                for table in existing_reference_tables:
+                    try:
+                        await cur.execute(
+                            f"UPDATE `{table}` SET source_id=%s WHERE source_id=%s",
+                            (int(canonical[0]), duplicate_id),
+                        )
+                    except Exception:
+                        # A legacy reference table may not expose source_id;
+                        # cleanup must remain auditable and never abort the group.
+                        continue
+                if await table_exists("task_graph_nodes"):
+                    duplicate_ref = str(duplicate_row[5] or "")
+                    await cur.execute(
+                        "UPDATE task_graph_nodes node "
+                        "JOIN task_graph_nodes canonical_node ON "
+                        "canonical_node.task_type=node.task_type "
+                        "AND canonical_node.provider=node.provider "
+                        "AND canonical_node.parser_type=node.parser_type "
+                        "AND canonical_node.source_ref=%s "
+                        "SET node.status='superseded', node.archived_at=UTC_TIMESTAMP() "
+                        "WHERE node.source_ref=%s AND node.source_ref<>%s",
+                        (canonical_ref, duplicate_ref, canonical_ref),
+                    )
+                    await cur.execute(
+                        "UPDATE task_graph_nodes node SET node.source_ref=%s "
+                        "WHERE node.source_ref=%s AND NOT EXISTS ("
+                        "SELECT 1 FROM task_graph_nodes canonical_node "
+                        "WHERE canonical_node.task_type=node.task_type "
+                        "AND canonical_node.provider=node.provider "
+                        "AND canonical_node.parser_type=node.parser_type "
+                        "AND canonical_node.source_ref=%s)",
+                        (canonical_ref, duplicate_ref, canonical_ref),
+                    )
+                await cur.execute(
+                    "UPDATE _online_source_rows SET archived_at=UTC_TIMESTAMP(), "
+                    "source_kind='superseded' WHERE id=%s AND archived_at IS NULL",
+                    (duplicate_id,),
+                )
+                await cur.execute(
+                    "UPDATE _local_source_records SET status='superseded', "
+                    "archived_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() "
+                    "WHERE source_kind='local_table' AND source_ref IN "
+                    "(SELECT source_ref FROM _online_source_rows WHERE id=%s)",
+                    (duplicate_id,),
+                )
+                result["merged_rows"] += 1
+            touched.add(parser_type)
+        if apply:
+            for parser_type in touched:
+                await rebuild_projection(cur, parser_type, reconcile_graph=False)
+            await conn.commit()
+    return result
+
+
 async def _record_migration_issue(
     cur,
     *,

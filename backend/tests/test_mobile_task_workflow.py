@@ -652,6 +652,8 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("await rebuild_projection(cur, parser_type)", local_branch)
         self.assertIn("SAVEPOINT bulk_assign_task", local_branch)
         self.assertIn('item["conflict"] = active_count > 1', source)
+        self.assertIn('item["source_count"] != 1', source)
+        self.assertIn("存在重复本地来源，请先处理来源异常", source)
 
     async def test_admin_assignment_uses_global_row_permission_validation(self):
         cursor = MagicMock()

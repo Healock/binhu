@@ -929,6 +929,33 @@ test('流口任务保存使用本地版本并且不再暴露腾讯冲突处理',
   assert.doesNotMatch(tableSource, /已自动保存并写回腾讯表格/)
 })
 
+test('指令核查编辑器使用防抖自动保存并提供失败重试', () => {
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(tableSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 700\)/)
+  assert.match(tableSource, /保存失败[\s\S]*?重试/)
+  assert.match(tableSource, /autosaveSequenceRef/)
+  assert.match(detailSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 700\)/)
+  assert.match(detailSource, /savingRef/)
+  assert.match(detailSource, /formGenerationRef/)
+})
+
+test('批量分配界面展示逐条跳过和失败原因', () => {
+  const source = readFileSync(
+    new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /本次分配结果明细/)
+  assert.match(source, /失败：\{item\.row_key\} · \{item\.reason\}/)
+  assert.match(source, /跳过：\{item\.row_key\} · \{item\.reason\}/)
+})
+
 test('模型三备注会进入手机任务编辑字段', () => {
   const detail = {
     workflow: {

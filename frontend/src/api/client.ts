@@ -1187,6 +1187,7 @@ export interface MobileTaskSummaryFields {
   date: string
   result: string
   analysis: string
+  note: string
   secondary_feedback: string
   registration_status: string
 }

@@ -17,7 +17,7 @@ import {
   message,
 } from 'antd'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
@@ -152,6 +152,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [manualConfirmReason, setManualConfirmReason] = useState<'address_mismatch' | 'address_ambiguous'>('address_mismatch')
   const [manualConfirmNote, setManualConfirmNote] = useState('')
   const [manualConfirming, setManualConfirming] = useState(false)
+  const autosaveTimerRef = useRef<number | null>(null)
+  const saveRef = useRef<(() => Promise<void>) | null>(null)
+  const savingRef = useRef(false)
+  const formGenerationRef = useRef(0)
+  const formValuesRef = useRef<Record<string, string>>({})
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
@@ -192,7 +197,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const selectSource = useCallback((source: MobileTaskSource) => {
     setSelectedSourceId(source.id)
     setFormValues({ ...source.values })
+    formValuesRef.current = { ...source.values }
     setSavedMessage('')
+  }, [])
+
+  const updateDraftValues = useCallback((updater: (current: Record<string, string>) => Record<string, string>) => {
+    formGenerationRef.current += 1
+    setFormValues(current => {
+      const next = updater(current)
+      formValuesRef.current = next
+      return next
+    })
   }, [])
 
   useEffect(() => {
@@ -321,6 +336,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
 
   const save = async () => {
     if (interactionLocked || !selectedSource || !dirty) return
+    if (savingRef.current) return
+    const requestGeneration = formGenerationRef.current
+    savingRef.current = true
     setSaving(true)
     setError('')
     setSavedMessage('')
@@ -398,19 +416,47 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           review_stage: savedReviewStage,
         } : source),
       } : current)
-      setFormValues(savedValues)
+      const draftChangedDuringSave = formGenerationRef.current !== requestGeneration
+      if (!draftChangedDuringSave) {
+        setFormValues(savedValues)
+        formValuesRef.current = savedValues
+      }
+      const latestDraft = draftChangedDuringSave ? { ...formValuesRef.current } : null
       // 保存“待登记”后，服务端会同时创建/更新房屋关联。重新读取一次详情，
       // 确保比对阶段、房屋版本和 registration_link 与服务端一致。
       await load(selectedSource.id)
+      if (latestDraft) {
+        formValuesRef.current = latestDraft
+        setFormValues(latestDraft)
+      }
       setSavedMessage(result.message)
     } catch (reason: any) {
       const status = reason?.response?.status
       setError(detailError(reason, '保存失败，请稍后重试'))
       if (status === 409 || status === 502) await load(selectedSource.id)
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
+
+  saveRef.current = save
+  useEffect(() => {
+    if (!dirty || interactionLocked || mode === 'analysis' || saving) return
+    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null
+      void saveRef.current?.()
+    }, 700)
+    return () => {
+      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
+      autosaveTimerRef.current = null
+    }
+  }, [dirty, formValues, interactionLocked, mode, saving])
+
+  useEffect(() => () => {
+    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
+  }, [])
 
   const submitStructuredDecision = async () => {
     if (
@@ -1026,7 +1072,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                           setRegistrationPropertyId(value || undefined)
                           setRegistrationPropertyVersion(property?.version)
                           if (property) {
-                            setFormValues(current => ({
+                            updateDraftValues(current => ({
                               ...current,
                               现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`,
                             }))
@@ -1042,7 +1088,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         value={formValues[field] || undefined}
                         options={options}
                         onChange={value => {
-                          setFormValues(current => ({ ...current, [field]: value || '' }))
+                          updateDraftValues(current => ({ ...current, [field]: value || '' }))
                           if (field === data.workflow.result_field && value !== '待登记') {
                             setRegistrationPropertyId(undefined)
                             setRegistrationPropertyVersion(undefined)
@@ -1054,7 +1100,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         autoSize={{ minRows: field === '现住址' ? 2 : 3, maxRows: 7 }}
                         placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : undefined}
                         value={formValues[field] || ''}
-                        onChange={event => setFormValues(current => ({ ...current, [field]: event.target.value }))}
+                        onChange={event => updateDraftValues(current => ({ ...current, [field]: event.target.value }))}
                       />
                     )}
                   </label>

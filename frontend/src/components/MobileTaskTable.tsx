@@ -110,6 +110,15 @@ export default function MobileTaskTable({
   const claimPromptKeysRef = useRef<Set<string>>(new Set())
   const registrationSearchSequenceRef = useRef<Record<string, number>>({})
   const registrationResultDraftRef = useRef<Record<string, string>>({})
+  const autosaveTimersRef = useRef<Record<string, number>>({})
+  const autosaveSequenceRef = useRef<Record<string, number>>({})
+  const autosaveRetryRef = useRef<Record<string, {
+    task: MobileTaskItem
+    item: MobileTaskInlineEditorItem
+    field: string
+    value: string
+  }>>({})
+  const [saveStates, setSaveStates] = useState<Record<string, 'saving' | 'saved' | 'error' | 'conflict'>>({})
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
     [rows],
@@ -257,11 +266,20 @@ export default function MobileTaskTable({
     changes: Record<string, string>,
     claim = false,
     registrationProperty?: { id: number; version: number },
+    options?: { autosaveKey?: string; silent?: boolean },
   ) => {
     const detail = item.detail
     const source = detail?.sources[0]
     if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return
     setSavingRowKey(task.task_key)
+    const autosaveKey = options?.autosaveKey
+    const requestSequence = autosaveKey
+      ? (autosaveSequenceRef.current[autosaveKey] || 0) + 1
+      : 0
+    if (autosaveKey) {
+      autosaveSequenceRef.current[autosaveKey] = requestSequence
+      setSaveStates(current => ({ ...current, [task.task_key]: 'saving' }))
+    }
     try {
       const updater = claim
         ? claimMobileTask
@@ -283,6 +301,9 @@ export default function MobileTaskTable({
         result.values,
         source.cell_meta,
       )
+      const isLatest = !autosaveKey || autosaveSequenceRef.current[autosaveKey] === requestSequence
+      if (!isLatest) return
+      if (autosaveKey) delete autosaveRetryRef.current[autosaveKey]
       setEditorItems(current => ({
         ...current,
         [task.task_key]: {
@@ -303,9 +324,26 @@ export default function MobileTaskTable({
           },
         }))
       }
-      message.success(result.message)
+      if (autosaveKey) setSaveStates(current => ({ ...current, [task.task_key]: 'saved' }))
+      if (!options?.silent) message.success(result.message)
       await onSaved()
     } catch (reason: any) {
+      if (autosaveKey && autosaveSequenceRef.current[autosaveKey] === requestSequence) {
+        const [, ...fieldParts] = autosaveKey.split(':')
+        const retryField = fieldParts.join(':')
+        if (retryField) {
+          autosaveRetryRef.current[autosaveKey] = {
+            task,
+            item,
+            field: retryField,
+            value: changes[retryField] || '',
+          }
+        }
+        setSaveStates(current => ({
+          ...current,
+          [task.task_key]: Number(reason?.response?.status) === 409 ? 'conflict' : 'error',
+        }))
+      }
       message.error(errorMessage(reason, '保存失败，请稍后重试'))
       if (registrationProperty) {
         const existingProperty = detail?.registration_link?.property
@@ -361,8 +399,10 @@ export default function MobileTaskTable({
     item: MobileTaskInlineEditorItem,
     field: string,
     value: string,
+    autosave = false,
   ) => {
-    const source = item.detail?.sources[0]
+    const currentItem = editorItemsRef.current[task.task_key] || item
+    const source = currentItem.detail?.sources[0]
     if (!source) return
     const changes = buildMobileTaskChanges(
       source.values,
@@ -381,8 +421,44 @@ export default function MobileTaskTable({
       }))
       return
     }
-    await saveEditor(task, item, changes, claim)
+    if (autosave) {
+      await saveEditor(task, currentItem, changes, claim, undefined, {
+        autosaveKey: `${task.task_key}:${field}`,
+        silent: true,
+      })
+    } else {
+      await saveEditor(task, item, changes, claim)
+    }
   }
+
+  const scheduleFieldSave = (
+    task: MobileTaskItem,
+    item: MobileTaskInlineEditorItem,
+    field: string,
+    value: string,
+  ) => {
+    const key = `${task.task_key}:${field}`
+    const previous = autosaveTimersRef.current[key]
+    if (previous) window.clearTimeout(previous)
+    autosaveTimersRef.current[key] = window.setTimeout(() => {
+      delete autosaveTimersRef.current[key]
+      const currentItem = editorItemsRef.current[task.task_key] || item
+      void saveField(task, currentItem, field, value, true)
+    }, 700)
+  }
+
+  const retryAutosave = (taskKey: string) => {
+    const pending = Object.entries(autosaveRetryRef.current)
+      .find(([, item]) => item.task.task_key === taskKey)?.[1]
+    if (!pending) return
+    void saveField(pending.task, pending.item, pending.field, pending.value, true)
+  }
+
+  useEffect(() => () => {
+    Object.values(autosaveTimersRef.current).forEach(timer => window.clearTimeout(timer))
+    autosaveTimersRef.current = {}
+    autosaveSequenceRef.current = {}
+  }, [])
 
   const searchRegistrationProperty = async (task: MobileTaskItem, keyword: string) => {
     const normalized = keyword.trim()
@@ -541,26 +617,28 @@ export default function MobileTaskTable({
     }
 
     if (!item?.available || !detail || !source) {
+      const isModelThree = task.parser_type === '疑似未注销模型三'
       return (
         <div
           ref={element => setEditorElement(task.task_key, element)}
           className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}
         >
           <div className="mobile-task-table-inline-fields">
-            <div className="mobile-task-table-inline-readonly">
+            <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
+            {!isModelThree && <div className="mobile-task-table-inline-readonly">
               <span>{mobileTaskCurrentAddressLabel(task.parser_type, task.summary.result || '')}</span>
               <strong>{task.summary.current_address || '未填写'}</strong>
-            </div>
-            <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
-            <div className="mobile-task-table-inline-readonly">
+            </div>}
+            {!isModelThree && <div className="mobile-task-table-inline-readonly">
               <span>研判</span>
               <strong>
                 <Tooltip title={task.summary.analysis || '未填写'}>
                   <span className="block truncate">{task.summary.analysis || '未填写'}</span>
                 </Tooltip>
               </strong>
-            </div>
-            <div className="mobile-task-table-inline-readonly"><span>二次反馈</span><strong>{task.summary.secondary_feedback || '未填写'}</strong></div>
+            </div>}
+            {!isModelThree && <div className="mobile-task-table-inline-readonly"><span>二次反馈</span><strong>{task.summary.secondary_feedback || '未填写'}</strong></div>}
+            {isModelThree && <div className="mobile-task-table-inline-readonly"><span>备注</span><strong>{task.summary.note || '未填写'}</strong></div>}
           </div>
           <div className="mobile-task-table-inline-actions">
             <Tooltip title={item?.reason || '当前任务只能在详情中处理'}>
@@ -615,6 +693,17 @@ export default function MobileTaskTable({
                         ? mobileTaskCurrentAddressLabel(task.parser_type, registrationResult)
                         : field}
                   </span>
+                  {saveStates[task.task_key] && (
+                    <small className="ml-2 inline-flex items-center gap-1 text-xs text-[var(--app-text-secondary)]" aria-live="polite">
+                      {saveStates[task.task_key] === 'saving' && '保存中'}
+                      {saveStates[task.task_key] === 'saved' && '已保存'}
+                      {saveStates[task.task_key] === 'error' && <>
+                        <span>保存失败</span>
+                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key)}>重试</Button>
+                      </>}
+                      {saveStates[task.task_key] === 'conflict' && '数据冲突，请刷新后重试'}
+                    </small>
+                  )}
                   {registrationAddressField ? (
                     <div className="grid gap-1">
                       <Select
@@ -648,12 +737,13 @@ export default function MobileTaskTable({
                         value={values[field] || undefined}
                         options={options}
                         onChange={value => {
+                          const nextValue = String(value || '')
                           setEditorValues(current => ({
                             ...current,
-                            [task.task_key]: { ...values, [field]: value || '' },
+                            [task.task_key]: { ...values, [field]: nextValue },
                           }))
                           if (registrationResultField) {
-                            registrationResultDraftRef.current[task.task_key] = String(value || '')
+                            registrationResultDraftRef.current[task.task_key] = nextValue
                           }
                           if (registrationResultField && value !== '待登记') {
                             setRegistrationProperties(current => ({
@@ -664,13 +754,9 @@ export default function MobileTaskTable({
                               },
                             }))
                           }
-                        }}
-                        onBlur={() => {
-                          const value = registrationResultField
-                            ? registrationResultDraftRef.current[task.task_key] ?? values[field] ?? ''
-                            : values[field] || ''
-                          if (registrationResultField && String(value).trim() === '待登记') return
-                          void saveField(task, item, field, value)
+                          if (!(registrationResultField && nextValue === '待登记')) {
+                            void saveField(task, item, field, nextValue)
+                          }
                         }}
                       />
                       {registrationResultField && registrationResult === '待登记' && (
@@ -684,10 +770,14 @@ export default function MobileTaskTable({
                       disabled={selectionMode || savingRowKey === task.task_key}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
-                      onChange={event => setEditorValues(current => ({
-                        ...current,
-                        [task.task_key]: { ...values, [field]: event.target.value },
-                      }))}
+                      onChange={event => {
+                        const nextValue = event.target.value
+                        setEditorValues(current => ({
+                          ...current,
+                          [task.task_key]: { ...values, [field]: nextValue },
+                        }))
+                        scheduleFieldSave(task, item, field, nextValue)
+                      }}
                       onBlur={() => void saveField(task, item, field, values[field] || '')}
                     />
                   )}
