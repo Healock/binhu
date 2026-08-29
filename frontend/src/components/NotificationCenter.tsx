@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { createPortal } from 'react-dom'
 import {
   Badge,
   Button,
@@ -42,7 +41,11 @@ interface AnnouncementFormValues {
   severity: 'info' | 'warning'
 }
 
-export default function NotificationCenter() {
+interface NotificationCenterProps {
+  placement?: 'sidebar' | 'mobile-header'
+}
+
+export default function NotificationCenter({ placement = 'sidebar' }: NotificationCenterProps) {
   const navigate = useNavigate()
   const { user, systemTimezone } = useAuth()
   const [open, setOpen] = useState(false)
@@ -302,16 +305,15 @@ export default function NotificationCenter() {
   return (
     <>
       {contextHolder}
-      {typeof document !== 'undefined' && createPortal(
-        <div className="fixed right-3 top-2.5 z-[60] md:hidden">
+      {placement === 'mobile-header' ? (
+        <div className="mobile-app-header__notification">
           {renderTrigger()}
-        </div>,
-        document.body,
+        </div>
+      ) : (
+        <div className="shrink-0">
+          {renderTrigger()}
+        </div>
       )}
-
-      <div className="hidden shrink-0 md:block">
-        {renderTrigger()}
-      </div>
 
       <Drawer
         title="消息中心"

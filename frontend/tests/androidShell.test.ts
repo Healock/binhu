@@ -28,6 +28,14 @@ test('Android client locks portrait and forces the packaged frontend into mobile
     'utf8',
   )
   const layout = readFileSync(new URL('../src/components/Layout.tsx', import.meta.url), 'utf8')
+  const notificationCenter = readFileSync(
+    new URL('../src/components/NotificationCenter.tsx', import.meta.url),
+    'utf8',
+  )
+  const presenceIndicator = readFileSync(
+    new URL('../src/components/OnlinePresenceIndicator.tsx', import.meta.url),
+    'utf8',
+  )
   const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
   const updateGate = readFileSync(new URL('../src/components/MandatoryUpdateGate.tsx', import.meta.url), 'utf8')
   const updateCoordinator = readFileSync(new URL('../src/components/ClientUpdateCoordinator.tsx', import.meta.url), 'utf8')
@@ -63,12 +71,20 @@ test('Android client locks portrait and forces the packaged frontend into mobile
   assert.match(activity, /useWideViewPort = false/)
   assert.match(activity, /WebViewCompat\.getCurrentWebViewPackage/)
   assert.match(activity, /"BinhuWebView"/)
-  assert.match(layout, /mobile-account-trigger ml-auto flex shrink-0/)
+  assert.match(layout, /className="mobile-app-header__actions"/)
+  assert.match(layout, /<OnlinePresenceIndicator \/>/)
+  assert.match(layout, /<NotificationCenter placement="mobile-header" \/>/)
+  assert.match(layout, /mobile-account-trigger flex shrink-0/)
+  assert.match(presenceIndicator, /'查看在线用户'/)
+  assert.match(notificationCenter, /aria-label="打开消息中心"/)
+  assert.doesNotMatch(notificationCenter, /createPortal/)
+  assert.doesNotMatch(notificationCenter, /fixed right-3 top-2\.5/)
   assert.doesNotMatch(layout, /aria-label="打开账号菜单"[\s\S]{0,160}mr-16/)
   assert.match(layout, /mobile-app-header md:hidden fixed/)
   assert.match(layout, /mainRef\.current\?\.scrollTo\(\{ top: 0, left: 0, behavior: 'auto' \}\)/)
   assert.match(layout, /window\.scrollTo\(\{ top: 0, left: 0, behavior: 'auto' \}\)/)
-  assert.match(styles, /\.online-presence-indicator\s*\{[\s\S]*?right:\s*64px;/)
+  assert.match(styles, /\.mobile-app-header__actions\s*\{[^}]*display:\s*flex;[^}]*gap:\s*4px/s)
+  assert.match(styles, /\.mobile-app-header__actions \.online-presence-indicator\s*\{[^}]*position:\s*static;/s)
   assert.match(styles, /html\.native-mobile-shell \.app-shell\s*\{[\s\S]*?flex-direction:\s*column;/)
   assert.match(styles, /html\.native-mobile-shell \.mobile-app-header\s*\{[\s\S]*?position:\s*sticky;/)
   assert.match(styles, /html\.native-mobile-shell \.app-shell > main\s*\{[^}]*overflow:\s*visible;/)
