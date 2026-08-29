@@ -25,6 +25,10 @@ except ModuleNotFoundError:  # Windows unit tests do not provide POSIX flock.
 WINDOWS_PLATFORMS = ("win7-x64", "win10-x64")
 ANDROID_PLATFORM = "android-arm64"
 PLATFORMS = (*WINDOWS_PLATFORMS, ANDROID_PLATFORM)
+WINDOWS_PACKAGE_IDS = {
+    "win7-x64": "com.bhzh.binhu.win7.x64",
+    "win10-x64": "com.bhzh.binhu.win10.x64",
+}
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -194,7 +198,7 @@ def validate_windows_platform(stage: Path, platform: str, expected_version: str,
     )
     if "releases.stable.json" not in actual_names:
         raise PublishError(f"missing Velopack feed for {platform}")
-    expected_package_id = f"com.bhzh.binhu.{platform}"
+    expected_package_id = WINDOWS_PACKAGE_IDS[platform]
     for name in actual_names:
         if name.endswith(".nupkg"):
             package_id, package_version = nupkg_metadata(platform_root / name)

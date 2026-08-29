@@ -19,10 +19,37 @@ from services.watch_matching import (
     projection_identity,
     sync_current_task_snapshots,
 )
+from services.local_source import local_data_source_enabled
 
 
 ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
 LEGACY_MODEL_THREE_SOURCE_SHEET = "legacy-model-three"
+
+
+def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
+    """Limit task-facing source queries to the active data ownership model.
+
+    During the local cutover, historical Tencent rows remain in the source
+    cache for audit purposes but must not make a task look duplicated or
+    block editing/assignment.  Non-local deployments retain the legacy
+    model-three de-duplication behavior.
+    """
+    if local_data_source_enabled():
+        prefix = f"{alias}."
+        local_kinds = (
+            f"{prefix}source_kind IN ('local_table','local_dispatch')"
+        )
+        model_three_compat = ""
+        if parser_type in {"疑似未注销模型三", "all"}:
+            model_three_compat = (
+                f" OR ({prefix}parser_type='疑似未注销模型三'"
+                f" AND {prefix}sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}')"
+            )
+        return (
+            f" AND {prefix}spreadsheet_id=0"
+            f" AND ({local_kinds}{model_three_compat})"
+        )
+    return logical_source_sql_filter(parser_type, alias)
 
 
 def logical_source_sql_filter(parser_type: str, alias: str = "source") -> str:
@@ -156,7 +183,7 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         "source.revision, source.row_hash "
         "FROM _online_source_rows AS source WHERE source.parser_type=%s "
         "AND source.archived_at IS NULL"
-        f"{logical_source_sql_filter(parser_type)} "
+        f"{active_source_sql_filter(parser_type)} "
         "ORDER BY spreadsheet_id, physical_row",
         (parser_type,),
     )

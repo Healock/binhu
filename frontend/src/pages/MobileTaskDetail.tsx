@@ -192,7 +192,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
   )
-  const interactionLocked = readonlyView
+  const localSourceConflict = Boolean(
+    data?.data_source_mode === 'local'
+      && (data.task.source_count > 1 || data.task.conflict),
+  )
+  const interactionLocked = readonlyView || localSourceConflict
   const visibleEditorFields = useMemo(() => (
     !interactionLocked && data && selectedSource
       ? mobileTaskEditorFields(
@@ -741,6 +745,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     return <div className="mobile-task-page"><Alert type="error" showIcon message={error || '任务不存在'} /><Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回任务列表</Button></div>
   }
 
+  const localSourceMode = data.data_source_mode === 'local'
   const state = STATE_LABELS[selectedSource?.state || data.task.state]
   const title = selectedSource
     ? firstValue(selectedSource.values, data.workflow.title_fields)
@@ -941,7 +946,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               title={dirty
                 ? '请先保存或放弃当前修改'
                 : !selectedSource?.source_available
-                  ? '腾讯来源行已不存在，不能准备登记'
+                  ? localSourceMode ? '本地任务来源已不存在，不能准备登记' : '腾讯来源行已不存在，不能准备登记'
                   : qmfLegacyStatusLoading
                     ? '正在复核全民防反馈状态'
                     : qmfLegacyStatusError
@@ -1118,12 +1123,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         <Alert
           type="warning"
           showIcon
-          message={`该任务包含 ${data.task.source_count} 条腾讯原始行`}
-          description="请先选择具体来源，再分别核对和保存。每次保存只修改当前选中的原始行。"
+          message={localSourceMode
+            ? `该任务存在 ${data.task.source_count} 条本地业务来源`
+            : `该任务包含 ${data.task.source_count} 条腾讯原始行`}
+          description={localSourceMode
+            ? '滨湖平台中存在重复的有效业务数据。为避免修改错对象，当前任务暂时只读，请管理员先处理重复来源。'
+            : '请先选择具体来源，再分别核对和保存。每次保存只修改当前选中的原始行。'}
         />
       )}
 
-      {sourceMissingFields.length > 0 && (
+      {!localSourceMode && sourceMissingFields.length > 0 && (
         <Alert
           type="info"
           showIcon
@@ -1132,7 +1141,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         />
       )}
 
-      {conflictFields.length > 0 && (
+      {!localSourceMode && conflictFields.length > 0 && (
         <section className="app-card p-4">
           <Alert
             type="error"
@@ -1178,7 +1187,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         </section>
       )}
 
-      {data.sources.length > 1 && (
+      {!localSourceMode && data.sources.length > 1 && (
         <section className="app-card mobile-task-source-panel">
           <div>
             <div className="text-sm font-semibold text-[var(--app-text-strong)]">选择腾讯来源</div>
@@ -1245,7 +1254,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">
-              {selectedSource.source_available ? `腾讯第 ${selectedSource.physical_row} 行` : '腾讯来源已删除'}
+              {localSourceMode
+                ? '滨湖平台本地数据'
+                : selectedSource.source_available ? `腾讯第 ${selectedSource.physical_row} 行` : '腾讯来源已删除'}
             </span>
           </div>
 
@@ -1394,7 +1405,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </div>
           )}
         </section>
-      ) : <Empty description="没有可用腾讯来源行" />}
+      ) : <Empty description={localSourceMode ? '没有可用本地任务来源' : '没有可用腾讯来源行'} />}
 
       {selectedSource && (
         <Collapse
