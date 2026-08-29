@@ -27,6 +27,8 @@ test('场所二维码通过受认证 Blob 加载并允许 Tauri 显示 object UR
   const tauri = JSON.parse(readFileSync(new URL('../../desktop/apps/win10-tauri/src-tauri/tauri.conf.json', import.meta.url), 'utf8'))
 
   assert.match(page, /<AuthenticatedImage alt="场所二维码"/)
+  assert.match(page, /loading=\{qrLoadingId === row\.id\}/)
+  assert.match(page, /message\.error\(apiErrorMessage\(reason, '二维码读取失败，请稍后重试'\)\)/)
   assert.match(image, /useAuthenticatedImageUrl/)
   assert.match(tauri.app.security.csp, /img-src[^;]*blob:/)
 })

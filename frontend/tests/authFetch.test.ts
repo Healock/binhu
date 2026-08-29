@@ -144,6 +144,41 @@ test('authenticated 503 stores maintenance reason and redirects to login', async
   })
 })
 
+test('feature-specific 503 stays on the current page', async () => {
+  const values = installBrowserState()
+  resetUnauthorizedRedirectForTests()
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => new Response(JSON.stringify({
+      detail: '场所码公开访问地址尚未配置',
+    }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+  })
+
+  const response = await fetchWithAuth('/api/venue-codes/7/qrcode')
+
+  assert.equal(response.status, 503)
+  assert.equal((globalThis as any).window.location.href, '/users')
+  assert.equal(values.get('auth_exit_reason'), undefined)
+})
+
+test('authenticated image feature 503 rejects locally without logging out', async () => {
+  const values = installBrowserState()
+  resetUnauthorizedRedirectForTests()
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => new Response(JSON.stringify({
+      detail: '二维码图片生成依赖尚未安装',
+    }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+  })
+
+  await assert.rejects(
+    fetchAuthenticatedImageBlob('/api/venue-codes/7/qrcode?format=png'),
+    /图片读取失败（503）/,
+  )
+  assert.equal((globalThis as any).window.location.href, '/users')
+  assert.equal(values.get('auth_exit_reason'), undefined)
+})
+
 test('login 503 can stay on the login page for the form to show the reason', async () => {
   const values = installBrowserState()
   resetUnauthorizedRedirectForTests()
