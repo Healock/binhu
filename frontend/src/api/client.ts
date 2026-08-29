@@ -1840,6 +1840,9 @@ export async function getMobileTaskAssignmentWorkbench(
 ): Promise<{
   data: MobileTaskAssignmentCandidate[]
   total: number
+  displayed_total: number
+  limited: boolean
+  limit: number
   communities: MobileTaskFilterOption[]
   inspectors_by_community: Record<string, string[]>
   inspector_counts_by_community: Record<string, Record<string, number>>

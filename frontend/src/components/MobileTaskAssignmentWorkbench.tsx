@@ -32,6 +32,9 @@ export default function MobileTaskAssignmentWorkbench({
   const [communities, setCommunities] = useState<Array<{ value: string; label: string; count: number }>>([])
   const [inspectors, setInspectors] = useState<Record<string, string[]>>({})
   const [inspectorCounts, setInspectorCounts] = useState<Record<string, Record<string, number>>>({})
+  const [availableTotal, setAvailableTotal] = useState(0)
+  const [limited, setLimited] = useState(false)
+  const [displayLimit, setDisplayLimit] = useState(2000)
   const [community, setCommunity] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -52,6 +55,9 @@ export default function MobileTaskAssignmentWorkbench({
       setCommunities(result.communities)
       setInspectors(result.inspectors_by_community)
       setInspectorCounts(result.inspector_counts_by_community || {})
+      setAvailableTotal(result.total || result.data.length)
+      setLimited(Boolean(result.limited))
+      setDisplayLimit(result.limit || 2000)
       setCommunity(current => (
         current && result.communities.some(item => item.value === current)
           ? current
@@ -290,6 +296,14 @@ export default function MobileTaskAssignmentWorkbench({
         )}
         {community && !inspectorOptions.length && visible.length > 0 && <Alert type="warning" showIcon message="该社区当前没有可用的在岗核查人，数据暂时不能分配" />}
         {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>刷新</Button>} />}
+        {limited && !error && (
+          <Alert
+            type="warning"
+            showIcon
+            message={`当前有 ${availableTotal} 条未分配数据，暂显示前 ${displayLimit} 条。分配完成后请刷新继续处理。`}
+            action={<Button size="small" onClick={() => void load()}>刷新下一批</Button>}
+          />
+        )}
         {progress && (
           <div className="mobile-task-assignment-workbench__progress">
             <Progress percent={Math.round(progress.processed / progress.total * 100)} status={saving ? 'active' : progress.failed ? 'exception' : 'normal'} />
