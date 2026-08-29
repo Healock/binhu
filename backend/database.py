@@ -2725,8 +2725,7 @@ class DatabaseManager:
                 await ensure_permission_schema(cur)
                 await ensure_online_editor_schema(cur)
                 await ensure_local_source_schema(cur)
-                if settings.LOCAL_DATA_SOURCE_ENABLED:
-                    await run_local_source_migration(conn)
+                await run_local_source_migration(conn)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
                 await ensure_qmf_registration_schema(cur)

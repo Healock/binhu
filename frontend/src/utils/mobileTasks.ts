@@ -68,7 +68,7 @@ export function mobileTaskSourceTags(value: string): string[] {
 }
 
 /**
- * 任务卡片只展示截止日期的月日。兼容腾讯常见的点、横线、斜线和中文
+ * 任务卡片只展示截止日期的月日。兼容历史数据常见的点、横线、斜线和中文
  * 月日格式；无法可靠识别时保留原值，避免凭空猜测业务日期。
  */
 export function formatMobileTaskDeadline(value: string): string {
@@ -140,7 +140,7 @@ export function buildMobileTaskChanges(
 /**
  * 将保存响应合并回当前详情页时，保留本次明确提交的值。
  *
- * 回写接口通常会返回完整来源行，但腾讯下拉单元格在某些响应中只
+ * 保存接口通常会返回完整来源行，但历史下拉单元格在某些响应中只
  * 返回选项 ID，或者暂时省略刚写入的文本。直接用响应覆盖整行会让
  * 用户刚选中的结果在保存结束后看起来像被清空。这里只对本次提交
  * 的非空字段做安全兜底；用户明确清空的字段仍以空值为准。

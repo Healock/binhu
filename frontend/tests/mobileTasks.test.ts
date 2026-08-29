@@ -882,11 +882,11 @@ test('本地任务详情不再把历史腾讯来源当成编辑前置条件', ()
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
-  assert.match(detailSource, /const localSourceMode = data\.data_source_mode === 'local'/)
   assert.match(detailSource, /const interactionLocked = readonlyView \|\| localSourceConflict/)
   assert.match(detailSource, /该任务存在 \$\{data\.task\.source_count\} 条本地业务来源/)
-  assert.match(detailSource, /!localSourceMode && data\.sources\.length > 1/)
   assert.match(detailSource, /滨湖平台本地数据/)
+  assert.match(detailSource, /没有可用本地任务来源/)
+  assert.doesNotMatch(detailSource, /选择腾讯来源|腾讯来源行|采用腾讯值/)
 })
 
 test('任务详情桌面端使用更紧凑的最大宽度', () => {
@@ -897,7 +897,7 @@ test('任务详情桌面端使用更紧凑的最大宽度', () => {
   assert.match(styleSource, /\.mobile-task-detail-page\s*\{[\s\S]*max-width: 1240px/)
 })
 
-test('流口任务本地保存后显示异步同步状态并支持逐字段冲突处理', () => {
+test('流口任务保存使用本地版本并且不再暴露腾讯冲突处理', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
@@ -915,14 +915,12 @@ test('流口任务本地保存后显示异步同步状态并支持逐字段冲�
     'utf8',
   )
 
-  assert.match(pageSource, /task\.sync_state === 'conflict'[\s\S]*同步冲突/)
-  assert.match(tableSource, /task\.sync_state === 'retry'[\s\S]*同步重试/)
-  assert.match(detailSource, /平台与腾讯表格修改了同一字段/)
-  assert.match(detailSource, />采用平台值</)
-  assert.match(detailSource, />采用腾讯值</)
-  assert.match(detailSource, /item\.error_code === 'source_missing'/)
-  assert.match(clientSource, /resolveMobileTaskSyncConflict/)
-  assert.match(clientSource, /resolve-sync-conflict/)
+  assert.match(detailSource, /expected_revision: selectedSource\.revision/)
+  assert.match(detailSource, /updateMobileTask/)
+  assert.doesNotMatch(detailSource, /平台与腾讯表格修改了同一字段|采用腾讯值|采用平台值/)
+  assert.doesNotMatch(clientSource, /resolveMobileTaskSyncConflict|resolve-sync-conflict/)
+  assert.doesNotMatch(pageSource, /腾讯写回|腾讯同步/)
+  assert.doesNotMatch(tableSource, /腾讯写回|腾讯同步/)
   assert.doesNotMatch(detailSource, /已保存，滨湖平台数据已同步并写回腾讯表格/)
   assert.doesNotMatch(tableSource, /已自动保存并写回腾讯表格/)
 })
@@ -1061,7 +1059,7 @@ test('普通选择字段在手机端关闭搜索，房屋关联仍允许模糊�
   assert.match(detailSource, /onSearch=\{value => void loadRegistrationProperties\(value\)\}/)
 })
 
-test('全民防只保留单条登记入口并在内部完成登记前核对', () => {
+test('全民防仅保留反馈状态只读查询，不再提供真实登记入口', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
@@ -1070,41 +1068,16 @@ test('全民防只保留单条登记入口并在内部完成登记前核对', ()
     new URL('../src/api/client.ts', import.meta.url),
     'utf8',
   )
-  const styleSource = readFileSync(
-    new URL('../src/index.css', import.meta.url),
-    'utf8',
-  )
-
   assert.doesNotMatch(detailSource, /data\.qmf_preview\?\.visible/)
   assert.doesNotMatch(detailSource, /previewQmfRegistration/)
   assert.doesNotMatch(detailSource, /全民防只读预演/)
   assert.match(detailSource, /data\.qmf_registration\?\.visible/)
-  assert.match(detailSource, /data\.qmf_registration\.enabled/)
-  assert.match(detailSource, /expected_revision: selectedSource\.revision/)
-  assert.match(detailSource, /qmfPreviewRequestActive\.current/)
-  assert.match(detailSource, />\{shouldResumeQmfRun \? '查看全民防登记记录' : '全民防登记'\}<\/Button>/)
-  assert.match(detailSource, /登记前核对已完成/)
-  assert.match(detailSource, /preview\.photo\.data_base64/)
-  assert.match(detailSource, /人员社区编码/)
-  assert.match(detailSource, /任务辖区编码/)
-  assert.match(detailSource, /辖区按派出所校验/)
-  assert.match(detailSource, /本次固定执行顺序/)
-  assert.doesNotMatch(detailSource, /QMF_CONFIRMATION|确认登记.*Input/)
-  assert.match(detailSource, /二次确认并执行全民防登记/)
-  assert.match(detailSource, /仅重试腾讯完成标记/)
+  assert.match(detailSource, /getQmfLegacyStatus/)
+  assert.match(detailSource, /平台仅展示只读核对结果，不会向全民防写入核查结果/)
+  assert.doesNotMatch(detailSource, /prepareQmfRegistration|executeQmfRegistration|getQmfRegistrationRun/)
+  assert.doesNotMatch(detailSource, /全民防模型三登记确认|二次确认并执行全民防登记|重新核对并准备/)
   assert.doesNotMatch(detailSource, /批量登记|自动登记|定时登记/)
-
-  const apiFunction = clientSource.match(
-    /export async function prepareQmfRegistration[\s\S]*?\r?\n}\r?\n/,
-  )?.[0] || ''
-  assert.match(apiFunction, /api\.post\('\/qmf-registration\/prepare', payload/)
-  assert.match(apiFunction, /parser_type: string/)
-  assert.match(apiFunction, /row_key: string/)
-  assert.match(apiFunction, /source_id: number/)
-  assert.match(apiFunction, /expected_revision: number/)
-  assert.doesNotMatch(apiFunction, /identity_number/)
-  assert.match(clientSource, /`\/qmf-registration\/runs\/\$\{runId\}\/execute`/)
-  assert.match(clientSource, /`\/qmf-registration\/runs\/\$\{runId\}\/execute`[\s\S]*?\{\}/)
-  assert.match(styleSource, /\.qmf-preview-person[\s\S]*grid-template-columns:/)
-  assert.match(styleSource, /@media \(max-width: 767px\)[\s\S]*\.qmf-preview-person[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
+  assert.match(clientSource, /export async function getQmfLegacyStatus/)
+  assert.doesNotMatch(clientSource, /export async function (prepare|execute)QmfRegistration/)
+  assert.doesNotMatch(clientSource, /retryQmfTencentMarker/)
 })

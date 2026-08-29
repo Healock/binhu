@@ -1,343 +1,50 @@
-from datetime import datetime, timedelta
+import inspect
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
-from pathlib import Path
 
 from fastapi import HTTPException
-from pydantic import ValidationError
 
-from deps import require_admin
-from routers.sync import SyncScheduleRequest
-from schemas.sync import SyncScheduleStatus
-from services import sync_tasks
+from routers import sync
 
 
-class FakeCursor:
-    def __init__(
-        self,
-        *,
-        schedule=(1, 5, None),
-        now=None,
-        active_task=None,
-        interrupted=None,
-    ):
-        self.schedule = list(schedule)
-        self.now = now or datetime(2026, 7, 27, 8, 0, 0)
-        self.active_task = active_task
-        self.interrupted = interrupted or []
-        self.executed = []
-        self.last_sql = ""
-        self.lastrowid = 77
-        self.rowcount = 1
+class RetiredScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_manual_trigger_returns_disabled_without_creating_a_task(self):
+        result = await sync.trigger_sync(user={"id": 1, "role": "admin"})
 
-    async def __aenter__(self):
-        return self
+        self.assertEqual(result.task_id, 0)
+        self.assertEqual(result.status, "disabled")
+        self.assertIn("腾讯数据源已下线", result.message)
 
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
+    async def test_status_and_schedule_are_permanently_disabled(self):
+        status = await sync.sync_status(user={"id": 1})
+        schedule = await sync.read_schedule(user={"id": 1, "role": "super_admin"})
 
-    async def execute(self, sql, params=None):
-        normalized = " ".join(sql.split())
-        self.last_sql = normalized
-        self.executed.append((normalized, params))
-        if normalized.startswith("UPDATE _sync_schedule SET last_triggered_at"):
-            self.schedule[2] = self.now + timedelta(
-                minutes=self.schedule[1]
-            )
+        self.assertEqual(status.status, "disabled")
+        self.assertEqual(status.schedule.enabled, False)
+        self.assertEqual(schedule["enabled"], False)
+        self.assertEqual(schedule["interval_minutes"], 0)
+        self.assertTrue(schedule["disabled"])
 
-    async def fetchone(self):
-        if self.last_sql.startswith("SELECT GET_LOCK"):
-            return (1,)
-        if self.last_sql.startswith("SELECT RELEASE_LOCK"):
-            return (1,)
-        if self.last_sql.startswith(
-            "SELECT enabled, interval_minutes, next_run_at"
-        ):
-            return tuple(self.schedule)
-        if self.last_sql == "SELECT UTC_TIMESTAMP()":
-            return (self.now,)
-        if self.last_sql.startswith("SELECT id FROM _sync_log"):
-            return (self.active_task,) if self.active_task else None
-        return None
+    async def test_schedule_update_is_gone(self):
+        with self.assertRaises(HTTPException) as raised:
+            await sync.save_schedule(user={"id": 1, "role": "super_admin"})
 
-    async def fetchall(self):
-        if self.last_sql.startswith("SELECT id, trigger_source FROM _sync_log"):
-            return list(self.interrupted)
-        if self.last_sql.startswith(
-            "SELECT parser_type FROM _config_spreadsheets"
-        ):
-            return []
-        return []
+        self.assertEqual(raised.exception.status_code, 410)
+        self.assertIn("腾讯数据源已下线", raised.exception.detail)
 
+    async def test_history_endpoint_does_not_read_legacy_sync_log(self):
+        result = await sync.sync_history(user={"id": 1})
 
-class FakePool:
-    def __init__(self, cursor):
-        self.cursor = cursor
-        self.connection = MagicMock()
-        context = MagicMock()
-        context.__aenter__ = AsyncMock(return_value=cursor)
-        context.__aexit__ = AsyncMock(return_value=None)
-        self.connection.cursor.return_value = context
-        self.acquire = AsyncMock(return_value=self.connection)
-        self.release = MagicMock()
+        self.assertEqual(result["data"], [])
+        self.assertEqual(result["total"], 0)
+        self.assertIn("腾讯数据源已下线", result["message"])
 
+    def test_retired_router_has_no_scheduler_or_task_creation_dependency(self):
+        source = inspect.getsource(sync)
 
-class ExistingQmfCursor:
-    def __init__(self, rows):
-        self.rows = rows
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
-
-    async def execute(self, sql, params=None):
-        return None
-
-    async def fetchall(self):
-        return self.rows
-
-
-class ExistingQmfPool:
-    def __init__(self, rows):
-        self.cursor = ExistingQmfCursor(rows)
-        self.connection = MagicMock()
-        context = MagicMock()
-        context.__aenter__ = AsyncMock(return_value=self.cursor)
-        context.__aexit__ = AsyncMock(return_value=None)
-        self.connection.cursor.return_value = context
-        self.acquire = AsyncMock(return_value=self.connection)
-        self.release = MagicMock()
-
-
-class ScheduledSyncTests(unittest.IsolatedAsyncioTestCase):
-    def test_schedule_defaults_to_enabled_every_ten_minutes(self):
-        schedule = SyncScheduleStatus()
-        self.assertTrue(schedule.enabled)
-        self.assertEqual(schedule.interval_minutes, 10)
-
-    async def test_manual_sync_permission_allows_only_admin_roles(self):
-        for role in ("admin", "super_admin"):
-            user = {"id": 1, "role": role}
-            self.assertEqual(await require_admin(user), user)
-
-        for role in ("leader", "member"):
-            with self.assertRaises(HTTPException) as raised:
-                await require_admin({"id": 2, "role": role})
-            self.assertEqual(raised.exception.status_code, 403)
-
-    def test_schedule_interval_validation(self):
-        self.assertEqual(
-            SyncScheduleRequest(enabled=True, interval_minutes=5).interval_minutes,
-            5,
-        )
-        self.assertEqual(
-            SyncScheduleRequest(
-                enabled=True,
-                interval_minutes=10080,
-            ).interval_minutes,
-            10080,
-        )
-        for invalid in (4, 10081):
-            with self.assertRaises(ValidationError):
-                SyncScheduleRequest(
-                    enabled=True,
-                    interval_minutes=invalid,
-                )
-
-    def test_existing_schedule_is_migrated_to_ten_minutes_only_once(self):
-        database_source = (
-            Path(__file__).resolve().parents[1] / "database.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("sync_interval_10m_migrated", database_source)
-        self.assertIn("SET interval_minutes=10", database_source)
-        self.assertIn("INTERVAL 10 MINUTE", database_source)
-        self.assertIn("INSERT IGNORE INTO _system_config", database_source)
-
-    async def test_due_schedule_is_claimed_only_once(self):
-        now = datetime(2026, 7, 27, 8, 0, 0)
-        cursor = FakeCursor(
-            schedule=(1, 5, now - timedelta(seconds=1)),
-            now=now,
-        )
-        pool = FakePool(cursor)
-
-        with patch.object(
-            sync_tasks.db_manager,
-            "get_pool",
-            return_value=pool,
-        ):
-            first = await sync_tasks.claim_due_scheduled_task()
-            second = await sync_tasks.claim_due_scheduled_task()
-
-        self.assertEqual(first, 77)
-        self.assertIsNone(second)
-        inserts = [
-            sql
-            for sql, _ in cursor.executed
-            if sql.startswith("INSERT INTO _sync_log")
-        ]
-        self.assertEqual(len(inserts), 1)
-
-    async def test_due_schedule_does_not_duplicate_active_task(self):
-        now = datetime(2026, 7, 27, 8, 0, 0)
-        cursor = FakeCursor(
-            schedule=(1, 5, now - timedelta(seconds=1)),
-            now=now,
-            active_task=41,
-        )
-        pool = FakePool(cursor)
-
-        with patch.object(
-            sync_tasks.db_manager,
-            "get_pool",
-            return_value=pool,
-        ):
-            result = await sync_tasks.claim_due_scheduled_task()
-
-        self.assertIsNone(result)
-        self.assertFalse(
-            any(
-                sql.startswith("INSERT INTO _sync_log")
-                for sql, _ in cursor.executed
-            )
-        )
-
-    async def test_update_schedule_resets_countdown_and_validates_range(self):
-        cursor = FakeCursor()
-        pool = FakePool(cursor)
-        current = {
-            "enabled": True,
-            "interval_minutes": 15,
-            "next_run_at": "2026-07-27T08:15:00Z",
-            "server_time": "2026-07-27T08:00:00Z",
-        }
-
-        with patch.object(
-            sync_tasks.db_manager,
-            "get_pool",
-            return_value=pool,
-        ), patch.object(
-            sync_tasks,
-            "get_schedule",
-            new=AsyncMock(return_value=current),
-        ):
-            result = await sync_tasks.update_schedule(True, 15, 3)
-
-        self.assertEqual(result, current)
-        update = next(
-            (params for sql, params in cursor.executed
-             if sql.startswith("UPDATE _sync_schedule SET enabled=")),
-            None,
-        )
-        self.assertEqual(update, (1, 15, 3, 1, 15))
-
-        for invalid in (4, 10081):
-            with self.assertRaises(ValueError):
-                await sync_tasks.update_schedule(True, invalid, 3)
-
-    async def test_task_completion_resets_schedule_and_notifies_auto_failures(self):
-        cases = [
-            ("scheduled", "failed", 1),
-            ("scheduled", "partial", 1),
-            ("scheduled", "success", 1),
-            ("manual", "failed", 0),
-        ]
-        for trigger_source, status, notice_count in cases:
-            with self.subTest(trigger_source=trigger_source, status=status):
-                engine = MagicMock()
-                engine.run_full_sync = AsyncMock()
-                reset = AsyncMock()
-                notify = AsyncMock()
-                with patch.object(
-                    sync_tasks,
-                    "SyncEngine",
-                    return_value=engine,
-                ), patch.object(
-                    sync_tasks.db_manager,
-                    "get_pool",
-                    return_value=MagicMock(),
-                ), patch.object(
-                    sync_tasks,
-                    "_get_task_terminal_state",
-                    new=AsyncMock(
-                        return_value=(status, trigger_source, "test error")
-                    ),
-                ), patch.object(
-                    sync_tasks,
-                    "reset_next_run_from_now",
-                    new=reset,
-                ), patch.object(
-                    sync_tasks,
-                    "create_sync_status_notifications",
-                    new=notify,
-                ):
-                    await sync_tasks.run_sync_task(88)
-
-                reset.assert_awaited_once()
-                self.assertEqual(notify.await_count, notice_count)
-
-    async def test_scheduled_qmf_does_not_repeat_terminal_run_for_same_business_date(self):
-        payload = '{"trigger":"scheduled","business_date":"2026-08-25"}'
-        pool = ExistingQmfPool([(42, "success", payload)])
-        current = {"id": 42, "status": "success"}
-
-        with patch.object(
-            sync_tasks,
-            "_scheduled_qmf_business_date",
-            new=AsyncMock(return_value="2026-08-25"),
-        ), patch.object(
-            sync_tasks.db_manager,
-            "get_pool",
-            return_value=pool,
-        ), patch(
-            "services.external_acquisition_jobs.get_job",
-            new=AsyncMock(return_value=current),
-        ) as get_job, patch(
-            "services.external_acquisition_jobs.create_job",
-            new=AsyncMock(),
-        ) as create_job:
-            result = await sync_tasks.run_scheduled_qmf_source_acquisition()
-
-        self.assertEqual(result, current)
-        get_job.assert_awaited_once_with(42)
-        create_job.assert_not_awaited()
-
-    async def test_startup_recovery_marks_tasks_failed_and_notifies_auto_only(self):
-        cursor = FakeCursor(
-            interrupted=[(11, "scheduled"), (12, "manual")],
-        )
-        pool = FakePool(cursor)
-        reset = AsyncMock()
-        notify = AsyncMock()
-
-        with patch.object(
-            sync_tasks.db_manager,
-            "get_pool",
-            return_value=pool,
-        ), patch.object(
-            sync_tasks,
-            "reset_next_run_from_now",
-            new=reset,
-        ), patch.object(
-            sync_tasks,
-            "create_sync_failure_notifications",
-            new=notify,
-        ):
-            count = await sync_tasks.recover_interrupted_tasks()
-
-        self.assertEqual(count, 2)
-        self.assertTrue(
-            any(
-                sql.startswith("UPDATE _sync_log SET status='failed'")
-                for sql, _ in cursor.executed
-            )
-        )
-        reset.assert_awaited_once()
-        notify.assert_awaited_once()
-        self.assertEqual(notify.await_args.args[0], 11)
+        self.assertNotIn("SyncScheduleRequest", source)
+        self.assertNotIn("create_sync_task", source)
+        self.assertNotIn("update_schedule", source)
+        self.assertNotIn("services.sync_tasks", source)
 
 
 if __name__ == "__main__":

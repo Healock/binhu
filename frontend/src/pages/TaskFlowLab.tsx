@@ -191,7 +191,7 @@ function dispatchBatchItems(batch: PoliceDispatchBatch): TaskFlowItem[] {
   if (batch.counts.pending_publish) result.push({
     id: `dispatch:${batch.id}:publish`, lane: 'ready', category: '下发数据发布',
     title: `批次 #${batch.id} · ${batch.file_name}`, statusLabel: `待发布 ${batch.counts.pending_publish}`, statusColor: 'blue',
-    community: batch.sheet_name, deadline: '', description: '审核完成，等待选择任务并发布到腾讯全链条',
+    community: batch.sheet_name, deadline: '', description: '审核完成，等待选择任务并发布到本地任务池',
     owner: batch.imported_by || '基础管控', openPath: `/police-tasks?batch=${batch.id}&status=pending_publish&category=all`, weight: batch.counts.pending_publish,
   })
   const exceptionCount = batch.counts.conflict + batch.counts.needs_reconciliation + batch.counts.retryable

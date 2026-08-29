@@ -67,10 +67,10 @@ const PHOTO_DETAIL_LABELS: Record<string, string> = {
   requested_from: '开始时间', requested_to: '结束时间', request_reason: '申请理由',
   result_status: '调取结果', result_note: '处理说明',
   community_name: '任务社区', source_label: '数据来源', requester_name_snapshot: '原申请人',
-  requested_at: '腾讯申请日期', external_origin: '来源渠道', external_sync_status: '腾讯同步状态',
+  requested_at: '历史申请日期', external_origin: '历史来源渠道', external_sync_status: '历史来源状态',
   legacy_result_note: '历史备注', data_issue: '数据异常',
-  batch_completed_at: '腾讯批次完成时间', tencent_physical_row: '腾讯物理行',
-  photo_sheet_batch_id: '腾讯批次编号', row_sync_status: '来源行状态',
+  batch_completed_at: '历史批次完成时间', tencent_physical_row: '历史来源位置',
+  photo_sheet_batch_id: '历史批次编号', row_sync_status: '历史来源行状态',
 }
 
 const TERMINAL = new Set(['approved', 'completed', 'rejected', 'cancelled', 'withdrawn'])
@@ -118,7 +118,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const [photoSource, setPhotoSource] = useState('')
   const [photoCommunity, setPhotoCommunity] = useState('')
   const [attachmentStatus, setAttachmentStatus] = useState('')
-  const [externalSyncStatus, setExternalSyncStatus] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [detail, setDetail] = useState<WorkOrderDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -163,7 +162,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
       const [result, typeResult] = await Promise.all([
         workflowApi.search({
           view, keyword: debouncedKeyword, type_code: typeCode, source_label: photoSource,
-          attachment_status: attachmentStatus, external_sync_status: externalSyncStatus,
+          attachment_status: attachmentStatus,
           page: nextPage, page_size: nextPageSize,
         }),
         types.length ? Promise.resolve({ data: types }) : workflowApi.types(),
@@ -179,13 +178,13 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     } finally {
       if (requestId === listRequestId.current) setLoading(false)
     }
-  }, [attachmentStatus, debouncedKeyword, externalSyncStatus, page, pageSize, photoCommunity, photoSource, typeCode, types, view])
+  }, [attachmentStatus, debouncedKeyword, page, pageSize, photoCommunity, photoSource, typeCode, types, view])
 
   useEffect(() => {
     setView(photoOnly ? 'photo_pending' : 'created')
   }, [photoOnly])
 
-  useEffect(() => { void load(1) }, [view, debouncedKeyword, typeCode, photoSource, photoCommunity, attachmentStatus, externalSyncStatus])
+  useEffect(() => { void load(1) }, [view, debouncedKeyword, typeCode, photoSource, photoCommunity, attachmentStatus])
 
   const refreshDetail = async (ticketId = detail?.id) => {
     if (!ticketId) return
@@ -600,19 +599,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   value={attachmentStatus || undefined}
                   onChange={value => setAttachmentStatus(value || '')}
                   options={[{ value: 'with', label: '有平台附件' }, { value: 'without', label: '无平台附件' }]}
-                />
-                <Select
-                  allowClear
-                  className="min-w-40"
-                  placeholder="腾讯同步状态"
-                  value={externalSyncStatus || undefined}
-                  onChange={value => setExternalSyncStatus(value || '')}
-                  options={[
-                    { value: 'pending', label: '待同步' }, { value: 'retry', label: '重试中' },
-                    { value: 'paused', label: '写回已暂停' },
-                    { value: 'synced', label: '已同步' }, { value: 'linked', label: '腾讯来源已关联' },
-                    { value: 'not_linked', label: '不关联腾讯' },
-                  ]}
                 />
                 </>}
                 meta={<span>当前筛选 {total} 张工单</span>}

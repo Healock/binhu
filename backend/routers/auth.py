@@ -689,21 +689,8 @@ class OAuthRequest(BaseModel):
 
 @router.get("/status")
 async def get_auth_status(user: dict = Depends(require_super_admin)):
-    """获取 OAuth 配置状态"""
-    pool = db_manager.get_pool("online_data")
-    conn = await pool.acquire()
-    try:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT client_id, open_id FROM _config_oauth_tokens ORDER BY id DESC LIMIT 1"
-            )
-            row = await cur.fetchone()
-    finally:
-        pool.release(conn)
-
-    if row:
-        return {"configured": True, "client_id": row[0] or "", "open_id": row[1] or ""}
-    return {"configured": False, "client_id": "", "open_id": ""}
+    """腾讯 OAuth 已下线；历史凭据仅作为受限审计材料保留。"""
+    raise HTTPException(status_code=410, detail="腾讯文档已下线，OAuth 配置不可用")
 
 
 @router.post("/oauth")
@@ -712,30 +699,8 @@ async def save_oauth(
     request: Request,
     user: dict = Depends(require_super_admin),
 ):
-    """保存 OAuth 凭据（超管）"""
-    if settings.LOCAL_DATA_SOURCE_ENABLED:
-        raise HTTPException(status_code=410, detail="腾讯表已下线，OAuth 配置已停用")
-    pool = db_manager.get_pool("online_data")
-    conn = await pool.acquire()
-    try:
-        async with conn.cursor() as cur:
-            await cur.execute("DELETE FROM _config_oauth_tokens")
-            await cur.execute(
-                "INSERT INTO _config_oauth_tokens (client_id, client_secret, access_token, refresh_token, open_id) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (req.client_id, req.client_secret, req.access_token, req.refresh_token, req.open_id),
-            )
-    finally:
-        pool.release(conn)
-    await record_admin_audit(
-        user,
-        "oauth.update",
-        target_type="oauth",
-        target_name="tencent-docs",
-        detail={"configured": True},
-        **request_audit_fields(request),
-    )
-    return {"message": "保存成功"}
+    """腾讯 OAuth 已下线，不再接受凭据写入。"""
+    raise HTTPException(status_code=410, detail="腾讯文档已下线，OAuth 配置不可用")
 
 
 @router.post("/oauth/test")
@@ -744,42 +709,5 @@ async def test_oauth(
     request: Request,
     user: dict = Depends(require_super_admin),
 ):
-    """测试 OAuth 凭据（超管）"""
-    if settings.LOCAL_DATA_SOURCE_ENABLED:
-        raise HTTPException(status_code=410, detail="腾讯表已下线，OAuth 测试已停用")
-    import httpx
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://docs.qq.com/openapi/spreadsheet/v3/spreadsheets",
-                headers={"Authorization": f"Bearer {req.access_token}"},
-                params={"client_id": req.client_id, "open_id": req.open_id},
-                timeout=10,
-            )
-        valid = resp.status_code == 200
-        await record_admin_audit(
-            user,
-            "oauth.test",
-            target_type="oauth",
-            target_name="tencent-docs",
-            result="success" if valid else "failed",
-            detail={"http_status": resp.status_code},
-            **request_audit_fields(request),
-        )
-        if valid:
-            return {"valid": True, "message": "凭据有效"}
-        return {"valid": False, "message": f"API返回 {resp.status_code}: {resp.text[:100]}"}
-    except Exception as e:
-        await record_admin_audit(
-            user,
-            "oauth.test",
-            target_type="oauth",
-            target_name="tencent-docs",
-            result="failed",
-            detail={"error": redact_text(str(e))[:200]},
-            **request_audit_fields(request),
-        )
-        return {
-            "valid": False,
-            "message": f"连接失败: {redact_text(str(e))}",
-        }
+    """腾讯 OAuth 已下线，不再发起外部连通性测试。"""
+    raise HTTPException(status_code=410, detail="腾讯文档已下线，OAuth 测试不可用")

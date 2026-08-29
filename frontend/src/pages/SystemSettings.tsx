@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert,
   Button,
@@ -11,32 +11,23 @@ import {
   Switch,
 } from 'antd'
 import {
-  formatUTCTime,
   getExternalAcquisitionRun,
   getLatestExternalAcquisitionRun,
   getQmfConfig,
   getResidencePlatformConfig,
-  getSyncSchedule,
   getSystemConfig,
   updateQmfConfig,
   updateResidencePlatformConfig,
   startResidencePlatformScan,
-  updateSyncSchedule,
   updateSystemConfig,
 } from '../api/client'
 import type {
   ExternalAcquisitionRun,
   QmfConfig,
   ResidencePlatformConfig,
-  SyncSchedule,
 } from '../api/client'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
-import {
-  formatCountdown,
-  getRemainingTime,
-  getServerOffset,
-} from '../utils/countdown'
 import {
   DEFAULT_SUMMARY_POSITIONS,
   PERSONNEL_POSITIONS,
@@ -54,25 +45,6 @@ const TIMEZONES = [
   { value: 'America/New_York', label: '纽约 (UTC-5)' },
   { value: 'Europe/London', label: '伦敦 (UTC+0)' },
 ]
-
-const INTERVAL_OPTIONS = [
-  { value: 10, label: '每 10 分钟' },
-  { value: 5, label: '每 5 分钟' },
-  { value: 15, label: '每 15 分钟' },
-  { value: 30, label: '每 30 分钟' },
-  { value: 60, label: '每 1 小时' },
-  { value: 120, label: '每 2 小时' },
-  { value: 240, label: '每 4 小时' },
-  { value: 480, label: '每 8 小时' },
-  { value: 720, label: '每 12 小时' },
-  { value: 1440, label: '每 24 小时' },
-  { value: 'custom', label: '自定义间隔' },
-]
-const COMMON_INTERVALS = new Set(
-  INTERVAL_OPTIONS
-    .map(option => option.value)
-    .filter((value): value is number => typeof value === 'number'),
-)
 
 type MaintenanceMode = 'off' | 'immediate' | 'scheduled'
 
@@ -127,20 +99,10 @@ function parseDateTimeInput(value: string, timezone: string): string {
 export default function SystemSettings() {
   const { setSystemTimezone } = useAuth()
   const [timezone, setTimezone] = useState('Asia/Shanghai')
-  const [schedule, setSchedule] = useState<SyncSchedule>({
-    enabled: true,
-    interval_minutes: 10,
-    next_run_at: null,
-    server_time: null,
-  })
-  const [enabled, setEnabled] = useState(true)
-  const [interval, setIntervalValue] = useState(10)
-  const [intervalChoice, setIntervalChoice] = useState<number | 'custom'>(10)
   const [loading, setLoading] = useState(true)
   const [savingTimezone, setSavingTimezone] = useState(false)
   const [savingSchedule, setSavingSchedule] = useState(false)
   const [timezoneMsg, setTimezoneMsg] = useState('')
-  const [scheduleMsg, setScheduleMsg] = useState('')
   const [visitPositions, setVisitPositions] = useState<PersonnelPosition[]>(
     [...DEFAULT_SUMMARY_POSITIONS],
   )
@@ -149,13 +111,9 @@ export default function SystemSettings() {
   >([...DEFAULT_SUMMARY_POSITIONS])
   const [savingPositions, setSavingPositions] = useState(false)
   const [positionsMsg, setPositionsMsg] = useState('')
-  const [clock, setClock] = useState(Date.now())
   const [idleMinutes, setIdleMinutes] = useState(30)
   const [savingIdle, setSavingIdle] = useState(false)
   const [idleMsg, setIdleMsg] = useState('')
-  const [onlineWritebackEnabled, setOnlineWritebackEnabled] = useState(false)
-  const [savingWriteback, setSavingWriteback] = useState(false)
-  const [writebackMsg, setWritebackMsg] = useState('')
   const [maintenanceMode, setMaintenanceMode] = useState<MaintenanceMode>('off')
   const [maintenanceStartAt, setMaintenanceStartAt] = useState('')
   const [maintenanceEndAt, setMaintenanceEndAt] = useState('')
@@ -173,8 +131,8 @@ export default function SystemSettings() {
   const [residenceRun, setResidenceRun] = useState<ExternalAcquisitionRun | null>(null)
 
   useEffect(() => {
-    Promise.all([getSystemConfig(), getSyncSchedule(), getQmfConfig(), getResidencePlatformConfig()])
-      .then(([config, currentSchedule, currentQmf, currentResidence]) => {
+    Promise.all([getSystemConfig(), getQmfConfig(), getResidencePlatformConfig()])
+      .then(([config, currentQmf, currentResidence]) => {
         setTimezone(config.timezone || 'Asia/Shanghai')
         const configuredTimezone = config.timezone || 'Asia/Shanghai'
         const configuredStartAt = formatDateTimeInput(config.maintenance_start_at, configuredTimezone)
@@ -190,9 +148,6 @@ export default function SystemSettings() {
         setMaintenanceEndAt(configuredEndAt)
         setMaintenanceMessage(config.maintenance_message || '平台正在维护中，请稍后再试')
         setIdleMinutes(Number(config.session_idle_minutes || 30))
-        setOnlineWritebackEnabled(
-          String(config.online_writeback_enabled || '0') === '1',
-        )
         const configuredVisitPositions = parseSummaryPositions(
           config.visit_summary_positions,
         ).filter(position => position !== '自购房')
@@ -204,18 +159,10 @@ export default function SystemSettings() {
         setWeekendDutyPositions(
           parseSummaryPositions(config.weekend_duty_positions),
         )
-        setSchedule(currentSchedule)
-        setEnabled(currentSchedule.enabled)
-        setIntervalValue(currentSchedule.interval_minutes)
-        setIntervalChoice(
-          COMMON_INTERVALS.has(currentSchedule.interval_minutes)
-            ? currentSchedule.interval_minutes
-            : 'custom',
-        )
         setQmfConfig(currentQmf)
         setResidenceConfig(currentResidence)
       })
-      .catch(() => setScheduleMsg('系统设置加载失败，请稍后重试'))
+      .catch(() => setTimezoneMsg('系统设置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
   }, [])
 
@@ -254,24 +201,6 @@ export default function SystemSettings() {
     }
   }, [residenceRun?.id, residenceRun?.status])
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-
-  const serverOffset = useMemo(
-    () => getServerOffset(schedule.server_time),
-    [schedule.server_time],
-  )
-  const remaining = getRemainingTime(
-    schedule.next_run_at,
-    serverOffset,
-    clock,
-  )
-  const countdown = remaining == null
-    ? '-'
-    : formatCountdown(remaining)
-
   const handleSaveTimezone = async () => {
     setSavingTimezone(true)
     setTimezoneMsg('')
@@ -283,30 +212,6 @@ export default function SystemSettings() {
       setTimezoneMsg('保存失败')
     } finally {
       setSavingTimezone(false)
-    }
-  }
-
-  const handleIntervalChoice = (value: number | 'custom') => {
-    setIntervalChoice(value)
-    if (typeof value === 'number') setIntervalValue(value)
-  }
-
-  const handleSaveSchedule = async () => {
-    setSavingSchedule(true)
-    setScheduleMsg('')
-    try {
-      const result = await updateSyncSchedule({
-        enabled,
-        interval_minutes: interval,
-      })
-      setSchedule(result)
-      setScheduleMsg(
-        enabled ? '定时同步已保存，倒计时已重新开始' : '定时同步已关闭',
-      )
-    } catch (error: any) {
-      setScheduleMsg(error?.response?.data?.detail || '保存失败')
-    } finally {
-      setSavingSchedule(false)
     }
   }
 
@@ -343,25 +248,6 @@ export default function SystemSettings() {
       setIdleMsg(error?.response?.data?.detail || '保存失败')
     } finally {
       setSavingIdle(false)
-    }
-  }
-
-  const handleSaveWriteback = async () => {
-    setSavingWriteback(true)
-    setWritebackMsg('')
-    try {
-      await updateSystemConfig({
-        online_writeback_enabled: onlineWritebackEnabled ? '1' : '0',
-      })
-      setWritebackMsg(
-        onlineWritebackEnabled
-          ? '在线回写已启用'
-          : '在线回写已暂停，数据查询仍可正常使用',
-      )
-    } catch (error: any) {
-      setWritebackMsg(error?.response?.data?.detail || '保存失败')
-    } finally {
-      setSavingWriteback(false)
     }
   }
 
@@ -411,7 +297,7 @@ export default function SystemSettings() {
     setQmfMsg('')
     try {
       const result = await updateQmfConfig({
-        registration_enabled: qmfConfig.registration_enabled,
+        registration_enabled: false,
         api_base_url: qmfConfig.api_base_url,
         login_host: qmfConfig.login_host,
         login_port: qmfConfig.login_port,
@@ -428,7 +314,7 @@ export default function SystemSettings() {
       })
       setQmfConfig(result)
       setQmfPassword('')
-      setQmfMsg('全民防封闭测试配置已保存')
+      setQmfMsg('全民防只读查询配置已保存')
     } catch (error: any) {
       setQmfMsg(error?.response?.data?.detail || '全民防配置保存失败')
     } finally {
@@ -580,42 +466,18 @@ export default function SystemSettings() {
       </Panel>
 
       <Panel
-        title="全民防模型三封闭测试"
-        description="单条登记继续执行实时预检测；反馈扫描只读核对已完成模型三任务，不会修改平台、腾讯表格或全民防数据。"
+        title="全民防模型三只读查询"
+        description="仅用于读取待办任务和反馈状态；不会上传照片、保存人员、反馈结果或执行真实登记。"
       >
         {!qmfConfig ? (
           <Alert type="info" showIcon message="全民防配置加载中" />
         ) : (
           <div className="flex flex-col gap-5">
             <Alert
-              type={qmfConfig.registration_configured ? 'success' : 'warning'}
+              type={qmfConfig.configured ? 'success' : 'warning'}
               showIcon
-              message={qmfConfig.registration_configured ? '全民防登记已开启' : '配置尚未完整或登记未开启'}
-              description="每条登记都会自动完成登记前核对；全民防登记会上传照片、保存人员资料并反馈模型三，提交后不可撤销。密码保存后不再显示；IMEI、MACHINEUID按授权要求完整显示。"
-            />
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">全民防登记开关</span>
-                <div className="flex min-h-9 items-center gap-3">
-                  <Switch
-                    checked={qmfConfig.registration_enabled}
-                    onChange={value => setQmfConfig(current => current ? { ...current, registration_enabled: value } : current)}
-                    disabled={savingQmf}
-                  />
-                  <span className="text-sm text-[var(--app-text-secondary)]">
-                    {qmfConfig.registration_enabled ? '已开启' : '已关闭'}
-                  </span>
-                </div>
-                <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  开启后仍需具备“执行全民防单条登记”权限；基础管控、中队长、所队领导、管理员和超级管理员默认拥有。每条都会重新完成登记前核对并要求二次确认。
-                </p>
-              </div>
-            </div>
-            <Alert
-              type="warning"
-              showIcon
-              message="全民防登记不可自动撤销"
-              description="任一步骤出现超时、断线或结果不确定时，系统会冻结该次运行，不会自动重试，也不会从头重放。请先到全民防人工核对。"
+              message={qmfConfig.configured ? '全民防只读查询已配置' : '只读查询配置尚未完整'}
+              description="腾讯表和全民防真实登记均已下线；此处凭据只用于受控的外部只读查询。密码保存后不再显示。"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <div className="settings-field">
@@ -748,14 +610,14 @@ export default function SystemSettings() {
               colon={false}
               column={{ xs: 1, sm: 2 }}
               items={[
-                { key: 'permission', label: '执行权限', children: '由权限组配置，基础管控、中队长、所队领导、管理员和超级管理员默认拥有' },
+                { key: 'boundary', label: '运行边界', children: '只读查询，不执行照片上传、人员保存或结果反馈' },
                 { key: 'password', label: '密码状态', children: qmfConfig.source_password_configured ? '已配置（不回显）' : '未配置' },
-                { key: 'session', label: '单次会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
+                { key: 'session', label: '只读会话上限', children: `${qmfConfig.session_max_seconds} 秒` },
               ]}
             />
             <div className="settings-actions">
               <Button type="primary" loading={savingQmf} onClick={handleSaveQmf}>
-                保存全民防配置
+                保存只读查询配置
               </Button>
             </div>
             {qmfMsg && (
@@ -925,143 +787,6 @@ export default function SystemSettings() {
             )}
           </div>
         )}
-      </Panel>
-
-      <Panel
-        title="自动同步"
-        description="按固定间隔读取腾讯文档；修改设置后会重新开始倒计时"
-      >
-        <div className="flex flex-col gap-5">
-          <div className="grid gap-5 md:grid-cols-2">
-            <div>
-              <div className="mb-2 text-sm font-medium text-slate-700">启用状态</div>
-              <div className="flex min-h-9 items-center gap-3">
-                <Switch
-                  checked={enabled}
-                  onChange={setEnabled}
-                  loading={loading}
-                />
-                <span className="text-sm text-slate-600">
-                  {enabled ? '已开启自动同步' : '已关闭自动同步'}
-                </span>
-              </div>
-            </div>
-
-            <div className="settings-field">
-              <label className="settings-field__label text-sm font-medium text-slate-700">
-                同步间隔
-              </label>
-              <div className="flex flex-wrap gap-3">
-                <Select
-                  value={intervalChoice}
-                  onChange={handleIntervalChoice}
-                  options={INTERVAL_OPTIONS}
-                  className="w-48"
-                  disabled={loading}
-                />
-                {intervalChoice === 'custom' && (
-                  <InputNumber
-                    min={5}
-                    max={10080}
-                    value={interval}
-                    onChange={value => setIntervalValue(value || 5)}
-                    addonAfter="分钟"
-                    className="w-48"
-                  />
-                )}
-              </div>
-              <p className="settings-field__hint text-xs text-slate-500">
-                自定义范围为 5 分钟至 7 天。
-              </p>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-            <Descriptions
-              size="small"
-              colon={false}
-              column={{ xs: 1, sm: 2 }}
-              items={[
-                {
-                  key: 'countdown',
-                  label: '距离下次同步',
-                  children: schedule.enabled ? countdown : '已关闭',
-                },
-                {
-                  key: 'next',
-                  label: '下次执行时间',
-                  children: schedule.enabled && schedule.next_run_at
-                    ? formatUTCTime(schedule.next_run_at, timezone)
-                    : '-',
-                },
-              ]}
-            />
-          </div>
-
-          <div className="flex justify-end">
-            <Button
-              type="primary"
-              onClick={handleSaveSchedule}
-              loading={savingSchedule}
-              disabled={loading || interval < 5 || interval > 10080}
-            >
-              保存自动同步设置
-            </Button>
-          </div>
-          {scheduleMsg && (
-            <Alert
-              type={scheduleMsg.includes('失败') ? 'error' : 'success'}
-              showIcon
-              message={scheduleMsg}
-            />
-          )}
-        </div>
-      </Panel>
-
-      <Panel
-        title="腾讯文档在线回写"
-        description="控制在线数据查询页是否允许把修改、新增和删除直接写回腾讯表格"
-      >
-        <div className="flex flex-col gap-4">
-          <Alert
-            type="warning"
-            showIcon
-            message="关闭开关不会影响查询和正常同步"
-            description="开启后，符合岗位和社区范围的账号才能编辑；修改结果要等下一次正常同步后才进入业务库、日报和汇总。"
-          />
-          <div className="flex min-h-11 items-center justify-between gap-4 rounded-lg border border-[var(--app-border)] px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-[var(--app-text-strong)]">
-                允许平台回写腾讯文档
-              </div>
-              <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-                发生异常时可立即关闭，已经登录的账号下一次写操作会立即受限。
-              </div>
-            </div>
-            <Switch
-              checked={onlineWritebackEnabled}
-              onChange={setOnlineWritebackEnabled}
-              loading={loading}
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button
-              type="primary"
-              loading={savingWriteback}
-              disabled={loading}
-              onClick={handleSaveWriteback}
-            >
-              保存在线回写设置
-            </Button>
-          </div>
-          {writebackMsg && (
-            <Alert
-              type={writebackMsg.includes('已') ? 'success' : 'error'}
-              showIcon
-              message={writebackMsg}
-            />
-          )}
-        </div>
       </Panel>
 
       <Panel

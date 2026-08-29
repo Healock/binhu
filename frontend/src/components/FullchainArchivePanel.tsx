@@ -26,7 +26,7 @@ const STAGES = [
 ] as const
 
 const ERROR_STAGE_LABELS: Record<string, string> = {
-  external_delete: '腾讯删除',
+  external_delete: '历史外部移除步骤',
   registration_evidence: '登记确认复核',
   source_snapshot: '冻结快照',
   archive_schema: '归档结构',
@@ -36,7 +36,7 @@ const ERROR_STAGE_LABELS: Record<string, string> = {
   transaction_begin: '事务启动',
   transaction_commit: '事务提交',
   transaction_rollback: '事务回滚',
-  cache_refresh: '同步缓存刷新',
+  cache_refresh: '本地投影刷新',
   reconcile_source: '平台来源对账',
   reconcile_schema: '对账结构检查',
   reconcile_archive_compare: '历史内容对账',
@@ -47,8 +47,8 @@ const ERROR_STAGE_LABELS: Record<string, string> = {
 }
 
 const ERROR_CODE_LABELS: Record<string, string> = {
-  source_row_changed: '腾讯删除前来源已变化，未执行删除',
-  registration_archive_evidence_changed: '居住证确认、房屋或来源状态已变化，腾讯行未删除',
+  source_row_changed: '归档前来源已变化，未移除当前任务',
+  registration_archive_evidence_changed: '居住证确认、房屋或来源状态已变化，当前任务未归档',
   source_snapshot_missing: '冻结快照缺失或不完整，无法安全补偿',
   archive_schema_mismatch: '归档表结构与当前业务不兼容',
   archive_insert_failed: '历史归档写入失败',
@@ -58,11 +58,11 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   archive_transaction_deadlock: '数据库事务发生死锁，可安全重试平台步骤',
   archive_transaction_timeout: '数据库事务等待超时，可安全重试平台步骤',
   archive_database_unavailable: '数据库暂时不可用',
-  external_delete_rejected: '腾讯明确拒绝删除请求，未继续平台归档',
-  external_delete_outcome_unknown: '腾讯删除结果不确定，禁止自动重试删除',
-  cache_refresh_pending: '腾讯已删除且平台已归档，等待缓存刷新',
+  external_delete_rejected: '历史外部移除步骤被拒绝，未继续平台归档',
+  external_delete_outcome_unknown: '历史外部移除结果不确定，禁止自动重试',
+  cache_refresh_pending: '平台已归档，等待本地投影刷新',
   archive_content_conflict: '历史数据与导出冻结快照不一致，需人工核对',
-  current_row_changed_after_external_delete: '腾讯删除后平台当前数据已变化，禁止覆盖',
+  current_row_changed_after_external_delete: '历史外部移除后平台当前数据已变化，禁止覆盖',
 }
 
 const PLATFORM_STATE_LABELS: Record<string, string> = {
@@ -76,7 +76,7 @@ const PLATFORM_STATE_LABELS: Record<string, string> = {
 const RECONCILE_STATE_LABELS: Record<string, string> = {
   pending: '尚未对账',
   reconciling: '正在仅平台对账',
-  reconciled_by_sync: '已由同步归档并完成对账',
+  reconciled_by_sync: '已由历史同步归档并完成对账',
   reconciled_from_current: '已从当前数据补偿归档',
   reconciled_from_snapshot: '已从冻结快照补偿归档',
   conflict: '平台对账冲突',
@@ -157,7 +157,7 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
         title: `确认导出并归档 ${preview.total} 条数据？`,
         width: 680,
         content: <div className="grid gap-3">
-          <Alert type="warning" showIcon message="导出即归档" description="确认后先永久保存反馈 XLSX，再由后台从腾讯在线表整行删除；已删除任务进入历史，不再出现在网格员当前任务中。" />
+          <Alert type="warning" showIcon message="导出即归档" description="确认后先永久保存反馈 XLSX，再由后台通过本地事务写入历史归档并移出当前任务池。" />
           <div className="flex flex-wrap gap-2">{Object.entries(preview.categories).map(([label, count]) => <Tag key={label} color="blue">{label} {count} 条</Tag>)}</div>
           <Table
             size="small"
@@ -230,7 +230,7 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
   ], [reviewOptions, saveReview, systemTimezone])
 
   return (
-    <Panel title={`${parserType}反馈导出与归档`} description="最终无法核实数据须经预览确认后导出；导出文件永久保留，腾讯整行删除在后台执行，并逐条显示进度和冲突。" padded={false}>
+    <Panel title={`${parserType}反馈导出与归档`} description="最终无法核实数据须经预览确认后导出；导出文件永久保留，本地归档在后台执行，并逐条显示进度和冲突。" padded={false}>
       <div className="grid gap-5 p-5">
         {error && <Alert type="error" showIcon message={error} />}
         <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(260px,1fr)_auto]">
@@ -300,12 +300,12 @@ export default function FullchainArchivePanel({ parserType = '全链条' }: Full
                         : '等待处理',
                 },
                 {
-                  title: '腾讯删除',
+                  title: '移出当前任务池',
                   dataIndex: 'external_delete_state',
                   width: 130,
                   render: value => value === 'deleted'
-                    ? '已确认删除'
-                    : value === 'deleting' ? '结果待确认' : '尚未删除',
+                    ? '已移出'
+                    : value === 'deleting' ? '处理中' : '等待处理',
                 },
                 {
                   title: '平台归档',

@@ -39,7 +39,7 @@ export default function FullchainPoliceRawPanel({ enabled }: { enabled: boolean 
           type="info"
           showIcon
           message="不再用于已登记归档判断"
-          description="新的已登记归档只认居住证双周期自动确认、腾讯写回成功及完整 24 小时保留期；本区文件不会影响候选结果。"
+          description="新的已登记归档只认居住证双周期自动确认、本地任务确认及完整 24 小时保留期；本区文件不会影响候选结果。"
         />
         {loadFailed && (
           <Alert

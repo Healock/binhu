@@ -350,39 +350,6 @@ async def _external_jobs() -> list[dict[str, Any]]:
     ]
 
 
-async def _sync_jobs() -> list[dict[str, Any]]:
-    if local_data_source_enabled():
-        return []
-    rows = await _rows("online_data", f"""
-        SELECT id,status,trigger_source,phase,total_steps,completed_steps,
-               total_rows,processed_rows,started_at,finished_at
-        FROM _sync_log
-        WHERE status IN ('pending','running')
-           OR finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {RECENT_WINDOW_MINUTES} MINUTE)
-        ORDER BY (status IN ('pending','running')) DESC,
-                 COALESCE(finished_at,started_at) DESC,id DESC
-        LIMIT {MAX_ITEMS_PER_SOURCE}
-    """)
-    items = []
-    for row in rows:
-        total = int(row[4] or 0) or int(row[6] or 0) or None
-        current = int(row[5] or 0) if row[4] else int(row[7] or 0)
-        items.append(_item(
-            source="online_sync",
-            source_id=row[0],
-            category="数据同步",
-            title="在线数据同步",
-            status=row[1],
-            phase=row[3],
-            current=current,
-            total=total,
-            message="自动同步" if row[2] == "scheduled" else "手动同步",
-            started_at=row[8],
-            finished_at=row[9],
-        ))
-    return items
-
-
 async def _dispatch_publish_jobs() -> list[dict[str, Any]]:
     rows = await _rows("dispatch", f"""
         SELECT id,status,phase,total_count,processed_count,created_at,
@@ -473,53 +440,16 @@ async def _registry_certificate_jobs() -> list[dict[str, Any]]:
 
 
 async def _qmf_jobs() -> list[dict[str, Any]]:
-    registration_rows, scan_rows = await asyncio.gather(
-        _rows("platform", f"""
-            SELECT id,status,tencent_marker_status,prepared_at,
-                   execution_started_at,completed_at,updated_at
-            FROM _qmf_registration_runs
-            WHERE status='executing'
-               OR tencent_marker_status IN ('pending','writing')
-               OR (
-                    status NOT IN ('prepared','pending_confirmation')
-                    AND updated_at >= DATE_SUB(
-                        UTC_TIMESTAMP(),
-                        INTERVAL {RECENT_WINDOW_MINUTES} MINUTE
-                    )
-               )
-            ORDER BY (status='executing' OR tencent_marker_status IN ('pending','writing')) DESC,
-                     updated_at DESC
-            LIMIT {MAX_ITEMS_PER_SOURCE}
-        """),
-        _rows("online_data", f"""
-            SELECT id,status,total_count,processed_count,created_at,
-                   started_at,finished_at,updated_at
-            FROM _qmf_status_scan_runs
-            WHERE status IN ('queued','running')
-               OR updated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {RECENT_WINDOW_MINUTES} MINUTE)
-            ORDER BY (status IN ('queued','running')) DESC,updated_at DESC
-            LIMIT {MAX_ITEMS_PER_SOURCE}
-        """),
-    )
-    items = []
-    for row in registration_rows:
-        marker_status = str(row[2] or "")
-        status = marker_status if marker_status in {"pending", "writing"} else row[1]
-        items.append(_item(
-            source="qmf_registration",
-            source_id=row[0],
-            category="全民防登记",
-            title="全民防单条登记",
-            status=status,
-            phase="tencent_marker" if marker_status in {"pending", "writing"} else "registration",
-            current=1 if normalize_task_state(status) == "success" else 0,
-            total=1,
-            created_at=row[3],
-            started_at=row[4],
-            finished_at=row[5],
-            updated_at=row[6],
-        ))
-    items.extend(
+    scan_rows = await _rows("online_data", f"""
+        SELECT id,status,total_count,processed_count,created_at,
+               started_at,finished_at,updated_at
+        FROM _qmf_status_scan_runs
+        WHERE status IN ('queued','running')
+           OR updated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {RECENT_WINDOW_MINUTES} MINUTE)
+        ORDER BY (status IN ('queued','running')) DESC,updated_at DESC
+        LIMIT {MAX_ITEMS_PER_SOURCE}
+    """)
+    return [
         _item(
             source="qmf_status_scan",
             source_id=row[0],
@@ -535,8 +465,7 @@ async def _qmf_jobs() -> list[dict[str, Any]]:
             updated_at=row[7],
         )
         for row in scan_rows
-    )
-    return items
+    ]
 
 
 async def _visit_import_jobs() -> list[dict[str, Any]]:
@@ -595,92 +524,18 @@ async def _backup_jobs() -> list[dict[str, Any]]:
     ]
 
 
-async def _writeback_queues() -> list[dict[str, Any]]:
-    if local_data_source_enabled():
-        return []
-    online_rows, photo_rows = await asyncio.gather(
-        _rows("online_data", """
-            SELECT status,COUNT(*),MIN(created_at),MAX(updated_at)
-            FROM _online_local_changes
-            WHERE status IN ('pending','processing','retry','conflict')
-            GROUP BY status
-        """),
-        _rows("workflow", """
-            SELECT status,COUNT(*),MIN(created_at),MAX(updated_at)
-            FROM photo_sheet_outbox
-            WHERE status IN ('pending','retry','paused')
-            GROUP BY status
-        """),
-    )
-    items = []
-    if online_rows:
-        counts = {str(row[0]): int(row[1] or 0) for row in online_rows}
-        total = sum(counts.values())
-        status = "processing" if counts.get("processing") else (
-            "retry" if counts.get("retry") else (
-                "conflict" if counts.get("conflict") else "pending"
-            )
-        )
-        items.append(_item(
-            source="online_writeback_queue",
-            source_id="current",
-            category="发布与回写",
-            title="任务字段回写队列",
-            status=status,
-            phase="writeback_queue",
-            current=counts.get("processing", 0),
-            total=total,
-            message=(
-                f"待写回 {counts.get('pending', 0)} · 重试 {counts.get('retry', 0)}"
-                f" · 冲突 {counts.get('conflict', 0)}"
-            ),
-            created_at=min((row[2] for row in online_rows if row[2]), default=None),
-            updated_at=max((row[3] for row in online_rows if row[3]), default=None),
-            detail_count=counts.get("retry", 0) + counts.get("conflict", 0),
-            attention_count=counts.get("retry", 0) + counts.get("conflict", 0),
-        ))
-    if photo_rows:
-        counts = {str(row[0]): int(row[1] or 0) for row in photo_rows}
-        total = sum(counts.values())
-        status = "retry" if counts.get("retry") else (
-            "paused" if counts.get("paused") else "pending"
-        )
-        items.append(_item(
-            source="photo_writeback_queue",
-            source_id="current",
-            category="发布与回写",
-            title="调照片名单回写队列",
-            status=status,
-            phase="photo_outbox",
-            current=0,
-            total=total,
-            message=(
-                f"待处理 {counts.get('pending', 0)} · 重试 {counts.get('retry', 0)}"
-                f" · 已暂停 {counts.get('paused', 0)}"
-            ),
-            created_at=min((row[2] for row in photo_rows if row[2]), default=None),
-            updated_at=max((row[3] for row in photo_rows if row[3]), default=None),
-            detail_count=counts.get("retry", 0) + counts.get("paused", 0),
-            attention_count=counts.get("retry", 0) + counts.get("paused", 0),
-            retry_kind="photo_outbox" if counts.get("retry", 0) or counts.get("paused", 0) else None,
-        ))
-    return items
-
-
 TaskLoader = Callable[[], Awaitable[list[dict[str, Any]]]]
 
 
 async def build_admin_task_queue() -> dict[str, Any]:
     loaders: list[tuple[str, TaskLoader]] = [
         ("外部数据获取", _external_jobs),
-        ("在线表同步", _sync_jobs),
         ("下发任务发布", _dispatch_publish_jobs),
         ("全链条归档", _archive_jobs),
         ("责任告知书读取", _registry_certificate_jobs),
         ("全民防任务", _qmf_jobs),
         ("走访导入", _visit_import_jobs),
         ("数据库备份", _backup_jobs),
-        ("回写队列", _writeback_queues),
     ]
     results = await asyncio.gather(
         *(loader() for _, loader in loaders),

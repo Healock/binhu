@@ -51,11 +51,14 @@ test('每日扫描设置默认由后台配置并使用上海时区时间', () =>
   assert.match(settingsSource, /status_scan_time/)
 })
 
-test('全民防设置移除协议确认项并说明默认执行岗位', () => {
+test('全民防设置只保留外部只读查询配置', () => {
   assert.doesNotMatch(settingsSource, /登录协议已实测/)
   assert.doesNotMatch(settingsSource, /写入协议已实测/)
   assert.doesNotMatch(settingsSource, /登记前核对与全民防登记均已开启/)
-  assert.match(settingsSource, /基础管控、中队长、所队领导、管理员和超级管理员默认拥有/)
+  assert.doesNotMatch(settingsSource, /全民防登记开关|二次确认|上传照片、保存人员资料并反馈模型三/)
+  assert.match(settingsSource, /全民防模型三只读查询/)
+  assert.match(settingsSource, /不会上传照片、保存人员、反馈结果或执行真实登记/)
+  assert.match(settingsSource, /registration_enabled: false/)
 })
 
 test('任务详情实时复核后立即替换旧的全民防缓存状态', () => {

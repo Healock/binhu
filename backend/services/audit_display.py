@@ -315,7 +315,7 @@ DETAIL_LABELS: dict[str, str] = {
     "run_id": "登记运行编号",
     "result_code": "结果代码",
     "duration_ms": "耗时（毫秒）",
-    "tencent_marker_status": "腾讯标记状态",
+    "tencent_marker_status": "历史完成标记状态",
     "photo": "照片校验摘要",
     "mime_type": "图片类型",
     "size_bytes": "图片大小（字节）",

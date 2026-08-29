@@ -85,7 +85,7 @@ def test_public_publish_run_contains_only_safe_progress_fields():
     assert not {"identity_number", "phone", "address"}.intersection(result)
 
 
-def test_recovery_freezes_sending_items_and_only_retries_unsent_items():
+def test_recovery_retries_unfinished_local_items_without_external_uncertainty():
     cursor = _Cursor()
     pool = _Pool(_Conn(cursor))
     with patch.object(jobs.db_manager, "get_pool", return_value=pool):
@@ -93,12 +93,12 @@ def test_recovery_freezes_sending_items_and_only_retries_unsent_items():
 
     assert recovered == 1
     sql = "\n".join(query for query, _params in cursor.queries)
-    assert "item.status='sending'" in sql
-    assert "task.publish_status='needs_reconciliation'" in sql
-    assert "item.status IN ('queued','checking')" in sql
+    assert "service_restarted_local" in sql
+    assert "item.status=CASE task.publish_status" in sql
     assert "task.publish_status='retryable'" in sql
     assert "status='failed',phase='finished'" in sql
     assert "WHERE batch.id=%s" in sql
+    assert "腾讯请求可能已经送达" not in sql
 
 
 def test_local_recovery_never_marks_external_outcome_uncertain():

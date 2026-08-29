@@ -682,14 +682,17 @@ class PhotoSheetMaintenanceTests(unittest.IsolatedAsyncioTestCase):
         launch.assert_called_once_with()
         self.assertTrue(result["full_sync_scheduled"])
 
-    async def test_photo_sheet_scheduler_has_its_own_cancellable_loop(self):
+    async def test_photo_sheet_scheduler_stays_stopped_in_local_mode(self):
+        maintenance = AsyncMock(side_effect=asyncio.CancelledError)
         with patch.object(
             photo_sheet_sync,
             "run_photo_sheet_maintenance_once",
-            new=AsyncMock(side_effect=asyncio.CancelledError),
+            new=maintenance,
         ):
-            with self.assertRaises(asyncio.CancelledError):
-                await photo_sheet_sync.run_photo_sheet_scheduler()
+            result = await photo_sheet_sync.run_photo_sheet_scheduler()
+
+        self.assertIsNone(result)
+        maintenance.assert_not_awaited()
 
 
 if __name__ == "__main__":

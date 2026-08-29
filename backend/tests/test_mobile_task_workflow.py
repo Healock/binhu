@@ -918,7 +918,7 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as raised:
             kwargs["current_values_validator"]({"核查人": "其他组员"})
         self.assertEqual(raised.exception.status_code, 409)
-        self.assertEqual(result["message"], "已领取任务并保存，正在同步腾讯表格")
+        self.assertEqual(result["message"], "已领取任务并保存到本地任务池")
 
     async def test_only_group_member_can_self_claim_task(self):
         request = MagicMock()

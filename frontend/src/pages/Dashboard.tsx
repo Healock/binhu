@@ -21,7 +21,6 @@ import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import MobileReportTable from '../components/MobileReportTable'
 import SummaryReportConfigButton from '../components/SummaryReportConfigButton'
-import SyncPanel from '../components/SyncPanel'
 import { EmptyState, PageHeader, Panel } from '../components/ui'
 import {
   formatDateInTimezone,
@@ -36,7 +35,6 @@ import {
   type OnlineOverviewDetailItem,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { useSync } from '../hooks/useSync'
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 import { buildReportTableTotal } from '../utils/tableTotals'
 
@@ -167,7 +165,7 @@ export default function Dashboard() {
   const [detailError, setDetailError] = useState('')
   const [startDate, endDate] = dateRange
 
-  // 日期或业务类型变化时读取报表；同步任务结束时也会调用同一函数。
+  // 日期或业务类型变化时读取本地报表。
   const fetchReport = useCallback(async () => {
     if (startDate > endDate) return
     setOverviewLoading(true)
@@ -205,15 +203,6 @@ export default function Dashboard() {
     }
   }, [startDate, endDate, reportType, reportColumnMode, requestedCommunity, responsibilityScope])
 
-  const {
-    syncing,
-    status: syncStatus,
-    taskError: syncTaskError,
-    statusError: syncStatusError,
-    actionError: syncActionError,
-    startSync: handleSync,
-  } = useSync(fetchReport)
-  const canManualSync = Boolean(user?.permissions.includes('sync.trigger'))
   const canConfigureReport = Boolean(user?.permissions.includes('report.config.manage'))
 
   useEffect(() => {
@@ -428,23 +417,12 @@ export default function Dashboard() {
     <div className="app-page">
       <PageHeader
         title="在线数据汇总"
-        description="同步腾讯文档数据，并按日期和业务类型查看统计结果"
+        description="基于本地业务数据按日期和业务类型查看统计结果"
         actions={report.exists ? (
           <Tag color="blue">
             网格员 {inspectorTable.data.length} 行 · 社区 {communityTable.data.length} 行
           </Tag>
         ) : undefined}
-      />
-
-      <SyncPanel
-        syncing={syncing}
-        status={syncStatus}
-        taskError={syncTaskError}
-        statusError={syncStatusError}
-        actionError={syncActionError}
-        onSync={handleSync}
-        canManualSync={canManualSync}
-        timezone={systemTimezone}
       />
 
       {isImplemented && (
@@ -466,7 +444,7 @@ export default function Dashboard() {
             rangeValue={availableRange}
             rangeDescription={overview?.available_data_days
               ? `共 ${overview.available_data_days} 个可用日期；当前选中 ${overview.selected_data_days} 天`
-              : '完成一次成功同步后，这里会显示可用范围'}
+              : '生成本地日报后，这里会显示可用范围'}
             metrics={[
               { key: 'total', title: '任务总数', value: overview?.total_tasks || 0, suffix: '条', help: '所选区间内同一业务任务去重后的数量' },
               { key: 'carryover', title: '结转数据', value: overview?.carryover_tasks || 0, suffix: '条', help: '进入所选区间时已经存在、尚未完成的任务；点击查看明细', valueStyle: { color: '#d97706' }, onClick: () => void loadOverviewDetails('carryover') },
@@ -631,7 +609,7 @@ export default function Dashboard() {
           {isRange ? (
             <p>区间内同一任务只计算一次，并按区间结束时的状态归类。</p>
           ) : (
-            <p>单日数据总数包含前期未完成任务和当天新增、变更的任务；日报随同步自动生成。</p>
+            <p>单日数据总数包含前期未完成任务和当天新增、变更的任务；日报由本地业务数据生成。</p>
           )}
         </div>
       </section>

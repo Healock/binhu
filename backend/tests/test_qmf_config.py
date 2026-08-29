@@ -66,7 +66,8 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
         ]
         config = await load_qmf_config(_Conn(rows))
         self.assertTrue(config.configured)
-        self.assertTrue(config.registration_configured)
+        self.assertFalse(config.registration_enabled)
+        self.assertFalse(config.registration_configured)
         self.assertEqual(config.source_username, "source-user")
         self.assertEqual(config.source_password, "source-password")
         self.assertEqual(config.source_imei, "imei-value")
@@ -75,6 +76,8 @@ class QmfConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.status_scan_time, "07:00")
 
         public = public_config(config, {row[0] for row in rows})
+        self.assertFalse(public["registration_enabled"])
+        self.assertFalse(public["registration_configured"])
         self.assertTrue(public["source_password_configured"])
         self.assertNotIn("source_password", public)
         self.assertEqual(public["source_imei"], "imei-value")

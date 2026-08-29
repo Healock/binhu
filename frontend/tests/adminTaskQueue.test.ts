@@ -41,17 +41,17 @@ test('侧栏版本区只显示版本号', () => {
   assert.doesNotMatch(layout, /数据管理中心 · v\{clientVersion\}/)
 })
 
-test('任务队列按需加载问题明细并只对白名单写回提供安全重试', () => {
+test('任务队列按需加载问题明细并禁止对历史外部队列盲目重试', () => {
   const api = read('../src/api/client.ts')
   const component = read('../src/components/AdminTaskQueueFloat.tsx')
 
   assert.match(api, /getAdminTaskQueueDetails/)
-  assert.match(api, /retryAdminPhotoWriteback/)
+  assert.doesNotMatch(api, /retryAdminPhotoWriteback/)
   assert.match(component, /查看问题明细/)
   assert.match(component, /原因分析/)
   assert.match(component, /建议处理/)
-  assert.match(component, /已禁止盲目重试/)
-  assert.match(component, /detail\.retry_kind !== 'photo_outbox'/)
+  assert.match(component, /请按建议处理/)
+  assert.doesNotMatch(component, /photo_outbox|写回队列/)
 })
 
 test('侧栏滚动条隐藏但滚动容器保持可用', () => {

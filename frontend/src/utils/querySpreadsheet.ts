@@ -130,7 +130,7 @@ const QUERY_SHEET_LONG_TEXT_COLUMNS = new Set([
 ])
 
 /**
- * 腾讯表格的业务值本质上都是显示文本。显式声明 STRING，既避免 Univer
+ * 本地业务表的展示值按文本处理。显式声明 STRING，既避免 Univer
  * 把 7.30、身份证号或长手机号重新推断为数字，也不会在公式栏暴露
  * FORCE_STRING 使用的前导单引号标记。
  */

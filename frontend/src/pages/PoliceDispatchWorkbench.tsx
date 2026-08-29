@@ -40,7 +40,7 @@ import {
   listPoliceDispatchTasks,
   publishSelectedPoliceDispatchTasks,
   resolvePoliceDispatchDuplicateGroup,
-  resolvePoliceDispatchConflict,
+  adoptExistingPoliceDispatchContent,
   reviewPoliceDispatchTask,
   updatePoliceDispatchBusinessFields,
   type PoliceCommunityOption,
@@ -77,7 +77,7 @@ const statusOptions = [
   { label: '全部', value: 'all' },
 ]
 
-const reconciliationHint = '腾讯写入结果不确定，系统会等待下一次完整同步核对，确认成功、冲突或可安全重试。'
+const reconciliationHint = '本地发布结果仍需核对，系统会继续确认成功、内容冲突或是否可以安全重试。'
 const publishStatusValues = publishStatusOptions.map(option => option.value)
 
 const categoryOptions = [
@@ -516,7 +516,7 @@ export default function PoliceDispatchWorkbench({
       content: (
         <div className="space-y-2 text-sm">
           <p>将删除该批次及其中 {activeBatch.total_count} 条本地审核任务，删除后不可恢复。</p>
-          <p className="text-slate-500">已经开始发布或存在腾讯来源关联的批次不能删除。</p>
+          <p className="text-slate-500">已经开始发布或存在本地来源关联的批次不能删除。</p>
         </div>
       ),
       okText: '删除批次',
@@ -638,38 +638,22 @@ export default function PoliceDispatchWorkbench({
     }
   }
 
-  const resolveConflict = async (strategy: 'adopt_tencent' | 'overwrite_tencent') => {
+  const adoptExistingContent = async () => {
     if (!selected?.linked_row_hash) return
-    const execute = async (confirmation = '') => {
-      setSaving(true)
-      try {
-        const result = await resolvePoliceDispatchConflict(selected.id, {
-          expected_version: selected.version,
-          expected_row_hash: selected.linked_row_hash,
-          strategy,
-          confirmation,
-        })
-        message.success(result.message)
-        setSelected(null)
-        await Promise.all([loadHome(), loadTasks(page)])
-      } catch (reason: any) {
-        message.error(reason?.response?.data?.detail || '冲突处理失败')
-      } finally {
-        setSaving(false)
-      }
+    setSaving(true)
+    try {
+      const result = await adoptExistingPoliceDispatchContent(selected.id, {
+        expected_version: selected.version,
+        expected_row_hash: selected.linked_row_hash,
+      })
+      message.success(result.message)
+      setSelected(null)
+      await Promise.all([loadHome(), loadTasks(page)])
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '冲突处理失败')
+    } finally {
+      setSaving(false)
     }
-    if (strategy === 'adopt_tencent') {
-      await execute()
-      return
-    }
-    Modal.confirm({
-      title: '用平台内容覆盖腾讯现有行？',
-      content: '系统会重新校验腾讯行版本，并更新现有行，不会新增重复记录。',
-      okText: '确认覆盖',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      onOk: () => execute('覆盖腾讯内容'),
-    })
   }
 
   const saveReview = async () => {
@@ -1337,21 +1321,21 @@ export default function PoliceDispatchWorkbench({
 
               {selected.publish_status === 'conflict' && (
                 <section className="rounded-2xl border border-red-200 bg-red-50 p-4">
-                  <div className="font-medium text-red-900">腾讯内容与平台待发布内容不同</div>
+                  <div className="font-medium text-red-900">本地现有内容与待发布内容不同</div>
                   <div className="mt-3 space-y-2">
                     {selected.conflict_diff.map(item => (
                       <div key={item.field} className="rounded-xl bg-white p-3 text-xs">
                         <div className="font-medium text-slate-700">{item.field}</div>
                         <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                          <div><span className="text-slate-400">平台：</span><span className="break-all">{item.platform || '（空）'}</span></div>
-                          <div><span className="text-slate-400">腾讯：</span><span className="break-all">{item.tencent || '（空）'}</span></div>
+                          <div><span className="text-slate-400">待发布：</span><span className="break-all">{item.platform || '（空）'}</span></div>
+                          <div><span className="text-slate-400">本地现有：</span><span className="break-all">{item.tencent || '（空）'}</span></div>
                         </div>
                       </div>
                     ))}
                   </div>
-                  <div className="mt-4 grid grid-cols-2 gap-2">
-                    <Button onClick={() => void resolveConflict('adopt_tencent')}>采用腾讯内容</Button>
-                    <Button danger onClick={() => void resolveConflict('overwrite_tencent')}>采用平台内容</Button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button onClick={() => void adoptExistingContent()}>采用本地现有内容</Button>
+                    <span className="self-center text-xs text-slate-500">如需使用待发布内容，请先修改或撤回当前任务后重新发布。</span>
                   </div>
                 </section>
               )}

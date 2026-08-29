@@ -155,6 +155,9 @@ def test_quick_dispatch_creates_batch_and_task_through_full_transaction(monkeypa
     monkeypatch.setattr("routers.police_dispatch._batch_payload", AsyncMock(return_value={
         "id": 91, "counts": {"pending_publish": 1},
     }))
+    local_publish = AsyncMock(return_value={"failed_count": 0, "success_count": 1})
+    monkeypatch.setattr("routers.police_dispatch._execute_local_publish_selection", local_publish)
+    monkeypatch.setattr("routers.police_dispatch.local_data_source_enabled", lambda: True)
     monkeypatch.setattr("routers.police_dispatch.record_admin_audit", AsyncMock())
     monkeypatch.setattr("routers.police_dispatch.request_audit_fields", lambda _request: {})
 
@@ -185,6 +188,9 @@ def test_quick_dispatch_creates_batch_and_task_through_full_transaction(monkeypa
     assert result["task_id"] == 92
     assert any("INSERT INTO _police_dispatch_batches" in query for query in executed_sql)
     assert any("INSERT INTO _police_dispatch_tasks" in query for query in executed_sql)
+    local_publish.assert_awaited_once()
+    assert local_publish.await_args.args[0] == 91
+    assert local_publish.await_args.args[1].task_ids == [92]
     connection.begin.assert_awaited_once()
     connection.commit.assert_awaited_once()
     connection.rollback.assert_not_awaited()

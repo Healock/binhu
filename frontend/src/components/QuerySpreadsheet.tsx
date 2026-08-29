@@ -535,7 +535,7 @@ export function QuerySpreadsheet({
       }
       if (automaticConversions.length) {
         restoreChanges(automaticConversions)
-        callbacksRef.current.onBlocked('检测到表格自动转换了长数字，已恢复原值，未写回腾讯表格；如需修改请重新明确输入完整文本')
+        callbacksRef.current.onBlocked('检测到表格自动转换了长数字，已恢复原值且未保存；如需修改请重新明确输入完整文本')
         automaticConversions.forEach(change => {
           const descriptorIndex = sheetRows.findIndex(item => item.data === change.row)
           const columnIndex = columns.indexOf(change.column)
@@ -571,7 +571,7 @@ export function QuerySpreadsheet({
       }
       if (blocked.length) {
         restoreChanges(blocked)
-        callbacksRef.current.onBlocked('只读单元格或公式不能写回腾讯表格，相关修改已撤销')
+        callbacksRef.current.onBlocked('只读单元格或公式不能保存，相关修改已撤销')
       }
       if (!accepted.length) return
 

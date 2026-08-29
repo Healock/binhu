@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from config import settings
 from services.parsers import get_parser
 
 
@@ -22,11 +21,17 @@ def local_sheet_id(parser_type: str) -> str:
 
 
 def local_data_source_enabled() -> bool:
-    return bool(settings.LOCAL_DATA_SOURCE_ENABLED)
+    """Return the permanent production data-source mode.
+
+    The environment flag remains in configuration so old deployment files do
+    not fail to load, but it can no longer reactivate the retired Tencent path.
+    """
+    return True
 
 
 def tencent_access_enabled() -> bool:
-    return bool(settings.TXDOCS_ENABLED)
+    """Tencent Docs runtime access is permanently disabled."""
+    return False
 
 
 def stable_json(value: Any) -> str:

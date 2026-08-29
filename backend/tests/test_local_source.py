@@ -34,11 +34,11 @@ class LocalSourceHelpersTest(unittest.TestCase):
         self.assertEqual(stable_json(left), stable_json(right))
         self.assertEqual(local_row_hash(left), local_row_hash(right))
 
-    def test_feature_switch_is_read_from_settings(self):
+    def test_local_source_cannot_be_disabled_by_legacy_setting(self):
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
             self.assertTrue(local_data_source_enabled())
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
-            self.assertFalse(local_data_source_enabled())
+            self.assertTrue(local_data_source_enabled())
 
     def test_task_source_filter_excludes_legacy_rows_during_local_cutover(self):
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
@@ -58,7 +58,8 @@ class LocalSourceHelpersTest(unittest.TestCase):
         self.assertIn("source_row.sheet_id='legacy-model-three'", model_three_clause)
 
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
-            self.assertEqual(active_source_sql_filter("全链条"), "")
+            clause = active_source_sql_filter("全链条")
+        self.assertIn("spreadsheet_id=0", clause)
 
     def test_local_system_change_supersedes_dispatch_record(self):
         class Cursor:
@@ -123,8 +124,8 @@ class LocalSourceHelpersTest(unittest.TestCase):
 
     def test_local_mode_hides_legacy_external_queues(self):
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
-            self.assertEqual(asyncio.run(admin_task_queue._sync_jobs()), [])
-            self.assertEqual(asyncio.run(admin_task_queue._writeback_queues()), [])
+            self.assertFalse(hasattr(admin_task_queue, "_sync_jobs"))
+            self.assertFalse(hasattr(admin_task_queue, "_writeback_queues"))
             details = asyncio.run(
                 admin_task_queue.get_admin_task_queue_details(
                     "online_writeback_queue"

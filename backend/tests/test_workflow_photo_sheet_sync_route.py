@@ -4,6 +4,7 @@ import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -13,7 +14,7 @@ from routers.workflow_photo_sheet import retry_photo_sheet_outbox, run_photo_she
 
 
 @pytest.mark.asyncio
-async def test_manual_sync_returns_background_run_and_preserves_order():
+async def test_manual_tencent_photo_sync_is_retired_without_creating_a_job():
     order: list[str] = []
 
     async def outbox_once():
@@ -49,14 +50,17 @@ async def test_manual_sync_returns_background_run_and_preserves_order():
             new=AsyncMock(return_value=({"id": 12, "status": "queued"}, False)),
         ) as create_job,
     ):
-        result = await run_photo_sheet_sync(
-            request=request,
-            full=True,
-            user={"id": 7, "username": "synthetic-admin"},
-        )
+        with pytest.raises(HTTPException) as raised:
+            await run_photo_sheet_sync(
+                request=request,
+                full=True,
+                user={"id": 7, "username": "synthetic-admin"},
+            )
 
-    assert result["run"]["id"] == 12
-    assert create_job.await_count == 1
+    assert raised.value.status_code == 409
+    assert "腾讯数据源已下线" in raised.value.detail
+    assert create_job.await_count == 0
+    assert order == []
 
 
 class _CursorContext:

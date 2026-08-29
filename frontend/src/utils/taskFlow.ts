@@ -9,7 +9,7 @@ export const TASK_FLOW_LANES: Array<{
 }> = [
   { key: 'ready', label: '现在可做', description: '当前可以直接进入详情处理' },
   { key: 'waiting', label: '等待协作', description: '等待研判或其他岗位继续处理' },
-  { key: 'exception', label: '需要关注', description: '来源异常或腾讯同步尚未完成' },
+  { key: 'exception', label: '需要关注', description: '本地来源异常或任务处理尚未完成' },
 ]
 
 export function taskFlowLane(task: MobileTaskItem): TaskFlowLane {

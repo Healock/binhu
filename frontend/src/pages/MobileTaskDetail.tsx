@@ -1,6 +1,5 @@
 import {
   ArrowLeftOutlined,
-  SafetyCertificateOutlined,
   PhoneOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
@@ -10,7 +9,6 @@ import {
   Collapse,
   Descriptions,
   Empty,
-  Image,
   Input,
   Modal,
   Select,
@@ -19,19 +17,14 @@ import {
   message,
 } from 'antd'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
   getMobileTaskResidenceDetail,
   manuallyConfirmRegistration,
   getQmfLegacyStatus,
-  getQmfRegistrationRun,
-  executeQmfRegistration,
-  prepareQmfRegistration,
-  retryQmfTencentMarker,
   searchRegistrationProperties,
-  resolveMobileTaskSyncConflict,
   updateMobileTask,
   updateMobileTaskAnalysis,
   decideMobileTaskUnverifiableReview,
@@ -40,8 +33,6 @@ import {
   type MobileTaskQmfStatus,
   type MobileTaskSource,
   type QmfLegacyStatus,
-  type QmfPrepareResult,
-  type QmfRegistrationRun,
   type ResidenceRegistrationDetail as ResidenceDetail,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -59,7 +50,6 @@ import {
   mobileTaskPhoneOptions,
   mobileTaskResultOptions,
   mobileTaskSourceTags,
-  mobileTaskSourceDifferences,
   mobileTaskSourceNeedsReview,
   mobileTaskSourceState,
   mobileTaskUsesRegistrationClosure,
@@ -72,26 +62,10 @@ import RegistrationLinkStatus from '../components/RegistrationLinkStatus'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
-import {
-  QMF_MARKER_STATUS,
-  QMF_RUN_STATUS,
-  QMF_STEP_STATUS,
-  canExecutePreparedQmfRun,
-  qmfLegacyStatusAllowsRegistration,
-  qmfRunCanReprepare,
-  qmfRunIsPolling,
-} from '../utils/qmfRegistration'
-
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
   checked: { text: '待补结果', color: 'orange' },
   completed: { text: '已完成', color: 'green' },
-} as const
-
-const SYNC_LABELS = {
-  pending: { text: '待同步', color: 'blue' },
-  retry: { text: '同步重试', color: 'orange' },
-  conflict: { text: '同步冲突', color: 'red' },
 } as const
 
 const STRUCTURED_REVIEW_TYPES = new Set([
@@ -151,20 +125,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [formValues, setFormValues] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [resolvingConflict, setResolvingConflict] = useState('')
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
   const [decisionOutcome, setDecisionOutcome] = useState<'success' | 'failure'>('success')
   const [decisionOpinion, setDecisionOpinion] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
   const [photoSubmitting, setPhotoSubmitting] = useState(false)
-  const [qmfPreviewOpen, setQmfPreviewOpen] = useState(false)
-  const [qmfPreviewLoading, setQmfPreviewLoading] = useState(false)
-  const [qmfPrepareResult, setQmfPrepareResult] = useState<QmfPrepareResult | null>(null)
-  const [qmfRun, setQmfRun] = useState<QmfRegistrationRun | null>(null)
-  const [qmfExecuting, setQmfExecuting] = useState(false)
-  const [qmfMarkerRetrying, setQmfMarkerRetrying] = useState(false)
-  const [qmfPreviewError, setQmfPreviewError] = useState('')
   const [qmfLegacyStatus, setQmfLegacyStatus] = useState<QmfLegacyStatus | null>(null)
   const [qmfLegacyStatusLoading, setQmfLegacyStatusLoading] = useState(false)
   const [qmfLegacyStatusError, setQmfLegacyStatusError] = useState('')
@@ -186,8 +152,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [manualConfirmReason, setManualConfirmReason] = useState<'address_mismatch' | 'address_ambiguous'>('address_mismatch')
   const [manualConfirmNote, setManualConfirmNote] = useState('')
   const [manualConfirming, setManualConfirming] = useState(false)
-  const qmfPreviewRequestActive = useRef(false)
-
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
@@ -223,9 +187,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       visibleEditorFields,
     )
   }, [formValues, selectedSource, visibleEditorFields])
-  const sourceDifferences = useMemo(() => (
-    data ? mobileTaskSourceDifferences(data.sources, data.workflow.columns) : []
-  ), [data])
   const dirty = Object.keys(changes).length > 0
 
   const selectSource = useCallback((source: MobileTaskSource) => {
@@ -357,12 +318,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     setPendingNavigationChanges(dirty)
     return () => setPendingNavigationChanges(false)
   }, [dirty])
-
-  const chooseSource = (source: MobileTaskSource) => {
-    if (source.id === selectedSourceId) return
-    if (dirty && !window.confirm('切换来源会丢失当前未保存内容，确定切换吗？')) return
-    selectSource(source)
-  }
 
   const save = async () => {
     if (interactionLocked || !selectedSource || !dirty) return
@@ -542,25 +497,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     }
   }
 
-  const resolveConflict = async (field: string, choice: 'platform' | 'tencent') => {
-    if (interactionLocked || !selectedSource || dirty) return
-    const key = `${field}:${choice}`
-    setResolvingConflict(key)
-    setError('')
-    try {
-      const result = await resolveMobileTaskSyncConflict(parserType, selectedSource.id, {
-        choice,
-        fields: [field],
-      })
-      message.success(result.message)
-      await load(selectedSource.id)
-    } catch (reason: any) {
-      setError(detailError(reason, '同步冲突处理失败'))
-    } finally {
-      setResolvingConflict('')
-    }
-  }
-
   const copy = async (value: string, label: string) => {
     try {
       await navigator.clipboard.writeText(value)
@@ -623,120 +559,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     }
   }
 
-  const openQmfRegistration = async () => {
-    if (
-      qmfPreviewRequestActive.current
-      || !selectedSource
-      || !data.qmf_registration?.enabled
-      || dirty
-    ) return
-    qmfPreviewRequestActive.current = true
-    setQmfPreviewOpen(true)
-    setQmfPreviewLoading(true)
-    setQmfPrepareResult(null)
-    setQmfRun(null)
-    setQmfPreviewError('')
-    try {
-      const result = await prepareQmfRegistration({
-        parser_type: parserType,
-        row_key: rowKey,
-        source_id: selectedSource.id,
-        expected_revision: selectedSource.revision,
-      })
-      setQmfPrepareResult(result)
-      setQmfRun(result.run)
-    } catch (reason: any) {
-      setQmfPreviewError(detailError(reason, '全民防登记准备失败，请稍后重试'))
-    } finally {
-      qmfPreviewRequestActive.current = false
-      setQmfPreviewLoading(false)
-    }
-  }
-
-  const openExistingQmfRun = () => {
-    const latest = data.qmf_registration?.latest_run
-    if (!latest) return
-    setQmfPreviewOpen(true)
-    setQmfPrepareResult(null)
-    setQmfRun(latest)
-    setQmfPreviewError('')
-  }
-
-  const executePreparedQmfRun = () => {
-    if (!canExecutePreparedQmfRun(qmfRun, Boolean(qmfPrepareResult))) return
-    Modal.confirm({
-      title: '最后确认：执行全民防登记？',
-      content: '此操作会依次上传照片、保存人员资料并反馈模型三，提交后不能撤销。任何不确定结果都会冻结本次运行。',
-      okText: '确认执行',
-      cancelText: '取消',
-      onOk: async () => {
-        if (!qmfRun) return
-        setQmfExecuting(true)
-        setQmfPreviewError('')
-        try {
-          const next = await executeQmfRegistration(qmfRun.id)
-          setQmfRun(next)
-          setData(current => current?.qmf_registration ? {
-            ...current,
-            qmf_registration: { ...current.qmf_registration, latest_run: next },
-          } : current)
-        } catch (reason: any) {
-          setQmfPreviewError(detailError(reason, '全民防登记启动失败'))
-        } finally {
-          setQmfExecuting(false)
-        }
-      },
-    })
-  }
-
-  const retryQmfMarker = async () => {
-    if (!qmfRun?.can_retry_marker || qmfMarkerRetrying) return
-    setQmfMarkerRetrying(true)
-    setQmfPreviewError('')
-    try {
-      const next = await retryQmfTencentMarker(qmfRun.id)
-      setQmfRun(next)
-      message.success('腾讯完成标记已写入')
-      await load(selectedSourceId || undefined)
-    } catch (reason: any) {
-      setQmfPreviewError(detailError(reason, '腾讯完成标记重试失败'))
-    } finally {
-      setQmfMarkerRetrying(false)
-    }
-  }
-
-  useEffect(() => {
-    if (!qmfRunIsPolling(qmfRun)) return
-    let cancelled = false
-    let timer = 0
-    const poll = async () => {
-      try {
-        const next = await getQmfRegistrationRun(qmfRun!.id)
-        if (cancelled) return
-        setQmfRun(next)
-        setData(current => current?.qmf_registration ? {
-          ...current,
-          qmf_registration: { ...current.qmf_registration, latest_run: next },
-        } : current)
-        if (qmfRunIsPolling(next)) {
-          timer = window.setTimeout(poll, 1000)
-        } else {
-          await load(selectedSourceId || undefined)
-        }
-      } catch (reason: any) {
-        if (!cancelled) {
-          setQmfPreviewError(detailError(reason, '全民防登记进度读取失败'))
-          timer = window.setTimeout(poll, 2500)
-        }
-      }
-    }
-    timer = window.setTimeout(poll, 700)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [load, qmfRun?.id, qmfRun?.status, selectedSourceId])
-
   if (loading && !data) {
     return <div className="app-card p-5"><Skeleton active paragraph={{ rows: 10 }} /></div>
   }
@@ -745,7 +567,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     return <div className="mobile-task-page"><Alert type="error" showIcon message={error || '任务不存在'} /><Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回任务列表</Button></div>
   }
 
-  const localSourceMode = data.data_source_mode === 'local'
   const state = STATE_LABELS[selectedSource?.state || data.task.state]
   const title = selectedSource
     ? firstValue(selectedSource.values, data.workflow.title_fields)
@@ -781,16 +602,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     registrationPending ? '待登记' : selectedSource?.values[data.workflow.result_field] || '',
   )
   const sourceTags = mobileTaskSourceTags(source)
-  const syncState = selectedSource?.sync_state || data.task.sync_state
-  const sourceMissingFields = selectedSource?.sync_fields.filter(
-    item => item.status === 'conflict' && item.error_code === 'source_missing',
-  ) || []
-  const conflictFields = selectedSource?.sync_fields.filter(
-    item => item.status === 'conflict' && item.error_code !== 'source_missing',
-  ) || []
-  const syncLabel = sourceMissingFields.length > 0 && conflictFields.length === 0
-    ? { text: '腾讯来源已删除（平台继续）', color: 'blue' as const }
-    : syncState ? SYNC_LABELS[syncState] : null
   const detailFacts = [
     { label: '身份证号', value: identityNumber || '未填写', copyValue: identityNumber, copyLabel: '身份证号' },
     { label: '手机号', value: phoneDisplay || '未填写', phones: phoneOptions },
@@ -804,26 +615,19 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       ? [{ label: '地址', value: '未填写', wide: true }]
       : []),
   ]
-  const latestQmfRun = qmfRun || data.qmf_registration?.latest_run || null
   const registrationLink = data.registration_link || data.task.registration_link || null
   const reviewFlow = data.task.review_flow || null
-  const canReprepareQmfRun = qmfRunCanReprepare(qmfRun)
-  const shouldResumeQmfRun = Boolean(
-    latestQmfRun
-    && ['prepared', 'executing', 'succeeded', 'failed', 'uncertain'].includes(latestQmfRun.status),
-  )
-  const qmfStatusAllowsRegistration = qmfLegacyStatusAllowsRegistration(qmfLegacyStatus)
   const qmfLegacyStatusView = qmfLegacyStatus ? (() => {
     switch (qmfLegacyStatus.state) {
       case 'pending':
-        return { type: 'info' as const, message: '全民防尚未反馈', description: '可以继续生成全民防登记准备；执行前还会再次复核。' }
+        return { type: 'info' as const, message: '全民防尚未反馈', description: '平台仅展示只读核对结果，不会向全民防写入核查结果。' }
       case 'not_found':
-        return { type: 'info' as const, message: '管理端未查到该记录', description: '这不等于未反馈；登记准备会继续通过手机待办接口确认唯一任务。' }
+        return { type: 'info' as const, message: '管理端未查到该记录', description: '这不等于未反馈，请在全民防系统中人工核对。' }
       case 'non_jurisdiction':
         return {
           type: 'warning' as const,
-          message: '全民防返回非本辖区，请重新提交结果',
-          description: `${qmfLegacyStatus.result_text || '非本辖区（无法提交）'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}；准备后将只新增一次特殊反馈。`,
+          message: '全民防返回非本辖区',
+          description: `${qmfLegacyStatus.result_text || '非本辖区'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}；平台只读展示，不会自动提交。`,
         }
       case 'completed_match':
         return {
@@ -834,13 +638,13 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       case 'completed_mismatch':
         return { type: 'error' as const, message: '全民防反馈结果与平台核查结果不一致', description: `${qmfLegacyStatus.result_text || '结果待核对'}${qmfLegacyStatus.checked_at ? ` · ${qmfLegacyStatus.checked_at}` : ''}，请先人工核对。` }
       case 'ambiguous':
-        return { type: 'warning' as const, message: '全民防存在多条匹配记录', description: '为避免误登记，当前不能继续。' }
+        return { type: 'warning' as const, message: '全民防存在多条匹配记录', description: '请在全民防系统中人工核对。' }
       case 'station_mismatch':
         return { type: 'warning' as const, message: '全民防记录不属于滨湖新城派出所', description: qmfLegacyStatus.station || '请人工核对记录归属。' }
       case 'unknown_result':
         return { type: 'warning' as const, message: '全民防核查结果暂不支持', description: '请人工核对全民防记录后再处理。' }
       default:
-        return { type: 'warning' as const, message: '全民防反馈状态暂时无法确认', description: qmfLegacyStatus.reason || '为避免重复登记，当前不能继续。' }
+        return { type: 'warning' as const, message: '全民防反馈状态暂时无法确认', description: qmfLegacyStatus.reason || '请稍后重试只读查询。' }
     }
   })() : null
 
@@ -850,7 +654,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         <Button type="text" className="min-h-11 px-1" icon={<ArrowLeftOutlined />} onClick={() => { if (confirmPendingNavigation()) navigate(-1) }}>返回</Button>
         <div className="flex items-center gap-2">
           <Tag color={state.color}>{state.text}</Tag>
-          {syncLabel && <Tag color={syncLabel.color}>{syncLabel.text}</Tag>}
         </div>
       </div>
 
@@ -928,36 +731,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           {phoneOptions.length === 0 && (
             <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>缺少电话号码</Button>
           )}
-          {!interactionLocked && mode === 'tasks' && data.qmf_registration?.visible && (
-            <Button
-              type="primary"
-              className="mobile-task-detail-pill"
-              icon={<SafetyCertificateOutlined />}
-              disabled={
-                (!shouldResumeQmfRun && (
-                  !data.qmf_registration.enabled
-                  || qmfLegacyStatusLoading
-                  || !qmfStatusAllowsRegistration
-                ))
-                || !selectedSource?.source_available
-                || dirty
-                || qmfPreviewLoading
-              }
-              title={dirty
-                ? '请先保存或放弃当前修改'
-                : !selectedSource?.source_available
-                  ? localSourceMode ? '本地任务来源已不存在，不能准备登记' : '腾讯来源行已不存在，不能准备登记'
-                  : qmfLegacyStatusLoading
-                    ? '正在复核全民防反馈状态'
-                    : qmfLegacyStatusError
-                      ? qmfLegacyStatusError
-                      : qmfLegacyStatus?.reason || data.qmf_registration.reason}
-              onClick={() => {
-                if (shouldResumeQmfRun) openExistingQmfRun()
-                else void openQmfRegistration()
-              }}
-            >{shouldResumeQmfRun ? '查看全民防登记记录' : '全民防登记'}</Button>
-          )}
         </div>
         {analysis && (
           <div className="mobile-task-analysis mt-4">
@@ -989,9 +762,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   ? formatSystemTime(data.qmf_feedback.completed_at)
                   : '已完成，时间待核对'}
               </span>
-              <Tag color={QMF_MARKER_STATUS[data.qmf_feedback.tencent_marker_status].color}>
-                {QMF_MARKER_STATUS[data.qmf_feedback.tencent_marker_status].label}
-              </Tag>
+              <Tag color="green">本地任务已确认</Tag>
             </div>
           )}
         />
@@ -1002,7 +773,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           <div>
             <h2 className="font-semibold text-[var(--app-text-strong)]">全民防反馈核对</h2>
             <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
-              这是后台只读扫描的最近缓存结果；执行全民防登记前仍会重新实时核对。
+              这是后台只读扫描的最近缓存结果，仅用于核对全民防平台反馈状态。
             </p>
           </div>
           <QmfFeedbackStatus status={data.task.qmf_status} />
@@ -1093,7 +864,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             && selectedSource && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3">
               <div className="text-xs text-[var(--app-text-secondary)]">
-                居住证已有有效登记，但自动地址匹配需要人工复核；确认后仍需后台写回腾讯表格。
+                居住证已有有效登记，但自动地址匹配需要人工复核；确认后将直接更新本地任务。
               </div>
               <Button type="primary" onClick={openManualRegistrationConfirm}>
                 人工确认已登记
@@ -1123,118 +894,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         <Alert
           type="warning"
           showIcon
-          message={localSourceMode
-            ? `该任务存在 ${data.task.source_count} 条本地业务来源`
-            : `该任务包含 ${data.task.source_count} 条腾讯原始行`}
-          description={localSourceMode
-            ? '滨湖平台中存在重复的有效业务数据。为避免修改错对象，当前任务暂时只读，请管理员先处理重复来源。'
-            : '请先选择具体来源，再分别核对和保存。每次保存只修改当前选中的原始行。'}
+          message={`该任务存在 ${data.task.source_count} 条本地业务来源`}
+          description="滨湖平台中存在重复的有效业务数据。为避免修改错对象，当前任务暂时只读，请管理员先处理重复来源。"
         />
-      )}
-
-      {!localSourceMode && sourceMissingFields.length > 0 && (
-        <Alert
-          type="info"
-          showIcon
-          message="腾讯来源行已删除，滨湖平台继续保留并处理当前任务"
-          description="这不会暂停本地核查、研判或任务流程。平台后续修改会保留在滨湖平台中，不会尝试覆盖已删除的腾讯行。"
-        />
-      )}
-
-      {!localSourceMode && conflictFields.length > 0 && (
-        <section className="app-card p-4">
-          <Alert
-            type="error"
-            showIcon
-            message="平台与腾讯表格修改了同一字段"
-            description="平台值仍在滨湖平台生效。请逐项核对后决定采用哪一边，系统不会自动覆盖。"
-          />
-          <div className="mt-4 space-y-3">
-            {conflictFields.map(item => (
-              <div key={item.field} className="rounded border border-[var(--app-border)] p-3">
-                <div className="mb-2 font-medium text-[var(--app-text-strong)]">{item.field}</div>
-                <Descriptions
-                  size="small"
-                  column={mobile ? 1 : 2}
-                  items={[
-                    { key: 'platform', label: '平台值', children: item.platform_value || '空白' },
-                    {
-                      key: 'tencent',
-                      label: '腾讯值',
-                      children: item.error_code === 'source_missing'
-                        ? '腾讯来源行已删除或已更换对象'
-                        : item.tencent_value || '空白',
-                    },
-                  ]}
-                />
-                <div className="mt-3 flex flex-wrap justify-end gap-2">
-                  <Button
-                    disabled={interactionLocked || dirty || item.error_code === 'source_missing'}
-                    loading={resolvingConflict === `${item.field}:platform`}
-                    onClick={() => void resolveConflict(item.field, 'platform')}
-                  >采用平台值</Button>
-                  <Button
-                    type="primary"
-                    danger
-                    disabled={interactionLocked || dirty}
-                    loading={resolvingConflict === `${item.field}:tencent`}
-                    onClick={() => void resolveConflict(item.field, 'tencent')}
-                  >采用腾讯值</Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {!localSourceMode && data.sources.length > 1 && (
-        <section className="app-card mobile-task-source-panel">
-          <div>
-            <div className="text-sm font-semibold text-[var(--app-text-strong)]">选择腾讯来源</div>
-            <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
-              {sourceDifferences.length > 0
-                ? `以下 ${sourceDifferences.length} 项内容不同，点击卡片切换处理对象`
-                : '两条来源的业务内容一致，请按腾讯行号分别处理'}
-            </p>
-          </div>
-          <div className="mobile-task-source-list">
-            {data.sources.map((source, index) => (
-              <button
-                key={source.id}
-                type="button"
-                className={`mobile-task-source-card${source.id === selectedSourceId ? ' is-selected' : ''}`}
-                onClick={() => chooseSource(source)}
-              >
-                <span className="mobile-task-source-card__header">
-                  <span className="font-semibold">来源 {index + 1}</span>
-                  <span>{source.source_available ? `腾讯第 ${source.physical_row} 行` : '腾讯来源已删除'}</span>
-                  <span className="mobile-task-source-card__state">
-                    {source.id === selectedSourceId ? '当前选中' : '点击选择'}
-                  </span>
-                </span>
-                {sourceDifferences.length > 0 && (
-                  <span className="mobile-task-source-card__differences">
-                    {sourceDifferences.map(difference => (
-                      <span key={difference.field} className="mobile-task-source-card__difference">
-                        <span>{difference.field}</span>
-                        <strong className={!difference.values[index] ? 'is-empty' : ''}>
-                          {difference.values[index] || '空白'}
-                        </strong>
-                      </span>
-                    ))}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        </section>
       )}
 
       {error && <Alert type="error" showIcon message={error} />}
       {savedMessage && <Alert type="success" showIcon message={savedMessage} />}
-      {readonlyView && <Alert type="info" showIcon message="当前是任务图只读协作视图" description="你可以查看任务信息和协作结果，但不能在此修改字段、处理同步冲突或发起新的业务操作。" />}
+      {readonlyView && <Alert type="info" showIcon message="当前是任务图只读协作视图" description="你可以查看任务信息和协作结果，但不能在此修改字段或发起新的业务操作。" />}
       {data.dependency_blocked && <Alert type="warning" showIcon message="该任务已进入研判队列" description={data.dependency_message || '网格员仍可继续核查；如已能核实，请直接修改并保存新的核查结果。'} />}
-      {!data.writeback_enabled && <Alert type="warning" showIcon message="在线回写已暂停，当前任务只能查看" />}
+      {!data.writeback_enabled && <Alert type="warning" showIcon message="当前任务暂不可编辑" />}
 
       {selectedSource ? (
         <section className="app-card p-4">
@@ -1254,9 +923,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">
-              {localSourceMode
-                ? '滨湖平台本地数据'
-                : selectedSource.source_available ? `腾讯第 ${selectedSource.physical_row} 行` : '腾讯来源已删除'}
+              滨湖平台本地数据
             </span>
           </div>
 
@@ -1405,7 +1072,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </div>
           )}
         </section>
-      ) : <Empty description={localSourceMode ? '没有可用本地任务来源' : '没有可用腾讯来源行'} />}
+      ) : <Empty description="没有可用本地任务来源" />}
 
       {selectedSource && (
         <Collapse
@@ -1440,7 +1107,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             type="warning"
             showIcon
             message="请确认你已核对居住证有效登记"
-            description="人工确认只允许用于地址不一致或同地址多套房屋的复核场景；系统仍会记录原因并等待腾讯写回结果。"
+            description="人工确认只允许用于地址不一致或同地址多套房屋的复核场景；系统会记录原因并直接更新本地任务。"
           />
           <label className="grid gap-1.5">
             <span className="text-sm font-medium text-[var(--app-text)]">确认原因</span>
@@ -1484,276 +1151,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         </div>
       </Modal>
 
-      <Modal
-        open={qmfPreviewOpen}
-        title={qmfPrepareResult
-          ? '全民防模型三登记确认'
-          : qmfRun
-            ? '全民防模型三登记记录'
-            : '全民防模型三登记'}
-        width={mobile ? 'calc(100vw - 24px)' : 920}
-        footer={[
-          <Button
-            key="close"
-            disabled={qmfPreviewLoading || qmfExecuting}
-            onClick={() => {
-              setQmfPreviewOpen(false)
-              setQmfPrepareResult(null)
-              setQmfConfirmation('')
-              setQmfPreviewError('')
-            }}
-          >关闭</Button>,
-        ]}
-        closable={!qmfPreviewLoading && !qmfExecuting}
-        maskClosable={!qmfPreviewLoading && !qmfExecuting}
-        onCancel={() => {
-          if (qmfPreviewLoading || qmfExecuting) return
-          setQmfPreviewOpen(false)
-          setQmfPrepareResult(null)
-          setQmfConfirmation('')
-          setQmfPreviewError('')
-        }}
-      >
-        <div className="qmf-preview-modal">
-          <Alert
-            type="info"
-            showIcon
-            message={qmfPrepareResult
-              ? '登记前核对已完成，确认后将执行全民防登记'
-              : qmfRun
-                ? '这里只恢复安全步骤状态，不保存或恢复人员照片正文'
-                : '正在读取全民防任务和登记所需资料'}
-            description={qmfPrepareResult
-              ? (qmfPrepareResult.platform_task.result === '离开不返吴'
-                ? '请逐项核对任务、社区和去往地。确认执行后会反馈全民防，提交后不能自动撤销。'
-                : '请逐项核对人员、任务、操作人和照片。确认执行后会写入全民防，提交后不能自动撤销。')
-              : '登记前核对不会执行写入；如需读取照片，照片只存在于本次认证响应和浏览器内存。'}
-          />
-          {qmfPreviewLoading && <Skeleton active paragraph={{ rows: 8 }} />}
-          {qmfPreviewError && <Alert type="error" showIcon message={qmfPreviewError} />}
-
-          {qmfPrepareResult && (() => {
-            const preview = qmfPrepareResult
-            return (
-              <>
-                {preview.person && preview.photo && (
-                <section className="qmf-preview-section qmf-preview-person">
-                  <div className="qmf-preview-photo">
-                    <Image
-                      src={`data:${preview.photo.mime_type};base64,${preview.photo.data_base64}`}
-                      alt="从居住证获取的照片"
-                      preview
-                    />
-                    <span>{preview.photo.mime_type} · {Math.ceil(preview.photo.size_bytes / 1024)} KB</span>
-                  </div>
-                  <Descriptions
-                    title="人员资料核对"
-                    size="small"
-                    column={mobile ? 1 : 2}
-                    items={[
-                      { key: 'name', label: '姓名', children: preview.person.name || '未填写' },
-                      { key: 'identity', label: '身份证号', children: preview.person.identity_number || '未填写' },
-                      { key: 'phone', label: '手机号', children: preview.person.phone || '未填写' },
-                      { key: 'gender', label: '性别', children: preview.person.gender || '未填写' },
-                      {
-                        key: 'birth',
-                        label: '出生日期',
-                        children: preview.person.birth_date
-                          ? `${preview.person.birth_date}${preview.person.birth_date_derived ? '（由身份证号识别）' : ''}`
-                          : '未填写',
-                      },
-                      { key: 'nation', label: '民族', children: preview.person.nation || '未填写' },
-                      { key: 'education', label: '文化程度', children: preview.person.education || '未填写' },
-                      { key: 'marriage', label: '婚姻状况', children: preview.person.marital_status || '未填写' },
-                      { key: 'person-community-code', label: '人员社区编码', children: preview.person.community_code || '未填写' },
-                      { key: 'current-address', label: '现住址', children: preview.person.current_address || '未填写', span: mobile ? 1 : 2 },
-                      { key: 'household-address', label: '户籍地址', children: preview.person.household_address || '未填写', span: mobile ? 1 : 2 },
-                    ]}
-                  />
-                </section>
-                )}
-
-                {preview.destination && (
-                  <section className="qmf-preview-section">
-                    <Descriptions
-                      title="离开不返吴反馈信息"
-                      size="small"
-                      column={mobile ? 1 : 2}
-                      items={[
-                        { key: 'resolved-community', label: '平台正式社区', children: preview.destination.community || '未匹配' },
-                        { key: 'qmf-community-code', label: '全民防社区代码', children: preview.destination.community_code || '未填写' },
-                        { key: 'destination-code', label: '去往行政区划', children: preview.destination.area_code || '未识别' },
-                        { key: 'destination-address', label: '去往地址详址', children: preview.destination.area_name || '未识别', span: mobile ? 1 : 2 },
-                      ]}
-                    />
-                  </section>
-                )}
-
-                <section className="qmf-preview-section">
-                  <Descriptions
-                    title="全民防待处理任务"
-                    size="small"
-                    column={mobile ? 1 : 2}
-                    items={[
-                      { key: 'station', label: '派出所', children: preview.upstream_task.police_station || '未填写' },
-                      { key: 'community', label: '社区', children: preview.upstream_task.community || '未填写' },
-                      { key: 'task-community-code', label: '任务辖区编码', children: preview.upstream_task.community_code || '未填写' },
-                      { key: 'status', label: '上游状态', children: preview.upstream_task.check_status_text || preview.upstream_task.check_status || '未填写' },
-                      { key: 'dispatch', label: '下发时间', children: preview.upstream_task.dispatch_time || '未填写' },
-                      { key: 'address', label: '任务地址', children: preview.upstream_task.address || '未填写', span: mobile ? 1 : 2 },
-                    ]}
-                  />
-                </section>
-
-                <section className="qmf-preview-section">
-                  <h3>安全校验</h3>
-                  <div className="qmf-preview-disabled-steps">
-                    {[
-                      ['source_revision', '来源版本一致'],
-                      ['single_source', '平台来源唯一'],
-                      ['identity_match', '身份证一致'],
-                      ['name_match', '姓名一致'],
-                      ['single_upstream_task', '上游任务唯一'],
-                      ['station_match', '派出所一致'],
-                      ['person_match', '人员资料一致'],
-                      ['jurisdiction_match', '辖区按派出所校验'],
-                      ['precheck_passed', '登记前校验通过'],
-                      ['photo_valid', '照片格式有效'],
-                      ['community_code_valid', '全民防社区代码有效'],
-                      ['destination_valid', '去往地信息有效'],
-                    ].filter(([key]) => Object.prototype.hasOwnProperty.call(preview.checks, key)).map(([key, label]) => (
-                      <Tag key={key} color={preview.checks[key] ? 'success' : 'error'}>{label}</Tag>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="qmf-preview-section">
-                  <Descriptions
-                    title="当前全民防登录身份"
-                    size="small"
-                    column={mobile ? 1 : 2}
-                    items={[
-                      { key: 'operator', label: '操作人', children: preview.operator.name },
-                      { key: 'operator-id', label: '操作账号', children: preview.operator.username },
-                      { key: 'operator-station', label: '所属机构', children: preview.operator.station_name },
-                      { key: 'operator-station-code', label: '机构代码', children: preview.operator.station_code },
-                    ]}
-                  />
-                </section>
-
-                <section className="qmf-preview-section">
-                  <h3>本次固定执行顺序</h3>
-                  <div className="qmf-preview-disabled-steps">
-                    {preview.planned_write_steps.map(step => (
-                      <span key={step.key}>
-                        {step.label}<Tag color="processing">将执行</Tag>
-                      </span>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="qmf-preview-section">
-                  <h3>预计字段变化</h3>
-                  <div className="qmf-registration-changes">
-                    {preview.planned_changes.map(change => (
-                      <div key={change.key} className="qmf-registration-change">
-                        <strong>{change.label}</strong>
-                        <span>{change.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              </>
-            )
-          })()}
-
-          {qmfRun && (
-            <section className="qmf-preview-section qmf-registration-run">
-              <div className="qmf-registration-run__header">
-                <h3>执行状态</h3>
-                <Tag color={QMF_RUN_STATUS[qmfRun.status].color}>
-                  {QMF_RUN_STATUS[qmfRun.status].label}
-                </Tag>
-              </div>
-              <div className="qmf-registration-steps">
-                {qmfRun.steps.map((step, index) => (
-                  <div key={step.key} className={`qmf-registration-step is-${step.status}`}>
-                    <span className="qmf-registration-step__index">{index + 1}</span>
-                    <span className="qmf-registration-step__label">{step.label}</span>
-                    <Tag color={QMF_STEP_STATUS[step.status].color}>
-                      {QMF_STEP_STATUS[step.status].label}
-                    </Tag>
-                  </div>
-                ))}
-              </div>
-              {qmfRun.completed_at && (
-                <p className="text-xs text-[var(--app-text-secondary)]">
-                  全民防完成时间：{formatSystemTime(qmfRun.completed_at)}
-                </p>
-              )}
-              {qmfRun.status === 'uncertain' && (
-                <Alert type="error" showIcon message="外部结果无法确认，本条已冻结" description="请先到全民防人工核对；系统不会自动重试，也不能从头重放。" />
-              )}
-              {qmfRun.status === 'failed' && (
-                <div className="space-y-3">
-                  <Alert
-                    type="error"
-                    showIcon
-                    message="登记已停止"
-                    description={canReprepareQmfRun
-                      ? '系统确认尚未开始任何写入。你可以人工重新核对任务、人员和照片后，再生成一次新的登记准备。'
-                      : '本条存在写入进度或无法安全排除外部影响，仍保持冻结，不能从头重放。'}
-                  />
-                  {canReprepareQmfRun && (
-                    <Button type="primary" onClick={() => void openQmfRegistration()}>
-                      重新核对并准备
-                    </Button>
-                  )}
-                </div>
-              )}
-              {qmfRun.status === 'succeeded' && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Tag color={QMF_MARKER_STATUS[qmfRun.tencent_marker_status].color}>
-                    {QMF_MARKER_STATUS[qmfRun.tencent_marker_status].label}
-                  </Tag>
-                  {qmfRun.can_retry_marker && (
-                    <Button loading={qmfMarkerRetrying} onClick={() => void retryQmfMarker()}>
-                      仅重试腾讯完成标记
-                    </Button>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
-
-          {qmfRun?.status === 'prepared' && qmfPrepareResult && (
-            <section className="qmf-preview-section qmf-registration-confirm">
-              <Alert
-                type="warning"
-                showIcon
-                message="执行前请再次核对"
-                description="执行前还会再次读取腾讯来源和全民防任务；任一内容变化都会在写入前停止。"
-              />
-              <Button
-                block
-                type="primary"
-                loading={qmfExecuting}
-                disabled={!canExecutePreparedQmfRun(qmfRun, true)}
-                onClick={executePreparedQmfRun}
-              >二次确认并执行全民防登记</Button>
-            </section>
-          )}
-
-          {qmfRun?.status === 'prepared' && !qmfPrepareResult && (
-            <section className="qmf-preview-section">
-              <Alert type="warning" showIcon message="准备资料未保存在平台" description="为保证你重新看到完整人员资料和照片，执行前必须再次完成登记前核对。" />
-              <Button type="primary" onClick={() => void openQmfRegistration()}>
-                重新核对并准备
-              </Button>
-            </section>
-          )}
-        </div>
-      </Modal>
     </div>
   )
 }
