@@ -35,6 +35,7 @@ from services.business_time import get_business_date
 from services.online_source import (
     acquire_sheet_lock,
     json_value,
+    rebuild_projection,
     release_sheet_lock,
     resolve_source_columns,
 )
@@ -3208,6 +3209,10 @@ async def _execute_local_publish_selection(
                 )
                 success_count += 1
 
+            # Local publishing does not have a Tencent sync cycle to rebuild
+            # the task projection.  Rebuild it in the same transaction so a
+            # successful batch is immediately visible to 指令核查.
+            await rebuild_projection(cur, parser.parser_type)
             await _refresh_publish_run_progress(cur, run_id)
             counts = await _refresh_batch_status(cur, batch_id)
             await cur.execute(
