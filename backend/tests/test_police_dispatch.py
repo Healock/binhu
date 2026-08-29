@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import os
 from datetime import date, datetime
@@ -51,6 +52,7 @@ from routers.police_dispatch import (
     _publish_request_values,
     _publish_values,
     _review_one,
+    _execute_local_publish_selection,
     _search_tasks,
     _task_counts,
     _verify_clean_preview_token,
@@ -186,6 +188,15 @@ def test_quick_dispatch_creates_batch_and_task_through_full_transaction(monkeypa
     connection.begin.assert_awaited_once()
     connection.commit.assert_awaited_once()
     connection.rollback.assert_not_awaited()
+
+
+def test_local_publish_rebuilds_task_projection_before_commit():
+    """Guard the local cutover path against bypassing the task projection."""
+    source = inspect.getsource(_execute_local_publish_selection)
+    rebuild_call = "await rebuild_projection(cur, parser.parser_type)"
+
+    assert rebuild_call in source
+    assert source.index(rebuild_call) < source.index("await conn.commit()")
 
 
 def test_quick_dispatch_profiles_cover_all_supported_business_tables():
