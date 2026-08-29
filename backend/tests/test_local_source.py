@@ -10,9 +10,11 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from services.local_source import (
     LOCAL_SPREADSHEET_ID,
     cleanup_duplicate_local_sources,
+    ensure_local_source_schema,
     local_data_source_enabled,
     local_row_hash,
     local_sheet_id,
+    mirror_business_tables_to_local_sources,
     stable_json,
 )
 from services.online_source import active_source_sql_filter
@@ -62,12 +64,27 @@ class LocalSourceHelpersTest(unittest.TestCase):
             model_three_clause = active_source_sql_filter(
                 "疑似未注销模型三", "source_row"
             )
-        self.assertIn("source_row.parser_type='疑似未注销模型三'", model_three_clause)
-        self.assertIn("source_row.sheet_id='legacy-model-three'", model_three_clause)
+        self.assertIn("source_row.spreadsheet_id=0", model_three_clause)
+        self.assertIn(
+            "source_row.source_kind IN ('local_table','local_dispatch')",
+            model_three_clause,
+        )
+        self.assertNotIn("legacy-model-three", model_three_clause)
 
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
             clause = active_source_sql_filter("全链条")
         self.assertIn("spreadsheet_id=0", clause)
+
+    def test_mirror_reuses_archived_local_physical_position(self):
+        source = inspect.getsource(mirror_business_tables_to_local_sources)
+        self.assertIn("sheet_id=%s AND physical_row=%s", source)
+        self.assertIn("ORDER BY archived_at IS NULL DESC,id", source)
+
+    def test_schema_only_rewrites_the_retired_source_default_when_needed(self):
+        source = inspect.getsource(ensure_local_source_schema)
+        self.assertIn('column_info[4]', source)
+        self.assertIn('!= "local_table"', source)
+        self.assertIn("MODIFY COLUMN `source_kind`", source)
 
     def test_local_system_change_supersedes_dispatch_record(self):
         class Cursor:
