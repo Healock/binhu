@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 from pydantic import BaseModel, Field
 
 from config import settings
@@ -77,6 +80,7 @@ class PropertySearch(BaseModel):
     visit_start_date: date | None = None
     visit_end_date: date | None = None
     star_ratings: list[StarRating] = Field(default_factory=list, max_length=5)
+    sort: Literal["id_desc", "address_asc", "community_asc", "updated_desc", "visit_desc"] = "id_desc"
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=50, ge=1, le=200)
 
@@ -374,6 +378,8 @@ async def _property_search_result(
     data: PropertySearch,
     user: dict,
     conn,
+    *,
+    export_all: bool = False,
 ) -> dict:
     if data.visit_start_date and data.visit_end_date and data.visit_end_date < data.visit_start_date:
         raise HTTPException(422, "走访结束日期不能早于开始日期")
@@ -517,6 +523,14 @@ async def _property_search_result(
         params.extend(sorted(matching_ids))
         clause = " WHERE " + " AND ".join(where) if where else ""
     offset = (data.page - 1) * data.page_size
+    visit_sort = data.sort == "visit_desc"
+    order_sql = {
+        "id_desc": "property.id DESC",
+        "address_asc": "COALESCE(property.normalized_address, property.natural_address, '') ASC, property.id DESC",
+        "community_asc": "COALESCE(property.community_name_snapshot, '') ASC, property.id DESC",
+        "updated_desc": "property.updated_at DESC, property.id DESC",
+        "visit_desc": "property.id DESC",
+    }.get(data.sort, "property.id DESC")
     async with conn.cursor() as cur:
         await cur.execute(
             f"SELECT COUNT(*) FROM registry_properties property{joins}{clause}",
@@ -530,8 +544,9 @@ async def _property_search_result(
             "COALESCE(certificate_totals.certificate_count,0),certificate.landlord_name,certificate.actual_renter_name,"
             "certificate.signed_status,certificate.sign_type,certificate.updated_at,"
             "COALESCE(certificate_issues.issue_count,0),certificate_source_state.source_ready "
-            f"FROM registry_properties property{joins}{clause} ORDER BY property.id DESC LIMIT %s OFFSET %s",
-            tuple(params) + (data.page_size, offset),
+            f"FROM registry_properties property{joins}{clause} ORDER BY {order_sql} "
+            + ("" if export_all or visit_sort else "LIMIT %s OFFSET %s"),
+            tuple(params) if export_all or visit_sort else tuple(params) + (data.page_size, offset),
         )
         rows = await cur.fetchall()
     payloads = [_property_payload(row) for row in rows]
@@ -539,6 +554,16 @@ async def _property_search_result(
         visit_summaries = await load_property_visit_summaries(cur, payloads)
     for payload in payloads:
         payload.update(visit_summaries.get(int(payload["id"]), {}))
+    if visit_sort:
+        payloads.sort(
+            key=lambda item: (
+                str(item.get("latest_visit_date") or ""),
+                int(item["id"]),
+            ),
+            reverse=True,
+        )
+        if not export_all:
+            payloads = payloads[offset:offset + data.page_size]
     return {
         "total": total,
         "page": data.page,
@@ -559,6 +584,7 @@ async def list_properties(
     visit_start_date: date | None = Query(default=None),
     visit_end_date: date | None = Query(default=None),
     star_ratings: list[StarRating] = Query(default=[]),
+    sort: Literal["id_desc", "address_asc", "community_asc", "updated_desc", "visit_desc"] = Query(default="id_desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
@@ -573,6 +599,7 @@ async def list_properties(
             visit_start_date=visit_start_date,
             visit_end_date=visit_end_date,
             star_ratings=star_ratings,
+            sort=sort,
             page=page,
             page_size=page_size,
         ),
@@ -589,6 +616,57 @@ async def search_properties(
 ):
     """搜索房屋档案；地址和户号关键词放在请求正文，避免进入访问日志 URL。"""
     return await _property_search_result(data, user, conn)
+
+
+@router.post("/properties/export")
+async def export_properties(
+    data: PropertySearch,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    result = await _property_search_result(data, user, conn, export_all=True)
+    rows = result.get("data") or []
+    workbook = build_xlsx(
+        "房屋档案",
+        [
+            "房屋ID", "社区", "标准详细地址", "街道", "幢", "室", "户号",
+            "住房类型", "居住处所", "最近走访日期", "星级评定", "责任书状态",
+            "房屋状态", "档案版本", "更新时间",
+        ],
+        [
+            [
+                row.get("id"), row.get("community_name"),
+                row.get("natural_address") or row.get("normalized_address"),
+                row.get("street"), row.get("building"), row.get("room"),
+                row.get("source_house_no"), row.get("housing_type"),
+                row.get("residence_type"), row.get("latest_visit_date") or "",
+                row.get("star_rating") or "", row.get("certificate_status_label") or "",
+                row.get("status"), row.get("version"), row.get("updated_at") or "",
+            ]
+            for row in rows
+        ],
+    )
+    await record_admin_audit(
+        user,
+        "registry.properties_export",
+        target_type="registry_properties",
+        target_name="房屋档案",
+        detail={
+            "file_format": "XLSX",
+            "rows": len(rows),
+            "sort": data.sort,
+            "community_filtered": data.community_id is not None,
+            "keyword_present": bool(data.keyword.strip()),
+        },
+        **request_audit_fields(request),
+    )
+    filename = f"房屋档案-{datetime.now():%Y%m%d%H%M%S}.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.post("/properties")
@@ -813,12 +891,13 @@ async def create_housing_person(
     return {"id": person_id, "message": "辖区人员档案已创建"}
 
 
-@router.post("/people/search")
-async def search_housing_people(
+async def _housing_people_search_result(
     data: RegistrySearch,
-    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
-    conn=Depends(get_registry_db),
-):
+    user: dict,
+    conn,
+    *,
+    export_all: bool = False,
+) -> dict:
     can_view_tags = has_permission(user, REGISTRY_WATCH_VIEW)
     if data.category_ids and not can_view_tags:
         raise HTTPException(403, "无权查看人员标签")
@@ -871,8 +950,9 @@ async def search_housing_people(
         total = int((await cur.fetchone())[0])
         await cur.execute(
             "SELECT id, name, identity_number, is_temporary, verification_status, status, created_at, updated_at "
-            f"FROM registry_housing_people WHERE {clause} ORDER BY id DESC LIMIT %s OFFSET %s",
-            tuple(params) + (data.page_size, offset),
+            f"FROM registry_housing_people WHERE {clause} ORDER BY id DESC "
+            + ("" if export_all else "LIMIT %s OFFSET %s"),
+            tuple(params) if export_all else tuple(params) + (data.page_size, offset),
         )
         rows = await cur.fetchall()
         categories_by_person = (
@@ -887,6 +967,58 @@ async def search_housing_people(
                           for item in categories_by_person.get(int(row[0]), [])
                       ]}
                      for row in rows]}
+
+
+@router.post("/people/search")
+async def search_housing_people(
+    data: RegistrySearch,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    return await _housing_people_search_result(data, user, conn)
+
+
+@router.post("/people/export")
+async def export_housing_people(
+    data: RegistrySearch,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    result = await _housing_people_search_result(data, user, conn, export_all=True)
+    rows = result.get("data") or []
+    workbook = build_xlsx(
+        "人员档案",
+        ["人员ID", "姓名", "身份证号", "临时人员", "核验状态", "人员标签", "档案状态", "更新时间"],
+        [
+            [
+                row.get("id"), row.get("name"), row.get("identity_number") or "",
+                "是" if row.get("is_temporary") else "否", row.get("verification_status"),
+                "、".join(str(item.get("name") or "") for item in row.get("categories") or []),
+                row.get("status"), row.get("updated_at") or "",
+            ]
+            for row in rows
+        ],
+    )
+    await record_admin_audit(
+        user,
+        "registry.people_export",
+        target_type="registry_people",
+        target_name="人员档案",
+        detail={
+            "file_format": "XLSX",
+            "rows": len(rows),
+            "keyword_present": bool(data.name.strip()),
+            "category_count": len(data.category_ids),
+        },
+        **request_audit_fields(request),
+    )
+    filename = f"人员档案-{datetime.now():%Y%m%d%H%M%S}.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.get("/role-types")

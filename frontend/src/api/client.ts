@@ -1818,6 +1818,52 @@ export async function listMobileTaskAnalysis(
   return data
 }
 
+export async function exportMobileTasks(
+  params: MobileTaskSearchParams,
+): Promise<Blob> {
+  return (await api.post(
+    `/mobile-tasks/${encodeURIComponent(params.parser_type)}/export`,
+    mobileTaskSearchPayload(params),
+    { ...activeRequest, responseType: 'blob', timeout: 300_000 },
+  )).data as Blob
+}
+
+export async function exportMobileTaskAnalysis(
+  params: MobileTaskAnalysisSearchParams,
+): Promise<Blob> {
+  return (await api.post(
+    '/mobile-tasks/analysis/export',
+    {
+      parser_types: params.parser_types,
+      scope: params.scope,
+      review_stage: params.review_stage || 'all',
+      communities: params.communities || [],
+      inspectors: params.inspectors || [],
+      watch_categories: params.watch_categories || [],
+      sort: params.sort || 'priority',
+      keyword: params.keyword || '',
+      page: 1,
+      page_size: 50,
+    },
+    { ...activeRequest, responseType: 'blob', timeout: 300_000 },
+  )).data as Blob
+}
+
+export async function importMobileTaskAnalysis(file: File): Promise<{
+  success_count: number
+  failed_count: number
+  success: Array<{ row: number; task: string; state: string }>
+  failed: Array<{ row: number; reason: string }>
+}> {
+  const form = new FormData()
+  form.append('file', file)
+  return (await api.post('/mobile-tasks/analysis/import', form, {
+    ...activeRequest,
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300_000,
+  })).data
+}
+
 export async function selectMobileTasksForAssignment(
   params: MobileTaskSearchParams,
 ): Promise<{ row_keys: string[]; total: number; community: string }> {
@@ -4058,12 +4104,30 @@ export const registryApi = {
     visit_start_date?: string
     visit_end_date?: string
     star_ratings?: string[]
+    sort?: 'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'
     page?: number
     page_size?: number
   } = {}) {
     return (await api.post('/registry/properties/search', params, activeRequest)).data as {
       data: RegistryProperty[]; total: number; page: number; page_size: number
     }
+  },
+  async exportProperties(params: {
+    keyword?: string
+    community_id?: number
+    housing_category?: RegistryHousingCategory
+    certificate_status?: RegistryCertificateStatus
+    status?: '' | 'active' | 'inactive'
+    visit_start_date?: string
+    visit_end_date?: string
+    star_ratings?: string[]
+    sort?: 'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'
+  } = {}) {
+    return (await api.post('/registry/properties/export', params, {
+      ...activeRequest,
+      responseType: 'blob',
+      timeout: 300_000,
+    })).data as Blob
   },
   async property(id: number) {
     return (await api.get(`/registry/properties/${id}`, activeRequest)).data
@@ -4208,6 +4272,18 @@ export const registryApi = {
       data: RegistryPerson[]; total: number; page: number; page_size: number
     }
   },
+  async exportPeople(payload: {
+    name?: string
+    identity_number?: string
+    phone?: string
+    category_ids?: number[]
+  } = {}) {
+    return (await api.post('/registry/people/export', payload, {
+      ...activeRequest,
+      responseType: 'blob',
+      timeout: 300_000,
+    })).data as Blob
+  },
   async roleTypes() {
     return (await api.get('/registry/role-types', activeRequest)).data as { data: Array<{ id: number; code: string; name: string; subject_type: 'person' | 'organization'; is_active: boolean }> }
   },
@@ -4233,6 +4309,13 @@ export const registryApi = {
     return (await api.get('/registry/organizations', { ...activeRequest, params })).data as {
       data: RegistryOrganization[]; total: number; page: number; page_size: number
     }
+  },
+  async exportOrganizations(params: { keyword?: string } = {}) {
+    return (await api.post('/registry/organizations/export', params, {
+      ...activeRequest,
+      responseType: 'blob',
+      timeout: 300_000,
+    })).data as Blob
   },
   async organization(id: number) {
     return (await api.get(`/registry/organizations/${id}`, activeRequest)).data

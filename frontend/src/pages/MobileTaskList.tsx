@@ -1,16 +1,20 @@
 import {
   CopyOutlined,
+  DownloadOutlined,
   ExclamationCircleOutlined,
   PhoneOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skeleton, Tag, message } from 'antd'
+import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skeleton, Tag, Upload, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import {
   getMobileTaskAnalysisFilterOptions,
   getMobileTaskFilterOptions,
   getLatestQmfStatusScan,
+  exportMobileTaskAnalysis,
+  exportMobileTasks,
+  importMobileTaskAnalysis,
   listMobileTaskAnalysis,
   listMobileTasks,
   startQmfStatusScan,
@@ -57,6 +61,7 @@ import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
+import { downloadBlob } from '../utils/fileDownload'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
@@ -280,6 +285,8 @@ export default function MobileTaskList({
   const [sourceMessage, setSourceMessage] = useState(() => snapshotRef.current?.source_message || '')
   const [qmfScan, setQmfScan] = useState<QmfStatusScanRun | null>(null)
   const [qmfScanLoading, setQmfScanLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [importingAnalysis, setImportingAnalysis] = useState(false)
   const [assignmentWorkbenchOpen, setAssignmentWorkbenchOpen] = useState(false)
   const loadingMoreRef = useRef(false)
   const scrollLoadArmedRef = useRef(false)
@@ -768,6 +775,70 @@ export default function MobileTaskList({
     await copyValue(value, label)
   }
 
+  const exportCurrent = async () => {
+    setExporting(true)
+    try {
+      const blob = analysisOnly
+        ? await exportMobileTaskAnalysis({
+          parser_types: analysisParserTypes,
+          scope: 'all',
+          review_stage: reviewStage,
+          communities,
+          inspectors,
+          watch_categories: watchCategories,
+          sort,
+          keyword: keyword || undefined,
+        })
+        : await exportMobileTasks({
+          parser_type: parserType,
+          scope,
+          status,
+          review_stage: reviewStage,
+          communities,
+          inspectors,
+          watch_categories: watchCategories,
+          qmf_feedback_states: qmfFeedbackStates,
+          priority,
+          sort,
+          keyword: keyword || undefined,
+        })
+      const saved = await downloadBlob(
+        blob,
+        `${analysisOnly ? '研判任务' : parserType}-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      )
+      if (saved) message.success(`已导出 ${analysisOnly ? '研判任务' : '当前筛选结果'}`)
+    } catch (reason: any) {
+      let detail = reason?.response?.data?.detail
+      if (reason?.response?.data instanceof Blob) {
+        try { detail = JSON.parse(await reason.response.data.text())?.detail } catch { detail = '' }
+      }
+      message.error(detail || '导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const importAnalysis = async (file: File) => {
+    setImportingAnalysis(true)
+    try {
+      const result = await importMobileTaskAnalysis(file)
+      if (result.failed_count) {
+        message.warning(`已导入 ${result.success_count} 条，${result.failed_count} 条需要处理`)
+      } else {
+        message.success(`已导入 ${result.success_count} 条研判结果`)
+      }
+      await load(1, false, true)
+    } catch (reason: any) {
+      let detail = reason?.response?.data?.detail
+      if (reason?.response?.data instanceof Blob) {
+        try { detail = JSON.parse(await reason.response.data.text())?.detail } catch { detail = '' }
+      }
+      message.error(detail || '研判文件导入失败')
+    } finally {
+      setImportingAnalysis(false)
+    }
+  }
+
   return (
     <div ref={pageRootRef} className="mobile-task-page">
       <ListToolbar
@@ -975,6 +1046,16 @@ export default function MobileTaskList({
         meta={<><span>当前筛选共 {total} 条</span>{keywordInput && <button type="button" className="text-[var(--app-primary)]" onClick={() => setKeywordInput('')}>清除搜索</button>}</>}
         actions={<>
           <Button onClick={() => void load()} loading={loading}>刷新</Button>
+          <Button icon={<DownloadOutlined />} onClick={() => void exportCurrent()} loading={exporting}>
+            {analysisOnly ? '导出待研判' : '导出当前结果'}
+          </Button>
+          {analysisOnly && <Upload
+            accept=".xlsx"
+            showUploadList={false}
+            beforeUpload={file => { void importAnalysis(file); return false }}
+          >
+            <Button loading={importingAnalysis}>导入研判结果</Button>
+          </Upload>}
           {isModelThree && canStartQmfScan && (
             <Button
               type="primary"
