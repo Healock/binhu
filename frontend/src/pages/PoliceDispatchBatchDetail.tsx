@@ -180,7 +180,7 @@ export default function PoliceDispatchBatchDetail() {
         title={batch ? `${businessLabels[batch.business_type] || batch.target_parser}${batch.police_subtype ? ` · ${policeSubtypeLabels[batch.police_subtype] || batch.police_subtype}` : ''} · 批次 #${batch.id}` : '下发批次'}
         description={batch
           ? `${batch.file_name} · ${batch.import_mode === 'quick' ? '快捷下发' : batch.import_mode === 'clean' ? '已处理直发' : '原始审核'} · 目标解析器：${batch.target_parser} · 用于历史倒查、复盘和发布异常处理`
-          : '查看审核进度、社区分配和腾讯发布结果'}
+          : '查看审核进度、社区分配和本地发布结果'}
         actions={batch && (
           <Space wrap>
             <Button icon={<MobileOutlined />} onClick={() => navigate(`/police-tasks?batch=${id}`)}>

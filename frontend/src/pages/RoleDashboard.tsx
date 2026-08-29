@@ -346,12 +346,12 @@ function ManagementOverview({ data }: { data: RoleDashboardData }) {
   const navigate = useNavigate()
   const management = data.management
   if (!management) return null
-  const syncOk = ['success', 'completed'].includes(management.sync.status)
+  const refreshOk = ['success', 'completed'].includes(management.sync.status)
   return (
     <Panel title="管理提醒" description="只显示当前账号有权限查看的管理状态">
       <MetricGrid>
-        <DashboardCard label="同步状态" value={syncOk ? '正常' : management.sync.status || '空闲'} tone={syncOk ? 'green' : 'amber'} />
-        <DashboardCard label="在线回写" value={management.online_writeback_enabled ? '已开启' : '已关闭'} tone={management.online_writeback_enabled ? 'green' : 'red'} />
+        <DashboardCard label="任务刷新" value={refreshOk ? '正常' : management.sync.status || '空闲'} tone={refreshOk ? 'green' : 'amber'} />
+        <DashboardCard label="业务数据源" value="本地任务池" tone="green" />
         <DashboardCard label="下发异常" value={management.dispatch_exceptions} tone={management.dispatch_exceptions ? 'red' : 'slate'} onClick={data.dispatch_overview ? () => navigate('/police-tasks?status=conflict') : undefined} />
         {management.latest_backup && <DashboardCard label="最近备份" value={management.latest_backup.status === 'success' ? '成功' : management.latest_backup.status} tone={management.latest_backup.status === 'success' ? 'green' : 'amber'} onClick={() => navigate('/operations')} />}
       </MetricGrid>
@@ -394,8 +394,8 @@ export default function RoleDashboard() {
   }, [load, user?.id])
 
   const syncLabel = useMemo(() => {
-    if (!data?.last_success_at) return '尚无成功同步记录'
-    return `最后成功同步 ${formatUTCTime(data.last_success_at, systemTimezone)}`
+    if (!data?.last_success_at) return '尚无数据快照记录'
+    return `最近数据快照 ${formatUTCTime(data.last_success_at, systemTimezone)}`
   }, [data?.last_success_at, systemTimezone])
 
   if (!data && loading) {

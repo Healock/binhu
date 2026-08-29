@@ -14,8 +14,6 @@ import GridMembers from './pages/GridMembers'
 import WeekendDuty from './pages/WeekendDuty'
 import Communities from './pages/Communities'
 import UserManagement from './pages/UserManagement'
-import SpreadsheetSettings from './pages/SpreadsheetSettings'
-import OAuthSettings from './pages/OAuthSettings'
 import SystemSettings from './pages/SystemSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
 import AccountSecuritySettings from './pages/AccountSecuritySettings'
@@ -224,8 +222,6 @@ function App() {
                 <Route path="personalization" element={<PersonalizationSettings />} />
                 <Route path="updates" element={<UpdateSettings />} />
                 <Route element={<ProtectedRoute requirePermission="system.manage" />}>
-                  <Route path="spreadsheets" element={<SpreadsheetSettings />} />
-                  <Route path="oauth" element={<OAuthSettings />} />
                   <Route path="system" element={<SystemSettings />} />
                 </Route>
                 <Route element={<ProtectedRoute requirePermission="workflow.config.manage" />}>

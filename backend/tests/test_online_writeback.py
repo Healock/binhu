@@ -588,7 +588,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             "number",
         ))
 
-    async def test_suspicious_automatic_coercion_is_rejected_before_audit(self):
+    async def test_unmigrated_legacy_source_is_rejected_without_external_access(self):
         parser = get_parser("全链条")
         cached = {column: "" for column in parser.COLUMNS}
         cached.update({
@@ -633,8 +633,10 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
                     conn=conn,
                 )
 
-        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("尚未迁移到本地数据源", raised.exception.detail)
         insert_audit.assert_not_awaited()
+        client.read_source_row.assert_not_awaited()
         client.batch_update.assert_not_awaited()
 
     async def test_view_scope_can_expand_but_edit_scope_stays_with_position(self):
@@ -883,7 +885,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("source.spreadsheet_id=0", source_sql)
         self.assertIn("sheet_id='legacy-model-three'", source_sql)
-        self.assertIn("physical_source.row_hash=source.row_hash", source_sql)
+        self.assertNotIn("physical_source", source_sql)
         self.assertEqual(cursor.many_rows[0][8], 1)
 
     async def test_non_mergeable_duplicates_are_exposed_as_conflict(self):
@@ -944,7 +946,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["pending_sync"])
         queue.assert_awaited_once()
 
-    async def test_mobile_batch_update_uses_one_request_and_one_cache_revision(self):
+    async def test_legacy_mobile_batch_update_never_calls_tencent(self):
         parser = get_parser("全链条")
         cached = {column: "" for column in parser.COLUMNS}
         cached.update({
@@ -980,29 +982,27 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
              patch("routers.query._update_writeback_audit", AsyncMock()), \
              patch("routers.query.update_cached_source_row", AsyncMock(return_value=("row-key", 2))) as cache_update, \
              patch("routers.query.record_admin_audit", AsyncMock()):
-            result = await update_source_fields(
-                parser_type="全链条",
-                source_id=1,
-                changes={
-                    "现住址": "长板一号",
-                    "核查结果": "无法核实",
-                    "二次反馈": "再次联系未果",
-                },
-                expected_revision=1,
-                request=request,
-                user=make_user("组员", communities=["长板"]),
-                conn=conn,
-            )
+            with self.assertRaises(HTTPException) as raised:
+                await update_source_fields(
+                    parser_type="全链条",
+                    source_id=1,
+                    changes={
+                        "现住址": "长板一号",
+                        "核查结果": "无法核实",
+                        "二次反馈": "再次联系未果",
+                    },
+                    expected_revision=1,
+                    request=request,
+                    user=make_user("组员", communities=["长板"]),
+                    conn=conn,
+                )
 
-        self.assertTrue(result["pending_sync"])
-        self.assertEqual(len(client.batch_update.await_args.args[1]), 3)
-        self.assertEqual(
-            [request["column"] for request in client.batch_update.await_args.args[1]],
-            [11, 12, 14],
-        )
-        cache_update.assert_awaited_once()
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("尚未迁移到本地数据源", raised.exception.detail)
+        client.batch_update.assert_not_awaited()
+        cache_update.assert_not_awaited()
 
-    async def test_direct_blank_edit_uses_clear_without_empty_batch_update(self):
+    async def test_legacy_blank_edit_never_calls_tencent_clear(self):
         parser = get_parser("全链条")
         cached = {column: "" for column in parser.COLUMNS}
         cached.update({
@@ -1049,20 +1049,20 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
              patch("routers.query._update_writeback_audit", AsyncMock()), \
              patch("routers.query.update_cached_source_row", AsyncMock(return_value=("row-key", 2))), \
              patch("routers.query.record_admin_audit", AsyncMock()):
-            result = await update_source_fields(
-                parser_type="全链条",
-                source_id=1,
-                changes={"核查结果": ""},
-                expected_revision=1,
-                request=request,
-                user=make_user("组员", communities=["长板"]),
-                conn=conn,
-            )
+            with self.assertRaises(HTTPException) as raised:
+                await update_source_fields(
+                    parser_type="全链条",
+                    source_id=1,
+                    changes={"核查结果": ""},
+                    expected_revision=1,
+                    request=request,
+                    user=make_user("组员", communities=["长板"]),
+                    conn=conn,
+                )
 
-        self.assertTrue(result["pending_sync"])
-        client.clear_cell.assert_awaited_once_with(
-            "file", "sheet", 10, parser.COLUMNS.index("核查结果")
-        )
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("尚未迁移到本地数据源", raised.exception.detail)
+        client.clear_cell.assert_not_awaited()
         client.batch_update.assert_not_awaited()
         client.build_update_cell_request.assert_not_called()
 

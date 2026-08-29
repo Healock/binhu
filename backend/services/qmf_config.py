@@ -1,4 +1,4 @@
-"""Runtime configuration for the全民防模型三 preview and sealed registration.
+"""Runtime configuration for 全民防 model-three read-only queries.
 
 The preview originally read all values from process environment variables.  The
 settings page now persists the values in ``_system_config`` so an administrator
@@ -130,7 +130,9 @@ def settings_config() -> QmfRuntimeConfig:
     """Build the fallback configuration from environment settings."""
     return QmfRuntimeConfig(
         preview_enabled=bool(settings.QMF_PREVIEW_ENABLED),
-        registration_enabled=bool(settings.QMF_REGISTRATION_ENABLED),
+        # Real registration is permanently retired.  Keep the compatibility
+        # field false even if an obsolete environment value is still present.
+        registration_enabled=False,
         login_protocol_verified=bool(settings.QMF_LOGIN_PROTOCOL_VERIFIED),
         write_protocol_verified=bool(settings.QMF_WRITE_PROTOCOL_VERIFIED),
         api_base_url=str(settings.QMF_API_BASE_URL or ""),
@@ -170,9 +172,8 @@ async def load_qmf_config(conn) -> QmfRuntimeConfig:
     values = {str(row[0]): row[1] for row in rows}
     return QmfRuntimeConfig(
         preview_enabled=_as_bool(values.get("qmf_preview_enabled", fallback.preview_enabled)),
-        registration_enabled=_as_bool(
-            values.get("qmf_registration_enabled", fallback.registration_enabled)
-        ),
+        # The stored key is retained for migration/audit compatibility only.
+        registration_enabled=False,
         login_protocol_verified=_as_bool(
             values.get("qmf_login_protocol_verified", fallback.login_protocol_verified)
         ),
@@ -221,7 +222,7 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
     """
     return {
         "preview_enabled": config.preview_enabled,
-        "registration_enabled": config.registration_enabled,
+        "registration_enabled": False,
         "login_protocol_verified": config.login_protocol_verified,
         "write_protocol_verified": config.write_protocol_verified,
         "api_base_url": config.api_base_url,
@@ -238,7 +239,7 @@ def public_config(config: QmfRuntimeConfig, stored_keys: set[str]) -> dict[str, 
         "status_scan_enabled": config.status_scan_enabled,
         "status_scan_time": config.status_scan_time,
         "configured": config.configured,
-        "registration_configured": config.registration_configured,
+        "registration_configured": False,
         "database_keys": sorted(stored_keys),
     }
 

@@ -42,7 +42,7 @@ test('照片工单搜索使用即时筛选并按系统时区显示时间', () =>
   assert.match(workflowSource, /formatUTCTime\(value, systemTimezone\)/)
 })
 
-test('运维中心区分腾讯请求额度和同步任务次数', () => {
+test('运维中心不再展示已下线的腾讯运行状态', () => {
   const operationsSource = readFileSync(
     new URL('../src/pages/OperationsCenter.tsx', import.meta.url),
     'utf8',
@@ -52,12 +52,11 @@ test('运维中心区分腾讯请求额度和同步任务次数', () => {
     'utf8',
   )
 
-  assert.match(operationsSource, /title="腾讯接口请求额度"/)
-  assert.match(operationsSource, /title="腾讯同步任务次数"/)
-  assert.match(operationsSource, /400011/)
-  assert.match(operationsSource, /estimated_remaining/)
+  assert.doesNotMatch(operationsSource, /title="腾讯接口请求额度"/)
+  assert.doesNotMatch(operationsSource, /title="腾讯同步任务次数"/)
+  assert.doesNotMatch(operationsSource, /腾讯文档 OAuth/)
+  assert.match(operationsSource, /本地任务池和外部只读扫描/)
   assert.match(typeSource, /txdocs_request_usage/)
-  assert.match(typeSource, /quota_exhausted_responses/)
 })
 
 test('运维中心按 Docker 口径区分工作内存和可回收缓存', () => {

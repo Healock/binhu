@@ -41,110 +41,49 @@ def platform_task() -> dict:
 
 
 class QmfStatusIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_prepare_checks_legacy_status_before_mobile_preview(self):
-        events = []
-
-        async def status_check(*_args, **_kwargs):
-            events.append("legacy_status")
-            return QmfLegacyStatus(state=STATUS_PENDING)
-
-        async def mobile_preview(*_args, **_kwargs):
-            events.append("mobile_preview")
-            return {
-                "mode": "read_only",
-                "can_submit": False,
-                "platform_task": platform_task(),
-                "upstream_task": {"task_id": "fixture-task"},
-                "operator": {},
-                "photo": None,
-                "checks": {},
-                "planned_write_steps": [],
-                "planned_changes": [],
-                "warnings": [],
-            }
-
-        prepared_run = {
-            "id": 7,
-            "status": "prepared",
-            "steps": [],
-            "can_execute": True,
-        }
+    async def test_prepare_is_gone_before_any_external_read_or_write(self):
+        load_config = AsyncMock()
+        legacy_status = AsyncMock()
+        preview = AsyncMock()
+        create_run = AsyncMock()
         with (
-            patch(
-                "routers.qmf_registration.load_qmf_config",
-                AsyncMock(return_value=SimpleNamespace(registration_configured=True)),
-            ),
-            patch(
-                "routers.qmf_registration._online_writeback_available",
-                AsyncMock(return_value=True),
-            ),
-            patch("routers.qmf_registration.qmf_operation_busy", return_value=False),
-            patch(
-                "routers.qmf_registration._database_registration_active",
-                AsyncMock(return_value=False),
-            ),
-            patch(
-                "routers.qmf_registration._eligible_platform_task",
-                AsyncMock(return_value=(platform_task(), "a" * 64)),
-            ),
-            patch("routers.qmf_registration._assert_source_unchanged", AsyncMock()),
-            patch(
-                "routers.qmf_registration._legacy_status_for_task",
-                AsyncMock(side_effect=status_check),
-            ),
-            patch(
-                "routers.qmf_registration.run_guarded_preview",
-                AsyncMock(side_effect=mobile_preview),
-            ),
-            patch(
-                "routers.qmf_registration._create_prepared_run",
-                AsyncMock(return_value=prepared_run),
-            ),
+            patch("routers.qmf_registration.load_qmf_config", load_config),
+            patch("routers.qmf_registration._legacy_status_for_task", legacy_status),
+            patch("routers.qmf_registration.run_guarded_preview", preview),
+            patch("routers.qmf_registration._create_prepared_run", create_run),
             patch("routers.qmf_registration.record_admin_audit", AsyncMock()),
         ):
-            response = await prepare_qmf_registration(
-                QmfPreviewRequest(
-                    parser_type="疑似未注销模型三",
-                    row_key="fixture-row",
-                    source_id=9,
-                    expected_revision=3,
-                ),
-                request("/api/qmf-registration/prepare"),
-                user={"id": 2, "username": "permission-user"},
-                conn=object(),
-            )
-        self.assertEqual(events, ["legacy_status", "mobile_preview"])
-        self.assertEqual(response.status_code, 200)
+            with self.assertRaises(HTTPException) as raised:
+                await prepare_qmf_registration(
+                    QmfPreviewRequest(
+                        parser_type="疑似未注销模型三",
+                        row_key="fixture-row",
+                        source_id=9,
+                        expected_revision=3,
+                    ),
+                    request("/api/qmf-registration/prepare"),
+                    user={"id": 2, "username": "permission-user"},
+                    conn=object(),
+                )
+        self.assertEqual(raised.exception.status_code, 410)
+        self.assertEqual(
+            raised.exception.detail["code"],
+            "tencent_data_source_disabled",
+        )
+        load_config.assert_not_awaited()
+        legacy_status.assert_not_awaited()
+        preview.assert_not_awaited()
+        create_run.assert_not_awaited()
 
-    async def test_prepare_stops_when_legacy_already_completed(self):
+    async def test_prepare_does_not_reopen_completed_legacy_registration(self):
         preview = AsyncMock()
+        legacy_status = AsyncMock(return_value=QmfLegacyStatus(
+            state=STATUS_COMPLETED_MATCH,
+            result="在吴",
+            matches_platform_result=True,
+        ))
         with (
-            patch(
-                "routers.qmf_registration.load_qmf_config",
-                AsyncMock(return_value=SimpleNamespace(registration_configured=True)),
-            ),
-            patch(
-                "routers.qmf_registration._online_writeback_available",
-                AsyncMock(return_value=True),
-            ),
-            patch("routers.qmf_registration.qmf_operation_busy", return_value=False),
-            patch(
-                "routers.qmf_registration._database_registration_active",
-                AsyncMock(return_value=False),
-            ),
-            patch(
-                "routers.qmf_registration._eligible_platform_task",
-                AsyncMock(return_value=(platform_task(), "a" * 64)),
-            ),
-            patch("routers.qmf_registration._assert_source_unchanged", AsyncMock()),
-            patch(
-                "routers.qmf_registration._legacy_status_for_task",
-                AsyncMock(return_value=QmfLegacyStatus(
-                    state=STATUS_COMPLETED_MATCH,
-                    result="在吴",
-                    matches_platform_result=True,
-                )),
-            ),
+            patch("routers.qmf_registration._legacy_status_for_task", legacy_status),
             patch("routers.qmf_registration.run_guarded_preview", preview),
             patch("routers.qmf_registration.record_admin_audit", AsyncMock()),
         ):
@@ -160,8 +99,12 @@ class QmfStatusIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     user={"id": 2, "username": "permission-user"},
                     conn=object(),
                 )
-        self.assertEqual(raised.exception.status_code, 409)
-        self.assertEqual(raised.exception.detail["code"], "legacy_already_completed")
+        self.assertEqual(raised.exception.status_code, 410)
+        self.assertEqual(
+            raised.exception.detail["code"],
+            "tencent_data_source_disabled",
+        )
+        legacy_status.assert_not_awaited()
         preview.assert_not_awaited()
 
     async def test_execute_rechecks_before_first_write_and_stops(self):

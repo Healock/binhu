@@ -507,7 +507,7 @@ async def create_quick_dispatch(
     user: dict = Depends(require_police_dispatch),
     conn=Depends(get_db),
 ):
-    """创建一条临时业务任务，交由既有发布工作台最终写入腾讯表。"""
+    """创建一条临时业务任务，并立即写入本地任务池。"""
     profile = _quick_dispatch_profiles().get(data.profile)
     if not profile:
         raise HTTPException(400, "不支持的快捷下发业务表")

@@ -78,7 +78,7 @@ export default function DataUploadCenter() {
       const latest = await getLatestExternalAcquisitionRun('qmf_source')
       if (latest) setQmfRun(latest)
     } catch {
-      // 同步入口仍可使用；任务状态读取失败不阻断页面其他上传功能。
+      // 外部只读扫描入口仍可使用；任务状态读取失败不阻断页面其他上传功能。
     }
   }
 
@@ -101,7 +101,7 @@ export default function DataUploadCenter() {
       const response = await startQmfSourceSync()
       setQmfRun(response.data)
     } catch (error: any) {
-      Modal.error({ title: '全民防同步启动失败', content: error?.response?.data?.detail || '请稍后重试' })
+          Modal.error({ title: '全民防只读扫描启动失败', content: error?.response?.data?.detail || '请稍后重试' })
     } finally {
       setQmfLoading(false)
     }
@@ -267,8 +267,8 @@ export default function DataUploadCenter() {
 
       {canManageQmfSource && (
         <Panel
-          title="全民防同步"
-          description="从全民防只读获取疑似未注销模型三的未核查任务，不属于腾讯在线表同步；已在平台完成的任务会保留，交由每日反馈核对后归档。"
+          title="全民防只读扫描"
+          description="从全民防只读获取疑似未注销模型三的未核查任务；已在平台完成的任务会保留，交由每日反馈核对后归档。"
         >
           <div className="flex flex-wrap items-center gap-3">
             <Button type="primary" loading={qmfLoading} onClick={() => void handleQmfSync()}>
@@ -283,7 +283,7 @@ export default function DataUploadCenter() {
           {qmfRun && (
             <div className="mt-3 rounded-lg border border-[var(--app-border)] p-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span>{qmfRun.message || '全民防同步任务'}</span>
+                <span>{qmfRun.message || '全民防只读扫描任务'}</span>
                 {qmfRun.created_at && <span className="text-[var(--app-text-secondary)]">{formatUTCTime(qmfRun.created_at, systemTimezone)}</span>}
               </div>
               {qmfRun.progress !== null && <Progress percent={qmfRun.progress} size="small" status={qmfRun.status === 'failed' ? 'exception' : qmfRun.status === 'success' || qmfRun.status === 'warning' ? 'success' : 'active'} />}

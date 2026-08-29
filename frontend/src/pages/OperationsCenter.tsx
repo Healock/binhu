@@ -32,7 +32,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   downloadBackup,
   downloadDiagnostics,
@@ -58,11 +58,6 @@ import { ListToolbar, Panel } from '../components/ui'
 import AppTable from '../components/AppTable'
 import useSystemTime from '../hooks/useSystemTime'
 import { downloadBlob } from '../utils/fileDownload'
-
-const MonoTrendChart = lazy(
-  () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoTrendChart })),
-)
-
 
 const STATUS_COLORS: Record<string, string> = {
   running: 'processing',
@@ -98,21 +93,6 @@ const STATUS_LABELS: Record<string, string> = {
   scheduled: '自动',
 }
 
-const TXDOCS_SOURCE_LABELS: Record<string, string> = {
-  full_sync: '全量同步',
-  online_query: '在线数据操作',
-  local_writeback: '平台异步写回',
-  photo_sheet: '调照片名单',
-  unknown: '未标记来源',
-}
-
-const TXDOCS_ENDPOINT_LABELS: Record<string, string> = {
-  file_info: '文件信息',
-  range_read: '范围读取',
-  batch_update: '批量写入',
-  other: '其他接口',
-}
-
 function formatBytes(value?: number | null) {
   if (value == null) return '-'
   if (value < 1024) return `${value} B`
@@ -135,14 +115,6 @@ function StatusTag({ value, label }: { value?: string | null; label?: string | n
   )
 }
 
-const OAUTH_STATUS = {
-  not_configured: { status: 'error' as const, text: '未配置' },
-  unknown: { status: 'warning' as const, text: '未设置过期时间' },
-  expired: { status: 'error' as const, text: '已过期' },
-  expiring: { status: 'warning' as const, text: '7 天内过期' },
-  healthy: { status: 'success' as const, text: '正常' },
-}
-
 function OverviewTab({
   data,
   loading,
@@ -157,12 +129,6 @@ function OverviewTab({
   const diskUsedPercent = data?.disk.total_bytes
     ? Math.round((data.disk.used_bytes / data.disk.total_bytes) * 100)
     : 0
-  const requestUsage = data?.txdocs_request_usage
-  const quotaExhausted = Boolean(requestUsage?.today.quota_exhausted_responses)
-  const photoOutbox = data?.photo_sheet_outbox
-  const requestPercent = requestUsage?.daily_limit
-    ? Math.min(100, Math.round((requestUsage.today.attempts / requestUsage.daily_limit) * 100))
-    : 0
   return (
     <div className="ops-overview-content">
       <div className="flex justify-end">
@@ -172,15 +138,6 @@ function OverviewTab({
       {data?.container_error && (
         <Alert type="warning" showIcon message="容器状态暂时不可用" description={data.container_error} />
       )}
-      {!!photoOutbox?.paused && (
-        <Alert
-          type="warning"
-          showIcon
-          message={`${photoOutbox.paused} 条调照片腾讯写回已暂停`}
-          description="连续失败达到自动重试上限，系统已停止刷写；请到工单流程配置的“同步记录与异常”中核对并手动恢复。"
-        />
-      )}
-
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <Card>
           <Statistic title="磁盘可用空间" value={formatBytes(data?.disk.free_bytes)} />
@@ -203,7 +160,7 @@ function OverviewTab({
         </Card>
         <Card>
           <Statistic
-            title="最近同步"
+            title="最近任务刷新"
             value={data?.latest_sync ? `#${data.latest_sync.id}` : '-'}
           />
           <div className="mt-2">
@@ -223,160 +180,14 @@ function OverviewTab({
         </Card>
         <Card>
           <Statistic
-            title="调照片待写回"
-            value={(photoOutbox?.pending || 0) + (photoOutbox?.retry || 0)}
+            title="后台任务"
+            value={data?.latest_sync ? '正常' : '-'}
           />
           <div className="mt-2 text-xs text-slate-500">
-            重试中 {photoOutbox?.retry || 0} · 已暂停 {photoOutbox?.paused || 0}
+            本地任务池和外部只读扫描
           </div>
         </Card>
       </div>
-
-      <Panel
-        title="腾讯接口请求额度"
-        description={`按${requestUsage?.timezone || '系统'}时区统计本服务器实际发出的 HTTP 请求尝试；共用同一腾讯应用的其他程序不在本地计数内`}
-      >
-        <div className="ops-quota-content">
-          {requestUsage && !requestUsage.today_coverage_complete && (
-            <Alert
-              type="info"
-              showIcon
-              message="当前业务日的本地计数尚不完整"
-              description={`计数从 ${formatTime(requestUsage.metering_started_at)} 开始，部署前已经发生的请求无法还原；收到 400011 后仍会直接按额度耗尽处理。`}
-            />
-          )}
-          {quotaExhausted && (
-            <Alert
-              type="error"
-              showIcon
-              message="腾讯接口已返回 400011，当前业务日按额度耗尽处理"
-              description="即使本地计数低于日限额，也可能有其他服务器或程序共用同一应用额度。"
-            />
-          )}
-          <Descriptions
-            bordered
-            size="small"
-            column={{ xs: 1, sm: 2, lg: 4 }}
-            items={[
-              { key: 'attempts', label: '今日请求尝试', children: requestUsage?.today.attempts ?? 0 },
-              { key: 'remaining', label: '本地估算剩余', children: requestUsage?.today.estimated_remaining ?? '-' },
-              { key: 'success', label: '成功', children: requestUsage?.today.success ?? 0 },
-              { key: 'failure', label: '失败 / 重试', children: `${requestUsage?.today.failure ?? 0} / ${requestUsage?.today.retries ?? 0}` },
-            ]}
-          />
-          <Progress
-            percent={requestPercent}
-            status={quotaExhausted ? 'exception' : requestPercent >= 85 ? 'active' : 'normal'}
-            format={() => `${requestUsage?.today.attempts ?? 0} / ${requestUsage?.daily_limit ?? 0}`}
-          />
-          {!!requestUsage?.daily.length && (
-            <Suspense fallback={<div className="mono-business-chart"><Skeleton active paragraph={{ rows: 4 }} /></div>}>
-              <MonoTrendChart
-                label="腾讯接口近日报文趋势"
-                data={requestUsage.daily.map(item => ({
-                  label: item.business_date.slice(5),
-                  attempts: item.attempts,
-                  success: item.success,
-                  failure: item.failure,
-                }))}
-                series={[
-                  { key: 'attempts', label: '请求尝试', color: 'var(--mono-chart-primary)' },
-                  { key: 'success', label: '成功', color: 'var(--mono-chart-completed)' },
-                  { key: 'failure', label: '失败', color: 'var(--mono-chart-danger)' },
-                ]}
-              />
-            </Suspense>
-          )}
-          <AppTable<any>
-            size="small"
-            rowKey="business_date"
-            pagination={false}
-            scroll={{ x: 760 }}
-            locale={{ emptyText: '尚未开始记录接口请求' }}
-            dataSource={requestUsage?.daily || []}
-            columns={[
-              { title: '业务日期', dataIndex: 'business_date' },
-              { title: '请求尝试', dataIndex: 'attempts', align: 'right' as const },
-              { title: '成功', dataIndex: 'success', align: 'right' as const },
-              { title: '失败', dataIndex: 'failure', align: 'right' as const },
-              { title: '重试请求', dataIndex: 'retries', align: 'right' as const },
-              { title: '400011', dataIndex: 'quota_exhausted_responses', align: 'right' as const },
-              { title: '估算剩余', dataIndex: 'estimated_remaining', align: 'right' as const },
-            ]}
-          />
-          <div className="text-sm font-medium text-[var(--app-text-strong)]">当前业务日请求构成</div>
-          <AppTable<any>
-            size="small"
-            rowKey={row => `${row.source}:${row.endpoint}:${row.method}`}
-            pagination={false}
-            locale={{ emptyText: '暂无请求来源记录' }}
-            dataSource={requestUsage?.today_breakdown || []}
-            columns={[
-              {
-                title: '来源',
-                dataIndex: 'source',
-                render: (value: string) => TXDOCS_SOURCE_LABELS[value] || value,
-              },
-              {
-                title: '接口类型',
-                dataIndex: 'endpoint',
-                render: (value: string) => TXDOCS_ENDPOINT_LABELS[value] || value,
-              },
-              { title: '方法', dataIndex: 'method' },
-              { title: '请求尝试', dataIndex: 'attempts', align: 'right' as const },
-              { title: '成功', dataIndex: 'success', align: 'right' as const },
-              { title: '失败', dataIndex: 'failure', align: 'right' as const },
-              { title: '重试请求', dataIndex: 'retries', align: 'right' as const },
-            ]}
-          />
-        </div>
-      </Panel>
-
-      <Panel
-        title="腾讯同步任务次数"
-        description={`按${data?.sync_timezone || '系统'}时区统计最近 14 个业务日；一次任务通常包含多次接口请求`}
-      >
-        {!!data?.sync_daily_counts.length && (
-          <Suspense fallback={<div className="mono-business-chart"><Skeleton active paragraph={{ rows: 4 }} /></div>}>
-            <MonoTrendChart
-              label="同步任务近 14 日趋势"
-              data={data.sync_daily_counts.map(item => ({
-                label: item.business_date.slice(5),
-                total: item.total,
-                success: item.success,
-                failed: item.failed + item.partial + item.unfinished,
-              }))}
-              series={[
-                { key: 'total', label: '总次数', color: 'var(--mono-chart-primary)' },
-                { key: 'success', label: '成功', color: 'var(--mono-chart-completed)' },
-                { key: 'failed', label: '异常/未完成', color: 'var(--mono-chart-unable)' },
-              ]}
-            />
-          </Suspense>
-        )}
-        <AppTable<any>
-          size="small"
-          rowKey="business_date"
-          pagination={false}
-          scroll={{ x: 720 }}
-          locale={{ emptyText: '暂无同步记录' }}
-          dataSource={data?.sync_daily_counts || []}
-          columns={[
-            {
-              title: '业务日期',
-              dataIndex: 'business_date',
-              render: (value: string) => dayjs(value).format('YYYY-MM-DD'),
-            },
-            { title: '总次数', dataIndex: 'total', align: 'right' as const },
-            { title: '成功', dataIndex: 'success', align: 'right' as const },
-            { title: '部分成功', dataIndex: 'partial', align: 'right' as const },
-            { title: '失败', dataIndex: 'failed', align: 'right' as const },
-            { title: '未完成', dataIndex: 'unfinished', align: 'right' as const },
-            { title: '手动', dataIndex: 'manual', align: 'right' as const },
-            { title: '自动', dataIndex: 'scheduled', align: 'right' as const },
-          ]}
-        />
-      </Panel>
 
       <Panel title="容器状态" description="内存按 Docker 口径显示工作内存，可回收文件缓存单独列出；只读显示，不提供重启或命令执行">
         <div className="grid gap-4 lg:grid-cols-2">
@@ -411,26 +222,6 @@ function OverviewTab({
         </div>
       </Panel>
 
-      <Panel title="凭据健康" description="只显示是否配置和过期时间，不显示令牌内容">
-        <Descriptions
-          column={{ xs: 1, sm: 2 }}
-          items={[
-            {
-              key: 'configured',
-              label: '腾讯文档 OAuth',
-              children: data?.oauth
-                ? (
-                  <Badge
-                    status={OAUTH_STATUS[data.oauth.status].status}
-                    text={OAUTH_STATUS[data.oauth.status].text}
-                  />
-                )
-                : '-',
-            },
-            { key: 'expires', label: '过期时间', children: formatTime(data?.oauth.expires_at) },
-          ]}
-        />
-      </Panel>
     </div>
   )
 }

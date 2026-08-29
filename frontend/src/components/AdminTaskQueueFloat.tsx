@@ -18,7 +18,6 @@ import {
 import {
   getAdminTaskQueue,
   getAdminTaskQueueDetails,
-  retryAdminPhotoWriteback,
   type AdminTaskQueueDetailItem,
   type AdminTaskQueueItem,
   type AdminTaskQueueResponse,
@@ -54,12 +53,9 @@ const PHASE_LABELS: Record<string, string> = {
   deleting: '正在归档',
   finished: '处理结束',
   registration: '真实登记',
-  tencent_marker: '腾讯状态回写',
   scan: '状态核对',
   import: '数据导入',
   backup: '数据库备份',
-  writeback_queue: '字段写回',
-  photo_outbox: '名单写回',
 }
 
 export function isAdminTaskQueueUser(user: User | null | undefined): boolean {
@@ -73,28 +69,10 @@ export function isAdminTaskQueueUser(user: User | null | undefined): boolean {
 
 function TaskQueueDetail({
   detail,
-  onRetried,
 }: {
   detail: AdminTaskQueueDetailItem
-  onRetried: () => void
 }) {
   const formatTime = useSystemTime()
-  const [retrying, setRetrying] = useState(false)
-  const [retryError, setRetryError] = useState('')
-
-  const retry = async () => {
-    if (!detail.can_retry || detail.retry_kind !== 'photo_outbox') return
-    setRetrying(true)
-    setRetryError('')
-    try {
-      await retryAdminPhotoWriteback(detail.id)
-      onRetried()
-    } catch {
-      setRetryError('重新加入写回队列失败，请稍后重试。')
-    } finally {
-      setRetrying(false)
-    }
-  }
 
   return (
     <div className="admin-task-queue-detail">
@@ -115,17 +93,10 @@ function TaskQueueDetail({
       </div>
       <div className="admin-task-queue-detail__footer">
         <span>{detail.updated_at ? formatTime(detail.updated_at) : '时间待更新'}</span>
-        {detail.can_retry ? (
-          <Button size="small" loading={retrying} onClick={() => void retry()}>
-            安全重试
-          </Button>
-        ) : (
-          <span className="admin-task-queue-detail__protected">
-            <SafetyCertificateOutlined /> 已禁止盲目重试
-          </span>
-        )}
+        <span className="admin-task-queue-detail__protected">
+          <SafetyCertificateOutlined /> 请按建议处理
+        </span>
       </div>
-      {retryError && <Alert type="error" showIcon message={retryError} />}
     </div>
   )
 }
@@ -163,11 +134,6 @@ function TaskQueueCard({
     const next = !detailsOpen
     setDetailsOpen(next)
     if (next && !details.length) void loadDetails()
-  }
-
-  const handleRetried = () => {
-    void loadDetails()
-    onRefresh()
   }
 
   return (
@@ -221,7 +187,7 @@ function TaskQueueCard({
                   />
                 )}
                 {!detailsLoading && !detailsError && details.map(detail => (
-                  <TaskQueueDetail key={detail.id} detail={detail} onRetried={handleRetried} />
+                  <TaskQueueDetail key={detail.id} detail={detail} />
                 ))}
                 {!detailsLoading && !detailsError && !details.length && (
                   <div className="admin-task-queue-empty">问题已经处理完毕</div>

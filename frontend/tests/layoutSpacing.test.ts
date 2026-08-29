@@ -225,9 +225,7 @@ test('外部数据获取入口使用统一面板结构', () => {
   const consumers = [
     '../src/pages/CodeSummary.tsx',
     '../src/components/VisitSourcePanel.tsx',
-    '../src/components/SyncPanel.tsx',
     '../src/pages/RegistryManagement.tsx',
-    '../src/pages/WorkflowConfig.tsx',
   ].map(path => readFileSync(new URL(path, import.meta.url), 'utf8'))
 
   assert.match(componentSource, /function ExternalDataPanel/)

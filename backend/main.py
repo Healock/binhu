@@ -41,7 +41,6 @@ from routers.registry_extended import router as registry_extended_router
 from routers.watch_import import router as watch_import_router
 from routers.workflow import router as workflow_router
 from routers.workflow_extended import router as workflow_extended_router
-from routers.workflow_photo_sheet import router as workflow_photo_sheet_router
 from routers.qmf_registration import router as qmf_registration_router
 from routers.task_graph import router as task_graph_router
 from routers.qmf_source import router as qmf_source_router
@@ -50,17 +49,9 @@ from routers.maintenance import router as maintenance_router
 from routers.app_bootstrap import router as app_bootstrap_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
-from services.sync_scheduler import run_sync_scheduler
-from services.sync_tasks import recover_interrupted_tasks, stop_sync_tasks
 from services.visit_import import recover_interrupted_visit_imports
 from services.workflow_scheduler import run_workflow_scheduler
-from services.photo_sheet_sync import run_photo_sheet_scheduler, stop_photo_sheet_tasks
-from services.online_local_writeback import (
-    run_online_writeback_scheduler,
-    stop_online_writeback_tasks,
-)
 from services.client_compatibility import ClientCompatibilityMiddleware
-from services.txdocs_usage import stop_txdocs_usage_tasks
 from services.registry_certificate_jobs import (
     recover_interrupted_certificate_source_runs,
     stop_certificate_source_tasks,
@@ -96,9 +87,6 @@ from services.venue_cleanup import run_venue_cleanup_scheduler
 async def lifespan(app: FastAPI):
     """启动时初始化数据库连接池，关闭时清理"""
     await init_db()
-    interrupted = await recover_interrupted_tasks()
-    if interrupted:
-        print(f"[SYNC] 已关闭 {interrupted} 个服务重启前遗留的同步任务")
     interrupted_backups = await recover_interrupted_backups()
     if interrupted_backups:
         print(
@@ -139,11 +127,8 @@ async def lifespan(app: FastAPI):
             f"待初步研判 {review_backfill['initial_pending']} 条，"
             f"来源异常 {review_backfill['source_exception']} 条"
         )
-    scheduler_task = asyncio.create_task(run_sync_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
-    photo_sheet_scheduler_task = asyncio.create_task(run_photo_sheet_scheduler())
-    online_writeback_task = asyncio.create_task(run_online_writeback_scheduler())
     certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())
     qmf_status_scan_scheduler_task = asyncio.create_task(run_status_scan_scheduler())
     presence_cleanup_task = asyncio.create_task(run_presence_cleanup_scheduler())
@@ -153,11 +138,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        scheduler_task.cancel()
         backup_scheduler_task.cancel()
         workflow_scheduler_task.cancel()
-        photo_sheet_scheduler_task.cancel()
-        online_writeback_task.cancel()
         certificate_scheduler_task.cancel()
         qmf_status_scan_scheduler_task.cancel()
         presence_cleanup_task.cancel()
@@ -165,15 +147,9 @@ async def lifespan(app: FastAPI):
         unverifiable_review_task.cancel()
         venue_cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
-            await scheduler_task
-        with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
             await workflow_scheduler_task
-        with suppress(asyncio.CancelledError):
-            await photo_sheet_scheduler_task
-        with suppress(asyncio.CancelledError):
-            await online_writeback_task
         with suppress(asyncio.CancelledError):
             await certificate_scheduler_task
         with suppress(asyncio.CancelledError):
@@ -187,11 +163,7 @@ async def lifespan(app: FastAPI):
             await unverifiable_review_task
         with suppress(asyncio.CancelledError):
             await venue_cleanup_task
-        await stop_sync_tasks()
         await stop_backup_tasks()
-        await stop_photo_sheet_tasks()
-        await stop_online_writeback_tasks()
-        await stop_txdocs_usage_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()
         await stop_fullchain_archive_tasks()
@@ -202,7 +174,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="滨湖智慧平台",
-    description="从腾讯文档获取数据，统计核查结果，生成数据透视表",
+    description="使用本地业务数据管理任务、统计核查结果并生成报表",
     version=APP_VERSION,
     lifespan=lifespan,
 )
@@ -253,7 +225,6 @@ app.include_router(registry_extended_router, dependencies=auth_dep)
 app.include_router(watch_import_router, dependencies=auth_dep)
 app.include_router(workflow_router, dependencies=auth_dep)
 app.include_router(workflow_extended_router, dependencies=auth_dep)
-app.include_router(workflow_photo_sheet_router, dependencies=auth_dep)
 app.include_router(qmf_registration_router, dependencies=auth_dep)
 app.include_router(residence_platform_router, dependencies=auth_dep)
 app.include_router(task_graph_router, dependencies=auth_dep)

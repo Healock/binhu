@@ -1,10 +1,8 @@
 """管理员和超级管理员可见的统一后台任务队列。"""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from database import db_manager
 from deps import require_admin_account
-from routers.workflow_photo_sheet import retry_photo_sheet_outbox
 from services.admin_task_queue import (
     build_admin_task_queue,
     get_admin_task_queue_details,
@@ -41,14 +39,7 @@ async def admin_task_queue_details(
 @router.post("/photo-writeback/{outbox_id}/retry")
 async def retry_admin_photo_writeback(
     outbox_id: int,
-    request: Request,
     user: dict = Depends(require_admin_account),
 ):
-    pool = db_manager.get_pool("workflow")
-    async with pool.acquire() as conn:
-        return await retry_photo_sheet_outbox(
-            outbox_id,
-            request,
-            user=user,
-            conn=conn,
-        )
+    del outbox_id, user
+    raise HTTPException(status_code=410, detail="腾讯调照片名单写回已下线")

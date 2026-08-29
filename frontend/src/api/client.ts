@@ -1,8 +1,7 @@
 import axios from 'axios'
 import type {
-  Spreadsheet, SpreadsheetCreate, StatsResponse, StatsItem,
-  SyncStatus, SyncTriggerResponse, SyncSchedule, AppNotification,
-  OAuthConfig, OAuthStatus, OpsOverview, OpsDatabase, BackupSchedule,
+  StatsResponse, StatsItem, AppNotification,
+  OpsOverview, OpsDatabase, BackupSchedule,
   BackupJob, AuditActionOption, AuditEvent, User, UserPreferences, ReportColumnMode,
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
   PublicProfile, PublicProfileSummary,
@@ -371,10 +370,6 @@ export async function getAdminTaskQueueDetails(
   return data
 }
 
-export async function retryAdminPhotoWriteback(outboxId: number): Promise<void> {
-  await api.post(`/admin/task-queue/photo-writeback/${outboxId}/retry`)
-}
-
 export async function getImportantUnreadAnnouncements(): Promise<AppNotification[]> {
   const { data } = await api.get('/notifications/announcements/important-unread', passiveRequest)
   return data.data || []
@@ -520,68 +515,6 @@ export async function updatePositionPermissionMappings(
   const { data } = await api.put('/permission-groups/position-mappings/all', {
     mappings,
   })
-  return data
-}
-
-// ---- Spreadsheets ----
-export async function listSpreadsheets(): Promise<Spreadsheet[]> {
-  const { data } = await api.get('/spreadsheets')
-  return data
-}
-
-export async function createSpreadsheet(payload: SpreadsheetCreate): Promise<Spreadsheet> {
-  const { data } = await api.post('/spreadsheets', payload)
-  return data
-}
-
-export async function updateSpreadsheet(id: number, payload: Partial<SpreadsheetCreate>): Promise<Spreadsheet> {
-  const { data } = await api.put(`/spreadsheets/${id}`, payload)
-  return data
-}
-
-export async function deleteSpreadsheet(id: number): Promise<void> {
-  await api.delete(`/spreadsheets/${id}`)
-}
-
-export async function getParserTypes(): Promise<string[]> {
-  const { data } = await api.get('/spreadsheets/meta/parser-types')
-  return data.data
-}
-
-export async function getSpreadsheetsConfig(): Promise<Record<string, string>> {
-  const { data } = await api.get('/spreadsheets/config')
-  const map: Record<string, string> = {}
-  data.data.forEach((item: { parser_type: string; url: string }) => {
-    map[item.parser_type] = item.url
-  })
-  return map
-}
-
-export async function saveSpreadsheetsConfig(configs: Record<string, string>): Promise<void> {
-  await api.put('/spreadsheets/config', { configs })
-}
-
-// ---- Sync ----
-export async function triggerSync(): Promise<SyncTriggerResponse> {
-  const { data } = await api.post('/sync/trigger')
-  return data
-}
-
-export async function getSyncStatus(): Promise<SyncStatus> {
-  const { data } = await api.get('/sync/status')
-  return data
-}
-
-export async function getSyncSchedule(): Promise<SyncSchedule> {
-  const { data } = await api.get('/sync/schedule')
-  return data
-}
-
-export async function updateSyncSchedule(payload: {
-  enabled: boolean
-  interval_minutes: number
-}): Promise<SyncSchedule & { message: string }> {
-  const { data } = await api.put('/sync/schedule', payload)
   return data
 }
 
@@ -2027,47 +1960,6 @@ export async function getQmfLegacyStatus(payload: {
   return data
 }
 
-export async function prepareQmfRegistration(payload: {
-  parser_type: string
-  row_key: string
-  source_id: number
-  expected_revision: number
-}): Promise<QmfPrepareResult> {
-  const { data } = await api.post('/qmf-registration/prepare', payload, {
-    ...activeRequest,
-    timeout: 60000,
-  })
-  return data
-}
-
-export async function executeQmfRegistration(
-  runId: number,
-): Promise<QmfRegistrationRun> {
-  const { data } = await api.post(
-    `/qmf-registration/runs/${runId}/execute`,
-    {},
-    activeRequest,
-  )
-  return data
-}
-
-export async function getQmfRegistrationRun(runId: number): Promise<QmfRegistrationRun> {
-  const { data } = await api.get(
-    `/qmf-registration/runs/${runId}`,
-    activeRequest,
-  )
-  return data
-}
-
-export async function retryQmfTencentMarker(runId: number): Promise<QmfRegistrationRun> {
-  const { data } = await api.post(
-    `/qmf-registration/runs/${runId}/retry-marker`,
-    {},
-    activeRequest,
-  )
-  return data
-}
-
 export async function getQmfConfig(): Promise<QmfConfig> {
   const { data } = await api.get('/qmf-registration/config', activeRequest)
   return data
@@ -2317,18 +2209,6 @@ export async function searchTaskGraph(payload: {
     '/task-graph/search',
     payload,
     options.passive ? passiveRequest : activeRequest,
-  )
-  return data
-}
-
-export async function resolveMobileTaskSyncConflict(
-  parserType: string,
-  sourceId: number,
-  payload: { choice: 'platform' | 'tencent'; fields: string[] },
-): Promise<{ message: string; sync_state: MobileTaskSyncState }> {
-  const { data } = await api.post(
-    `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}/resolve-sync-conflict`,
-    payload,
   )
   return data
 }
@@ -3529,16 +3409,19 @@ export async function updatePoliceDispatchBusinessFields(
   await api.patch(`/police-dispatch/tasks/${id}/business-fields`, payload)
 }
 
-export async function resolvePoliceDispatchConflict(
+export async function adoptExistingPoliceDispatchContent(
   id: number,
   payload: {
     expected_version: number
-    strategy: 'adopt_tencent' | 'overwrite_tencent'
     expected_row_hash: string
-    confirmation?: string
   },
 ): Promise<{ message: string; cache_pending: boolean }> {
-  const { data } = await api.post(`/police-dispatch/tasks/${id}/resolve-conflict`, payload)
+  const { data } = await api.post(`/police-dispatch/tasks/${id}/resolve-conflict`, {
+    ...payload,
+    // 兼容旧服务端枚举；正常页面只提供“采用本地现有内容”。
+    strategy: 'adopt_tencent',
+    confirmation: '',
+  })
   return data
 }
 
@@ -3815,21 +3698,6 @@ export function formatDateInTimezone(date: Date = new Date(), timezone: string =
       day: '2-digit',
     }).format(date)
   }
-}
-
-// ---- Auth ----
-export async function getAuthStatus(): Promise<OAuthStatus> {
-  const { data } = await api.get('/auth/status')
-  return data
-}
-
-export async function saveOAuth(payload: OAuthConfig): Promise<void> {
-  await api.post('/auth/oauth', payload)
-}
-
-export async function testOAuth(payload: OAuthConfig): Promise<{ valid: boolean; message: string }> {
-  const { data } = await api.post('/auth/oauth/test', payload)
-  return data
 }
 
 // ---- Public work profiles ----
@@ -4559,48 +4427,6 @@ export interface PendingPhotoRequest {
   overdue: boolean
 }
 
-export interface PhotoSheetConfig {
-  source_code: string
-  file_url: string
-  configured: boolean
-  header_row: number
-  read_enabled: boolean
-  write_enabled: boolean
-  import_applied_at: string | null
-  legacy_cutoff_row: number | null
-  last_cursor_row: number
-  last_full_sync_date: string | null
-  last_sync_at: string | null
-  last_sync_status: string
-  last_error: string
-  outbox_pending_count: number
-  outbox_paused_count: number
-}
-
-export interface PhotoSheetPreview {
-  rows_read: number
-  requests: number
-  markers: number
-  historical_completed: number
-  pending_after_last_marker: number
-  issue_count: number
-  blocking_issue_count: number
-  warning_count: number
-  identity_empty_count: number
-  identity_invalid_count: number
-  excel_date_converted_count: number
-  request_date_missing_count: number
-  request_date_invalid_count: number
-  marker_time_invalid_count: number
-  pending_blocking_count: number
-  pending_warning_count: number
-  duplicate_groups: number
-  last_marker_row: number | null
-  preview_token: string
-  created_tickets?: number
-  message?: string
-}
-
 export const workflowApi = {
   async types() {
     return (await api.get('/workflow/types', activeRequest)).data as { data: WorkflowType[] }
@@ -4733,48 +4559,5 @@ export const workflowApi = {
   },
   async reconcilePhotoImport(batchId: number) {
     return (await api.post(`/workflow/photo-imports/${batchId}/reconcile`, { confirm: true }, activeRequest)).data as PhotoImportReconcileResult
-  },
-  async photoSheetConfig() {
-    return (await api.get('/workflow/photo-sheet/config', activeRequest)).data as PhotoSheetConfig
-  },
-  async savePhotoSheetConfig(payload: Pick<PhotoSheetConfig, 'file_url' | 'header_row' | 'read_enabled' | 'write_enabled'>) {
-    return (await api.put('/workflow/photo-sheet/config', payload)).data as PhotoSheetConfig
-  },
-  async previewPhotoSheet() {
-    return (await api.post('/workflow/photo-sheet/preview', {}, activeRequest)).data as {
-      run: ExternalAcquisitionRun
-      reused: boolean
-    }
-  },
-  async importPhotoSheet(previewToken: string) {
-    return (await api.post('/workflow/photo-sheet/import', { preview_token: previewToken }, {
-      ...activeRequest,
-      timeout: 60 * 60 * 1000,
-    })).data as PhotoSheetPreview
-  },
-  async syncPhotoSheet(full = false) {
-    return (await api.post('/workflow/photo-sheet/sync', {}, {
-      ...activeRequest,
-      params: { full },
-      timeout: 300000,
-    })).data
-  },
-  async photoSheetRuns(page = 1, pageSize = 20) {
-    return (await api.get('/workflow/photo-sheet/runs', {
-      ...activeRequest,
-      params: { page, page_size: pageSize },
-    })).data
-  },
-  async photoSheetIssues(kind: 'data' | 'requester' | 'conflict' | 'outbox', page = 1, pageSize = 50) {
-    return (await api.get('/workflow/photo-sheet/issues', {
-      ...activeRequest,
-      params: { kind, page, page_size: pageSize },
-    })).data
-  },
-  async retryPhotoSheetConflict(conflictId: number) {
-    return (await api.post(`/workflow/photo-sheet/conflicts/${conflictId}/retry`, {})).data
-  },
-  async retryPhotoSheetOutbox(outboxId: number) {
-    return (await api.post(`/workflow/photo-sheet/outbox/${outboxId}/retry`, {})).data
   },
 }

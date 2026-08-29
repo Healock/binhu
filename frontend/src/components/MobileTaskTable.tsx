@@ -580,7 +580,7 @@ export default function MobileTaskTable({
       >
         {fields.length === 0 ? (
           <div className="mobile-task-table-inline-status">
-            {detail.writeback_enabled ? '当前任务没有可填写字段' : '在线回写已暂停，当前任务只能查看'}
+            {detail.writeback_enabled ? '当前任务没有可填写字段' : '当前任务暂不可编辑，只能查看'}
           </div>
         ) : (
           <div className="mobile-task-table-inline-fields">

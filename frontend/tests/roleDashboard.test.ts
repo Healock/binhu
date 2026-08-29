@@ -75,16 +75,16 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
   assert.match(source, /label: '已发布'/)
 })
 
-test('运维和照片批次图表使用真实序列且保留明细表', () => {
+test('运维中心保留本地运行状态且照片批次图表继续使用真实序列', () => {
   const operations = read('../src/pages/OperationsCenter.tsx')
   const uploads = read('../src/pages/DataUploadCenter.tsx')
   const calendar = read('../src/components/ContributionCalendar.tsx')
 
-  assert.match(operations, /requestUsage\.daily\.map/)
-  assert.match(operations, /data\.sync_daily_counts\.map/)
-  assert.match(operations, /<MonoTrendChart/)
-  assert.match(operations, /<AppTable(?:<[^>]+>)?[\s\S]*dataSource=\{requestUsage\?\.daily \|\| \[\]\}/)
-  assert.match(operations, /<AppTable(?:<[^>]+>)?[\s\S]*dataSource=\{data\?\.sync_daily_counts \|\| \[\]\}/)
+  assert.match(operations, /title="容器状态"/)
+  assert.match(operations, /title="MySQL 连接"/)
+  assert.match(operations, /title="最近备份"/)
+  assert.match(operations, /本地任务池和外部只读扫描/)
+  assert.doesNotMatch(operations, /腾讯接口额度|sync_daily_counts|txdocs_request_usage/)
   assert.match(uploads, /<MonoWaterfallChart/)
   for (const field of ['matched_files', 'unmatched_files', 'conflict_files', 'duplicate_files', 'failed_files']) {
     assert.match(uploads, new RegExp(`photoBatch\\.${field}`))

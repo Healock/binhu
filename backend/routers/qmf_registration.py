@@ -147,7 +147,8 @@ async def update_qmf_config(
     user: dict = Depends(require_super_admin),
     conn=Depends(get_db),
 ):
-    current = await load_qmf_config(conn)
+    if data.registration_enabled:
+        raise HTTPException(410, "全民防真实登记已下线，仅允许配置外部只读查询")
     if (
         data.expected_station_code.strip() != "320584710000"
         or data.expected_station_name.strip() != "滨湖新城派出所"
@@ -159,7 +160,7 @@ async def update_qmf_config(
         raise HTTPException(400, "每日扫描时间格式应为 HH:mm")
 
     values: dict[str, Any] = {
-        "qmf_registration_enabled": "1" if data.registration_enabled else "0",
+        "qmf_registration_enabled": "0",
         "qmf_api_base_url": data.api_base_url.strip(),
         "qmf_login_host": data.login_host.strip(),
         "qmf_login_port": str(data.login_port),
@@ -175,26 +176,6 @@ async def update_qmf_config(
     }
     if data.source_password is not None:
         values["qmf_source_password"] = data.source_password
-
-    if data.registration_enabled:
-        password = (
-            data.source_password
-            if data.source_password is not None
-            else current.source_password
-        )
-        required = (
-            values["qmf_api_base_url"],
-            values["qmf_login_host"],
-            values["qmf_login_port"],
-            values["qmf_source_username"],
-            password,
-            values["qmf_source_imei"],
-            values["qmf_source_machine_uid"],
-            values["qmf_expected_station_code"],
-            values["qmf_expected_station_name"],
-        )
-        if not all(required):
-            raise HTTPException(400, "开启全民防功能前请先完整填写接口、账号和设备信息")
 
     async with conn.cursor() as cur:
         for key, value in values.items():
@@ -1426,178 +1407,11 @@ async def prepare_qmf_registration(
     user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
-    started_at = time.monotonic()
-    try:
-        if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
-            raise QmfPreviewError(
-                "tencent_data_source_disabled",
-                "腾讯表已下线，全民防登记仅保留外部只读查询",
-                410,
-            )
-        runtime_config = await load_qmf_config(conn)
-        if not runtime_config.registration_configured:
-            raise QmfPreviewError(
-                "registration_not_configured",
-                "全民防真实登记尚未完成安全配置",
-                503,
-            )
-        if not await _online_writeback_available(conn):
-            raise QmfPreviewError(
-                "tencent_writeback_disabled",
-                "在线回写已暂停，不能创建全民防登记准备",
-                503,
-            )
-        if qmf_operation_busy() or await _database_registration_active(conn):
-            raise QmfPreviewError(
-                "registration_busy", "已有一条全民防任务正在执行", 429
-            )
-        platform_task, current_hash = await _eligible_platform_task(
-            data, user=user, conn=conn
-        )
-        await _assert_source_unchanged(
-            conn,
-            parser_type=data.parser_type,
-            row_key=data.row_key,
-            source_id=data.source_id,
-            expected_revision=data.expected_revision,
-            expected_hash=current_hash,
-        )
-        legacy_status = await _legacy_status_for_task(
-            conn,
-            platform_task=platform_task,
-            source_id=data.source_id,
-        )
-        await persist_realtime_qmf_status(
-            conn,
-            parser_type=platform_task["parser_type"],
-            row_key=platform_task["row_key"],
-            source_id=data.source_id,
-            source_revision=data.expected_revision,
-            source_row_hash=current_hash,
-            platform_result=platform_task["result"],
-            status=legacy_status,
-        )
-        ensure_registration_allowed(legacy_status)
-        result = await run_guarded_preview(
-            platform_task=platform_task,
-            config=runtime_config,
-        )
-        await _assert_source_unchanged(
-            conn,
-            parser_type=data.parser_type,
-            row_key=data.row_key,
-            source_id=data.source_id,
-            expected_revision=data.expected_revision,
-            expected_hash=current_hash,
-        )
-        run = await _create_prepared_run(
-            conn,
-            data=data,
-            user=user,
-            expected_hash=current_hash,
-            preview=result,
-        )
-        result = {
-            **result,
-            "mode": "prepared",
-            "can_submit": True,
-            "run": _public_run(run),
-            "planned_write_steps": [
-                {"key": key, "label": label, "enabled": True}
-                for key, label in steps_for_result(platform_task["result"])
-            ],
-            "warnings": [
-                *(result.get("warnings") or []),
-                (
-                    "真实登记只会执行一次模型三注销反馈；提交后不能撤销。"
-                    if platform_task["result"] == RESULT_LEAVE_NOT_RETURNING
-                    else "真实登记会依次上传照片、保存人员资料并反馈模型三；提交后不能撤销。"
-                ),
-            ],
-        }
-        await record_admin_audit(
-            user,
-            "qmf_registration.prepare",
-            target_type="qmf_registration_run",
-            target_name=str(run["id"]),
-            detail={
-                "run_id": run["id"],
-                "source_id": data.source_id,
-                "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
-                **({"photo": {
-                    "mime_type": str(
-                        (result.get("photo") or {}).get("mime_type") or ""
-                    )[:50],
-                    "size_bytes": int(
-                        (result.get("photo") or {}).get("size_bytes") or 0
-                    ),
-                    "sha256": str(
-                        (result.get("photo") or {}).get("sha256") or ""
-                    )[:64],
-                }} if result.get("photo") else {}),
-            },
-            **request_audit_fields(request),
-        )
-        return JSONResponse(
-            content=result,
-            headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
-        )
-    except QmfPreviewError as exc:
-        await record_admin_audit(
-            user,
-            "qmf_registration.prepare",
-            target_type="online_source_row",
-            target_name=str(data.source_id),
-            result="failed",
-            detail={
-                "source_id": data.source_id,
-                "result_code": exc.code,
-                **({"error_step": exc.step[:64]} if exc.step else {}),
-                **(
-                    {"upstream_http_status": int(exc.upstream_status)}
-                    if exc.upstream_status is not None else {}
-                ),
-                **(
-                    {"transport_error": exc.transport_error}
-                    if exc.transport_error in _QMF_SAFE_TRANSPORT_ERRORS else {}
-                ),
-                "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
-            },
-            **request_audit_fields(request),
-        )
-        raise HTTPException(
-            exc.status_code, _safe_error_detail(exc.code, exc.message)
-        ) from exc
-    except HTTPException as exc:
-        await record_admin_audit(
-            user,
-            "qmf_registration.prepare",
-            target_type="online_source_row",
-            target_name=str(data.source_id),
-            result="failed",
-            detail={
-                "source_id": data.source_id,
-                "result_code": f"platform_http_{exc.status_code}",
-                "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
-            },
-            **request_audit_fields(request),
-        )
-        raise
-    except Exception as exc:
-        await record_admin_audit(
-            user,
-            "qmf_registration.prepare",
-            target_type="online_source_row",
-            target_name=str(data.source_id),
-            result="failed",
-            detail={
-                "source_id": data.source_id,
-                "result_code": "unexpected_error",
-                "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
-            },
-            **request_audit_fields(request),
-        )
-        raise HTTPException(500, "全民防真实登记准备失败") from exc
+    del request, user, conn
+    raise HTTPException(410, {
+        "code": "tencent_data_source_disabled",
+        "message": "腾讯表已下线，全民防登记仅保留外部只读查询",
+    })
 
 
 @router.post("/runs/{run_id}/execute", status_code=202)
@@ -1608,28 +1422,8 @@ async def execute_qmf_registration(
     user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
-    if settings.LOCAL_DATA_SOURCE_ENABLED and not settings.TXDOCS_ENABLED:
-        raise HTTPException(410, "腾讯表已下线，全民防登记写入已停用")
-    config = await load_qmf_config(conn)
-    run = await _claim_run(conn, run_id, user=user, config=config)
-    try:
-        _launch_registration_run(
-            run_id,
-            user=user,
-            audit_fields=request_audit_fields(request),
-        )
-    except Exception as exc:
-        await _set_run_result(
-            conn,
-            run_id,
-            status="failed",
-            result_code="background_start_failed",
-        )
-        raise HTTPException(500, "全民防登记任务启动失败，已冻结本次执行") from exc
-    await asyncio.sleep(0)
-    return _public_run(
-        await _load_run(conn, run_id, user_id=int(user["id"]))
-    )
+    del run_id, data, request, user, conn
+    raise HTTPException(410, "腾讯表已下线，全民防登记写入已停用")
 
 
 @router.get("/runs/{run_id}")
@@ -1650,54 +1444,7 @@ async def retry_qmf_tencent_marker(
     user: dict = Depends(require_permission(QMF_REGISTRATION_EXECUTE)),
     conn=Depends(get_db),
 ):
-    run = await _load_run(conn, run_id, user_id=int(user["id"]))
-    if run["status"] != "succeeded" or not run["can_retry_marker"]:
-        raise HTTPException(409, "该运行不需要或不允许重试腾讯完成标记")
-    await _claim_marker_retry(conn, run_id)
-    audit_result = "failed"
-    error_code = "unexpected_error"
-    try:
-        await _append_tencent_marker(
-            conn,
-            run=run,
-            user=user,
-            request_stub=request,
-            strict_source=False,
-        )
-        await _set_marker_status(conn, run_id, "succeeded")
-        audit_result = "success"
-        error_code = ""
-    except QmfPreviewError as exc:
-        marker_status = "conflict" if exc.status_code == 409 else "pending"
-        await _set_marker_status(conn, run_id, marker_status, exc.code)
-        error_code = exc.code
-        raise HTTPException(
-            exc.status_code, _safe_error_detail(exc.code, exc.message)
-        ) from exc
-    except HTTPException as exc:
-        marker_status = "conflict" if exc.status_code == 409 else "pending"
-        await _set_marker_status(conn, run_id, marker_status, f"http_{exc.status_code}")
-        error_code = f"http_{exc.status_code}"
-        raise
-    except Exception as exc:
-        await _set_marker_status(conn, run_id, "pending", "unexpected_error")
-        raise HTTPException(500, "腾讯完成标记写入失败，请稍后人工重试") from exc
-    finally:
-        await record_admin_audit(
-            user,
-            "qmf_registration.tencent_marker.retry",
-            target_type="qmf_registration_run",
-            target_name=str(run_id),
-            result=audit_result,
-            detail={
-                "run_id": run_id,
-                "result_code": error_code,
-            },
-            **request_audit_fields(request),
-        )
-    return _public_run(
-        await _load_run(conn, run_id, user_id=int(user["id"]))
-    )
+    raise HTTPException(410, "腾讯表已下线，全民防完成标记写入已停用")
 
 
 @router.post("/preview")

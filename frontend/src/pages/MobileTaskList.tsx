@@ -1262,7 +1262,7 @@ export default function MobileTaskList({
                     <div className="mobile-task-item-card__date">
                       {deadline
                         ? `截止 ${deadline}`
-                        : (task.source_count > 1 ? `${task.source_count} 条腾讯来源` : '点击进入处理')}
+                        : (task.source_count > 1 ? `${task.source_count} 条本地来源` : '点击进入处理')}
                     </div>
                   </div>
                   <MobilePhonePicker

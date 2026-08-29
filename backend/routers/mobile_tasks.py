@@ -3400,11 +3400,7 @@ async def claim_mobile_task(
     )
     return {
         **result,
-        "message": (
-            "已领取任务并保存到本地任务池"
-            if local_data_source_enabled()
-            else "已领取任务并保存，正在同步腾讯表格"
-        ),
+        "message": "已领取任务并保存到本地任务池",
     }
 
 

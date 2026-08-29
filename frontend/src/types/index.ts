@@ -1,29 +1,3 @@
-// 在线表格
-export interface Spreadsheet {
-  id: number
-  name: string
-  url: string
-  file_id: string
-  data_sheet_id: string
-  summary_sheet_id: string
-  header_row: number
-  parser_type: string
-  enabled: boolean
-  created_at: string | null
-  updated_at: string | null
-}
-
-export interface SpreadsheetCreate {
-  name: string
-  url: string
-  parser_type?: string
-  file_id?: string
-  data_sheet_id?: string
-  summary_sheet_id?: string
-  header_row?: number
-  enabled?: boolean
-}
-
 // 统计数据
 export interface StatsItem {
   核查人: string
@@ -48,47 +22,6 @@ export interface StatsResponse {
   total: number
   page: number
   page_size: number
-}
-
-// 同步状态
-export type SyncStatusValue =
-  | 'no_data'
-  | 'pending'
-  | 'running'
-  | 'success'
-  | 'completed'
-  | 'partial'
-  | 'failed'
-  | 'conflict'
-
-export interface SyncSchedule {
-  enabled: boolean
-  interval_minutes: number
-  next_run_at: string | null
-  server_time: string | null
-}
-
-export interface SyncStatus {
-  task_id: number
-  status: SyncStatusValue
-  total_rows: number
-  processed_rows: number
-  error_message: string | null
-  started_at: string | null
-  finished_at: string | null
-  trigger_source: 'manual' | 'scheduled'
-  phase: 'queued' | 'syncing' | 'building_reports' | 'finished'
-  current_item: string | null
-  total_steps: number
-  completed_steps: number
-  last_success_at: string | null
-  schedule: SyncSchedule
-}
-
-export interface SyncTriggerResponse {
-  task_id: number
-  status: 'pending' | 'conflict'
-  message: string
 }
 
 export interface AppNotification {
@@ -276,22 +209,6 @@ export interface AuditDetailItem {
 export interface AuditActionOption {
   value: string
   label: string
-}
-
-// OAuth
-export interface OAuthConfig {
-  client_id: string
-  client_secret: string
-  access_token: string
-  refresh_token?: string
-  open_id: string
-  expires_at?: string
-}
-
-export interface OAuthStatus {
-  configured: boolean
-  client_id: string
-  open_id: string
 }
 
 // 用户与认证

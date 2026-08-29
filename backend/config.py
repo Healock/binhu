@@ -65,10 +65,10 @@ class Settings(BaseSettings):
     # Tencent Docs API
     TXDOCS_BASE_URL: str = "https://docs.qq.com/openapi/spreadsheet/v3"
     TXDOCS_DAILY_REQUEST_LIMIT: int = 20000
-    # Local data cutover.  When enabled, business reads/writes use the
-    # OnlineData tables and Tencent Docs is treated as a migration-only source.
-    # 生产 Compose 明确打开；开发/兼容测试默认关闭，避免未执行迁移时误读旧来源。
-    LOCAL_DATA_SOURCE_ENABLED: bool = False
+    # Local MySQL is the only supported business data source.  These fields
+    # remain for deployment compatibility, but runtime code must not use them
+    # to reactivate Tencent Docs access.
+    LOCAL_DATA_SOURCE_ENABLED: bool = True
     TXDOCS_ENABLED: bool = False
     TXDOCS_MIGRATION_MODE: str = "readonly"
     TXDOCS_CUTOFF_AT: str = ""
