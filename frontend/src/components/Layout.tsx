@@ -112,74 +112,78 @@ export default function Layout() {
         <button
           type="button"
           aria-label="返回仪表盘"
-          className="flex min-w-0 items-center gap-2 border-0 bg-transparent p-0 text-left"
+          className="mobile-app-header__brand flex min-w-0 items-center gap-2 border-0 bg-transparent p-0 text-left"
           onClick={() => {
             if (!confirmPendingNavigation()) return
             setAccountOpen(false)
             navigate('/')
           }}
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">滨</span>
-          <span className="font-semibold text-slate-800">滨湖智慧平台</span>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">滨</span>
+          <span className="mobile-app-header__brand-title font-semibold text-slate-800">滨湖智慧平台</span>
         </button>
         {user && (
-          <Popover
-            open={accountOpen}
-            onOpenChange={setAccountOpen}
-            trigger="click"
-            placement="bottomRight"
-            content={(
-              <div className="w-48 space-y-3 p-1">
-                <div>
-                  <div className="font-medium text-slate-900">{getUserDisplayName(user)}</div>
-                  <div className="text-xs text-slate-500">用户名：{user.username}</div>
-                  <div className="text-xs text-slate-500">
-                    {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
+          <div className="mobile-app-header__actions">
+            <OnlinePresenceIndicator />
+            <NotificationCenter placement="mobile-header" />
+            <Popover
+              open={accountOpen}
+              onOpenChange={setAccountOpen}
+              trigger="click"
+              placement="bottomRight"
+              content={(
+                <div className="w-48 space-y-3 p-1">
+                  <div>
+                    <div className="font-medium text-slate-900">{getUserDisplayName(user)}</div>
+                    <div className="text-xs text-slate-500">用户名：{user.username}</div>
+                    <div className="text-xs text-slate-500">
+                      {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
+                    </div>
                   </div>
+                  <Button
+                    block
+                    icon={<UserOutlined />}
+                    onClick={() => {
+                      if (!confirmPendingNavigation()) return
+                      setAccountOpen(false)
+                      navigate('/profile')
+                    }}
+                  >
+                    个人中心
+                  </Button>
+                  <Button
+                    block
+                    icon={<SettingOutlined />}
+                    onClick={() => {
+                      if (!confirmPendingNavigation()) return
+                      setAccountOpen(false)
+                      navigate('/settings/personalization')
+                    }}
+                  >
+                    个性化设置
+                  </Button>
+                  <Button block icon={<LogoutOutlined />} onClick={handleLogout}>
+                    退出登录
+                  </Button>
                 </div>
-                <Button
-                  block
-                  icon={<UserOutlined />}
-                  onClick={() => {
-                    if (!confirmPendingNavigation()) return
-                    setAccountOpen(false)
-                    navigate('/profile')
-                  }}
-                >
-                  个人中心
-                </Button>
-                <Button
-                  block
-                  icon={<SettingOutlined />}
-                  onClick={() => {
-                    if (!confirmPendingNavigation()) return
-                    setAccountOpen(false)
-                    navigate('/settings/personalization')
-                  }}
-                >
-                  个性化设置
-                </Button>
-                <Button block icon={<LogoutOutlined />} onClick={handleLogout}>
-                  退出登录
-                </Button>
-              </div>
-            )}
-          >
-            <button
-              type="button"
-              aria-label="打开账号菜单"
-              className="mobile-account-trigger ml-auto flex shrink-0 items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+              )}
             >
-              <AuthenticatedAvatar size={24} src={user.avatar_url} icon={<UserOutlined />}>
-                {getUserDisplayName(user).slice(0, 1)}
-              </AuthenticatedAvatar>
-              <span className="hidden sm:inline">{getUserDisplayName(user)}</span>
-            </button>
-          </Popover>
+              <button
+                type="button"
+                aria-label="打开账号菜单"
+                className="mobile-account-trigger flex shrink-0 items-center gap-2 rounded-full px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+              >
+                <AuthenticatedAvatar size={24} src={user.avatar_url} icon={<UserOutlined />}>
+                  {getUserDisplayName(user).slice(0, 1)}
+                </AuthenticatedAvatar>
+                <span className="hidden sm:inline">{getUserDisplayName(user)}</span>
+              </button>
+            </Popover>
+          </div>
         )}
       </header>
 
-      <OnlinePresenceIndicator />
+      {!mobile && <OnlinePresenceIndicator />}
       <AdminTaskQueueFloat />
 
       {sidebarOpen && (
@@ -282,7 +286,7 @@ export default function Layout() {
                   {user.username} · {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                 </div>
               </button>
-              <NotificationCenter />
+              {!mobile && <NotificationCenter />}
             </div>
             <button
               type="button"
