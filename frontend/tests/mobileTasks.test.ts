@@ -877,6 +877,18 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
   assert.match(styleSource, /mobile-task-assignment-workbench[\s\S]*overflow: hidden/)
 })
 
+test('本地任务详情不再把历史腾讯来源当成编辑前置条件', () => {
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(detailSource, /const localSourceMode = data\.data_source_mode === 'local'/)
+  assert.match(detailSource, /const interactionLocked = readonlyView \|\| localSourceConflict/)
+  assert.match(detailSource, /该任务存在 \$\{data\.task\.source_count\} 条本地业务来源/)
+  assert.match(detailSource, /!localSourceMode && data\.sources\.length > 1/)
+  assert.match(detailSource, /滨湖平台本地数据/)
+})
+
 test('任务详情桌面端使用更紧凑的最大宽度', () => {
   const styleSource = readFileSync(
     new URL('../src/index.css', import.meta.url),

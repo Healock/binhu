@@ -26,8 +26,13 @@ from services.online_edit_permissions import (
     inspector_option_context,
     row_edit_capabilities,
 )
-from services.online_source import json_value, logical_source_sql_filter
+from services.online_source import (
+    active_source_sql_filter,
+    json_value,
+    rebuild_projection,
+)
 from services.online_local_writeback import (
+    apply_local_system_changes,
     launch_local_change_processing,
     load_local_changes,
     local_sync_state,
@@ -147,12 +152,31 @@ async def _task_source_ready(cur, parser_type: str) -> bool:
     """
     if local_data_source_enabled():
         await cur.execute(
-            "SELECT 1 FROM _online_source_projection WHERE parser_type=%s LIMIT 1",
+            "SELECT 1 FROM _online_source_rows AS source "
+            "WHERE source.parser_type=%s AND source.archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type, 'source')} LIMIT 1",
             (parser_type,),
         )
         await cur.fetchone()
         return True
     return await _source_ready(cur, await _enabled_spreadsheets(cur, parser_type))
+
+
+async def _active_source_counts(cur, parser_type: str, row_keys: list[str]) -> dict[str, int]:
+    if not local_data_source_enabled() or not row_keys:
+        return {}
+    placeholders = ",".join(["%s"] * len(row_keys))
+    await cur.execute(
+        "SELECT row_key, COUNT(*) FROM _online_source_rows AS source "
+        "WHERE source.parser_type=%s AND source.row_key IN (" + placeholders + ") "
+        "AND source.archived_at IS NULL "
+        f"{active_source_sql_filter(parser_type, 'source')} GROUP BY row_key",
+        [parser_type, *row_keys],
+    )
+    return {
+        str(row_key): int(count or 0)
+        for row_key, count in await cur.fetchall()
+    }
 
 
 async def _qmf_registration_state(
@@ -794,9 +818,25 @@ def _json_field(field: str) -> str:
     )
 
 
+def _active_source_count_sql(parser_type: str, alias: str = "projection") -> str:
+    return (
+        "(SELECT COUNT(*) FROM _online_source_rows AS active_source "
+        f"WHERE active_source.parser_type={alias}.parser_type "
+        f"AND active_source.row_key={alias}.row_key "
+        "AND active_source.archived_at IS NULL "
+        f"{active_source_sql_filter(parser_type, 'active_source')})"
+    )
+
+
+def _source_exception_condition(parser_type: str) -> str:
+    if local_data_source_enabled():
+        return f"({_active_source_count_sql(parser_type)} > 1)"
+    return "(projection.conflict=1 OR projection.source_count>1)"
+
+
 def _review_condition(parser_type: str) -> str:
     workflow = TASK_WORKFLOWS[parser_type]
-    conditions = ["projection.conflict=1", "projection.source_count>1"]
+    conditions = [_source_exception_condition(parser_type)]
     if not workflow.valid_results:
         conditions.append(
             f"({_json_field(workflow.result_field)} LIKE '%%无法核实%%')"
@@ -864,7 +904,7 @@ def _review_stage_condition(parser_type: str, stage: ReviewStage) -> str:
 
 def _priority_case(parser_type: str) -> str:
     workflow = TASK_WORKFLOWS[parser_type]
-    source_exception = "projection.conflict=1 OR projection.source_count>1"
+    source_exception = _source_exception_condition(parser_type)
     if workflow.valid_results:
         analyzed = "0"
         waiting = "0"
@@ -1130,6 +1170,14 @@ def _task_where(
     scope_where, scope_params = _scope_where(context, data.scope)
     where_parts = ["projection.parser_type=%s", scope_where]
     params: list = [parser_type, *scope_params]
+    if local_data_source_enabled():
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM _online_source_rows AS active_source "
+            "WHERE active_source.parser_type=projection.parser_type "
+            "AND active_source.row_key=projection.row_key "
+            "AND active_source.archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type, 'active_source')})"
+        )
     review_condition = _review_condition(parser_type)
     if data.status == "pending":
         where_parts.append("projection.task_state<>'completed'")
@@ -1601,12 +1649,28 @@ async def _aggregate_live(
 ) -> dict[str, dict]:
     where, params = _scope_where(context, scope)
     type_placeholders = ", ".join(["%s"] * len(parser_types))
+    active_source_exists = "1=1"
+    source_exception = "projection.conflict=1 OR projection.source_count>1"
+    if local_data_source_enabled():
+        active_source_exists = (
+            "EXISTS (SELECT 1 FROM _online_source_rows AS active_source "
+            "WHERE active_source.parser_type=projection.parser_type "
+            "AND active_source.row_key=projection.row_key "
+            "AND active_source.archived_at IS NULL "
+            f"{active_source_sql_filter('all', 'active_source')})"
+        )
+        source_exception = (
+            "(SELECT COUNT(*) FROM _online_source_rows AS active_source "
+            "WHERE active_source.parser_type=projection.parser_type "
+            "AND active_source.row_key=projection.row_key "
+            "AND active_source.archived_at IS NULL "
+            f"{active_source_sql_filter('all', 'active_source')}) > 1"
+        )
     await cur.execute(
         f"""
         SELECT projection.parser_type, projection.task_state,
                COUNT(*),
-               SUM(CASE WHEN projection.conflict=1
-                              OR projection.source_count>1
+               SUM(CASE WHEN {source_exception}
                               OR EXISTS (
                                   SELECT 1 FROM _task_registration_links registration_link
                                   WHERE registration_link.parser_type=projection.parser_type
@@ -1624,6 +1688,7 @@ async def _aggregate_live(
         FROM _online_source_projection AS projection
         WHERE projection.parser_type IN ({type_placeholders})
           AND {where}
+          AND {active_source_exists}
         GROUP BY projection.parser_type, projection.task_state
         """,
         (*parser_types, *params),
@@ -2076,6 +2141,11 @@ async def _list_mobile_tasks_data(
             [*query_params, data.page_size, (data.page - 1) * data.page_size],
         )
         rows = await cur.fetchall()
+        active_counts = await _active_source_counts(
+            cur,
+            parser_type,
+            [str(row[0]) for row in rows],
+        )
         qmf_by_row = await _qmf_status_by_rows(cur, parser_type, rows)
         residence_by_row = await residence_status_by_rows(cur, parser_type, rows)
         registration_by_row = await registration_links_by_rows(
@@ -2102,8 +2172,12 @@ async def _list_mobile_tasks_data(
                 parser_type,
                 str(row[0]),
                 json_value(row[1], {}),
-                int(row[2] or 0),
-                bool(row[3]),
+                active_counts.get(str(row[0]), 0)
+                if local_data_source_enabled()
+                else int(row[2] or 0),
+                active_counts.get(str(row[0]), 0) > 1
+                if local_data_source_enabled()
+                else bool(row[3]),
                 bool(str(row[4] or "")),
                 str(row[5] or ""),
                 watch_by_row.get(str(row[0])),
@@ -2252,6 +2326,9 @@ async def select_mobile_tasks_for_assignment(
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
 
     where_sql, query_params = _task_where(context, parser_type, data)
+    assignment_source_condition = "projection.conflict=0"
+    if local_data_source_enabled():
+        assignment_source_condition = f"{_active_source_count_sql(parser_type)} <= 1"
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
@@ -2262,11 +2339,13 @@ async def select_mobile_tasks_for_assignment(
             WHERE {where_sql}
               AND TRIM(COALESCE(projection.inspector, ''))=''
               AND projection.task_state<>'completed'
-              AND projection.conflict=0
+              AND {assignment_source_condition}
               AND EXISTS (
                   SELECT 1 FROM _online_source_rows AS source_row
                   WHERE source_row.parser_type=projection.parser_type
                     AND source_row.row_key=projection.row_key
+                    AND source_row.archived_at IS NULL
+                    {active_source_sql_filter(parser_type, 'source_row')}
               )
             ORDER BY {_address_order(parser_type)}, projection.row_key
             LIMIT %s
@@ -2323,6 +2402,9 @@ async def get_mobile_task_assignment_workbench(
         context,
         "all" if context.get("admin_mode") else "community",
     )
+    assignment_source_condition = "projection.conflict=0"
+    if local_data_source_enabled():
+        assignment_source_condition = f"{_active_source_count_sql(parser_type)} <= 1"
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
@@ -2334,11 +2416,13 @@ async def get_mobile_task_assignment_workbench(
               AND {scope_where}
               AND TRIM(COALESCE(projection.inspector, ''))=''
               AND projection.task_state<>'completed'
-              AND projection.conflict=0
+              AND {assignment_source_condition}
               AND EXISTS (
                   SELECT 1 FROM _online_source_rows AS source_row
                   WHERE source_row.parser_type=projection.parser_type
                     AND source_row.row_key=projection.row_key
+                    AND source_row.archived_at IS NULL
+                    {active_source_sql_filter(parser_type, 'source_row')}
               )
             ORDER BY {_address_order(parser_type)}, projection.row_key
             LIMIT %s
@@ -2364,11 +2448,13 @@ async def get_mobile_task_assignment_workbench(
               AND {scope_where}
               AND TRIM(COALESCE(projection.inspector, ''))<>''
               AND projection.task_state<>'completed'
-              AND projection.conflict=0
+              AND {assignment_source_condition}
               AND EXISTS (
                   SELECT 1 FROM _online_source_rows AS source_row
                   WHERE source_row.parser_type=projection.parser_type
                     AND source_row.row_key=projection.row_key
+                    AND source_row.archived_at IS NULL
+                    {active_source_sql_filter(parser_type, 'source_row')}
               )
             GROUP BY projection.community, projection.inspector
             """,
@@ -2523,7 +2609,8 @@ async def _mobile_task_detail_data(
                    revision, row_hash, spreadsheet_id, sheet_id
             FROM _online_source_rows AS source
             WHERE source.parser_type=%s AND source.row_key=%s
-              {logical_source_sql_filter(parser_type)}
+              AND source.archived_at IS NULL
+              {active_source_sql_filter(parser_type)}
             ORDER BY spreadsheet_id, physical_row
             """,
             (parser_type, row_key),
@@ -2707,20 +2794,26 @@ async def _mobile_task_detail_data(
     )
     qmf_config = await load_qmf_config(conn)
     qmf_allowed = has_permission(user, QMF_REGISTRATION_EXECUTE)
+    effective_source_count = len(sources)
+    effective_conflict = (
+        effective_source_count > 1
+        if local_data_source_enabled()
+        else bool(parent_row[2])
+    )
     qmf_preview = preview_capability(
         allowed=qmf_allowed,
         parser_type=parser_type,
-        source_count=int(parent_row[1] or 0),
-        conflict=bool(parent_row[2]),
-        values=sources[0]["values"] if len(sources) == 1 else None,
+        source_count=effective_source_count,
+        conflict=effective_conflict,
+        values=sources[0]["values"] if effective_source_count == 1 else None,
         config=qmf_config,
     )
     qmf_registration = registration_capability(
         allowed=qmf_allowed,
         parser_type=parser_type,
-        source_count=int(parent_row[1] or 0),
-        conflict=bool(parent_row[2]),
-        values=sources[0]["values"] if len(sources) == 1 else None,
+        source_count=effective_source_count,
+        conflict=effective_conflict,
+        values=sources[0]["values"] if effective_source_count == 1 else None,
         config=qmf_config,
     )
     latest_qmf_run, qmf_feedback = await _qmf_registration_state(
@@ -2735,8 +2828,8 @@ async def _mobile_task_detail_data(
             parser_type,
             row_key,
             parent_values,
-            len(sources),
-            bool(parent_row[2]) and len(sources) > 1,
+            effective_source_count,
+            effective_conflict,
             bool(str(parent_row[3] or "")),
             str(parent_row[4] or ""),
             watch_by_row.get(row_key),
@@ -2782,6 +2875,7 @@ async def _mobile_task_detail_data(
         "review_flow": review_flow,
         "registration_manual_confirm_allowed": can_confirm_registration(user),
         "sources": sources,
+        "data_source_mode": "local" if local_data_source_enabled() else "tencent",
     }
 
 
@@ -2824,10 +2918,16 @@ async def _mobile_task_inline_editors_data(
                 "reason": str(exc.detail),
             }
             continue
-        if detail["task"]["conflict"] or len(detail["sources"]) != 1:
+        if len(detail["sources"]) != 1 or (
+            not local_data_source_enabled() and detail["task"]["conflict"]
+        ):
             items[row_key] = {
                 "available": False,
-                "reason": "该任务包含多个腾讯来源，请进入详情选择来源后修改",
+                "reason": (
+                    "该任务包含多个本地来源，请进入详情处理"
+                    if local_data_source_enabled()
+                    else "该任务包含多个腾讯来源，请进入详情选择来源后修改"
+                ),
             }
             continue
         items[row_key] = {
@@ -3411,10 +3511,10 @@ async def bulk_assign_mobile_tasks(
 ):
     """Manually assign selected unassigned tasks to one or all local members.
 
-    Tencent writeback is inherently row/version based, so each physical source
-    row is still revalidated and written through the existing safe path.  Each
-    request is capped to a small resumable chunk; balanced_offset/total keep the
-    allocation deterministic across retries without bypassing per-row checks.
+    Local mode updates one bounded chunk in a single transaction and rebuilds
+    the projection once.  The legacy compatibility mode keeps the physical-row
+    validation path.  ``balanced_offset`` and ``balanced_total`` make retried
+    chunks deterministic.
     """
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
@@ -3436,7 +3536,7 @@ async def bulk_assign_mobile_tasks(
         raise HTTPException(400, "平均分配分块范围无效，请重新发起分配")
 
     projection_by_key: dict[str, dict] = {}
-    source_rows_by_key: dict[str, list[tuple[int, int]]] = {}
+    source_rows_by_key: dict[str, list[dict]] = {}
     skipped: list[dict[str, str]] = []
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
@@ -3495,17 +3595,36 @@ async def bulk_assign_mobile_tasks(
 
         await cur.execute(
             f"""
-            SELECT source.id, source.row_key, source.revision
+            SELECT source.id, source.row_key, source.revision,
+                   source.physical_row, source.row_hash, source.values_json,
+                   source.sheet_id
             FROM _online_source_rows AS source
             WHERE source.parser_type=%s
               AND source.row_key IN ({key_placeholders})
-              {logical_source_sql_filter(parser_type)}
+              AND source.archived_at IS NULL
+              {active_source_sql_filter(parser_type)}
             ORDER BY source.row_key, source.id
             """,
             [parser_type, *row_keys],
         )
-        for source_id, row_key, revision in await cur.fetchall():
-            source_rows_by_key.setdefault(str(row_key), []).append((int(source_id), int(revision)))
+        for source_id, row_key, revision, physical_row, row_hash, values_json, sheet_id in await cur.fetchall():
+            source_rows_by_key.setdefault(str(row_key), []).append({
+                "id": int(source_id),
+                "row_key": str(row_key),
+                "revision": int(revision),
+                "physical_row": int(physical_row),
+                "row_hash": str(row_hash or ""),
+                "values": json_value(values_json, {}),
+                "sheet_id": str(sheet_id or ""),
+            })
+        if local_data_source_enabled():
+            # Projection rows may still carry the old Tencent source count or
+            # conflict bit until the first local rebuild.  Assignment must
+            # use the active local rows just loaded above.
+            for row_key, item in projection_by_key.items():
+                active_count = len(source_rows_by_key.get(row_key) or [])
+                item["source_count"] = active_count
+                item["conflict"] = active_count > 1
 
     eligible_keys: list[str] = []
     for row_key in row_keys:
@@ -3540,43 +3659,88 @@ async def bulk_assign_mobile_tasks(
     update_count = 0
     failures: list[dict[str, str]] = []
     successful_assignment_counts = {name: 0 for name in assignment_counts}
-    for row_key in eligible_keys:
-        assigned_inspector = assignment_plan.get(row_key, "")
-        if not assigned_inspector:
-            skipped.append({"row_key": row_key, "reason": "没有生成分配方案"})
-            continue
-        sources = source_rows_by_key.get(row_key) or []
-        if not sources:
-            skipped.append({"row_key": row_key, "reason": "找不到来源行"})
-            continue
-        task_ok = True
-        for source_id, revision in sources:
-            try:
-                await queue_source_fields(
-                    parser_type=parser_type,
-                    source_id=source_id,
-                    changes={"核查人": assigned_inspector},
-                    expected_revision=revision,
-                    request=request,
-                    user=user,
-                    conn=conn,
-                    explicit_text_edit=True,
+    if local_data_source_enabled():
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                for row_key in eligible_keys:
+                    assigned_inspector = assignment_plan.get(row_key, "")
+                    if not assigned_inspector:
+                        skipped.append({"row_key": row_key, "reason": "没有生成分配方案"})
+                        continue
+                    sources = source_rows_by_key.get(row_key) or []
+                    if len(sources) != 1:
+                        skipped.append({"row_key": row_key, "reason": "本地来源不唯一"})
+                        continue
+                    source = sources[0]
+                    await cur.execute("SAVEPOINT bulk_assign_task")
+                    try:
+                        await apply_local_system_changes(
+                            cur,
+                            source={
+                                **source,
+                                "spreadsheet_id": 0,
+                                "spreadsheet": {"parser_type": parser_type},
+                            },
+                            changes={"核查人": assigned_inspector},
+                            user=user,
+                            action="bulk_assign_local",
+                            rebuild=False,
+                        )
+                    except (ValueError, LookupError):
+                        await cur.execute("ROLLBACK TO SAVEPOINT bulk_assign_task")
+                        failures.append({"row_key": row_key, "reason": "任务已变化，请刷新后重试"})
+                    else:
+                        update_count += 1
+                        successful_assignment_counts[assigned_inspector] = (
+                            successful_assignment_counts.get(assigned_inspector, 0) + 1
+                        )
+                    finally:
+                        await cur.execute("RELEASE SAVEPOINT bulk_assign_task")
+                if update_count:
+                    await rebuild_projection(cur, parser_type)
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+    else:
+        for row_key in eligible_keys:
+            assigned_inspector = assignment_plan.get(row_key, "")
+            if not assigned_inspector:
+                skipped.append({"row_key": row_key, "reason": "没有生成分配方案"})
+                continue
+            sources = source_rows_by_key.get(row_key) or []
+            if not sources:
+                skipped.append({"row_key": row_key, "reason": "找不到来源行"})
+                continue
+            task_ok = True
+            for source in sources:
+                try:
+                    await queue_source_fields(
+                        parser_type=parser_type,
+                        source_id=source["id"],
+                        changes={"核查人": assigned_inspector},
+                        expected_revision=source["revision"],
+                        request=request,
+                        user=user,
+                        conn=conn,
+                        explicit_text_edit=True,
+                    )
+                except HTTPException as exc:
+                    task_ok = False
+                    reason = {
+                        400: "数据校验未通过",
+                        403: "没有该任务的编辑权限",
+                        409: "任务已变化，请刷新后重试",
+                        502: "腾讯回写校验失败",
+                    }.get(exc.status_code, "保存失败")
+                    failures.append({"row_key": row_key, "reason": reason})
+                    break
+            if task_ok:
+                update_count += 1
+                successful_assignment_counts[assigned_inspector] = (
+                    successful_assignment_counts.get(assigned_inspector, 0) + 1
                 )
-            except HTTPException as exc:
-                task_ok = False
-                reason = {
-                    400: "数据校验未通过",
-                    403: "没有该任务的编辑权限",
-                    409: "任务已变化，请刷新后重试",
-                    502: "本地任务保存校验失败" if local_data_source_enabled() else "腾讯回写校验失败",
-                }.get(exc.status_code, "保存失败")
-                failures.append({"row_key": row_key, "reason": reason})
-                break
-        if task_ok:
-            update_count += 1
-            successful_assignment_counts[assigned_inspector] = (
-                successful_assignment_counts.get(assigned_inspector, 0) + 1
-            )
 
     result = _bulk_assignment_result(
         updated=update_count,

@@ -223,6 +223,7 @@ class ConflictCursor(SqlAwareCursor):
                 1, 2, "sheet", 10, "row-key", source_row_hash(self.source_values),
                 json.dumps(self.source_values, ensure_ascii=False), "{}", 1,
                 "测试来源", "file", "sheet", 1, 1,
+                "tencent_legacy", "legacy:test",
             )
         elif "GET_LOCK" in compact or "RELEASE_LOCK" in compact:
             self.one = (1,)

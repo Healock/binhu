@@ -1,5 +1,6 @@
 import os
 import asyncio
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -13,8 +14,12 @@ from services.local_source import (
     local_sheet_id,
     stable_json,
 )
+from services.online_source import active_source_sql_filter
+from services.online_local_writeback import apply_local_system_changes
+from services.parsers import get_parser
 from services import admin_task_queue
 from services import photo_sheet_sync, sync_tasks
+from routers import query
 from config import settings
 
 
@@ -34,6 +39,87 @@ class LocalSourceHelpersTest(unittest.TestCase):
             self.assertTrue(local_data_source_enabled())
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
             self.assertFalse(local_data_source_enabled())
+
+    def test_task_source_filter_excludes_legacy_rows_during_local_cutover(self):
+        with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
+            clause = active_source_sql_filter("全链条", "source_row")
+        self.assertIn("source_row.spreadsheet_id=0", clause)
+        self.assertIn(
+            "source_row.source_kind IN ('local_table','local_dispatch')",
+            clause,
+        )
+        self.assertNotIn("legacy-model-three", clause)
+
+        with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
+            model_three_clause = active_source_sql_filter(
+                "疑似未注销模型三", "source_row"
+            )
+        self.assertIn("source_row.parser_type='疑似未注销模型三'", model_three_clause)
+        self.assertIn("source_row.sheet_id='legacy-model-three'", model_three_clause)
+
+        with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
+            self.assertEqual(active_source_sql_filter("全链条"), "")
+
+    def test_local_system_change_supersedes_dispatch_record(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.one = None
+                self.rowcount = 0
+                self.lastrowid = 41
+
+            async def execute(self, sql, params=None):
+                compact = " ".join(sql.split())
+                self.calls.append((compact, params))
+                self.one = None
+                self.rowcount = 1
+                if compact.startswith("SELECT source_kind,source_ref"):
+                    self.one = ("local_dispatch", "police_dispatch_task:7")
+                elif compact.startswith("UPDATE _local_source_records SET parser_type"):
+                    self.rowcount = 0
+
+            async def fetchone(self):
+                return self.one
+
+        parser = get_parser("全链条")
+        values = {column: "" for column in parser.COLUMNS}
+        values.update({
+            "姓名": "测试人员",
+            "身份证号": "32052519911016025X",
+            "电话号码": "13800138000",
+            "下发时间": "2026-08-29",
+        })
+        cursor = Cursor()
+        with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
+            asyncio.run(apply_local_system_changes(
+                cursor,
+                source={
+                    "id": 9,
+                    "row_key": parser.make_row_key(values),
+                    "revision": 1,
+                    "physical_row": 12,
+                    "values": values,
+                    "spreadsheet": {"parser_type": "全链条"},
+                },
+                changes={"核查人": "测试网格员"},
+                rebuild=False,
+            ))
+
+        supersede = [
+            call for call in cursor.calls
+            if "SET status='superseded'" in call[0]
+        ]
+        self.assertEqual(
+            supersede[0][1],
+            ("local_dispatch", "police_dispatch_task:7"),
+        )
+
+    def test_local_query_editing_does_not_depend_on_tencent_writeback_switch(self):
+        projection_source = inspect.getsource(query._projection_query)
+        source_rows_source = inspect.getsource(query.list_source_rows)
+        expected = "local_data_source_enabled() or await _writeback_enabled(cur)"
+        self.assertIn(expected, projection_source)
+        self.assertIn(expected, source_rows_source)
 
     def test_local_mode_hides_legacy_external_queues(self):
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
