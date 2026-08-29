@@ -17,6 +17,11 @@ interface AssignmentProgress {
   failed: number
 }
 
+interface AssignmentOutcome {
+  skipped: Array<{ row_key: string; reason: string }>
+  failed: Array<{ row_key: string; reason: string }>
+}
+
 export default function MobileTaskAssignmentWorkbench({
   open,
   parserType,
@@ -43,6 +48,7 @@ export default function MobileTaskAssignmentWorkbench({
   const [assignOpen, setAssignOpen] = useState(false)
   const [inspector, setInspector] = useState<string>()
   const [progress, setProgress] = useState<AssignmentProgress | null>(null)
+  const [outcome, setOutcome] = useState<AssignmentOutcome | null>(null)
   const dragRef = useRef<{ active: boolean; select: boolean }>({ active: false, select: true })
   const suppressClickRef = useRef(false)
 
@@ -127,6 +133,8 @@ export default function MobileTaskAssignmentWorkbench({
     let updated = 0
     let skipped = 0
     let failed = 0
+    const skippedDetails: AssignmentOutcome['skipped'] = []
+    const failedDetails: AssignmentOutcome['failed'] = []
     const completedKeys = new Set<string>()
     try {
       for (let offset = 0; offset < rowKeys.length; offset += MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE) {
@@ -147,6 +155,9 @@ export default function MobileTaskAssignmentWorkbench({
         updated += result.updated
         skipped += result.skipped
         failed += result.failed
+        skippedDetails.push(...(result.details || []))
+        failedDetails.push(...(result.failed_details || []))
+        setOutcome({ skipped: [...skippedDetails], failed: [...failedDetails] })
         setCandidates(current => current.filter(item => !completedKeys.has(item.row_key)))
         setSelected(current => new Set([...current].filter(key => !completedKeys.has(key))))
         setProgress({ total: rowKeys.length, processed, updated, skipped, failed })
@@ -185,6 +196,8 @@ export default function MobileTaskAssignmentWorkbench({
     let updated = 0
     let skipped = 0
     let failed = 0
+    const skippedDetails: AssignmentOutcome['skipped'] = []
+    const failedDetails: AssignmentOutcome['failed'] = []
     try {
       for (const group of groups) {
         for (let offset = 0; offset < group.rowKeys.length; offset += MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE) {
@@ -204,6 +217,9 @@ export default function MobileTaskAssignmentWorkbench({
           updated += result.updated
           skipped += result.skipped
           failed += result.failed
+          skippedDetails.push(...(result.details || []))
+          failedDetails.push(...(result.failed_details || []))
+          setOutcome({ skipped: [...skippedDetails], failed: [...failedDetails] })
           setCandidates(current => current.filter(item => !completedKeys.has(item.row_key)))
           setSelected(current => new Set([...current].filter(key => !completedKeys.has(key))))
           setProgress({ total, processed, updated, skipped, failed })
@@ -228,6 +244,7 @@ export default function MobileTaskAssignmentWorkbench({
     if (!saving) {
       setSelected(new Set())
       setProgress(null)
+      setOutcome(null)
     }
     onClose()
   }
@@ -309,6 +326,19 @@ export default function MobileTaskAssignmentWorkbench({
             <Progress percent={Math.round(progress.processed / progress.total * 100)} status={saving ? 'active' : progress.failed ? 'exception' : 'normal'} />
             <span>已处理 {progress.processed}/{progress.total}，成功 {progress.updated}，跳过 {progress.skipped}，失败 {progress.failed}</span>
           </div>
+        )}
+        {outcome && (outcome.skipped.length > 0 || outcome.failed.length > 0) && (
+          <Alert
+            type={outcome.failed.length ? 'error' : 'warning'}
+            showIcon
+            message="本次分配结果明细"
+            description={(
+              <div className="grid gap-1 text-sm">
+                {outcome.failed.map(item => <div key={`failed-${item.row_key}`}>失败：{item.row_key} · {item.reason}</div>)}
+                {outcome.skipped.map(item => <div key={`skipped-${item.row_key}`}>跳过：{item.row_key} · {item.reason}</div>)}
+              </div>
+            )}
+          />
         )}
 
         <div className="mobile-task-assignment-workbench__scroll">

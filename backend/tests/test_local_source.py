@@ -9,6 +9,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.local_source import (
     LOCAL_SPREADSHEET_ID,
+    cleanup_duplicate_local_sources,
     local_data_source_enabled,
     local_row_hash,
     local_sheet_id,
@@ -24,6 +25,13 @@ from config import settings
 
 
 class LocalSourceHelpersTest(unittest.TestCase):
+    def test_duplicate_cleanup_is_conservative_and_explicitly_applied(self):
+        source = inspect.getsource(cleanup_duplicate_local_sources)
+        self.assertIn("spreadsheet_id=0", source)
+        self.assertIn("archived_at IS NULL", source)
+        self.assertIn("len(hashes) != 1", source)
+        self.assertIn("source_kind='superseded'", source)
+        self.assertIn("if not apply", source)
     def test_local_locator_is_stable_and_not_a_tencent_position(self):
         self.assertEqual(LOCAL_SPREADSHEET_ID, 0)
         self.assertEqual(local_sheet_id("全链条"), "local:全链条")

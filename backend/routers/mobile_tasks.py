@@ -3652,6 +3652,9 @@ async def bulk_assign_mobile_tasks(
         if item["conflict"]:
             skipped.append({"row_key": row_key, "reason": "来源存在冲突"})
             continue
+        if item["source_count"] != 1:
+            skipped.append({"row_key": row_key, "reason": "存在重复本地来源，请先处理来源异常"})
+            continue
         if not source_rows_by_key.get(row_key):
             skipped.append({"row_key": row_key, "reason": "找不到来源行"})
             continue
