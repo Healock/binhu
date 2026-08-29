@@ -8,18 +8,10 @@ CERTBOT=${BINHU_CERTBOT:-/usr/local/bin/certbot}
 mkdir -p "$STATE_DIR"
 
 [ -x "$CERTBOT" ] || { echo "certbot not found: $CERTBOT" >&2; exit 1; }
-if "$CERTBOT" renew --non-interactive --cert-name "$IP_ADDRESS" \
+if "$CERTBOT" renew --non-interactive --no-random-sleep-on-renew --cert-name "$IP_ADDRESS" \
   --deploy-hook "nginx -t && systemctl reload nginx"; then
   printf '0\n' > "$FAILURES"
   exit 0
 fi
 
-count=0
-[ ! -f "$FAILURES" ] || count=$(cat "$FAILURES")
-count=$((count + 1))
-printf '%s\n' "$count" > "$FAILURES"
-logger -p daemon.err -t binhu-ip-cert "IP certificate renewal failed ($count consecutive failures)"
-if [ "$count" -ge 2 ]; then
-  logger -p daemon.crit -t binhu-ip-cert "ALERT: Binhu update certificate renewal has failed twice"
-fi
 exit 1

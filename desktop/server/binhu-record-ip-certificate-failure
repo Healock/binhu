@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+STATE_DIR=/var/lib/binhu-ip-cert
+FAILURES="$STATE_DIR/failures"
+mkdir -p "$STATE_DIR"
+
+count=0
+if [ -f "$FAILURES" ]; then
+  stored=$(cat "$FAILURES" 2>/dev/null || true)
+  case "$stored" in
+    ''|*[!0-9]*) stored=0 ;;
+  esac
+  count=$stored
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$FAILURES"
+logger -p daemon.err -t binhu-ip-cert "IP certificate renewal failed ($count consecutive failures)"
+if [ "$count" -ge 2 ]; then
+  logger -p daemon.crit -t binhu-ip-cert "ALERT: Binhu update certificate renewal has failed twice"
+fi
