@@ -269,6 +269,7 @@ async def apply_local_system_changes(
     changes: dict[str, str],
     user: dict[str, Any] | None = None,
     action: str = "system_local_update",
+    rebuild: bool = True,
 ) -> tuple[int, int, dict[str, str], str]:
     """Apply a trusted server-side change directly to the local task source.
 
@@ -376,7 +377,8 @@ async def apply_local_system_changes(
         ),
     )
     audit_id = int(cur.lastrowid)
-    await rebuild_projection(cur, parser_type)
+    if rebuild:
+        await rebuild_projection(cur, parser_type)
     return audit_id, next_revision, after, new_key
 
 

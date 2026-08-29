@@ -1,5 +1,6 @@
 import os
 import asyncio
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -13,8 +14,10 @@ from services.local_source import (
     local_sheet_id,
     stable_json,
 )
+from services.online_source import active_source_sql_filter
 from services import admin_task_queue
 from services import photo_sheet_sync, sync_tasks
+from routers import query
 from config import settings
 
 
@@ -34,6 +37,23 @@ class LocalSourceHelpersTest(unittest.TestCase):
             self.assertTrue(local_data_source_enabled())
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
             self.assertFalse(local_data_source_enabled())
+
+    def test_task_source_filter_excludes_legacy_rows_during_local_cutover(self):
+        with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
+            clause = active_source_sql_filter("全链条", "source_row")
+        self.assertIn("source_row.spreadsheet_id=0", clause)
+        self.assertIn("source_row.source_kind LIKE 'local_%'", clause)
+        self.assertIn("source_row.sheet_id='legacy-model-three'", clause)
+
+        with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
+            self.assertEqual(active_source_sql_filter("全链条"), "")
+
+    def test_local_query_editing_does_not_depend_on_tencent_writeback_switch(self):
+        projection_source = inspect.getsource(query._projection_query)
+        source_rows_source = inspect.getsource(query.list_source_rows)
+        expected = "local_data_source_enabled() or await _writeback_enabled(cur)"
+        self.assertIn(expected, projection_source)
+        self.assertIn(expected, source_rows_source)
 
     def test_local_mode_hides_legacy_external_queues(self):
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):

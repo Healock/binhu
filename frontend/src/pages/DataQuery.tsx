@@ -587,7 +587,7 @@ export default function DataQuery() {
           </Button>
           {source === 'online' && canAdd && (
             <Button className="md:hidden" icon={<PlusOutlined />} onClick={openAdd}>
-              新增原始行
+              {dataSourceMode === 'local' ? '新增业务数据' : '新增原始行'}
             </Button>
           )}
           {isSuperAdmin && (
@@ -687,7 +687,7 @@ export default function DataQuery() {
                     loading={savingDraftIds.has(draftId)}
                     onClick={() => submitDraft(selectedSheetRow)}
                   >
-                    写入腾讯表格
+                    {dataSourceMode === 'local' ? '写入本地任务池' : '写入腾讯表格'}
                   </Button>
                   <Button size="small" onClick={() => discardDraft(draftId)}>清空这行</Button>
                 </>
@@ -697,7 +697,9 @@ export default function DataQuery() {
             })() : (
               <>
                 {Number(selectedSheetRow.__source_count || 0) > 1 ? (
-                  <Tag>{selectedSheetRow.__source_count} 条腾讯原始行</Tag>
+                  <Tag>
+                    {selectedSheetRow.__source_count} 条{dataSourceMode === 'local' ? '本地来源' : '腾讯原始行'}
+                  </Tag>
                 ) : selectedSheetRow.__editable_fields?.length ? (
                   <Tag color="blue">蓝色单元格可编辑</Tag>
                 ) : <Tag>只读</Tag>}
@@ -708,8 +710,10 @@ export default function DataQuery() {
                 </Button>
                 {selectedSheetRow.__can_delete && (
                   <Popconfirm
-                    title="确认删除腾讯原始行？"
-                    description="该操作会真实删除在线表格中的整行，下一次同步后进入归档。"
+                    title={dataSourceMode === 'local' ? '确认移除本地任务？' : '确认删除腾讯原始行？'}
+                    description={dataSourceMode === 'local'
+                      ? '该操作会将当前业务数据归档，并从本地任务池移除。'
+                      : '该操作会真实删除在线表格中的整行，下一次同步后进入归档。'}
                     okText="确认删除"
                     cancelText="取消"
                     okButtonProps={{ danger: true }}
@@ -723,7 +727,11 @@ export default function DataQuery() {
             )}
           </div>
           <div className="query-spreadsheet-toolbar__actions">
-            {sheetSaving && <Tag color="processing">正在写回腾讯表格</Tag>}
+            {sheetSaving && (
+              <Tag color="processing">
+                {dataSourceMode === 'local' ? '正在保存到滨湖平台' : '正在写回腾讯表格'}
+              </Tag>
+            )}
             <Button
               size="small"
               icon={sheetFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
@@ -774,7 +782,7 @@ export default function DataQuery() {
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不回写腾讯表格。
+          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不写入业务数据。
         </div>
       </div>
 
@@ -826,9 +834,9 @@ export default function DataQuery() {
 
       <Modal
         open={addOpen}
-        title={`新增“${selectedType}”腾讯原始行`}
+        title={dataSourceMode === 'local' ? `新增“${selectedType}”业务数据` : `新增“${selectedType}”腾讯原始行`}
         width={840}
-        okText="写入腾讯表格"
+        okText={dataSourceMode === 'local' ? '写入本地任务池' : '写入腾讯表格'}
         cancelText="取消"
         confirmLoading={adding}
         onOk={submitAdd}
@@ -837,7 +845,9 @@ export default function DataQuery() {
         <Alert
           type="warning"
           showIcon
-          message="新增会直接写入腾讯在线表格，业务汇总需等待下一次正常同步"
+          message={dataSourceMode === 'local'
+            ? '新增会直接写入滨湖平台本地任务池'
+            : '新增会直接写入腾讯在线表格，业务汇总需等待下一次正常同步'}
           className="mb-4"
         />
         <div className="grid max-h-[60vh] grid-cols-1 gap-4 overflow-y-auto pr-2 md:grid-cols-2">
@@ -905,7 +915,9 @@ export default function DataQuery() {
                 }}
                 options={drawerSources.map(item => ({
                   value: item.id,
-                  label: `腾讯第 ${item.physical_row} 行`,
+                  label: dataSourceMode === 'local'
+                    ? `本地任务 #${item.id}`
+                    : `腾讯第 ${item.physical_row} 行`,
                 }))}
               />
             )}
@@ -961,14 +973,18 @@ export default function DataQuery() {
             )}
             {selectedDrawerSource?.can_delete && (
               <Popconfirm
-                title="确认删除腾讯原始行？"
-                description="删除后需等待下一次同步更新业务汇总。"
+                title={dataSourceMode === 'local' ? '确认移除本地任务？' : '确认删除腾讯原始行？'}
+                description={dataSourceMode === 'local'
+                  ? '删除后会立即从本地任务池移除并进入归档。'
+                  : '删除后需等待下一次同步更新业务汇总。'}
                 okText="确认删除"
                 cancelText="取消"
                 okButtonProps={{ danger: true }}
                 onConfirm={() => handleDelete(sourceToDisplay(selectedDrawerSource, 'drawer'))}
               >
-                <Button danger block icon={<DeleteOutlined />}>删除这条腾讯原始行</Button>
+                <Button danger block icon={<DeleteOutlined />}>
+                  {dataSourceMode === 'local' ? '移除这条本地任务' : '删除这条腾讯原始行'}
+                </Button>
               </Popconfirm>
             )}
           </div>

@@ -27,8 +27,8 @@ from services.online_edit_permissions import (
 )
 from services.online_source import (
     acquire_sheet_lock,
+    active_source_sql_filter,
     json_value,
-    logical_source_sql_filter,
     rebuild_projection,
     release_sheet_lock,
     replace_source_cache,
@@ -502,7 +502,7 @@ async def _source_data_version(cur, parser_type: str) -> str:
         FROM _online_source_rows AS source
          WHERE source.parser_type=%s
            AND source.archived_at IS NULL
-        {logical_source_sql_filter(parser_type)}
+        {active_source_sql_filter(parser_type)}
         """,
         (parser_type,),
     )
@@ -529,7 +529,7 @@ async def _oauth_client(cur) -> TxDocsClient:
 
 async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
     await cur.execute(
-        """
+        f"""
         SELECT source.id, source.spreadsheet_id, source.sheet_id,
                source.physical_row, source.row_key, source.row_hash,
                source.values_json, source.cell_meta_json, source.revision,
@@ -541,6 +541,7 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
           ON spreadsheet.id=source.spreadsheet_id
          WHERE source.id=%s AND source.parser_type=%s
            AND source.archived_at IS NULL
+           {active_source_sql_filter(parser_type, 'source')}
         """,
         (source_id, parser_type),
     )
@@ -1827,6 +1828,16 @@ async def _projection_query(
     columns = parser.COLUMNS
     where_parts = ["projection.parser_type=%s"]
     params: list[Any] = [parser_type]
+    if local_data_source_enabled():
+        # Historical Tencent rows may remain in the projection during the
+        # cutover. They are audit-only and must not appear in normal queries.
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM _online_source_rows AS active_source "
+            "WHERE active_source.parser_type=projection.parser_type "
+            "AND active_source.row_key=projection.row_key "
+            "AND active_source.archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type, 'active_source')})"
+        )
     scopes = effective_view_communities(user)
     if scopes is not None:
         allowed = await community_names_for_scopes(conn, scopes)
@@ -1874,6 +1885,15 @@ async def _projection_query(
             f"'{_json_path(sort_by)}'))"
         )
     order = "ASC" if sort_order == "asc" else "DESC"
+    single_source_condition = "projection.source_count=1"
+    if local_data_source_enabled():
+        single_source_condition = (
+            "(SELECT COUNT(*) FROM _online_source_rows AS single_source "
+            "WHERE single_source.parser_type=projection.parser_type "
+            "AND single_source.row_key=projection.row_key "
+            "AND single_source.archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type, 'single_source')})=1"
+        )
 
     async with conn.cursor() as cur:
         await cur.execute(
@@ -1892,8 +1912,9 @@ async def _projection_query(
             LEFT JOIN _online_source_rows AS source
              ON source.parser_type=projection.parser_type
               AND source.row_key=projection.row_key
-             AND source.archived_at IS NULL
-              AND projection.source_count=1
+              AND source.archived_at IS NULL
+              {active_source_sql_filter(parser_type, 'source')}
+              AND {single_source_condition}
             {where}
             ORDER BY {sort_expression} {order}, projection.row_key
             LIMIT %s OFFSET %s
@@ -1901,9 +1922,26 @@ async def _projection_query(
             params + [page_size, (page - 1) * page_size],
         )
         rows = await cur.fetchall()
+        effective_source_counts: dict[str, int] = {}
+        if local_data_source_enabled() and rows:
+            row_keys = [str(row[0]) for row in rows]
+            placeholders = ",".join(["%s"] * len(row_keys))
+            await cur.execute(
+                "SELECT row_key, COUNT(*) FROM _online_source_rows AS source "
+                "WHERE source.parser_type=%s AND source.row_key IN (" + placeholders + ") "
+                "AND source.archived_at IS NULL "
+                f"{active_source_sql_filter(parser_type, 'source')} "
+                "GROUP BY row_key",
+                [parser_type, *row_keys],
+            )
+            effective_source_counts = {
+                str(row_key): int(count or 0)
+                for row_key, count in await cur.fetchall()
+            }
         await cur.execute(
             "SELECT cell_meta_json FROM _online_source_rows "
-            "WHERE parser_type=%s AND archived_at IS NULL ORDER BY id LIMIT 1",
+            "WHERE parser_type=%s AND archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type)} ORDER BY id LIMIT 1",
             (parser_type,),
         )
         metadata_row = await cur.fetchone()
@@ -1925,14 +1963,22 @@ async def _projection_query(
                 (parser_type,),
             )
             pending_count = int((await cur.fetchone())[0] or 0)
-            enabled = await _writeback_enabled(cur)
+            enabled = local_data_source_enabled() or await _writeback_enabled(cur)
         data_version = await _source_data_version(cur, parser_type)
 
         data = []
         for row in rows:
             values = json_value(row[1], {})
-            source_count = int(row[2] or 0)
-            conflict = bool(row[3])
+            source_count = (
+                effective_source_counts.get(str(row[0]), 0)
+                if local_data_source_enabled()
+                else int(row[2] or 0)
+            )
+            conflict = (
+                source_count > 1
+                if local_data_source_enabled()
+                else bool(row[3])
+            )
             capabilities = await row_edit_capabilities(cur, user, parser, values)
             direct_source = source_count == 1 and row[5] is not None
             editable_fields = (
@@ -2099,13 +2145,13 @@ async def list_source_rows(
             FROM _online_source_rows AS source
             WHERE source.parser_type=%s AND source.row_key=%s
               AND source.archived_at IS NULL
-              {logical_source_sql_filter(parser_type)}
+              {active_source_sql_filter(parser_type)}
             ORDER BY spreadsheet_id, physical_row
             """,
             (parser_type, row_key),
         )
         result = []
-        enabled = await _writeback_enabled(cur)
+        enabled = local_data_source_enabled() or await _writeback_enabled(cur)
         for source_id, physical_row, raw_values, raw_meta, revision, row_hash in await cur.fetchall():
             values = json_value(raw_values, {})
             if allowed is not None and parser.community_value(values) not in allowed:
