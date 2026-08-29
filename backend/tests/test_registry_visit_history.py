@@ -8,6 +8,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.registry_visit_history import (
+    filter_property_ids_by_visit,
     load_property_visit_history,
     load_property_visit_summaries,
     property_visit_keys,
@@ -66,6 +67,30 @@ class RegistryVisitKeyTests(unittest.TestCase):
 
 
 class RegistryVisitHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filter_property_ids_by_visit_applies_date_and_star_before_pagination(self):
+        cursor = _Cursor(
+            aliases=[],
+            visits=[
+                ("长板社区", visit_address_key("长板社区1号")),
+            ],
+        )
+        matched = await filter_property_ids_by_visit(
+            cursor,
+            [
+                {"id": 1, "community_name": "长板社区", "natural_address": "长板社区1号", "normalized_address": "长板社区1号"},
+                {"id": 2, "community_name": "长板社区", "natural_address": "长板社区2号", "normalized_address": "长板社区2号"},
+            ],
+            visit_start_date=date(2026, 8, 20),
+            visit_end_date=date(2026, 8, 31),
+            star_ratings=["三星出租房"],
+        )
+        self.assertEqual(matched, {1})
+        sql, params = cursor.calls[-1]
+        self.assertIn("`业务日期` >= %s", sql)
+        self.assertIn("`业务日期` <= %s", sql)
+        self.assertIn("`星级` IN (%s)", sql)
+        self.assertEqual(params[-3:], (date(2026, 8, 20), date(2026, 8, 31), "三星出租房"))
+
     async def test_property_visit_summary_uses_alias_and_keeps_latest_dates(self):
         alias_key = visit_address_key("旧地址 8 号")
         cursor = _Cursor(

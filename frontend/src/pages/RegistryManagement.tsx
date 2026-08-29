@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Form, Image, Input, Modal, Popconfirm,
+  Alert, Button, DatePicker, Descriptions, Drawer, Form, Image, Input, Modal, Popconfirm,
   Select, Space, Spin, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { FileImageOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import type { ReactNode } from 'react'
+import { FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
 import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
@@ -69,6 +71,8 @@ const certificateStatusColors: Record<Exclude<RegistryCertificateStatus, ''>, st
   not_applicable: 'default',
 }
 
+const starRatingOptions = ['一星出租房', '二星出租房', '三星出租房', '四星出租房', '五星出租房']
+
 function issuePayloadText(row: RegistryImportIssue, ...keys: string[]) {
   for (const key of keys) {
     const value = row.payload?.[key]
@@ -94,6 +98,8 @@ export default function RegistryManagement() {
   const [housingCategory, setHousingCategory] = useState<RegistryHousingCategory>('')
   const [certificateStatus, setCertificateStatus] = useState<RegistryCertificateStatus>('')
   const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
+  const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
+  const [starRatings, setStarRatings] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [total, setTotal] = useState(0)
@@ -172,6 +178,9 @@ export default function RegistryManagement() {
           housing_category: housingCategory,
           certificate_status: certificateStatus,
           status: propertyStatus,
+          visit_start_date: visitDateRange?.[0],
+          visit_end_date: visitDateRange?.[1],
+          star_ratings: starRatings,
           page,
           page_size: pageSize,
         })
@@ -247,8 +256,8 @@ export default function RegistryManagement() {
   }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, page, pageSize])
 
   const applyCertificateRun = (run: RegistryCertificateSourceRun, announce = false) => {
     const previousStatus = certificateRunRef.current?.status
@@ -297,6 +306,19 @@ export default function RegistryManagement() {
   }, [certificateRun?.id, certificateRun?.status])
 
   const communityOptions = useMemo(() => communities.map(item => ({ value: item.id, label: item.name })), [communities])
+
+  const filterDropdown = (content: ReactNode, onClear: () => void) => ({
+    confirm,
+    clearFilters,
+  }: { confirm: () => void; clearFilters?: () => void }) => (
+    <div className="p-3" style={{ width: 280 }}>
+      {content}
+      <Space className="mt-3">
+        <Button size="small" onClick={() => { onClear(); clearFilters?.(); confirm() }}>清空</Button>
+        <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+      </Space>
+    </div>
+  )
 
   const openCreate = (kind: ModalKind) => {
     if (kind !== 'personTag') setSelected(null)
@@ -523,14 +545,42 @@ export default function RegistryManagement() {
   }
 
   const propertyColumns: ResponsiveColumns<RegistryProperty> = [
-    { title: '社区', dataIndex: 'community_name', width: 130, responsivePriority: 'always' },
+    {
+      title: '社区', dataIndex: 'community_name', width: 130, responsivePriority: 'always',
+      filteredValue: communityId ? [communityId] : null,
+      filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
+      filterDropdown: filterDropdown(
+        <Select allowClear showSearch optionFilterProp="label" className="w-full" placeholder="全部社区"
+          value={communityId} options={communityOptions} onChange={value => setCommunityId(value)} />,
+        () => setCommunityId(undefined),
+      ),
+    },
     { title: '标准详细地址', width: 360, ellipsis: true, responsivePriority: 'always', render: (_, row) => row.natural_address || row.normalized_address },
     { title: '户号', dataIndex: 'source_house_no', width: 150, ellipsis: true, responsivePriority: 'standard', render: value => value || '-' },
-    { title: '住房类型', dataIndex: 'housing_type', width: 120, responsivePriority: 'standard', render: value => value
-      ? <Tag color={['个人出租', '单位出租'].includes(value) ? 'blue' : value === '自购房屋' ? 'green' : 'default'}>{value}</Tag>
-      : <Tag color="warning">未标注</Tag> },
+    {
+      title: '住房类型', dataIndex: 'housing_type', width: 120, responsivePriority: 'standard',
+      filteredValue: housingCategory ? [housingCategory] : null,
+      filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
+      filterDropdown: filterDropdown(
+        <Select className="w-full" value={housingCategory || undefined} allowClear placeholder="全部住房类型"
+          options={housingCategoryOptions.filter(item => item.value)} onChange={value => setHousingCategory((value || '') as RegistryHousingCategory)} />,
+        () => setHousingCategory(''),
+      ),
+      render: value => value
+        ? <Tag color={['个人出租', '单位出租'].includes(value) ? 'blue' : value === '自购房屋' ? 'green' : 'default'}>{value}</Tag>
+        : <Tag color="warning">未标注</Tag>,
+    },
     { title: '居住处所', dataIndex: 'residence_type', width: 120, responsivePriority: 'wide', render: value => value || '-' },
-    { title: '责任书', key: 'certificate_status', width: 220, responsivePriority: 'standard', render: (_, row) => (
+    {
+      title: '责任书', key: 'certificate_status', width: 220, responsivePriority: 'standard',
+      filteredValue: certificateStatus ? [certificateStatus] : null,
+      filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
+      filterDropdown: filterDropdown(
+        <Select className="w-full" value={certificateStatus || undefined} allowClear placeholder="全部责任书状态"
+          options={certificateStatusOptions.filter(item => item.value)} onChange={value => setCertificateStatus((value || '') as RegistryCertificateStatus)} />,
+        () => setCertificateStatus(''),
+      ),
+      render: (_, row) => (
       <div className="registry-certificate-cell">
         <Tag color={certificateStatusColors[row.certificate_status || 'not_uploaded']}>
           {row.certificate_status_label || '未上传告知书'}
@@ -539,16 +589,50 @@ export default function RegistryManagement() {
           <span>{row.landlord_renter_relation_label || '责任关系待确认'}</span>
         )}
       </div>
-    ) },
-    { title: '最近走访日期', key: 'latest_visit_date', width: 130, responsivePriority: 'always', render: (_, row) => (
+      ) },
+    {
+      title: '最近走访日期', key: 'latest_visit_date', width: 150, responsivePriority: 'always',
+      filteredValue: visitDateRange ? ['range'] : null,
+      filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
+      filterDropdown: filterDropdown(
+        <DatePicker.RangePicker className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
+          onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
+            if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
+            else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])
+          }} />,
+        () => setVisitDateRange(undefined),
+      ),
+      render: (_, row) => (
       <div className="registry-visit-cell">
         <strong>{row.latest_visit_date || '暂无走访'}</strong>
       </div>
-    ) },
-    { title: '星级评定', key: 'latest_star_rating', width: 130, responsivePriority: 'always', render: (_, row) => row.latest_star_rating
-      ? <Tag color="gold">{row.latest_star_rating}</Tag>
-      : '-' },
-    { title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always', render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag> },
+      ) },
+    {
+      title: '星级评定', key: 'latest_star_rating', width: 150, responsivePriority: 'always',
+      filteredValue: starRatings.length ? starRatings : null,
+      filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
+      filterDropdown: filterDropdown(
+        <Select mode="multiple" allowClear className="w-full" value={starRatings} maxTagCount="responsive"
+          placeholder="全部星级评定" options={starRatingOptions.map(value => ({ value, label: value }))}
+          onChange={values => setStarRatings(values)} />,
+        () => setStarRatings([]),
+      ),
+      render: (_, row) => row.latest_star_rating
+        ? <Tag color="gold">{row.latest_star_rating}</Tag>
+        : '-',
+    },
+    {
+      title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always',
+      filteredValue: propertyStatus ? [propertyStatus] : null,
+      filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
+      filterDropdown: filterDropdown(
+        <Select className="w-full" value={propertyStatus || undefined} allowClear placeholder="全部状态"
+          options={[{ value: 'active', label: '启用房屋' }, { value: 'inactive', label: '停用房屋' }]}
+          onChange={value => setPropertyStatus((value || '') as '' | 'active' | 'inactive')} />,
+        () => setPropertyStatus(''),
+      ),
+      render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag>,
+    },
     { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
     { title: '操作', key: 'actions', width: 210, render: (_, row) => <Space>
       <Button size="small" onClick={() => openDetail('property', row)}>详情</Button>
@@ -616,38 +700,6 @@ export default function RegistryManagement() {
 
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
-    <Select
-      allowClear
-      showSearch
-      optionFilterProp="label"
-      placeholder="全部社区"
-      value={communityId}
-      onChange={value => setCommunityId(value)}
-      options={communityOptions}
-      className="w-full md:w-44"
-    />
-    <Select
-      value={housingCategory}
-      onChange={value => setHousingCategory(value as RegistryHousingCategory)}
-      options={housingCategoryOptions}
-      className="w-full md:w-40"
-    />
-    <Select
-      value={certificateStatus}
-      onChange={value => setCertificateStatus(value as RegistryCertificateStatus)}
-      options={certificateStatusOptions}
-      className="w-full md:w-52"
-    />
-    <Select
-      value={propertyStatus}
-      onChange={value => setPropertyStatus(value)}
-      options={[
-        { value: 'active', label: '启用房屋' },
-        { value: 'inactive', label: '停用房屋' },
-        { value: '', label: '全部状态' },
-      ]}
-      className="w-full md:w-36"
-    />
   </> : tab === 'issues' ? <>
     {renderSearchInput('搜索地址、户号、社区或错误值')}
     <Select
@@ -788,6 +840,9 @@ export default function RegistryManagement() {
             setCategoryIds([])
             setHousingCategory('')
             setCertificateStatus('')
+            setPropertyStatus('active')
+            setVisitDateRange(undefined)
+            setStarRatings([])
             setPage(1)
           }}
           items={[

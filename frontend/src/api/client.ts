@@ -4055,6 +4055,9 @@ export const registryApi = {
     housing_category?: RegistryHousingCategory
     certificate_status?: RegistryCertificateStatus
     status?: '' | 'active' | 'inactive'
+    visit_start_date?: string
+    visit_end_date?: string
+    star_ratings?: string[]
     page?: number
     page_size?: number
   } = {}) {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -22,12 +22,14 @@ from services.permissions import (
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.registry_certificate_status import certificate_status_summary
-from services.registry_visit_history import load_property_visit_summaries
+from services.registry_visit_history import filter_property_ids_by_visit, load_property_visit_summaries
 from services.watch_matching import backfill_assignment_snapshots
 from services.registry_watch_backfill import ensure_watch_person_registry_link
 
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
+
+StarRating = Literal["一星出租房", "二星出租房", "三星出租房", "四星出租房", "五星出租房"]
 
 
 class PropertyCreate(BaseModel):
@@ -72,6 +74,9 @@ class PropertySearch(BaseModel):
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = ""
     status: Literal["", "active", "inactive"] = "active"
+    visit_start_date: date | None = None
+    visit_end_date: date | None = None
+    star_ratings: list[StarRating] = Field(default_factory=list, max_length=5)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=50, ge=1, le=200)
 
@@ -370,6 +375,11 @@ async def _property_search_result(
     user: dict,
     conn,
 ) -> dict:
+    if data.visit_start_date and data.visit_end_date and data.visit_end_date < data.visit_start_date:
+        raise HTTPException(422, "走访结束日期不能早于开始日期")
+    if data.visit_start_date and data.visit_end_date:
+        if (data.visit_end_date - data.visit_start_date).days > 366:
+            raise HTTPException(422, "走访日期范围不能超过 367 天")
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
     if allowed is not None and data.community_id is not None and data.community_id not in allowed:
         raise HTTPException(403, "无权查看该社区档案")
@@ -475,6 +485,37 @@ async def _property_search_result(
         "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) source_ready) "
         "certificate_source_state"
     )
+    # Visit fields live in VisitData. Resolve matching property IDs before
+    # pagination so a filter never applies only to the visible page.
+    if data.visit_start_date or data.visit_end_date or data.star_ratings:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT property.id,property.community_name_snapshot,property.natural_address,property.normalized_address "
+                f"FROM registry_properties property{joins}{clause}",
+                tuple(params),
+            )
+            candidate_rows = await cur.fetchall()
+            candidate_properties = [
+                {
+                    "id": int(row[0]),
+                    "community_name": row[1],
+                    "natural_address": row[2],
+                    "normalized_address": row[3],
+                }
+                for row in candidate_rows
+            ]
+            matching_ids = await filter_property_ids_by_visit(
+                cur,
+                candidate_properties,
+                visit_start_date=data.visit_start_date,
+                visit_end_date=data.visit_end_date,
+                star_ratings=data.star_ratings,
+            )
+        if not matching_ids:
+            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+        where.append("property.id IN (" + ",".join(["%s"] * len(matching_ids)) + ")")
+        params.extend(sorted(matching_ids))
+        clause = " WHERE " + " AND ".join(where) if where else ""
     offset = (data.page - 1) * data.page_size
     async with conn.cursor() as cur:
         await cur.execute(
@@ -515,6 +556,9 @@ async def list_properties(
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = Query(default=""),
     status: Literal["", "active", "inactive"] = Query(default="active"),
+    visit_start_date: date | None = Query(default=None),
+    visit_end_date: date | None = Query(default=None),
+    star_ratings: list[StarRating] = Query(default=[]),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
@@ -526,6 +570,9 @@ async def list_properties(
             housing_category=housing_category,
             certificate_status=certificate_status,
             status=status,
+            visit_start_date=visit_start_date,
+            visit_end_date=visit_end_date,
+            star_ratings=star_ratings,
             page=page,
             page_size=page_size,
         ),
