@@ -110,6 +110,9 @@ ACTION_LABELS: dict[str, str] = {
     "police_dispatch.feedback.export": "导出下发反馈表",
     "mobile_tasks.bulk_assign": "批量分配核查人",
     "mobile_tasks.self_claim": "自主领取核查任务",
+    "mobile_tasks.export": "导出流口任务",
+    "mobile_tasks.analysis_export": "导出待研判任务",
+    "mobile_tasks.analysis_import": "导入研判结果",
     "mobile_tasks.registration.manual_confirm": "人工确认登记结果",
     "qmf_registration.preview": "全民防模型三只读预演",
     "qmf_registration.config.update": "修改全民防封闭测试配置",
@@ -127,6 +130,9 @@ ACTION_LABELS: dict[str, str] = {
     "registry.property.create": "辖区房屋档案创建",
     "registry.property.update": "修改辖区房屋档案",
     "registry.property.status": "修改辖区房屋状态",
+    "registry.properties_export": "导出房屋档案",
+    "registry.people_export": "导出人员档案",
+    "registry.organizations_export": "导出机构档案",
     "registry.property_person.attach": "关联房屋人员",
     "registry.property_person.update": "修改房屋人员关系",
     "registry.property_organization.attach": "关联房屋机构",
@@ -250,6 +256,10 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "work_order_attachment": "工单附件",
     "photo_import_batch": "照片调取批次",
     "task_graph": "个人任务依赖图",
+    "mobile_task_analysis": "流口任务研判",
+    "registry_properties": "辖区房屋档案列表",
+    "registry_people": "辖区人员档案列表",
+    "registry_organizations": "辖区机构档案列表",
 }
 
 RESULT_LABELS: dict[str, str] = {

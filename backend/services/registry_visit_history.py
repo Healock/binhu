@@ -71,19 +71,6 @@ def _visit_table() -> str:
     return f"`{schema}`.`t_visit_details`"
 
 
-def _match_clause(keys_by_community: dict[str, set[str]]) -> tuple[str, tuple[Any, ...]]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    for community, keys in sorted(keys_by_community.items()):
-        if not community or not keys:
-            continue
-        placeholders = ",".join(["%s"] * len(keys))
-        clauses.append(f"(`社区`=%s AND `_address_key` IN ({placeholders}))")
-        params.append(community)
-        params.extend(sorted(keys))
-    return " OR ".join(clauses), tuple(params)
-
-
 async def load_property_visit_summaries(cur, properties: list[dict]) -> dict[int, dict]:
     """一次读取当前房屋页的走访摘要，避免逐房查询。"""
     defaults = {
@@ -114,37 +101,40 @@ async def load_property_visit_summaries(cur, properties: list[dict]) -> dict[int
     keys_by_community: dict[str, set[str]] = defaultdict(set)
     for community, key in unique_owners:
         keys_by_community[community].add(key)
-    clause, params = _match_clause(keys_by_community)
-    if not clause:
+    if not keys_by_community:
         return defaults
-
-    await cur.execute(
-        "SELECT id,`社区`,`_address_key`,`业务日期`,`入户时间`,`星级`,`星级采集时间` "
-        f"FROM {_visit_table()} WHERE {clause}",
-        params,
-    )
     latest_visit_order: dict[int, tuple[str, str, int]] = {}
     latest_rating_order: dict[int, tuple[str, int]] = {}
-    for row in await cur.fetchall():
-        owner = unique_owners.get((str(row[1] or "").strip(), str(row[2] or "")))
-        if owner is None:
-            continue
-        summary = defaults[owner]
-        summary["visit_count"] += 1
-        visit_date = _iso(row[3]) or ""
-        visit_at = _iso(row[4]) or ""
-        visit_order = (visit_date, visit_at, int(row[0]))
-        if visit_order > latest_visit_order.get(owner, ("", "", 0)):
-            latest_visit_order[owner] = visit_order
-            summary["latest_visit_date"] = visit_date or None
-        star = str(row[5] or "").strip()
-        if star:
-            star_at = _iso(row[6]) or visit_at
-            rating_order = (star_at, int(row[0]))
-            if rating_order > latest_rating_order.get(owner, ("", 0)):
-                latest_rating_order[owner] = rating_order
-                summary["latest_star_rating"] = star
-                summary["latest_star_rating_at"] = star_at or None
+    for community, key_set in sorted(keys_by_community.items()):
+        keys = sorted(key_set)
+        for start in range(0, len(keys), 500):
+            batch = keys[start:start + 500]
+            placeholders = ",".join(["%s"] * len(batch))
+            await cur.execute(
+                "SELECT id,`社区`,`_address_key`,`业务日期`,`入户时间`,`星级`,`星级采集时间` "
+                f"FROM {_visit_table()} WHERE `社区`=%s AND `_address_key` IN ({placeholders})",
+                (community, *batch),
+            )
+            for row in await cur.fetchall():
+                owner = unique_owners.get((str(row[1] or "").strip(), str(row[2] or "")))
+                if owner is None:
+                    continue
+                summary = defaults[owner]
+                summary["visit_count"] += 1
+                visit_date = _iso(row[3]) or ""
+                visit_at = _iso(row[4]) or ""
+                visit_order = (visit_date, visit_at, int(row[0]))
+                if visit_order > latest_visit_order.get(owner, ("", "", 0)):
+                    latest_visit_order[owner] = visit_order
+                    summary["latest_visit_date"] = visit_date or None
+                star = str(row[5] or "").strip()
+                if star:
+                    star_at = _iso(row[6]) or visit_at
+                    rating_order = (star_at, int(row[0]))
+                    if rating_order > latest_rating_order.get(owner, ("", 0)):
+                        latest_rating_order[owner] = rating_order
+                        summary["latest_star_rating"] = star
+                        summary["latest_star_rating_at"] = star_at or None
     return defaults
 
 
