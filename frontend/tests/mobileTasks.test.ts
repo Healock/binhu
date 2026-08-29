@@ -867,7 +867,11 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
   assert.doesNotMatch(workbenchSource, /if \(saving\) return/)
   assert.match(workbenchSource, /for \(const group of groups\)/)
   assert.match(workbenchSource, /setCandidates\(current => current\.filter/)
+  assert.match(workbenchSource, /当前有 \$\{availableTotal\} 条未分配数据/)
+  assert.match(workbenchSource, /刷新下一批/)
   assert.match(clientSource, /assignment-workbench/)
+  assert.match(clientSource, /displayed_total/)
+  assert.match(clientSource, /limited: boolean/)
   assert.match(clientSource, /inspector_counts_by_community/)
   const styleSource = readFileSync(
     new URL('../src/index.css', import.meta.url),

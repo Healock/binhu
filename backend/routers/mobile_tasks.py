@@ -2410,6 +2410,26 @@ async def get_mobile_task_assignment_workbench(
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         await cur.execute(
             f"""
+            SELECT COUNT(*)
+            FROM _online_source_projection AS projection
+            WHERE projection.parser_type=%s
+              AND {scope_where}
+              AND TRIM(COALESCE(projection.inspector, ''))=''
+              AND projection.task_state<>'completed'
+              AND {assignment_source_condition}
+              AND EXISTS (
+                  SELECT 1 FROM _online_source_rows AS source_row
+                  WHERE source_row.parser_type=projection.parser_type
+                    AND source_row.row_key=projection.row_key
+                    AND source_row.archived_at IS NULL
+                    {active_source_sql_filter(parser_type, 'source_row')}
+              )
+            """,
+            [parser_type, *scope_params],
+        )
+        available_total = int((await cur.fetchone())[0] or 0)
+        await cur.execute(
+            f"""
             SELECT projection.row_key, projection.community, projection.values_json
             FROM _online_source_projection AS projection
             WHERE projection.parser_type=%s
@@ -2427,14 +2447,9 @@ async def get_mobile_task_assignment_workbench(
             ORDER BY {_address_order(parser_type)}, projection.row_key
             LIMIT %s
             """,
-            [parser_type, *scope_params, MAX_BULK_ASSIGNMENT_TASKS + 1],
+            [parser_type, *scope_params, MAX_BULK_ASSIGNMENT_TASKS],
         )
         rows = await cur.fetchall()
-        if len(rows) > MAX_BULK_ASSIGNMENT_TASKS:
-            raise HTTPException(
-                409,
-                f"当前未分配任务超过 {MAX_BULK_ASSIGNMENT_TASKS} 条，请先分业务或社区处理",
-            )
         assignment_context = await inspector_option_context(
             cur,
             user,
@@ -2489,7 +2504,10 @@ async def get_mobile_task_assignment_workbench(
         inspector_counts_by_community.setdefault(formal_community, {})[inspector_name] = int(count or 0)
     return {
         "data": items,
-        "total": len(items),
+        "total": available_total,
+        "displayed_total": len(items),
+        "limited": available_total > len(items),
+        "limit": MAX_BULK_ASSIGNMENT_TASKS,
         "communities": [
             {"value": community, "label": community, "count": count}
             for community, count in sorted(community_counts.items())
