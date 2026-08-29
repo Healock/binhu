@@ -24,6 +24,7 @@ from services.registry_security import hmac_digest, normalize_identity, normaliz
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_visit_history import load_property_visit_summaries
 from services.watch_matching import backfill_assignment_snapshots
+from services.registry_watch_backfill import ensure_watch_person_registry_link
 
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
@@ -942,19 +943,32 @@ async def create_watch_person(
     if identity and user.get("role") != "super_admin":
         raise HTTPException(403, "身份证号只能由超级管理员录入")
     identity_hmac, hmac_version = hmac_digest(identity, kind="identity")
-    async with conn.cursor() as cur:
-        if identity_hmac:
-            await cur.execute("SELECT id FROM watch_people WHERE identity_hmac=%s", (identity_hmac,))
-            if await cur.fetchone():
-                raise HTTPException(409, "该身份证号已存在人员标签档案")
-        await cur.execute(
-            "INSERT INTO watch_people "
-            "(name, identity_number, identity_hmac, identity_hmac_version, is_temporary, verification_status, created_by, updated_by) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (data.name.strip(), identity or None, identity_hmac, hmac_version,
-             int(data.is_temporary), data.verification_status, user["id"], user["id"]),
-        )
-        person_id = int(cur.lastrowid)
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            if identity_hmac:
+                await cur.execute("SELECT id FROM watch_people WHERE identity_hmac=%s", (identity_hmac,))
+                if await cur.fetchone():
+                    raise HTTPException(409, "该身份证号已存在人员标签档案")
+            await cur.execute(
+                "INSERT INTO watch_people "
+                "(name, identity_number, identity_hmac, identity_hmac_version, is_temporary, verification_status, created_by, updated_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (data.name.strip(), identity or None, identity_hmac, hmac_version,
+                 int(data.is_temporary), data.verification_status, user["id"], user["id"]),
+            )
+            person_id = int(cur.lastrowid)
+            await ensure_watch_person_registry_link(
+                cur,
+                person_id,
+                source_type="watch_manual",
+                source_ref=f"watch_person:{person_id}",
+                actor_id=user["id"],
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     await record_admin_audit(
         user,
         "registry.watch_person.create",

@@ -32,6 +32,7 @@ from services.permissions import (
     has_permission,
 )
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
+from services.registry_watch_backfill import ensure_watch_person_registry_link
 from services.watch_matching import backfill_assignment_snapshots
 from services.registry_import import (
     ISSUE_CERTIFICATE_CONTENT_CONFLICT,
@@ -2952,8 +2953,8 @@ async def list_housing_person_merges(
         await cur.execute(
             "SELECT history.id, history.source_person_id, source.name, history.target_person_id, target.name, "
             "history.reason, history.created_at, "
-            "EXISTS (SELECT 1 FROM registry_merge_history undo WHERE undo.source_person_id=history.source_person_id "
-            "AND undo.action='undo' AND undo.id>history.id) AS undone "
+            "EXISTS (SELECT 1 FROM registry_merge_history undo_record WHERE undo_record.source_person_id=history.source_person_id "
+            "AND undo_record.action='undo' AND undo_record.id>history.id) AS undone "
             "FROM registry_merge_history history "
             "JOIN registry_housing_people source ON source.id=history.source_person_id "
             "JOIN registry_housing_people target ON target.id=history.target_person_id "
@@ -3066,7 +3067,7 @@ async def update_watch_person(
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT identity_number, identity_hmac, identity_hmac_version "
+                "SELECT identity_number, identity_hmac, identity_hmac_version, registry_person_id "
                 "FROM watch_people WHERE id=%s FOR UPDATE",
                 (person_id,),
             )
@@ -3083,14 +3084,25 @@ async def update_watch_person(
                 await cur.execute("SELECT id FROM watch_people WHERE identity_hmac=%s AND id<>%s", (digest, person_id))
                 if await cur.fetchone():
                     raise HTTPException(409, "该身份证号已存在其他人员标签档案")
+            old_digest = existing[1]
+            # A changed or removed identity must not retain the old archive
+            # link. The helper below will attach the new digest when valid.
+            next_registry_person_id = existing[3] if digest and digest == old_digest else None
             await cur.execute(
                 "UPDATE watch_people SET name=%s, identity_number=%s, identity_hmac=%s, identity_hmac_version=%s, "
-                "verification_status=%s, status=%s, updated_by=%s WHERE id=%s",
-                (data.name.strip(), identity or None, digest, version, data.verification_status,
-                 data.status, user["id"], person_id),
+                "registry_person_id=%s, verification_status=%s, status=%s, updated_by=%s WHERE id=%s",
+                (data.name.strip(), identity or None, digest, version, next_registry_person_id,
+                 data.verification_status, data.status, user["id"], person_id),
             )
             if cur.rowcount != 1:
                 raise HTTPException(404, "人员标签档案不存在")
+            await ensure_watch_person_registry_link(
+                cur,
+                person_id,
+                source_type="watch_manual",
+                source_ref=f"watch_person:{person_id}",
+                actor_id=user["id"],
+            )
         await conn.commit()
     except Exception:
         await conn.rollback()

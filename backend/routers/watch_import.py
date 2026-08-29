@@ -13,6 +13,7 @@ from routers.registry import get_registry_db
 from services.audit import record_admin_audit, request_audit_fields
 from services.permissions import REGISTRY_IMPORT_MANAGE
 from services.registry_security import hmac_digest
+from services.registry_watch_backfill import ensure_watch_person_registry_link
 from services.watch_import import (
     CORE_CATEGORY_CODES,
     WatchImportRow,
@@ -350,6 +351,17 @@ async def confirm_watch_import(
                     (person_id, phone, phone_digest, phone_version, is_primary, source_ref, actor_id),
                 )
                 created_phones += 1
+
+            # Phones are inserted above for legacy compatibility; copy the
+            # resulting active phone set to the registry archive now.
+            for person_id in sorted(set(person_by_identity.values())):
+                await ensure_watch_person_registry_link(
+                    cur,
+                    person_id,
+                    source_type="watch_import",
+                    source_ref=f"batch:{batch_id}",
+                    actor_id=user["id"],
+                )
 
             person_ids = list(person_by_identity.values())
             existing_assignments: set[int] = set()

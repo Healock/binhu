@@ -1517,3 +1517,17 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 - 电脑端双层表格把每条任务调整为 12px 圆角分组卡片，移除粗横线和左侧竖线，增加柔和边框、轻阴影、组间留白及未保存/多选状态高亮。
 - 本版只修改前端样式和版本记录，不改变接口、数据库、权限或腾讯写回协议。发布使用 `backup_scope=none / release_scope=auto`；上线后检查浅色、深色、长地址、状态标签、横向滚动和保存状态，验收前不创建标签。
+
+### 人员标签历史回填（显式维护命令）
+
+- 历史 `watch_people` 与辖区人员档案的关联不会在应用启动时自动写入。首次处理前，先在维护窗口完成 `RegistryData` 完整备份，并确认没有并行的人员标签导入、编辑或合并操作。
+- 预览和核验均为只读：
+  `python -m migrations.registry_watch_people measure`、
+  `python -m migrations.registry_watch_people migrate`、
+  `python -m migrations.registry_watch_people verify`。
+- 只有明确获得维护授权后才执行：
+  `python -m migrations.registry_watch_people migrate --apply --batch-size 500`。
+  命令按身份证摘要幂等创建/复用人员档案、回填 `registry_person_id`，并复制有效联系电话；不会删除标签、标签历史、任务快照或建立虚假的房屋关系。
+- 输出仅包含汇总数量，不包含姓名、身份证号、手机号、地址或原始标签内容。缺少身份证摘要、摘要冲突或关联不唯一的数据会安全跳过并计数，不覆盖已有档案字段。
+- 中断后可直接重复执行；已完成的关联不会重复创建。若必须回退，先停止迁移并保留幂等结果，确需恢复时使用迁移前备份，并评估其对迁移后正常业务写入的影响。
+- 首次部署只发布代码，不自动执行 `--apply`。执行后使用 `verify` 核对有效标签人数、已关联人数、摘要一致性和联系电话数量，再开放人员档案页面。
