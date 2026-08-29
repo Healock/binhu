@@ -36,10 +36,18 @@ def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
     """
     if local_data_source_enabled():
         prefix = f"{alias}."
+        local_kinds = (
+            f"{prefix}source_kind IN ('local_table','local_dispatch')"
+        )
+        model_three_compat = ""
+        if parser_type in {"疑似未注销模型三", "all"}:
+            model_three_compat = (
+                f" OR ({prefix}parser_type='疑似未注销模型三'"
+                f" AND {prefix}sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}')"
+            )
         return (
             f" AND {prefix}spreadsheet_id=0"
-            f" AND ({prefix}source_kind LIKE 'local_%'"
-            f" OR {prefix}sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}')"
+            f" AND ({local_kinds}{model_three_compat})"
         )
     return logical_source_sql_filter(parser_type, alias)
 

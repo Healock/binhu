@@ -535,7 +535,7 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
                source.values_json, source.cell_meta_json, source.revision,
                spreadsheet.name, spreadsheet.file_id,
                spreadsheet.data_sheet_id, spreadsheet.header_row,
-               spreadsheet.enabled
+               spreadsheet.enabled, source.source_kind, source.source_ref
         FROM _online_source_rows AS source
         LEFT JOIN _config_spreadsheets AS spreadsheet
           ON spreadsheet.id=source.spreadsheet_id
@@ -560,6 +560,8 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
         "values": json_value(row[6], {}),
         "cell_meta": json_value(row[7], {}),
         "revision": int(row[8]),
+        "source_kind": str(row[14] or ""),
+        "source_ref": str(row[15] or ""),
         "spreadsheet": {
             "id": int(row[1]),
             "name": str(row[9] or "本地业务数据"),
@@ -814,7 +816,8 @@ async def _update_local_source_fields(
             await cur.execute(
                 "SELECT id FROM _online_source_rows "
                 "WHERE parser_type=%s AND row_key=%s AND id<>%s "
-                "AND archived_at IS NULL LIMIT 1",
+                "AND archived_at IS NULL "
+                f"{active_source_sql_filter(parser_type)} LIMIT 1",
                 (parser_type, new_key, source_id),
             )
             if await cur.fetchone():
@@ -2227,7 +2230,8 @@ async def create_source_row(
             new_key = parser.make_row_key(values)
             await cur.execute(
                 "SELECT id FROM _online_source_rows "
-                "WHERE parser_type=%s AND row_key=%s AND archived_at IS NULL LIMIT 1",
+                "WHERE parser_type=%s AND row_key=%s AND archived_at IS NULL "
+                f"{active_source_sql_filter(parser_type)} LIMIT 1",
                 (parser_type, new_key),
             )
             if await cur.fetchone():
@@ -2445,8 +2449,8 @@ async def delete_source_row(
                 )
                 await cur.execute(
                     "UPDATE _local_source_records SET status='archived', archived_at=UTC_TIMESTAMP(), "
-                    "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
-                    (f"{parser.table_name}:{source['physical_row']}",),
+                    "updated_at=UTC_TIMESTAMP() WHERE source_kind=%s AND source_ref=%s",
+                    (source["source_kind"], source["source_ref"]),
                 )
                 await cur.execute("DELETE FROM _online_local_changes WHERE source_id=%s", (source_id,))
                 await cur.execute("DELETE FROM _online_source_rows WHERE id=%s", (source_id,))

@@ -14,6 +14,7 @@ from services.local_source import (
 )
 from services.online_source import (
     acquire_sheet_lock,
+    active_source_sql_filter,
     json_value,
     rebuild_projection,
     release_sheet_lock,
@@ -307,7 +308,9 @@ async def apply_local_system_changes(
     if new_key != old_key:
         await cur.execute(
             "SELECT id FROM _online_source_rows "
-            "WHERE parser_type=%s AND row_key=%s AND id<>%s LIMIT 1",
+            "WHERE parser_type=%s AND row_key=%s AND id<>%s "
+            "AND archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type)} LIMIT 1",
             (parser_type, new_key, source_id),
         )
         if await cur.fetchone():
@@ -315,6 +318,17 @@ async def apply_local_system_changes(
 
     table_name = parser.table_name.replace("`", "")
     physical_id = int(source.get("physical_row") or 0)
+    await cur.execute(
+        "SELECT source_kind,source_ref FROM _online_source_rows "
+        "WHERE id=%s AND revision=%s FOR UPDATE",
+        (source_id, expected_revision),
+    )
+    previous_source = await cur.fetchone()
+    if not previous_source:
+        raise ValueError("本地来源版本已变化")
+    previous_source_kind = str(previous_source[0] or "")
+    previous_source_ref = str(previous_source[1] or "")
+    local_source_ref = f"{table_name}:{physical_id}"
     assignments = ", ".join(f"`{field}`=%s" for field in changed)
     await cur.execute(
         f"UPDATE `{table_name}` SET {assignments}, `_row_key`=%s, "
@@ -332,13 +346,19 @@ async def apply_local_system_changes(
         "WHERE id=%s AND revision=%s",
         (
             local_sheet_id(parser_type), physical_id, new_key, content_hash,
-            stable_json(after), f"{table_name}:{physical_id}", source_id,
+            stable_json(after), local_source_ref, source_id,
             expected_revision,
         ),
     )
     if cur.rowcount != 1:
         raise ValueError("本地来源版本已变化")
     next_revision = expected_revision + 1
+    if previous_source_kind != "local_table" or previous_source_ref != local_source_ref:
+        await cur.execute(
+            "UPDATE _local_source_records SET status='superseded', "
+            "updated_at=UTC_TIMESTAMP() WHERE source_kind=%s AND source_ref=%s",
+            (previous_source_kind, previous_source_ref),
+        )
     await cur.execute(
         "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
         "business_key=%s, values_json=%s, content_hash=%s, revision=%s, "
@@ -346,7 +366,7 @@ async def apply_local_system_changes(
         "WHERE source_kind='local_table' AND source_ref=%s",
         (
             parser_type, physical_id, new_key, stable_json(after), content_hash,
-            next_revision, f"{table_name}:{physical_id}",
+            next_revision, local_source_ref,
         ),
     )
     if cur.rowcount == 0:
@@ -356,7 +376,7 @@ async def apply_local_system_changes(
             "values_json,content_hash,revision,status) VALUES "
             "(%s,%s,%s,'local_table',%s,%s,%s,%s,'active')",
             (
-                parser_type, physical_id, new_key, f"{table_name}:{physical_id}",
+                parser_type, physical_id, new_key, local_source_ref,
                 stable_json(after), content_hash, next_revision,
             ),
         )
