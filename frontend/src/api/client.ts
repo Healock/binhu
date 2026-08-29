@@ -1463,6 +1463,7 @@ export interface MobileTaskDetailData {
     tencent_marker_status: QmfTencentMarkerStatus
   } | null
   sources: MobileTaskSource[]
+  data_source_mode?: 'local' | 'tencent'
 }
 
 export type TaskGraphNodeStatus = 'ready' | 'blocked' | 'in_progress' | 'completed' | 'cancelled' | 'source_missing' | 'archived'
