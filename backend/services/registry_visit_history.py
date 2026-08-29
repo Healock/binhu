@@ -42,25 +42,27 @@ async def load_property_address_variants(cur, property_ids: list[int]) -> dict[i
     variants: dict[int, list[str]] = defaultdict(list)
     if not property_ids:
         return variants
-    placeholders = ",".join(["%s"] * len(property_ids))
-    await cur.execute(
-        "SELECT property_id,alias FROM registry_address_aliases "
-        f"WHERE enabled=1 AND property_id IN ({placeholders})",
-        tuple(property_ids),
-    )
-    for property_id, alias in await cur.fetchall():
-        variants[int(property_id)].append(str(alias or ""))
-    await cur.execute(
-        "SELECT property_id,natural_address,normalized_address "
-        "FROM registry_property_address_versions "
-        f"WHERE property_id IN ({placeholders})",
-        tuple(property_ids),
-    )
-    for property_id, natural_address, normalized_address in await cur.fetchall():
-        variants[int(property_id)].extend([
-            str(natural_address or ""),
-            str(normalized_address or ""),
-        ])
+    for start in range(0, len(property_ids), 500):
+        batch = property_ids[start:start + 500]
+        placeholders = ",".join(["%s"] * len(batch))
+        await cur.execute(
+            "SELECT property_id,alias FROM registry_address_aliases "
+            f"WHERE enabled=1 AND property_id IN ({placeholders})",
+            tuple(batch),
+        )
+        for property_id, alias in await cur.fetchall():
+            variants[int(property_id)].append(str(alias or ""))
+        await cur.execute(
+            "SELECT property_id,natural_address,normalized_address "
+            "FROM registry_property_address_versions "
+            f"WHERE property_id IN ({placeholders})",
+            tuple(batch),
+        )
+        for property_id, natural_address, normalized_address in await cur.fetchall():
+            variants[int(property_id)].extend([
+                str(natural_address or ""),
+                str(normalized_address or ""),
+            ])
     return variants
 
 
@@ -144,6 +146,70 @@ async def load_property_visit_summaries(cur, properties: list[dict]) -> dict[int
                 summary["latest_star_rating"] = star
                 summary["latest_star_rating_at"] = star_at or None
     return defaults
+
+
+async def filter_property_ids_by_visit(
+    cur,
+    properties: list[dict],
+    *,
+    visit_start_date: date | None = None,
+    visit_end_date: date | None = None,
+    star_ratings: list[str] | None = None,
+) -> set[int]:
+    """Return properties having at least one matching visit record.
+
+    Address matching intentionally reuses the same exact community/address-key
+    rules as the summary loader.  The caller supplies the complete candidate
+    property set before pagination, so filtering cannot accidentally affect only
+    the currently displayed page.
+    """
+    if not properties:
+        return set()
+    variants = await load_property_address_variants(cur, [int(item["id"]) for item in properties])
+    owners: dict[tuple[str, str], set[int]] = defaultdict(set)
+    for item in properties:
+        property_id = int(item["id"])
+        community = str(item.get("community_name") or "").strip()
+        for key in property_visit_keys(item, variants.get(property_id)):
+            owners[(community, key)].add(property_id)
+    unique_owners = {
+        pair: next(iter(property_ids))
+        for pair, property_ids in owners.items()
+        if len(property_ids) == 1
+    }
+    keys_by_community: dict[str, set[str]] = defaultdict(set)
+    for community, key in unique_owners:
+        keys_by_community[community].add(key)
+    if not keys_by_community:
+        return set()
+    normalized_ratings = [str(value).strip() for value in (star_ratings or []) if str(value).strip()]
+    matched: set[int] = set()
+    for community, key_set in sorted(keys_by_community.items()):
+        keys = sorted(key_set)
+        for start in range(0, len(keys), 500):
+            batch = keys[start:start + 500]
+            placeholders = ",".join(["%s"] * len(batch))
+            conditions = [f"`社区`=%s", f"`_address_key` IN ({placeholders})"]
+            query_params: list[Any] = [community, *batch]
+            if visit_start_date is not None:
+                conditions.append("`业务日期` >= %s")
+                query_params.append(visit_start_date)
+            if visit_end_date is not None:
+                conditions.append("`业务日期` <= %s")
+                query_params.append(visit_end_date)
+            if normalized_ratings:
+                rating_placeholders = ",".join(["%s"] * len(normalized_ratings))
+                conditions.append(f"`星级` IN ({rating_placeholders})")
+                query_params.extend(normalized_ratings)
+            await cur.execute(
+                f"SELECT `社区`,`_address_key` FROM {_visit_table()} WHERE {' AND '.join(conditions)}",
+                tuple(query_params),
+            )
+            for visit_community, address_key in await cur.fetchall():
+                owner = unique_owners.get((str(visit_community or "").strip(), str(address_key or "")))
+                if owner is not None:
+                    matched.add(owner)
+    return matched
 
 
 async def load_property_visit_history(

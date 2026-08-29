@@ -156,6 +156,36 @@ test('房屋档案展示最近走访并按页读取历史走访和星级', () =>
   assert.match(pageSource, /title: '星级评定'/)
 })
 
+test('房屋档案在表头按走访区间和星级类型执行服务端筛选', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+  const propertyColumns = pageSource.slice(
+    pageSource.indexOf('const propertyColumns'),
+    pageSource.indexOf('const personColumns'),
+  )
+  const propertyToolbar = pageSource.slice(
+    pageSource.indexOf("const toolbarFilters = tab === 'properties'"),
+    pageSource.indexOf(": tab === 'issues'"),
+  )
+
+  assert.match(propertyColumns, /DatePicker\.RangePicker/)
+  assert.match(propertyColumns, /mode="multiple"/)
+  assert.match(propertyColumns, /filterDropdown/)
+  assert.match(pageSource, /visit_start_date: visitDateRange\?\.\[0\]/)
+  assert.match(pageSource, /visit_end_date: visitDateRange\?\.\[1\]/)
+  assert.match(pageSource, /star_ratings: starRatings/)
+  assert.match(apiSource, /visit_start_date\?: string/)
+  assert.match(apiSource, /star_ratings\?: string\[\]/)
+  assert.doesNotMatch(propertyToolbar, /placeholder="全部社区"/)
+  assert.doesNotMatch(propertyToolbar, /全部责任书状态/)
+})
+
 test('人员标签整合到人员档案并保留独立权限和历史', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
