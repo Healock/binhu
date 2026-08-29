@@ -186,6 +186,26 @@ test('房屋档案在表头按走访区间和星级类型执行服务端筛选',
   assert.doesNotMatch(propertyToolbar, /全部责任书状态/)
 })
 
+test('辖区房屋、人员和机构档案按页面当前条件导出', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /api\.post\('\/registry\/properties\/export', params/)
+  assert.match(apiSource, /api\.post\('\/registry\/people\/export', payload/)
+  assert.match(apiSource, /api\.post\('\/registry\/organizations\/export', params/)
+  assert.match(pageSource, /sort: propertySort/)
+  assert.match(pageSource, /exportPeople\(\{ name: debouncedKeyword, category_ids: categoryIds \}\)/)
+  assert.match(pageSource, /exportOrganizations\(\{ keyword: debouncedKeyword \}\)/)
+  assert.match(pageSource, /导出当前结果/)
+  assert.match(pageSource, /最近走访/)
+})
+
 test('人员标签整合到人员档案并保留独立权限和历史', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),

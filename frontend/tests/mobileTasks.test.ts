@@ -462,6 +462,25 @@ test('两级研判状态在卡片、表格和详情中直接提示复核信息',
   assert.match(noticeSource, /只填写二次反馈不会结束无法核实流程/)
 })
 
+test('流口任务和待研判任务按当前筛选排序导出并支持研判结果回导', () => {
+  const listSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /mobileTaskSearchPayload\(params\)/)
+  assert.match(apiSource, /\/mobile-tasks\/analysis\/export/)
+  assert.match(apiSource, /\/mobile-tasks\/analysis\/import/)
+  assert.match(listSource, /exportMobileTasks\(\{[\s\S]*?sort,[\s\S]*?keyword:/)
+  assert.match(listSource, /exportMobileTaskAnalysis\(\{[\s\S]*?sort,[\s\S]*?keyword:/)
+  assert.match(listSource, /导出当前结果/)
+  assert.match(listSource, /导入研判结果/)
+})
+
 test('研判详情只提供结构化成功失败决定，不再自由保存研判文字', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),

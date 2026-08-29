@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+from io import BytesIO
 from typing import Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
+from openpyxl import load_workbook
 from pydantic import BaseModel, Field
 
 from database import db_manager, get_db
@@ -74,6 +78,7 @@ from services.unverifiable_review import (
     supports_unverifiable_review,
 )
 from services.audit import record_admin_audit, request_audit_fields
+from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 from config import settings
 from services.local_source import local_data_source_enabled
 from services.watch_matching import task_watch_payload
@@ -1818,6 +1823,136 @@ def _task_record(
     }
 
 
+def _export_value(values: dict, *keys: str) -> str:
+    for key in keys:
+        value = values.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _mobile_export_row(
+    parser_type: str,
+    row_key: str,
+    values: dict,
+    source_id: int | None,
+    source_count: int,
+    conflict: bool,
+    pending: bool,
+    task_state: str,
+    source_revision: int | None = None,
+    source_row_hash: str = "",
+    review_flow: dict | None = None,
+) -> list[object]:
+    workflow = TASK_WORKFLOWS[parser_type]
+    stage = str((review_flow or {}).get("state") or workflow.review_stage(values) or "")
+    return [
+        parser_type,
+        row_key,
+        source_id or "",
+        source_revision or "",
+        source_row_hash,
+        int((review_flow or {}).get("flow_version") or 0) or "",
+        _export_value(values, "姓名", "核查对象", "对象姓名"),
+        _export_value(values, "身份证号", "身份证号码", "公民身份号码"),
+        _export_value(values, "联系号码", "手机号", "联系电话", "手机号码"),
+        _export_value(values, "原地址", "原住址", "地址", "疑似现住址"),
+        _export_value(values, "社区", "下发社区"),
+        _export_value(values, "核查人"),
+        task_state,
+        UNVERIFIABLE_STATE_LABELS.get(stage, stage),
+        "",
+        _export_value(values, *workflow.analysis_fields),
+        _export_value(values, *workflow.secondary_fields),
+        _export_value(values, workflow.result_field),
+        _export_value(values, *workflow.date_fields),
+        "是" if conflict or source_count != 1 else "否",
+        "是" if pending else "否",
+    ]
+
+
+async def _mobile_export_workbook(
+    *,
+    data: TaskSearch | AnalysisTaskSearch,
+    parser_type: str | None,
+    user: dict,
+    conn,
+) -> tuple[BytesIO, int]:
+    context = await _flow_context(conn, user)
+    active_source_filter = (
+        " AND source.spreadsheet_id=0 "
+        "AND source.source_kind IN ('local_table','local_dispatch')"
+        if local_data_source_enabled() else ""
+    )
+    if isinstance(data, AnalysisTaskSearch):
+        parser_types = list(dict.fromkeys(data.parser_types))
+        if not parser_types or any(value not in TASK_WORKFLOWS for value in parser_types):
+            raise HTTPException(400, "存在尚未接入研判工作台的业务表")
+        where_sql, query_params = _analysis_task_where(context, data)
+        order_sql = _analysis_order(data)
+        type_label = "研判任务"
+    else:
+        if not parser_type or parser_type not in TASK_WORKFLOWS:
+            raise HTTPException(400, "该业务尚未接入手机任务工作台")
+        parser_types = [parser_type]
+        where_sql, query_params = _task_where(context, parser_type, data)
+        order_sql = _task_order(parser_type, data.sort)
+        type_label = parser_type
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT projection.parser_type, projection.row_key, projection.values_json,
+                   projection.source_count, projection.conflict, projection.pending_state,
+                   projection.task_state,
+                   (SELECT MIN(source.id) FROM _online_source_rows source
+                    WHERE source.parser_type=projection.parser_type
+                      AND source.row_key=projection.row_key
+                      AND source.archived_at IS NULL{active_source_filter}) AS source_id,
+                   (SELECT source.revision FROM _online_source_rows source
+                    WHERE source.parser_type=projection.parser_type
+                      AND source.row_key=projection.row_key
+                      AND source.archived_at IS NULL{active_source_filter}
+                    ORDER BY source.id LIMIT 1) AS source_revision,
+                   (SELECT source.row_hash FROM _online_source_rows source
+                    WHERE source.parser_type=projection.parser_type
+                      AND source.row_key=projection.row_key
+                      AND source.archived_at IS NULL{active_source_filter}
+                    ORDER BY source.id LIMIT 1) AS source_row_hash
+            FROM _online_source_projection AS projection
+            WHERE {where_sql}
+            ORDER BY {order_sql}
+            LIMIT 100000
+            """,
+            query_params,
+        )
+        rows = await cur.fetchall()
+        review_by_row = await review_flows_by_rows(
+            cur, [(str(row[0]), str(row[1])) for row in rows]
+        )
+    export_rows = [
+        _mobile_export_row(
+            str(row[0]), str(row[1]), json_value(row[2], {}),
+            int(row[7]) if row[7] is not None else None,
+            int(row[3] or 0), bool(row[4]), bool(row[5]), str(row[6] or ""),
+            int(row[8]) if row[8] is not None else None,
+            str(row[9] or ""),
+            review_by_row.get((str(row[0]), str(row[1]))),
+        )
+        for row in rows
+    ]
+    workbook = build_xlsx(
+        type_label,
+        [
+            "业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本",
+            "姓名", "身份证号", "手机号",
+            "原地址", "社区", "核查人", "任务状态", "研判阶段", "本次研判决定", "研判意见",
+            "复核反馈", "核查结果", "截止日期", "来源异常", "待同步",
+        ],
+        export_rows,
+    )
+    return workbook, len(export_rows)
+
+
 def _source_in_community(
     parser,
     values: dict,
@@ -2263,6 +2398,122 @@ async def search_mobile_task_analysis(
     return await _list_analysis_tasks_data(data, user, conn)
 
 
+@router.post("/analysis/export")
+async def export_mobile_task_analysis(
+    data: AnalysisTaskSearch,
+    request: Request,
+    user: dict = Depends(require_permission(ONLINE_TASK_MANAGE)),
+    conn=Depends(get_db),
+):
+    workbook, count = await _mobile_export_workbook(
+        data=data, parser_type=None, user=user, conn=conn,
+    )
+    await record_admin_audit(
+        user,
+        "mobile_tasks.analysis_export",
+        target_type="mobile_task_analysis",
+        target_name="研判任务",
+        detail={
+            "file_format": "XLSX",
+            "parser_types": list(dict.fromkeys(data.parser_types)),
+            "review_stage": data.review_stage,
+            "communities_count": len(data.communities),
+            "inspectors_count": len(data.inspectors),
+            "sort": data.sort,
+            "keyword_present": bool(data.keyword.strip()),
+            "rows": count,
+        },
+        **request_audit_fields(request),
+    )
+    filename = f"研判任务-{datetime.now():%Y%m%d%H%M%S}.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.post("/analysis/import")
+async def import_mobile_task_analysis(
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_permission(ONLINE_TASK_MANAGE)),
+    conn=Depends(get_db),
+):
+    """Import a previously exported analysis workbook without creating tasks."""
+    content = await file.read()
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        sheet = workbook.active
+        values = list(sheet.values)
+    except Exception as exc:
+        raise HTTPException(400, "研判文件无法读取，请上传平台导出的 XLSX 文件") from exc
+    if not values:
+        raise HTTPException(400, "研判文件为空")
+    headers = [str(value or "").strip() for value in values[0]]
+    required = ["业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本", "研判阶段", "本次研判决定", "研判意见"]
+    missing = [header for header in required if header not in headers]
+    if missing:
+        raise HTTPException(400, f"研判文件缺少字段：{'、'.join(missing)}")
+    index = {header: headers.index(header) for header in required}
+    succeeded: list[dict] = []
+    failed: list[dict] = []
+    for row_number, row in enumerate(values[1:], start=2):
+        cell = lambda key: str(row[index[key]] or "").strip() if index[key] < len(row) else ""
+        outcome = cell("本次研判决定").lower()
+        if not outcome:
+            continue
+        parser_type = cell("业务类型")
+        try:
+            source_id = int(cell("来源ID"))
+            expected_revision = int(cell("来源版本"))
+            flow_version = int(cell("流程版本"))
+        except ValueError:
+            failed.append({"row": row_number, "reason": "来源ID、来源版本和流程版本必须是数字"})
+            continue
+        normalized_outcome = {"成功": "success", "研判成功": "success", "success": "success", "失败": "failure", "研判失败": "failure", "failure": "failure"}.get(outcome)
+        if normalized_outcome is None:
+            failed.append({"row": row_number, "reason": "本次研判决定只能填写成功或失败"})
+            continue
+        stage = {
+            INITIAL_PENDING: INITIAL_PENDING,
+            UNVERIFIABLE_STATE_LABELS[INITIAL_PENDING]: INITIAL_PENDING,
+            DEEP_PENDING: DEEP_PENDING,
+            UNVERIFIABLE_STATE_LABELS[DEEP_PENDING]: DEEP_PENDING,
+        }.get(cell("研判阶段"))
+        if stage is None:
+            failed.append({"row": row_number, "reason": "研判阶段不是当前可提交的初步或深度待研判状态"})
+            continue
+        if not parser_type or not supports_unverifiable_review(parser_type):
+            failed.append({"row": row_number, "reason": "该业务不支持通过研判文件提交两级研判"})
+            continue
+        try:
+            decision = UnverifiableDecision(
+                stage=stage,
+                outcome=normalized_outcome,
+                opinion=cell("研判意见"),
+                flow_version=flow_version,
+                expected_revision=expected_revision,
+                expected_row_hash=cell("来源行哈希"),
+            )
+            result = await decide_mobile_task_unverifiable_review(
+                parser_type, source_id, decision, request, user, conn,
+            )
+            succeeded.append({"row": row_number, "task": f"{parser_type}:{cell('任务标识')}", "state": result.get("review_flow", {}).get("state", "")})
+        except (HTTPException, ValueError) as exc:
+            reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            failed.append({"row": row_number, "reason": reason})
+    await record_admin_audit(
+        user,
+        "mobile_tasks.analysis_import",
+        target_type="mobile_task_analysis",
+        target_name=file.filename or "研判文件",
+        detail={"file_format": "XLSX", "success_count": len(succeeded), "failed_count": len(failed)},
+        **request_audit_fields(request),
+    )
+    return {"success_count": len(succeeded), "failed_count": len(failed), "success": succeeded, "failed": failed}
+
+
 @router.get("/{parser_type}/filter-options")
 async def get_mobile_task_filter_options(
     parser_type: str,
@@ -2308,6 +2559,42 @@ async def search_mobile_tasks(
     conn=Depends(get_db),
 ):
     return await _list_mobile_tasks_data(parser_type, data, user, conn)
+
+
+@router.post("/{parser_type}/export")
+async def export_mobile_tasks(
+    parser_type: str,
+    data: TaskSearch,
+    request: Request,
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    workbook, count = await _mobile_export_workbook(
+        data=data, parser_type=parser_type, user=user, conn=conn,
+    )
+    await record_admin_audit(
+        user,
+        "mobile_tasks.export",
+        target_type="mobile_task",
+        target_name=parser_type,
+        detail={
+            "file_format": "XLSX",
+            "status": data.status,
+            "review_stage": data.review_stage,
+            "communities_count": len(data.communities),
+            "inspectors_count": len(data.inspectors),
+            "sort": data.sort,
+            "keyword_present": bool(data.keyword.strip()),
+            "rows": count,
+        },
+        **request_audit_fields(request),
+    )
+    filename = f"{parser_type}-任务-{datetime.now():%Y%m%d%H%M%S}.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.post("/{parser_type}/assignment-selection")

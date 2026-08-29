@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import type { ReactNode } from 'react'
-import { FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
 import type { ResponsiveColumns } from '../components/responsiveTable'
@@ -27,6 +27,7 @@ import {
   type WatchCategory,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { downloadBlob } from '../utils/fileDownload'
 
 type TabKey = 'properties' | 'people' | 'organizations' | 'merges' | 'candidates' | 'conflicts' | 'issues' | 'imports'
 type ModalKind = 'property' | 'person' | 'organization' | 'phone' | 'alias' | 'personRelation' | 'organizationRelation' | 'merge' | 'personTag'
@@ -100,6 +101,7 @@ export default function RegistryManagement() {
   const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
   const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
   const [starRatings, setStarRatings] = useState<string[]>([])
+  const [propertySort, setPropertySort] = useState<'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'>('id_desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [total, setTotal] = useState(0)
@@ -110,6 +112,7 @@ export default function RegistryManagement() {
   const [certificateRun, setCertificateRun] = useState<RegistryCertificateSourceRun | null>(null)
   const [communities, setCommunities] = useState<Array<{ id: number; name: string }>>([])
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
   const [keyword, setKeyword] = useState('')
   const [keywordFlush, setKeywordFlush] = useState(0)
@@ -181,6 +184,7 @@ export default function RegistryManagement() {
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
           star_ratings: starRatings,
+          sort: propertySort,
           page,
           page_size: pageSize,
         })
@@ -256,8 +260,8 @@ export default function RegistryManagement() {
   }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, propertySort])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, propertySort, page, pageSize])
 
   const applyCertificateRun = (run: RegistryCertificateSourceRun, announce = false) => {
     const previousStatus = certificateRunRef.current?.status
@@ -544,6 +548,40 @@ export default function RegistryManagement() {
     await load()
   }
 
+  const exportRegistryRecords = async () => {
+    if (!['properties', 'people', 'organizations'].includes(tab)) return
+    setExporting(true)
+    try {
+      const exportName = tab === 'properties' ? '房屋档案' : tab === 'people' ? '人员档案' : '机构档案'
+      const blob = tab === 'properties'
+        ? await registryApi.exportProperties({
+          keyword: debouncedKeyword,
+          community_id: communityId,
+          housing_category: housingCategory,
+          certificate_status: certificateStatus,
+          status: propertyStatus,
+          visit_start_date: visitDateRange?.[0],
+          visit_end_date: visitDateRange?.[1],
+          star_ratings: starRatings,
+          sort: propertySort,
+        })
+        : tab === 'people'
+          ? await registryApi.exportPeople({ name: debouncedKeyword, category_ids: categoryIds })
+          : await registryApi.exportOrganizations({ keyword: debouncedKeyword })
+      if (await downloadBlob(blob, `${exportName}-${new Date().toISOString().slice(0, 10)}.xlsx`)) {
+        message.success('已导出当前筛选结果')
+      }
+    } catch (reason: any) {
+      let detailMessage = reason?.response?.data?.detail
+      if (reason?.response?.data instanceof Blob) {
+        try { detailMessage = JSON.parse(await reason.response.data.text())?.detail } catch { detailMessage = '' }
+      }
+      message.error(detailMessage || '辖区档案导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const propertyColumns: ResponsiveColumns<RegistryProperty> = [
     {
       title: '社区', dataIndex: 'community_name', width: 130, responsivePriority: 'always',
@@ -700,6 +738,18 @@ export default function RegistryManagement() {
 
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
+    <Select
+      value={propertySort}
+      onChange={value => { setPropertySort(value); setPage(1) }}
+      options={[
+        { value: 'id_desc', label: '默认排序（最新）' },
+        { value: 'address_asc', label: '地址升序' },
+        { value: 'community_asc', label: '社区升序' },
+        { value: 'updated_desc', label: '最近更新' },
+        { value: 'visit_desc', label: '最近走访' },
+      ]}
+      className="w-full md:w-44"
+    />
   </> : tab === 'issues' ? <>
     {renderSearchInput('搜索地址、户号、社区或错误值')}
     <Select
@@ -787,6 +837,11 @@ export default function RegistryManagement() {
 
   const toolbarActions = <>
     {tab !== 'imports' && <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}
+    {['properties', 'people', 'organizations'].includes(tab) && (
+      <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportRegistryRecords()}>
+        导出当前结果
+      </Button>
+    )}
     {canManage && tab === 'properties' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('property')}>新增房屋</Button>}
     {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
     {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
@@ -843,6 +898,7 @@ export default function RegistryManagement() {
             setPropertyStatus('active')
             setVisitDateRange(undefined)
             setStarRatings([])
+            setPropertySort('id_desc')
             setPage(1)
           }}
           items={[

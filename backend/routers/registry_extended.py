@@ -7,9 +7,10 @@ import json
 from io import BytesIO
 from datetime import datetime
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from openpyxl import load_workbook
 from pydantic import BaseModel, Field
 
@@ -64,11 +65,18 @@ from services.registry_certificate_jobs import (
     retry_certificate_source_run,
 )
 from services.visit_source import VisitSourceError
+from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
 
 REGISTRY_IMPORT_WRITE_CHUNK = 500
+
+
+class OrganizationSearch(BaseModel):
+    keyword: str = Field(default="", max_length=100)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
 
 
 def _can_view_identity(user: dict) -> bool:
@@ -1346,14 +1354,13 @@ async def add_person_phone(
     return {"id": phone_id, "message": "联系电话已添加"}
 
 
-@router.get("/organizations")
-async def list_organizations(
-    keyword: str = Query(default="", max_length=100),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
-    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
-    conn=Depends(get_registry_db),
-):
+async def _organization_search_result(
+    data: OrganizationSearch,
+    user: dict,
+    conn,
+    *,
+    export_all: bool = False,
+) -> dict:
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
     where = " WHERE status='active'"
     params: list[object] = []
@@ -1367,23 +1374,82 @@ async def list_organizations(
             + ",".join(["%s"] * len(allowed)) + "))"
         )
         params.extend(allowed)
-    if keyword.strip():
+    if data.keyword.strip():
         where += " AND (name LIKE %s OR license_number LIKE %s)"
-        params.extend([f"%{keyword.strip()}%", f"%{keyword.strip()}%"])
+        params.extend([f"%{data.keyword.strip()}%", f"%{data.keyword.strip()}%"])
     async with conn.cursor() as cur:
         await cur.execute(f"SELECT COUNT(*) FROM registry_organizations{where}", tuple(params))
         total = int((await cur.fetchone())[0])
         await cur.execute(
             "SELECT id, name, organization_type, license_number, status, notes, created_at, updated_at "
-            f"FROM registry_organizations{where} ORDER BY id DESC LIMIT %s OFFSET %s",
-            tuple(params) + (page_size, (page - 1) * page_size),
+            f"FROM registry_organizations{where} ORDER BY id DESC "
+            + ("" if export_all else "LIMIT %s OFFSET %s"),
+            tuple(params) if export_all else tuple(params) + (
+                data.page_size, (data.page - 1) * data.page_size,
+            ),
         )
         rows = await cur.fetchall()
-    return {"total": total, "page": page, "page_size": page_size, "data": [
+    return {"total": total, "page": data.page, "page_size": data.page_size, "data": [
         {"id": int(row[0]), "name": row[1], "organization_type": row[2],
          "license_number": row[3], "status": row[4], "notes": row[5],
          "created_at": _iso(row[6]), "updated_at": _iso(row[7])} for row in rows
     ]}
+
+
+@router.get("/organizations")
+async def list_organizations(
+    keyword: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    return await _organization_search_result(
+        OrganizationSearch(keyword=keyword, page=page, page_size=page_size),
+        user,
+        conn,
+    )
+
+
+@router.post("/organizations/export")
+async def export_organizations(
+    data: OrganizationSearch,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+    conn=Depends(get_registry_db),
+):
+    result = await _organization_search_result(data, user, conn, export_all=True)
+    rows = result.get("data") or []
+    workbook = build_xlsx(
+        "机构档案",
+        ["机构ID", "机构名称", "机构类型", "统一编号", "档案状态", "备注", "更新时间"],
+        [
+            [
+                row.get("id"), row.get("name"), row.get("organization_type"),
+                row.get("license_number"), row.get("status"), row.get("notes"),
+                row.get("updated_at") or "",
+            ]
+            for row in rows
+        ],
+    )
+    await record_admin_audit(
+        user,
+        "registry.organizations_export",
+        target_type="registry_organizations",
+        target_name="机构档案",
+        detail={
+            "file_format": "XLSX",
+            "rows": len(rows),
+            "keyword_present": bool(data.keyword.strip()),
+        },
+        **request_audit_fields(request),
+    )
+    filename = f"机构档案-{datetime.now():%Y%m%d%H%M%S}.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.get("/organizations/{organization_id}")
