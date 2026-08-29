@@ -23,54 +23,22 @@ from services.local_source import local_data_source_enabled
 
 
 ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
-LEGACY_MODEL_THREE_SOURCE_SHEET = "legacy-model-three"
-
-
 def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
     """Limit task-facing source queries to the active data ownership model.
 
-    During the local cutover, historical Tencent rows remain in the source
-    cache for audit purposes but must not make a task look duplicated or
-    block editing/assignment.  Non-local deployments retain the legacy
-    model-three de-duplication behavior.
+    Historical external rows may remain archived for audit purposes, but no
+    task-facing query may treat them as active business sources.
     """
     if local_data_source_enabled():
         prefix = f"{alias}."
         local_kinds = (
             f"{prefix}source_kind IN ('local_table','local_dispatch')"
         )
-        model_three_compat = ""
-        if parser_type in {"疑似未注销模型三", "all"}:
-            model_three_compat = (
-                f" OR ({prefix}parser_type='疑似未注销模型三'"
-                f" AND {prefix}sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}')"
-            )
         return (
             f" AND {prefix}spreadsheet_id=0"
-            f" AND ({local_kinds}{model_three_compat})"
+            f" AND {local_kinds}"
         )
-    return logical_source_sql_filter(parser_type, alias)
-
-
-def logical_source_sql_filter(parser_type: str, alias: str = "source") -> str:
-    """Collapse an identical API/Tencent model-three pair into one source.
-
-    The virtual API row remains active when it is the only copy or its content
-    differs.  Only an exact row-hash duplicate is shadowed by a physical source.
-    """
-    if parser_type != "疑似未注销模型三":
-        return ""
-    prefix = f"{alias}."
-    return (
-        f" AND NOT ({prefix}spreadsheet_id=0 "
-        f"AND {prefix}sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}' "
-        "AND EXISTS (SELECT 1 FROM _online_source_rows AS physical_source "
-        f"WHERE physical_source.parser_type={prefix}parser_type "
-        f"AND physical_source.row_key={prefix}row_key "
-        f"AND physical_source.row_hash={prefix}row_hash "
-        "AND NOT (physical_source.spreadsheet_id=0 "
-        f"AND physical_source.sheet_id='{LEGACY_MODEL_THREE_SOURCE_SHEET}')))"
-    )
+    return ""
 
 
 def json_value(value: Any, fallback):

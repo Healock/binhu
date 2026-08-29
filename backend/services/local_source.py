@@ -47,14 +47,24 @@ def local_row_hash(values: dict[str, Any]) -> str:
 async def ensure_local_source_schema(cur) -> None:
     """幂等增加本地来源元数据和迁移问题表。"""
     for column, definition in (
-        ("source_kind", "VARCHAR(40) NOT NULL DEFAULT 'tencent_legacy'"),
+        ("source_kind", "VARCHAR(40) NOT NULL DEFAULT 'local_table'"),
         ("source_ref", "VARCHAR(190) NOT NULL DEFAULT ''"),
         ("archived_at", "DATETIME DEFAULT NULL"),
     ):
         await cur.execute("SHOW COLUMNS FROM `_online_source_rows` LIKE %s", (column,))
-        if not await cur.fetchone():
+        column_info = await cur.fetchone()
+        if not column_info:
             await cur.execute(
                 f"ALTER TABLE `_online_source_rows` ADD COLUMN `{column}` {definition}"
+            )
+        elif column == "source_kind" and str(column_info[4] or "") != "local_table":
+            # Tencent has been permanently retired. Existing deployments used
+            # a legacy default which could silently classify a future row as an
+            # external source when an insert omitted the field. Avoid taking a
+            # metadata lock on every startup once the default is corrected.
+            await cur.execute(
+                "ALTER TABLE `_online_source_rows` MODIFY COLUMN `source_kind` "
+                "VARCHAR(40) NOT NULL DEFAULT 'local_table'"
             )
     await cur.execute(
         "SHOW INDEX FROM `_online_source_rows` WHERE Key_name=%s",
@@ -343,12 +353,23 @@ async def mirror_business_tables_to_local_sources(
                             stable_json(values), content_hash,
                         ),
                     )
+                # The local table id is the authoritative stable position.  A
+                # previous archive may have left the correct position occupied
+                # by an archived source row; revive that row instead of trying
+                # to insert a second row into the unique physical position.
                 await cur.execute(
-                    "SELECT id FROM _online_source_rows WHERE source_kind='local_table' "
-                    "AND source_ref=%s AND archived_at IS NULL LIMIT 1",
-                    (source_ref,),
+                    "SELECT id FROM _online_source_rows WHERE spreadsheet_id=0 "
+                    "AND sheet_id=%s AND physical_row=%s ORDER BY id LIMIT 1",
+                    (local_sheet_id(parser_type), int(row[0])),
                 )
                 existing = await cur.fetchone()
+                if not existing:
+                    await cur.execute(
+                        "SELECT id FROM _online_source_rows WHERE source_kind='local_table' "
+                        "AND source_ref=%s ORDER BY archived_at IS NULL DESC,id LIMIT 1",
+                        (source_ref,),
+                    )
+                    existing = await cur.fetchone()
                 if not existing:
                     await cur.execute(
                         "SELECT id, source_ref FROM _online_source_rows WHERE parser_type=%s "

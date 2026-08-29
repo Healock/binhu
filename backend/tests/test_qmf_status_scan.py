@@ -117,7 +117,7 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("snapshot.error_code<>''", source)
         self.assertIn("snapshot.source_revision<>source.revision", source)
         self.assertIn(
-            "logical_source_sql_filter(MODEL_THREE_PARSER, 'candidate')",
+            "active_source_sql_filter(MODEL_THREE_PARSER, 'candidate')",
             source,
         )
         self.assertIn("INTERVAL 7 DAY", source)

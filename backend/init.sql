@@ -345,7 +345,7 @@ CREATE TABLE IF NOT EXISTS _online_source_rows (
     cell_meta_json JSON NOT NULL,
     revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
     refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    source_kind VARCHAR(40) NOT NULL DEFAULT 'tencent_legacy',
+    source_kind VARCHAR(40) NOT NULL DEFAULT 'local_table',
     source_ref VARCHAR(190) NOT NULL DEFAULT '',
     archived_at DATETIME DEFAULT NULL,
     UNIQUE KEY uk_online_source_position (spreadsheet_id, sheet_id, physical_row),

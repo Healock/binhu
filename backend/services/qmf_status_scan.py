@@ -26,7 +26,7 @@ from services.qmf_status import (
     STATUS_UNAVAILABLE,
     normalize_qmf_status_result,
 )
-from services.online_source import logical_source_sql_filter
+from services.online_source import active_source_sql_filter
 from services.task_graph import reconcile_projection_task_graph
 
 
@@ -362,7 +362,7 @@ async def create_status_scan_run(
                                MIN(candidate.id) AS source_id
                         FROM _online_source_rows AS candidate
                         WHERE 1=1
-                        {logical_source_sql_filter(MODEL_THREE_PARSER, 'candidate')}
+                        {active_source_sql_filter(MODEL_THREE_PARSER, 'candidate')}
                         GROUP BY candidate.parser_type,candidate.row_key
                     ) AS selected_source
                       ON selected_source.parser_type=projection.parser_type

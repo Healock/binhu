@@ -30,7 +30,7 @@ from services.online_edit_permissions import (
 )
 from services.online_source import (
     cleanup_expired_writeback_audit,
-    logical_source_sql_filter,
+    active_source_sql_filter,
     match_source_cache_rows,
     rebuild_projection,
     source_row_hash,
@@ -246,12 +246,12 @@ class BatchUpdateCursor(ConflictCursor):
 
 
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
-    def test_model_three_virtual_source_is_identified_and_deduplicated(self):
-        predicate = logical_source_sql_filter("疑似未注销模型三", "source")
+    def test_model_three_uses_only_local_sources(self):
+        predicate = active_source_sql_filter("疑似未注销模型三", "source")
         self.assertIn("source.spreadsheet_id=0", predicate)
-        self.assertIn("source.sheet_id='legacy-model-three'", predicate)
-        self.assertIn("physical_source.row_hash=source.row_hash", predicate)
-        self.assertEqual(logical_source_sql_filter("全链条"), "")
+        self.assertIn("source.source_kind IN ('local_table','local_dispatch')", predicate)
+        self.assertNotIn("legacy-model-three", predicate)
+        self.assertNotIn("physical_source", predicate)
 
     def test_blank_rental_result_select_uses_business_write_options(self):
         metadata = writeback_cell_metadata(
@@ -865,7 +865,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(projection[11], "pending")
         self.assertEqual(json.loads(projection[2])["现住址"], "新址")
 
-    async def test_model_three_projection_collapses_identical_virtual_copy(self):
+    async def test_model_three_projection_uses_only_local_source(self):
         parser = get_parser("疑似未注销模型三")
         values = {column: "" for column in parser.COLUMNS}
         values.update({
@@ -884,7 +884,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             if sql.startswith("SELECT source.id, source.row_key, source.values_json")
         )
         self.assertIn("source.spreadsheet_id=0", source_sql)
-        self.assertIn("sheet_id='legacy-model-three'", source_sql)
+        self.assertIn("source.source_kind IN ('local_table','local_dispatch')", source_sql)
+        self.assertNotIn("legacy-model-three", source_sql)
         self.assertNotIn("physical_source", source_sql)
         self.assertEqual(cursor.many_rows[0][8], 1)
 
