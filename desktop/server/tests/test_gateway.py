@@ -55,7 +55,7 @@ class GatewayTests(unittest.TestCase):
         for platform in gateway.WINDOWS_PLATFORMS:
             platform_root = source / platform
             platform_root.mkdir()
-            package_id = f"com.bhzh.binhu.{platform}"
+            package_id = gateway.WINDOWS_PACKAGE_IDS[platform]
             full = platform_root / f"Binhu-{platform}-{version}-full.nupkg"
             make_nupkg(full, version, package_id)
             if include_delta is None:
@@ -67,13 +67,13 @@ class GatewayTests(unittest.TestCase):
             setup = platform_root / f"Binhu-{platform}-Setup.exe"
             setup.write_bytes(b"setup")
             assets = [{
-                    "PackageId": f"com.bhzh.binhu.{platform}", "Version": version,
+                    "PackageId": package_id, "Version": version,
                     "Type": "Full", "FileName": full.name, "SHA1": "0" * 40,
                     "SHA256": digest(full), "Size": full.stat().st_size,
                 }]
             if delta is not None:
                 assets.append({
-                    "PackageId": f"com.bhzh.binhu.{platform}", "Version": version,
+                    "PackageId": package_id, "Version": version,
                     "Type": "Delta", "FileName": delta.name, "SHA1": "0" * 40,
                     "SHA256": digest(delta), "Size": delta.stat().st_size,
                 })
