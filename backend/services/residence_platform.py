@@ -318,6 +318,18 @@ class ResidencePlatformClient:
         if response.status_code in {401, 403}:
             raise ResidencePlatformError("authentication_expired", "居住证平台登录已失效")
         if response.status_code != 200:
+            # The upstream service sometimes reports an expired token as HTTP
+            # 500.  Inspect only the structured authentication markers so the
+            # caller can refresh the session without exposing response details.
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = None
+            if _is_authentication_response(error_payload):
+                raise ResidencePlatformError(
+                    "authentication_expired",
+                    "居住证平台登录已失效",
+                )
             raise ResidencePlatformError("http_error", "居住证平台查询返回 HTTP 错误")
         try:
             payload = response.json()

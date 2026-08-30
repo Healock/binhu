@@ -91,12 +91,14 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
                 "processed": 2,
                 "success_count": 2,
                 "error_count": 0,
+                "error_counts": {},
                 "status": "completed",
             },
             {
                 "processed": 1,
                 "success_count": 0,
                 "error_count": 1,
+                "error_counts": {"request_error": 1},
                 "status": "completed",
             },
             {"processed": 0, "status": "idle"},
@@ -128,6 +130,7 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["processed"], 3)
         self.assertEqual(result["success_count"], 2)
         self.assertEqual(result["error_count"], 1)
+        self.assertEqual(result["error_counts"], {"request_error": 1})
         self.assertEqual(context.update.await_count, 3)
         self.assertEqual(context.update.await_args_list[-1].kwargs["current"], 3)
         self.assertEqual(context.update.await_args_list[-1].kwargs["total"], 3)
@@ -395,6 +398,55 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.MockTransport(business_failure),
         ).lookup(VALID_IDENTITY)
         self.assertEqual((result.state, result.error_code), ("error", "business_error"))
+
+    async def test_http_500_token_expiry_is_detected_safely(self):
+        async def token_expired(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={
+                "message": "Token失效，请重新登录",
+                "detail": "fixture-sensitive-upstream-detail",
+            })
+
+        client = ResidencePlatformClient(
+            config(),
+            transport=httpx.MockTransport(token_expired),
+        )
+        with self.assertRaises(ResidencePlatformError) as raised:
+            await client.lookup(VALID_IDENTITY)
+
+        self.assertEqual(raised.exception.code, "authentication_expired")
+        self.assertNotIn("fixture-sensitive", str(raised.exception))
+
+    async def test_lookup_refreshes_expired_session_once(self):
+        stale_client = type("Client", (), {})()
+        stale_client.config = config(access_token="stale-token")
+        stale_client.lookup = AsyncMock(side_effect=ResidencePlatformError(
+            "authentication_expired",
+            "居住证平台登录已失效",
+        ))
+        refreshed_result = object()
+        fresh_client = type("Client", (), {})()
+        fresh_client.lookup = AsyncMock(return_value=refreshed_result)
+        community_client = AsyncMock(side_effect=[stale_client, fresh_client])
+        target = residence_status_scan.ResidenceLookupTarget(
+            identity=VALID_IDENTITY,
+            community_code="3205840377",
+        )
+
+        with patch.object(
+            residence_status_scan,
+            "_community_client",
+            new=community_client,
+        ):
+            result = await residence_status_scan._lookup_target(config(), target)
+
+        self.assertIs(result, refreshed_result)
+        self.assertEqual(community_client.await_count, 2)
+        self.assertEqual(
+            community_client.await_args_list[1].kwargs["rejected_token"],
+            "stale-token",
+        )
+        stale_client.lookup.assert_awaited_once_with(VALID_IDENTITY)
+        fresh_client.lookup.assert_awaited_once_with(VALID_IDENTITY)
 
     async def test_read_only_path_allowlist_rejects_other_routes(self):
         client = ResidencePlatformClient(config())
