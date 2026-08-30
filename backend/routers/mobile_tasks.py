@@ -1856,7 +1856,16 @@ def _mobile_export_row(
     public_values = [
         _export_value(values, "姓名", "核查对象", "对象姓名"),
         _export_value(values, "身份证号", "身份证号码", "公民身份号码"),
-        _export_value(values, "联系号码", "手机号", "联系电话", "手机号码", "电话"),
+        _export_value(
+            values,
+            "联系号码",
+            "手机号",
+            "联系电话",
+            "手机号码",
+            "电话号码",
+            "联系方式",
+            "电话",
+        ),
         _export_value(values, "原地址", "原住址", "地址", "疑似现住址"),
         _export_value(values, "现住址", "核查补充信息", "拟登记住址"),
         _export_value(values, "社区", "下发社区"),

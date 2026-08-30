@@ -44,7 +44,7 @@ class _TaskExportCursor:
             (
                 "疑似返苏",
                 "task-1",
-                json.dumps({"姓名": "测试人员", "核查结果": "无法核实"}, ensure_ascii=False),
+                json.dumps({"姓名": "测试人员", "电话号码": "13800138000", "核查结果": "无法核实"}, ensure_ascii=False),
                 1,
                 0,
                 "",
@@ -93,6 +93,7 @@ async def test_mobile_task_export_reuses_list_order_and_writes_public_fields(mon
     assert "来源ID" not in headers
     assert "手机号" in headers
     assert "现住址" in headers
+    assert values[headers.index("手机号")] == "13800138000"
     assert values[headers.index("研判阶段")] == "初步待研判"
 
 
