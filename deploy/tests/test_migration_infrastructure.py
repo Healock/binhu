@@ -116,6 +116,29 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             self.assertIn("proxy_read_timeout 300s", block)
             self.assertIn("proxy_send_timeout 300s", block)
 
+    def test_self_owned_roster_import_accepts_backend_limit(self) -> None:
+        configs = [
+            (
+                (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8"),
+                "\n    }",
+            ),
+            (
+                (ROOT / "nginx/migration/new-app-locations.conf").read_text(
+                    encoding="utf-8"
+                ),
+                "\n}",
+            ),
+        ]
+        route = "location = /api/qmf-source/self-owned/import"
+        for config, block_end in configs:
+            start = config.index(route)
+            end = config.index(block_end, start)
+            block = config[start:end]
+            self.assertIn("client_max_body_size 101m", block)
+            self.assertIn("client_body_timeout 300s", block)
+            self.assertIn("proxy_read_timeout 300s", block)
+            self.assertIn("proxy_send_timeout 300s", block)
+
     def test_photo_batch_confirm_allows_large_batches_to_finish(self) -> None:
         configs = [
             (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8"),
