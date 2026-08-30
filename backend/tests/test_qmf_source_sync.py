@@ -97,10 +97,6 @@ class QmfSourceSyncTests(unittest.IsolatedAsyncioTestCase):
                     "skipped_tasks": 1,
                 }),
             ) as self_owned,
-            patch(
-                "services.qmf_source_sync._save_qmf_snapshot",
-                AsyncMock(return_value="2026-08-25"),
-            ) as snapshot,
         ):
             result = await _sync_rows(
                 ctx,
@@ -121,7 +117,9 @@ class QmfSourceSyncTests(unittest.IsolatedAsyncioTestCase):
         self_owned.assert_awaited_once()
         self.assertEqual(result["self_owned_matched"], 2)
         self.assertEqual(result["self_owned_updated"], 1)
-        snapshot.assert_awaited_once()
+        self.assertFalse(
+            any("daily_report" in sql for sql in connection.cursor_instance.executed)
+        )
 
 
 if __name__ == "__main__":
