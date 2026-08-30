@@ -65,7 +65,7 @@ class _TaskExportConnection:
 
 
 @pytest.mark.asyncio
-async def test_mobile_task_export_reuses_list_order_and_writes_human_review_stage(monkeypatch):
+async def test_mobile_task_export_reuses_list_order_and_writes_public_fields(monkeypatch):
     async def flow_context(_conn, _user):
         return {}
 
@@ -89,7 +89,10 @@ async def test_mobile_task_export_reuses_list_order_and_writes_human_review_stag
 
     assert count == 1
     assert f"ORDER BY {mobile_tasks._task_order('疑似返苏', 'address_asc')}" in conn.query_cursor.sql
-    assert values[headers.index("任务标识")] == "task-1"
+    assert "任务标识" not in headers
+    assert "来源ID" not in headers
+    assert "手机号" in headers
+    assert "现住址" in headers
     assert values[headers.index("研判阶段")] == "初步待研判"
 
 

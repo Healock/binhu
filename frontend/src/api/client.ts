@@ -2290,6 +2290,18 @@ export async function bulkAssignMobileTasks(
   return data
 }
 
+export async function cancelMobileTaskAssignments(
+  parserType: string,
+  community = '',
+): Promise<{ updated: number; skipped: number; details: Array<{ row_key: string; reason: string }> }> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/assignments/cancel`,
+    { community },
+    activeRequest,
+  )
+  return data
+}
+
 export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 20
 
 export interface QueryWritebackAudit {

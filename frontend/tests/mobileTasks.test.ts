@@ -1064,17 +1064,23 @@ test('流口任务支持按地址或身份证号对完整结果排序', () => {
   assert.match(clientSource, /sort: params\.sort \|\| 'priority'/)
 })
 
-test('流口任务数量卡顺序固定为已研判优先、已完成沉底', () => {
+test('流口任务数量卡按全部、普通待处理、等待研判、已研判、来源异常、已完成排列', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
   )
-  const analyzedIndex = pageSource.indexOf("{ key: 'analyzed'")
+  const allIndex = pageSource.indexOf("{ key: 'all'")
+  const ordinaryIndex = pageSource.indexOf("{ key: 'ordinary'")
   const waitingIndex = pageSource.indexOf("{ key: 'waiting_analysis'")
+  const analyzedIndex = pageSource.indexOf("{ key: 'analyzed'")
+  const exceptionIndex = pageSource.indexOf("{ key: 'source_exception'")
   const completedIndex = pageSource.indexOf("{ key: 'completed'")
-  assert.ok(analyzedIndex >= 0)
-  assert.ok(waitingIndex > analyzedIndex)
-  assert.ok(completedIndex > waitingIndex)
+  assert.ok(allIndex >= 0)
+  assert.ok(ordinaryIndex > allIndex)
+  assert.ok(waitingIndex > ordinaryIndex)
+  assert.ok(analyzedIndex > waitingIndex)
+  assert.ok(exceptionIndex > analyzedIndex)
+  assert.ok(completedIndex > exceptionIndex)
   assert.match(pageSource, /setReviewStage\('all'\)/)
 })
 

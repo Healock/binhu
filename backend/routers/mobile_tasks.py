@@ -450,6 +450,12 @@ class BulkAssignmentRequest(BaseModel):
     balanced_total: int = Field(default=0, ge=0, le=MAX_BULK_ASSIGNMENT_TASKS)
 
 
+class CancelAssignmentsRequest(BaseModel):
+    """按业务和可选社区撤销尚未完成任务的核查人分配。"""
+
+    community: str = Field(default="", max_length=200)
+
+
 class TaskSearch(BaseModel):
     scope: FlowScope = "mine"
     status: TaskStatus = "pending"
@@ -1843,9 +1849,27 @@ def _mobile_export_row(
     source_revision: int | None = None,
     source_row_hash: str = "",
     review_flow: dict | None = None,
+    include_internal: bool = False,
 ) -> list[object]:
     workflow = TASK_WORKFLOWS[parser_type]
     stage = str((review_flow or {}).get("state") or workflow.review_stage(values) or "")
+    public_values = [
+        _export_value(values, "姓名", "核查对象", "对象姓名"),
+        _export_value(values, "身份证号", "身份证号码", "公民身份号码"),
+        _export_value(values, "联系号码", "手机号", "联系电话", "手机号码", "电话"),
+        _export_value(values, "原地址", "原住址", "地址", "疑似现住址"),
+        _export_value(values, "现住址", "核查补充信息", "拟登记住址"),
+        _export_value(values, "社区", "下发社区"),
+        _export_value(values, "核查人"),
+        task_state,
+        UNVERIFIABLE_STATE_LABELS.get(stage, stage),
+        _export_value(values, *workflow.analysis_fields),
+        _export_value(values, *workflow.secondary_fields),
+        _export_value(values, workflow.result_field),
+        _export_value(values, *workflow.date_fields),
+    ]
+    if not include_internal:
+        return public_values
     return [
         parser_type,
         row_key,
@@ -1853,19 +1877,8 @@ def _mobile_export_row(
         source_revision or "",
         source_row_hash,
         int((review_flow or {}).get("flow_version") or 0) or "",
-        _export_value(values, "姓名", "核查对象", "对象姓名"),
-        _export_value(values, "身份证号", "身份证号码", "公民身份号码"),
-        _export_value(values, "联系号码", "手机号", "联系电话", "手机号码"),
-        _export_value(values, "原地址", "原住址", "地址", "疑似现住址"),
-        _export_value(values, "社区", "下发社区"),
-        _export_value(values, "核查人"),
-        task_state,
-        UNVERIFIABLE_STATE_LABELS.get(stage, stage),
+        *public_values,
         "",
-        _export_value(values, *workflow.analysis_fields),
-        _export_value(values, *workflow.secondary_fields),
-        _export_value(values, workflow.result_field),
-        _export_value(values, *workflow.date_fields),
         "是" if conflict or source_count != 1 else "否",
         "是" if pending else "否",
     ]
@@ -1891,6 +1904,7 @@ async def _mobile_export_workbook(
         where_sql, query_params = _analysis_task_where(context, data)
         order_sql = _analysis_order(data)
         type_label = "研判任务"
+        include_internal_columns = True
     else:
         if not parser_type or parser_type not in TASK_WORKFLOWS:
             raise HTTPException(400, "该业务尚未接入手机任务工作台")
@@ -1898,6 +1912,7 @@ async def _mobile_export_workbook(
         where_sql, query_params = _task_where(context, parser_type, data)
         order_sql = _task_order(parser_type, data.sort)
         type_label = parser_type
+        include_internal_columns = False
     async with conn.cursor() as cur:
         await cur.execute(
             f"""
@@ -1937,17 +1952,25 @@ async def _mobile_export_workbook(
             int(row[8]) if row[8] is not None else None,
             str(row[9] or ""),
             review_by_row.get((str(row[0]), str(row[1]))),
+            include_internal=include_internal_columns,
         )
         for row in rows
     ]
+    if include_internal_columns:
+        headers = [
+            "业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本",
+            "姓名", "身份证号", "手机号", "原地址", "现住址", "社区", "核查人",
+            "任务状态", "研判阶段", "本次研判决定", "研判意见", "复核反馈", "核查结果", "截止日期",
+            "来源异常", "待同步",
+        ]
+    else:
+        headers = [
+            "姓名", "身份证号", "手机号", "原地址", "现住址", "社区", "核查人",
+            "任务状态", "研判阶段", "研判意见", "复核反馈", "核查结果", "截止日期",
+        ]
     workbook = build_xlsx(
         type_label,
-        [
-            "业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本",
-            "姓名", "身份证号", "手机号",
-            "原地址", "社区", "核查人", "任务状态", "研判阶段", "本次研判决定", "研判意见",
-            "复核反馈", "核查结果", "截止日期", "来源异常", "待同步",
-        ],
+        headers,
         export_rows,
     )
     return workbook, len(export_rows)
@@ -2789,6 +2812,10 @@ async def get_mobile_task_assignment_workbench(
         if not inspector_name:
             continue
         inspector_counts_by_community.setdefault(formal_community, {})[inspector_name] = int(count or 0)
+    assigned_totals_by_community: dict[str, int] = {}
+    for formal_community, counts in inspector_counts_by_community.items():
+        assigned_totals_by_community[formal_community] = sum(counts.values())
+    all_communities = set(community_counts) | set(assigned_totals_by_community)
     return {
         "data": items,
         "total": available_total,
@@ -2796,20 +2823,22 @@ async def get_mobile_task_assignment_workbench(
         "limited": available_total > len(items),
         "limit": MAX_BULK_ASSIGNMENT_TASKS,
         "communities": [
-            {"value": community, "label": community, "count": count}
-            for community, count in sorted(community_counts.items())
+            {"value": community, "label": community, "count": community_counts.get(community, 0),
+             "assigned_count": assigned_totals_by_community.get(community, 0)}
+            for community in sorted(all_communities)
         ],
         "inspectors_by_community": {
             community: list(inspectors_by_community.get(community) or [])
-            for community in community_counts
+            for community in all_communities
         },
         "inspector_counts_by_community": {
             community: {
                 inspector: inspector_counts_by_community.get(community, {}).get(inspector, 0)
                 for inspector in inspectors_by_community.get(community) or []
             }
-            for community in community_counts
+            for community in all_communities
         },
+        "assigned_totals_by_community": assigned_totals_by_community,
     }
 
 
@@ -4071,3 +4100,112 @@ async def bulk_assign_mobile_tasks(
         **request_audit_fields(request),
     )
     return result
+
+
+@router.post("/{parser_type}/assignments/cancel")
+async def cancel_mobile_task_assignments(
+    parser_type: str,
+    data: CancelAssignmentsRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """撤销当前业务范围内尚未完成任务的核查人分配。
+
+    该操作只清除“核查人”字段，不修改核查结果、研判、反馈或任务历史；
+    每条变更仍通过本地事务写入审计，便于追溯误分配的恢复过程。
+    """
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以撤销批量分配")
+    if not local_data_source_enabled():
+        raise HTTPException(410, "本地数据源未启用，无法执行本地分配恢复")
+
+    requested_community = str(data.community or "").strip()
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    if requested_community:
+        aliases = await community_names_for_scopes(conn, [requested_community])
+        formal = aliases[0] if aliases else requested_community
+        scope_where += " AND projection.community=%s"
+        scope_params.append(formal)
+
+    changed = 0
+    skipped: list[dict[str, str]] = []
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT source.id, source.row_key, source.revision,
+                       source.physical_row, source.values_json,
+                       projection.task_state, projection.inspector,
+                       projection.source_count, projection.conflict
+                FROM _online_source_projection projection
+                JOIN _online_source_rows source
+                  ON source.parser_type=projection.parser_type
+                 AND source.row_key=projection.row_key
+                 AND source.archived_at IS NULL
+                 AND source.spreadsheet_id=0
+                WHERE projection.parser_type=%s
+                  AND {scope_where}
+                  AND TRIM(COALESCE(projection.inspector,''))<>''
+                  AND projection.task_state<>'completed'
+                ORDER BY source.id
+                LIMIT %s
+                """,
+                [parser_type, *scope_params, MAX_BULK_ASSIGNMENT_TASKS * 20],
+            )
+            rows = await cur.fetchall()
+            for source_id, row_key, revision, physical_row, values_json, task_state, inspector, source_count, conflict in rows:
+                if int(source_count or 0) != 1 or bool(conflict):
+                    skipped.append({"row_key": str(row_key), "reason": "来源异常，未自动撤销"})
+                    continue
+                values = json_value(values_json, {})
+                if not str(values.get("核查人") or "").strip():
+                    continue
+                try:
+                    await apply_local_system_changes(
+                        cur,
+                        source={
+                            "id": int(source_id),
+                            "revision": int(revision),
+                            "physical_row": int(physical_row),
+                            "row_key": str(row_key),
+                            "values": values,
+                            "spreadsheet_id": 0,
+                            "spreadsheet": {"parser_type": parser_type},
+                        },
+                        changes={"核查人": ""},
+                        user=user,
+                        action="bulk_unassign_local",
+                        rebuild=False,
+                    )
+                    changed += 1
+                except (ValueError, LookupError) as exc:
+                    skipped.append({"row_key": str(row_key), "reason": str(exc) or "任务已变化，请刷新后重试"})
+            if changed:
+                await rebuild_projection(cur, parser_type)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    await record_admin_audit(
+        user,
+        "mobile_tasks.bulk_unassign",
+        target_type="mobile_task",
+        target_name=parser_type,
+        detail={
+            "community": requested_community,
+            "updated_count": changed,
+            "skipped_count": len(skipped),
+        },
+        **request_audit_fields(request),
+    )
+    return {"updated": changed, "skipped": len(skipped), "details": skipped}

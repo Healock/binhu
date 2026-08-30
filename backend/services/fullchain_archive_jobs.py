@@ -1052,15 +1052,16 @@ async def _run_local_archive_export(conn, export_id: int) -> None:
 
 
 async def run_fullchain_archive_export(export_id: int) -> None:
-    # 先处理腾讯已确认删除的条目；该路径不获取 OAuth、不读取腾讯，也不调用
-    # 删除接口。之后普通执行器只会看到尚未删除的条目。
-    await reconcile_deleted_archive_items(export_id)
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         if local_data_source_enabled():
+            # 腾讯表已经下线，本地归档直接进入本地事务，不再先执行历史
+            # “腾讯删除后对账”路径，避免发布被无意义的兼容检查拖慢。
             await _run_local_archive_export(conn, export_id)
             return
+        # 兼容旧部署：只有明确处于腾讯模式时才执行历史删除对账。
+        await reconcile_deleted_archive_items(export_id)
         async with conn.cursor() as cur:
             await cur.execute("SELECT parser_type FROM _fullchain_archive_exports WHERE id=%s", (export_id,))
             export_row = await cur.fetchone()
