@@ -309,6 +309,18 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["phone"], "18800000000")
         self.assertEqual(summary["source"], "模型来源甲")
 
+    def test_card_summary_reads_historical_phone_aliases(self):
+        for parser_type, values in (
+            ("全链条", {"手机号": "13800138000"}),
+            ("出租房屋核查", {"电话号码": "13800138001"}),
+            ("疑似返苏", {"电话": "13800138002"}),
+        ):
+            with self.subTest(parser_type=parser_type):
+                self.assertEqual(
+                    TASK_WORKFLOWS[parser_type].summary(values)["phone"],
+                    next(iter(values.values())),
+                )
+
     def test_analyzed_card_summary_includes_analysis_result(self):
         summary = TASK_WORKFLOWS["寄递业"].summary({
             "核查结果": "无法核实",

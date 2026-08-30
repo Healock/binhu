@@ -61,7 +61,12 @@ from services.qmf_registration import (
 from services.qmf_status import normalize_qmf_status_result
 from services.qmf_config import load_qmf_config
 from services.qmf_runs import WRITE_STEP_KEYS, parse_steps, utc_text
-from services.task_workflow import MOBILE_TASK_TYPES, SUMMARY_TASK_TYPES, TASK_WORKFLOWS
+from services.task_workflow import (
+    MOBILE_TASK_TYPES,
+    PHONE_FIELD_ALIASES,
+    SUMMARY_TASK_TYPES,
+    TASK_WORKFLOWS,
+)
 from services.task_graph import online_task_blocked
 from services.unverifiable_review import (
     ACTIVE_STATES as UNVERIFIABLE_ACTIVE_STATES,
@@ -3190,7 +3195,9 @@ async def _mobile_task_detail_data(
         "workflow": {
             "label": workflow.label,
             "result_field": workflow.result_field,
-            "phone_fields": list(workflow.phone_fields),
+            # Keep the canonical field first while allowing historical source
+            # aliases in the detail page to match the list summary.
+            "phone_fields": list(dict.fromkeys((*workflow.phone_fields, *PHONE_FIELD_ALIASES))),
             "title_fields": list(workflow.title_fields),
             "address_fields": list(workflow.address_fields),
             "date_fields": list(workflow.date_fields),
