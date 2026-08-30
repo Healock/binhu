@@ -442,6 +442,10 @@ class RegistrationManualConfirm(BaseModel):
     expected_revision: int = Field(gt=0)
 
 
+class AddressMatchConfirm(BaseModel):
+    small_community_id: int = Field(gt=0)
+
+
 class SyncConflictResolution(BaseModel):
     choice: Literal["platform", "tencent"]
     fields: list[str] = Field(min_length=1, max_length=5)
@@ -466,6 +470,8 @@ class TaskSearch(BaseModel):
     status: TaskStatus = "pending"
     review_stage: ReviewStage = "all"
     communities: list[str] = Field(default_factory=list, max_length=50)
+    small_communities: list[str] = Field(default_factory=list, max_length=50)
+    match_status: list[str] = Field(default_factory=list, max_length=20)
     inspectors: list[str] = Field(default_factory=list, max_length=50)
     watch_categories: list[int] = Field(default_factory=list, max_length=50)
     qmf_feedback_states: list[QmfFeedbackState] = Field(
@@ -483,6 +489,8 @@ class AnalysisTaskSearch(BaseModel):
     scope: FlowScope = "all"
     review_stage: ReviewStage = "all"
     communities: list[str] = Field(default_factory=list, max_length=50)
+    small_communities: list[str] = Field(default_factory=list, max_length=50)
+    match_status: list[str] = Field(default_factory=list, max_length=20)
     inspectors: list[str] = Field(default_factory=list, max_length=50)
     watch_categories: list[int] = Field(default_factory=list, max_length=50)
     sort: SortMode = "priority"
@@ -1010,11 +1018,15 @@ def _assignment_candidate(
     row_key: str,
     community: str,
     values: dict,
+    small_community_name: str = "",
+    match_status: str = "unmatched",
 ) -> dict[str, str]:
     summary = TASK_WORKFLOWS[parser_type].summary(values)
     return {
         "row_key": row_key,
         "community": community,
+        "small_community": small_community_name,
+        "match_status": match_status,
         "source": summary["source"] or TASK_WORKFLOWS[parser_type].label,
         "address": summary["address"] or "未填写地址",
     }
@@ -1212,11 +1224,22 @@ def _task_where(
     community_condition, community_params = _multi_filter_condition(
         "community", data.communities
     )
+    small_community_condition, small_community_params = _multi_filter_condition(
+        "small_community_name", data.small_communities
+    )
+    match_status_condition, match_status_params = _multi_filter_condition(
+        "address_match_status", data.match_status
+    )
     inspector_condition, inspector_params = _multi_filter_condition(
         "inspector", data.inspectors
     )
-    where_parts.extend([community_condition, inspector_condition])
+    where_parts.extend([
+        community_condition, small_community_condition,
+        match_status_condition, inspector_condition,
+    ])
     params.extend(community_params)
+    params.extend(small_community_params)
+    params.extend(match_status_params)
     params.extend(inspector_params)
     keyword = data.keyword.strip()
     if keyword:
@@ -1298,11 +1321,22 @@ def _analysis_task_where(
     community_condition, community_params = _multi_filter_condition(
         "community", data.communities
     )
+    small_community_condition, small_community_params = _multi_filter_condition(
+        "small_community_name", data.small_communities
+    )
+    match_status_condition, match_status_params = _multi_filter_condition(
+        "address_match_status", data.match_status
+    )
     inspector_condition, inspector_params = _multi_filter_condition(
         "inspector", data.inspectors
     )
-    where_parts.extend([community_condition, inspector_condition])
+    where_parts.extend([
+        community_condition, small_community_condition,
+        match_status_condition, inspector_condition,
+    ])
     params.extend(community_params)
+    params.extend(small_community_params)
+    params.extend(match_status_params)
     params.extend(inspector_params)
     if data.keyword.strip():
         where_parts.append("projection.search_text LIKE %s")
@@ -1557,6 +1591,12 @@ async def _list_analysis_tasks_data(
                 await task_watch_payload(cur, parser_type, keys)
                 if settings.REGISTRY_FEATURE_ENABLED and keys else {}
             )
+        address_matches_by_parser = {}
+        for current_type in parser_types:
+            keys = [str(row[1]) for row in rows if str(row[0]) == current_type]
+            address_matches_by_parser[current_type] = await _address_matches_by_rows(
+                cur, current_type, keys
+            )
     photo_fetched: dict[str, set[str]] = {}
     for parser_type in parser_types:
         keys = [str(row[1]) for row in rows if str(row[0]) == parser_type]
@@ -1570,6 +1610,7 @@ async def _list_analysis_tasks_data(
                 str(row[1]) in photo_fetched.get(str(row[0]), set()),
                 str(row[5] or ""),
                 review_flow=review_by_row.get((str(row[0]), str(row[1]))),
+                address_match=address_matches_by_parser.get(str(row[0]), {}).get(str(row[1])),
             )
             for row in rows
         ],
@@ -1786,6 +1827,7 @@ def _task_record(
     residence_status: dict | None = None,
     registration_link: dict | None = None,
     review_flow: dict | None = None,
+    address_match: dict | None = None,
 ) -> dict:
     workflow = TASK_WORKFLOWS[parser_type]
     normalized = {key: str(value or "") for key, value in values.items()}
@@ -1831,6 +1873,41 @@ def _task_record(
         "qmf_status": qmf_status,
         "residence_status": residence_status,
         "registration_link": registration_link,
+        "address_match": address_match,
+    }
+
+
+async def _address_matches_by_rows(
+    cur,
+    parser_type: str,
+    row_keys: list[str],
+) -> dict[str, dict]:
+    if not row_keys:
+        return {}
+    placeholders = ",".join(["%s"] * len(row_keys))
+    await cur.execute(
+        f"""
+        SELECT row_key, small_community_id, small_community_name,
+               address_match_status, address_match_score,
+               address_match_method, address_match_reason,
+               address_match_candidates, address_match_version
+        FROM _online_source_projection
+        WHERE parser_type=%s AND row_key IN ({placeholders})
+        """,
+        (parser_type, *row_keys),
+    )
+    return {
+        str(row[0]): {
+            "small_community_id": int(row[1]) if row[1] is not None else None,
+            "small_community_name": str(row[2] or ""),
+            "status": str(row[3] or "unmatched"),
+            "score": float(row[4] or 0),
+            "method": str(row[5] or ""),
+            "reason": str(row[6] or ""),
+            "candidates": json_value(row[7], []),
+            "version": str(row[8] or ""),
+        }
+        for row in await cur.fetchall()
     }
 
 
@@ -2152,6 +2229,8 @@ async def _task_filter_options(
     scope: FlowScope,
     user: dict,
     communities: list[str] | None = None,
+    small_communities: list[str] | None = None,
+    match_status: list[str] | None = None,
     review_stage: ReviewStage = "all",
 ) -> dict:
     capability_user = _task_capability_user(user)
@@ -2165,16 +2244,39 @@ async def _task_filter_options(
     community_condition, community_params = _multi_filter_condition(
         "community", communities or []
     )
+    small_community_condition, small_community_params = _multi_filter_condition(
+        "small_community_name", small_communities or []
+    )
+    match_status_condition, match_status_params = _multi_filter_condition(
+        "address_match_status", match_status or []
+    )
     if community_condition != "1=1":
         inspector_where = f"{inspector_where} AND {community_condition}"
         inspector_params.extend(community_params)
-    result = {"communities": [], "inspectors": [], "watch_categories": []}
+    if small_community_condition != "1=1":
+        inspector_where = f"{inspector_where} AND {small_community_condition}"
+        inspector_params.extend(small_community_params)
+    if match_status_condition != "1=1":
+        inspector_where = f"{inspector_where} AND {match_status_condition}"
+        inspector_params.extend(match_status_params)
+    result = {
+        "communities": [], "small_communities": [],
+        "match_statuses": [], "inspectors": [], "watch_categories": [],
+    }
     for column, key, empty_label in (
         ("community", "communities", "社区未填写"),
+        ("small_community_name", "small_communities", "小区未关联"),
+        ("address_match_status", "match_statuses", "未匹配"),
         ("inspector", "inspectors", "未分配核查人"),
     ):
         option_where = inspector_where if column == "inspector" else where_sql
         option_params = inspector_params if column == "inspector" else params
+        if column == "small_community_name" and communities:
+            option_where = f"{option_where} AND {community_condition}"
+            option_params = [*option_params, *community_params]
+        if column == "address_match_status" and communities:
+            option_where = f"{option_where} AND {community_condition}"
+            option_params = [*option_params, *community_params]
         await cur.execute(
             f"""
             SELECT projection.{column}, COUNT(*)
@@ -2313,6 +2415,9 @@ async def _list_mobile_tasks_data(
             [*query_params, data.page_size, (data.page - 1) * data.page_size],
         )
         rows = await cur.fetchall()
+        address_matches = await _address_matches_by_rows(
+            cur, parser_type, [str(row[0]) for row in rows]
+        )
         active_counts = await _active_source_counts(
             cur,
             parser_type,
@@ -2363,6 +2468,7 @@ async def _list_mobile_tasks_data(
                 residence_status=residence_by_row.get(str(row[0])),
                 registration_link=registration_by_row.get(str(row[0])),
                 review_flow=review_by_row.get((parser_type, str(row[0]))),
+                address_match=address_matches.get(str(row[0])),
             )
             for row in rows
         ],
@@ -2556,6 +2662,8 @@ async def get_mobile_task_filter_options(
     parser_type: str,
     scope: FlowScope = Query("mine"),
     community: list[str] = Query(default=[]),
+    small_community: list[str] = Query(default=[]),
+    match_status: list[str] = Query(default=[]),
     review_stage: ReviewStage = Query("all"),
     user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
     conn=Depends(get_db),
@@ -2583,6 +2691,8 @@ async def get_mobile_task_filter_options(
             scope,
             user,
             communities=community,
+            small_communities=small_community,
+            match_status=match_status,
             review_stage=review_stage,
         )
     return {"source_ready": True, **options}
@@ -2650,15 +2760,16 @@ async def select_mobile_tasks_for_assignment(
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
 
     where_sql, query_params = _task_where(context, parser_type, data)
-    assignment_source_condition = "projection.conflict=0"
+    assignment_source_condition = "projection.conflict=0 AND projection.address_match_status='confirmed'"
     if local_data_source_enabled():
-        assignment_source_condition = f"{_active_source_count_sql(parser_type)} <= 1"
+        assignment_source_condition = f"{_active_source_count_sql(parser_type)} <= 1 AND projection.address_match_status='confirmed'"
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
         await cur.execute(
             f"""
-            SELECT projection.row_key, projection.community
+            SELECT projection.row_key, projection.community, projection.small_community_name,
+                   projection.address_match_status
             FROM _online_source_projection AS projection
             WHERE {where_sql}
               AND TRIM(COALESCE(projection.inspector, ''))=''
@@ -2691,7 +2802,7 @@ async def select_mobile_tasks_for_assignment(
     aliases = assignment_context["community_aliases"]
     formal_communities = {
         aliases.get(str(community or "").strip(), "")
-        for _, community in rows
+        for _, community, _, _ in rows
     }
     if "" in formal_communities:
         raise HTTPException(403, "部分任务社区不在当前账号可分配范围内")
@@ -2703,10 +2814,120 @@ async def select_mobile_tasks_for_assignment(
     ):
         raise HTTPException(400, "该社区当前没有在岗组员可分配")
     return {
-        "row_keys": [str(row_key) for row_key, _ in rows],
+        "row_keys": [str(row[0]) for row in rows],
         "total": len(rows),
         "community": formal_community,
     }
+
+
+@router.post("/{parser_type}/{row_key}/address-match/confirm")
+async def confirm_mobile_task_address_match(
+    parser_type: str,
+    row_key: str,
+    data: AddressMatchConfirm,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """人工确认任务的小区归属；确认结果不会被后续规则重跑覆盖。"""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以确认小区归属")
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT projection.community, projection.source_count,
+                       projection.conflict
+                FROM _online_source_projection AS projection
+                WHERE projection.parser_type=%s AND projection.row_key=%s
+                  AND {scope_where}
+                FOR UPDATE
+                """,
+                (parser_type, row_key, *scope_params),
+            )
+            projection = await cur.fetchone()
+            if not projection:
+                raise HTTPException(404, "任务不存在或不在当前账号可操作范围内")
+            if bool(projection[2]) or int(projection[1] or 0) != 1:
+                raise HTTPException(409, "任务存在重复或冲突来源，暂不能确认小区")
+            await cur.execute(
+                """
+                SELECT entry.id, entry.name, entry.community_id, community.name
+                FROM _police_address_entries AS entry
+                JOIN _communities AS community ON community.id=entry.community_id
+                WHERE entry.id=%s AND entry.enabled=1
+                """,
+                (data.small_community_id,),
+            )
+            entry = await cur.fetchone()
+            if not entry:
+                raise HTTPException(404, "小区不存在、已停用或尚未设置所属社区")
+            assignment_context = await inspector_option_context(
+                cur,
+                user,
+                assignment_only=True,
+            )
+            aliases = assignment_context["community_aliases"]
+            task_community = aliases.get(str(projection[0] or "").strip(), "")
+            entry_community = aliases.get(str(entry[3] or "").strip(), "")
+            if not task_community or not entry_community or task_community != entry_community:
+                raise HTTPException(409, "所选小区与任务正式社区不一致，请先处理地址冲突")
+            await cur.execute(
+                """
+                INSERT INTO _online_task_address_matches (
+                    parser_type, row_key, original_address,
+                    suggested_entry_id, suggested_community_id,
+                    suggested_community_name, match_status, match_score,
+                    match_method, match_reason, candidates_json,
+                    matcher_version, confirmed_entry_id, confirmed_by,
+                    confirmed_at
+                )
+                SELECT parser_type, row_key, '', %s, %s, %s,
+                       'confirmed', 1, '人工确认', '管理员已确认小区归属',
+                       JSON_ARRAY(), 'rule-v1', %s, %s, UTC_TIMESTAMP()
+                FROM _online_source_projection
+                WHERE parser_type=%s AND row_key=%s
+                ON DUPLICATE KEY UPDATE
+                    suggested_entry_id=VALUES(suggested_entry_id),
+                    suggested_community_id=VALUES(suggested_community_id),
+                    suggested_community_name=VALUES(suggested_community_name),
+                    match_status='confirmed', match_score=1,
+                    match_method='人工确认',
+                    match_reason='管理员已确认小区归属',
+                    matcher_version='rule-v1',
+                    confirmed_entry_id=VALUES(confirmed_entry_id),
+                    confirmed_by=VALUES(confirmed_by),
+                    confirmed_at=VALUES(confirmed_at)
+                """,
+                (
+                    int(entry[0]), int(entry[2]), str(entry[3] or ""),
+                    int(entry[0]), int(user["id"]), parser_type, row_key,
+                ),
+            )
+            await rebuild_projection(cur, parser_type)
+            result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "mobile_tasks.address_match_confirm",
+        target_type="mobile_task_address_match",
+        target_name=f"{parser_type}:{row_key}",
+        detail={"small_community_id": int(entry[0])},
+        **request_audit_fields(request),
+    )
+    return {"message": "小区归属已确认", "address_match": result}
 
 
 @router.get("/{parser_type}/assignment-workbench")
@@ -2754,7 +2975,8 @@ async def get_mobile_task_assignment_workbench(
         available_total = int((await cur.fetchone())[0] or 0)
         await cur.execute(
             f"""
-            SELECT projection.row_key, projection.community, projection.values_json
+            SELECT projection.row_key, projection.community, projection.small_community_name,
+                   projection.address_match_status, projection.values_json
             FROM _online_source_projection AS projection
             WHERE projection.parser_type=%s
               AND {scope_where}
@@ -2804,7 +3026,7 @@ async def get_mobile_task_assignment_workbench(
     aliases = assignment_context["community_aliases"]
     inspectors_by_community = assignment_context["inspectors_by_community"]
     items: list[dict[str, str]] = []
-    for row_key, raw_community, raw_values in rows:
+    for row_key, raw_community, raw_small_community, raw_match_status, raw_values in rows:
         community = aliases.get(str(raw_community or "").strip(), "")
         if not community:
             community = str(raw_community or "").strip() or "社区未识别"
@@ -2813,6 +3035,8 @@ async def get_mobile_task_assignment_workbench(
             str(row_key),
             community,
             json_value(raw_values, {}),
+            str(raw_small_community or ""),
+            str(raw_match_status or "unmatched"),
         ))
     community_counts: dict[str, int] = {}
     for item in items:
@@ -2863,6 +3087,8 @@ async def list_mobile_tasks(
     status: TaskStatus = Query("pending"),
     review_stage: ReviewStage = Query("all"),
     community: list[str] = Query(default=[]),
+    small_community: list[str] = Query(default=[]),
+    match_status: list[str] = Query(default=[]),
     inspector: list[str] = Query(default=[]),
     watch_category: list[int] = Query(default=[]),
     priority: Priority = Query("all"),
@@ -2880,6 +3106,8 @@ async def list_mobile_tasks(
             status=status,
             review_stage=review_stage,
             communities=community,
+            small_communities=small_community,
+            match_status=match_status,
             inspectors=inspector,
             watch_categories=watch_category,
             priority=priority,
@@ -2994,6 +3222,11 @@ async def _mobile_task_detail_data(
             [row_key],
         )
         registration_link = registration_by_row.get(row_key)
+        address_match = (await _address_matches_by_rows(
+            cur,
+            parser_type,
+            [row_key],
+        )).get(row_key)
 
         sources = []
         for (
@@ -3069,6 +3302,7 @@ async def _mobile_task_detail_data(
                     ),
                 ),
                 review_flow=review_flow,
+                address_match=address_match,
             )
             editable_fields = (
                 list(capabilities["editable_fields"])
@@ -3191,6 +3425,7 @@ async def _mobile_task_detail_data(
             residence_status=residence_by_row.get(row_key),
             registration_link=registration_link,
             review_flow=review_flow,
+            address_match=address_match,
         ),
         "workflow": {
             "label": workflow.label,
@@ -3222,6 +3457,7 @@ async def _mobile_task_detail_data(
         "qmf_status": qmf_by_row.get(row_key),
         "residence_status": residence_by_row.get(row_key),
         "registration_link": registration_link,
+        "address_match": address_match,
         "review_flow": review_flow,
         "registration_manual_confirm_allowed": can_confirm_registration(user),
         "sources": sources,
@@ -3895,7 +4131,10 @@ async def bulk_assign_mobile_tasks(
         await cur.execute(
             f"""
             SELECT projection.row_key, projection.community, projection.inspector,
-                   projection.task_state, projection.conflict, projection.source_count
+                   projection.task_state, projection.conflict, projection.source_count,
+                   projection.address_match_status,
+                   projection.small_community_id,
+                   projection.small_community_name
             FROM _online_source_projection AS projection
             WHERE projection.parser_type=%s
               AND projection.row_key IN ({key_placeholders})
@@ -3910,6 +4149,9 @@ async def bulk_assign_mobile_tasks(
                 "state": str(row[3] or "").strip(),
                 "conflict": bool(row[4]),
                 "source_count": int(row[5] or 0),
+                "address_match_status": str(row[6] or "unmatched"),
+                "small_community_id": int(row[7]) if row[7] is not None else None,
+                "small_community_name": str(row[8] or ""),
             }
         missing_scope = [key for key in row_keys if key not in projection_by_key]
         if missing_scope:
@@ -3986,6 +4228,9 @@ async def bulk_assign_mobile_tasks(
             continue
         if item["source_count"] != 1:
             skipped.append({"row_key": row_key, "reason": "存在重复本地来源，请先处理来源异常"})
+            continue
+        if item["address_match_status"] != "confirmed" or not item["small_community_id"]:
+            skipped.append({"row_key": row_key, "reason": "小区归属尚未人工确认，请先处理地址匹配"})
             continue
         if not source_rows_by_key.get(row_key):
             skipped.append({"row_key": row_key, "reason": "找不到来源行"})

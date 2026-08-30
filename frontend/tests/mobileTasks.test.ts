@@ -900,6 +900,34 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
   assert.match(styleSource, /mobile-task-assignment-workbench[\s\S]*overflow: hidden/)
 })
 
+test('任务匹配只生成建议，分配前必须人工确认小区归属', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const tableSource = readFileSync(
+    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
+    'utf8',
+  )
+  const detailSource = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  const workbenchSource = readFileSync(
+    new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /筛选小区/)
+  assert.match(pageSource, /匹配状态/)
+  assert.match(tableSource, /小区归属/)
+  assert.match(tableSource, /confirmMobileTaskAddressMatch/)
+  assert.match(detailSource, /原始地址只读保留，不会被匹配结果覆盖/)
+  assert.match(detailSource, /候选小区/)
+  assert.match(workbenchSource, /item\.match_status === 'confirmed'/)
+  assert.match(workbenchSource, /只有“已人工确认”的任务可以选择和平均分配/)
+})
+
 test('本地任务详情不再把历史腾讯来源当成编辑前置条件', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),

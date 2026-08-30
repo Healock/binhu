@@ -1214,6 +1214,7 @@ export interface MobileTaskItem {
   qmf_status: MobileTaskQmfStatus | null
   residence_status?: MobileTaskResidenceStatus | null
   registration_link?: MobileTaskRegistrationLink | null
+  address_match?: MobileTaskAddressMatch | null
 }
 
 export type ResidenceRegistrationState =
@@ -1313,6 +1314,17 @@ export interface MobileTaskFilterOption {
   count: number
 }
 
+export interface MobileTaskAddressMatch {
+  small_community_id: number | null
+  small_community_name: string
+  status: 'unmatched' | 'suggested' | 'ambiguous' | 'conflict' | 'confirmed' | 'invalid'
+  score: number
+  method: string
+  reason: string
+  candidates: Array<Record<string, unknown>>
+  version: string
+}
+
 export interface MobileTaskFacets {
   total: number
   priority_counts: Record<Exclude<MobileTaskPriority, 'all'>, number>
@@ -1350,6 +1362,7 @@ export interface MobileTaskDetailData {
   qmf_status?: MobileTaskQmfStatus | null
   residence_status?: MobileTaskResidenceStatus | null
   registration_link?: MobileTaskRegistrationLink | null
+  address_match?: MobileTaskAddressMatch | null
   registration_manual_confirm_allowed?: boolean
   workflow: {
     label: string
@@ -1726,6 +1739,8 @@ export interface MobileTaskSearchParams {
   status: MobileTaskStatus
   review_stage?: MobileTaskReviewStage
   communities?: string[]
+  small_communities?: string[]
+  match_status?: string[]
   inspectors?: string[]
   watch_categories?: number[]
   qmf_feedback_states?: QmfFeedbackState[]
@@ -1741,6 +1756,8 @@ export interface MobileTaskAnalysisSearchParams {
   scope: MobileTaskScope
   review_stage?: MobileTaskReviewStage
   communities?: string[]
+  small_communities?: string[]
+  match_status?: string[]
   inspectors?: string[]
   watch_categories?: number[]
   sort?: MobileTaskSort
@@ -1755,6 +1772,8 @@ function mobileTaskSearchPayload(params: MobileTaskSearchParams) {
     status: params.status,
     review_stage: params.review_stage || 'all',
     communities: params.communities || [],
+    small_communities: params.small_communities || [],
+    match_status: params.match_status || [],
     inspectors: params.inspectors || [],
     watch_categories: params.watch_categories || [],
     qmf_feedback_states: params.qmf_feedback_states || [],
@@ -1783,6 +1802,8 @@ export async function listMobileTasks(
     status: MobileTaskStatus
     review_stage: MobileTaskReviewStage
     communities: string[]
+    small_communities: string[]
+    match_status: string[]
     inspectors: string[]
     watch_categories: number[]
     qmf_feedback_states: QmfFeedbackState[]
@@ -1808,6 +1829,8 @@ export async function listMobileTaskAnalysis(
     scope: params.scope,
     review_stage: params.review_stage || 'all',
     communities: params.communities || [],
+    small_communities: params.small_communities || [],
+    match_status: params.match_status || [],
     inspectors: params.inspectors || [],
     watch_categories: params.watch_categories || [],
     sort: params.sort || 'priority',
@@ -1838,6 +1861,8 @@ export async function exportMobileTaskAnalysis(
       scope: params.scope,
       review_stage: params.review_stage || 'all',
       communities: params.communities || [],
+      small_communities: params.small_communities || [],
+      match_status: params.match_status || [],
       inspectors: params.inspectors || [],
       watch_categories: params.watch_categories || [],
       sort: params.sort || 'priority',
@@ -1878,6 +1903,8 @@ export async function selectMobileTasksForAssignment(
 export interface MobileTaskAssignmentCandidate {
   row_key: string
   community: string
+  small_community: string
+  match_status: string
   source: string
   address: string
 }
@@ -1891,11 +1918,25 @@ export async function getMobileTaskAssignmentWorkbench(
   limited: boolean
   limit: number
   communities: MobileTaskFilterOption[]
+  small_communities?: MobileTaskFilterOption[]
   inspectors_by_community: Record<string, string[]>
   inspector_counts_by_community: Record<string, Record<string, number>>
 }> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/assignment-workbench`,
+    activeRequest,
+  )
+  return data
+}
+
+export async function confirmMobileTaskAddressMatch(
+  parserType: string,
+  rowKey: string,
+  smallCommunityId: number,
+): Promise<{ message: string; address_match: MobileTaskAddressMatch }> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/confirm`,
+    { small_community_id: smallCommunityId },
     activeRequest,
   )
   return data
@@ -1907,9 +1948,13 @@ export async function getMobileTaskFilterOptions(
   communities: string[] = [],
   reviewStage: MobileTaskReviewStage = 'all',
   options: { passive?: boolean } = {},
+  smallCommunities: string[] = [],
+  matchStatuses: string[] = [],
 ): Promise<{
   source_ready: boolean
   communities: MobileTaskFilterOption[]
+  small_communities: MobileTaskFilterOption[]
+  match_statuses: MobileTaskFilterOption[]
   inspectors: MobileTaskFilterOption[]
   assignment: {
     enabled: boolean
@@ -1928,6 +1973,8 @@ export async function getMobileTaskFilterOptions(
   params.set('scope', scope)
   params.set('review_stage', reviewStage)
   communities.forEach(value => params.append('community', value))
+  smallCommunities.forEach(value => params.append('small_community', value))
+  matchStatuses.forEach(value => params.append('match_status', value))
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
     { ...(options.passive ? {} : activeRequest), params },
@@ -3948,6 +3995,35 @@ export interface RegistryProperty {
   latest_visit_date: string | null
   latest_star_rating: string | null
   latest_star_rating_at: string | null
+  small_community_id: number | null
+  small_community_name: string
+  small_community_community_id: number | null
+  small_community_community_name: string
+  address_match_status: 'unmatched' | 'suggested' | 'ambiguous' | 'conflict' | 'confirmed' | 'invalid' | 'disabled'
+  address_match_score: number
+  address_match_method: string
+  address_match_reason: string
+  address_match_candidates: Array<{
+    entry_id: number
+    name: string
+    community_id: number | null
+    community_name: string
+    score: number
+    method: string
+    reason: string
+  }>
+  address_match_version: string
+  address_match_confirmed_by: number | null
+  address_match_confirmed_at: string | null
+}
+
+export interface RegistrySmallCommunityOption {
+  id: number
+  name: string
+  community_id: number
+  community_name: string
+  detail_address: string
+  aliases: string[]
 }
 
 export interface RegistryPropertyVisit {
@@ -4121,12 +4197,18 @@ export const registryApi = {
     visit_start_date?: string
     visit_end_date?: string
     star_ratings?: string[]
+    small_community_ids?: number[]
+    address_match_statuses?: string[]
     sort?: 'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'
     page?: number
     page_size?: number
   } = {}) {
     return (await api.post('/registry/properties/search', params, activeRequest)).data as {
-      data: RegistryProperty[]; total: number; page: number; page_size: number
+      data: RegistryProperty[]
+      total: number
+      page: number
+      page_size: number
+      match_status_counts: Record<string, number>
     }
   },
   async exportProperties(params: {
@@ -4138,6 +4220,8 @@ export const registryApi = {
     visit_start_date?: string
     visit_end_date?: string
     star_ratings?: string[]
+    small_community_ids?: number[]
+    address_match_statuses?: string[]
     sort?: 'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'
   } = {}) {
     return (await api.post('/registry/properties/export', params, {
@@ -4148,6 +4232,18 @@ export const registryApi = {
   },
   async property(id: number) {
     return (await api.get(`/registry/properties/${id}`, activeRequest)).data
+  },
+  async smallCommunityOptions(communityId?: number) {
+    return (await api.get('/registry/properties/small-community-options', {
+      ...activeRequest,
+      params: communityId ? { community_id: communityId } : undefined,
+    })).data as { data: RegistrySmallCommunityOption[] }
+  },
+  async confirmPropertySmallCommunities(items: Array<{ property_id: number; small_community_id: number }>) {
+    return (await api.post('/registry/properties/small-community-links/confirm', { items }, activeRequest)).data as {
+      message: string
+      confirmed: number
+    }
   },
   async propertyVisits(id: number, params: { page?: number; page_size?: number } = {}) {
     return (await api.get(`/registry/properties/${id}/visits`, {

@@ -231,14 +231,24 @@ async def test_property_search_combines_scope_keyword_community_and_housing_filt
     )
 
     count_sql, count_params = conn.search_cursor.calls[0]
-    row_sql, row_params = conn.search_cursor.calls[1]
+    status_sql, status_params = conn.search_cursor.calls[1]
+    row_sql, row_params = conn.search_cursor.calls[2]
     assert "community_id IN" in count_sql
     assert "community_id=%s" in count_sql
     assert "housing_type IN" in count_sql
     assert "registry_address_aliases" in count_sql
-    assert count_params.count("%南厍%") == 9
+    assert count_params.count("%南厍%") == 10
+    assert "property_match.small_community_name LIKE %s" in count_sql
+    assert "GROUP BY COALESCE(property_match.match_status,'unmatched')" in status_sql
+    assert status_params == count_params
     assert row_params[-2:] == (20, 20)
-    assert result == {"total": 12, "page": 2, "page_size": 20, "data": []}
+    assert result == {
+        "total": 12,
+        "page": 2,
+        "page_size": 20,
+        "data": [],
+        "match_status_counts": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -306,6 +316,21 @@ def test_property_visit_history_keeps_basic_view_permission():
         for dependency in route.dependant.dependencies
     }
     assert "require_registry_property_view" in dependency_names
+
+
+def test_small_community_options_use_existing_community_schema_ordering():
+    import inspect
+
+    source = inspect.getsource(registry_router.property_small_community_options)
+    assert "ORDER BY community.name,entry.name,entry.id" in source
+    assert "community.sort_order" not in source
+
+
+def test_property_small_community_routes_precede_dynamic_property_routes():
+    paths = [item.path for item in registry_router.router.routes]
+    assert paths.index("/api/registry/properties/small-community-options") < paths.index(
+        "/api/registry/properties/{property_id}/people"
+    )
 
 
 class _RegistryTagCursor:

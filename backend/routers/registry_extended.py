@@ -618,6 +618,14 @@ async def get_property_detail(
         )
         versions = await cur.fetchall()
         await cur.execute(
+            "SELECT small_community_id,small_community_name,community_id,community_name_snapshot,"
+            "match_status,match_score,match_method,match_reason,match_evidence,matcher_version,"
+            "confirmed_by,confirmed_at,property_version "
+            "FROM registry_property_small_community_links WHERE property_id=%s",
+            (property_id,),
+        )
+        small_community_match = await cur.fetchone()
+        await cur.execute(
             "SELECT rel.id, person.id, person.name, role.id, role.name, rel.valid_from, rel.valid_to, rel.verified "
             "FROM registry_property_person_roles rel "
             "JOIN registry_housing_people person ON person.id=rel.person_id "
@@ -727,6 +735,26 @@ async def get_property_detail(
              "source_type": item[8], "reason": item[9], "created_at": _iso(item[10])}
             for item in versions
         ],
+        "small_community_match": ({
+            "small_community_id": int(small_community_match[0]) if small_community_match[0] is not None else None,
+            "small_community_name": str(small_community_match[1] or ""),
+            "community_id": int(small_community_match[2]) if small_community_match[2] is not None else None,
+            "community_name": str(small_community_match[3] or ""),
+            "status": str(small_community_match[4] or "unmatched"),
+            "score": float(small_community_match[5] or 0),
+            "method": str(small_community_match[6] or ""),
+            "reason": str(small_community_match[7] or ""),
+            "candidates": _json(small_community_match[8], {}).get("candidates", []),
+            "version": str(small_community_match[9] or ""),
+            "confirmed_by": int(small_community_match[10]) if small_community_match[10] is not None else None,
+            "confirmed_at": _iso(small_community_match[11]),
+            "property_version": int(small_community_match[12] or 1),
+        } if small_community_match else {
+            "small_community_id": None, "small_community_name": "", "community_id": None,
+            "community_name": "", "status": "unmatched", "score": 0, "method": "",
+            "reason": "尚未运行房屋小区匹配", "candidates": [], "version": "",
+            "confirmed_by": None, "confirmed_at": None, "property_version": int(row[15]),
+        }),
         "people": [
             {"relation_id": int(item[0]), "person_id": int(item[1]), "person_name": item[2],
              "role_type_id": int(item[3]), "role_name": item[4], "valid_from": _iso(item[5]),

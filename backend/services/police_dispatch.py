@@ -447,7 +447,7 @@ def apply_preprocessing_suggestions(
     enabled.sort(key=lambda item: (int(item.get("sort_order") or item["id"]), int(item["id"])))
     enabled_ids = {int(item["id"]) for item in enabled}
     resolver = community_resolver(enabled)
-    allocation_pool: list[dict[str, Any]] = []
+    unmatched_rows: list[dict[str, Any]] = []
     mark_duplicate_groups(rows)
 
     for row in rows:
@@ -527,28 +527,14 @@ def apply_preprocessing_suggestions(
                 "suggestion_reason": "原移交信息明确说明不属于滨湖辖区",
             })
             continue
-        allocation_pool.append(row)
+        unmatched_rows.append(row)
 
-    if not enabled:
-        for row in allocation_pool:
-            row.update({
-                "suggested_action": "manual",
-                "suggestion_reason": "当前没有启用社区，无法平均分配",
-                "allocation_mode": "conflict",
-            })
-        return
-    allocation_pool.sort(key=lambda item: (
-        item.get("identity_hash", ""),
-        normalize_lookup(item.get("person_name", "")),
-        int(item.get("source_row") or 0),
-    ))
-    for index, row in enumerate(allocation_pool):
-        community = enabled[index % len(enabled)]
+    for row in unmatched_rows:
         row.update({
-            "suggested_action": "dispatch",
-            "suggested_community_id": int(community["id"]),
-            "suggestion_reason": "地址无法唯一匹配，已按稳定顺序平均分配",
-            "allocation_mode": "balanced",
+            "suggested_action": "manual",
+            "suggested_community_id": None,
+            "suggestion_reason": "地址无法唯一匹配小区，需要人工确认",
+            "allocation_mode": "unmatched",
         })
 
 

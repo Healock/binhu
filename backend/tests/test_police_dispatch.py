@@ -634,11 +634,11 @@ def test_suggestions_require_review_and_balance_only_unmatched_pool():
     # 公寓即使模式中含“民宿较多”，地址本身不含酒店/民宿时仍只是社区映射。
     assert rows[2]["suggested_action"] == "dispatch"
     assert rows[2]["suggested_community_id"] == 2
-    assert rows[3]["allocation_mode"] == "balanced"
-    assert rows[3]["suggested_community_id"] in {1, 2, 3}
-    balanced = [row for row in rows if row["allocation_mode"] == "balanced"]
-    counts = {community_id: sum(row["suggested_community_id"] == community_id for row in balanced) for community_id in (1, 2, 3)}
-    assert max(counts.values()) - min(counts.values()) <= 1
+    assert rows[3]["allocation_mode"] == "unmatched"
+    assert rows[3]["suggested_action"] == "manual"
+    assert rows[3]["suggested_community_id"] is None
+    assert all(row["allocation_mode"] == "unmatched" for row in rows[3:])
+    assert all(row["suggested_community_id"] is None for row in rows[3:])
     assert all(not row.get("final_action") for row in rows)
 
 

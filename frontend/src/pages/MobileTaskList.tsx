@@ -65,6 +65,14 @@ import { downloadBlob } from '../utils/fileDownload'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
+const MATCH_STATUS_OPTIONS = [
+  { value: 'confirmed', label: '已人工确认' },
+  { value: 'suggested', label: '系统建议' },
+  { value: 'ambiguous', label: '待人工确认' },
+  { value: 'conflict', label: '地址冲突' },
+  { value: 'unmatched', label: '未匹配' },
+  { value: 'invalid', label: '低信息地址' },
+]
 
 const STATUS_OPTIONS = [
   { label: '待处理（未完成）', value: 'pending' },
@@ -240,6 +248,8 @@ export default function MobileTaskList({
       : 'all',
   )
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
+  const [smallCommunities, setSmallCommunities] = useState<string[]>(readMulti(searchParams, 'small_community'))
+  const [matchStatuses, setMatchStatuses] = useState<string[]>(readMulti(searchParams, 'match_status'))
   const [inspectors, setInspectors] = useState<string[]>(readMulti(searchParams, 'inspector'))
   const [watchCategories, setWatchCategories] = useState<number[]>(readMultiNumber(searchParams, 'watch_category'))
   const [qmfFeedbackStates, setQmfFeedbackStates] = useState<QmfFeedbackState[]>(
@@ -268,6 +278,7 @@ export default function MobileTaskList({
   const [keywordFlush, setKeywordFlush] = useState(0)
   const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
+  const [smallCommunityOptions, setSmallCommunityOptions] = useState<MobileTaskFilterOption[]>([])
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
   const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
   const [watchCategoryOptions, setWatchCategoryOptions] = useState<Array<{ value: number; label: string; color: string; alert_level: string; count: number }>>([])
@@ -353,16 +364,25 @@ export default function MobileTaskList({
           scope,
           communities,
           'all',
+          {},
+          smallCommunities,
+          matchStatuses,
         )
       if (requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
+      setSmallCommunityOptions(result.small_communities || [])
       setInspectorOptions(result.inspectors)
       setAssignment(result.assignment || EMPTY_ASSIGNMENT)
       setWatchCategoryOptions(result.watch_categories || [])
       const communityValues = new Set(result.communities.map(option => option.value))
+      const smallCommunityValues = new Set((result.small_communities || []).map(option => option.value))
       const inspectorValues = new Set(result.inspectors.map(option => option.value))
       setCommunities(current => {
         const next = current.filter(value => communityValues.has(value))
+        return next.length === current.length ? current : next
+      })
+      setSmallCommunities(current => {
+        const next = current.filter(value => smallCommunityValues.has(value))
         return next.length === current.length ? current : next
       })
       setInspectors(current => {
@@ -374,13 +394,14 @@ export default function MobileTaskList({
     } catch {
       if (requestId !== optionsRequestId.current) return
       setCommunityOptions([])
+      setSmallCommunityOptions([])
       setInspectorOptions([])
       setAssignment(EMPTY_ASSIGNMENT)
       setWatchCategoryOptions([])
     } finally {
       if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
-  }, [analysisOnly, analysisParserTypes, communities, parserType, reviewStage, scope])
+  }, [analysisOnly, analysisParserTypes, communities, matchStatuses, parserType, reviewStage, scope, smallCommunities])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
 
@@ -408,6 +429,8 @@ export default function MobileTaskList({
           scope: 'all',
           review_stage: reviewStage,
           communities,
+          small_communities: smallCommunities,
+          match_status: matchStatuses,
           inspectors,
           watch_categories: watchCategories,
           sort,
@@ -421,6 +444,8 @@ export default function MobileTaskList({
           status,
           review_stage: reviewStage,
           communities,
+          small_communities: smallCommunities,
+          match_status: matchStatuses,
           inspectors,
           watch_categories: watchCategories,
           qmf_feedback_states: qmfFeedbackStates,
@@ -472,7 +497,7 @@ export default function MobileTaskList({
       }
       if (append) loadingMoreRef.current = false
     }
-  }, [analysisOnly, analysisParserTypes, communities, inspectors, keyword, parserType, priority, qmfFeedbackStates, reviewStage, scope, sort, status, watchCategories])
+  }, [analysisOnly, analysisParserTypes, communities, inspectors, keyword, matchStatuses, parserType, priority, qmfFeedbackStates, reviewStage, scope, smallCommunities, sort, status, watchCategories])
 
   const loadQmfScan = useCallback(async (silent = true) => {
     if (!isModelThree) {
@@ -649,13 +674,15 @@ export default function MobileTaskList({
     if (analysisOnly) next.set('review_stage', reviewStage)
     else if (reviewStage !== 'all') next.set('review_stage', reviewStage)
     communities.forEach(value => next.append('community', value))
+    smallCommunities.forEach(value => next.append('small_community', value))
+    matchStatuses.forEach(value => next.append('match_status', value))
     inspectors.forEach(value => next.append('inspector', value))
     watchCategories.forEach(value => next.append('watch_category', String(value)))
     if (isModelThree) qmfFeedbackStates.forEach(value => next.append('qmf_state', value))
     if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, sort, status, watchCategories])
+  }, [analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, matchStatuses, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, smallCommunities, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -663,6 +690,8 @@ export default function MobileTaskList({
     next.set('scope', nextScope)
     next.set('status', 'all')
     setCommunities([])
+    setSmallCommunities([])
+    setMatchStatuses([])
     setInspectors([])
     setWatchCategories([])
     setQmfFeedbackStates([])
@@ -676,6 +705,8 @@ export default function MobileTaskList({
   const clearFilters = () => {
     if (analysisOnly) setAnalysisParserSelection([ALL_ANALYSIS_TYPES])
     setCommunities([])
+    setSmallCommunities([])
+    setMatchStatuses([])
     setInspectors([])
     setWatchCategories([])
     setQmfFeedbackStates([])
@@ -722,6 +753,8 @@ export default function MobileTaskList({
   }
 
   const filtersActive = communities.length > 0
+    || smallCommunities.length > 0
+    || matchStatuses.length > 0
     || inspectors.length > 0
     || watchCategories.length > 0
     || (isModelThree && qmfFeedbackStates.length > 0)
@@ -784,6 +817,8 @@ export default function MobileTaskList({
           scope: 'all',
           review_stage: reviewStage,
           communities,
+          small_communities: smallCommunities,
+          match_status: matchStatuses,
           inspectors,
           watch_categories: watchCategories,
           sort,
@@ -795,6 +830,8 @@ export default function MobileTaskList({
           status,
           review_stage: reviewStage,
           communities,
+          small_communities: smallCommunities,
+          match_status: matchStatuses,
           inspectors,
           watch_categories: watchCategories,
           qmf_feedback_states: qmfFeedbackStates,
@@ -887,10 +924,37 @@ export default function MobileTaskList({
             }))}
             onChange={values => {
               setCommunities(values)
+              setSmallCommunities([])
               setInspectors([])
               setInspectorOptions([])
             }}
           />
+          {!analysisOnly && <Select
+            mode="multiple"
+            size="large"
+            value={smallCommunities}
+            loading={optionsLoading}
+            maxTagCount="responsive"
+            showSearch
+            allowClear
+            optionFilterProp="label"
+            placeholder="筛选小区"
+            options={smallCommunityOptions.map(option => ({
+              value: option.value,
+              label: `${option.label}（${option.count}）`,
+            }))}
+            onChange={values => setSmallCommunities(values)}
+          />}
+          {!analysisOnly && <Select
+            mode="multiple"
+            size="large"
+            value={matchStatuses}
+            maxTagCount="responsive"
+            allowClear
+            placeholder="匹配状态"
+            options={MATCH_STATUS_OPTIONS}
+            onChange={values => setMatchStatuses(values)}
+          />}
           <Select
             mode="multiple"
             size="large"
@@ -1150,6 +1214,7 @@ export default function MobileTaskList({
                 loading={loading}
                 analysisMode={analysisOnly}
                 canClaimUnassigned={!analysisOnly && user?.member?.position === '组员'}
+                canManageAddressMatches={!analysisOnly && canBulkAssign}
                 selectionMode={false}
                 selectedRowKeys={[]}
                 canSelect={() => false}
@@ -1184,6 +1249,7 @@ export default function MobileTaskList({
               && currentAddress !== originalAddress,
             )
             const deadline = formatMobileTaskDeadline(task.summary.deadline)
+            const addressMatch = task.address_match
             return (
               <article
                 key={task.task_key}
@@ -1317,6 +1383,20 @@ export default function MobileTaskList({
                   {task.review_flow && !['resolved', 'archived'].includes(task.review_flow.state) && (
                     <UnverifiableReviewNotice flow={task.review_flow} showStateLabel />
                   )}
+                  <div className="mobile-task-card-address-match">
+                    <span>{addressMatch?.small_community_name || '未关联小区'}</span>
+                    <Tag color={addressMatch?.status === 'confirmed' ? 'success' : addressMatch?.status === 'conflict' ? 'error' : addressMatch?.status === 'suggested' ? 'processing' : 'default'}>
+                      {addressMatch?.status === 'confirmed'
+                        ? '已确认'
+                        : addressMatch?.status === 'suggested'
+                          ? '系统建议'
+                          : addressMatch?.status === 'ambiguous'
+                            ? '待确认'
+                            : addressMatch?.status === 'conflict'
+                              ? '地址冲突'
+                              : '未匹配'}
+                    </Tag>
+                  </div>
                   {['analyzed', 'initial_extension', 'deep_pending', 'deep_extension'].includes(task.review_stage) && task.summary.analysis && (
                     <div className="mobile-task-analysis">
                       <div className="mobile-task-analysis__label">研判结果</div>

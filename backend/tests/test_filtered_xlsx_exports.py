@@ -160,10 +160,12 @@ class _PropertySortCursor:
         return [
             (1, "", 1, "长板社区", "一号", "", "", "", "", "", None,
              "manual", "", "一号", "active", 1, None, datetime(2026, 8, 1),
-             0, None, None, None, None, None, 0, 0),
+             0, None, None, None, None, None, 0, 0,
+             None, "", None, "", "unmatched", 0, "", "", None, "", None, None),
             (2, "", 1, "长板社区", "二号", "", "", "", "", "", None,
              "manual", "", "二号", "active", 1, None, datetime(2026, 8, 2),
-             0, None, None, None, None, None, 0, 0),
+             0, None, None, None, None, None, 0, 0,
+             None, "", None, "", "unmatched", 0, "", "", None, "", None, None),
         ]
 
 

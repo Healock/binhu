@@ -57,6 +57,41 @@ async def ensure_registry_schema(cur) -> None:
     await _ensure_column(cur, "registry_properties", "source_ref", "VARCHAR(190) NOT NULL DEFAULT '' AFTER source_type")
     await _ensure_index(cur, "registry_properties", "idx_registry_property_housing_type", "INDEX idx_registry_property_housing_type (housing_type, status)")
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_small_community_links (
+            property_id BIGINT NOT NULL PRIMARY KEY,
+            small_community_id BIGINT DEFAULT NULL,
+            small_community_name VARCHAR(300) NOT NULL DEFAULT '',
+            community_id BIGINT DEFAULT NULL,
+            community_name_snapshot VARCHAR(200) NOT NULL DEFAULT '',
+            match_status VARCHAR(30) NOT NULL DEFAULT 'unmatched',
+            match_score DECIMAL(6,4) NOT NULL DEFAULT 0,
+            match_method VARCHAR(100) NOT NULL DEFAULT '',
+            match_reason VARCHAR(500) NOT NULL DEFAULT '',
+            match_evidence JSON DEFAULT NULL,
+            matcher_version VARCHAR(40) NOT NULL DEFAULT '',
+            confirmed_by BIGINT DEFAULT NULL,
+            confirmed_at DATETIME DEFAULT NULL,
+            property_version INT UNSIGNED NOT NULL DEFAULT 1,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_registry_property_small_community_status (match_status),
+            INDEX idx_registry_property_small_community_id (small_community_id),
+            INDEX idx_registry_property_small_community_community (community_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_column(
+        cur,
+        "registry_property_small_community_links",
+        "small_community_name",
+        "VARCHAR(300) NOT NULL DEFAULT '' AFTER small_community_id",
+    )
+    await _ensure_column(
+        cur,
+        "registry_property_small_community_links",
+        "community_name_snapshot",
+        "VARCHAR(200) NOT NULL DEFAULT '' AFTER community_id",
+    )
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_property_units (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             property_id BIGINT NOT NULL,

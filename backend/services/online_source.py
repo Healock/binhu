@@ -20,9 +20,38 @@ from services.watch_matching import (
     sync_current_task_snapshots,
 )
 from services.local_source import local_data_source_enabled
+from services.address_matching import RuleMatcher
 
 
 ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
+
+
+async def _address_match_entries(cur) -> list[dict[str, Any]]:
+    """读取启用的小区地址库，供投影重建时生成建议。"""
+    await cur.execute(
+        """
+        SELECT entry.id, entry.name, entry.normalized_name, entry.detail_address,
+               entry.aliases_json, entry.community_id, community.name,
+               entry.enabled
+        FROM _police_address_entries AS entry
+        LEFT JOIN _communities AS community ON community.id=entry.community_id
+        WHERE entry.enabled=1
+        ORDER BY entry.id
+        """
+    )
+    result = []
+    for row in await cur.fetchall():
+        result.append({
+            "id": int(row[0]),
+            "name": str(row[1] or ""),
+            "normalized_name": str(row[2] or ""),
+            "detail_address": str(row[3] or ""),
+            "aliases_json": row[4],
+            "community_id": int(row[5]) if row[5] is not None else None,
+            "community_name": str(row[6] or ""),
+            "enabled": bool(row[7]),
+        })
+    return result
 def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
     """Limit task-facing source queries to the active data ownership model.
 
@@ -139,6 +168,39 @@ async def release_sheet_lock(cur, spreadsheet_id: int) -> None:
 
 async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = True) -> None:
     parser = get_parser(parser_type)
+    matcher = RuleMatcher()
+    address_entries = await _address_match_entries(cur)
+    address_entries_by_id = {int(item["id"]): item for item in address_entries}
+    await cur.execute(
+        """
+        SELECT row_key, original_address, suggested_entry_id,
+               suggested_community_id, suggested_community_name,
+               match_status, match_score, match_method, match_reason,
+               candidates_json, matcher_version, confirmed_entry_id,
+               confirmed_by, confirmed_at
+        FROM _online_task_address_matches
+        WHERE parser_type=%s
+        """,
+        (parser_type,),
+    )
+    stored_matches = {
+        str(row[0]): {
+            "original_address": str(row[1] or ""),
+            "suggested_entry_id": row[2],
+            "suggested_community_id": row[3],
+            "suggested_community_name": str(row[4] or ""),
+            "status": str(row[5] or "unmatched"),
+            "score": float(row[6] or 0),
+            "method": str(row[7] or ""),
+            "reason": str(row[8] or ""),
+            "candidates": json_value(row[9], []),
+            "version": str(row[10] or ""),
+            "confirmed_entry_id": int(row[11]) if row[11] is not None else None,
+            "confirmed_by": row[12],
+            "confirmed_at": row[13],
+        }
+        for row in await cur.fetchall()
+    }
     await cur.execute(
         "SELECT row_key, first_dispatch_at FROM _online_source_projection WHERE parser_type=%s",
         (parser_type,),
@@ -222,6 +284,7 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         })
 
     projection_rows = []
+    address_match_rows = []
     merged_rows: dict[str, tuple[dict[str, str], bool]] = {}
     for row_key, source_rows in grouped.items():
         parent = dict(source_rows[0])
@@ -254,11 +317,85 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
 
     for row_key, source_rows in grouped.items():
         parent, conflict = merged_rows[row_key]
+        address = ""
+        address_fields = tuple(
+            field
+            for field in getattr(TASK_WORKFLOWS.get(parser_type), "address_fields", ())
+            if field != "现住址"
+        ) or tuple(getattr(TASK_WORKFLOWS.get(parser_type), "address_fields", ()))
+        for field in address_fields:
+            if str(parent.get(field) or "").strip():
+                address = str(parent.get(field) or "").strip()
+                break
+        address_match = matcher.match(
+            address,
+            address_entries,
+            community_name=parser.community_value(parent),
+        )
+        stored = stored_matches.get(row_key)
+        if stored and stored.get("status") == "confirmed":
+            confirmed_entry = address_entries_by_id.get(
+                int(stored.get("confirmed_entry_id") or 0)
+            )
+            if confirmed_entry:
+                address_match = {
+                    "status": "confirmed",
+                    "score": float(stored.get("score") or 1),
+                    "method": "人工确认",
+                    "reason": str(stored.get("reason") or "管理员已确认小区归属"),
+                    "candidate": {
+                        "entry_id": int(confirmed_entry["id"]),
+                        "name": str(confirmed_entry.get("name") or ""),
+                        "community_id": confirmed_entry.get("community_id"),
+                        "community_name": str(confirmed_entry.get("community_name") or ""),
+                        "score": float(stored.get("score") or 1),
+                        "method": "人工确认",
+                        "reason": "管理员已确认小区归属",
+                    },
+                    "candidates": address_match.get("candidates") or stored.get("candidates") or [],
+                    "version": str(stored.get("version") or matcher.version),
+                }
+            else:
+                address_match = {
+                    "status": "conflict",
+                    "score": float(stored.get("score") or 0),
+                    "method": "人工确认复核",
+                    "reason": "已确认的小区已停用或不存在，需要重新确认",
+                    "candidate": None,
+                    "candidates": stored.get("candidates") or [],
+                    "version": str(stored.get("version") or matcher.version),
+                }
+        match_candidate = address_match.get("candidate") or {}
+        address_match_rows.append((
+            parser_type,
+            row_key,
+            address,
+            match_candidate.get("entry_id"),
+            match_candidate.get("community_id"),
+            match_candidate.get("community_name", ""),
+            address_match.get("status", "unmatched"),
+            address_match.get("score", 0.0),
+            address_match.get("method", ""),
+            address_match.get("reason", ""),
+            stable_json(address_match.get("candidates", [])),
+            address_match.get("version", matcher.version),
+            stored.get("confirmed_entry_id") if stored else None,
+            stored.get("confirmed_by") if stored else None,
+            stored.get("confirmed_at") if stored else None,
+        ))
         projection_rows.append((
             parser_type,
             row_key,
             stable_json(parent),
             parser.community_value(parent),
+            match_candidate.get("entry_id"),
+            match_candidate.get("name", ""),
+            address_match.get("status", "unmatched"),
+            address_match.get("score", 0.0),
+            address_match.get("method", ""),
+            address_match.get("reason", ""),
+            stable_json(address_match.get("candidates", [])),
+            address_match.get("version", ""),
             str(parent.get("核查人", "") or "").strip(),
             projection_identity(parser_type, parent, parser.COLUMNS),
             parse_dispatch_time(
@@ -288,6 +425,35 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
             pending_states.get(row_key, ""),
         ))
 
+    if address_match_rows:
+        await cur.executemany(
+            """
+            INSERT INTO _online_task_address_matches (
+                parser_type, row_key, original_address,
+                suggested_entry_id, suggested_community_id,
+                suggested_community_name, match_status, match_score,
+                match_method, match_reason, candidates_json, matcher_version,
+                confirmed_entry_id, confirmed_by, confirmed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                original_address=VALUES(original_address),
+                suggested_entry_id=VALUES(suggested_entry_id),
+                suggested_community_id=VALUES(suggested_community_id),
+                suggested_community_name=VALUES(suggested_community_name),
+                match_status=VALUES(match_status),
+                match_score=VALUES(match_score),
+                match_method=VALUES(match_method),
+                match_reason=VALUES(match_reason),
+                candidates_json=VALUES(candidates_json),
+                matcher_version=VALUES(matcher_version),
+                confirmed_entry_id=VALUES(confirmed_entry_id),
+                confirmed_by=VALUES(confirmed_by),
+                confirmed_at=VALUES(confirmed_at)
+            """,
+            address_match_rows,
+        )
+
     await cur.execute(
         "DELETE FROM _online_source_projection WHERE parser_type=%s",
         (parser_type,),
@@ -296,10 +462,15 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         await cur.executemany(
             """
             INSERT INTO _online_source_projection (
-                parser_type, row_key, values_json, community, inspector,
+                parser_type, row_key, values_json, community,
+                small_community_id, small_community_name,
+                address_match_status, address_match_score,
+                address_match_method, address_match_reason,
+                address_match_candidates, address_match_version, inspector,
                 identity_hmac, first_dispatch_at, task_state,
                 source_count, conflict, search_text, pending_state
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             projection_rows,
         )
