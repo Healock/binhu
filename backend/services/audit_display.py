@@ -109,6 +109,7 @@ ACTION_LABELS: dict[str, str] = {
     "code_summary.export": "导出平安码与管家码汇总",
     "police_dispatch.feedback.export": "导出下发反馈表",
     "mobile_tasks.bulk_assign": "批量分配核查人",
+    "mobile_tasks.bulk_unassign": "批量撤销核查人分配",
     "mobile_tasks.self_claim": "自主领取核查任务",
     "mobile_tasks.export": "导出流口任务",
     "mobile_tasks.analysis_export": "导出待研判任务",

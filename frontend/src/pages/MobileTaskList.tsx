@@ -98,12 +98,12 @@ const STATE_LABELS = {
 } as const
 
 const PRIORITY_CARDS: Array<{ key: MobileTaskPriority; label: string }> = [
-  { key: 'analyzed', label: '已研判' },
-  { key: 'source_exception', label: '来源异常' },
+  { key: 'all', label: '全部' },
   { key: 'ordinary', label: '普通待处理' },
   { key: 'waiting_analysis', label: '等待研判' },
+  { key: 'analyzed', label: '已研判' },
+  { key: 'source_exception', label: '来源异常' },
   { key: 'completed', label: '已完成' },
-  { key: 'all', label: '全部' },
 ]
 
 const EMPTY_FACETS: MobileTaskFacets = {
@@ -225,10 +225,10 @@ export default function MobileTaskList({
     analysisOnly
       ? 'all'
       : initialQmfFeedbackStates.length
-        ? 'completed'
+      ? 'completed'
       : ['pending', 'unchecked', 'checked', 'review', 'registration_review', 'completed', 'all'].includes(requestedStatus || '')
       ? requestedStatus as MobileTaskStatus
-      : 'pending',
+      : 'all',
   )
   const [reviewStage, setReviewStage] = useState<MobileTaskReviewStage>(
     analysisOnly
@@ -661,14 +661,14 @@ export default function MobileTaskList({
     const next = new URLSearchParams()
     next.set('type', type)
     next.set('scope', nextScope)
-    next.set('status', 'pending')
+    next.set('status', 'all')
     setCommunities([])
     setInspectors([])
     setWatchCategories([])
     setQmfFeedbackStates([])
     setPriority('all')
     setSort('priority')
-    setStatus(analysisOnly ? 'all' : 'pending')
+    setStatus('all')
     setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
     setSearchParams(next)
   }
@@ -681,7 +681,7 @@ export default function MobileTaskList({
     setQmfFeedbackStates([])
     setPriority('all')
     setSort('priority')
-    setStatus(analysisOnly ? 'all' : 'pending')
+    setStatus('all')
     setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
     setKeywordInput('')
   }
@@ -727,7 +727,7 @@ export default function MobileTaskList({
     || (isModelThree && qmfFeedbackStates.length > 0)
     || (analysisOnly && !analysisParserSelection.includes(ALL_ANALYSIS_TYPES))
     || (!analysisOnly && priority !== 'all')
-    || (!analysisOnly && status !== 'pending')
+    || (!analysisOnly && status !== 'all')
     || (!analysisOnly && reviewStage !== 'all')
     || sort !== 'priority'
     || Boolean(keywordInput.trim())

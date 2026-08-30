@@ -3,6 +3,7 @@ import { Alert, Button, Empty, Modal, Progress, Select, Spin, Tabs, Tag, message
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   bulkAssignMobileTasks,
+  cancelMobileTaskAssignments,
   getMobileTaskAssignmentWorkbench,
   MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE,
   type MobileTaskAssignmentCandidate,
@@ -34,7 +35,7 @@ export default function MobileTaskAssignmentWorkbench({
   onChanged: () => Promise<void> | void
 }) {
   const [candidates, setCandidates] = useState<MobileTaskAssignmentCandidate[]>([])
-  const [communities, setCommunities] = useState<Array<{ value: string; label: string; count: number }>>([])
+  const [communities, setCommunities] = useState<Array<{ value: string; label: string; count: number; assigned_count?: number }>>([])
   const [inspectors, setInspectors] = useState<Record<string, string[]>>({})
   const [inspectorCounts, setInspectorCounts] = useState<Record<string, Record<string, number>>>({})
   const [availableTotal, setAvailableTotal] = useState(0)
@@ -238,6 +239,37 @@ export default function MobileTaskAssignmentWorkbench({
     }
   }
 
+  const cancelAssigned = () => {
+    if (!community) return
+    const assignedCount = communities.find(item => item.value === community)?.assigned_count || 0
+    if (!assignedCount) {
+      message.info('当前社区没有可撤销的已分配数据')
+      return
+    }
+    Modal.confirm({
+      title: '撤销本社区已分配数据？',
+      content: `将清除“${community}”中 ${assignedCount} 条未完成任务的核查人分配，核查结果、研判和历史记录不会删除。`,
+      okText: '确认撤销',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSaving(true)
+        setError('')
+        try {
+          const result = await cancelMobileTaskAssignments(parserType, community)
+          message.success(`已撤销 ${result.updated} 条分配`)
+          if (result.skipped) message.warning(`另有 ${result.skipped} 条来源异常任务未处理`)
+          await load()
+          await onChanged()
+        } catch (reason: any) {
+          setError(reason?.response?.data?.detail || '撤销分配失败')
+        } finally {
+          setSaving(false)
+        }
+      },
+    })
+  }
+
   const close = () => {
     setAssignOpen(false)
     setInspector(undefined)
@@ -294,6 +326,13 @@ export default function MobileTaskAssignmentWorkbench({
               onClick={() => void runBalancedRemaining()}
             >
               平均分配剩余数据
+            </Button>
+            <Button
+              danger
+              disabled={!community || !(communities.find(item => item.value === community)?.assigned_count || 0) || saving}
+              onClick={cancelAssigned}
+            >
+              撤销本社区已分配
             </Button>
           </div>
         </header>
