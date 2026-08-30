@@ -304,7 +304,7 @@ export default function DataUploadCenter() {
       {canManageQmfSource && (
         <Panel
           title="辖区资产：自购自住人员"
-          description="用于维护辖区内自购自住房屋居住人员基础资料。导入后会进入辖区人员档案，并自动挂上“自购自住”人员标签；同时将匹配的模型三空白或无法核实结果填为“近期返吴”，不会调用全民防写入接口。"
+          description="用于维护辖区内自购自住房屋居住人员基础资料。姓名、身份证号和个人联系电话会进入受权限保护的人员档案，并自动挂上“自购自住”标签；当前及后续匹配的模型三空白或无法核实结果会填为“近期返吴”，不会调用全民防写入接口。"
         >
           <Upload
             accept=".zip"
@@ -327,17 +327,30 @@ export default function DataUploadCenter() {
               disabled={!selfOwnedFile || selfOwnedLoading}
               onClick={() => void handleSelfOwnedImport()}
             >导入并更新平台核查结果</Button>
-            <span className="text-xs text-[var(--app-text-secondary)]">按居民证号去重，仅保存安全摘要和身份 HMAC</span>
+            <span className="text-xs text-[var(--app-text-secondary)]">按居民证号去重，原始 ZIP 不落库；匹配使用身份 HMAC</span>
           </div>
           {selfOwnedError && <Alert className="mt-3" type="error" showIcon message={selfOwnedError} />}
           {selfOwnedResult && (
             <div className="mt-3 rounded-lg border border-[var(--app-border)] p-3 text-sm">
               <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {selfOwnedResult.upgraded && <span className="font-medium text-blue-600">旧批次已按新规则补齐</span>}
                 <span>文件 {selfOwnedResult.workbook_count} 个</span>
                 <span>记录 {selfOwnedResult.total_rows} 条</span>
                 <span>有效 {selfOwnedResult.valid_rows} 条</span>
                 <span>无效 {selfOwnedResult.invalid_rows} 条</span>
                 <span>重复 {selfOwnedResult.duplicate_rows} 条</span>
+                {selfOwnedResult.registry_people_created !== undefined && (
+                  <span>新增人员档案 {selfOwnedResult.registry_people_created} 条</span>
+                )}
+                {selfOwnedResult.registry_people_reused !== undefined && (
+                  <span>复用人员档案 {selfOwnedResult.registry_people_reused} 条</span>
+                )}
+                {selfOwnedResult.registry_phones_created !== undefined && (
+                  <span>补充联系电话 {selfOwnedResult.registry_phones_created} 条</span>
+                )}
+                {selfOwnedResult.tag_assignments_created !== undefined && (
+                  <span>新增自购自住标签 {selfOwnedResult.tag_assignments_created} 条</span>
+                )}
                 <span>命中模型三 {selfOwnedResult.matched_tasks} 条</span>
                 <span className="font-medium text-green-600">已填近期返吴 {selfOwnedResult.updated_tasks} 条</span>
                 <span>保留原结果 {selfOwnedResult.skipped_tasks} 条</span>

@@ -76,6 +76,10 @@ async def import_self_owned_roster(
             "matched_tasks": result["matched_tasks"],
             "updated_tasks": result["updated_tasks"],
             "skipped_tasks": result["skipped_tasks"],
+            "registry_people_created": result["registry_people_created"],
+            "registry_people_reused": result["registry_people_reused"],
+            "registry_phones_created": result["registry_phones_created"],
+            "tag_assignments_created": result["tag_assignments_created"],
         },
         **request_audit_fields(request),
     )
