@@ -5,6 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# Historical imports used several phone column labels. Keep each workflow's
+# canonical field first, then fall back to these aliases for list/detail data.
+PHONE_FIELD_ALIASES: tuple[str, ...] = (
+    "手机号",
+    "手机号码",
+    "电话号码",
+    "联系方式",
+    "联系号码",
+    "联系电话",
+    "电话",
+    "承租人联系号码",
+)
+
+
 def canonical_result_option(parser_type: str, value: str) -> str:
     """Return the user-facing canonical label for a historical result value."""
     text = str(value or "").strip()
@@ -122,10 +136,14 @@ class TaskWorkflow:
             values,
             tuple(field for field in self.address_fields if field != "现住址"),
         )
+        phone = self.first_value(
+            values,
+            tuple(dict.fromkeys((*self.phone_fields, *PHONE_FIELD_ALIASES))),
+        )
         return {
             "title": self.first_value(values, self.title_fields) or "未填写姓名",
             "identity_number": self.first_value(values, self.identity_fields),
-            "phone": self.first_value(values, self.phone_fields),
+            "phone": phone,
             "source": self.first_value(values, self.source_fields),
             "address": current_address or original_address,
             "current_address": current_address,

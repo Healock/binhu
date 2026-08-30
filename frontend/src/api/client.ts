@@ -2915,6 +2915,7 @@ export async function startQmfSourceSync(): Promise<{
 export interface SelfOwnedRosterResult {
   batch_id: number
   status: string
+  upgraded?: boolean
   rule_version: string
   workbook_count: number
   total_rows: number
@@ -2924,6 +2925,10 @@ export interface SelfOwnedRosterResult {
   matched_tasks: number
   updated_tasks: number
   skipped_tasks: number
+  registry_people_created?: number
+  registry_people_reused?: number
+  registry_phones_created?: number
+  tag_assignments_created?: number
 }
 
 export async function importModelThreeSelfOwnedRoster(file: File): Promise<SelfOwnedRosterResult> {

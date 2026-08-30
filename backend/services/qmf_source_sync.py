@@ -15,6 +15,7 @@ from database import db_manager
 from services.external_acquisition_jobs import JobContext
 from services.online_source import rebuild_projection, source_row_hash
 from services.parsers import get_parser
+from services.model_three_self_owned import apply_self_owned_matches
 from services.qmf_source import (
     MODEL_THREE_PARSER,
     QMF_SOURCE_SHEET_ID,
@@ -172,6 +173,9 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
                     )
 
                 await rebuild_projection(cur, MODEL_THREE_PARSER)
+                self_owned_stats = await apply_self_owned_matches(cur)
+                if self_owned_stats["updated_tasks"]:
+                    await rebuild_projection(cur, MODEL_THREE_PARSER)
                 report_date = await _save_qmf_snapshot(conn)
             await conn.commit()
         except Exception:
@@ -188,6 +192,8 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
         "unresolved_count": int(result.get("unresolved_count") or 0),
         "issue_count": int(result.get("issue_count") or 0),
         "unresolved": result.get("unresolved") or [],
+        "self_owned_matched": self_owned_stats["matched_tasks"],
+        "self_owned_updated": self_owned_stats["updated_tasks"],
         "report_date": report_date,
     }
 
