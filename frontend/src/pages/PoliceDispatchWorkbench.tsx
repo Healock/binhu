@@ -638,6 +638,13 @@ export default function PoliceDispatchWorkbench({
     }
   }
 
+  const hasBusinessFieldChanges = () => {
+    if (!selected) return false
+    return Object.entries(fieldDraft).some(([field, value]) => (
+      value !== String(selected.raw_values?.[field] || '')
+    ))
+  }
+
   const adoptExistingContent = async () => {
     if (!selected?.linked_row_hash) return
     setSaving(true)
@@ -664,8 +671,21 @@ export default function PoliceDispatchWorkbench({
     }
     setSaving(true)
     try {
+      let expectedVersion = selected.version
+      if (hasBusinessFieldChanges()) {
+        const changed = Object.fromEntries(
+          Object.entries(fieldDraft).filter(([field, value]) => (
+            value !== String(selected.raw_values?.[field] || '')
+          )),
+        )
+        const updated = await updatePoliceDispatchBusinessFields(selected.id, {
+          expected_version: expectedVersion,
+          fields: changed,
+        })
+        expectedVersion = updated.version
+      }
       await reviewPoliceDispatchTask(selected.id, {
-        expected_version: selected.version,
+        expected_version: expectedVersion,
         final_action: finalAction,
         final_community_id: finalAction === 'dispatch' ? finalCommunityId : null,
         review_note: reviewNote,
@@ -1159,7 +1179,9 @@ export default function PoliceDispatchWorkbench({
                   disabled={Boolean(selected && ['success', 'publishing', 'needs_reconciliation', 'conflict'].includes(selected.publish_status))}
                   onClick={saveReview}
                 >
-                  {selected?.publish_status === 'conflict' ? '请先处理内容冲突' : '保存审核结果'}
+                  {selected?.publish_status === 'conflict'
+                    ? '请先处理内容冲突'
+                    : hasBusinessFieldChanges() ? '保存字段并提交审核' : '保存审核结果'}
                 </Button>
               )
         )}
@@ -1194,13 +1216,7 @@ export default function PoliceDispatchWorkbench({
                     <div className="font-medium text-slate-900">导入业务字段</div>
                     <div className="mt-1 text-xs text-slate-500">修改后会重新计算地址建议、社区分配和重复关系，受影响的旧审核会被清除。</div>
                   </div>
-                  <Button
-                    loading={fieldSaving}
-                    disabled={['success', 'publishing', 'needs_reconciliation', 'conflict'].includes(selected.publish_status)}
-                    onClick={saveBusinessFields}
-                  >
-                    保存字段
-                  </Button>
+                  <span className="text-xs text-slate-500">字段修改会与审核结果一起提交</span>
                 </div>
                 <div className="mt-4 space-y-3">
                   {keyBusinessHeaders.map(field => (
