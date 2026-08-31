@@ -80,8 +80,8 @@ export default function Communities() {
   const handleDelete = (id: number, name: string) => {
     Modal.confirm({
       title: '删除社区',
-      content: `确认删除社区“${name}”？`,
-      okText: '删除',
+      content: `确认删除社区“${name}”？删除仅适用于没有人员、房屋或任务引用的空社区，操作不可恢复。`,
+      okText: '确认删除社区',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
@@ -170,7 +170,7 @@ export default function Communities() {
     Modal.confirm({
       title: `删除片区“${area.name}”？`,
       content: '只有没有关联社区的片区才能删除。',
-      okText: '删除',
+                okText: '确认删除片区',
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: async () => {
