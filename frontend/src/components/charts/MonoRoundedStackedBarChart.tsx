@@ -65,6 +65,10 @@ export default function MonoRoundedStackedBarChart({
     ratio: `${item.completed}/${item.total}`,
   }))
   const height = Math.max(320, rows.length * 32 + 30)
+  // Keep a non-zero numeric domain even when a scoped community has no
+  // completed or pending rows. Recharts otherwise collapses the horizontal
+  // axis to 0 and renders labels without a visible chart area.
+  const maxTotal = Math.max(...rows.map(item => Number(item.total) || 0), 1)
 
   return (
     <div className="mono-rounded-stacked-bar" aria-label={ariaLabel}>
@@ -88,7 +92,7 @@ export default function MonoRoundedStackedBarChart({
             margin={{ top: 8, right: 58, bottom: 8, left: 0 }}
             barCategoryGap={10}
           >
-            <XAxis type="number" hide domain={[0, 'dataMax']} />
+            <XAxis type="number" hide domain={[0, maxTotal]} />
             <YAxis
               type="category"
               dataKey="label"
