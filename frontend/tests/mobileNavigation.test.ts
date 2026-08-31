@@ -335,7 +335,7 @@ test('读取配置时去重、过滤未知项和无权限页面并保留顺序',
       },
       {
         id: 'system',
-        items: ['settings'],
+        items: ['help', 'settings'],
       },
     ],
   })
@@ -363,7 +363,7 @@ test('读取配置时丢弃空分类并保留其余有效分类', () => {
     groups: [
       { id: 'workspace', items: [] },
       { id: 'resources', items: ['grid_members'] },
-      { id: 'system', items: ['settings'] },
+      { id: 'system', items: ['help', 'settings'] },
     ],
   }, 'member')
 
@@ -371,7 +371,7 @@ test('读取配置时丢弃空分类并保留其余有效分类', () => {
     version: 2,
     groups: [
       { id: 'workspace', items: ['dashboard'] },
-      { id: 'system', items: ['settings'] },
+      { id: 'system', items: ['help', 'settings'] },
     ],
   })
 })
@@ -393,7 +393,7 @@ test('拖动分类和页面后按目标位置保存顺序', () => {
       version: 2,
       groups: [
         { id: 'workspace', items: ['dashboard', 'online_query'] },
-        { id: 'system', items: ['settings'] },
+        { id: 'system', items: ['help', 'settings'] },
       ],
     },
     'workspace',
@@ -419,6 +419,29 @@ test('仪表盘固定为 Dock 第一项且旧配置会自动补齐', () => {
     items: ['dashboard'],
   })
   assert.equal(defaultMobileDockConfig('member').groups[0].items[0], 'dashboard')
+})
+
+test('帮助中心对所有登录用户开放并显示独立侧边栏图标', () => {
+  const navigation = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+  const icon = readFileSync(
+    new URL('../src/components/NavigationIcon.tsx', import.meta.url),
+    'utf8',
+  )
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+
+  for (const role of ['member', 'leader', 'admin', 'super_admin'] as const) {
+    assert.equal(
+      accessibleNavigationGroups(role)
+        .some(group => group.items.some(item => item.id === 'help')),
+      true,
+    )
+  }
+  assert.match(navigation, /id: 'help'[\s\S]*?path: '\/help'[\s\S]*?icon: 'help'/)
+  assert.match(icon, /help: IconHelpCircle/)
+  assert.match(app, /path="\/help"/)
 })
 
 test('平安码管家码汇总页面和导航接入', () => {

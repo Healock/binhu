@@ -271,6 +271,7 @@ export type MobileNavigationGroupId =
   | 'system'
 export type MobileNavigationItemId =
   | 'dashboard'
+  | 'help'
   | 'task_flow_lab'
   | 'online_summary'
   | 'online_query'

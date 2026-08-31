@@ -69,6 +69,14 @@ def test_administrative_areas_are_stored_in_platform_domain():
     assert "`PlatformData`.`_administrative_areas`" in sql
 
 
+def test_help_documents_are_stored_in_platform_domain():
+    with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
+        sql = rewrite_domain_sql(
+            "SELECT * FROM _help_documents WHERE slug=%s"
+        )
+    assert "`PlatformData`.`_help_documents`" in sql
+
+
 def test_already_target_qualified_table_is_not_rewritten_twice():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql("SELECT * FROM `PlatformData`.`_users`")

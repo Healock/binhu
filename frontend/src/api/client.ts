@@ -26,6 +26,49 @@ const activeRequest = { headers: { 'X-User-Activity': '1' } }
 const passiveRequest = { headers: { 'X-User-Activity': '0' } }
 let unauthorizedRedirectStarted = false
 
+export interface HelpDocumentSummary {
+  slug: string
+  title: string
+  category: string
+  summary: string
+  sort_order: number
+  revision: number
+  is_customized: boolean
+  updated_at: string | null
+  can_edit: boolean
+}
+
+export interface HelpDocument extends HelpDocumentSummary {
+  content_md: string
+}
+
+export async function listHelpDocuments(): Promise<{
+  data: HelpDocumentSummary[]
+  can_edit: boolean
+}> {
+  return (await api.get('/help/documents', passiveRequest)).data
+}
+
+export async function getHelpDocument(slug: string): Promise<HelpDocument> {
+  return (await api.get(`/help/documents/${encodeURIComponent(slug)}`, passiveRequest)).data
+}
+
+export async function updateHelpDocument(
+  slug: string,
+  payload: Pick<HelpDocument, 'title' | 'summary' | 'content_md'> & { expected_revision: number },
+): Promise<HelpDocument> {
+  return (await api.put(`/help/documents/${encodeURIComponent(slug)}`, payload)).data
+}
+
+export async function resetHelpDocument(
+  slug: string,
+  expectedRevision: number,
+): Promise<HelpDocument> {
+  return (await api.post(`/help/documents/${encodeURIComponent(slug)}/reset`, {
+    expected_revision: expectedRevision,
+  })).data
+}
+
 function normalizeUserAssets(user: User): User {
   return {
     ...user,

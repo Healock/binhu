@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/themeMode.test.ts tests/workLog.test.ts tests/userDisplayName.test.ts tests/authFetch.test.ts tests/desktopBridge.test.ts tests/androidShell.test.ts tests/rememberedUsername.test.ts tests/queryGrid.test.ts tests/querySpreadsheet.test.ts tests/mobileTasks.test.ts tests/taskFlowLab.test.ts tests/reteTaskFlowLab.test.ts tests/workflowTickets.test.ts tests/policeDispatchNavigation.test.ts tests/fullchainArchive.test.ts tests/summaryXlsx.test.ts tests/fileDownload.test.ts tests/summaryTableLayout.test.ts tests/selectAlignment.test.ts tests/workProfiles.test.ts tests/roleDashboard.test.ts tests/dashboardCache.test.ts tests/workflowPhotoSheetPreview.test.ts tests/layoutSpacing.test.ts tests/systemTime.test.ts tests/registryImport.test.ts tests/qmfRegistration.test.ts tests/qmfStatusScan.test.ts tests/residenceRegistrationStatus.test.ts tests/releaseNotes.test.ts tests/responsiveLayout.test.ts tests/adminTaskQueue.test.ts tests/fullscreenNotice.test.ts tests/venueCode.test.ts",
+    "test": "node --experimental-strip-types --test tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/helpCenter.test.ts tests/themeMode.test.ts tests/workLog.test.ts tests/userDisplayName.test.ts tests/authFetch.test.ts tests/desktopBridge.test.ts tests/androidShell.test.ts tests/rememberedUsername.test.ts tests/queryGrid.test.ts tests/querySpreadsheet.test.ts tests/mobileTasks.test.ts tests/taskFlowLab.test.ts tests/reteTaskFlowLab.test.ts tests/workflowTickets.test.ts tests/policeDispatchNavigation.test.ts tests/fullchainArchive.test.ts tests/summaryXlsx.test.ts tests/fileDownload.test.ts tests/summaryTableLayout.test.ts tests/selectAlignment.test.ts tests/workProfiles.test.ts tests/roleDashboard.test.ts tests/dashboardCache.test.ts tests/workflowPhotoSheetPreview.test.ts tests/layoutSpacing.test.ts tests/systemTime.test.ts tests/registryImport.test.ts tests/qmfRegistration.test.ts tests/qmfStatusScan.test.ts tests/residenceRegistrationStatus.test.ts tests/releaseNotes.test.ts tests/responsiveLayout.test.ts tests/adminTaskQueue.test.ts tests/fullscreenNotice.test.ts tests/venueCode.test.ts",
     "test:totals": "node --experimental-strip-types --test tests/tableTotals.test.ts"
   },
   "dependencies": {
@@ -31,8 +31,10 @@
     "dayjs": "^1.11.21",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^6.28.0",
     "recharts": "^3.10.1",
+    "remark-gfm": "^4.0.1",
     "rete": "^2.0.6",
     "rete-area-plugin": "^2.3.2",
     "rete-auto-arrange-plugin": "^2.0.2",

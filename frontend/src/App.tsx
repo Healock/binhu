@@ -51,6 +51,7 @@ import {
 const DataQuery = lazy(() => import('./pages/DataQuery'))
 const TaskFlowLab = lazy(() => import('./pages/TaskFlowLab'))
 const ReteTaskFlowLab = lazy(() => import('./pages/ReteTaskFlowLab'))
+const HelpCenter = lazy(() => import('./pages/HelpCenter'))
 
 function LazyPage({ children }: { children: ReactNode }) {
   return (
@@ -141,6 +142,7 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/profile" element={<Profile />} />
+              <Route path="/help" element={<LazyPage><HelpCenter /></LazyPage>} />
               <Route path="/people" element={<Navigate to="/grid-members" replace />} />
               <Route path="/people/:userId" element={<PublicProfile />} />
               <Route path="/" element={<RoleDashboard />} />
