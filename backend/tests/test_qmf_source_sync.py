@@ -89,12 +89,14 @@ class QmfSourceSyncTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=column_map),
             ),
             patch("services.qmf_source_sync.rebuild_projection", AsyncMock()) as rebuild,
+            patch("services.qmf_source_sync.rebuild_projection_rows", AsyncMock()) as rebuild_rows,
             patch(
                 "services.qmf_source_sync.apply_self_owned_matches",
                 AsyncMock(return_value={
                     "matched_tasks": 2,
                     "updated_tasks": 1,
                     "skipped_tasks": 1,
+                    "updated_row_keys": ["row-1"],
                 }),
             ) as self_owned,
         ):
@@ -113,7 +115,8 @@ class QmfSourceSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(connection.rolled_back)
         self.assertTrue(pool.released)
         self.assertTrue(connection.cursor_instance.executed[0].startswith("SELECT _row_key,"))
-        self.assertEqual(rebuild.await_count, 2)
+        self.assertEqual(rebuild.await_count, 1)
+        rebuild_rows.assert_awaited_once()
         self_owned.assert_awaited_once()
         self.assertEqual(result["self_owned_matched"], 2)
         self.assertEqual(result["self_owned_updated"], 1)

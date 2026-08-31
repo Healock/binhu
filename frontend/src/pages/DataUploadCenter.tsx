@@ -133,13 +133,18 @@ export default function DataUploadCenter() {
       setSelfOwnedFile(null)
       setSelfOwnedFileList([])
     } catch (error: any) {
+      const status = error?.response?.status
+      const timedOut = error?.code === 'ECONNABORTED'
+        || error?.code === 'ETIMEDOUT'
+        || status === 408
+        || status === 504
+      const uploadError = status === 413
+        ? '自购自住名单 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
+        : timedOut
+          ? '自购自住名单上传或处理超时，请稍后重试'
+          : error?.response?.data?.detail || '自购自住名单导入失败，请稍后重试'
       setSelfOwnedError(
-        error?.response?.data?.detail
-          || (error?.response?.status === 413
-            ? '自购自住名单 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
-            : error?.code === 'ECONNABORTED'
-              ? '自购自住名单上传或处理超时，请稍后重试'
-              : '自购自住名单导入失败，请稍后重试'),
+        uploadError,
       )
     } finally {
       setSelfOwnedLoading(false)

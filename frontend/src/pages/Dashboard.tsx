@@ -7,7 +7,6 @@ import {
   Empty,
   message,
   Pagination,
-  Segmented,
   Select,
   Skeleton,
   Table,
@@ -19,7 +18,6 @@ import dayjs from 'dayjs'
 import { useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
-import MobileReportTable from '../components/MobileReportTable'
 import SummaryReportConfigButton from '../components/SummaryReportConfigButton'
 import { EmptyState, PageHeader, Panel } from '../components/ui'
 import {
@@ -147,7 +145,6 @@ export default function Dashboard() {
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [overviewError, setOverviewError] = useState('')
   const [msg, setMsg] = useState('')
-  const [mobileReportSection, setMobileReportSection] = useState<'inspector' | 'community'>('inspector')
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
   const [exporting, setExporting] = useState(false)
@@ -246,12 +243,6 @@ export default function Dashboard() {
         }
       : { columns: [], data: [] }
   )
-  const mobileTable = mobileReportSection === 'inspector'
-    ? inspectorTable
-    : communityTable
-  const mobileTitleColumns = mobileReportSection === 'inspector'
-    ? ['社区', '姓名']
-    : ['社区']
   const inspectorTitle = '网格员汇总'
   const communityTitle = '社区汇总'
   const availableRange = overview?.available_start_date
@@ -638,43 +629,7 @@ export default function Dashboard() {
         </section>
       ) : (
         <>
-          <div className="dashboard-mobile-report-list md:hidden">
-            <Segmented
-              block
-              value={mobileReportSection}
-              onChange={value => setMobileReportSection(value as 'inspector' | 'community')}
-              options={[
-                {
-                  label: `网格员 ${inspectorTable.data.length}`,
-                  value: 'inspector',
-                },
-                {
-                  label: `社区 ${communityTable.data.length}`,
-                  value: 'community',
-                },
-              ]}
-            />
-            <MobileReportTable
-              columns={mobileTable?.columns || []}
-              rows={mobileTable?.data || []}
-              titleColumns={mobileTitleColumns}
-              resetKey={`${mobileReportSection}-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
-              fullColumns={reportTableColumns(
-                mobileTable?.columns || [],
-                mobileTable?.data || [],
-              )}
-              fullSummary={reportTableSummary(mobileTable?.columns || [])}
-              rowKey={(row, index) => (
-                row.id
-                || (mobileReportSection === 'inspector'
-                  ? `${row.社区}-${row.姓名}-${index}`
-                  : row.社区)
-                || index
-              )}
-            />
-          </div>
-
-          <div className="hidden space-y-6 md:block">
+          <div className="dashboard-mobile-report-list grid gap-6">
             <AppTable<Record<string, any>>
               key={`inspector-${reportType}-${startDate}-${endDate}-${reportColumnMode}`}
               columns={reportTableColumns(inspectorTable.columns, inspectorTable.data)}

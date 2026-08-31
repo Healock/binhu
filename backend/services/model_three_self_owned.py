@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 from config import settings
 from services.qmf_registration import valid_identity, normalize_identity
 from services.registry_security import hmac_digest, normalize_phone
-from services.online_source import source_row_hash, rebuild_projection
+from services.online_source import source_row_hash, rebuild_projection_rows
 from services.parsers import get_parser
 
 
@@ -518,7 +518,7 @@ async def _store_people_and_tags(
     }
 
 
-async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[str, int]:
+async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[str, Any]:
     """Apply the retained roster to current model-three tasks without external writes."""
     parser = get_parser(MODEL_THREE_PARSER)
     roster_filter = "AND roster.batch_id=%s" if batch_id is not None else "AND batch.status='completed'"
@@ -534,6 +534,7 @@ async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[
     )
     matched = await cur.fetchall()
     updated = skipped = 0
+    updated_row_keys: list[str] = []
     for row_key, raw_values, source_count, conflict in matched:
         values = raw_values if isinstance(raw_values, dict) else json.loads(raw_values or "{}")
         current = str(values.get("核查结果") or "").strip()
@@ -572,7 +573,13 @@ async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[
             ("近期返吴", str(row_key)),
         )
         updated += 1
-    return {"matched_tasks": len(matched), "updated_tasks": updated, "skipped_tasks": skipped}
+        updated_row_keys.append(str(row_key))
+    return {
+        "matched_tasks": len(matched),
+        "updated_tasks": updated,
+        "skipped_tasks": skipped,
+        "updated_row_keys": updated_row_keys,
+    }
 
 
 async def latest_batch(cur) -> dict[str, Any] | None:
@@ -651,7 +658,16 @@ async def apply_self_owned_import(conn, *, parsed: ParsedSelfOwned, file_name: s
                 category_id=self_owned_category_id,
             )
             match_stats = await apply_self_owned_matches(cur, batch_id=batch_id)
-            await rebuild_projection(cur, MODEL_THREE_PARSER, reconcile_graph=False)
+            # The roster matcher already updates only the affected model-three
+            # rows. Rebuilding the entire business projection here made large
+            # ZIP imports exceed the request timeout; refresh just those rows.
+            matched_keys = list(match_stats.pop("updated_row_keys", []))
+            await rebuild_projection_rows(
+                cur,
+                MODEL_THREE_PARSER,
+                matched_keys,
+                reconcile_graph=False,
+            )
             await cur.execute(
                 "UPDATE _qmf_self_owned_batches SET status='completed',matched_tasks=%s,updated_tasks=%s,skipped_tasks=%s,completed_at=UTC_TIMESTAMP() WHERE id=%s",
                 (

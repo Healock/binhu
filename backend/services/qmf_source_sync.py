@@ -13,7 +13,7 @@ from typing import Any
 
 from database import db_manager
 from services.external_acquisition_jobs import JobContext
-from services.online_source import rebuild_projection, source_row_hash
+from services.online_source import rebuild_projection, rebuild_projection_rows, source_row_hash
 from services.parsers import get_parser
 from services.model_three_self_owned import apply_self_owned_matches
 from services.qmf_source import (
@@ -160,7 +160,12 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
                 await rebuild_projection(cur, MODEL_THREE_PARSER)
                 self_owned_stats = await apply_self_owned_matches(cur)
                 if self_owned_stats["updated_tasks"]:
-                    await rebuild_projection(cur, MODEL_THREE_PARSER)
+                    await rebuild_projection_rows(
+                        cur,
+                        MODEL_THREE_PARSER,
+                        list(self_owned_stats.get("updated_row_keys") or []),
+                        reconcile_graph=False,
+                    )
             await conn.commit()
         except Exception:
             await conn.rollback()
