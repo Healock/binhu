@@ -673,7 +673,7 @@ async def run_residence_lookup_cycle(
     queue_tasks: bool = True,
     full_scan: bool = False,
     scan_token: str | None = None,
-) -> dict[str, int | str]:
+) -> dict[str, Any]:
     pool = _pool()
     async with pool.acquire() as conn:
         config = await load_residence_config(conn)
@@ -694,17 +694,23 @@ async def run_residence_lookup_cycle(
     outcomes = await asyncio.gather(*(guarded(item) for item in items))
     success_count = sum(not error_code for _, error_code in outcomes)
     error_count = len(outcomes) - success_count
+    error_counts: dict[str, int] = {}
+    for _, error_code in outcomes:
+        if error_code:
+            error_counts[error_code] = error_counts.get(error_code, 0) + 1
     if any(error_code == "authentication_expired" for _, error_code in outcomes):
         return {
             "processed": len(items),
             "success_count": success_count,
             "error_count": error_count,
+            "error_counts": error_counts,
             "status": "authentication_expired",
         }
     return {
         "processed": len(items),
         "success_count": success_count,
         "error_count": error_count,
+        "error_counts": error_counts,
         "status": "completed",
     }
 
@@ -728,6 +734,7 @@ async def run_residence_full_scan_job(context: "JobContext") -> dict[str, Any]:
         processed = 0
         success_count = 0
         error_count = 0
+        error_counts: dict[str, int] = {}
         stopped_for_authentication = False
         scan_token = str(uuid.uuid4())
         while True:
@@ -741,6 +748,12 @@ async def run_residence_full_scan_job(context: "JobContext") -> dict[str, Any]:
             processed += batch_count
             success_count += int(result.get("success_count") or 0)
             error_count += int(result.get("error_count") or 0)
+            for error_code, count in dict(result.get("error_counts") or {}).items():
+                safe_code = str(error_code or "").strip()
+                if safe_code:
+                    error_counts[safe_code] = (
+                        error_counts.get(safe_code, 0) + int(count or 0)
+                    )
             await context.update(
                 phase="querying",
                 current=processed,
@@ -760,6 +773,7 @@ async def run_residence_full_scan_job(context: "JobContext") -> dict[str, Any]:
             "processed": processed,
             "success_count": success_count,
             "error_count": error_count,
+            "error_counts": error_counts,
             "message": message,
         }
 
