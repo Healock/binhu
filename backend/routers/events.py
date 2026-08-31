@@ -15,6 +15,7 @@ from deps import get_current_user
 
 
 router = APIRouter(prefix="/api/events", tags=["实时事件"])
+REDIS_RETRY_ERRORS = (redis.ConnectionError, redis.TimeoutError, OSError)
 
 
 def _audience_allowed(audiences: list[str], user: dict) -> bool:
@@ -63,7 +64,7 @@ async def _event_generator(request: Request, user: dict) -> AsyncIterator[str]:
             try:
                 latest = await client.xrevrange(settings.REDIS_STREAM_KEY, count=1)
                 last_id = str(latest[0][0]) if latest else "0-0"
-            except (redis.ConnectionError, redis.TimeoutError, OSError):
+            except REDIS_RETRY_ERRORS:
                 yield "event: realtime_unavailable\ndata: {}\n\n"
                 await asyncio.sleep(3)
         if last_id and request.headers.get("last-event-id"):
@@ -73,7 +74,7 @@ async def _event_generator(request: Request, user: dict) -> AsyncIterator[str]:
                     yield "event: resync_required\ndata: {}\n\n"
                     latest = await client.xrevrange(settings.REDIS_STREAM_KEY, count=1)
                     last_id = str(latest[0][0]) if latest else "0-0"
-            except (redis.ConnectionError, redis.TimeoutError, OSError):
+            except REDIS_RETRY_ERRORS:
                 yield "event: realtime_unavailable\ndata: {}\n\n"
                 await asyncio.sleep(3)
         while not await request.is_disconnected():
@@ -96,7 +97,7 @@ async def _event_generator(request: Request, user: dict) -> AsyncIterator[str]:
                     emitted = True
                 if not emitted:
                     yield ": keep-alive\n\n"
-            except (redis.ConnectionError, redis.TimeoutError):
+            except REDIS_RETRY_ERRORS:
                 yield "event: realtime_unavailable\ndata: {}\n\n"
                 await asyncio.sleep(3)
     finally:
