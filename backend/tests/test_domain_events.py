@@ -1,0 +1,36 @@
+import asyncio
+
+from services.domain_events import _safe_audiences, decode_event_row
+from services.redis_relay import classify_redis_error, retry_delay
+
+
+def test_audiences_are_validated_and_sorted():
+    assert _safe_audiences(["authenticated", "user:3", "authenticated"]) == ["authenticated", "user:3"]
+
+
+def test_audiences_reject_newlines_and_unknown_scopes():
+    for value in ("user:x\n", "broadcast", ""):
+        try:
+            _safe_audiences([value])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(value)
+
+
+def test_decode_event_row_contains_metadata_only():
+    row = ("id", 1, "online", "online.task.changed", "online_task", "fullchain:k", 2,
+           '["authenticated"]', "pending", 0, None, None, None, "", "", None, None)
+    event = decode_event_row(row)
+    assert event["event_id"] == "id"
+    assert "values" not in event and "身份证号" not in event
+
+
+def test_retry_backoff_is_bounded_without_jitter():
+    assert retry_delay(1, jitter=False) == 1
+    assert retry_delay(99, jitter=False) == 300
+
+
+def test_error_classification():
+    assert classify_redis_error(RuntimeError("NOAUTH Authentication required")) == "blocked"
+    assert classify_redis_error(RuntimeError("OOM command not allowed")) == "retry"

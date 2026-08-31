@@ -14,3 +14,4 @@ defusedxml==0.7.1
 Pillow==12.2.0
 qrcode==8.2
 WeasyPrint==69.0
+redis==6.4.0

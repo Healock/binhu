@@ -22,6 +22,7 @@ import NavigationIcon from './NavigationIcon'
 import NotificationCenter from './NotificationCenter'
 import SessionTimeoutGuard from './SessionTimeoutGuard'
 import OnlinePresenceIndicator from './OnlinePresenceIndicator'
+import RealtimeCoordinator from './RealtimeCoordinator'
 import AdminTaskQueueFloat from './AdminTaskQueueFloat'
 import { AuthenticatedAvatar } from './AuthenticatedImage'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
@@ -98,6 +99,7 @@ export default function Layout() {
 
   return (
     <div className={`app-shell app-shell--${layout.mode} flex`}>
+      <RealtimeCoordinator />
       <header className="mobile-app-header md:hidden fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-4">
         {mobileNavigationMode === 'sidebar' && (
           <button

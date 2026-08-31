@@ -32,6 +32,7 @@ from services.online_source import (
     rebuild_projection,
     release_sheet_lock,
     replace_source_cache,
+    rebuild_projection_keys,
     resolve_source_columns,
     source_row_hash,
     stable_json,
@@ -66,6 +67,7 @@ from services.work_activity import (
     is_actual_online_work,
     record_work_activity,
 )
+from services.domain_events import enqueue_event
 
 
 router = APIRouter(
@@ -527,9 +529,8 @@ async def _oauth_client(cur) -> TxDocsClient:
     )
 
 
-async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
-    await cur.execute(
-        f"""
+async def _load_source_row(cur, parser_type: str, source_id: int, *, lock: bool = False) -> dict:
+    sql = f"""
         SELECT source.id, source.spreadsheet_id, source.sheet_id,
                source.physical_row, source.row_key, source.row_hash,
                source.values_json, source.cell_meta_json, source.revision,
@@ -542,7 +543,11 @@ async def _load_source_row(cur, parser_type: str, source_id: int) -> dict:
          WHERE source.id=%s AND source.parser_type=%s
            AND source.archived_at IS NULL
            {active_source_sql_filter(parser_type, 'source')}
-        """,
+        """
+    if lock:
+        sql += " FOR UPDATE"
+    await cur.execute(
+        sql,
         (source_id, parser_type),
     )
     row = await cur.fetchone()
@@ -692,8 +697,9 @@ async def _update_local_source_fields(
         raise RuntimeError("system-managed edit must use an exact field whitelist")
     ordered_columns = [column for column in parser.COLUMNS if column in normalized_changes]
 
+    await conn.begin()
     async with conn.cursor() as cur:
-        source = await _load_source_row(cur, parser_type, source_id)
+        source = await _load_source_row(cur, parser_type, source_id, lock=True)
         if source["spreadsheet_id"] != 0:
             # 迁移窗口前已存在的来源行按其缓存物理位置惰性切换到本地表。
             # 不读取或写入腾讯，只把本地业务表设为唯一来源。
@@ -714,7 +720,7 @@ async def _update_local_source_fields(
                     source_id,
                 ),
             )
-            source = await _load_source_row(cur, parser_type, source_id)
+            source = await _load_source_row(cur, parser_type, source_id, lock=True)
         if source["revision"] != expected_revision:
             raise HTTPException(409, "该任务已被更新，请刷新后重试")
         current_values = {
@@ -916,7 +922,12 @@ async def _update_local_source_fields(
                 )
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-        await rebuild_projection(cur, parser_type, reconcile_graph=False)
+        await rebuild_projection_keys(
+            cur,
+            parser_type,
+            [str(source["row_key"]), str(new_key)],
+            reconcile_graph=False,
+        )
         await reconcile_online_task_graph(
             cur,
             parser_type=parser_type,
@@ -926,6 +937,19 @@ async def _update_local_source_fields(
             after=after,
             actor_user_id=int(user.get("id")) if user.get("id") else None,
             event_type="online_task_save",
+        )
+        community = parser.community_value(after)
+        audiences = ["authenticated"]
+        if community:
+            audiences.append(f"community:{community}")
+        await enqueue_event(
+            cur,
+            domain="online",
+            event_type="online.task.changed",
+            aggregate_type="online_task",
+            aggregate_id=f"{parser_type}:{new_key}",
+            aggregate_revision=expected_revision + 1,
+            audiences=audiences,
         )
         await conn.commit()
         await record_admin_audit(
@@ -975,20 +999,24 @@ async def update_source_fields(
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
     if local_data_source_enabled():
-        return await _update_local_source_fields(
-            parser_type=parser_type,
-            source_id=source_id,
-            changes=changes,
-            expected_revision=expected_revision,
-            request=request,
-            user=user,
-            conn=conn,
-            explicit_text_edit=explicit_text_edit,
-            allowed_columns=allowed_columns,
-            current_values_validator=current_values_validator,
-            redact_audit_values=redact_audit_values,
-            system_managed_columns=system_managed_columns,
-        )
+        try:
+            return await _update_local_source_fields(
+                parser_type=parser_type,
+                source_id=source_id,
+                changes=changes,
+                expected_revision=expected_revision,
+                request=request,
+                user=user,
+                conn=conn,
+                explicit_text_edit=explicit_text_edit,
+                allowed_columns=allowed_columns,
+                current_values_validator=current_values_validator,
+                redact_audit_values=redact_audit_values,
+                system_managed_columns=system_managed_columns,
+            )
+        except Exception:
+            await conn.rollback()
+            raise
     parser = get_parser(parser_type)
     normalized_changes = {
         str(column): str(value or "").strip()
@@ -1540,7 +1568,12 @@ async def queue_source_fields(
                 # enqueue_local_changes rebuilds once before the registration
                 # link is changed.  Rebuild again so task_state and task graph
                 # observe the association atomically in this same transaction.
-                await rebuild_projection(cur, parser_type, reconcile_graph=False)
+                await rebuild_projection_keys(
+                    cur,
+                    parser_type,
+                    [str(source["row_key"]), str(new_key)],
+                    reconcile_graph=False,
+                )
             # 结构化“无法核实”流程与所有普通任务保存共用同一事务。
             # 延时期间的二次反馈、正式结果变化和新一轮无法核实都在这里留痕。
             if record_unverifiable_save:
@@ -1559,7 +1592,16 @@ async def queue_source_fields(
                     )
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
-            await rebuild_projection(cur, parser_type, reconcile_graph=False)
+            await rebuild_projection_keys(cur, parser_type, [new_key], reconcile_graph=False)
+            await enqueue_event(
+                cur,
+                domain="online",
+                event_type="online.task.changed",
+                aggregate_type="online_task",
+                aggregate_id=f"{parser_type}:{new_key}",
+                aggregate_revision=revision,
+                audiences=["authenticated"],
+            )
             await reconcile_online_task_graph(
                 cur,
                 parser_type=parser_type,
@@ -2216,6 +2258,8 @@ async def create_source_row(
         parser.validate_new_row(values)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if local_data_source_enabled():
+        await conn.begin()
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
@@ -2271,7 +2315,16 @@ async def create_source_row(
                     stable_json(values), local_row_hash(values),
                 ),
             )
-            await rebuild_projection(cur, parser_type, reconcile_graph=False)
+            await rebuild_projection_keys(cur, parser_type, [new_key], reconcile_graph=False)
+            await enqueue_event(
+                cur,
+                domain="online",
+                event_type="online.task.created",
+                aggregate_type="online_task",
+                aggregate_id=f"{parser_type}:{new_key}",
+                aggregate_revision=1,
+                audiences=["authenticated"],
+            )
             # The business-table auto-increment id is only the local physical
             # row used by the compatibility layer.  API callers must receive
             # the stable source-row id used by edit/detail endpoints.
@@ -2431,7 +2484,7 @@ async def delete_source_row(
         await conn.begin()
         try:
             async with conn.cursor() as cur:
-                source = await _load_source_row(cur, parser_type, source_id)
+                source = await _load_source_row(cur, parser_type, source_id, lock=True)
                 if source["revision"] != expected_revision:
                     raise HTTPException(409, "该任务已被更新，请刷新后重试")
                 archive_columns = ["_row_key", *parser.COLUMNS]
@@ -2454,7 +2507,16 @@ async def delete_source_row(
                 )
                 await cur.execute("DELETE FROM _online_local_changes WHERE source_id=%s", (source_id,))
                 await cur.execute("DELETE FROM _online_source_rows WHERE id=%s", (source_id,))
-                await rebuild_projection(cur, parser_type, reconcile_graph=False)
+                await rebuild_projection_keys(cur, parser_type, [str(source["row_key"])])
+                await enqueue_event(
+                    cur,
+                    domain="online",
+                    event_type="online.task.deleted",
+                    aggregate_type="online_task",
+                    aggregate_id=f"{parser_type}:{source['row_key']}",
+                    aggregate_revision=source["revision"] + 1,
+                    audiences=["authenticated"],
+                )
                 await conn.commit()
         except Exception:
             await conn.rollback()

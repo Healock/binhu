@@ -71,6 +71,44 @@ async def operations_overview(
     return await build_operations_overview()
 
 
+@router.get("/outbox")
+async def outbox_overview(user: dict = Depends(require_super_admin)):
+    """Return safe aggregate relay health without exposing business payloads."""
+    result = {"pending": 0, "publishing": 0, "retry": 0, "blocked": 0,
+              "dead_letter": 0, "published": 0, "oldest_pending_seconds": 0}
+    for database in ("online_data", "platform"):
+        try:
+            pool = db_manager.get_pool(database)
+        except ValueError:
+            continue
+        conn = await pool.acquire()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT status, COUNT(*) FROM _domain_event_outbox GROUP BY status"
+                )
+                for status, count in await cur.fetchall():
+                    result[str(status)] = result.get(str(status), 0) + int(count or 0)
+                await cur.execute(
+                    "SELECT COALESCE(TIMESTAMPDIFF(SECOND, MIN(occurred_at), UTC_TIMESTAMP()), 0) "
+                    "FROM _domain_event_outbox WHERE status IN ('pending','retry','publishing')"
+                )
+                row = await cur.fetchone()
+                result["oldest_pending_seconds"] = max(result["oldest_pending_seconds"], int(row[0] or 0))
+        except Exception:
+            continue
+        finally:
+            pool.release(conn)
+    pending = result["pending"] + result["retry"] + result["publishing"]
+    result["pending_total"] = pending
+    result["severity"] = (
+        "critical" if result["blocked"] or result["dead_letter"] or pending >= 5000 or result["oldest_pending_seconds"] >= 300
+        else "warning" if pending >= 500 or result["oldest_pending_seconds"] >= 30
+        else "ok"
+    )
+    return result
+
+
 @router.get("/logs/sources")
 async def log_sources(user: dict = Depends(require_super_admin)):
     return {
