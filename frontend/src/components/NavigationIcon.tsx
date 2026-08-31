@@ -10,6 +10,7 @@ import {
   IconFileDescription,
   IconFolder,
   IconHomeSearch,
+  IconHelpCircle,
   IconLayoutDashboard,
   IconLayoutGrid,
   IconListCheck,
@@ -58,6 +59,7 @@ const ICONS = {
   permissions: IconShieldLock,
   settings: IconSettings,
   operations: IconServerCog,
+  help: IconHelpCircle,
 } satisfies Record<NavigationIconName, TablerIcon>
 
 export default function NavigationIcon({

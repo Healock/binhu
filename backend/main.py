@@ -47,6 +47,7 @@ from routers.qmf_source import router as qmf_source_router
 from routers.residence_platform import router as residence_platform_router
 from routers.maintenance import router as maintenance_router
 from routers.app_bootstrap import router as app_bootstrap_router
+from routers.help_docs import router as help_docs_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
 from services.visit_import import recover_interrupted_visit_imports
@@ -197,6 +198,7 @@ app.include_router(presence_router)
 app.include_router(events_router)
 app.include_router(maintenance_router)
 app.include_router(app_bootstrap_router)
+app.include_router(help_docs_router)
 
 # 业务路由（全部需要登录）
 auth_dep = [Depends(get_current_user)]

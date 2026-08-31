@@ -41,6 +41,7 @@ from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
 from services.local_source import ensure_local_source_schema, run_local_source_migration
 from services.domain_events import ensure_outbox_schema
+from services.help_docs import ensure_help_docs_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -2816,6 +2817,7 @@ class DatabaseManager:
                 await ensure_unverifiable_review_schema(cur)
                 await ensure_task_assignment_responsibility_schema(cur)
                 await ensure_administrative_area_schema(cur)
+                await ensure_help_docs_schema(cur)
                 await ensure_bootstrap_admin(cur)
                 await ensure_outbox_schema(cur)
 

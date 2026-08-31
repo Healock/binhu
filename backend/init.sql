@@ -30,6 +30,24 @@ CREATE TABLE IF NOT EXISTS _system_config (
     config_value TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _help_documents (
+    slug             VARCHAR(100) PRIMARY KEY,
+    title            VARCHAR(160) NOT NULL,
+    category         VARCHAR(100) NOT NULL,
+    summary          VARCHAR(500) NOT NULL DEFAULT '',
+    content_md       MEDIUMTEXT NOT NULL,
+    sort_order       INT NOT NULL DEFAULT 0,
+    revision         INT UNSIGNED NOT NULL DEFAULT 1,
+    is_customized    TINYINT(1) NOT NULL DEFAULT 0,
+    builtin_digest   CHAR(64) NOT NULL,
+    updated_by       INT DEFAULT NULL,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                     ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_help_category_order (category, sort_order, slug),
+    INDEX idx_help_active_order (sort_order, slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('timezone', 'Asia/Shanghai'),
     ('online_summary_positions', '["组长", "组员"]'),

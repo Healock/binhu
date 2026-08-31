@@ -34,6 +34,7 @@ export type NavigationIconName =
   | 'permissions'
   | 'settings'
   | 'operations'
+  | 'help'
 
 export interface NavigationItemDefinition {
   id: MobileNavigationItemId
@@ -259,6 +260,13 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
     dockLabel: '设置',
     icon: 'system',
     items: [
+      {
+        id: 'help',
+        path: '/help',
+        label: '帮助',
+        shortLabel: '帮助',
+        icon: 'help',
+      },
       {
         id: 'settings',
         path: '/settings',
