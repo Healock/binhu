@@ -23,6 +23,15 @@ interface AssignmentOutcome {
   failed: Array<{ row_key: string; reason: string }>
 }
 
+const MATCH_STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  confirmed: { label: '已人工确认', color: 'success' },
+  suggested: { label: '系统建议', color: 'processing' },
+  ambiguous: { label: '多候选待确认', color: 'warning' },
+  conflict: { label: '地址冲突', color: 'error' },
+  invalid: { label: '无效地址', color: 'default' },
+  unmatched: { label: '未关联小区', color: 'default' },
+}
+
 export default function MobileTaskAssignmentWorkbench({
   open,
   parserType,
@@ -42,6 +51,7 @@ export default function MobileTaskAssignmentWorkbench({
   const [limited, setLimited] = useState(false)
   const [displayLimit, setDisplayLimit] = useState(2000)
   const [community, setCommunity] = useState('')
+  const [smallCommunity, setSmallCommunity] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -70,6 +80,11 @@ export default function MobileTaskAssignmentWorkbench({
           ? current
           : result.communities[0]?.value || ''
       ))
+      setSmallCommunity(current => (
+        current && result.data.some(item => item.small_community === current)
+          ? current
+          : ''
+      ))
       setSelected(current => {
         const valid = new Set(result.data.map(item => item.row_key))
         return new Set([...current].filter(key => valid.has(key)))
@@ -96,12 +111,35 @@ export default function MobileTaskAssignmentWorkbench({
   }, [])
 
   const visible = useMemo(
-    () => candidates.filter(item => item.community === community),
-    [candidates, community],
+    () => candidates.filter(item => (
+      item.community === community
+      && (!smallCommunity || (
+        smallCommunity === '__unmatched__'
+          ? !item.small_community
+          : item.small_community === smallCommunity
+      ))
+    )),
+    [candidates, community, smallCommunity],
   )
+  const smallCommunityOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    candidates
+      .filter(item => item.community === community)
+      .forEach(item => {
+        const key = item.small_community || '__unmatched__'
+        counts.set(key, (counts.get(key) || 0) + 1)
+      })
+    return [...counts.entries()].map(([value, count]) => ({
+      value,
+      label: `${value === '__unmatched__' ? '未关联小区' : value}（${count}）`,
+    }))
+  }, [candidates, community])
   const inspectorOptions = inspectors[community] || []
   const assignableRemainingCount = useMemo(
-    () => candidates.filter(item => (inspectors[item.community] || []).length > 0).length,
+    () => candidates.filter(item => (
+      item.match_status === 'confirmed'
+      && (inspectors[item.community] || []).length > 0
+    )).length,
     [candidates, inspectors],
   )
   const selectedVisible = useMemo(
@@ -109,7 +147,9 @@ export default function MobileTaskAssignmentWorkbench({
     [selected, visible],
   )
   const selectedInCommunity = useMemo(
-    () => inspectorOptions.length > 0 ? selectedVisible : [],
+    () => inspectorOptions.length > 0
+      ? selectedVisible.filter(item => item.match_status === 'confirmed')
+      : [],
     [inspectorOptions.length, selectedVisible],
   )
 
@@ -184,7 +224,10 @@ export default function MobileTaskAssignmentWorkbench({
       .map(item => ({
         community: item.value,
         rowKeys: candidates
-          .filter(candidate => candidate.community === item.value)
+          .filter(candidate => (
+            candidate.community === item.value
+            && candidate.match_status === 'confirmed'
+          ))
           .map(candidate => candidate.row_key),
       }))
       .filter(group => group.rowKeys.length && (inspectors[group.community] || []).length)
@@ -311,9 +354,11 @@ export default function MobileTaskAssignmentWorkbench({
             <Button
               icon={<CheckSquareOutlined />}
               disabled={!visible.length || !inspectorOptions.length}
-              onClick={() => setSelected(current => {
-                const next = new Set(current)
-                visible.forEach(item => next.add(item.row_key))
+            onClick={() => setSelected(current => {
+              const next = new Set(current)
+                visible
+                  .filter(item => item.match_status === 'confirmed')
+                  .forEach(item => next.add(item.row_key))
                 return next
               })}
             >
@@ -346,9 +391,27 @@ export default function MobileTaskAssignmentWorkbench({
             }))}
             onChange={value => {
               setCommunity(value)
+              setSmallCommunity('')
               setSelected(new Set())
             }}
           />
+        )}
+        {community && (
+          <div className="mobile-task-assignment-workbench__filters">
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={smallCommunity || undefined}
+              placeholder="筛选小区（含未关联）"
+              options={smallCommunityOptions}
+              onChange={value => {
+                setSmallCommunity(value || '')
+                setSelected(new Set())
+              }}
+            />
+            <span>只有“已人工确认”的任务可以选择和平均分配。</span>
+          </div>
         )}
         {community && !inspectorOptions.length && visible.length > 0 && <Alert type="warning" showIcon message="该社区当前没有可用的在岗核查人，数据暂时不能分配" />}
         {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>刷新</Button>} />}
@@ -386,7 +449,8 @@ export default function MobileTaskAssignmentWorkbench({
               <div className="mobile-task-assignment-grid" onContextMenu={event => event.preventDefault()}>
               {visible.map(item => {
                 const checked = selected.has(item.row_key)
-                const canAssign = inspectorOptions.length > 0
+                const canAssign = inspectorOptions.length > 0 && item.match_status === 'confirmed'
+                const matchStatus = MATCH_STATUS_LABELS[item.match_status] || MATCH_STATUS_LABELS.unmatched
                 return (
                   <button
                     type="button"
@@ -410,6 +474,7 @@ export default function MobileTaskAssignmentWorkbench({
                     }}
                     onClick={event => {
                       event.preventDefault()
+                      if (!canAssign) return
                       if (suppressClickRef.current) {
                         suppressClickRef.current = false
                         return
@@ -419,7 +484,9 @@ export default function MobileTaskAssignmentWorkbench({
                   >
                     <span className="mobile-task-assignment-item__source">
                       {mobileTaskSourceTags(item.source).map(value => <Tag key={value}>{value}</Tag>)}
+                      <Tag color={matchStatus.color}>{matchStatus.label}</Tag>
                     </span>
+                    <span>{item.small_community || '未关联小区'}</span>
                     <strong>{item.address}</strong>
                   </button>
                 )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from typing import Literal
 from urllib.parse import quote
@@ -33,6 +34,9 @@ from services.registry_watch_backfill import ensure_watch_person_registry_link
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
 
 StarRating = Literal["一星出租房", "二星出租房", "三星出租房", "四星出租房", "五星出租房"]
+PropertyAddressMatchStatus = Literal[
+    "", "unmatched", "suggested", "ambiguous", "conflict", "confirmed", "invalid", "disabled",
+]
 
 
 class PropertyCreate(BaseModel):
@@ -80,9 +84,20 @@ class PropertySearch(BaseModel):
     visit_start_date: date | None = None
     visit_end_date: date | None = None
     star_ratings: list[StarRating] = Field(default_factory=list, max_length=5)
+    small_community_ids: list[int] = Field(default_factory=list, max_length=50)
+    address_match_statuses: list[PropertyAddressMatchStatus] = Field(default_factory=list, max_length=10)
     sort: Literal["id_desc", "address_asc", "community_asc", "updated_desc", "visit_desc"] = "id_desc"
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=50, ge=1, le=200)
+
+
+class PropertySmallCommunityConfirmItem(BaseModel):
+    property_id: int = Field(gt=0)
+    small_community_id: int = Field(gt=0)
+
+
+class PropertySmallCommunityConfirm(BaseModel):
+    items: list[PropertySmallCommunityConfirmItem] = Field(min_length=1, max_length=200)
 
 
 class PropertyPersonRoleCreate(BaseModel):
@@ -371,6 +386,30 @@ def _property_payload(row) -> dict:
         sign_type=row[22],
         updated_at=row[23].isoformat() if row[23] else None,
     ))
+    evidence = row[34]
+    if isinstance(evidence, (bytes, bytearray)):
+        evidence = evidence.decode("utf-8", errors="replace")
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+        except (TypeError, ValueError):
+            evidence = {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    payload.update({
+        "small_community_id": int(row[26]) if row[26] is not None else None,
+        "small_community_name": str(row[27] or ""),
+        "small_community_community_id": int(row[28]) if row[28] is not None else None,
+        "small_community_community_name": str(row[29] or ""),
+        "address_match_status": str(row[30] or "unmatched"),
+        "address_match_score": float(row[31] or 0),
+        "address_match_method": str(row[32] or ""),
+        "address_match_reason": str(row[33] or ""),
+        "address_match_candidates": evidence.get("candidates", []),
+        "address_match_version": str(row[35] or ""),
+        "address_match_confirmed_by": int(row[36]) if row[36] is not None else None,
+        "address_match_confirmed_at": row[37].isoformat() if row[37] else None,
+    })
     return payload
 
 
@@ -394,7 +433,13 @@ async def _property_search_result(
     params: list[object] = []
     if allowed is not None:
         if not allowed:
-            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+            return {
+                "total": 0,
+                "page": data.page,
+                "page_size": data.page_size,
+                "data": [],
+                "match_status_counts": {},
+            }
         where.append("property.community_id IN (" + ",".join(["%s"] * len(allowed)) + ")")
         params.extend(allowed)
     if data.community_id is not None:
@@ -411,7 +456,13 @@ async def _property_search_result(
             )
             community_ids = [int(row[0]) for row in await community_cur.fetchall()]
         if not community_ids:
-            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+            return {
+                "total": 0,
+                "page": data.page,
+                "page_size": data.page_size,
+                "data": [],
+                "match_status_counts": {},
+            }
         where.append("property.community_id IN (" + ",".join(["%s"] * len(community_ids)) + ")")
         params.extend(community_ids)
     if data.status:
@@ -428,6 +479,15 @@ async def _property_search_result(
         params.extend(["个人出租", "单位出租", "自购房屋"])
     elif data.housing_category == "unmarked":
         where.append("COALESCE(property.housing_type,'')='' ")
+    if data.small_community_ids:
+        small_ids = list(dict.fromkeys(int(value) for value in data.small_community_ids))
+        where.append("property_match.small_community_id IN (" + ",".join(["%s"] * len(small_ids)) + ")")
+        params.extend(small_ids)
+    match_statuses = [value for value in dict.fromkeys(data.address_match_statuses) if value]
+    if match_statuses:
+        placeholders = ",".join(["%s"] * len(match_statuses))
+        where.append(f"COALESCE(property_match.match_status,'unmatched') IN ({placeholders})")
+        params.extend(match_statuses)
 
     certificate_count = "COALESCE(certificate_totals.certificate_count,0)"
     certificate_issue_count = "COALESCE(certificate_issues.issue_count,0)"
@@ -471,14 +531,17 @@ async def _property_search_result(
             "(property.community_name_snapshot LIKE %s OR property.natural_address LIKE %s OR property.normalized_address LIKE %s "
             "OR property.source_house_no LIKE %s OR property.building LIKE %s OR property.room LIKE %s "
             "OR property.housing_type LIKE %s OR property.residence_type LIKE %s "
+            "OR property_match.small_community_name LIKE %s "
             "OR EXISTS (SELECT 1 FROM registry_address_aliases alias "
             "WHERE alias.property_id=property.id AND alias.enabled=1 AND alias.alias LIKE %s))"
         )
-        params.extend([like_value] * 9)
+        params.extend([like_value] * 10)
 
     clause = " WHERE " + " AND ".join(where) if where else ""
     joins = (
-        " LEFT JOIN (SELECT property_id,COUNT(*) certificate_count,MAX(id) latest_id "
+        " LEFT JOIN registry_property_small_community_links property_match "
+        "ON property_match.property_id=property.id "
+        "LEFT JOIN (SELECT property_id,COUNT(*) certificate_count,MAX(id) latest_id "
         "FROM registry_property_certificates GROUP BY property_id) certificate_totals "
         "ON certificate_totals.property_id=property.id "
         "LEFT JOIN registry_property_certificates certificate "
@@ -518,7 +581,13 @@ async def _property_search_result(
                 star_ratings=data.star_ratings,
             )
         if not matching_ids:
-            return {"total": 0, "page": data.page, "page_size": data.page_size, "data": []}
+            return {
+                "total": 0,
+                "page": data.page,
+                "page_size": data.page_size,
+                "data": [],
+                "match_status_counts": {},
+            }
         where.append("property.id IN (" + ",".join(["%s"] * len(matching_ids)) + ")")
         params.extend(sorted(matching_ids))
         clause = " WHERE " + " AND ".join(where) if where else ""
@@ -538,12 +607,28 @@ async def _property_search_result(
         )
         total = int((await cur.fetchone())[0])
         await cur.execute(
+            "SELECT COALESCE(property_match.match_status,'unmatched'),COUNT(*) "
+            f"FROM registry_properties property{joins}{clause} "
+            "GROUP BY COALESCE(property_match.match_status,'unmatched')",
+            tuple(params),
+        )
+        match_status_counts = {
+            str(row[0] or "unmatched"): int(row[1] or 0)
+            for row in await cur.fetchall()
+        }
+        await cur.execute(
             "SELECT property.id,property.street,property.community_id,property.community_name_snapshot,property.natural_address, "
             "property.building,property.room,property.housing_type,property.residence_type,property.source_house_no,property.source_updated_at, "
             "property.source_type,property.source_ref,property.normalized_address,property.status,property.current_version,property.created_at,property.updated_at, "
             "COALESCE(certificate_totals.certificate_count,0),certificate.landlord_name,certificate.actual_renter_name,"
             "certificate.signed_status,certificate.sign_type,certificate.updated_at,"
-            "COALESCE(certificate_issues.issue_count,0),certificate_source_state.source_ready "
+            "COALESCE(certificate_issues.issue_count,0),certificate_source_state.source_ready, "
+            "property_match.small_community_id,property_match.small_community_name,"
+            "property_match.community_id,property_match.community_name_snapshot,"
+            "COALESCE(property_match.match_status,'unmatched'),"
+            "COALESCE(property_match.match_score,0),property_match.match_method,"
+            "property_match.match_reason,property_match.match_evidence,"
+            "property_match.matcher_version,property_match.confirmed_by,property_match.confirmed_at "
             f"FROM registry_properties property{joins}{clause} ORDER BY {order_sql} "
             + ("" if export_all or visit_sort else "LIMIT %s OFFSET %s"),
             tuple(params) if export_all or visit_sort else tuple(params) + (data.page_size, offset),
@@ -569,6 +654,7 @@ async def _property_search_result(
         "page": data.page,
         "page_size": data.page_size,
         "data": payloads,
+        "match_status_counts": match_status_counts,
     }
 
 
@@ -584,6 +670,8 @@ async def list_properties(
     visit_start_date: date | None = Query(default=None),
     visit_end_date: date | None = Query(default=None),
     star_ratings: list[StarRating] = Query(default=[]),
+    small_community_id: list[int] = Query(default=[]),
+    address_match_status: list[PropertyAddressMatchStatus] = Query(default=[]),
     sort: Literal["id_desc", "address_asc", "community_asc", "updated_desc", "visit_desc"] = Query(default="id_desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -599,6 +687,8 @@ async def list_properties(
             visit_start_date=visit_start_date,
             visit_end_date=visit_end_date,
             star_ratings=star_ratings,
+            small_community_ids=small_community_id,
+            address_match_statuses=address_match_status,
             sort=sort,
             page=page,
             page_size=page_size,
@@ -618,6 +708,167 @@ async def search_properties(
     return await _property_search_result(data, user, conn)
 
 
+@router.get("/properties/small-community-options")
+async def property_small_community_options(
+    community_id: int | None = Query(default=None),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_VIEW)),
+):
+    allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
+    if allowed is not None and community_id is not None and community_id not in allowed:
+        raise HTTPException(403, "无权查看该社区的小区地址库")
+    where = ["entry.enabled=1", "entry.community_id IS NOT NULL", "community.is_active=1"]
+    params: list[object] = []
+    if community_id is not None:
+        where.append("entry.community_id=%s")
+        params.append(community_id)
+    elif allowed is not None:
+        if not allowed:
+            return {"data": []}
+        where.append("entry.community_id IN (" + ",".join(["%s"] * len(allowed)) + ")")
+        params.extend(allowed)
+    try:
+        pool = db_manager.get_pool("online_data")
+    except ValueError as exc:
+        raise HTTPException(503, "本地小区地址库尚未完成初始化") from exc
+    online_conn = await pool.acquire()
+    try:
+        async with online_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT entry.id,entry.name,entry.community_id,community.name,"
+                "entry.detail_address,entry.aliases_json "
+                "FROM _police_address_entries entry "
+                "JOIN _communities community ON community.id=entry.community_id "
+                "WHERE " + " AND ".join(where) + " ORDER BY community.name,entry.name,entry.id",
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+    finally:
+        pool.release(online_conn)
+    result = []
+    for row in rows:
+        aliases = row[5]
+        if isinstance(aliases, str):
+            try:
+                aliases = json.loads(aliases)
+            except (TypeError, ValueError):
+                aliases = []
+        result.append({
+            "id": int(row[0]),
+            "name": str(row[1] or ""),
+            "community_id": int(row[2]),
+            "community_name": str(row[3] or ""),
+            "detail_address": str(row[4] or ""),
+            "aliases": aliases if isinstance(aliases, list) else [],
+        })
+    return {"data": result}
+
+
+@router.post("/properties/small-community-links/confirm")
+async def confirm_property_small_communities(
+    data: PropertySmallCommunityConfirm,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    item_by_property: dict[int, int] = {}
+    for item in data.items:
+        if item.property_id in item_by_property:
+            raise HTTPException(422, "同一套房屋不能在一次确认中选择多个小区")
+        item_by_property[item.property_id] = item.small_community_id
+    entry_ids = sorted(set(item_by_property.values()))
+    try:
+        pool = db_manager.get_pool("online_data")
+    except ValueError as exc:
+        raise HTTPException(503, "本地小区地址库尚未完成初始化") from exc
+    online_conn = await pool.acquire()
+    try:
+        async with online_conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(entry_ids))
+            await cur.execute(
+                "SELECT entry.id,entry.name,entry.community_id,community.name "
+                "FROM _police_address_entries entry "
+                "JOIN _communities community ON community.id=entry.community_id "
+                f"WHERE entry.enabled=1 AND community.is_active=1 AND entry.id IN ({placeholders})",
+                tuple(entry_ids),
+            )
+            entries = {
+                int(row[0]): {
+                    "id": int(row[0]), "name": str(row[1] or ""),
+                    "community_id": int(row[2]), "community_name": str(row[3] or ""),
+                }
+                for row in await cur.fetchall()
+            }
+    finally:
+        pool.release(online_conn)
+    if len(entries) != len(entry_ids):
+        raise HTTPException(409, "所选小区不存在、已停用或尚未设置所属社区")
+
+    allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
+    property_ids = sorted(item_by_property)
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(property_ids))
+            await cur.execute(
+                "SELECT id,community_id,community_name_snapshot,current_version,status "
+                f"FROM registry_properties WHERE id IN ({placeholders}) FOR UPDATE",
+                tuple(property_ids),
+            )
+            properties = {
+                int(row[0]): {
+                    "community_id": int(row[1]) if row[1] is not None else None,
+                    "community_name": str(row[2] or ""),
+                    "version": int(row[3] or 1), "status": str(row[4] or ""),
+                }
+                for row in await cur.fetchall()
+            }
+            if len(properties) != len(property_ids):
+                raise HTTPException(404, "部分房屋档案不存在")
+            rows = []
+            for property_id, entry_id in item_by_property.items():
+                property_row = properties[property_id]
+                entry = entries[entry_id]
+                if property_row["status"] != "active":
+                    raise HTTPException(409, f"房屋 {property_id} 已停用，不能确认小区")
+                if allowed is not None and property_row["community_id"] not in allowed:
+                    raise HTTPException(403, "只能维护有权限社区内的房屋档案")
+                if property_row["community_id"] is None or property_row["community_id"] != entry["community_id"]:
+                    raise HTTPException(409, f"房屋 {property_id} 与所选小区的社区归属不一致")
+                rows.append((
+                    property_id, entry_id, entry["name"], entry["community_id"],
+                    entry["community_name"], int(user["id"]), property_row["version"],
+                ))
+            await cur.executemany(
+                "INSERT INTO registry_property_small_community_links ("
+                "property_id,small_community_id,small_community_name,community_id,"
+                "community_name_snapshot,match_status,match_score,match_method,match_reason,"
+                "match_evidence,matcher_version,confirmed_by,confirmed_at,property_version) "
+                "VALUES (%s,%s,%s,%s,%s,'confirmed',1,'人工确认','管理员已确认小区归属',"
+                "JSON_OBJECT('source','manual'),'rule-v1',%s,UTC_TIMESTAMP(),%s) "
+                "ON DUPLICATE KEY UPDATE small_community_id=VALUES(small_community_id),"
+                "small_community_name=VALUES(small_community_name),community_id=VALUES(community_id),"
+                "community_name_snapshot=VALUES(community_name_snapshot),match_status='confirmed',"
+                "match_score=1,match_method='人工确认',match_reason='管理员已确认小区归属',"
+                "match_evidence=VALUES(match_evidence),matcher_version='rule-v1',"
+                "confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at),"
+                "property_version=VALUES(property_version)",
+                rows,
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "registry.property_small_community.confirm",
+        target_type="registry_property",
+        target_name="批量确认小区归属",
+        detail={"property_count": len(property_ids), "small_community_count": len(entry_ids)},
+        **request_audit_fields(request),
+    )
+    return {"message": f"已确认 {len(property_ids)} 套房屋的小区归属", "confirmed": len(property_ids)}
+
+
 @router.post("/properties/export")
 async def export_properties(
     data: PropertySearch,
@@ -630,18 +881,19 @@ async def export_properties(
     workbook = build_xlsx(
         "房屋档案",
         [
-            "房屋ID", "社区", "标准详细地址", "街道", "幢", "室", "户号",
+            "房屋ID", "社区", "小区", "小区匹配状态", "标准详细地址", "街道", "幢", "室", "户号",
             "住房类型", "居住处所", "最近走访日期", "星级评定", "责任书状态",
             "房屋状态", "档案版本", "更新时间",
         ],
         [
             [
-                row.get("id"), row.get("community_name"),
+                row.get("id"), row.get("community_name"), row.get("small_community_name"),
+                row.get("address_match_status"),
                 row.get("natural_address") or row.get("normalized_address"),
                 row.get("street"), row.get("building"), row.get("room"),
                 row.get("source_house_no"), row.get("housing_type"),
                 row.get("residence_type"), row.get("latest_visit_date") or "",
-                row.get("star_rating") or "", row.get("certificate_status_label") or "",
+                row.get("latest_star_rating") or "", row.get("certificate_status_label") or "",
                 row.get("status"), row.get("version"), row.get("updated_at") or "",
             ]
             for row in rows

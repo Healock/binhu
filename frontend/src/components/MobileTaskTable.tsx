@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'rea
 import {
   getMobileTaskInlineEditors,
   claimMobileTask,
+  confirmMobileTaskAddressMatch,
   searchRegistrationProperties,
   updateMobileTask,
   updateMobileTaskAnalysis,
@@ -41,6 +42,15 @@ const STATE_LABELS = {
   completed: { text: '已完成', color: 'green' },
 } as const
 
+const ADDRESS_MATCH_LABELS: Record<string, { text: string; color: string }> = {
+  unmatched: { text: '未关联小区', color: 'default' },
+  suggested: { text: '系统建议', color: 'processing' },
+  ambiguous: { text: '多候选待确认', color: 'warning' },
+  conflict: { text: '地址冲突', color: 'error' },
+  confirmed: { text: '已人工确认', color: 'success' },
+  invalid: { text: '无效地址', color: 'default' },
+}
+
 interface InlineRegistrationPropertyState {
   loading: boolean
   options: MobileTaskRegistrationProperty[]
@@ -60,6 +70,7 @@ interface MobileTaskTableProps {
   loading: boolean
   analysisMode?: boolean
   canClaimUnassigned?: boolean
+  canManageAddressMatches?: boolean
   selectionMode: boolean
   selectedRowKeys: Key[]
   canSelect: (task: MobileTaskItem) => boolean
@@ -83,6 +94,7 @@ export default function MobileTaskTable({
   loading,
   analysisMode = false,
   canClaimUnassigned = false,
+  canManageAddressMatches = false,
   selectionMode,
   selectedRowKeys,
   canSelect,
@@ -101,6 +113,7 @@ export default function MobileTaskTable({
   const [registrationProperties, setRegistrationProperties] = useState<Record<string, InlineRegistrationPropertyState>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [savingRowKey, setSavingRowKey] = useState('')
+  const [confirmingAddressMatchKey, setConfirmingAddressMatchKey] = useState('')
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
   const loadingEditorKeysRef = useRef<Set<string>>(new Set())
   const editorElementsRef = useRef<Map<string, HTMLElement>>(new Map())
@@ -550,6 +563,63 @@ export default function MobileTaskTable({
     await saveEditor(task, item, changes, claim, { id: property.id, version: property.version })
   }
 
+  const confirmAddressMatch = async (task: MobileTaskItem, entryId: number) => {
+    const candidate = task.address_match?.candidates.find(item => Number(item.entry_id) === entryId)
+    const candidateName = String(candidate?.name || '所选小区')
+    Modal.confirm({
+      title: '确认任务小区归属？',
+      content: `确认后，该任务才允许进入单人分配或平均分配。当前选择：${candidateName}`,
+      okText: '确认归属',
+      cancelText: '取消',
+      onOk: async () => {
+        setConfirmingAddressMatchKey(task.task_key)
+        try {
+          const result = await confirmMobileTaskAddressMatch(task.parser_type, task.row_key, entryId)
+          message.success(result.message)
+          await onSaved()
+        } catch (reason: any) {
+          message.error(errorMessage(reason, '小区归属确认失败'))
+          throw reason
+        } finally {
+          setConfirmingAddressMatchKey('')
+        }
+      },
+    })
+  }
+
+  const renderAddressMatch = (task: MobileTaskItem) => {
+    const match = task.address_match
+    const label = ADDRESS_MATCH_LABELS[match?.status || 'unmatched'] || ADDRESS_MATCH_LABELS.unmatched
+    const options = (match?.candidates || [])
+      .map(candidate => ({
+        value: Number(candidate.entry_id),
+        label: `${String(candidate.name || '未命名小区')}${candidate.community_name ? ` · ${String(candidate.community_name)}` : ''}`,
+      }))
+      .filter(option => Number.isInteger(option.value) && option.value > 0)
+    return (
+      <section className="mobile-task-address-match">
+        <div className="mobile-task-address-match__summary">
+          <span>小区归属</span>
+          <strong>{match?.small_community_name || '未关联小区'}</strong>
+          <Tag color={label.color}>{label.text}</Tag>
+          {match?.method && <span>{match.method}</span>}
+          {match?.reason && <span>{match.reason}</span>}
+        </div>
+        {canManageAddressMatches && match?.status !== 'confirmed' && options.length > 0 && (
+          <Select
+            showSearch
+            optionFilterProp="label"
+            placeholder="选择候选小区并人工确认"
+            options={options}
+            loading={confirmingAddressMatchKey === task.task_key}
+            disabled={selectionMode || Boolean(confirmingAddressMatchKey)}
+            onChange={entryId => void confirmAddressMatch(task, entryId)}
+          />
+        )}
+      </section>
+    )
+  }
+
   const renderExpandedRow = (task: MobileTaskItem) => {
     const surfaceTone = mobileTaskSurfaceTone(task)
     const toneClass = `mobile-task-table-inline-editor--tone-${surfaceTone}`
@@ -577,7 +647,9 @@ export default function MobileTaskTable({
 
     if (analysisMode && task.review_flow) {
       return (
-        <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}>
+        <div className="grid gap-3">
+          {renderAddressMatch(task)}
+          <div className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}>
           <div className="grid min-w-0 gap-2 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               <Tag color={task.review_flow.state === 'source_exception' ? 'red' : 'blue'}>
@@ -595,23 +667,27 @@ export default function MobileTaskTable({
           <div className="mobile-task-table-inline-actions">
             <Button size="small" type="primary" onClick={() => onOpen(task)}>进入研判详情</Button>
           </div>
+          </div>
         </div>
       )
     }
 
     if (!item) {
       return (
-        <div
-          ref={element => setEditorElement(task.task_key, element)}
-          className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--loading`}
-          onClick={event => event.stopPropagation()}
-        >
-          <div className="mobile-task-table-inline-status">
-            {editorLoading ? '正在准备本行填写项…' : '滚动到本行时自动读取可编辑信息'}
+        <div className="grid gap-3">
+          {renderAddressMatch(task)}
+          <div
+            ref={element => setEditorElement(task.task_key, element)}
+            className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--loading`}
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="mobile-task-table-inline-status">
+              {editorLoading ? '正在准备本行填写项…' : '滚动到本行时自动读取可编辑信息'}
+            </div>
+            {!editorLoading && (
+              <Button size="small" onClick={() => void requestEditors([task.task_key], true)}>读取本行</Button>
+            )}
           </div>
-          {!editorLoading && (
-            <Button size="small" onClick={() => void requestEditors([task.task_key], true)}>读取本行</Button>
-          )}
         </div>
       )
     }
@@ -619,10 +695,12 @@ export default function MobileTaskTable({
     if (!item?.available || !detail || !source) {
       const isModelThree = task.parser_type === '疑似未注销模型三'
       return (
-        <div
-          ref={element => setEditorElement(task.task_key, element)}
-          className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}
-        >
+        <div className="grid gap-3">
+          {renderAddressMatch(task)}
+          <div
+            ref={element => setEditorElement(task.task_key, element)}
+            className={`mobile-task-table-inline-editor ${toneClass} mobile-task-table-inline-editor--readonly`}
+          >
           <div className="mobile-task-table-inline-fields">
             <div className="mobile-task-table-inline-readonly"><span>核查结果</span><strong>{task.summary.result || '未填写'}</strong></div>
             {!isModelThree && <div className="mobile-task-table-inline-readonly">
@@ -645,17 +723,20 @@ export default function MobileTaskTable({
               <Button size="small" onClick={() => onOpen(task)}>进入详情</Button>
             </Tooltip>
           </div>
+          </div>
         </div>
       )
     }
 
     return (
-      <div
-        ref={element => setEditorElement(task.task_key, element)}
-        className={`mobile-task-table-inline-editor ${toneClass}${dirtyCount ? ' mobile-task-table-inline-editor--dirty' : ''}`}
-        onClick={event => event.stopPropagation()}
-        onDoubleClick={event => event.stopPropagation()}
-      >
+      <div className="grid gap-3">
+        {renderAddressMatch(task)}
+        <div
+          ref={element => setEditorElement(task.task_key, element)}
+          className={`mobile-task-table-inline-editor ${toneClass}${dirtyCount ? ' mobile-task-table-inline-editor--dirty' : ''}`}
+          onClick={event => event.stopPropagation()}
+          onDoubleClick={event => event.stopPropagation()}
+        >
         {fields.length === 0 ? (
           <div className="mobile-task-table-inline-status">
             {detail.writeback_enabled ? '当前任务没有可填写字段' : '当前任务暂不可编辑，只能查看'}
@@ -809,6 +890,7 @@ export default function MobileTaskTable({
             )}
           </div>
         )}
+        </div>
       </div>
     )
   }
@@ -894,6 +976,24 @@ export default function MobileTaskTable({
       responsivePriority: 'always',
       ellipsis: true,
       render: value => value || <span className="text-[var(--app-text-muted)]">未识别社区</span>,
+    },
+    {
+      title: '小区',
+      key: 'small_community',
+      width: 165,
+      responsivePriority: 'standard',
+      render: (_, task) => {
+        const match = task.address_match
+        const label = ADDRESS_MATCH_LABELS[match?.status || 'unmatched'] || ADDRESS_MATCH_LABELS.unmatched
+        return (
+          <div className="grid min-w-0 gap-1">
+            <Tooltip title={match?.small_community_name || '未关联小区'}>
+              <span className="truncate">{match?.small_community_name || '未关联小区'}</span>
+            </Tooltip>
+            <Tag color={label.color} className="m-0 w-fit">{label.text}</Tag>
+          </div>
+        )
+      },
     },
     {
       title: '核查人',
@@ -1063,8 +1163,8 @@ export default function MobileTaskTable({
   const tableScrollWidth = responsiveLayout.isCompact
     ? compactPersonnelPresentation.tableScrollWidth
     : responsiveLayout.isStandard
-      ? 1390
-      : 1500
+      ? 1555
+      : 1665
 
   return (
     <div ref={tableRef} className="app-card mobile-task-table overflow-hidden">

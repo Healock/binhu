@@ -23,6 +23,7 @@ import {
   type RegistryOrganization,
   type RegistryPerson,
   type RegistryProperty,
+  type RegistrySmallCommunityOption,
   type RegistryPropertyVisit,
   type WatchCategory,
 } from '../api/client'
@@ -73,6 +74,20 @@ const certificateStatusColors: Record<Exclude<RegistryCertificateStatus, ''>, st
 }
 
 const starRatingOptions = ['一星出租房', '二星出租房', '三星出租房', '四星出租房', '五星出租房']
+const addressMatchStatusOptions = [
+  { value: 'unmatched', label: '未关联小区', color: 'default' },
+  { value: 'suggested', label: '系统建议', color: 'blue' },
+  { value: 'ambiguous', label: '待人工确认', color: 'gold' },
+  { value: 'conflict', label: '地址冲突', color: 'error' },
+  { value: 'confirmed', label: '已人工确认', color: 'success' },
+  { value: 'invalid', label: '低信息地址', color: 'default' },
+  { value: 'disabled', label: '小区已停用', color: 'warning' },
+]
+
+function addressMatchStatusView(status: string) {
+  return addressMatchStatusOptions.find(item => item.value === status)
+    || { value: status, label: status || '未关联小区', color: 'default' }
+}
 
 function issuePayloadText(row: RegistryImportIssue, ...keys: string[]) {
   for (const key of keys) {
@@ -101,10 +116,17 @@ export default function RegistryManagement() {
   const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
   const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
   const [starRatings, setStarRatings] = useState<string[]>([])
+  const [smallCommunityOptions, setSmallCommunityOptions] = useState<RegistrySmallCommunityOption[]>([])
+  const [smallCommunityIds, setSmallCommunityIds] = useState<number[]>([])
+  const [addressMatchStatuses, setAddressMatchStatuses] = useState<string[]>([])
+  const [selectedPropertyIds, setSelectedPropertyIds] = useState<number[]>([])
+  const [matchConfirmProperty, setMatchConfirmProperty] = useState<RegistryProperty | null>(null)
+  const [matchConfirmEntryId, setMatchConfirmEntryId] = useState<number | undefined>()
   const [propertySort, setPropertySort] = useState<'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'>('id_desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [total, setTotal] = useState(0)
+  const [matchStatusCounts, setMatchStatusCounts] = useState<Record<string, number>>({})
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importPreview, setImportPreview] = useState<any>(null)
   const [importing, setImporting] = useState(false)
@@ -184,6 +206,8 @@ export default function RegistryManagement() {
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
           star_ratings: starRatings,
+          small_community_ids: smallCommunityIds,
+          address_match_statuses: addressMatchStatuses,
           sort: propertySort,
           page,
           page_size: pageSize,
@@ -191,6 +215,7 @@ export default function RegistryManagement() {
         if (requestId !== listRequestId.current) return
         setProperties(response.data)
         setTotal(response.total)
+        setMatchStatusCounts(response.match_status_counts || {})
       }
       if (tab === 'people') {
         const response = debouncedKeyword || categoryIds.length > 0
@@ -260,8 +285,15 @@ export default function RegistryManagement() {
   }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, propertySort])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, propertySort, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
+
+  useEffect(() => {
+    if (tab !== 'properties') return
+    void registryApi.smallCommunityOptions(communityId)
+      .then(result => setSmallCommunityOptions(result.data || []))
+      .catch(() => setSmallCommunityOptions([]))
+  }, [tab, communityId])
 
   const applyCertificateRun = (run: RegistryCertificateSourceRun, announce = false) => {
     const previousStatus = certificateRunRef.current?.status
@@ -548,6 +580,51 @@ export default function RegistryManagement() {
     await load()
   }
 
+  const confirmSuggestedPropertyMatches = async () => {
+    const rows = properties.filter(row => selectedPropertyIds.includes(row.id))
+    const items = rows
+      .filter(row => row.address_match_status === 'suggested' && row.small_community_id)
+      .map(row => ({ property_id: row.id, small_community_id: Number(row.small_community_id) }))
+    if (!items.length) {
+      message.warning('请选择已有唯一系统建议的房屋')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await registryApi.confirmPropertySmallCommunities(items)
+      message.success(result.message)
+      setSelectedPropertyIds([])
+      await load()
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '小区归属确认失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const confirmPropertyMatch = async () => {
+    if (!matchConfirmProperty || !matchConfirmEntryId) return
+    const propertyId = matchConfirmProperty.id
+    setSaving(true)
+    try {
+      const result = await registryApi.confirmPropertySmallCommunities([{
+        property_id: propertyId,
+        small_community_id: matchConfirmEntryId,
+      }])
+      message.success(result.message)
+      setMatchConfirmProperty(null)
+      setMatchConfirmEntryId(undefined)
+      await load()
+      if (detailOpen && detailKind === 'property' && selected?.id === propertyId) {
+        setDetail(await registryApi.property(propertyId))
+      }
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '小区归属确认失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const exportRegistryRecords = async () => {
     if (!['properties', 'people', 'organizations'].includes(tab)) return
     setExporting(true)
@@ -563,6 +640,8 @@ export default function RegistryManagement() {
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
           star_ratings: starRatings,
+          small_community_ids: smallCommunityIds,
+          address_match_statuses: addressMatchStatuses,
           sort: propertySort,
         })
         : tab === 'people'
@@ -589,8 +668,32 @@ export default function RegistryManagement() {
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
         <Select allowClear showSearch optionFilterProp="label" className="w-full" placeholder="全部社区"
-          value={communityId} options={communityOptions} onChange={value => setCommunityId(value)} />,
+          value={communityId} options={communityOptions} onChange={value => {
+            setCommunityId(value)
+            setSmallCommunityIds([])
+            setSelectedPropertyIds([])
+          }} />,
         () => setCommunityId(undefined),
+      ),
+    },
+    {
+      title: '小区', key: 'small_community', width: 190, responsivePriority: 'always',
+      render: (_, row) => (
+        <div className="grid gap-1">
+          <strong>{row.small_community_name || '未关联小区'}</strong>
+          <Tag color={addressMatchStatusView(row.address_match_status).color}>
+            {addressMatchStatusView(row.address_match_status).label}
+          </Tag>
+        </div>
+      ),
+    },
+    {
+      title: '匹配依据', key: 'address_match_reason', width: 260, responsivePriority: 'wide',
+      render: (_, row) => (
+        <div className="grid gap-1 text-xs">
+          <span>{row.address_match_reason || '尚未生成匹配建议'}</span>
+          {row.address_match_method && <span className="text-[var(--app-text-muted)]">{row.address_match_method} · {Math.round((row.address_match_score || 0) * 100)} 分</span>}
+        </div>
       ),
     },
     { title: '标准详细地址', width: 360, ellipsis: true, responsivePriority: 'always', render: (_, row) => row.natural_address || row.normalized_address },
@@ -672,8 +775,12 @@ export default function RegistryManagement() {
       render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag>,
     },
     { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
-    { title: '操作', key: 'actions', width: 210, render: (_, row) => <Space>
+    { title: '操作', key: 'actions', width: 280, render: (_, row) => <Space wrap>
       <Button size="small" onClick={() => openDetail('property', row)}>详情</Button>
+      {canManage && <Button size="small" type={row.address_match_status === 'suggested' ? 'primary' : 'default'} onClick={() => {
+        setMatchConfirmProperty(row)
+        setMatchConfirmEntryId(row.small_community_id || undefined)
+      }}>{row.address_match_status === 'confirmed' ? '修正小区' : '确认小区'}</Button>}
       {canManage && <Button size="small" onClick={() => openEdit('property', row)}>编辑</Button>}
       {canManage && <Popconfirm title={row.status === 'active' ? '确认停用这套房屋？' : '确认启用这套房屋？'} onConfirm={() => void toggleProperty(row)}><Button size="small">{row.status === 'active' ? '停用' : '启用'}</Button></Popconfirm>}
     </Space> },
@@ -738,6 +845,31 @@ export default function RegistryManagement() {
 
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
+    <Select
+      mode="multiple"
+      allowClear
+      showSearch
+      optionFilterProp="label"
+      value={smallCommunityIds}
+      onChange={values => setSmallCommunityIds(values)}
+      options={smallCommunityOptions.map(item => ({
+        value: item.id,
+        label: `${item.name} · ${item.community_name}`,
+      }))}
+      maxTagCount="responsive"
+      placeholder="按小区筛选"
+      className="w-full md:w-72"
+    />
+    <Select
+      mode="multiple"
+      allowClear
+      value={addressMatchStatuses}
+      onChange={values => setAddressMatchStatuses(values)}
+      options={addressMatchStatusOptions.map(item => ({ value: item.value, label: item.label }))}
+      maxTagCount="responsive"
+      placeholder="按匹配状态筛选"
+      className="w-full md:w-64"
+    />
     <Select
       value={propertySort}
       onChange={value => { setPropertySort(value); setPage(1) }}
@@ -842,6 +974,15 @@ export default function RegistryManagement() {
         导出当前结果
       </Button>
     )}
+    {canManage && tab === 'properties' && selectedPropertyIds.length > 0 && (
+      <Popconfirm
+        title={`确认当前选择的 ${selectedPropertyIds.length} 套房屋？`}
+        description="只会确认已有唯一系统建议的记录；冲突、未匹配和低信息地址不会被批量确认。"
+        onConfirm={() => void confirmSuggestedPropertyMatches()}
+      >
+        <Button type="primary" loading={saving}>批量确认系统建议</Button>
+      </Popconfirm>
+    )}
     {canManage && tab === 'properties' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('property')}>新增房屋</Button>}
     {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
     {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
@@ -892,6 +1033,9 @@ export default function RegistryManagement() {
             setTab(value as TabKey)
             setKeyword('')
             setCommunityId(undefined)
+            setSmallCommunityIds([])
+            setAddressMatchStatuses([])
+            setSelectedPropertyIds([])
             setCategoryIds([])
             setHousingCategory('')
             setCertificateStatus('')
@@ -915,7 +1059,19 @@ export default function RegistryManagement() {
           {tab !== 'imports' && <ListToolbar
             filters={toolbarFilters}
             notice={toolbarNotice}
-            meta={<span>当前筛选共 {total} 条</span>}
+            meta={tab === 'properties' ? <Space size="middle" wrap>
+              <span>当前筛选共 {total} 条</span>
+              <span>待确认 {(
+                (matchStatusCounts.suggested || 0)
+                + (matchStatusCounts.ambiguous || 0)
+                + (matchStatusCounts.conflict || 0)
+                + (matchStatusCounts.disabled || 0)
+              )} 条</span>
+              <span>未关联 {(
+                (matchStatusCounts.unmatched || 0)
+                + (matchStatusCounts.invalid || 0)
+              )} 条</span>
+            </Space> : <span>当前筛选共 {total} 条</span>}
             actions={toolbarActions}
           />}
           {tab === 'issues' && <AppTable
@@ -965,7 +1121,27 @@ export default function RegistryManagement() {
               description={importPreview.status === 'preview' ? '当前仍是预览状态，确认后只导入正常数据，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
           </ExternalDataPanel>}
-        {tab === 'properties' && <AppTable fitHeight rowKey="id" loading={loading} columns={propertyColumns} responsiveDetails dataSource={properties} pagination={listPagination} scroll={{ x: 1300 }} emptyText="当前筛选条件下没有房屋档案" />}
+        {tab === 'properties' && <AppTable
+          fitHeight
+          rowKey="id"
+          loading={loading}
+          columns={propertyColumns}
+          responsiveDetails
+          dataSource={properties}
+          pagination={listPagination}
+          rowSelection={canManage ? {
+            selectedRowKeys: selectedPropertyIds,
+            onChange: keys => setSelectedPropertyIds(keys.map(Number)),
+            getCheckboxProps: row => ({
+              disabled: row.address_match_status !== 'suggested' || !row.small_community_id,
+              title: row.address_match_status === 'suggested' && row.small_community_id
+                ? '选择后可批量确认系统建议'
+                : '只有唯一系统建议可批量确认',
+            }),
+          } : undefined}
+          scroll={{ x: 1660 }}
+          emptyText="当前筛选条件下没有房屋档案"
+        />}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'merges' && <AppTable rowKey="id" loading={loading} dataSource={merges} pagination={false} columns={[
@@ -992,6 +1168,47 @@ export default function RegistryManagement() {
         ]} />}
         </div>
       </Panel>
+
+      <Modal
+        open={Boolean(matchConfirmProperty)}
+        title={matchConfirmProperty?.address_match_status === 'confirmed' ? '修正房屋所属小区' : '确认房屋所属小区'}
+        okText="确认关联"
+        cancelText="取消"
+        confirmLoading={saving}
+        okButtonProps={{ disabled: !matchConfirmEntryId }}
+        onCancel={() => {
+          if (saving) return
+          setMatchConfirmProperty(null)
+          setMatchConfirmEntryId(undefined)
+        }}
+        onOk={() => void confirmPropertyMatch()}
+      >
+        <div className="grid gap-4">
+          <Alert
+            type="info"
+            showIcon
+            message="人工确认后，规则重跑不会覆盖结果"
+            description={matchConfirmProperty?.address_match_reason || '请按房屋标准地址、历史地址和别名核对唯一小区。'}
+          />
+          <div className="text-sm text-[var(--app-text-secondary)]">
+            <strong className="text-[var(--app-text)]">房屋地址：</strong>
+            {matchConfirmProperty?.natural_address || matchConfirmProperty?.normalized_address || '未填写'}
+          </div>
+          <Select
+            showSearch
+            optionFilterProp="label"
+            value={matchConfirmEntryId}
+            placeholder="选择当前社区下的小区"
+            options={smallCommunityOptions
+              .filter(item => item.community_id === matchConfirmProperty?.community_id)
+              .map(item => ({
+                value: item.id,
+                label: `${item.name}${item.detail_address ? ` · ${item.detail_address}` : ''}`,
+              }))}
+            onChange={value => setMatchConfirmEntryId(value)}
+          />
+        </div>
+      </Modal>
 
       <Modal open={Boolean(modal)} title={modal === 'property' ? `${selected ? '编辑' : '新增'}房屋档案` : modal === 'person' ? `${selected ? '编辑' : '新增'}辖区人员` : modal === 'organization' ? `${selected ? '编辑' : '新增'}机构档案` : modal === 'phone' ? '添加联系电话' : modal === 'alias' ? '添加地址别名' : modal === 'personRelation' ? '添加房屋人员关系' : modal === 'organizationRelation' ? '添加房屋机构关系' : modal === 'personTag' ? `为${selected?.name || '人员'}添加标签` : '合并人员档案'} onCancel={() => setModal(null)} onOk={() => void save()} confirmLoading={saving} destroyOnClose>
         <Form form={form} layout="vertical" preserve={false}>
@@ -1102,7 +1319,46 @@ export default function RegistryManagement() {
               <strong>{detail.latest_star_rating || '暂无评定'}</strong>
             </div>
           </section>}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'property' && (() => {
+            const match = detail.small_community_match || {}
+            const status = addressMatchStatusView(match.status || 'unmatched')
+            return <section className="registry-small-community-match">
+              <div className="registry-small-community-match__heading">
+                <div>
+                  <span>房屋所属小区</span>
+                  <strong>{match.small_community_name || '尚未关联小区'}</strong>
+                </div>
+                <Tag color={status.color}>{status.label}</Tag>
+              </div>
+              <div className="registry-small-community-match__facts">
+                <div><span>所属社区</span><strong>{match.community_name || detail.community_name || '未确定'}</strong></div>
+                <div><span>匹配方式</span><strong>{match.method || '尚未匹配'}</strong></div>
+                <div><span>匹配分数</span><strong>{Math.round((match.score || 0) * 100)} 分</strong></div>
+              </div>
+              <p>{match.reason || '规则匹配只生成建议，确认前不会用于任务分配。'}</p>
+              {Array.isArray(match.candidates) && match.candidates.length > 0 && <div className="registry-small-community-match__candidates">
+                <span>候选小区</span>
+                <Space size={[6, 6]} wrap>
+                  {match.candidates.slice(0, 5).map((candidate: any) => (
+                    <Tag key={`${candidate.entry_id}-${candidate.community_id || 0}`}>
+                      {candidate.name} · {candidate.community_name || '社区未确定'} · {Math.round((candidate.score || 0) * 100)} 分
+                    </Tag>
+                  ))}
+                </Space>
+              </div>}
+              {canManage && <Button size="small" onClick={() => {
+                const property = properties.find(item => item.id === detail.id) || {
+                  ...detail,
+                  small_community_id: match.small_community_id,
+                  address_match_status: match.status,
+                  address_match_reason: match.reason,
+                }
+                setMatchConfirmProperty(property)
+                setMatchConfirmEntryId(match.small_community_id || undefined)
+              }}>{match.status === 'confirmed' ? '修正小区' : '人工确认小区'}</Button>}
+            </section>
+          })()}
+          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'small_community_match'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
           {detailKind === 'person' && canViewTags && <Panel
             title="人员标签"
             extra={canManageTags ? <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate('personTag')}>添加标签</Button> : undefined}

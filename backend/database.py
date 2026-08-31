@@ -830,6 +830,60 @@ async def ensure_online_editor_schema(cur) -> None:
     await _ensure_column(
         cur,
         "_online_source_projection",
+        "small_community_id",
+        "BIGINT DEFAULT NULL AFTER community",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "small_community_name",
+        "VARCHAR(300) NOT NULL DEFAULT '' AFTER small_community_id",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "address_match_status",
+        "VARCHAR(30) NOT NULL DEFAULT 'unmatched' AFTER small_community_name",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "address_match_score",
+        "DECIMAL(6,4) NOT NULL DEFAULT 0 AFTER address_match_status",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "address_match_method",
+        "VARCHAR(100) NOT NULL DEFAULT '' AFTER address_match_score",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "address_match_reason",
+        "VARCHAR(500) NOT NULL DEFAULT '' AFTER address_match_method",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "address_match_candidates",
+        "JSON DEFAULT NULL AFTER address_match_reason",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "address_match_version",
+        "VARCHAR(40) NOT NULL DEFAULT '' AFTER address_match_candidates",
+    )
+    await _ensure_index(
+        cur,
+        "_online_source_projection",
+        "idx_source_projection_small_community",
+        "INDEX idx_source_projection_small_community (parser_type, small_community_id, address_match_status)",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
         "first_dispatch_at",
         "DATETIME DEFAULT NULL AFTER identity_hmac",
     )
@@ -889,6 +943,30 @@ async def ensure_online_editor_schema(cur) -> None:
               '全链条', '出租房屋核查', '寄递业',
               '疑似未注销模型三', '疑似返苏'
           )
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_task_address_matches (
+            parser_type VARCHAR(50) NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            original_address TEXT NOT NULL,
+            suggested_entry_id BIGINT DEFAULT NULL,
+            suggested_community_id BIGINT DEFAULT NULL,
+            suggested_community_name VARCHAR(200) NOT NULL DEFAULT '',
+            match_status VARCHAR(30) NOT NULL DEFAULT 'unmatched',
+            match_score DECIMAL(6,4) NOT NULL DEFAULT 0,
+            match_method VARCHAR(100) NOT NULL DEFAULT '',
+            match_reason VARCHAR(500) NOT NULL DEFAULT '',
+            candidates_json JSON DEFAULT NULL,
+            matcher_version VARCHAR(40) NOT NULL DEFAULT '',
+            confirmed_entry_id BIGINT DEFAULT NULL,
+            confirmed_by BIGINT DEFAULT NULL,
+            confirmed_at DATETIME DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (parser_type, row_key),
+            INDEX idx_task_address_match_status (parser_type, match_status),
+            INDEX idx_task_address_match_community (parser_type, suggested_community_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     # 修复旧版本把正确结果“近期返吴”或“非本辖区”误判为未核查的投影状态。
     # 历史错拼值仍按已完成兼容；这里只更新本地投影，不写腾讯来源表。

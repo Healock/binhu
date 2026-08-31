@@ -206,6 +206,33 @@ test('辖区房屋、人员和机构档案按页面当前条件导出', () => {
   assert.match(pageSource, /最近走访/)
 })
 
+test('房屋档案显示小区匹配状态、待确认数量和人工确认入口', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(
+    new URL('../src/api/client.ts', import.meta.url),
+    'utf8',
+  )
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(apiSource, /small-community-options/)
+  assert.match(apiSource, /small-community-links\/confirm/)
+  assert.match(apiSource, /match_status_counts: Record<string, number>/)
+  assert.match(pageSource, /按小区筛选/)
+  assert.match(pageSource, /按匹配状态筛选/)
+  assert.match(pageSource, /待确认 \{/)
+  assert.match(pageSource, /房屋所属小区/)
+  assert.match(pageSource, /规则匹配只生成建议，确认前不会用于任务分配/)
+  assert.match(pageSource, /人工确认小区/)
+  assert.match(pageSource, /typeof value !== 'object'/)
+  assert.match(styleSource, /registry-small-community-match/)
+})
+
 test('人员标签整合到人员档案并保留独立权限和历史', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),

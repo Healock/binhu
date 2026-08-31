@@ -857,12 +857,11 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(cursor.many_rows), 1)
         projection = cursor.many_rows[0]
-        # identity_hmac and first_dispatch_at were added before the workflow
-        # fields in the projection tuple.
-        self.assertEqual(projection[7], "completed")
-        self.assertEqual(projection[8], 2)
-        self.assertEqual(projection[9], 0)
-        self.assertEqual(projection[11], "pending")
+        # Address-match metadata precedes workflow fields in the projection.
+        self.assertEqual(projection[15], "completed")
+        self.assertEqual(projection[16], 2)
+        self.assertEqual(projection[17], 0)
+        self.assertEqual(projection[19], "pending")
         self.assertEqual(json.loads(projection[2])["现住址"], "新址")
 
     async def test_model_three_projection_uses_only_local_source(self):
@@ -887,7 +886,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source.source_kind IN ('local_table','local_dispatch')", source_sql)
         self.assertNotIn("legacy-model-three", source_sql)
         self.assertNotIn("physical_source", source_sql)
-        self.assertEqual(cursor.many_rows[0][8], 1)
+        self.assertEqual(cursor.many_rows[0][16], 1)
 
     async def test_non_mergeable_duplicates_are_exposed_as_conflict(self):
         parser = get_parser("全链条")
@@ -901,8 +900,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         await rebuild_projection(cursor, "全链条")
 
-        self.assertEqual(cursor.many_rows[0][8], 2)
-        self.assertEqual(cursor.many_rows[0][9], 1)
+        self.assertEqual(cursor.many_rows[0][16], 2)
+        self.assertEqual(cursor.many_rows[0][17], 1)
 
     async def test_fullchain_projection_retains_registration_value(self):
         parser = get_parser("全链条")
@@ -922,7 +921,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
 
         projection_values = json.loads(cursor.many_rows[0][2])
         self.assertEqual(projection_values["登记情况"], "已登记")
-        self.assertIn("已登记", cursor.many_rows[0][10])
+        self.assertIn("已登记", cursor.many_rows[0][18])
 
     async def test_external_tencent_change_does_not_block_platform_edit(self):
         conn = FakeConnection(ConflictCursor({}))

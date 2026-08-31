@@ -549,7 +549,7 @@ class MobileTaskFilterOptionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
-    def test_assignment_candidate_only_exposes_source_and_address(self):
+    def test_assignment_candidate_exposes_safe_address_match_summary(self):
         candidate = _assignment_candidate(
             "全链条",
             "row-key",
@@ -568,6 +568,8 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
             {
                 "row_key": "row-key",
                 "community": "长板社区",
+                "small_community": "",
+                "match_status": "unmatched",
                 "source": "公安下发",
                 "address": "测试路2号",
             },
@@ -594,6 +596,18 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GROUP BY projection.community, projection.inspector", source)
         self.assertIn('"inspector_counts_by_community"', source)
         self.assertEqual(MAX_BULK_ASSIGNMENT_TASKS, 2000)
+
+    def test_assignment_requires_manually_confirmed_small_community(self):
+        from routers.mobile_tasks import (
+            bulk_assign_mobile_tasks,
+            select_mobile_tasks_for_assignment,
+        )
+
+        selection_source = inspect.getsource(select_mobile_tasks_for_assignment)
+        bulk_source = inspect.getsource(bulk_assign_mobile_tasks)
+        self.assertIn("projection.address_match_status='confirmed'", selection_source)
+        self.assertIn('item["address_match_status"] != "confirmed"', bulk_source)
+        self.assertIn("小区归属尚未人工确认", bulk_source)
 
     def test_bulk_assignment_requires_bounded_chunks(self):
         request = BulkAssignmentRequest(
