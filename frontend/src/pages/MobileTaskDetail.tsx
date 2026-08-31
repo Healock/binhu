@@ -27,6 +27,7 @@ import {
   getQmfLegacyStatus,
   searchRegistrationProperties,
   updateMobileTask,
+  claimMobileTask,
   updateMobileTaskAnalysis,
   decideMobileTaskUnverifiableReview,
   workflowApi,
@@ -168,6 +169,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const autosaveTimerRef = useRef<number | null>(null)
   const saveRef = useRef<(() => Promise<void>) | null>(null)
   const savingRef = useRef(false)
+  const claimPromptKeyRef = useRef('')
+  const claimDeclinedKeyRef = useRef('')
   const formGenerationRef = useRef(0)
   const formValuesRef = useRef<Record<string, string>>({})
   const selectedSource = useMemo(
@@ -212,6 +215,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     )
   }, [formValues, selectedSource, visibleEditorFields])
   const dirty = Object.keys(changes).length > 0
+
+  const shouldClaimUnassigned = mode === 'tasks'
+    && !readonlyView
+    && user?.member?.position === '组员'
+    && !String(data?.task.inspector || selectedSource?.values.核查人 || '').trim()
+
+  const claimPromptKey = useMemo(() => (
+    selectedSource
+      ? `${selectedSource.id}:${selectedSource.revision}:${JSON.stringify(changes)}`
+      : ''
+  ), [changes, selectedSource])
 
   const selectSource = useCallback((source: MobileTaskSource) => {
     setSelectedSourceId(source.id)
@@ -353,16 +367,54 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     return () => setPendingNavigationChanges(false)
   }, [dirty])
 
-  const save = async () => {
-    if (interactionLocked || !selectedSource || !dirty) return
+  const save = async (forceClaimPrompt = false) => {
+    if (interactionLocked || !data || !selectedSource || !dirty) return
     if (savingRef.current) return
+
+    let claim = false
+    if (shouldClaimUnassigned) {
+      if (claimDeclinedKeyRef.current === claimPromptKey && !forceClaimPrompt) return
+      if (forceClaimPrompt) claimDeclinedKeyRef.current = ''
+      if (claimPromptKeyRef.current !== claimPromptKey) {
+        claimPromptKeyRef.current = claimPromptKey
+        const confirmed = await new Promise<boolean>(resolve => {
+          let settled = false
+          const finish = (value: boolean) => {
+            if (settled) return
+            settled = true
+            resolve(value)
+          }
+          Modal.confirm({
+            title: '该任务暂未分配核查人，是否领取任务？',
+            okText: '领取并保存',
+            cancelText: '取消',
+            onOk: () => finish(true),
+            onCancel: () => finish(false),
+            afterClose: () => finish(false),
+          })
+        })
+        claimPromptKeyRef.current = ''
+        if (!confirmed) {
+          claimDeclinedKeyRef.current = claimPromptKey
+          setError('未领取任务，填写内容未保存')
+          return
+        }
+      }
+      claim = true
+      claimDeclinedKeyRef.current = ''
+    }
+
     const requestGeneration = formGenerationRef.current
     savingRef.current = true
     setSaving(true)
     setError('')
     setSavedMessage('')
     try {
-      const updater = mode === 'analysis' ? updateMobileTaskAnalysis : updateMobileTask
+      const updater = claim
+        ? claimMobileTask
+        : mode === 'analysis'
+          ? updateMobileTaskAnalysis
+          : updateMobileTask
       const result = await updater(parserType, selectedSource.id, {
         changes,
         base_values: Object.fromEntries(
@@ -1216,7 +1268,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 icon={<SaveOutlined />}
                 loading={saving}
                 disabled={!dirty || !data.writeback_enabled}
-                onClick={() => void save()}
+                onClick={() => void save(true)}
               >{dirty ? `保存 ${Object.keys(changes).length} 项修改` : '没有未保存修改'}</Button>
             </div>
           )}

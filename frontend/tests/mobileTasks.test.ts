@@ -205,6 +205,18 @@ test('任务详情保存合并响应时保留下拉结果并把选项 ID 还原�
   )
 })
 
+test('任务详情保存未分配任务时复用自主领取接口和确认提示', () => {
+  const source = readFileSync(
+    new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /claimMobileTask/)
+  assert.match(source, /该任务暂未分配核查人，是否领取任务？/)
+  assert.match(source, /okText: '领取并保存'/)
+  assert.match(source, /未领取任务，填写内容未保存/)
+  assert.match(source, /const updater = claim\s*\?\s*claimMobileTask/)
+})
+
 test('重复腾讯来源只列出真正不同的字段并保留空白差异', () => {
   const differences = mobileTaskSourceDifferences([
     { values: { 姓名: '朱明山', 电话: '13800000000', 现住址: '', 核查结果: '在吴' } },
