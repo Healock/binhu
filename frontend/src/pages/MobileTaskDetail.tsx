@@ -30,10 +30,13 @@ import {
   claimMobileTask,
   updateMobileTaskAnalysis,
   decideMobileTaskUnverifiableReview,
+  getMobileTaskInternalTransferOptions,
+  transferMobileTaskInternally,
   workflowApi,
   type MobileTaskDetailData,
   type MobileTaskQmfStatus,
   type MobileTaskSource,
+  type MobileTaskInternalTransferOption,
   type QmfLegacyStatus,
   type ResidenceRegistrationDetail as ResidenceDetail,
 } from '../api/client'
@@ -77,7 +80,7 @@ const STRUCTURED_REVIEW_TYPES = new Set([
 
 const ADDRESS_MATCH_STATUS = {
   unmatched: { label: '未匹配', color: 'default' },
-  suggested: { label: '系统建议', color: 'processing' },
+  suggested: { label: '自动匹配', color: 'processing' },
   ambiguous: { label: '多候选待确认', color: 'warning' },
   conflict: { label: '地址冲突', color: 'error' },
   confirmed: { label: '已人工确认', color: 'success' },
@@ -139,6 +142,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [savedMessage, setSavedMessage] = useState('')
+  const [claimDeclined, setClaimDeclined] = useState(false)
+  const [immediateSaveSequence, setImmediateSaveSequence] = useState(0)
+  const [transferOptions, setTransferOptions] = useState<MobileTaskInternalTransferOption[]>([])
+  const [transferCommunity, setTransferCommunity] = useState<string>()
+  const [transferLeader, setTransferLeader] = useState<string>()
+  const [transferring, setTransferring] = useState(false)
   const [decisionOutcome, setDecisionOutcome] = useState<'success' | 'failure'>('success')
   const [decisionOpinion, setDecisionOpinion] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
@@ -173,6 +182,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const claimDeclinedKeyRef = useRef('')
   const formGenerationRef = useRef(0)
   const formValuesRef = useRef<Record<string, string>>({})
+  const registrationSearchRequestRef = useRef(0)
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
@@ -215,11 +225,27 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     )
   }, [formValues, selectedSource, visibleEditorFields])
   const dirty = Object.keys(changes).length > 0
+  const registrationDraftIncomplete = Boolean(
+    registrationClosureEnabled
+      && data
+      && (formValues[data.workflow.result_field] || '').trim() === '待登记'
+      && (!registrationPropertyId || !registrationPropertyVersion),
+  )
 
   const shouldClaimUnassigned = mode === 'tasks'
     && !readonlyView
     && user?.member?.position === '组员'
     && !String(data?.task.inspector || selectedSource?.values.核查人 || '').trim()
+  const canHandleInternalTransfer = mode === 'tasks' && Boolean(
+    ['基础管控', '中队长', '所队领导'].includes(user?.member?.position || '')
+      || ['admin', 'super_admin'].includes(user?.role || ''),
+  )
+  const internalTransferActive = Boolean(
+    canHandleInternalTransfer
+      && data
+      && selectedSource
+      && (formValues[data.workflow.result_field] || selectedSource.values[data.workflow.result_field] || '').trim() === '移交（所内）',
+  )
 
   const claimPromptKey = useMemo(() => (
     selectedSource
@@ -236,6 +262,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
 
   const updateDraftValues = useCallback((updater: (current: Record<string, string>) => Record<string, string>) => {
     formGenerationRef.current += 1
+    setSavedMessage('')
+    setClaimDeclined(false)
     setFormValues(current => {
       const next = updater(current)
       formValuesRef.current = next
@@ -304,6 +332,52 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     })
     return () => { cancelled = true }
   }, [data?.task.residence_status?.state, parserType, rowKey])
+
+  useEffect(() => {
+    if (!internalTransferActive) {
+      setTransferOptions([])
+      setTransferCommunity(undefined)
+      setTransferLeader(undefined)
+      return
+    }
+    let cancelled = false
+    void getMobileTaskInternalTransferOptions(parserType).then(options => {
+      if (!cancelled) setTransferOptions(options)
+    }).catch(reason => {
+      if (!cancelled) setError(detailError(reason, '所内移交社区信息读取失败'))
+    })
+    return () => { cancelled = true }
+  }, [internalTransferActive, parserType])
+
+  const submitInternalTransfer = async () => {
+    if (!selectedSource || !transferCommunity) return
+    const option = transferOptions.find(item => item.community === transferCommunity)
+    if (!option?.leaders.length) {
+      setError('目标社区没有在岗组长，请先维护人员配置')
+      return
+    }
+    if (option.leaders.length > 1 && !transferLeader) {
+      setError('该社区有多名在岗组长，请选择接手组长')
+      return
+    }
+    setTransferring(true)
+    setError('')
+    try {
+      await transferMobileTaskInternally(parserType, selectedSource.id, {
+        target_community: transferCommunity,
+        target_leader: option.leaders.length === 1 ? option.leaders[0] : transferLeader,
+        expected_row_key: selectedSource.row_key || rowKey,
+        expected_revision: selectedSource.revision,
+        expected_row_hash: selectedSource.row_hash,
+      })
+      message.success(`已移交给 ${transferCommunity} 社区组长`)
+      await load(selectedSource.id)
+    } catch (reason: any) {
+      setError(detailError(reason, '所内移交失败'))
+    } finally {
+      setTransferring(false)
+    }
+  }
 
   useEffect(() => {
     if (
@@ -396,12 +470,14 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         claimPromptKeyRef.current = ''
         if (!confirmed) {
           claimDeclinedKeyRef.current = claimPromptKey
+          setClaimDeclined(true)
           setError('未领取任务，填写内容未保存')
           return
         }
       }
       claim = true
       claimDeclinedKeyRef.current = ''
+      setClaimDeclined(false)
     }
 
     const requestGeneration = formGenerationRef.current
@@ -442,6 +518,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       const dependencyStillPending = savedReviewStage === 'waiting_analysis'
       setData(current => current ? {
         ...current,
+        registration_link: result.registration_link !== undefined
+          ? result.registration_link
+          : current.registration_link,
         dependency_blocked: mode === 'tasks'
           ? dependencyStillPending
           : current.dependency_blocked,
@@ -450,30 +529,42 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           : current.dependency_message,
         task: {
           ...current.task,
-          pending_sync: true,
+          ...(result.task_update || {}),
+          pending_sync: current.data_source_mode !== 'local',
           sync_state: result.sync_state,
-          review_stage: savedReviewStage,
+          review_stage: result.task_update?.review_stage ?? savedReviewStage,
+          review_flow: result.review_flow !== undefined
+            ? result.review_flow
+            : result.task_update?.review_flow ?? current.task.review_flow,
+          registration_link: result.registration_link !== undefined
+            ? result.registration_link
+            : result.task_update?.registration_link ?? current.task.registration_link,
           summary: {
             ...current.task.summary,
+            ...(result.task_update?.summary || {}),
             result: savedResult,
             analysis: savedAnalysis,
           },
         },
         sources: current.sources.map(source => source.id === selectedSource.id ? {
           ...source,
+          row_key: result.row_key,
+          row_hash: result.row_hash,
           values: savedValues,
           revision: result.revision,
           sync_state: result.sync_state,
-          sync_fields: [
-            ...source.sync_fields.filter(item => !(item.field in changes)),
-            ...Object.entries(changes).map(([field, platformValue]) => ({
-              field,
-              platform_value: platformValue,
-              tencent_value: null,
-              status: 'pending' as const,
-              error_code: '',
-            })),
-          ],
+          sync_fields: current.data_source_mode === 'local'
+            ? source.sync_fields.filter(item => !(item.field in changes))
+            : [
+                ...source.sync_fields.filter(item => !(item.field in changes)),
+                ...Object.entries(changes).map(([field, platformValue]) => ({
+                  field,
+                  platform_value: platformValue,
+                  tencent_value: null,
+                  status: 'pending' as const,
+                  error_code: '',
+                })),
+              ],
           state: mobileTaskSourceState(
             parserType,
             current.workflow.result_field,
@@ -484,7 +575,10 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             current.workflow.secondary_fields,
             savedValues,
           ),
-          review_stage: savedReviewStage,
+          review_stage: result.task_update?.review_stage ?? savedReviewStage,
+          review_flow: result.review_flow !== undefined
+            ? result.review_flow
+            : result.task_update?.review_flow ?? source.review_flow,
         } : source),
       } : current)
       const draftChangedDuringSave = formGenerationRef.current !== requestGeneration
@@ -492,19 +586,30 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         setFormValues(savedValues)
         formValuesRef.current = savedValues
       }
-      const latestDraft = draftChangedDuringSave ? { ...formValuesRef.current } : null
-      // 保存“待登记”后，服务端会同时创建/更新房屋关联。重新读取一次详情，
-      // 确保比对阶段、房屋版本和 registration_link 与服务端一致。
-      await load(selectedSource.id)
-      if (latestDraft) {
+      const registrationLink = result.registration_link
+      if (registrationLink?.property) {
+        setRegistrationPropertyId(registrationLink.property_id || undefined)
+        setRegistrationPropertyVersion(registrationLink.property_version || undefined)
+        setRegistrationProperties(current => {
+          const retained = current.filter(item => item.id !== registrationLink.property?.id)
+          return [registrationLink.property!, ...retained]
+        })
+      } else if ((savedValues[data.workflow.result_field] || '').trim() !== '待登记') {
+        setRegistrationPropertyId(undefined)
+        setRegistrationPropertyVersion(undefined)
+      }
+      setSavedMessage('已保存')
+    } catch (reason: any) {
+      const status = reason?.response?.status
+      const latestDraft = { ...formValuesRef.current }
+      setError(status === 409
+        ? '数据冲突，请刷新核对后重试；当前草稿已保留'
+        : detailError(reason, '保存失败，请稍后重试；当前草稿已保留'))
+      if (status === 409) {
+        await load(selectedSource.id)
         formValuesRef.current = latestDraft
         setFormValues(latestDraft)
       }
-      setSavedMessage(result.message)
-    } catch (reason: any) {
-      const status = reason?.response?.status
-      setError(detailError(reason, '保存失败，请稍后重试'))
-      if (status === 409 || status === 502) await load(selectedSource.id)
     } finally {
       savingRef.current = false
       setSaving(false)
@@ -512,18 +617,31 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }
 
   saveRef.current = save
-  useEffect(() => {
-    if (!dirty || interactionLocked || mode === 'analysis' || saving) return
+  const scheduleAutoSave = useCallback((delay: number) => {
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null
       void saveRef.current?.()
-    }, 700)
+    }, delay)
+  }, [])
+
+  const requestImmediateSave = useCallback(() => {
+    setImmediateSaveSequence(current => current + 1)
+  }, [])
+
+  useEffect(() => {
+    if (!immediateSaveSequence) return
+    scheduleAutoSave(0)
+  }, [immediateSaveSequence, scheduleAutoSave])
+
+  useEffect(() => {
+    if (!dirty || interactionLocked || mode === 'analysis' || saving || registrationDraftIncomplete) return
+    scheduleAutoSave(700)
     return () => {
       if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
       autosaveTimerRef.current = null
     }
-  }, [dirty, formValues, interactionLocked, mode, saving])
+  }, [dirty, formValues, interactionLocked, mode, registrationDraftIncomplete, saving, scheduleAutoSave])
 
   useEffect(() => () => {
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
@@ -568,18 +686,26 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }
 
   const loadRegistrationProperties = async (keyword: string) => {
-    if (!data || !keyword.trim()) {
-      setRegistrationProperties([])
-      return
-    }
+    if (!data || !keyword.trim()) return
+    const requestId = ++registrationSearchRequestRef.current
     setRegistrationPropertyLoading(true)
     try {
       const result = await searchRegistrationProperties(keyword, data.task.community)
-      setRegistrationProperties(result.data || [])
+      if (requestId === registrationSearchRequestRef.current) {
+        setRegistrationProperties(current => {
+          const selected = current.find(item => item.id === registrationPropertyId)
+          const next = result.data || []
+          return selected && !next.some(item => item.id === selected.id)
+            ? [selected, ...next]
+            : next
+        })
+      }
     } catch {
-      setRegistrationProperties([])
+      // 搜索失败时保留已选房屋和上一批候选，避免控件抽搐或选项消失。
     } finally {
-      setRegistrationPropertyLoading(false)
+      if (requestId === registrationSearchRequestRef.current) {
+        setRegistrationPropertyLoading(false)
+      }
     }
   }
 
@@ -1100,8 +1226,54 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         />
       )}
 
-      {error && <Alert type="error" showIcon message={error} />}
-      {savedMessage && <Alert type="success" showIcon message={savedMessage} />}
+      {internalTransferActive && (
+        <section className="app-card mobile-task-internal-transfer p-4">
+          <h2 className="font-semibold text-[var(--app-text-strong)]">所内移交</h2>
+          <p className="mt-1 text-xs text-[var(--app-text-secondary)]">
+            选择目标社区后，任务当前待办将转给该社区在岗组长；在线汇总工作量仍归第一核查人。
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_auto]">
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择目标社区"
+              value={transferCommunity}
+              options={transferOptions.map(item => ({ value: item.community, label: item.community }))}
+              onChange={value => {
+                setTransferCommunity(value)
+                const leaders = transferOptions.find(item => item.community === value)?.leaders || []
+                setTransferLeader(leaders.length === 1 ? leaders[0] : undefined)
+              }}
+            />
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择接手组长"
+              disabled={!transferCommunity}
+              value={transferLeader}
+              options={(transferOptions.find(item => item.community === transferCommunity)?.leaders || [])
+                .map(value => ({ value, label: value }))}
+              onChange={setTransferLeader}
+            />
+            <Button
+              type="primary"
+              loading={transferring}
+              disabled={!transferCommunity || !transferLeader}
+              onClick={() => void submitInternalTransfer()}
+            >
+              确认所内移交
+            </Button>
+          </div>
+        </section>
+      )}
+
+      <div className="mobile-task-save-feedback" aria-live="polite">
+        {error ? <Alert type="error" showIcon message={error} />
+          : savedMessage ? <Alert type="success" showIcon message={savedMessage} />
+            : saving ? <Alert type="info" showIcon message="保存中" />
+              : dirty ? <Alert type="info" showIcon message={registrationDraftIncomplete ? '请选择唯一拟登记房屋后自动保存' : '等待自动保存'} />
+                : <span className="mobile-task-save-feedback__idle">所有修改均已保存</span>}
+      </div>
       {readonlyView && <Alert type="info" showIcon message="当前是任务图只读协作视图" description="你可以查看任务信息和协作结果，但不能在此修改字段或发起新的业务操作。" />}
       {data.dependency_blocked && <Alert type="warning" showIcon message="该任务已进入研判队列" description={data.dependency_message || '网格员仍可继续核查；如已能核实，请直接修改并保存新的核查结果。'} />}
       {!data.writeback_enabled && <Alert type="warning" showIcon message="当前任务暂不可编辑" />}
@@ -1120,7 +1292,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                       : '填写或修改研判内容，清空后将重新回到待研判'
                     : data.dependency_blocked
                       ? '基础管控可同时研判；重新核实后可直接修改结果并保存'
-                      : '确认所有修改后统一保存'}
+                      : '文本停止输入 700ms 后自动保存，选项选择后立即保存'}
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">
@@ -1190,7 +1362,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 return (
                   <label
                     key={field}
-                    className={`block${field === '核查反馈' ? ' mobile-task-detail-editor-field--compact' : ''}`}
+                    className={`block${field === '核查反馈' ? ' mobile-task-detail-editor-field--compact' : ''}${registrationClosureEnabled && field === '现住址' && (formValues[data.workflow.result_field] || '').trim() === '待登记' ? ' mobile-task-registration-editor' : ''}`}
                   >
                     <span className="mb-1.5 block text-sm font-medium text-[var(--app-text)]">
                       {field === '核查人'
@@ -1231,6 +1403,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                               ...current,
                               现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`,
                             }))
+                            requestImmediateSave()
                           }
                         }}
                       />
@@ -1248,6 +1421,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                             setRegistrationPropertyId(undefined)
                             setRegistrationPropertyVersion(undefined)
                           }
+                          if (!(field === data.workflow.result_field && value === '待登记')) {
+                            requestImmediateSave()
+                          }
                         }}
                       />
                     ) : (
@@ -1261,15 +1437,15 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   </label>
                 )
               })}
-              <Button
-                block
-                type="primary"
-                className="min-h-12"
-                icon={<SaveOutlined />}
-                loading={saving}
-                disabled={!dirty || !data.writeback_enabled}
-                onClick={() => void save(true)}
-              >{dirty ? `保存 ${Object.keys(changes).length} 项修改` : '没有未保存修改'}</Button>
+              <div className="mobile-task-auto-save-status">
+                <span>{saving ? '保存中' : dirty ? '修改尚未保存' : '已保存'}</span>
+                {shouldClaimUnassigned && claimDeclined && claimDeclinedKeyRef.current === claimPromptKey && dirty && (
+                  <Button type="primary" onClick={() => void save(true)}>领取并保存</Button>
+                )}
+                {error && dirty && !shouldClaimUnassigned && (
+                  <Button onClick={() => void save(true)}>重试</Button>
+                )}
+              </div>
             </div>
           )}
         </section>

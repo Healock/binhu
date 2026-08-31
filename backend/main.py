@@ -76,7 +76,6 @@ from routers.venue_codes import router as venue_public_router, admin_router as v
 from services.presence import run_presence_cleanup_scheduler
 from services.residence_status_scan import run_residence_lookup_scheduler
 from services.unverifiable_review import (
-    backfill_missing_unverifiable_flows,
     run_unverifiable_review_scheduler,
 )
 from routers.presence import router as presence_router
@@ -121,13 +120,6 @@ async def lifespan(app: FastAPI):
     recovered_external_jobs = await recover_interrupted_jobs()
     if recovered_external_jobs:
         print(f"[EXTERNAL] 已关闭 {recovered_external_jobs} 个外部获取遗留任务")
-    review_backfill = await backfill_missing_unverifiable_flows()
-    if review_backfill["initial_pending"] or review_backfill["source_exception"]:
-        print(
-            "[UNVERIFIABLE_REVIEW] 已接管历史无法核实任务："
-            f"待初步研判 {review_backfill['initial_pending']} 条，"
-            f"来源异常 {review_backfill['source_exception']} 条"
-        )
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
     certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())

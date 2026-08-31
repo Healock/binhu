@@ -30,6 +30,7 @@ from services.online_source import (
     active_source_sql_filter,
     json_value,
     rebuild_projection,
+    rebuild_projection_rows,
     release_sheet_lock,
     replace_source_cache,
     resolve_source_columns,
@@ -65,6 +66,11 @@ from services.work_activity import (
     ONLINE_TASK_UPDATE,
     is_actual_online_work,
     record_work_activity,
+)
+from services.task_assignment_responsibility import (
+    capture_first_assignment,
+    migrate_responsibility_row_key,
+    task_update_is_credited_to,
 )
 
 
@@ -900,6 +906,26 @@ async def _update_local_source_fields(
                 row_key_after=str(new_key),
                 revision=expected_revision + 1,
             )
+        await migrate_responsibility_row_key(
+            cur,
+            parser_type,
+            str(source["row_key"]),
+            str(new_key),
+        )
+        if (
+            "核查人" in ordered_columns
+            and not str(current_values.get("核查人") or "").strip()
+            and str(after.get("核查人") or "").strip()
+        ):
+            await capture_first_assignment(
+                cur,
+                parser_type=parser_type,
+                row_key=str(new_key),
+                community=parser.community_value(after),
+                inspector=str(after.get("核查人") or ""),
+                actor_user_id=int(user.get("id")) if user.get("id") else None,
+                source="task_assignment",
+            )
         if record_unverifiable_save:
             from services.unverifiable_review import record_task_save
             try:
@@ -916,7 +942,12 @@ async def _update_local_source_fields(
                 )
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-        await rebuild_projection(cur, parser_type, reconcile_graph=False)
+        await rebuild_projection_rows(
+            cur,
+            parser_type,
+            [str(source["row_key"]), str(new_key)],
+            reconcile_graph=False,
+        )
         await reconcile_online_task_graph(
             cur,
             parser_type=parser_type,
@@ -927,6 +958,12 @@ async def _update_local_source_fields(
             actor_user_id=int(user.get("id")) if user.get("id") else None,
             event_type="online_task_save",
         )
+        activity_credited = await task_update_is_credited_to(
+            cur,
+            parser_type,
+            str(new_key),
+            str((user.get("member") or {}).get("name") or ""),
+        )
         await conn.commit()
         await record_admin_audit(
             user,
@@ -936,7 +973,7 @@ async def _update_local_source_fields(
             detail={"source_id": source_id, "columns": ordered_columns},
             **request_audit_fields(request),
         )
-        if is_actual_online_work(ordered_columns):
+        if is_actual_online_work(ordered_columns) and activity_credited:
             await record_work_activity(user, ONLINE_TASK_UPDATE, event_key=f"local:{audit_id}")
         warnings = []
         if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
@@ -949,6 +986,7 @@ async def _update_local_source_fields(
             "message": "已保存到本地业务数据",
             "values": after,
             "row_key": new_key,
+            "row_hash": local_row_hash(after),
             "revision": expected_revision + 1,
             "pending_sync": False,
             "warnings": warnings,

@@ -65,9 +65,17 @@ import { downloadBlob } from '../utils/fileDownload'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
+const ANALYSIS_TASK_TYPES = [
+  '全链条',
+  '出租房屋核查',
+  '寄递业',
+  '疑似返苏',
+  '苏州涉警',
+  '交通涉警',
+] as const
 const MATCH_STATUS_OPTIONS = [
   { value: 'confirmed', label: '已人工确认' },
-  { value: 'suggested', label: '系统建议' },
+  { value: 'suggested', label: '自动匹配' },
   { value: 'ambiguous', label: '待人工确认' },
   { value: 'conflict', label: '地址冲突' },
   { value: 'unmatched', label: '未匹配' },
@@ -199,12 +207,12 @@ export default function MobileTaskList({
     if (!analysisOnly) return []
     const requested = readMulti(searchParams, 'type')
     if (requested.includes(ALL_ANALYSIS_TYPES)) return [ALL_ANALYSIS_TYPES]
-    const valid = requested.filter(value => MOBILE_TASK_TYPES.includes(value as any))
+    const valid = requested.filter(value => ANALYSIS_TASK_TYPES.includes(value as any))
     return valid.length ? valid : [ALL_ANALYSIS_TYPES]
   })
   const analysisParserTypes = useMemo(
     () => analysisParserSelection.includes(ALL_ANALYSIS_TYPES)
-      ? [...MOBILE_TASK_TYPES]
+      ? [...ANALYSIS_TASK_TYPES]
       : analysisParserSelection,
     [analysisParserSelection],
   )
@@ -242,7 +250,7 @@ export default function MobileTaskList({
     analysisOnly
       ? selectableReviewStages.includes(requestedReviewStage as MobileTaskReviewStage)
         ? requestedReviewStage as MobileTaskReviewStage
-        : 'initial_pending'
+        : 'all'
       : ['waiting_analysis', 'analyzed'].includes(requestedReviewStage || '')
       ? requestedReviewStage as MobileTaskReviewStage
       : 'all',
@@ -393,11 +401,7 @@ export default function MobileTaskList({
       setWatchCategories(current => current.filter(value => watchValues.has(value)))
     } catch {
       if (requestId !== optionsRequestId.current) return
-      setCommunityOptions([])
-      setSmallCommunityOptions([])
-      setInspectorOptions([])
-      setAssignment(EMPTY_ASSIGNMENT)
-      setWatchCategoryOptions([])
+      // 刷新失败时保留已有选项，避免筛选器闪烁和已选值被清空。
     } finally {
       if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
@@ -698,7 +702,7 @@ export default function MobileTaskList({
     setPriority('all')
     setSort('priority')
     setStatus('all')
-    setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
+    setReviewStage('all')
     setSearchParams(next)
   }
 
@@ -713,13 +717,13 @@ export default function MobileTaskList({
     setPriority('all')
     setSort('priority')
     setStatus('all')
-    setReviewStage(analysisOnly ? 'waiting_analysis' : 'all')
+    setReviewStage('all')
     setKeywordInput('')
   }
 
   const updateAnalysisParserSelection = (values: string[]) => {
     let next = values.filter(value => (
-      value === ALL_ANALYSIS_TYPES || MOBILE_TASK_TYPES.includes(value as any)
+      value === ALL_ANALYSIS_TYPES || ANALYSIS_TASK_TYPES.includes(value as any)
     ))
     if (next.includes(ALL_ANALYSIS_TYPES)) {
       next = analysisParserSelection.includes(ALL_ANALYSIS_TYPES) && next.length > 1
@@ -890,7 +894,7 @@ export default function MobileTaskList({
             onChange={updateAnalysisParserSelection}
             options={[
               { value: ALL_ANALYSIS_TYPES, label: '全部数据' },
-              ...MOBILE_TASK_TYPES.map(value => ({ value, label: value })),
+              ...ANALYSIS_TASK_TYPES.map(value => ({ value, label: value })),
             ]}
           /> : <Select
             size="large"
