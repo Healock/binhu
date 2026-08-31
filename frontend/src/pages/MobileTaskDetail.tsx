@@ -634,7 +634,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     if (!dirty || interactionLocked || mode === 'analysis' || saving || registrationDraftIncomplete) return
     const shouldSaveImmediately = immediateSaveSequence > handledImmediateSaveRef.current
     handledImmediateSaveRef.current = immediateSaveSequence
-    scheduleAutoSave(shouldSaveImmediately ? 0 : 700)
+    if (shouldSaveImmediately) scheduleAutoSave(0)
+    else scheduleAutoSave(700)
     return () => {
       if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
       autosaveTimerRef.current = null

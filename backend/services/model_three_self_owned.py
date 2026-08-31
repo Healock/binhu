@@ -30,6 +30,7 @@ RULE_VERSION = "self-owned-v2"
 MAX_ZIP_BYTES = 100 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 MAX_FILES = 30
+PROJECTION_REFRESH_BATCH_SIZE = 500
 MAX_ROWS = 150_000
 WRITE_CHUNK = 800
 
@@ -662,12 +663,13 @@ async def apply_self_owned_import(conn, *, parsed: ParsedSelfOwned, file_name: s
             # rows. Rebuilding the entire business projection here made large
             # ZIP imports exceed the request timeout; refresh just those rows.
             matched_keys = list(match_stats.pop("updated_row_keys", []))
-            await rebuild_projection_rows(
-                cur,
-                MODEL_THREE_PARSER,
-                matched_keys,
-                reconcile_graph=False,
-            )
+            for offset in range(0, len(matched_keys), PROJECTION_REFRESH_BATCH_SIZE):
+                await rebuild_projection_rows(
+                    cur,
+                    MODEL_THREE_PARSER,
+                    matched_keys[offset:offset + PROJECTION_REFRESH_BATCH_SIZE],
+                    reconcile_graph=False,
+                )
             await cur.execute(
                 "UPDATE _qmf_self_owned_batches SET status='completed',matched_tasks=%s,updated_tasks=%s,skipped_tasks=%s,completed_at=UTC_TIMESTAMP() WHERE id=%s",
                 (

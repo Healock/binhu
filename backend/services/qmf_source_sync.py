@@ -23,6 +23,8 @@ from services.qmf_source import (
     fetch_pending_rows,
     resolve_rows,
 )
+
+PROJECTION_REFRESH_BATCH_SIZE = 500
 from services.schema_compat import get_database_column_map, quote_identifier
 
 
@@ -159,11 +161,12 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
 
                 await rebuild_projection(cur, MODEL_THREE_PARSER)
                 self_owned_stats = await apply_self_owned_matches(cur)
-                if self_owned_stats["updated_tasks"]:
+                updated_row_keys = list(self_owned_stats.get("updated_row_keys") or [])
+                for offset in range(0, len(updated_row_keys), PROJECTION_REFRESH_BATCH_SIZE):
                     await rebuild_projection_rows(
                         cur,
                         MODEL_THREE_PARSER,
-                        list(self_owned_stats.get("updated_row_keys") or []),
+                        updated_row_keys[offset:offset + PROJECTION_REFRESH_BATCH_SIZE],
                         reconcile_graph=False,
                     )
             await conn.commit()
