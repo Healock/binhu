@@ -42,6 +42,9 @@ import {
   getOpsDatabases,
   getOpsOverview,
   getOpsTableStructure,
+  getDiagnosticJob,
+  queryDiagnosticIncidents,
+  runDiagnostic,
   triggerDatabaseBackup,
   updateBackupSchedule,
 } from '../api/client'
@@ -53,6 +56,7 @@ import type {
   OpsContainer,
   OpsDatabase,
   OpsOverview,
+  DiagnosticJob,
 } from '../types'
 import { ListToolbar, Panel } from '../components/ui'
 import AppTable from '../components/AppTable'
@@ -112,6 +116,87 @@ function StatusTag({ value, label }: { value?: string | null; label?: string | n
     <Tag color={STATUS_COLORS[normalized] || 'default'}>
       {label || STATUS_LABELS[normalized] || normalized}
     </Tag>
+  )
+}
+
+function DiagnosticTab() {
+  const [name, setName] = useState('')
+  const [hours, setHours] = useState(1)
+  const [rows, setRows] = useState<DiagnosticJob[]>([])
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<{ job: DiagnosticJob; report: any } | null>(null)
+
+  const search = async () => {
+    if (!name.trim()) {
+      message.warning('请输入用户姓名')
+      return
+    }
+    setLoading(true)
+    try {
+      setRows((await queryDiagnosticIncidents(name.trim(), hours)).data)
+    } catch {
+      message.error('诊断记录加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const open = async (jobId: string) => {
+    try {
+      setSelected(await getDiagnosticJob(jobId))
+    } catch {
+      message.error('诊断详情加载失败')
+    }
+  }
+
+  const run = async () => {
+    if (!selected) return
+    try {
+      await runDiagnostic(selected.job.job_id)
+      message.success('深度诊断已排队')
+      await open(selected.job.job_id)
+      await search()
+    } catch {
+      message.error('深度诊断暂未能排队')
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <ListToolbar
+        filters={<Space wrap><Input placeholder="输入用户姓名" value={name} onChange={event => setName(event.target.value)} onPressEnter={search} allowClear /><Select value={hours} onChange={setHours} options={[1, 6, 24, 168].map(value => ({ value, label: `最近 ${value === 168 ? 7 : value} 小时` }))} /></Space>}
+        actions={<Button icon={<ReloadOutlined />} onClick={search} loading={loading}>查询</Button>}
+      />
+      <AppTable<DiagnosticJob>
+        rowKey="job_id"
+        loading={loading}
+        dataSource={rows}
+        pagination={false}
+        columns={[
+          { title: '时间', dataIndex: 'created_at', render: value => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-' },
+          { title: '页面', dataIndex: 'page_url', ellipsis: true },
+          { title: '错误码', dataIndex: 'error_code' },
+          { title: '任务', dataIndex: 'task_id', render: value => value || '未关联' },
+          { title: '状态', dataIndex: 'status', render: value => <StatusTag value={value} /> },
+          { title: '操作', render: (_, row) => <Button type="link" onClick={() => open(row.job_id)}>查看</Button> },
+        ]}
+      />
+      <Modal open={Boolean(selected)} onCancel={() => setSelected(null)} footer={null} title="错误现场与诊断结果" width={760}>
+        {selected && (
+          <div className="space-y-4">
+            <Descriptions size="small" bordered column={1} items={[
+              { key: 'time', label: '时间', children: selected.job.created_at || '-' },
+              { key: 'page', label: '页面', children: selected.job.page_url || '-' },
+              { key: 'code', label: '错误码', children: selected.job.error_code || '-' },
+              { key: 'message', label: '摘要', children: selected.job.error_message || '-' },
+            ]} />
+            {selected.report?.summary && <Alert type={selected.report.overall_status === 'healthy' ? 'success' : 'warning'} message="深度诊断已完成" description={selected.report.summary.map((item: any) => `${item.code}: ${item.summary}`).join('；')} />}
+            {selected.job.status === 'captured' && <Button type="primary" onClick={run}>执行深度诊断</Button>}
+            {selected.report?.technical && <details><summary>技术详情</summary><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 text-xs text-slate-100">{JSON.stringify(selected.report.technical, null, 2)}</pre></details>}
+          </div>
+        )}
+      </Modal>
+    </div>
   )
 }
 
@@ -943,6 +1028,7 @@ export default function OperationsCenter() {
           { key: 'databases', label: '数据库', children: <DatabasesTab /> },
           { key: 'backups', label: '备份管理', children: <BackupsTab /> },
           { key: 'audit', label: '操作记录', children: <AuditTab /> },
+          { key: 'diagnostic', label: '问题诊断', children: <DiagnosticTab /> },
         ]}
       />
     </div>

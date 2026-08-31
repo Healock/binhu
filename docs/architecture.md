@@ -1284,3 +1284,7 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 `GET /api/events/stream` 是登录后的 SSE 网关。网关先按 `audiences` 过滤，再向浏览器发送事件；断线时依据 `Last-Event-ID` 从 Stream 补发，使用 `event_id` 去重。浏览器只把事件当作失效提示，按 `aggregate_revision` 丢弃旧事件并重新读取业务数据，SSE 断开时使用低频轮询兜底。事件正文不保存姓名、身份证、电话、地址或其他业务字段。
 
 数据库迁移使用 `python -m migrations.internal_events measure|migrate|verify`，只有明确 `--apply` 才建表。Relay 单独部署，不能在 Web 进程中执行外部同步或阻塞业务事务。
+
+## 用户无感问题诊断
+
+业务失败响应由 FastAPI 全局中间件异步记录脱敏现场到 `PlatformData.diagnostic_jobs`，不读取请求正文，不阻塞原请求。运维人员在运维中心按用户姓名检索最近错误，必要时将 `captured` 记录排入独立 `diagnostic-worker`，生成 `diagnostic_reports`。诊断保留 90 天，Redis Stream 仅作为快速唤醒通道，Worker 始终以 MySQL 队列为可靠兜底；诊断自身异常不得影响业务请求。
