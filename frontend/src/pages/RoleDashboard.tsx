@@ -51,6 +51,14 @@ const percent = (value: unknown) => `${(Number(value || 0) * 100).toFixed(0)}%`
 const metric = (value: unknown, fallback = '0') => (
   value === null || value === undefined ? fallback : String(value)
 )
+const dashboardCount = (...values: unknown[]) => {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return Math.max(0, parsed)
+  }
+  return 0
+}
 
 function buildUrl(path: string, params: Record<string, string | number | null | undefined>) {
   const search = new URLSearchParams()
@@ -243,15 +251,22 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
       {overview.community_breakdown.length > 0 && (
         <Suspense fallback={<div className="mono-rounded-stacked-bar"><Skeleton active paragraph={{ rows: 8 }} /></div>}>
           <MonoRoundedStackedBarChart
-            ariaLabel="12 个社区在线核查完成情况"
+            ariaLabel={`${overview.community_breakdown.length} 个社区在线核查完成情况`}
             data={overview.community_breakdown.map(item => {
-              const total = Math.max(item.total, 0)
-              const unable = Math.min(Math.max(item.unable_to_verify, 0), Math.max(item.pending, 0))
+              const raw = item as Record<string, unknown>
+              const completed = dashboardCount(raw.completed, raw.completed_tasks, raw['已完成'])
+              const unableCount = dashboardCount(raw.unable_to_verify, raw.unable_count, raw['无法见底数'])
+              const pendingCount = dashboardCount(raw.pending, raw.pending_tasks, raw['未核查'])
+              const total = Math.max(
+                dashboardCount(raw.total, raw.total_tasks, raw['数据总数']),
+                completed + pendingCount,
+              )
+              const unable = Math.min(unableCount, pendingCount || Math.max(total - completed, 0))
               return {
-                label: item.community,
-                completed: Math.max(item.completed, 0),
+                label: String(raw.community || raw['社区'] || '未填写社区'),
+                completed,
                 unable,
-                pending: Math.max(item.pending - unable, 0),
+                pending: Math.max(total - completed - unable, 0),
                 total,
               }
             })}

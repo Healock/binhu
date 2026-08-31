@@ -213,7 +213,7 @@ class ModelThreeSelfOwnedUpgradeTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=match_stats),
             ),
             patch(
-                "services.model_three_self_owned.rebuild_projection",
+                "services.model_three_self_owned.rebuild_projection_rows",
                 AsyncMock(),
             ),
         ):

@@ -75,6 +75,21 @@ test('仪表盘只消费后端模块并提供筛选直达', () => {
   assert.match(source, /label: '已发布'/)
 })
 
+test('在线数据汇总直接同时展示网格员和社区表，不再使用二分段切换', () => {
+  const source = read('../src/pages/Dashboard.tsx')
+  assert.doesNotMatch(source, /<Segmented/)
+  assert.doesNotMatch(source, /MobileReportTable/)
+  assert.match(source, /className="dashboard-mobile-report-list grid gap-6"/)
+  assert.match(source, /const inspectorTitle = '网格员汇总'/)
+  assert.match(source, /const communityTitle = '社区汇总'/)
+})
+
+test('社区完成图表为零值数据保留可见坐标轴', () => {
+  const source = read('../src/components/charts/MonoRoundedStackedBarChart.tsx')
+  assert.match(source, /const maxTotal = Math\.max\(\.\.\.rows\.map\(item => Number\(item\.total\) \|\| 0\), 1\)/)
+  assert.match(source, /domain=\{\[0, maxTotal\]\}/)
+})
+
 test('运维中心保留本地运行状态且照片批次图表继续使用真实序列', () => {
   const operations = read('../src/pages/OperationsCenter.tsx')
   const uploads = read('../src/pages/DataUploadCenter.tsx')

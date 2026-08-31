@@ -13,7 +13,7 @@ from typing import Any
 
 from database import db_manager
 from services.external_acquisition_jobs import JobContext
-from services.online_source import rebuild_projection, source_row_hash
+from services.online_source import rebuild_projection, rebuild_projection_rows, source_row_hash
 from services.parsers import get_parser
 from services.model_three_self_owned import apply_self_owned_matches
 from services.qmf_source import (
@@ -23,6 +23,8 @@ from services.qmf_source import (
     fetch_pending_rows,
     resolve_rows,
 )
+
+PROJECTION_REFRESH_BATCH_SIZE = 500
 from services.schema_compat import get_database_column_map, quote_identifier
 
 
@@ -159,8 +161,14 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
 
                 await rebuild_projection(cur, MODEL_THREE_PARSER)
                 self_owned_stats = await apply_self_owned_matches(cur)
-                if self_owned_stats["updated_tasks"]:
-                    await rebuild_projection(cur, MODEL_THREE_PARSER)
+                updated_row_keys = list(self_owned_stats.get("updated_row_keys") or [])
+                for offset in range(0, len(updated_row_keys), PROJECTION_REFRESH_BATCH_SIZE):
+                    await rebuild_projection_rows(
+                        cur,
+                        MODEL_THREE_PARSER,
+                        updated_row_keys[offset:offset + PROJECTION_REFRESH_BATCH_SIZE],
+                        reconcile_graph=False,
+                    )
             await conn.commit()
         except Exception:
             await conn.rollback()

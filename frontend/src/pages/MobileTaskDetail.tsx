@@ -178,6 +178,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const autosaveTimerRef = useRef<number | null>(null)
   const saveRef = useRef<(() => Promise<void>) | null>(null)
   const savingRef = useRef(false)
+  const handledImmediateSaveRef = useRef(0)
   const claimPromptKeyRef = useRef('')
   const claimDeclinedKeyRef = useRef('')
   const formGenerationRef = useRef(0)
@@ -630,18 +631,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }, [])
 
   useEffect(() => {
-    if (!immediateSaveSequence) return
-    scheduleAutoSave(0)
-  }, [immediateSaveSequence, scheduleAutoSave])
-
-  useEffect(() => {
     if (!dirty || interactionLocked || mode === 'analysis' || saving || registrationDraftIncomplete) return
-    scheduleAutoSave(700)
+    const shouldSaveImmediately = immediateSaveSequence > handledImmediateSaveRef.current
+    handledImmediateSaveRef.current = immediateSaveSequence
+    if (shouldSaveImmediately) scheduleAutoSave(0)
+    else scheduleAutoSave(700)
     return () => {
       if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
       autosaveTimerRef.current = null
     }
-  }, [dirty, formValues, interactionLocked, mode, registrationDraftIncomplete, saving, scheduleAutoSave])
+  }, [dirty, formValues, immediateSaveSequence, interactionLocked, mode, registrationDraftIncomplete, saving, scheduleAutoSave])
 
   useEffect(() => () => {
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
