@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from services.business_time import get_business_date
-from services.online_source import json_value, rebuild_projection
+from services.online_source import active_source_sql_filter, json_value, rebuild_projection
 from services.task_workflow import TASK_WORKFLOWS
 
 
@@ -321,10 +321,20 @@ def review_export_fields(events: list[dict[str, Any]]) -> dict[str, str]:
 async def audit_missing_unverifiable_flows(cur) -> list[dict[str, Any]]:
     """只读查找上线前已经存在、但尚未建立结构化流程的无法核实任务。"""
     placeholders = ",".join(["%s"] * len(UNVERIFIABLE_REVIEW_TYPES))
+    active_filter = active_source_sql_filter("", "source")
     await cur.execute(
         f"""
         SELECT projection.parser_type,projection.row_key,projection.values_json,
-               projection.source_count,projection.conflict
+               (
+                 SELECT COUNT(*) FROM _online_source_rows source
+                 WHERE source.parser_type=projection.parser_type
+                   AND source.row_key=projection.row_key{active_filter}
+               ) AS active_source_count,
+               (
+                 SELECT COUNT(DISTINCT source.row_hash) FROM _online_source_rows source
+                 WHERE source.parser_type=projection.parser_type
+                   AND source.row_key=projection.row_key{active_filter}
+               ) AS active_hash_count
         FROM _online_source_projection projection
         WHERE projection.parser_type IN ({placeholders})
           AND NOT EXISTS (
@@ -337,7 +347,7 @@ async def audit_missing_unverifiable_flows(cur) -> list[dict[str, Any]]:
         UNVERIFIABLE_REVIEW_TYPES,
     )
     missing: list[dict[str, Any]] = []
-    for parser_type, row_key, values_json, source_count, conflict in await cur.fetchall():
+    for parser_type, row_key, values_json, source_count, active_hash_count in await cur.fetchall():
         parser_type = str(parser_type)
         workflow = TASK_WORKFLOWS.get(parser_type)
         values = json_value(values_json, {})
@@ -348,83 +358,90 @@ async def audit_missing_unverifiable_flows(cur) -> list[dict[str, Any]]:
             "row_key": str(row_key),
             "values": values,
             "source_count": int(source_count or 0),
-            "conflict": bool(conflict),
+            "conflict": int(active_hash_count or 0) > 1,
         })
     return missing
 
 
-async def backfill_missing_unverifiable_flows() -> dict[str, int]:
+async def _backfill_missing_unverifiable_flows_in_connection(conn) -> dict[str, int]:
+    created = exceptions = 0
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            missing = await audit_missing_unverifiable_flows(cur)
+            for item in missing:
+                parser_type = item["parser_type"]
+                row_key = item["row_key"]
+                values = item["values"]
+                workflow = TASK_WORKFLOWS[parser_type]
+                await cur.execute(
+                    f"""
+                    SELECT id,revision,row_hash
+                    FROM _online_source_rows source
+                    WHERE parser_type=%s AND row_key=%s
+                    {active_source_sql_filter(parser_type, 'source')}
+                    ORDER BY id
+                    """,
+                    (parser_type, row_key),
+                )
+                source_rows = await cur.fetchall()
+                source_safe = (
+                    item["source_count"] == 1
+                    and not item["conflict"]
+                    and len(source_rows) == 1
+                )
+                source_id = int(source_rows[0][0]) if source_safe else None
+                source_revision = int(source_rows[0][1] or 0) if source_safe else 0
+                source_row_hash = str(source_rows[0][2] or "") if source_safe else ""
+                state = INITIAL_PENDING if source_safe else SOURCE_EXCEPTION
+                safe_reason = "" if source_safe else "legacy_source_context_invalid"
+                deadline_field = workflow.date_fields[0] if workflow.date_fields else ""
+                original_deadline = str(values.get(deadline_field) or "")
+                await cur.execute(
+                    """
+                    INSERT IGNORE INTO _unverifiable_review_flows
+                    (parser_type,row_key,cycle_no,source_id,source_revision,
+                     source_row_hash,state,original_deadline,previous_deadline,
+                     safe_reason_code,last_action_at)
+                    VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP())
+                    """,
+                    (
+                        parser_type, row_key, source_id, source_revision,
+                        source_row_hash, state, original_deadline,
+                        original_deadline, safe_reason,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    continue
+                flow_id = int(cur.lastrowid)
+                legacy_analysis = workflow.first_value(values, workflow.analysis_fields)
+                await _event(
+                    cur, flow_id=flow_id, stage=state,
+                    action="legacy_unverifiable_backfill", text=legacy_analysis,
+                    automatic=True, source_revision=source_revision,
+                    source_row_hash=source_row_hash,
+                    safe_reason_code=safe_reason,
+                )
+                if source_safe:
+                    created += 1
+                else:
+                    exceptions += 1
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"initial_pending": created, "source_exception": exceptions}
+
+
+async def backfill_missing_unverifiable_flows(conn=None) -> dict[str, int]:
     """幂等接管历史无法核实任务，不根据旧自由文字猜测研判阶段。"""
+    if conn is not None:
+        return await _backfill_missing_unverifiable_flows_in_connection(conn)
     from database import db_manager
 
     pool = db_manager.get_pool("online_data")
-    created = exceptions = 0
-    async with pool.acquire() as conn:
-        await conn.begin()
-        try:
-            async with conn.cursor() as cur:
-                missing = await audit_missing_unverifiable_flows(cur)
-                for item in missing:
-                    parser_type = item["parser_type"]
-                    row_key = item["row_key"]
-                    values = item["values"]
-                    workflow = TASK_WORKFLOWS[parser_type]
-                    await cur.execute(
-                        """
-                        SELECT id,revision,row_hash
-                        FROM _online_source_rows
-                        WHERE parser_type=%s AND row_key=%s
-                        ORDER BY id
-                        """,
-                        (parser_type, row_key),
-                    )
-                    source_rows = await cur.fetchall()
-                    source_safe = (
-                        item["source_count"] == 1
-                        and not item["conflict"]
-                        and len(source_rows) == 1
-                    )
-                    source_id = int(source_rows[0][0]) if source_safe else None
-                    source_revision = int(source_rows[0][1] or 0) if source_safe else 0
-                    source_row_hash = str(source_rows[0][2] or "") if source_safe else ""
-                    state = INITIAL_PENDING if source_safe else SOURCE_EXCEPTION
-                    safe_reason = "" if source_safe else "legacy_source_context_invalid"
-                    deadline_field = workflow.date_fields[0] if workflow.date_fields else ""
-                    original_deadline = str(values.get(deadline_field) or "")
-                    await cur.execute(
-                        """
-                        INSERT IGNORE INTO _unverifiable_review_flows
-                        (parser_type,row_key,cycle_no,source_id,source_revision,
-                         source_row_hash,state,original_deadline,previous_deadline,
-                         safe_reason_code,last_action_at)
-                        VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP())
-                        """,
-                        (
-                            parser_type, row_key, source_id, source_revision,
-                            source_row_hash, state, original_deadline,
-                            original_deadline, safe_reason,
-                        ),
-                    )
-                    if cur.rowcount != 1:
-                        continue
-                    flow_id = int(cur.lastrowid)
-                    legacy_analysis = workflow.first_value(values, workflow.analysis_fields)
-                    await _event(
-                        cur, flow_id=flow_id, stage=state,
-                        action="legacy_unverifiable_backfill", text=legacy_analysis,
-                        automatic=True, source_revision=source_revision,
-                        source_row_hash=source_row_hash,
-                        safe_reason_code=safe_reason,
-                    )
-                    if source_safe:
-                        created += 1
-                    else:
-                        exceptions += 1
-            await conn.commit()
-        except Exception:
-            await conn.rollback()
-            raise
-    return {"initial_pending": created, "source_exception": exceptions}
+    async with pool.acquire() as pooled_conn:
+        return await _backfill_missing_unverifiable_flows_in_connection(pooled_conn)
 
 
 async def _event(

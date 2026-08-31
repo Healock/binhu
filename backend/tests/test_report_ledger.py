@@ -129,9 +129,12 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
             sql,
         )
         self.assertIn(
-            "NULLIF(TRIM(formal_community.name), '')",
+            "NULLIF(TRIM(responsibility.first_community), '')",
             sql,
         )
+        self.assertIn("responsibility.first_inspector", sql)
+        insert_call = cursor.execute.await_args_list[2]
+        self.assertEqual(insert_call.args[1][4], builder.parser_type)
 
     async def test_removed_unfinished_task_is_kept_as_excluded_tombstone(self):
         cursor = make_cursor(
@@ -160,6 +163,11 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source='removed'", sql)
         self.assertIn("included=0", sql)
         self.assertIn("LEFT JOIN `2026-07-29_snapshot_fullChain` t", sql)
+        self.assertIn(
+            "LEFT JOIN OnlineData._task_assignment_responsibilities AS responsibility",
+            sql,
+        )
+        self.assertIn("responsibility.first_inspector", sql)
 
 
 if __name__ == "__main__":

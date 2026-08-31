@@ -458,6 +458,11 @@ html.desktop-shell .ant-notification-topRight {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+  min-height: 42px;
+}
+
+.mobile-task-assignment-workbench__notice {
+  min-height: 42px;
 }
 
 .mobile-task-assignment-workbench__filters .ant-select {
@@ -551,6 +556,11 @@ html.desktop-shell .ant-notification-topRight {
   gap: 12px;
   color: var(--app-text-secondary);
   font-size: 12px;
+  min-height: 28px;
+}
+
+.mobile-task-assignment-workbench__progress-idle {
+  grid-column: 1 / -1;
 }
 
 .mobile-task-assignment-workbench__footer {
@@ -568,6 +578,25 @@ html.desktop-shell .ant-notification-topRight {
   background: color-mix(in srgb, var(--app-surface) 96%, transparent);
   box-shadow: 0 -8px 24px rgb(15 23 42 / 0.08);
   backdrop-filter: blur(10px);
+}
+
+.mobile-task-assignment-workbench__footer.is-idle {
+  visibility: hidden;
+}
+
+.mobile-task-save-feedback {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+.mobile-task-save-feedback__idle {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.mobile-task-detail-page .mobile-task-registration-editor {
+  min-height: 126px;
 }
 
 .mobile-task-address-match {

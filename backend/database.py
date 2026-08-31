@@ -35,6 +35,7 @@ from services.model_three_self_owned import ensure_self_owned_schema
 from services.residence_status_scan import ensure_residence_status_schema
 from services.task_registration import ensure_task_registration_schema
 from services.unverifiable_review import ensure_unverifiable_review_schema
+from services.task_assignment_responsibility import ensure_task_assignment_responsibility_schema
 from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
@@ -2813,6 +2814,7 @@ class DatabaseManager:
                 await ensure_residence_status_schema(cur)
                 await ensure_task_registration_schema(cur)
                 await ensure_unverifiable_review_schema(cur)
+                await ensure_task_assignment_responsibility_schema(cur)
                 await ensure_administrative_area_schema(cur)
                 await ensure_bootstrap_admin(cur)
                 await ensure_outbox_schema(cur)

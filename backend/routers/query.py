@@ -31,9 +31,9 @@ from services.online_source import (
     active_source_sql_filter,
     json_value,
     rebuild_projection,
+    rebuild_projection_rows,
     release_sheet_lock,
     replace_source_cache,
-    rebuild_projection_keys,
     resolve_source_columns,
     source_row_hash,
     stable_json,
@@ -69,6 +69,11 @@ from services.work_activity import (
     record_work_activity,
 )
 from services.domain_events import enqueue_event
+from services.task_assignment_responsibility import (
+    capture_first_assignment,
+    migrate_responsibility_row_key,
+    task_update_is_credited_to,
+)
 
 
 router = APIRouter(
@@ -917,6 +922,26 @@ async def _update_local_source_fields(
                 row_key_after=str(new_key),
                 revision=expected_revision + 1,
             )
+        await migrate_responsibility_row_key(
+            cur,
+            parser_type,
+            str(source["row_key"]),
+            str(new_key),
+        )
+        if (
+            "核查人" in ordered_columns
+            and not str(current_values.get("核查人") or "").strip()
+            and str(after.get("核查人") or "").strip()
+        ):
+            await capture_first_assignment(
+                cur,
+                parser_type=parser_type,
+                row_key=str(new_key),
+                community=parser.community_value(after),
+                inspector=str(after.get("核查人") or ""),
+                actor_user_id=int(user.get("id")) if user.get("id") else None,
+                source="task_assignment",
+            )
         if record_unverifiable_save:
             from services.unverifiable_review import record_task_save
             try:
@@ -933,7 +958,7 @@ async def _update_local_source_fields(
                 )
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-        await rebuild_projection_keys(
+        await rebuild_projection_rows(
             cur,
             parser_type,
             [str(source["row_key"]), str(new_key)],
@@ -962,7 +987,13 @@ async def _update_local_source_fields(
             aggregate_revision=expected_revision + 1,
             audiences=audiences,
         )
-        await _connection_transaction_call(conn, "commit")
+        activity_credited = await task_update_is_credited_to(
+            cur,
+            parser_type,
+            str(new_key),
+            str((user.get("member") or {}).get("name") or ""),
+        )
+        await conn.commit()
         await record_admin_audit(
             user,
             "online.local_update",
@@ -971,7 +1002,7 @@ async def _update_local_source_fields(
             detail={"source_id": source_id, "columns": ordered_columns},
             **request_audit_fields(request),
         )
-        if is_actual_online_work(ordered_columns):
+        if is_actual_online_work(ordered_columns) and activity_credited:
             await record_work_activity(user, ONLINE_TASK_UPDATE, event_key=f"local:{audit_id}")
         warnings = []
         if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
@@ -984,6 +1015,7 @@ async def _update_local_source_fields(
             "message": "已保存到本地业务数据",
             "values": after,
             "row_key": new_key,
+            "row_hash": local_row_hash(after),
             "revision": expected_revision + 1,
             "pending_sync": False,
             "warnings": warnings,
@@ -1579,7 +1611,7 @@ async def queue_source_fields(
                 # enqueue_local_changes rebuilds once before the registration
                 # link is changed.  Rebuild again so task_state and task graph
                 # observe the association atomically in this same transaction.
-                await rebuild_projection_keys(
+                await rebuild_projection_rows(
                     cur,
                     parser_type,
                     [str(source["row_key"]), str(new_key)],
@@ -1603,7 +1635,7 @@ async def queue_source_fields(
                     )
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
-            await rebuild_projection_keys(cur, parser_type, [new_key], reconcile_graph=False)
+            await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
             await enqueue_event(
                 cur,
                 domain="online",
@@ -2326,7 +2358,7 @@ async def create_source_row(
                     stable_json(values), local_row_hash(values),
                 ),
             )
-            await rebuild_projection_keys(cur, parser_type, [new_key], reconcile_graph=False)
+            await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
             await enqueue_event(
                 cur,
                 domain="online",
@@ -2518,7 +2550,7 @@ async def delete_source_row(
                 )
                 await cur.execute("DELETE FROM _online_local_changes WHERE source_id=%s", (source_id,))
                 await cur.execute("DELETE FROM _online_source_rows WHERE id=%s", (source_id,))
-                await rebuild_projection_keys(cur, parser_type, [str(source["row_key"])])
+                await rebuild_projection_rows(cur, parser_type, [str(source["row_key"])])
                 await enqueue_event(
                     cur,
                     domain="online",

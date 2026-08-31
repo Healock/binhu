@@ -102,7 +102,9 @@ async def refresh_daily_ledger(
             (report_date, builder.parser_type),
         )
 
-    parameters: list[Any] = []
+    # The responsibility join appears before all date predicates in the SQL,
+    # so its parser parameter must be bound first as well.
+    inner_parameters: list[Any] = [builder.parser_type]
     if is_current_day:
         online_sql = (
             "EXISTS (SELECT 1 FROM OnlineData."
@@ -121,7 +123,7 @@ async def refresh_daily_ledger(
             "AND archived._archived_at >= %s "
             "AND archived._archived_at < %s)"
         )
-        parameters.extend([snapshot_generated_at, utc_end])
+        inner_parameters.extend([snapshot_generated_at, utc_end])
 
     state_sql = builder.ledger_state_sql("t")
     unable_sql = builder.ledger_unable_sql("t")
@@ -153,7 +155,7 @@ async def refresh_daily_ledger(
         activity_sql = (
             f"CASE WHEN {_date_activity_sql('t')} THEN 1 ELSE 0 END"
         )
-        parameters.extend(
+        inner_parameters.extend(
             [utc_start, utc_end, utc_start, utc_end]
         )
         previous_unfinished_sql = "0"
@@ -163,12 +165,11 @@ async def refresh_daily_ledger(
         SELECT
             t._row_key AS row_key,
             COALESCE(
-                NULLIF(TRIM(formal_community.name), ''),
-                NULLIF(TRIM(t.`{community}`), ''),
+                NULLIF(TRIM(responsibility.first_community), ''),
                 '未分配社区'
             )
                 AS community,
-            TRIM(IFNULL(t.`{inspector}`, '')) AS inspector,
+            TRIM(IFNULL(responsibility.first_inspector, '')) AS inspector,
             {state_sql} AS task_state,
             {unable_sql} AS unable_to_verify,
             {reached_bottom_sql} AS reached_bottom,
@@ -182,6 +183,9 @@ async def refresh_daily_ledger(
           ON community_alias.alias = TRIM(t.`{community}`)
         LEFT JOIN OnlineData._communities AS formal_community
           ON formal_community.id = community_alias.community_id
+        LEFT JOIN OnlineData._task_assignment_responsibilities AS responsibility
+          ON responsibility.parser_type=%s
+         AND responsibility.row_key=t._row_key
     """
     if not previous:
         derived_sql = f"""
@@ -266,7 +270,7 @@ async def refresh_daily_ledger(
             builder.parser_type,
             report_date,
             builder.parser_type,
-            *parameters,
+            *inner_parameters,
         ),
     )
 
@@ -289,11 +293,10 @@ async def refresh_daily_ledger(
                 0,
                 0,
                 COALESCE(
-                    NULLIF(TRIM(formal_community.name), ''),
-                    NULLIF(TRIM(p.`{previous_community}`), ''),
+                    NULLIF(TRIM(responsibility.first_community), ''),
                     '未分配社区'
                 ),
-                TRIM(IFNULL(p.`{previous_inspector}`, '')),
+                TRIM(IFNULL(responsibility.first_inspector, '')),
                 {previous_state},
                 {builder.ledger_unable_sql("p")},
                 {builder.ledger_reached_bottom_sql("p")},
@@ -304,6 +307,9 @@ async def refresh_daily_ledger(
               ON community_alias.alias = TRIM(p.`{previous_community}`)
             LEFT JOIN OnlineData._communities AS formal_community
               ON formal_community.id = community_alias.community_id
+            LEFT JOIN OnlineData._task_assignment_responsibilities AS responsibility
+              ON responsibility.parser_type=%s
+             AND responsibility.row_key=p._row_key
             WHERE t._row_key IS NULL
               AND ({previous_state}) <> 'completed'
             ON DUPLICATE KEY UPDATE
@@ -318,7 +324,7 @@ async def refresh_daily_ledger(
                 effective_workload=0,
                 updated_at=CURRENT_TIMESTAMP
             """,
-            (report_date, builder.parser_type),
+            (report_date, builder.parser_type, builder.parser_type),
         )
 
     # 如果某次移除后的下一次同步已不再包含该行，仍需关闭此前遗留的未完成流水。

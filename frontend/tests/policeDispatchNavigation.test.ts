@@ -43,7 +43,12 @@ test('研判页区分已下发和未下发数据研判', () => {
   assert.match(mobileTaskSource, /label: '全部数据'/)
   assert.match(mobileTaskSource, /listMobileTaskAnalysis/)
   assert.match(mobileTaskSource, /getMobileTaskAnalysisFilterOptions/)
-  assert.match(mobileTaskSource, /analysisOnly \? 'waiting_analysis'/)
+  assert.match(mobileTaskSource, /const \[reviewStage,[\s\S]*?analysisOnly[\s\S]*?: 'all'/)
+  for (const parserType of ['全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警']) {
+    assert.match(mobileTaskSource, new RegExp(`'${parserType}'`))
+  }
+  const analysisTypes = mobileTaskSource.match(/const ANALYSIS_TASK_TYPES = \[([\s\S]*?)\] as const/)?.[1] || ''
+  assert.doesNotMatch(analysisTypes, /疑似未注销模型三/)
   assert.match(mobileTaskSource, /review_stage:\s*reviewStage/)
   assert.match(mobileTaskSource, /研判阶段筛选/)
   assert.match(mobileTaskSource, /waiting_analysis.*待研判/)

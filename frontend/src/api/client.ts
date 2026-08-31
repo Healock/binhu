@@ -1336,6 +1336,7 @@ export interface MobileTaskFacets {
 
 export interface MobileTaskSource {
   id: number
+  row_key?: string
   physical_row: number
   source_available: boolean
   values: Record<string, string>
@@ -1355,6 +1356,21 @@ export interface MobileTaskSource {
     status: Exclude<MobileTaskSyncState, ''> | 'processing'
     error_code: string
   }>
+}
+
+export interface MobileTaskSaveResult {
+  values: Record<string, string>
+  row_key: string
+  row_hash: string
+  revision: number
+  pending_sync: boolean
+  sync_state: MobileTaskSyncState
+  message: string
+  warnings?: string[]
+  inspector_mismatch?: boolean
+  task_update?: Partial<MobileTaskItem>
+  registration_link?: MobileTaskRegistrationLink | null
+  review_flow?: MobileTaskReviewFlow | null
 }
 
 export interface MobileTaskDetailData {
@@ -2133,19 +2149,44 @@ export async function updateMobileTask(
     registration_property_id?: number
     registration_property_version?: number
   },
-): Promise<{
-  values: Record<string, string>
-  row_key: string
-  revision: number
-  pending_sync: boolean
-  sync_state: MobileTaskSyncState
-  message: string
-  warnings?: string[]
-  inspector_mismatch?: boolean
-}> {
+): Promise<MobileTaskSaveResult> {
   const { data } = await api.patch(
     `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
     payload,
+  )
+  return data
+}
+
+export interface MobileTaskInternalTransferOption {
+  community: string
+  leaders: string[]
+}
+
+export async function getMobileTaskInternalTransferOptions(
+  parserType: string,
+): Promise<MobileTaskInternalTransferOption[]> {
+  const { data } = await api.get(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/internal-transfer-options`,
+    activeRequest,
+  )
+  return data.data || []
+}
+
+export async function transferMobileTaskInternally(
+  parserType: string,
+  sourceId: number,
+  payload: {
+    target_community: string
+    target_leader?: string
+    expected_row_key: string
+    expected_revision: number
+    expected_row_hash: string
+  },
+) {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}/internal-transfer`,
+    payload,
+    activeRequest,
   )
   return data
 }
@@ -2198,16 +2239,7 @@ export async function claimMobileTask(
     registration_property_id?: number
     registration_property_version?: number
   },
-): Promise<{
-  values: Record<string, string>
-  row_key: string
-  revision: number
-  pending_sync: boolean
-  sync_state: MobileTaskSyncState
-  message: string
-  warnings?: string[]
-  inspector_mismatch?: boolean
-}> {
+): Promise<MobileTaskSaveResult> {
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/source-rows/${sourceId}/claim`,
     payload,
@@ -2223,14 +2255,7 @@ export async function updateMobileTaskAnalysis(
     base_values?: Record<string, string>
     expected_revision: number
   },
-): Promise<{
-  values: Record<string, string>
-  row_key: string
-  revision: number
-  pending_sync: boolean
-  sync_state: MobileTaskSyncState
-  message: string
-}> {
+): Promise<MobileTaskSaveResult> {
   const { data } = await api.patch(
     `/mobile-tasks/analysis/${encodeURIComponent(parserType)}/source-rows/${sourceId}`,
     payload,

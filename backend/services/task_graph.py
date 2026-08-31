@@ -543,3 +543,45 @@ async def reconcile_projection_task_graph(cur, parser_type: str) -> dict[str, in
             (parser_type, *sorted(missing)),
         )
     return result
+
+
+async def reconcile_projection_task_graph_rows(
+    cur,
+    parser_type: str,
+    row_keys: list[str],
+) -> dict[str, int]:
+    """Reconcile only projection rows changed by an interactive transaction."""
+    normalized_keys = list(dict.fromkeys(
+        _text(row_key) for row_key in row_keys if _text(row_key)
+    ))
+    if (
+        not normalized_keys
+        or not await task_graph_enabled(cur)
+        or parser_type not in TASK_WORKFLOWS
+    ):
+        return {"processed": 0, "changed": 0, "source_missing": 0}
+    placeholders = ",".join(["%s"] * len(normalized_keys))
+    await cur.execute(
+        "SELECT row_key,values_json FROM _online_source_projection "
+        f"WHERE parser_type=%s AND row_key IN ({placeholders})",
+        (parser_type, *normalized_keys),
+    )
+    values_by_key = {
+        str(row_key): (raw if isinstance(raw, dict) else json.loads(raw or "{}"))
+        for row_key, raw in await cur.fetchall()
+    }
+    result = {"processed": 0, "changed": 0, "source_missing": 0}
+    for row_key, values in values_by_key.items():
+        outcome = await reconcile_online_task_graph(
+            cur,
+            parser_type=parser_type,
+            row_key_before=row_key,
+            row_key_after=row_key,
+            before=values,
+            after=values,
+            event_type="source_projection_incremental_reconcile",
+            force=True,
+        )
+        result["processed"] += 1
+        result["changed"] += int(bool(outcome.get("changed")))
+    return result

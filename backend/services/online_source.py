@@ -13,7 +13,10 @@ from services.task_registration import (
     ensure_missing_registration_review,
     registration_links_by_rows,
 )
-from services.task_graph import reconcile_projection_task_graph
+from services.task_graph import (
+    reconcile_projection_task_graph,
+    reconcile_projection_task_graph_rows,
+)
 from services.watch_matching import (
     parse_dispatch_time,
     projection_identity,
@@ -30,7 +33,7 @@ ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
 async def _address_match_entries(cur) -> list[dict[str, Any]]:
     """读取启用的小区地址库，供投影重建时生成建议。"""
     await cur.execute(
-        """
+        f"""
         SELECT entry.id, entry.name, entry.normalized_name, entry.detail_address,
                entry.aliases_json, entry.community_id, community.name,
                entry.enabled
@@ -167,13 +170,35 @@ async def release_sheet_lock(cur, spreadsheet_id: int) -> None:
     await cur.fetchone()
 
 
-async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = True) -> None:
+async def rebuild_projection(
+    cur,
+    parser_type: str,
+    *,
+    reconcile_graph: bool = True,
+    row_keys: list[str] | None = None,
+) -> None:
+    """Rebuild all projections or only the explicitly affected task rows.
+
+    Interactive edits must pass ``row_keys`` so a single save never deletes,
+    rematches and recreates an entire business projection.  Imports and
+    maintenance jobs intentionally omit it and keep the full rebuild behavior.
+    """
     parser = get_parser(parser_type)
+    target_keys = list(dict.fromkeys(
+        str(row_key).strip() for row_key in (row_keys or [])
+        if str(row_key).strip()
+    ))
+    key_filter = ""
+    key_params: list[str] = []
+    if target_keys:
+        placeholders = ",".join(["%s"] * len(target_keys))
+        key_filter = f" AND row_key IN ({placeholders})"
+        key_params = target_keys
     matcher = RuleMatcher()
     address_entries = await _address_match_entries(cur)
     address_entries_by_id = {int(item["id"]): item for item in address_entries}
     await cur.execute(
-        """
+        f"""
         SELECT row_key, original_address, suggested_entry_id,
                suggested_community_id, suggested_community_name,
                match_status, match_score, match_method, match_reason,
@@ -181,8 +206,9 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
                confirmed_by, confirmed_at
         FROM _online_task_address_matches
         WHERE parser_type=%s
+        {key_filter}
         """,
-        (parser_type,),
+        (parser_type, *key_params),
     )
     stored_matches = {
         str(row[0]): {
@@ -203,20 +229,26 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         for row in await cur.fetchall()
     }
     await cur.execute(
-        "SELECT row_key, first_dispatch_at FROM _online_source_projection WHERE parser_type=%s",
-        (parser_type,),
+        "SELECT row_key, first_dispatch_at FROM _online_source_projection "
+        f"WHERE parser_type=%s{key_filter}",
+        (parser_type, *key_params),
     )
     previous_first_dispatch = {
         str(row[0]): row[1] for row in await cur.fetchall() if row[1]
     }
+    source_key_filter = (
+        f" AND source.row_key IN ({','.join(['%s'] * len(target_keys))})"
+        if target_keys else ""
+    )
     await cur.execute(
         "SELECT source.id, source.row_key, source.values_json, "
         "source.revision, source.row_hash "
         "FROM _online_source_rows AS source WHERE source.parser_type=%s "
         "AND source.archived_at IS NULL"
+        f"{source_key_filter}"
         f"{active_source_sql_filter(parser_type)} "
         "ORDER BY spreadsheet_id, physical_row",
-        (parser_type,),
+        (parser_type, *target_keys),
     )
     source_records = await cur.fetchall()
     source_ids = [int(row[0]) for row in source_records]
@@ -246,10 +278,20 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
             "row_hash": str(row_hash or ""),
         })
 
+    audit_filter = ""
+    audit_params: list[object] = [parser_type]
+    if target_keys:
+        placeholders = ",".join(["%s"] * len(target_keys))
+        audit_filter = (
+            f" AND (row_key_before IN ({placeholders}) "
+            f"OR row_key_after IN ({placeholders}))"
+        )
+        audit_params.extend(target_keys)
+        audit_params.extend(target_keys)
     await cur.execute(
         "SELECT row_key_before, row_key_after FROM _online_writeback_audit "
-        "WHERE parser_type=%s AND sync_status='pending'",
-        (parser_type,),
+        f"WHERE parser_type=%s AND sync_status='pending'{audit_filter}",
+        audit_params,
     )
     pending_states = {
         str(value): "pending"
@@ -257,11 +299,18 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         for value in row
         if value
     }
+    local_change_filter = ""
+    local_change_params: list[object] = [parser_type]
+    if target_keys:
+        placeholders = ",".join(["%s"] * len(target_keys))
+        local_change_filter = f" AND row_key IN ({placeholders})"
+        local_change_params.extend(target_keys)
     await cur.execute(
         "SELECT row_key, status FROM _online_local_changes "
         "WHERE parser_type=%s "
-        "AND status IN ('pending','processing','retry','conflict')",
-        (parser_type,),
+        "AND status IN ('pending','processing','retry','conflict')"
+        f"{local_change_filter}",
+        local_change_params,
     )
     state_priority = {"pending": 1, "processing": 1, "retry": 2, "conflict": 3}
     for row_key, status in await cur.fetchall():
@@ -271,7 +320,13 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         if state_priority.get(candidate, 0) > state_priority.get(current, 0):
             pending_states[key] = "pending" if candidate == "processing" else candidate
     if parser_type == "全链条":
-        await cur.execute("""
+        police_filter = ""
+        police_params: list[object] = []
+        if target_keys:
+            placeholders = ",".join(["%s"] * len(target_keys))
+            police_filter = f" AND source.row_key IN ({placeholders})"
+            police_params.extend(target_keys)
+        await cur.execute(f"""
             SELECT source.row_key
             FROM _police_dispatch_publish_results AS result
             JOIN _online_source_rows AS source
@@ -279,7 +334,8 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
              AND source.sheet_id=result.sheet_id
              AND source.physical_row=result.physical_row
             WHERE result.status='success'
-        """)
+            {police_filter}
+        """, police_params)
         pending_states.update({
             str(row[0]): "pending" for row in await cur.fetchall() if row[0]
         })
@@ -455,10 +511,18 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
             address_match_rows,
         )
 
-    await cur.execute(
-        "DELETE FROM _online_source_projection WHERE parser_type=%s",
-        (parser_type,),
-    )
+    if target_keys:
+        placeholders = ",".join(["%s"] * len(target_keys))
+        await cur.execute(
+            "DELETE FROM _online_source_projection "
+            f"WHERE parser_type=%s AND row_key IN ({placeholders})",
+            (parser_type, *target_keys),
+        )
+    else:
+        await cur.execute(
+            "DELETE FROM _online_source_projection WHERE parser_type=%s",
+            (parser_type,),
+        )
     if projection_rows:
         await cur.executemany(
             """
@@ -475,9 +539,33 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
             """,
             projection_rows,
         )
-    await sync_current_task_snapshots(cur, parser_type)
+    await sync_current_task_snapshots(cur, parser_type, target_keys or None)
     if reconcile_graph:
-        await reconcile_projection_task_graph(cur, parser_type)
+        if target_keys:
+            await reconcile_projection_task_graph_rows(cur, parser_type, target_keys)
+        else:
+            await reconcile_projection_task_graph(cur, parser_type)
+
+
+async def rebuild_projection_rows(
+    cur,
+    parser_type: str,
+    row_keys: list[str],
+    *,
+    reconcile_graph: bool = True,
+) -> None:
+    """Explicit incremental projection API for saves and assignments."""
+    normalized = list(dict.fromkeys(
+        str(row_key).strip() for row_key in row_keys if str(row_key).strip()
+    ))
+    if not normalized:
+        return
+    await rebuild_projection(
+        cur,
+        parser_type,
+        reconcile_graph=reconcile_graph,
+        row_keys=normalized,
+    )
 
 
 async def rebuild_projection_keys(

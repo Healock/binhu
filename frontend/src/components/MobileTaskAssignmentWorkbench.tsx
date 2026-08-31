@@ -25,12 +25,14 @@ interface AssignmentOutcome {
 
 const MATCH_STATUS_LABELS: Record<string, { label: string; color: string }> = {
   confirmed: { label: '已人工确认', color: 'success' },
-  suggested: { label: '系统建议', color: 'processing' },
+  suggested: { label: '自动匹配', color: 'processing' },
   ambiguous: { label: '多候选待确认', color: 'warning' },
   conflict: { label: '地址冲突', color: 'error' },
   invalid: { label: '无效地址', color: 'default' },
   unmatched: { label: '未关联小区', color: 'default' },
 }
+
+const isAssignableMatch = (status: string) => status === 'confirmed' || status === 'suggested'
 
 export default function MobileTaskAssignmentWorkbench({
   open,
@@ -62,12 +64,15 @@ export default function MobileTaskAssignmentWorkbench({
   const [outcome, setOutcome] = useState<AssignmentOutcome | null>(null)
   const dragRef = useRef<{ active: boolean; select: boolean }>({ active: false, select: true })
   const suppressClickRef = useRef(false)
+  const loadRequestRef = useRef(0)
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current
     setLoading(true)
     setError('')
     try {
       const result = await getMobileTaskAssignmentWorkbench(parserType)
+      if (requestId !== loadRequestRef.current) return
       setCandidates(result.data)
       setCommunities(result.communities)
       setInspectors(result.inspectors_by_community)
@@ -90,9 +95,10 @@ export default function MobileTaskAssignmentWorkbench({
         return new Set([...current].filter(key => valid.has(key)))
       })
     } catch (reason: any) {
+      if (requestId !== loadRequestRef.current) return
       setError(reason?.response?.data?.detail || '未分配数据读取失败')
     } finally {
-      setLoading(false)
+      if (requestId === loadRequestRef.current) setLoading(false)
     }
   }, [parserType])
 
@@ -137,7 +143,7 @@ export default function MobileTaskAssignmentWorkbench({
   const inspectorOptions = inspectors[community] || []
   const assignableRemainingCount = useMemo(
     () => candidates.filter(item => (
-      item.match_status === 'confirmed'
+      isAssignableMatch(item.match_status)
       && (inspectors[item.community] || []).length > 0
     )).length,
     [candidates, inspectors],
@@ -148,7 +154,7 @@ export default function MobileTaskAssignmentWorkbench({
   )
   const selectedInCommunity = useMemo(
     () => inspectorOptions.length > 0
-      ? selectedVisible.filter(item => item.match_status === 'confirmed')
+      ? selectedVisible.filter(item => isAssignableMatch(item.match_status))
       : [],
     [inspectorOptions.length, selectedVisible],
   )
@@ -208,12 +214,12 @@ export default function MobileTaskAssignmentWorkbench({
       if (skipped || failed) message.warning(`另有 ${skipped + failed} 条数据已变化或写入失败，工作台已刷新`)
       setAssignOpen(false)
       setInspector(undefined)
-      await load()
-      await onChanged()
+      void load()
+      void Promise.resolve(onChanged())
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '分配中断，已成功的数据不会重复分配')
-      await load()
-      await onChanged()
+      void load()
+      void Promise.resolve(onChanged())
     } finally {
       setSaving(false)
     }
@@ -226,7 +232,7 @@ export default function MobileTaskAssignmentWorkbench({
         rowKeys: candidates
           .filter(candidate => (
             candidate.community === item.value
-            && candidate.match_status === 'confirmed'
+            && isAssignableMatch(candidate.match_status)
           ))
           .map(candidate => candidate.row_key),
       }))
@@ -271,12 +277,12 @@ export default function MobileTaskAssignmentWorkbench({
       }
       message.success(`已按社区平均分配 ${updated} 条剩余数据`)
       if (skipped || failed) message.warning(`另有 ${skipped + failed} 条数据已变化或写入失败，工作台已刷新`)
-      await load()
-      await onChanged()
+      void load()
+      void Promise.resolve(onChanged())
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '平均分配中断，已成功的数据不会重复分配')
-      await load()
-      await onChanged()
+      void load()
+      void Promise.resolve(onChanged())
     } finally {
       setSaving(false)
     }
@@ -302,8 +308,8 @@ export default function MobileTaskAssignmentWorkbench({
           const result = await cancelMobileTaskAssignments(parserType, community)
           message.success(`已撤销 ${result.updated} 条分配`)
           if (result.skipped) message.warning(`另有 ${result.skipped} 条来源异常任务未处理`)
-          await load()
-          await onChanged()
+          void load()
+          void Promise.resolve(onChanged())
         } catch (reason: any) {
           setError(reason?.response?.data?.detail || '撤销分配失败')
         } finally {
@@ -333,7 +339,7 @@ export default function MobileTaskAssignmentWorkbench({
       closable
       closeIcon={<CloseOutlined />}
       onCancel={close}
-      destroyOnClose
+      destroyOnClose={false}
       className="mobile-task-assignment-modal"
       style={{ top: 0, maxWidth: '100vw', paddingBottom: 0 }}
       styles={{
@@ -357,7 +363,7 @@ export default function MobileTaskAssignmentWorkbench({
             onClick={() => setSelected(current => {
               const next = new Set(current)
                 visible
-                  .filter(item => item.match_status === 'confirmed')
+                  .filter(item => isAssignableMatch(item.match_status))
                   .forEach(item => next.add(item.row_key))
                 return next
               })}
@@ -410,25 +416,27 @@ export default function MobileTaskAssignmentWorkbench({
                 setSelected(new Set())
               }}
             />
-            <span>只有“已人工确认”的任务可以选择和平均分配。</span>
+            <span>“自动匹配”和“已人工确认”的任务可直接分配。</span>
           </div>
         )}
-        {community && !inspectorOptions.length && visible.length > 0 && <Alert type="warning" showIcon message="该社区当前没有可用的在岗核查人，数据暂时不能分配" />}
-        {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>刷新</Button>} />}
-        {limited && !error && (
-          <Alert
-            type="warning"
-            showIcon
-            message={`当前有 ${availableTotal} 条未分配数据，暂显示前 ${displayLimit} 条。分配完成后请刷新继续处理。`}
-            action={<Button size="small" onClick={() => void load()}>刷新下一批</Button>}
-          />
-        )}
-        {progress && (
-          <div className="mobile-task-assignment-workbench__progress">
+        <div className="mobile-task-assignment-workbench__notice" aria-live="polite">
+          {community && !inspectorOptions.length && visible.length > 0 && <Alert type="warning" showIcon message="该社区当前没有可用的在岗核查人，数据暂时不能分配" />}
+          {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void load()}>刷新</Button>} />}
+          {limited && !error && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`当前有 ${availableTotal} 条未分配数据，暂显示前 ${displayLimit} 条。分配完成后请刷新继续处理。`}
+              action={<Button size="small" onClick={() => void load()}>刷新下一批</Button>}
+            />
+          )}
+        </div>
+        <div className="mobile-task-assignment-workbench__progress" aria-live="polite">
+          {progress ? <>
             <Progress percent={Math.round(progress.processed / progress.total * 100)} status={saving ? 'active' : progress.failed ? 'exception' : 'normal'} />
             <span>已处理 {progress.processed}/{progress.total}，成功 {progress.updated}，跳过 {progress.skipped}，失败 {progress.failed}</span>
-          </div>
-        )}
+          </> : <span className="mobile-task-assignment-workbench__progress-idle">可拖动或点击选择待分配任务</span>}
+        </div>
         {outcome && (outcome.skipped.length > 0 || outcome.failed.length > 0) && (
           <Alert
             type={outcome.failed.length ? 'error' : 'warning'}
@@ -444,12 +452,12 @@ export default function MobileTaskAssignmentWorkbench({
         )}
 
         <div className="mobile-task-assignment-workbench__scroll">
-          <Spin spinning={loading || saving}>
+          <Spin spinning={loading && candidates.length === 0}>
             {visible.length ? (
               <div className="mobile-task-assignment-grid" onContextMenu={event => event.preventDefault()}>
               {visible.map(item => {
                 const checked = selected.has(item.row_key)
-                const canAssign = inspectorOptions.length > 0 && item.match_status === 'confirmed'
+                const canAssign = inspectorOptions.length > 0 && isAssignableMatch(item.match_status)
                 const matchStatus = MATCH_STATUS_LABELS[item.match_status] || MATCH_STATUS_LABELS.unmatched
                 return (
                   <button
@@ -498,12 +506,12 @@ export default function MobileTaskAssignmentWorkbench({
           </Spin>
         </div>
 
-        {selectedInCommunity.length > 0 && (
-          <footer className="mobile-task-assignment-workbench__footer">
+        <footer className={`mobile-task-assignment-workbench__footer${selectedInCommunity.length ? '' : ' is-idle'}`}>
+          {selectedInCommunity.length > 0 ? <>
             <span>已选择 {selectedInCommunity.length} 条 · {community}</span>
             <Button type="primary" size="large" onClick={() => setAssignOpen(true)}>分配核查人</Button>
-          </footer>
-        )}
+          </> : <span>请选择可分配的任务</span>}
+        </footer>
       </div>
 
       <Modal
