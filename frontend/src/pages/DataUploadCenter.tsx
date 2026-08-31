@@ -30,6 +30,7 @@ import {
 
 const { Dragger } = Upload
 const MAX_PHOTO_ZIP_BYTES = 200 * 1024 * 1024
+const MAX_SELF_OWNED_ZIP_BYTES = 100 * 1024 * 1024
 const MonoWaterfallChart = lazy(
   () => import('../components/charts/MonoBusinessCharts').then(module => ({ default: module.MonoWaterfallChart })),
 )
@@ -114,6 +115,10 @@ export default function DataUploadCenter() {
       setSelfOwnedError('自购自住名单只支持 ZIP 文件')
       return Upload.LIST_IGNORE
     }
+    if (file.size > MAX_SELF_OWNED_ZIP_BYTES) {
+      setSelfOwnedError('自购自住名单 ZIP 不能超过 100MB')
+      return Upload.LIST_IGNORE
+    }
     setSelfOwnedFile(file)
     setSelfOwnedFileList([selectedUploadFile(file)])
     return false
@@ -128,7 +133,14 @@ export default function DataUploadCenter() {
       setSelfOwnedFile(null)
       setSelfOwnedFileList([])
     } catch (error: any) {
-      setSelfOwnedError(error?.response?.data?.detail || '自购自住名单导入失败，请稍后重试')
+      setSelfOwnedError(
+        error?.response?.data?.detail
+          || (error?.response?.status === 413
+            ? '自购自住名单 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
+            : error?.code === 'ECONNABORTED'
+              ? '自购自住名单上传或处理超时，请稍后重试'
+              : '自购自住名单导入失败，请稍后重试'),
+      )
     } finally {
       setSelfOwnedLoading(false)
     }

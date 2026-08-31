@@ -42,6 +42,21 @@ test('照片批次上传使用长超时并明确提示网关大小限制', () =>
   assert.match(pageSource, /照片 ZIP 上传或解析超时/)
 })
 
+test('自购自住名单上传遵守后端大小限制并明确提示网关拒绝', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataUploadCenter.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /MAX_SELF_OWNED_ZIP_BYTES = 100 \* 1024 \* 1024/)
+  assert.match(pageSource, /file\.size > MAX_SELF_OWNED_ZIP_BYTES/)
+  assert.match(pageSource, /自购自住名单 ZIP 不能超过 100MB/)
+  assert.match(pageSource, /error\?\.response\?\.status === 413/)
+  assert.match(pageSource, /自购自住名单 ZIP 超过服务器上传限制/)
+  assert.match(pageSource, /error\?\.code === 'ECONNABORTED'/)
+  assert.match(pageSource, /自购自住名单上传或处理超时/)
+})
+
 test('历史照片批次修复必须先预览再明确确认', () => {
   const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
   const pageSource = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
