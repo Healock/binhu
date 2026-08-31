@@ -512,14 +512,14 @@ export default function PoliceDispatchWorkbench({
   const deleteActiveBatch = () => {
     if (!activeBatch || !isSuperAdmin) return
     Modal.confirm({
-      title: `删除批次 #${activeBatch.id}？`,
+      title: `撤销批次 #${activeBatch.id}？`,
       content: (
         <div className="space-y-2 text-sm">
-          <p>将删除该批次及其中 {activeBatch.total_count} 条本地审核任务，删除后不可恢复。</p>
-          <p className="text-slate-500">已经开始发布或存在本地来源关联的批次不能删除。</p>
+          <p>将删除该批次及其中 {activeBatch.total_count} 条审核、冲突和发布尝试记录，操作后不可恢复。</p>
+          <p className="text-slate-500">这不会修改本地任务池中已经存在的同主键数据。只要本批次没有成功下发记录，即使当前显示内容冲突，也可以安全撤销。</p>
         </div>
       ),
-      okText: '删除批次',
+      okText: '确认撤销',
       cancelText: '取消',
       okButtonProps: { danger: true, loading: deletingBatch },
       async onOk() {
@@ -833,15 +833,23 @@ export default function PoliceDispatchWorkbench({
             </Button>
           )}
           {isSuperAdmin && activeBatch && (
-            <Button
-              danger
-              icon={<DeleteOutlined />}
-              loading={deletingBatch}
-              className="shrink-0"
-              onClick={deleteActiveBatch}
+            <Tooltip
+              title={activeBatch.counts.published > 0
+                ? `已有 ${activeBatch.counts.published} 条任务成功进入本地任务池，需保留批次记录`
+                : '撤销未成功下发的批次；内容冲突和发布尝试记录会一并清理'}
             >
-              <span className="hidden sm:inline">删除批次</span>
-            </Button>
+              <span className="shrink-0">
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={deletingBatch}
+                  disabled={activeBatch.counts.published > 0}
+                  onClick={deleteActiveBatch}
+                >
+                  <span className="hidden sm:inline">撤销批次</span>
+                </Button>
+              </span>
+            </Tooltip>
           )}
         </div>
         {activeBatch && (

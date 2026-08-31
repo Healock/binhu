@@ -48,10 +48,10 @@ def test_complete_address_generates_suggestion_without_overwriting_original():
     assert original == "松陵芦荡路1288号芦风华庭11栋1502室"
 
 
-def test_alias_and_incomplete_address_remain_reviewable_candidates():
+def test_alias_and_incomplete_address_with_one_candidate_is_automatic():
     result = match_address("芦风花庭11号楼", ENTRIES, community_name="长板社区")
     assert result["candidate"]["entry_id"] == 1
-    assert result["status"] in {"suggested", "ambiguous"}
+    assert result["status"] == "suggested"
     assert "小区别名" in result["method"]
 
 
@@ -90,8 +90,39 @@ def test_same_name_in_multiple_communities_and_close_scores_require_review():
     assert result["status"] == "conflict"
     assert "多个社区" in result["reason"]
 
-    ambiguous = match_address("雅园附近东太湖大道", ENTRIES)
-    assert ambiguous["status"] in {"ambiguous", "invalid"}
+    ambiguous_entries = [
+        {
+            **ENTRIES[1],
+            "id": 20,
+            "name": "滨湖雅园",
+            "aliases": ["雅园"],
+            "community_id": 20,
+            "community_name": "横扇社区",
+        },
+        {
+            **ENTRIES[1],
+            "id": 21,
+            "name": "湖畔雅园",
+            "aliases": ["雅园"],
+            "community_id": 20,
+            "community_name": "横扇社区",
+        },
+    ]
+    ambiguous = match_address("雅园东太湖大道1000号", ambiguous_entries)
+    assert ambiguous["status"] == "ambiguous"
+    assert len(ambiguous["candidates"]) == 2
+
+
+def test_duplicate_rows_for_one_logical_small_community_do_not_force_review():
+    duplicate_rows = [
+        {**ENTRIES[0], "id": 30},
+        {**ENTRIES[0], "id": 31, "aliases": ["芦风花庭"]},
+    ]
+    result = match_address("芦荡路1288号11幢", duplicate_rows, community_name="长板社区")
+    assert result["status"] == "suggested"
+    assert len(result["candidates"]) == 1
+    assert result["candidate"]["entry_id"] in {30, 31}
+    assert result["candidate"]["name"] == "芦风华庭"
 
 
 def test_disabled_entries_are_never_candidates():

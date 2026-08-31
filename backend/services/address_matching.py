@@ -13,7 +13,7 @@ from difflib import SequenceMatcher
 from typing import Any, Iterable, Protocol
 
 
-MATCHER_VERSION = "rule-v1"
+MATCHER_VERSION = "rule-v2"
 LOW_INFORMATION_MARKERS = ("派出所", "公司", "厂房", "商场旁", "附近", "日期")
 CHINESE_DIGITS = str.maketrans("零〇一二三四五六七八九", "00123456789")
 
@@ -68,6 +68,40 @@ class AddressCandidate:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def candidate_group_key(candidate: AddressCandidate | dict[str, Any]) -> tuple[str, int | None]:
+    """Return the logical small-community key used to collapse duplicate entries.
+
+    Historical address dictionaries can contain more than one enabled row for
+    the same named small community.  Those rows are alternate evidence for one
+    destination, not separate destinations that should force manual review.
+    """
+    if isinstance(candidate, AddressCandidate):
+        name = candidate.name
+        community_id = candidate.community_id
+    else:
+        name = str(candidate.get("name") or "")
+        raw_community_id = candidate.get("community_id")
+        try:
+            community_id = int(raw_community_id) if raw_community_id is not None else None
+        except (TypeError, ValueError):
+            community_id = None
+    return normalize_address_text(name), community_id
+
+
+def deduplicate_candidates(candidates: Iterable[AddressCandidate]) -> list[AddressCandidate]:
+    """Keep the strongest stable representative for each logical community."""
+    grouped: dict[tuple[str, int | None], AddressCandidate] = {}
+    for candidate in candidates:
+        key = candidate_group_key(candidate)
+        current = grouped.get(key)
+        if current is None or (-candidate.score, candidate.entry_id) < (
+            -current.score,
+            current.entry_id,
+        ):
+            grouped[key] = candidate
+    return sorted(grouped.values(), key=lambda item: (-item.score, item.name, item.entry_id))
 
 
 def _entry_parts(entry: dict[str, Any]) -> dict[str, str]:
@@ -185,8 +219,7 @@ def match_address(
             method="+".join(methods) or "规则",
             reason="；".join(methods) or "字符相似",
         ))
-    candidates.sort(key=lambda item: (-item.score, item.name, item.entry_id))
-    candidates = candidates[:top_n]
+    candidates = deduplicate_candidates(candidates)[:top_n]
     if not candidates:
         if street_conflicts:
             return {
@@ -206,10 +239,17 @@ def match_address(
             "candidates": [], "version": MATCHER_VERSION,
         }
     best = candidates[0]
-    same_name_communities = {item.community_id for item in candidates if item.name == best.name}
+    same_name_communities = {
+        item.community_id
+        for item in candidates
+        if normalize_address_text(item.name) == normalize_address_text(best.name)
+    }
     if len(same_name_communities) > 1:
         status = "conflict"
         reason = "同名小区对应多个社区"
+    elif len(candidates) == 1:
+        status = "suggested"
+        reason = "唯一有效候选，自动匹配"
     elif len(candidates) > 1 and best.score - candidates[1].score < 0.08:
         status = "ambiguous"
         reason = "前两名候选分数接近，需要人工确认"

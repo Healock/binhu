@@ -1724,7 +1724,7 @@ async def delete_batch(
     try:
         async with conn.cursor() as cur:
             await cur.execute("""
-                SELECT id, first_publish_date, publish_started_at
+                SELECT id
                 FROM _police_dispatch_batches
                 WHERE id=%s
                 FOR UPDATE
@@ -1732,32 +1732,74 @@ async def delete_batch(
             batch = await cur.fetchone()
             if not batch:
                 raise HTTPException(404, "批次不存在")
-            if batch[1] is not None or batch[2] is not None:
-                raise HTTPException(
-                    409,
-                    "该批次已经开始发布，不能删除；腾讯表格中的外部结果无法随批次撤销",
-                )
 
             await cur.execute("""
                 SELECT COUNT(task.id),
+                       SUM(task.publish_status='success'),
+                       SUM(task.publish_status='publishing'),
                        SUM(result.id IS NOT NULL),
-                       SUM(task.publish_status IN (
-                           'publishing', 'retryable', 'needs_reconciliation',
-                           'conflict', 'success'
-                       ) OR task.published_row IS NOT NULL
-                         OR task.linked_source_id IS NOT NULL)
+                       SUM(source.id IS NOT NULL
+                           AND source.source_kind='local_dispatch'
+                           AND source.source_ref=CONCAT(
+                               'police_dispatch_task:', task.id
+                           ))
                 FROM _police_dispatch_tasks AS task
                 LEFT JOIN _police_dispatch_publish_results AS result
                   ON result.task_id=task.id
+                LEFT JOIN _online_source_rows AS source
+                  ON source.id=task.linked_source_id
                 WHERE task.batch_id=%s
             """, (batch_id,))
-            task_count, result_count, external_state_count = await cur.fetchone()
-            if int(result_count or 0) or int(external_state_count or 0):
+            (
+                task_count,
+                success_count,
+                publishing_count,
+                result_count,
+                owned_source_count,
+            ) = await cur.fetchone()
+            await cur.execute("""
+                SELECT COUNT(*),
+                       SUM(status IN ('pending','running'))
+                FROM _police_dispatch_publish_runs
+                WHERE batch_id=%s
+            """, (batch_id,))
+            run_count, active_run_count = await cur.fetchone()
+            if int(publishing_count or 0) or int(active_run_count or 0):
                 raise HTTPException(
                     409,
-                    "该批次已经存在发布记录或腾讯来源关联，不能删除",
+                    "该批次仍有后台发布任务正在处理，请稍后刷新后再撤销",
+                )
+            published_count = max(
+                int(success_count or 0),
+                int(owned_source_count or 0),
+            )
+            if published_count:
+                raise HTTPException(
+                    409,
+                    f"该批次已有 {published_count} 条任务成功进入本地任务池，"
+                    "不能整体删除，以免误删已下发任务",
                 )
 
+            await cur.execute("""
+                DELETE item FROM _police_dispatch_publish_run_items AS item
+                JOIN _police_dispatch_publish_runs AS run
+                  ON run.id=item.run_id
+                WHERE run.batch_id=%s
+            """, (batch_id,))
+            await cur.execute(
+                "DELETE FROM _police_dispatch_publish_runs WHERE batch_id=%s",
+                (batch_id,),
+            )
+            await cur.execute("""
+                DELETE result FROM _police_dispatch_publish_results AS result
+                JOIN _police_dispatch_tasks AS task
+                  ON task.id=result.task_id
+                WHERE task.batch_id=%s
+            """, (batch_id,))
+            await cur.execute(
+                "DELETE FROM _police_dispatch_import_issues WHERE batch_id=%s",
+                (batch_id,),
+            )
             await cur.execute(
                 "DELETE FROM _police_dispatch_tasks WHERE batch_id=%s",
                 (batch_id,),
@@ -1778,11 +1820,15 @@ async def delete_batch(
         "police_dispatch.delete",
         target_type="police_dispatch_batch",
         target_name=str(batch_id),
-        detail={"row_count": int(task_count or 0)},
+        detail={
+            "row_count": int(task_count or 0),
+            "publish_result_count": int(result_count or 0),
+            "publish_run_count": int(run_count or 0),
+        },
         **request_audit_fields(request),
     )
     return {
-        "message": "批次已删除",
+        "message": "批次已撤销",
         "deleted_task_count": int(task_count or 0),
     }
 
