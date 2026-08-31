@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 from io import BytesIO
+import time
 from typing import Literal
 from urllib.parse import quote
 
@@ -34,6 +36,7 @@ from services.online_source import (
     active_source_sql_filter,
     json_value,
     rebuild_projection,
+    rebuild_projection_rows,
 )
 from services.online_local_writeback import (
     apply_local_system_changes,
@@ -68,6 +71,10 @@ from services.task_workflow import (
     TASK_WORKFLOWS,
 )
 from services.task_graph import online_task_blocked
+from services.task_assignment_responsibility import (
+    capture_first_assignment,
+    record_internal_transfer,
+)
 from services.unverifiable_review import (
     ACTIVE_STATES as UNVERIFIABLE_ACTIVE_STATES,
     DEEP_EXTENSION,
@@ -76,6 +83,7 @@ from services.unverifiable_review import (
     INITIAL_EXTENSION,
     INITIAL_PENDING,
     STATE_LABELS as UNVERIFIABLE_STATE_LABELS,
+    UNVERIFIABLE_REVIEW_TYPES,
     apply_decision,
     prepare_decision,
     review_events_for_flow,
@@ -85,7 +93,7 @@ from services.unverifiable_review import (
 from services.audit import record_admin_audit, request_audit_fields
 from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 from config import settings
-from services.local_source import local_data_source_enabled
+from services.local_source import local_data_source_enabled, local_row_hash
 from services.watch_matching import task_watch_payload
 from services.residence_platform import ResidencePlatformError
 from services.residence_status_scan import (
@@ -109,6 +117,7 @@ from services.residence_status_scan import _load_current_target, _lookup_registr
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
+logger = logging.getLogger(__name__)
 FlowScope = Literal["mine", "community", "all"]
 TaskStatus = Literal[
     "pending",
@@ -465,6 +474,14 @@ class CancelAssignmentsRequest(BaseModel):
     community: str = Field(default="", max_length=200)
 
 
+class InternalTransferRequest(BaseModel):
+    target_community: str = Field(min_length=1, max_length=200)
+    target_leader: str = Field(default="", max_length=100)
+    expected_row_key: str = Field(min_length=1, max_length=500)
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
+
+
 class TaskSearch(BaseModel):
     scope: FlowScope = "mine"
     status: TaskStatus = "pending"
@@ -760,16 +777,16 @@ def _registration_update_hooks(
                     property_id=int(property_row["id"]),
                     property_version=int(property_row["version"]),
                     source_revision=int(revision),
-                    source_row_hash=str(source["row_hash"] or ""),
+                    source_row_hash=local_row_hash(after),
                     identity_hmac=str(projection_context[0] or ""),
                     task_community=str(projection_context[1] or ""),
                     user_id=int(user.get("id")) if user.get("id") else None,
                 )
             else:
                 # A normal edit on an already-linked pending task advances the
-                # local source revision before Tencent is contacted.  Carry
-                # the link across that exact expected revision so the scanner
-                # cannot mistake our own queued edit for an external change.
+                # local source revision and content hash in the same transaction.
+                # Carry the link across that exact change so the scanner cannot
+                # mistake the platform's own edit for an external source change.
                 await refresh_registration_source_context_after_writeback(
                     cur,
                     parser_type=parser_type,
@@ -777,7 +794,7 @@ def _registration_update_hooks(
                     previous_revision=int(source["revision"]),
                     previous_row_hash=str(source["row_hash"] or ""),
                     current_revision=int(revision),
-                    current_row_hash=str(source["row_hash"] or ""),
+                    current_row_hash=local_row_hash(after),
                 )
         elif action == "cancel":
             await cancel_registration_link(
@@ -1504,7 +1521,7 @@ async def _list_analysis_tasks_data(
     conn,
 ) -> dict:
     parser_types = list(dict.fromkeys(data.parser_types))
-    if not parser_types or any(parser_type not in TASK_WORKFLOWS for parser_type in parser_types):
+    if not parser_types or any(parser_type not in UNVERIFIABLE_REVIEW_TYPES for parser_type in parser_types):
         raise HTTPException(400, "存在尚未接入研判工作台的业务表")
     context = await _flow_context(conn, user)
     where_sql, query_params = _analysis_task_where(context, data)
@@ -2502,8 +2519,8 @@ async def get_mobile_task_analysis_filter_options(
     user: dict = Depends(require_permission(ONLINE_TASK_MANAGE)),
     conn=Depends(get_db),
 ):
-    parser_types = list(dict.fromkeys(parser_type or list(MOBILE_TASK_TYPES)))
-    if any(value not in TASK_WORKFLOWS for value in parser_types):
+    parser_types = list(dict.fromkeys(parser_type or list(UNVERIFIABLE_REVIEW_TYPES)))
+    if any(value not in UNVERIFIABLE_REVIEW_TYPES for value in parser_types):
         raise HTTPException(400, "存在尚未接入研判工作台的业务表")
     context = await _flow_context(conn, user)
     data = AnalysisTaskSearch(
@@ -2760,9 +2777,19 @@ async def select_mobile_tasks_for_assignment(
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
 
     where_sql, query_params = _task_where(context, parser_type, data)
-    assignment_source_condition = "projection.conflict=0 AND projection.address_match_status='confirmed'"
+    assignment_source_condition = (
+        "projection.conflict=0 "
+        "AND projection.address_match_status IN ('confirmed','suggested') "
+        "AND projection.small_community_id IS NOT NULL "
+        "AND TRIM(COALESCE(projection.community,''))<>''"
+    )
     if local_data_source_enabled():
-        assignment_source_condition = f"{_active_source_count_sql(parser_type)} <= 1 AND projection.address_match_status='confirmed'"
+        assignment_source_condition = (
+            f"{_active_source_count_sql(parser_type)} <= 1 "
+            "AND projection.address_match_status IN ('confirmed','suggested') "
+            "AND projection.small_community_id IS NOT NULL "
+            "AND TRIM(COALESCE(projection.community,''))<>''"
+        )
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
@@ -2913,7 +2940,7 @@ async def confirm_mobile_task_address_match(
                     int(entry[0]), int(user["id"]), parser_type, row_key,
                 ),
             )
-            await rebuild_projection(cur, parser_type)
+            await rebuild_projection_rows(cur, parser_type, [row_key])
             result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
         await conn.commit()
     except Exception:
@@ -3339,6 +3366,7 @@ async def _mobile_task_detail_data(
                 ]
             sources.append({
                 "id": int(source_id),
+                "row_key": row_key,
                 "physical_row": int(physical_row),
                 "source_available": int(physical_row) > 0,
                 "values": {
@@ -3769,6 +3797,63 @@ async def get_mobile_task_detail(
     return await _mobile_task_detail_data(parser_type, row_key, user, conn)
 
 
+async def _mobile_task_save_context(conn, parser_type: str, row_key: str) -> dict:
+    """Load only the task state changed by an incremental save."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT values_json,source_count,conflict,pending_state,task_state "
+            "FROM _online_source_projection WHERE parser_type=%s AND row_key=%s",
+            (parser_type, row_key),
+        )
+        projection = await cur.fetchone()
+        if not projection:
+            return {}
+        values = json_value(projection[0], {})
+        registration_link = (await registration_links_by_rows(
+            cur,
+            parser_type,
+            [row_key],
+        )).get(row_key)
+        review_flow = (await review_flows_by_rows(
+            cur,
+            [(parser_type, row_key)],
+        )).get((parser_type, row_key))
+        address_match = (await _address_matches_by_rows(
+            cur,
+            parser_type,
+            [row_key],
+        )).get(row_key)
+    source_count = int(projection[1] or 0)
+    conflict = bool(projection[2])
+    pending = bool(str(projection[3] or ""))
+    task_state_value = str(projection[4] or "")
+    task = _task_record(
+        parser_type,
+        row_key,
+        values,
+        source_count,
+        conflict,
+        pending,
+        task_state_value,
+        registration_link=registration_link,
+        review_flow=review_flow,
+        address_match=address_match,
+    )
+    return {
+        "task_update": {
+            key: task[key]
+            for key in (
+                "row_key", "summary", "community", "inspector", "state",
+                "needs_review", "review_stage", "review_flow", "source_count",
+                "conflict", "pending_sync", "sync_state", "priority",
+                "registration_link", "address_match",
+            )
+        },
+        "registration_link": registration_link,
+        "review_flow": review_flow,
+    }
+
+
 @router.post("/{parser_type}/{row_key}/registration/confirm")
 async def manually_confirm_registration(
     parser_type: str,
@@ -3923,7 +4008,10 @@ async def update_mobile_task(
     )
     if registration_mode:
         wake_residence_lookup_scheduler()
-    return result
+    return {
+        **result,
+        **await _mobile_task_save_context(conn, parser_type, str(result["row_key"])),
+    }
 
 
 @router.post("/{parser_type}/source-rows/{source_id}/claim")
@@ -3986,8 +4074,168 @@ async def claim_mobile_task(
     )
     return {
         **result,
+        **await _mobile_task_save_context(conn, parser_type, str(result["row_key"])),
         "message": "已领取任务并保存到本地任务池",
     }
+
+
+@router.get("/{parser_type}/internal-transfer-options")
+async def get_internal_transfer_options(
+    parser_type: str,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    _require_unverifiable_reviewer(user)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT community.name,member.name
+            FROM _communities community
+            JOIN _departments department
+              ON department.community_id=community.id
+             AND department.department_type='community'
+             AND department.is_active=1
+            LEFT JOIN _grid_member_department_links link
+              ON link.department_id=department.id
+            LEFT JOIN _grid_members member
+              ON member.id=link.member_id
+             AND member.position='组长'
+             AND member.status='在岗'
+            WHERE community.is_active=1
+            ORDER BY community.name,member.name
+            """
+        )
+        grouped: dict[str, list[str]] = {}
+        for community, leader in await cur.fetchall():
+            name = str(community or "").strip()
+            if not name:
+                continue
+            grouped.setdefault(name, [])
+            leader_name = str(leader or "").strip()
+            if leader_name and leader_name not in grouped[name]:
+                grouped[name].append(leader_name)
+    return {
+        "data": [
+            {"community": community, "leaders": leaders}
+            for community, leaders in grouped.items()
+        ],
+    }
+
+
+@router.post("/{parser_type}/source-rows/{source_id}/internal-transfer")
+async def transfer_mobile_task_internally(
+    parser_type: str,
+    source_id: int,
+    data: InternalTransferRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    scoped_user = _require_unverifiable_reviewer(user)
+    target_community = data.target_community.strip()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT row_key,row_hash FROM _online_source_rows source "
+            "WHERE source.id=%s AND source.parser_type=%s AND source.archived_at IS NULL "
+            f"{active_source_sql_filter(parser_type)}",
+            (source_id, parser_type),
+        )
+        source_row = await cur.fetchone()
+        if not source_row:
+            raise HTTPException(404, "本地任务来源不存在")
+        if str(source_row[0] or "") != data.expected_row_key:
+            raise HTTPException(409, "任务主键已变化，请刷新后重试")
+        if str(source_row[1] or "") != data.expected_row_hash:
+            raise HTTPException(409, "任务已被其他人更新，请刷新后重试")
+        await cur.execute(
+            """
+            SELECT member.name
+            FROM _communities community
+            JOIN _departments department
+              ON department.community_id=community.id
+             AND department.department_type='community'
+             AND department.is_active=1
+            JOIN _grid_member_department_links link
+              ON link.department_id=department.id
+            JOIN _grid_members member
+              ON member.id=link.member_id
+             AND member.position='组长'
+             AND member.status='在岗'
+            WHERE community.is_active=1 AND community.name=%s
+            ORDER BY member.name
+            """,
+            (target_community,),
+        )
+        leaders = list(dict.fromkeys(
+            str(row[0] or "").strip() for row in await cur.fetchall()
+            if str(row[0] or "").strip()
+        ))
+    if not leaders:
+        raise HTTPException(409, "目标社区没有在岗组长，请先维护人员配置")
+    if len(leaders) == 1:
+        target_leader = leaders[0]
+    else:
+        target_leader = data.target_leader.strip()
+        if not target_leader:
+            raise HTTPException(422, "目标社区有多名在岗组长，请明确选择接手组长")
+        if target_leader not in leaders:
+            raise HTTPException(400, "所选人员不是目标社区的在岗组长")
+
+    workflow = TASK_WORKFLOWS[parser_type]
+    community_field = get_parser(parser_type).COMMUNITY_COLUMN
+
+    def validate_transfer(current: dict) -> None:
+        result = str(current.get(workflow.result_field) or "").strip()
+        if result != "移交（所内）":
+            raise HTTPException(409, "只有核查结果为“移交（所内）”的任务可以转交")
+
+    async def transfer_callback(
+        *, cur, source, before, after, row_key_before, row_key_after, revision,
+    ):
+        del after, row_key_before
+        try:
+            await record_internal_transfer(
+                cur,
+                parser_type=parser_type,
+                row_key=row_key_after,
+                source_id=int(source["id"]),
+                before=before,
+                target_community=target_community,
+                target_leader=target_leader,
+                operator_user_id=int(scoped_user.get("id")) if scoped_user.get("id") else None,
+                source_revision=revision,
+                community_field=community_field,
+            )
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    result = await queue_source_fields(
+        parser_type=parser_type,
+        source_id=source_id,
+        changes={community_field: target_community, "核查人": target_leader},
+        base_values={},
+        expected_revision=data.expected_revision,
+        request=request,
+        user=scoped_user,
+        conn=conn,
+        explicit_text_edit=True,
+        current_values_validator=validate_transfer,
+        transaction_callback=transfer_callback,
+        audit_action="internal_transfer_local",
+    )
+    await record_admin_audit(
+        scoped_user,
+        "mobile_tasks.internal_transfer",
+        target_type="mobile_task",
+        target_name=f"{parser_type}:{source_id}",
+        detail={"target_community": target_community, "target_leader": target_leader},
+        **request_audit_fields(request),
+    )
+    return {**result, "target_community": target_community, "target_leader": target_leader}
 
 
 @router.post("/{parser_type}/source-rows/{source_id}/resolve-sync-conflict")
@@ -4091,13 +4339,8 @@ async def bulk_assign_mobile_tasks(
     user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
-    """Manually assign selected unassigned tasks to one or all local members.
-
-    Local mode updates one bounded chunk in a single transaction and rebuilds
-    the projection once.  The legacy compatibility mode keeps the physical-row
-    validation path.  ``balanced_offset`` and ``balanced_total`` make retried
-    chunks deterministic.
-    """
+    """Assign one bounded local task chunk with one incremental projection pass."""
+    started_at = time.monotonic()
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
     user = _require_task_edit_user(user)
@@ -4229,8 +4472,8 @@ async def bulk_assign_mobile_tasks(
         if item["source_count"] != 1:
             skipped.append({"row_key": row_key, "reason": "存在重复本地来源，请先处理来源异常"})
             continue
-        if item["address_match_status"] != "confirmed" or not item["small_community_id"]:
-            skipped.append({"row_key": row_key, "reason": "小区归属尚未人工确认，请先处理地址匹配"})
+        if item["address_match_status"] not in {"confirmed", "suggested"} or not item["small_community_id"]:
+            skipped.append({"row_key": row_key, "reason": "小区归属未形成唯一可靠结果，请先处理地址匹配"})
             continue
         if not source_rows_by_key.get(row_key):
             skipped.append({"row_key": row_key, "reason": "找不到来源行"})
@@ -4252,6 +4495,7 @@ async def bulk_assign_mobile_tasks(
 
     update_count = 0
     failures: list[dict[str, str]] = []
+    successful_keys: list[str] = []
     successful_assignment_counts = {name: 0 for name in assignment_counts}
     if local_data_source_enabled():
         await conn.begin()
@@ -4285,14 +4529,24 @@ async def bulk_assign_mobile_tasks(
                         await cur.execute("ROLLBACK TO SAVEPOINT bulk_assign_task")
                         failures.append({"row_key": row_key, "reason": "任务已变化，请刷新后重试"})
                     else:
+                        await capture_first_assignment(
+                            cur,
+                            parser_type=parser_type,
+                            row_key=row_key,
+                            community=projection_by_key[row_key]["community"],
+                            inspector=assigned_inspector,
+                            actor_user_id=int(user.get("id")) if user.get("id") else None,
+                            source="bulk_assignment",
+                        )
                         update_count += 1
+                        successful_keys.append(row_key)
                         successful_assignment_counts[assigned_inspector] = (
                             successful_assignment_counts.get(assigned_inspector, 0) + 1
                         )
                     finally:
                         await cur.execute("RELEASE SAVEPOINT bulk_assign_task")
-                if update_count:
-                    await rebuild_projection(cur, parser_type)
+                if successful_keys:
+                    await rebuild_projection_rows(cur, parser_type, successful_keys)
             await conn.commit()
         except Exception:
             await conn.rollback()
@@ -4332,6 +4586,7 @@ async def bulk_assign_mobile_tasks(
                     break
             if task_ok:
                 update_count += 1
+                successful_keys.append(row_key)
                 successful_assignment_counts[assigned_inspector] = (
                     successful_assignment_counts.get(assigned_inspector, 0) + 1
                 )
@@ -4359,6 +4614,17 @@ async def bulk_assign_mobile_tasks(
             "assignment_counts": successful_assignment_counts,
         },
         **request_audit_fields(request),
+    )
+    logger.info(
+        "mobile_task_bulk_assignment parser=%s requested=%d eligible=%d "
+        "updated=%d skipped=%d failed=%d duration_ms=%d",
+        parser_type,
+        len(row_keys),
+        len(eligible_keys),
+        result["updated"],
+        result["skipped"],
+        result["failed"],
+        max(0, int((time.monotonic() - started_at) * 1000)),
     )
     return result
 
@@ -4451,7 +4717,11 @@ async def cancel_mobile_task_assignments(
                 except (ValueError, LookupError) as exc:
                     skipped.append({"row_key": str(row_key), "reason": str(exc) or "任务已变化，请刷新后重试"})
             if changed:
-                await rebuild_projection(cur, parser_type)
+                await rebuild_projection_rows(
+                    cur,
+                    parser_type,
+                    [str(row[1]) for row in rows if str(row[1] or "").strip()],
+                )
         await conn.commit()
     except Exception:
         await conn.rollback()

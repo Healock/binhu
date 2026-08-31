@@ -57,11 +57,25 @@ def projection_identity(parser_type: str, values: dict, columns: list[str]) -> s
     return None
 
 
-async def sync_current_task_snapshots(cur, parser_type: str) -> None:
+async def sync_current_task_snapshots(
+    cur,
+    parser_type: str,
+    row_keys: list[str] | None = None,
+) -> None:
     """用当前投影幂等补齐当时有效的人员标签。"""
     if not settings.REGISTRY_FEATURE_ENABLED:
         return
     registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+    normalized_keys = list(dict.fromkeys(
+        str(row_key).strip() for row_key in (row_keys or [])
+        if str(row_key).strip()
+    ))
+    row_filter = ""
+    params: list[object] = [parser_type]
+    if normalized_keys:
+        placeholders = ",".join(["%s"] * len(normalized_keys))
+        row_filter = f" AND projection.row_key IN ({placeholders})"
+        params.extend(normalized_keys)
     await cur.execute(
         f"""
         INSERT IGNORE INTO `{registry}`.online_task_watch_snapshots (
@@ -97,8 +111,9 @@ async def sync_current_task_snapshots(cur, parser_type: str) -> None:
         ) version_info ON version_info.assignment_id=assignment.id
         WHERE projection.parser_type=%s
           AND projection.identity_hmac IS NOT NULL
+          {row_filter}
         """,
-        (parser_type,),
+        params,
     )
 
 

@@ -912,7 +912,7 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
   assert.match(styleSource, /mobile-task-assignment-workbench[\s\S]*overflow: hidden/)
 })
 
-test('任务匹配只生成建议，分配前必须人工确认小区归属', () => {
+test('唯一可靠建议作为自动匹配直接参与分配', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
@@ -936,8 +936,12 @@ test('任务匹配只生成建议，分配前必须人工确认小区归属', ()
   assert.match(tableSource, /confirmMobileTaskAddressMatch/)
   assert.match(detailSource, /原始地址只读保留，不会被匹配结果覆盖/)
   assert.match(detailSource, /候选小区/)
-  assert.match(workbenchSource, /item\.match_status === 'confirmed'/)
-  assert.match(workbenchSource, /只有“已人工确认”的任务可以选择和平均分配/)
+  assert.match(workbenchSource, /status === 'confirmed' \|\| status === 'suggested'/)
+  assert.match(workbenchSource, /自动匹配/)
+  assert.match(workbenchSource, /“自动匹配”和“已人工确认”的任务可直接分配/)
+  for (const blocked of ['ambiguous', 'conflict', 'unmatched', 'invalid']) {
+    assert.match(workbenchSource, new RegExp(`${blocked}:`))
+  }
 })
 
 test('本地任务详情不再把历史腾讯来源当成编辑前置条件', () => {
@@ -1000,9 +1004,14 @@ test('指令核查编辑器使用防抖自动保存并提供失败重试', () =>
   assert.match(tableSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 700\)/)
   assert.match(tableSource, /保存失败[\s\S]*?重试/)
   assert.match(tableSource, /autosaveSequenceRef/)
-  assert.match(detailSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 700\)/)
+  assert.match(detailSource, /scheduleAutoSave\(700\)/)
   assert.match(detailSource, /savingRef/)
   assert.match(detailSource, /formGenerationRef/)
+  assert.match(detailSource, /task_update/)
+  assert.match(detailSource, /registration_link/)
+  assert.match(detailSource, /review_flow/)
+  assert.match(detailSource, /expected_row_key: selectedSource\.row_key \|\| rowKey/)
+  assert.doesNotMatch(detailSource, />\s*保存修改\s*</)
 })
 
 test('批量分配界面展示逐条跳过和失败原因', () => {

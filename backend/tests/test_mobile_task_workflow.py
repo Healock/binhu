@@ -16,6 +16,7 @@ from routers.mobile_tasks import (
     BulkAssignmentRequest,
     EMPTY_FILTER_VALUE,
     InlineEditorRequest,
+    InternalTransferRequest,
     TaskSearch,
     TaskBatchUpdate,
     _address_order,
@@ -45,8 +46,10 @@ from routers.mobile_tasks import (
     is_flow_task_admin,
     is_flow_task_elevated,
     require_flow_user,
+    transfer_mobile_task_internally,
 )
 from services.parsers import get_parser
+from services.local_source import local_row_hash
 from services.task_workflow import TASK_WORKFLOWS, task_state
 
 
@@ -67,6 +70,43 @@ class FilterOptionsCursor:
 
     async def fetchall(self):
         return self.rows
+
+
+class InternalTransferCursor:
+    def __init__(self, *, row_key="row-1", row_hash="hash-1", leaders=("组长甲",)):
+        self.row_key = row_key
+        self.row_hash = row_hash
+        self.leaders = list(leaders)
+        self.last_sql = ""
+        self.executions = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def execute(self, sql, params=()):
+        self.last_sql = " ".join(str(sql).split())
+        self.executions.append((self.last_sql, params))
+
+    async def fetchone(self):
+        if self.last_sql.startswith("SELECT row_key,row_hash"):
+            return (self.row_key, self.row_hash)
+        return None
+
+    async def fetchall(self):
+        if self.last_sql.startswith("SELECT member.name"):
+            return [(leader,) for leader in self.leaders]
+        return []
+
+
+class InternalTransferConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
 
 
 class MobileTaskWorkflowTests(unittest.TestCase):
@@ -597,7 +637,7 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"inspector_counts_by_community"', source)
         self.assertEqual(MAX_BULK_ASSIGNMENT_TASKS, 2000)
 
-    def test_assignment_requires_manually_confirmed_small_community(self):
+    def test_assignment_accepts_confirmed_or_unique_automatic_small_community(self):
         from routers.mobile_tasks import (
             bulk_assign_mobile_tasks,
             select_mobile_tasks_for_assignment,
@@ -605,9 +645,15 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
 
         selection_source = inspect.getsource(select_mobile_tasks_for_assignment)
         bulk_source = inspect.getsource(bulk_assign_mobile_tasks)
-        self.assertIn("projection.address_match_status='confirmed'", selection_source)
-        self.assertIn('item["address_match_status"] != "confirmed"', bulk_source)
-        self.assertIn("小区归属尚未人工确认", bulk_source)
+        self.assertIn(
+            "projection.address_match_status IN ('confirmed','suggested')",
+            selection_source,
+        )
+        self.assertIn(
+            'item["address_match_status"] not in {"confirmed", "suggested"}',
+            bulk_source,
+        )
+        self.assertIn("小区归属未形成唯一可靠结果", bulk_source)
 
     def test_bulk_assignment_requires_bounded_chunks(self):
         request = BulkAssignmentRequest(
@@ -675,7 +721,12 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         local_branch = source.split("if local_data_source_enabled():", 2)[-1]
         self.assertIn('action="bulk_assign_local"', local_branch)
         self.assertIn("rebuild=False", local_branch)
-        self.assertIn("await rebuild_projection(cur, parser_type)", local_branch)
+        self.assertIn(
+            "await rebuild_projection_rows(cur, parser_type, successful_keys)",
+            local_branch,
+        )
+        self.assertIn("successful_keys.append(row_key)", local_branch)
+        self.assertNotIn("await rebuild_projection(cur, parser_type)", local_branch)
         self.assertIn("SAVEPOINT bulk_assign_task", local_branch)
         self.assertIn('item["conflict"] = active_count > 1', source)
         self.assertIn('item["source_count"] != 1', source)
@@ -840,7 +891,7 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
             previous_revision=7,
             previous_row_hash="a" * 64,
             current_revision=8,
-            current_row_hash="a" * 64,
+            current_row_hash=local_row_hash({"核查结果": "待登记", "核查人": "组员甲"}),
         )
 
     async def test_leader_can_only_assign_active_member_in_same_community(self):
@@ -921,6 +972,10 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
                 }),
             ),
             patch("routers.mobile_tasks.queue_source_fields", queue_mock),
+            patch(
+                "routers.mobile_tasks._mobile_task_save_context",
+                AsyncMock(return_value={"task_update": {"inspector": "组员甲"}}),
+            ),
             patch("routers.mobile_tasks.record_admin_audit", AsyncMock()),
         ):
             result = await claim_mobile_task(
@@ -980,6 +1035,145 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
                     },
                     object(),
                 )
+        self.assertEqual(raised.exception.status_code, 403)
+
+
+class MobileTaskInternalTransferTests(unittest.IsolatedAsyncioTestCase):
+    def make_request(self):
+        request = MagicMock()
+        request.headers = {}
+        request.client = None
+        return request
+
+    def make_user(self, position="基础管控"):
+        return {
+            "id": 7,
+            "username": "reviewer-a",
+            "permissions": ["online.task.manage"],
+            "member": {"name": "基础管控甲", "position": position},
+        }
+
+    async def test_single_leader_transfer_validates_source_and_records_event(self):
+        cursor = InternalTransferCursor(leaders=("组长甲",))
+        queue_mock = AsyncMock(return_value={
+            "row_key": "row-1",
+            "row_hash": "hash-2",
+            "revision": 4,
+        })
+        record_mock = AsyncMock()
+        with (
+            patch("routers.mobile_tasks.queue_source_fields", queue_mock),
+            patch("routers.mobile_tasks.record_internal_transfer", record_mock),
+            patch("routers.mobile_tasks.record_admin_audit", AsyncMock()),
+        ):
+            result = await transfer_mobile_task_internally(
+                "全链条",
+                11,
+                InternalTransferRequest(
+                    target_community="长板",
+                    expected_row_key="row-1",
+                    expected_revision=3,
+                    expected_row_hash="hash-1",
+                ),
+                self.make_request(),
+                self.make_user(),
+                InternalTransferConnection(cursor),
+            )
+
+            kwargs = queue_mock.await_args.kwargs
+            self.assertEqual(kwargs["changes"], {"社区": "长板", "核查人": "组长甲"})
+            kwargs["current_values_validator"]({"核查结果": "移交（所内）"})
+            with self.assertRaises(HTTPException) as raised:
+                kwargs["current_values_validator"]({"核查结果": "已登记"})
+            self.assertEqual(raised.exception.status_code, 409)
+            await kwargs["transaction_callback"](
+                cur=cursor,
+                source={"id": 11},
+                before={"社区": "冬梅", "核查人": "第一核查人"},
+                after={"社区": "长板", "核查人": "组长甲"},
+                row_key_before="row-1",
+                row_key_after="row-1",
+                revision=4,
+            )
+
+        self.assertEqual(result["target_leader"], "组长甲")
+        self.assertEqual(record_mock.await_args.kwargs["community_field"], "社区")
+        self.assertEqual(record_mock.await_args.kwargs["before"]["核查人"], "第一核查人")
+
+    async def test_transfer_rejects_changed_row_key_before_writing(self):
+        queue_mock = AsyncMock()
+        with patch("routers.mobile_tasks.queue_source_fields", queue_mock):
+            with self.assertRaises(HTTPException) as raised:
+                await transfer_mobile_task_internally(
+                    "全链条",
+                    11,
+                    InternalTransferRequest(
+                        target_community="长板",
+                        expected_row_key="old-row",
+                        expected_revision=3,
+                        expected_row_hash="hash-1",
+                    ),
+                    self.make_request(),
+                    self.make_user(),
+                    InternalTransferConnection(InternalTransferCursor()),
+                )
+        self.assertEqual(raised.exception.status_code, 409)
+        queue_mock.assert_not_awaited()
+
+    async def test_transfer_requires_explicit_leader_when_community_has_multiple(self):
+        queue_mock = AsyncMock()
+        with patch("routers.mobile_tasks.queue_source_fields", queue_mock):
+            with self.assertRaises(HTTPException) as raised:
+                await transfer_mobile_task_internally(
+                    "全链条",
+                    11,
+                    InternalTransferRequest(
+                        target_community="长板",
+                        expected_row_key="row-1",
+                        expected_revision=3,
+                        expected_row_hash="hash-1",
+                    ),
+                    self.make_request(),
+                    self.make_user(),
+                    InternalTransferConnection(InternalTransferCursor(
+                        leaders=("组长甲", "组长乙"),
+                    )),
+                )
+        self.assertEqual(raised.exception.status_code, 422)
+        queue_mock.assert_not_awaited()
+
+    async def test_transfer_rejects_community_without_active_leader(self):
+        with self.assertRaises(HTTPException) as raised:
+            await transfer_mobile_task_internally(
+                "全链条",
+                11,
+                InternalTransferRequest(
+                    target_community="长板",
+                    expected_row_key="row-1",
+                    expected_revision=3,
+                    expected_row_hash="hash-1",
+                ),
+                self.make_request(),
+                self.make_user(),
+                InternalTransferConnection(InternalTransferCursor(leaders=())),
+            )
+        self.assertEqual(raised.exception.status_code, 409)
+
+    async def test_ordinary_member_cannot_transfer_task(self):
+        with self.assertRaises(HTTPException) as raised:
+            await transfer_mobile_task_internally(
+                "全链条",
+                11,
+                InternalTransferRequest(
+                    target_community="长板",
+                    expected_row_key="row-1",
+                    expected_revision=3,
+                    expected_row_hash="hash-1",
+                ),
+                self.make_request(),
+                self.make_user(position="组员"),
+                InternalTransferConnection(InternalTransferCursor()),
+            )
         self.assertEqual(raised.exception.status_code, 403)
 
 
