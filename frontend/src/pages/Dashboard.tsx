@@ -286,7 +286,7 @@ export default function Dashboard() {
           },
         ],
       })
-      if (saved) message.success('已导出当前在线汇总数据')
+      if (saved) message.success('已导出当前筛选范围的在线汇总数据')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
     } finally {
