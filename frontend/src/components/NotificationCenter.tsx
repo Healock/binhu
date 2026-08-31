@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  Alert,
   Badge,
   Button,
   Drawer,
@@ -54,6 +55,7 @@ export default function NotificationCenter({ placement = 'sidebar' }: Notificati
   const [unreadCount, setUnreadCount] = useState(0)
   const [personalUnread, setPersonalUnread] = useState(0)
   const [announcementUnread, setAnnouncementUnread] = useState(0)
+  const [loadError, setLoadError] = useState('')
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [form] = Form.useForm<AnnouncementFormValues>()
@@ -64,12 +66,13 @@ export default function NotificationCenter({ placement = 'sidebar' }: Notificati
     if (showLoading) setLoading(true)
     try {
       const result = await getNotifications(50)
+      setLoadError('')
       setNotifications(result.data)
       setUnreadCount(result.unread_count)
       setPersonalUnread(result.personal_unread_count)
       setAnnouncementUnread(result.announcement_unread_count)
     } catch {
-      // 消息中心不打断当前页面，下一轮轮询会重试。
+      setLoadError('消息暂时加载失败，请点击重试；当前页面不会受到影响。')
     } finally {
       if (showLoading) setLoading(false)
     }
@@ -345,6 +348,7 @@ export default function NotificationCenter({ placement = 'sidebar' }: Notificati
           </Space>
         )}
       >
+        {loadError && <Alert className="mb-3" type="warning" showIcon message={loadError} action={<Button size="small" onClick={() => void load(true)}>重试</Button>} />}
         <Tabs
           items={[
             {
