@@ -141,7 +141,7 @@ export default function DataUploadCenter() {
       const uploadError = status === 413
         ? '自购自住名单 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
         : timedOut
-          ? '自购自住名单处理时间较长，已先查询最近一次结果；请勿重复上传相同文件'
+          ? '自购自住名单上传或处理超时；已先查询最近一次结果，请勿重复上传相同文件'
           : error?.response?.data?.detail || '自购自住名单导入失败，请稍后重试'
       if (timedOut && canManageQmfSource) {
         void getLatestModelThreeSelfOwnedRoster().then(setSelfOwnedResult).catch(() => undefined)
@@ -197,7 +197,7 @@ export default function DataUploadCenter() {
           || (error?.response?.status === 413
             ? '照片 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
             : error?.code === 'ECONNABORTED'
-              ? '照片 ZIP 处理时间较长，已刷新最近批次；请勿重复上传相同文件'
+              ? '照片 ZIP 上传或解析超时；已刷新最近批次，请勿重复上传相同文件'
               : '照片 ZIP 解析失败，请检查文件名和内容'),
       )
       if (error?.code === 'ECONNABORTED' || error?.response?.status === 408 || error?.response?.status === 504) {
