@@ -96,7 +96,12 @@ function firstValue(values: Record<string, string>, fields: string[]) {
 
 function detailError(reason: any, fallback: string) {
   const detail = reason?.response?.data?.detail
-  return typeof detail === 'object' ? detail?.message || fallback : detail || reason?.message || fallback
+  const value = typeof detail === 'object' ? detail?.message || fallback : detail || reason?.message || fallback
+  if (typeof value === 'string') {
+    const half = value.length / 2
+    if (Number.isInteger(half) && value.slice(0, half) === value.slice(half)) return value.slice(0, half)
+  }
+  return value
 }
 
 function realtimeQmfSnapshot(
