@@ -596,7 +596,7 @@ async def rebuild_projection_keys(
         f"SELECT row_key, original_address, suggested_entry_id, suggested_community_id, "
         "suggested_community_name, match_status, match_score, match_method, match_reason, "
         "candidates_json, matcher_version, confirmed_entry_id, confirmed_by, confirmed_at "
-        "FROM _online_task_address_matches WHERE parser_type=%s AND row_key IN ({placeholders})",
+        f"FROM _online_task_address_matches WHERE parser_type=%s AND row_key IN ({placeholders})",
         (parser_type, *keys),
     )
     stored_matches = {
