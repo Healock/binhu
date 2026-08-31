@@ -55,15 +55,27 @@ async def _event_generator(request: Request, user: dict) -> AsyncIterator[str]:
     seen: set[str] = set()
     try:
         last_id = request.headers.get("last-event-id") or ""
-        if not last_id:
-            latest = await client.xrevrange(settings.REDIS_STREAM_KEY, count=1)
-            last_id = str(latest[0][0]) if latest else "0-0"
-        else:
-            first = await client.xrange(settings.REDIS_STREAM_KEY, min=last_id, max=last_id, count=1)
-            if not first and last_id != "0-0":
-                yield "event: resync_required\ndata: {}\n\n"
+        # Redis may be temporarily unavailable when the browser first opens
+        # the stream.  Keep the SSE connection alive and report a recoverable
+        # state instead of raising before the read loop has started (which
+        # otherwise surfaces as an HTTP 500 response).
+        while not last_id and not await request.is_disconnected():
+            try:
                 latest = await client.xrevrange(settings.REDIS_STREAM_KEY, count=1)
                 last_id = str(latest[0][0]) if latest else "0-0"
+            except (redis.ConnectionError, redis.TimeoutError, OSError):
+                yield "event: realtime_unavailable\ndata: {}\n\n"
+                await asyncio.sleep(3)
+        if last_id and request.headers.get("last-event-id"):
+            try:
+                first = await client.xrange(settings.REDIS_STREAM_KEY, min=last_id, max=last_id, count=1)
+                if not first and last_id != "0-0":
+                    yield "event: resync_required\ndata: {}\n\n"
+                    latest = await client.xrevrange(settings.REDIS_STREAM_KEY, count=1)
+                    last_id = str(latest[0][0]) if latest else "0-0"
+            except (redis.ConnectionError, redis.TimeoutError, OSError):
+                yield "event: realtime_unavailable\ndata: {}\n\n"
+                await asyncio.sleep(3)
         while not await request.is_disconnected():
             try:
                 result = await client.xread({settings.REDIS_STREAM_KEY: last_id}, count=100, block=15000)
