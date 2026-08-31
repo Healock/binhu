@@ -203,12 +203,6 @@ async def rebuild_projection(cur, parser_type: str, *, reconcile_graph: bool = T
         for row in await cur.fetchall()
     }
     await cur.execute(
-        f"SELECT row_key, first_dispatch_at FROM _online_source_projection "
-        f"WHERE parser_type=%s AND row_key IN ({placeholders})",
-        (parser_type, *keys),
-    )
-    first_dispatch_by_key = {str(row[0]): row[1] for row in await cur.fetchall()}
-    await cur.execute(
         "SELECT row_key, first_dispatch_at FROM _online_source_projection WHERE parser_type=%s",
         (parser_type,),
     )
@@ -504,6 +498,12 @@ async def rebuild_projection_keys(
         return {"processed": 0, "deleted": 0}
     parser = get_parser(parser_type)
     placeholders = ",".join(["%s"] * len(keys))
+    await cur.execute(
+        f"SELECT row_key, first_dispatch_at FROM _online_source_projection "
+        f"WHERE parser_type=%s AND row_key IN ({placeholders})",
+        (parser_type, *keys),
+    )
+    first_dispatch_by_key = {str(row[0]): row[1] for row in await cur.fetchall()}
     await cur.execute(
         f"SELECT row_key, original_address, suggested_entry_id, suggested_community_id, "
         "suggested_community_name, match_status, match_score, match_method, match_reason, "

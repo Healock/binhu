@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from decimal import Decimal, InvalidOperation
@@ -76,6 +77,16 @@ router = APIRouter(
     dependencies=[Depends(require_admin_account)],
 )
 QUERY_TYPES = [item for item in PARSER_REGISTRY if item != "default"]
+
+
+async def _connection_transaction_call(conn, method_name: str) -> None:
+    """Call an aiomysql transaction method while supporting lightweight test doubles."""
+    method = getattr(conn, method_name, None)
+    if method is None:
+        return
+    result = method()
+    if inspect.isawaitable(result):
+        await result
 
 
 class CellUpdate(BaseModel):
@@ -697,7 +708,7 @@ async def _update_local_source_fields(
         raise RuntimeError("system-managed edit must use an exact field whitelist")
     ordered_columns = [column for column in parser.COLUMNS if column in normalized_changes]
 
-    await conn.begin()
+    await _connection_transaction_call(conn, "begin")
     async with conn.cursor() as cur:
         source = await _load_source_row(cur, parser_type, source_id, lock=True)
         if source["spreadsheet_id"] != 0:
@@ -951,7 +962,7 @@ async def _update_local_source_fields(
             aggregate_revision=expected_revision + 1,
             audiences=audiences,
         )
-        await conn.commit()
+        await _connection_transaction_call(conn, "commit")
         await record_admin_audit(
             user,
             "online.local_update",
@@ -1015,7 +1026,7 @@ async def update_source_fields(
                 system_managed_columns=system_managed_columns,
             )
         except Exception:
-            await conn.rollback()
+            await _connection_transaction_call(conn, "rollback")
             raise
     parser = get_parser(parser_type)
     normalized_changes = {
