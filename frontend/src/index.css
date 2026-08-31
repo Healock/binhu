@@ -5520,6 +5520,8 @@ html.native-mobile-shell .app-sidebar__item-label {
   position: sticky;
   top: 24px;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
   max-height: calc(100vh - 48px);
   gap: 16px;
   padding: 16px;
@@ -5527,9 +5529,9 @@ html.native-mobile-shell .app-sidebar__item-label {
 }
 
 .help-center-catalog {
-  min-height: 180px;
+  min-height: 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-y: contain;
 }
 
 .help-center-category + .help-center-category {
