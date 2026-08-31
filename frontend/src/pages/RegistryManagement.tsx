@@ -76,7 +76,7 @@ const certificateStatusColors: Record<Exclude<RegistryCertificateStatus, ''>, st
 const starRatingOptions = ['一星出租房', '二星出租房', '三星出租房', '四星出租房', '五星出租房']
 const addressMatchStatusOptions = [
   { value: 'unmatched', label: '未关联小区', color: 'default' },
-  { value: 'suggested', label: '系统建议', color: 'blue' },
+  { value: 'suggested', label: '自动匹配', color: 'blue' },
   { value: 'ambiguous', label: '待人工确认', color: 'gold' },
   { value: 'conflict', label: '地址冲突', color: 'error' },
   { value: 'confirmed', label: '已人工确认', color: 'success' },
@@ -977,10 +977,10 @@ export default function RegistryManagement() {
     {canManage && tab === 'properties' && selectedPropertyIds.length > 0 && (
       <Popconfirm
         title={`确认当前选择的 ${selectedPropertyIds.length} 套房屋？`}
-        description="只会确认已有唯一系统建议的记录；冲突、未匹配和低信息地址不会被批量确认。"
+        description="只会处理已有唯一自动匹配的记录；冲突、未匹配和低信息地址不会进入分配。管理员仍可在详情中修正归属。"
         onConfirm={() => void confirmSuggestedPropertyMatches()}
       >
-        <Button type="primary" loading={saving}>批量确认系统建议</Button>
+        <Button type="primary" loading={saving}>批量处理自动匹配</Button>
       </Popconfirm>
     )}
     {canManage && tab === 'properties' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('property')}>新增房屋</Button>}
@@ -1135,8 +1135,8 @@ export default function RegistryManagement() {
             getCheckboxProps: row => ({
               disabled: row.address_match_status !== 'suggested' || !row.small_community_id,
               title: row.address_match_status === 'suggested' && row.small_community_id
-                ? '选择后可批量确认系统建议'
-                : '只有唯一系统建议可批量确认',
+                ? '选择后可批量处理自动匹配'
+                : '只有唯一自动匹配可批量处理',
             }),
           } : undefined}
           scroll={{ x: 1660 }}
