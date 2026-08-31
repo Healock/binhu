@@ -808,6 +808,15 @@ async def decide_ticket(
             step = await cur.fetchone()
             if not step:
                 raise HTTPException(409, "当前工单没有可处理节点")
+            await cur.execute(
+                "SELECT 1 FROM work_order_steps WHERE work_order_id=%s AND status='pending' LIMIT 1",
+                (ticket_id,),
+            )
+            has_pending_next_step = bool(await cur.fetchone())
+            if data.action == "approve" and not has_pending_next_step:
+                raise HTTPException(409, "当前已是最后一个流程节点，请使用“完成”")
+            if data.action == "complete" and has_pending_next_step:
+                raise HTTPException(409, "当前还有后续流程节点，请使用“通过”")
             if not row[1]:
                 config = _json(step[4], {})
                 if bool(config.get("claim_required", True)) and not _can_manage(user):
