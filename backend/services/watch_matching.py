@@ -117,6 +117,44 @@ async def sync_current_task_snapshots(
     )
 
 
+async def sync_current_task_snapshots_for_keys(cur, parser_type: str, row_keys: list[str]) -> None:
+    """增量投影时只同步受影响任务的人员标签快照。"""
+    if not settings.REGISTRY_FEATURE_ENABLED or not row_keys:
+        return
+    placeholders = ",".join(["%s"] * len(row_keys))
+    registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+    await cur.execute(
+        f"""
+        INSERT IGNORE INTO `{registry}`.online_task_watch_snapshots (
+            parser_type, row_key, identity_hmac, first_dispatch_at,
+            assignment_id, assignment_version, snapshot_status,
+            snapshot_reason, captured_at
+        )
+        SELECT projection.parser_type, projection.row_key,
+               projection.identity_hmac,
+               COALESCE(projection.first_dispatch_at, projection.updated_at),
+               assignment.id, COALESCE(version_info.version_no, 1),
+               'active', 'incremental_match', UTC_TIMESTAMP()
+        FROM _online_source_projection projection
+        JOIN `{registry}`.watch_people person
+          ON person.identity_hmac=projection.identity_hmac
+         AND person.status='active'
+        JOIN `{registry}`.watch_assignments assignment
+          ON assignment.person_id=person.id
+         AND assignment.valid_from<=COALESCE(projection.first_dispatch_at, projection.updated_at)
+         AND (assignment.valid_to IS NULL OR assignment.valid_to>=COALESCE(projection.first_dispatch_at, projection.updated_at))
+         AND (assignment.released_at IS NULL OR assignment.released_at>COALESCE(projection.first_dispatch_at, projection.updated_at))
+        LEFT JOIN (
+            SELECT assignment_id, MAX(version_no) AS version_no
+            FROM `{registry}`.watch_assignment_versions GROUP BY assignment_id
+        ) version_info ON version_info.assignment_id=assignment.id
+        WHERE projection.parser_type=%s AND projection.row_key IN ({placeholders})
+          AND projection.identity_hmac IS NOT NULL
+        """,
+        (parser_type, *row_keys),
+    )
+
+
 async def _snapshot_assignment_row(
     cur,
     *,

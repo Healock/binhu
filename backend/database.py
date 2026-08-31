@@ -40,6 +40,7 @@ from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
 from services.local_source import ensure_local_source_schema, run_local_source_migration
+from services.domain_events import ensure_outbox_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -2816,6 +2817,7 @@ class DatabaseManager:
                 await ensure_task_assignment_responsibility_schema(cur)
                 await ensure_administrative_area_schema(cur)
                 await ensure_bootstrap_admin(cur)
+                await ensure_outbox_schema(cur)
 
         # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
         # 在启动时平滑补齐，既不改历史记录，也不要求重建归档库。
@@ -2886,6 +2888,10 @@ class DatabaseManager:
             async with cls._pools["registry"].acquire() as conn:
                 async with conn.cursor() as cur:
                     await ensure_registry_schema(cur)
+        if "platform" in cls._pools:
+            async with cls._pools["platform"].acquire() as conn:
+                async with conn.cursor() as cur:
+                    await ensure_outbox_schema(cur)
         if "workflow" in cls._pools:
             async with cls._pools["workflow"].acquire() as conn:
                 async with conn.cursor() as cur:

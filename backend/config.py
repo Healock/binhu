@@ -187,6 +187,16 @@ class Settings(BaseSettings):
     FULLCHAIN_ARCHIVE_MAX_ROWS: int = 5000
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 
+    # Internal realtime events. Redis is optional for business writes: when it
+    # is unavailable, transactional outbox rows remain durable in MySQL.
+    REDIS_URL: str = "redis://:change-me@redis:6379/0"
+    REDIS_STREAM_KEY: str = "binhu:events"
+    REDIS_PUBSUB_CHANNEL: str = "binhu:events:published"
+    REDIS_STREAM_RETENTION_DAYS: int = 7
+    REDIS_STREAM_MAX_ENTRIES: int = 1_000_000
+    REDIS_MAX_MEMORY_BYTES: int = 1_073_741_824
+    REALTIME_EVENTS_ENABLED: bool = True
+
     @property
     def cors_allowed_origins(self) -> list[str]:
         """Return the explicit CORS allowlist; same-origin deployments leave it empty."""

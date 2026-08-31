@@ -1268,3 +1268,12 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 
 `0.17.5` 把预览 ZIP 固定写入由 `BINHU_WORKFLOW_PHOTO_IMPORT_DIR` 配置的持久化目录，生产 Compose 默认绑定服务器 `/data/binhu/workflow-photo-imports`。数据库批次记录和 ZIP 文件因此可以跨容器重建共同保留。若旧版本留下的预览记录仍在、文件已经丢失，重新上传相同 SHA-256 的 ZIP 会在事务锁保护下恢复原批次文件；批次编号、预览明细和匹配统计保持不变，之后再由用户明确确认入库。
 
+# 内部事件与实时通知
+
+业务数据库（MySQL）仍是唯一业务真相。保存、领取、分配、研判和删除在同一事务中更新业务表、任务投影，并写入 `_domain_event_outbox`；Redis 不可用时只影响通知，不影响业务提交。
+
+独立 `event-relay` 以租约和 `FOR UPDATE SKIP LOCKED` 分批领取 Outbox，至少一次写入 Redis Stream，再用 Pub/Sub 广播 Stream ID 作为唤醒提示。Relay 使用有限退避、熔断和死信分类；网络、只读、加载中和内存错误持续重试，非法事件进入死信。Stream 保留近 7 日并设置 100 万条硬上限，运维中心只显示数量、年龄、重试和死信摘要。
+
+`GET /api/events/stream` 是登录后的 SSE 网关。网关先按 `audiences` 过滤，再向浏览器发送事件；断线时依据 `Last-Event-ID` 从 Stream 补发，使用 `event_id` 去重。浏览器只把事件当作失效提示，按 `aggregate_revision` 丢弃旧事件并重新读取业务数据，SSE 断开时使用低频轮询兜底。事件正文不保存姓名、身份证、电话、地址或其他业务字段。
+
+数据库迁移使用 `python -m migrations.internal_events measure|migrate|verify`，只有明确 `--apply` 才建表。Relay 单独部署，不能在 Web 进程中执行外部同步或阻塞业务事务。

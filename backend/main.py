@@ -79,6 +79,7 @@ from services.unverifiable_review import (
     run_unverifiable_review_scheduler,
 )
 from routers.presence import router as presence_router
+from routers.events import router as events_router
 from services.venue_cleanup import run_venue_cleanup_scheduler
 from services.local_report_scheduler import run_local_report_scheduler
 
@@ -193,6 +194,7 @@ async def health_check():
 # auth 路由（login 端点无需鉴权，logout/me 需要鉴权在路由内处理）
 app.include_router(auth_router)
 app.include_router(presence_router)
+app.include_router(events_router)
 app.include_router(maintenance_router)
 app.include_router(app_bootstrap_router)
 

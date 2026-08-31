@@ -20,6 +20,7 @@ from services.task_graph import (
 from services.watch_matching import (
     parse_dispatch_time,
     projection_identity,
+    sync_current_task_snapshots_for_keys,
     sync_current_task_snapshots,
 )
 from services.local_source import local_data_source_enabled
@@ -565,6 +566,123 @@ async def rebuild_projection_rows(
         reconcile_graph=reconcile_graph,
         row_keys=normalized,
     )
+
+
+async def rebuild_projection_keys(
+    cur,
+    parser_type: str,
+    row_keys: list[str],
+    *,
+    reconcile_graph: bool = False,
+) -> dict[str, int]:
+    """Recompute only the supplied business keys.
+
+    This is the request-path projection primitive.  It intentionally never
+    scans or deletes the rest of a parser's projection; full rebuilds remain a
+    maintenance operation for repair and migration commands.
+    """
+    keys = sorted({str(key) for key in row_keys if str(key)})
+    if not keys:
+        return {"processed": 0, "deleted": 0}
+    parser = get_parser(parser_type)
+    placeholders = ",".join(["%s"] * len(keys))
+    await cur.execute(
+        f"SELECT row_key, first_dispatch_at FROM _online_source_projection "
+        f"WHERE parser_type=%s AND row_key IN ({placeholders})",
+        (parser_type, *keys),
+    )
+    first_dispatch_by_key = {str(row[0]): row[1] for row in await cur.fetchall()}
+    await cur.execute(
+        f"SELECT row_key, original_address, suggested_entry_id, suggested_community_id, "
+        "suggested_community_name, match_status, match_score, match_method, match_reason, "
+        "candidates_json, matcher_version, confirmed_entry_id, confirmed_by, confirmed_at "
+        "FROM _online_task_address_matches WHERE parser_type=%s AND row_key IN ({placeholders})",
+        (parser_type, *keys),
+    )
+    stored_matches = {
+        str(row[0]): {
+            "original_address": str(row[1] or ""), "suggested_entry_id": row[2],
+            "suggested_community_id": row[3], "suggested_community_name": str(row[4] or ""),
+            "status": str(row[5] or "unmatched"), "score": float(row[6] or 0),
+            "method": str(row[7] or ""), "reason": str(row[8] or ""),
+            "candidates": json_value(row[9], []), "version": str(row[10] or ""),
+            "confirmed_entry_id": int(row[11]) if row[11] is not None else None,
+            "confirmed_by": row[12], "confirmed_at": row[13],
+        } for row in await cur.fetchall()
+    }
+    address_entries = await _address_match_entries(cur)
+    address_entries_by_id = {int(item["id"]): item for item in address_entries}
+    await cur.execute(
+        f"SELECT source.id, source.row_key, source.values_json, source.revision, source.row_hash "
+        f"FROM _online_source_rows source WHERE source.parser_type=%s AND source.row_key IN ({placeholders}) "
+        "AND source.archived_at IS NULL" + active_source_sql_filter(parser_type) + " ORDER BY source.id",
+        (parser_type, *keys),
+    )
+    source_records = await cur.fetchall()
+    source_ids = [int(row[0]) for row in source_records]
+    local_by_source: dict[int, dict[str, str]] = defaultdict(dict)
+    if source_ids:
+        source_placeholders = ",".join(["%s"] * len(source_ids))
+        await cur.execute(
+            f"SELECT source_id, field_name, local_value FROM _online_local_changes "
+            f"WHERE source_id IN ({source_placeholders}) AND status IN ('pending','processing','retry','conflict')",
+            source_ids,
+        )
+        for source_id, field_name, local_value in await cur.fetchall():
+            local_by_source[int(source_id)][str(field_name)] = str(local_value or "")
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    source_contexts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for source_id, row_key, raw_values, revision, row_hash in source_records:
+        values = json_value(raw_values, {})
+        values.update(local_by_source.get(int(source_id), {}))
+        grouped[str(row_key)].append({column: str(values.get(column, "") or "").strip() for column in parser.COLUMNS})
+        source_contexts[str(row_key)].append({"id": int(source_id), "revision": int(revision), "row_hash": str(row_hash or "")})
+    registration_links = await registration_links_by_rows(cur, parser_type, keys)
+    matcher = RuleMatcher()
+    projection_rows: list[tuple] = []
+    address_rows: list[tuple] = []
+    for row_key in keys:
+        source_rows = grouped.get(row_key, [])
+        if not source_rows:
+            await cur.execute("DELETE FROM _online_source_projection WHERE parser_type=%s AND row_key=%s", (parser_type, row_key))
+            await cur.execute("DELETE FROM _online_task_address_matches WHERE parser_type=%s AND row_key=%s", (parser_type, row_key))
+            continue
+        parent = dict(source_rows[0])
+        conflict = False
+        for incoming in source_rows[1:]:
+            if incoming == parent:
+                continue
+            merged = parser.merge_duplicate_row(parent, incoming)
+            if merged is None:
+                conflict = True
+            else:
+                parent = merged
+        identity_hmac = projection_identity(parser_type, parent, parser.COLUMNS)
+        await ensure_missing_registration_review(
+            cur, parser_type=parser_type, row_key=row_key, values=parent,
+            source_contexts=source_contexts.get(row_key, []), identity_hmac=identity_hmac,
+            task_community=parser.community_value(parent),
+        )
+        workflow = TASK_WORKFLOWS.get(parser_type)
+        address_fields = tuple(field for field in getattr(workflow, "address_fields", ()) if field != "现住址") or tuple(getattr(workflow, "address_fields", ()))
+        address = next((str(parent.get(field) or "").strip() for field in address_fields if str(parent.get(field) or "").strip()), "")
+        address_match = matcher.match(address, address_entries, community_name=parser.community_value(parent))
+        stored = stored_matches.get(row_key)
+        if stored and stored.get("status") == "confirmed":
+            confirmed = address_entries_by_id.get(int(stored.get("confirmed_entry_id") or 0))
+            if confirmed:
+                address_match = {"status": "confirmed", "score": float(stored.get("score") or 1), "method": "人工确认", "reason": str(stored.get("reason") or "管理员已确认小区归属"), "candidate": {"entry_id": int(confirmed["id"]), "name": str(confirmed.get("name") or ""), "community_id": confirmed.get("community_id"), "community_name": str(confirmed.get("community_name") or ""), "score": float(stored.get("score") or 1), "method": "人工确认", "reason": "管理员已确认小区归属"}, "candidates": stored.get("candidates") or [], "version": str(stored.get("version") or matcher.version)}
+        candidate = address_match.get("candidate") or {}
+        address_rows.append((parser_type, row_key, address, candidate.get("entry_id"), candidate.get("community_id"), candidate.get("community_name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", matcher.version), stored.get("confirmed_entry_id") if stored else None, stored.get("confirmed_by") if stored else None, stored.get("confirmed_at") if stored else None))
+        projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), task_state(parser_type, parent, registration_status=str((registration_links.get(row_key) or {}).get("status") or "")), len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), ""))
+    if address_rows:
+        await cur.executemany(
+            "INSERT INTO _online_task_address_matches (parser_type,row_key,original_address,suggested_entry_id,suggested_community_id,suggested_community_name,match_status,match_score,match_method,match_reason,candidates_json,matcher_version,confirmed_entry_id,confirmed_by,confirmed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE original_address=VALUES(original_address),suggested_entry_id=VALUES(suggested_entry_id),suggested_community_id=VALUES(suggested_community_id),suggested_community_name=VALUES(suggested_community_name),match_status=VALUES(match_status),match_score=VALUES(match_score),match_method=VALUES(match_method),match_reason=VALUES(match_reason),candidates_json=VALUES(candidates_json),matcher_version=VALUES(matcher_version),confirmed_entry_id=VALUES(confirmed_entry_id),confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at)", address_rows)
+    if projection_rows:
+        await cur.executemany(
+            "INSERT INTO _online_source_projection (parser_type,row_key,values_json,community,small_community_id,small_community_name,address_match_status,address_match_score,address_match_method,address_match_reason,address_match_candidates,address_match_version,inspector,identity_hmac,first_dispatch_at,task_state,source_count,conflict,search_text,pending_state) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE values_json=VALUES(values_json),community=VALUES(community),small_community_id=VALUES(small_community_id),small_community_name=VALUES(small_community_name),address_match_status=VALUES(address_match_status),address_match_score=VALUES(address_match_score),address_match_method=VALUES(address_match_method),address_match_reason=VALUES(address_match_reason),address_match_candidates=VALUES(address_match_candidates),address_match_version=VALUES(address_match_version),inspector=VALUES(inspector),identity_hmac=VALUES(identity_hmac),first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),task_state=VALUES(task_state),source_count=VALUES(source_count),conflict=VALUES(conflict),search_text=VALUES(search_text),pending_state=VALUES(pending_state)", projection_rows)
+    await sync_current_task_snapshots_for_keys(cur, parser_type, keys)
+    return {"processed": len(projection_rows), "deleted": len(keys) - len(projection_rows)}
 
 
 async def replace_source_cache(
