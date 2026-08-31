@@ -1,5 +1,6 @@
 import {
   ArrowLeftOutlined,
+  FileSearchOutlined,
   PhoneOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
@@ -1056,6 +1057,15 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           {interactionLocked && phoneOptions.length > 0 && <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>只读模式</Button>}
           {phoneOptions.length === 0 && (
             <Button disabled className="mobile-task-detail-pill" icon={<PhoneOutlined />}>缺少电话号码</Button>
+          )}
+          {!interactionLocked && mode === 'tasks' && identityNumber && (
+            <Button
+              className="mobile-task-detail-pill"
+              icon={<FileSearchOutlined />}
+              onClick={() => setPhotoRequestOpen(true)}
+            >
+              申请调照片
+            </Button>
           )}
         </div>
         {analysis && (
