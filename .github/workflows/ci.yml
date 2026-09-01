@@ -87,6 +87,8 @@ jobs:
         run: npm test
         working-directory: frontend
       - name: Build frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: npm run build
         working-directory: frontend
 
@@ -115,6 +117,7 @@ jobs:
         run: |
           npm.cmd ci --prefix frontend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_OPTIONS = '--max-old-space-size=8192'
           npm.cmd run build --prefix frontend -- --mode desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & desktop/scripts/build-local-frontend.ps1 -SkipBuild -FrontendDist frontend/dist
