@@ -1,5 +1,6 @@
 import { CheckSquareOutlined, CloseOutlined, TeamOutlined } from '@ant-design/icons'
 import { Alert, Button, Empty, Modal, Progress, Select, Spin, Tabs, Tag, message } from 'antd'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   bulkAssignMobileTasks,
@@ -65,6 +66,8 @@ export default function MobileTaskAssignmentWorkbench({
   const dragRef = useRef<{ active: boolean; select: boolean }>({ active: false, select: true })
   const suppressClickRef = useRef(false)
   const loadRequestRef = useRef(0)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [columnCount, setColumnCount] = useState(1)
 
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current
@@ -116,6 +119,21 @@ export default function MobileTaskAssignmentWorkbench({
     }
   }, [])
 
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const updateColumnCount = () => {
+      const width = element.clientWidth
+      // Keep the existing card breakpoint (250px cards + 10px gap) while
+      // virtualizing complete rows instead of changing desktop to one column.
+      setColumnCount(Math.max(1, Math.floor((width + 10) / 260)))
+    }
+    updateColumnCount()
+    const observer = new ResizeObserver(updateColumnCount)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [open])
+
   const visible = useMemo(
     () => candidates.filter(item => (
       item.community === community
@@ -158,6 +176,19 @@ export default function MobileTaskAssignmentWorkbench({
       : [],
     [inspectorOptions.length, selectedVisible],
   )
+  const virtualRows = useMemo(() => {
+    const rows: MobileTaskAssignmentCandidate[][] = []
+    for (let index = 0; index < visible.length; index += columnCount) {
+      rows.push(visible.slice(index, index + columnCount))
+    }
+    return rows
+  }, [columnCount, visible])
+  const virtualizer = useVirtualizer({
+    count: virtualRows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 112,
+    overscan: 8,
+  })
 
   const setSelectedState = (rowKey: string, checked: boolean) => {
     setSelected(current => {
@@ -214,11 +245,9 @@ export default function MobileTaskAssignmentWorkbench({
       if (skipped || failed) message.warning(`另有 ${skipped + failed} 条数据已变化或写入失败，工作台已刷新`)
       setAssignOpen(false)
       setInspector(undefined)
-      void load()
       void Promise.resolve(onChanged())
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '分配中断，已成功的数据不会重复分配')
-      void load()
       void Promise.resolve(onChanged())
     } finally {
       setSaving(false)
@@ -277,11 +306,9 @@ export default function MobileTaskAssignmentWorkbench({
       }
       message.success(`已按社区平均分配 ${updated} 条剩余数据`)
       if (skipped || failed) message.warning(`另有 ${skipped + failed} 条数据已变化或写入失败，工作台已刷新`)
-      void load()
       void Promise.resolve(onChanged())
     } catch (reason: any) {
       setError(reason?.response?.data?.detail || '平均分配中断，已成功的数据不会重复分配')
-      void load()
       void Promise.resolve(onChanged())
     } finally {
       setSaving(false)
@@ -451,52 +478,76 @@ export default function MobileTaskAssignmentWorkbench({
           />
         )}
 
-        <div className="mobile-task-assignment-workbench__scroll">
+        <div ref={scrollRef} className="mobile-task-assignment-workbench__scroll">
           <Spin spinning={loading && candidates.length === 0}>
             {visible.length ? (
-              <div className="mobile-task-assignment-grid" onContextMenu={event => event.preventDefault()}>
-              {visible.map(item => {
-                const checked = selected.has(item.row_key)
-                const canAssign = inspectorOptions.length > 0 && isAssignableMatch(item.match_status)
-                const matchStatus = MATCH_STATUS_LABELS[item.match_status] || MATCH_STATUS_LABELS.unmatched
+              <div
+                className="mobile-task-assignment-virtual"
+                style={{ height: `${virtualizer.getTotalSize()}px` }}
+                onContextMenu={event => event.preventDefault()}
+              >
+              {virtualizer.getVirtualItems().map(virtualItem => {
+                const row = virtualRows[virtualItem.index]
                 return (
-                  <button
-                    type="button"
-                    key={item.row_key}
-                    className={`mobile-task-assignment-item${checked ? ' is-selected' : ''}${canAssign ? '' : ' is-disabled'}`}
-                    aria-pressed={checked}
-                    aria-disabled={!canAssign}
-                    onPointerDown={event => {
-                      if (event.button !== 0 || !canAssign) return
-                      if (event.pointerType === 'touch') {
-                        suppressClickRef.current = false
-                        return
-                      }
-                      event.preventDefault()
-                      suppressClickRef.current = true
-                      dragRef.current = { active: true, select: !checked }
-                      if (canAssign) setSelectedState(item.row_key, !checked)
-                    }}
-                    onPointerEnter={() => {
-                      if (dragRef.current.active) setSelectedState(item.row_key, dragRef.current.select)
-                    }}
-                    onClick={event => {
-                      event.preventDefault()
-                      if (!canAssign) return
-                      if (suppressClickRef.current) {
-                        suppressClickRef.current = false
-                        return
-                      }
-                      setSelectedState(item.row_key, !checked)
+                  <div
+                    key={`assignment-row-${virtualItem.index}`}
+                    className="mobile-task-assignment-virtual-row"
+                    ref={virtualizer.measureElement}
+                    data-index={virtualItem.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+                      transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <span className="mobile-task-assignment-item__source">
-                      {mobileTaskSourceTags(item.source).map(value => <Tag key={value}>{value}</Tag>)}
-                      <Tag color={matchStatus.color}>{matchStatus.label}</Tag>
-                    </span>
-                    <span>{item.small_community || '未关联小区'}</span>
-                    <strong>{item.address}</strong>
-                  </button>
+                    {row.map(item => {
+                      const checked = selected.has(item.row_key)
+                      const canAssign = inspectorOptions.length > 0 && isAssignableMatch(item.match_status)
+                      const matchStatus = MATCH_STATUS_LABELS[item.match_status] || MATCH_STATUS_LABELS.unmatched
+                      return (
+                        <button
+                          type="button"
+                          key={item.row_key}
+                          className={`mobile-task-assignment-item${checked ? ' is-selected' : ''}${canAssign ? '' : ' is-disabled'}`}
+                          aria-pressed={checked}
+                          aria-disabled={!canAssign}
+                          onPointerDown={event => {
+                            if (event.button !== 0 || !canAssign) return
+                            if (event.pointerType === 'touch') {
+                              suppressClickRef.current = false
+                              return
+                            }
+                            event.preventDefault()
+                            suppressClickRef.current = true
+                            dragRef.current = { active: true, select: !checked }
+                            setSelectedState(item.row_key, !checked)
+                          }}
+                          onPointerEnter={() => {
+                            if (dragRef.current.active) setSelectedState(item.row_key, dragRef.current.select)
+                          }}
+                          onClick={event => {
+                            event.preventDefault()
+                            if (!canAssign) return
+                            if (suppressClickRef.current) {
+                              suppressClickRef.current = false
+                              return
+                            }
+                            setSelectedState(item.row_key, !checked)
+                          }}
+                        >
+                          <span className="mobile-task-assignment-item__source">
+                            {mobileTaskSourceTags(item.source).map(value => <Tag key={value}>{value}</Tag>)}
+                            <Tag color={matchStatus.color}>{matchStatus.label}</Tag>
+                          </span>
+                          <span>{item.small_community || '未关联小区'}</span>
+                          <strong>{item.address}</strong>
+                        </button>
+                      )
+                    })}
+                  </div>
                 )
               })}
               </div>

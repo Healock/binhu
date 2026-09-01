@@ -800,6 +800,10 @@ async def ensure_online_editor_schema(cur) -> None:
             conflict TINYINT(1) NOT NULL DEFAULT 0,
             search_text MEDIUMTEXT NOT NULL,
             pending_state VARCHAR(20) NOT NULL DEFAULT '',
+            assignment_source_label VARCHAR(300) NOT NULL DEFAULT '',
+            assignment_address_display VARCHAR(500) NOT NULL DEFAULT '',
+            assignment_address_sort_key VARCHAR(500) NOT NULL DEFAULT '',
+            assignment_queue_ready TINYINT(1) NOT NULL DEFAULT 0,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (parser_type, row_key),
@@ -810,6 +814,13 @@ async def ensure_online_editor_schema(cur) -> None:
             ),
             INDEX idx_source_projection_identity (
                 parser_type, identity_hmac
+            ),
+            INDEX idx_source_projection_assignment_global (
+                parser_type, assignment_queue_ready, assignment_address_sort_key, row_key
+            ),
+            INDEX idx_source_projection_assignment_community (
+                parser_type, community, assignment_queue_ready,
+                assignment_address_sort_key, row_key
             )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
@@ -904,6 +915,45 @@ async def ensure_online_editor_schema(cur) -> None:
         "_online_source_projection",
         "idx_source_projection_identity",
         "INDEX idx_source_projection_identity (parser_type, identity_hmac)",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "assignment_source_label",
+        "VARCHAR(300) NOT NULL DEFAULT '' AFTER pending_state",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "assignment_address_display",
+        "VARCHAR(500) NOT NULL DEFAULT '' AFTER assignment_source_label",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "assignment_address_sort_key",
+        "VARCHAR(500) NOT NULL DEFAULT '' AFTER assignment_address_display",
+    )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "assignment_queue_ready",
+        "TINYINT(1) NOT NULL DEFAULT 0 AFTER assignment_address_sort_key",
+    )
+    await _ensure_index(
+        cur,
+        "_online_source_projection",
+        "idx_source_projection_assignment_global",
+        "INDEX idx_source_projection_assignment_global "
+        "(parser_type, assignment_queue_ready, assignment_address_sort_key, row_key)",
+    )
+    await _ensure_index(
+        cur,
+        "_online_source_projection",
+        "idx_source_projection_assignment_community",
+        "INDEX idx_source_projection_assignment_community "
+        "(parser_type, community, assignment_queue_ready, "
+        "assignment_address_sort_key, row_key)",
     )
     # 只读取已有来源缓存完成兼容回填，不访问或改写腾讯文档。
     await cur.execute("""
@@ -2823,6 +2873,12 @@ class DatabaseManager:
                 await ensure_help_docs_schema(cur)
                 await ensure_bootstrap_admin(cur)
                 await ensure_outbox_schema(cur)
+                from services.assignment_projection_backfill import (
+                    ensure_assignment_projection_backfill_schema,
+                    run_assignment_projection_backfill,
+                )
+                await ensure_assignment_projection_backfill_schema(cur)
+                await run_assignment_projection_backfill(conn)
 
         # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
         # 在启动时平滑补齐，既不改历史记录，也不要求重建归档库。

@@ -1995,6 +1995,8 @@ export async function getMobileTaskAssignmentWorkbench(
   small_communities?: MobileTaskFilterOption[]
   inspectors_by_community: Record<string, string[]>
   inspector_counts_by_community: Record<string, Record<string, number>>
+  duration_ms?: number
+  query_mode?: 'indexed_projection' | string
 }> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/assignment-workbench`,
@@ -2430,6 +2432,7 @@ export async function bulkAssignMobileTasks(
   inspector: string
   mode: 'single' | 'balanced'
   assignment_counts: Record<string, number>
+  duration_ms?: number
 }> {
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/bulk-assign`,
@@ -2451,7 +2454,7 @@ export async function cancelMobileTaskAssignments(
   return data
 }
 
-export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 20
+export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 100
 
 export interface QueryWritebackAudit {
   id: number
