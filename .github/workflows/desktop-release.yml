@@ -27,8 +27,8 @@ env:
   ELECTRON_ARCHIVE_SHA256: 3690467f4cb67752cdad90962bb3bee252dafcbfb12834d853e36d97117cd5b2
   VXKEX_URL: https://github.com/i486/VxKex/releases/download/Version1.2.1.2229/KexSetup_Release_1_2_1_2229.exe
   VXKEX_SHA256: 7db81065591ab62f2086af84ff5cbf0d021589715024ba893e22a74f6c8708cd
-  WEBVIEW2_BOOTSTRAPPER_URL: https://go.microsoft.com/fwlink/p/?LinkId=2124703
-  WEBVIEW2_BOOTSTRAPPER_SHA256: 94314d8b20c8a370df81c5cc3d8d7a3e23fe5de14ef5e988229ff3208e449146
+  WEBVIEW2_BOOTSTRAPPER_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/474c9f1d-0fd5-49da-b3b0-df536d328170/MicrosoftEdgeWebview2Setup.exe
+  WEBVIEW2_BOOTSTRAPPER_SHA256: 17debf797a6c737959bc588236e897936ffac1af5f7e515e674ab32f9edfe719
 
 jobs:
   prepare:
