@@ -394,12 +394,16 @@ class QmfLegacyStatusClient:
                 state=STATUS_NOT_FOUND,
                 reason="管理端未查到记录，将继续由手机待办接口复核",
             )
-        if total > 1 or len(matching) > 1:
+        # The management endpoint's ``total`` may describe a broader result
+        # set than the requested identity (some deployments ignore ``sfzh``
+        # when calculating the count).  Only rows that actually match the
+        # normalized identity are evidence of a duplicate task.
+        if len(matching) > 1:
             return QmfLegacyStatus(
                 state=STATUS_AMBIGUOUS,
                 reason="全民防管理端存在多条匹配记录",
             )
-        if total != 1 or len(matching) != 1:
+        if len(matching) != 1:
             return QmfLegacyStatus(
                 state=STATUS_UNAVAILABLE,
                 reason="全民防管理端状态响应与查询条件不一致",

@@ -17,6 +17,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@tabler/icons-react": "^3.46.0",
     "@tailwindcss/postcss": "^4.3.3",
+    "@tanstack/react-virtual": "^3.14.10",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@uiw/react-heat-map": "^2.3.4",
     "@univerjs/core": "^0.25.1",

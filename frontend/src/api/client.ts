@@ -2028,6 +2028,8 @@ export async function getMobileTaskAssignmentWorkbench(
   small_communities?: MobileTaskFilterOption[]
   inspectors_by_community: Record<string, string[]>
   inspector_counts_by_community: Record<string, Record<string, number>>
+  duration_ms?: number
+  query_mode?: 'indexed_projection' | string
 }> {
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/assignment-workbench`,
@@ -2044,6 +2046,25 @@ export async function confirmMobileTaskAddressMatch(
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/confirm`,
     { small_community_id: smallCommunityId },
+    activeRequest,
+  )
+  return data
+}
+
+export async function resolveMobileTaskAddressConflict(
+  parserType: string,
+  rowKey: string,
+  smallCommunityId: number,
+  expectedRevision: number,
+  expectedRowHash: string,
+): Promise<MobileTaskSaveResult> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/resolve-conflict`,
+    {
+      small_community_id: smallCommunityId,
+      expected_revision: expectedRevision,
+      expected_row_hash: expectedRowHash,
+    },
     activeRequest,
   )
   return data
@@ -2444,6 +2465,7 @@ export async function bulkAssignMobileTasks(
   inspector: string
   mode: 'single' | 'balanced'
   assignment_counts: Record<string, number>
+  duration_ms?: number
 }> {
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/bulk-assign`,
@@ -2465,7 +2487,7 @@ export async function cancelMobileTaskAssignments(
   return data
 }
 
-export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 20
+export const MOBILE_TASK_ASSIGNMENT_CHUNK_SIZE = 100
 
 export interface QueryWritebackAudit {
   id: number

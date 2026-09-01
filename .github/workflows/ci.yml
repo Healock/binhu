@@ -71,6 +71,10 @@ jobs:
     name: Frontend checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Vite currently needs more than the default ~2 GiB Node heap on the
+      # hosted runner while rendering the full application bundle.
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,6 +100,8 @@ jobs:
     name: Desktop clients
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,10 +121,13 @@ jobs:
       - name: Build local desktop frontend
         shell: pwsh
         env:
+          # Keep the Windows hosted runner from failing at Vite chunk rendering
+          # before the desktop architecture checks can run.
           NODE_OPTIONS: --max-old-space-size=8192
         run: |
           npm.cmd ci --prefix frontend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_OPTIONS = '--max-old-space-size=8192'
           npm.cmd run build --prefix frontend -- --mode desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & desktop/scripts/build-local-frontend.ps1 -SkipBuild -FrontendDist frontend/dist

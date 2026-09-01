@@ -161,11 +161,11 @@ async def lifespan(app: FastAPI):
             await residence_lookup_task
         with suppress(asyncio.CancelledError):
             await unverifiable_review_task
-            await unverifiable_review_task
         with suppress(asyncio.CancelledError):
             await venue_cleanup_task
         with suppress(asyncio.CancelledError):
             await local_report_task
+        with suppress(asyncio.CancelledError):
             await venue_cloud_task
         await stop_backup_tasks()
         await stop_certificate_source_tasks()

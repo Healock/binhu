@@ -163,7 +163,7 @@ QmfFeedbackState = Literal[
 ]
 EMPTY_FILTER_VALUE = "__empty__"
 MAX_BULK_ASSIGNMENT_TASKS = 2000
-MAX_BULK_ASSIGNMENT_CHUNK = 20
+MAX_BULK_ASSIGNMENT_CHUNK = 100
 
 
 async def _task_source_ready(cur, parser_type: str) -> bool:
@@ -457,6 +457,14 @@ class AddressMatchConfirm(BaseModel):
     small_community_id: int = Field(gt=0)
 
 
+class AddressMatchConflictResolution(BaseModel):
+    """管理员确认冲突候选后，将任务社区改为候选正式社区并重新匹配。"""
+
+    small_community_id: int = Field(gt=0)
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
+
+
 class SyncConflictResolution(BaseModel):
     choice: Literal["platform", "tencent"]
     fields: list[str] = Field(min_length=1, max_length=5)
@@ -579,6 +587,7 @@ def _bulk_assignment_result(
     inspector: str,
     mode: AssignmentMode,
     assignment_counts: dict[str, int],
+    duration_ms: int = 0,
 ) -> dict:
     """Build mutually exclusive assignment outcome counts and details."""
     return {
@@ -590,6 +599,7 @@ def _bulk_assignment_result(
         "inspector": inspector if mode == "single" else "",
         "mode": mode,
         "assignment_counts": assignment_counts,
+        "duration_ms": duration_ms,
     }
 
 
@@ -2973,13 +2983,132 @@ async def confirm_mobile_task_address_match(
     return {"message": "小区归属已确认", "address_match": result}
 
 
+@router.post("/{parser_type}/{row_key}/address-match/resolve-conflict")
+async def resolve_mobile_task_address_conflict(
+    parser_type: str,
+    row_key: str,
+    data: AddressMatchConflictResolution,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """提供地址冲突的可执行处理路径，并在修正后重新生成匹配结果。"""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    if not local_data_source_enabled():
+        raise HTTPException(409, "本地业务数据源尚未启用，暂不能处理地址冲突")
+    scoped_user = _require_unverifiable_reviewer(user)
+    context = await _flow_context(conn, scoped_user)
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    parser = get_parser(parser_type)
+    community_field = parser.COMMUNITY_COLUMN
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT source.id, source.row_key, source.revision, source.row_hash,
+                   source.values_json, projection.address_match_status,
+                   projection.address_match_candidates, projection.community,
+                   projection.source_count, projection.conflict
+            FROM _online_source_rows AS source
+            JOIN _online_source_projection AS projection
+              ON projection.parser_type=source.parser_type
+             AND projection.row_key=source.row_key
+            WHERE source.id=(
+                SELECT candidate_source.id FROM _online_source_rows AS candidate_source
+                WHERE candidate_source.parser_type=%s
+                  AND candidate_source.row_key=%s
+                  AND candidate_source.archived_at IS NULL
+                {active_source_sql_filter(parser_type, 'candidate_source')}
+                ORDER BY id LIMIT 1
+            )
+              AND source.parser_type=%s
+              AND source.archived_at IS NULL
+              AND {scope_where}
+            """,
+            (parser_type, row_key, parser_type, *scope_params),
+        )
+        source = await cur.fetchone()
+        if not source:
+            raise HTTPException(404, "任务不存在或不在当前账号可处理范围内")
+        if str(source[1] or "") != row_key:
+            raise HTTPException(409, "任务主键已变化，请刷新后重试")
+        if int(source[2] or 0) != data.expected_revision or str(source[3] or "") != data.expected_row_hash:
+            raise HTTPException(409, "任务已被其他人更新，请刷新后重试")
+        if int(source[8] or 0) != 1 or bool(source[9]):
+            raise HTTPException(409, "任务存在重复或冲突来源，请先处理来源异常")
+        if str(source[5] or "") != "conflict":
+            raise HTTPException(409, "该任务当前已不处于地址冲突状态，请刷新后重试")
+        candidates = json_value(source[6], [])
+        selected = next(
+            (item for item in candidates if int(item.get("entry_id") or 0) == data.small_community_id),
+            None,
+        )
+        if not selected:
+            raise HTTPException(400, "所选小区不是本次冲突匹配生成的候选，请刷新后重新选择")
+        await cur.execute(
+            """
+            SELECT entry.id, entry.name, entry.community_id, community.name
+            FROM _police_address_entries AS entry
+            JOIN _communities AS community ON community.id=entry.community_id
+            WHERE entry.id=%s AND entry.enabled=1 AND community.is_active=1
+            """,
+            (data.small_community_id,),
+        )
+        entry = await cur.fetchone()
+        if not entry:
+            raise HTTPException(404, "候选小区不存在、已停用或所属社区已停用")
+        target_community = str(entry[3] or "").strip()
+        if not target_community:
+            raise HTTPException(409, "候选小区尚未设置有效所属社区，请先维护小区地址库")
+        current_values = json_value(source[4], {})
+
+    result = await queue_source_fields(
+        parser_type=parser_type,
+        source_id=int(source[0]),
+        changes={community_field: target_community},
+        base_values={community_field: str(current_values.get(community_field) or "")},
+        expected_revision=data.expected_revision,
+        request=request,
+        user=scoped_user,
+        conn=conn,
+        explicit_text_edit=True,
+        allowed_columns={community_field},
+        audit_action="address_match.resolve_conflict",
+        record_unverifiable_save=False,
+    )
+    await record_admin_audit(
+        scoped_user,
+        "mobile_tasks.address_match.resolve_conflict",
+        target_type="mobile_task_address_match",
+        target_name=f"{parser_type}:{row_key}",
+        detail={
+            "small_community_id": int(entry[0]),
+            "target_community": target_community,
+        },
+        **request_audit_fields(request),
+    )
+    return {
+        **result,
+        "message": f"已将任务社区修正为{target_community}，正在重新匹配",
+        **await _mobile_task_save_context(conn, parser_type, str(result["row_key"])),
+    }
+
+
 @router.get("/{parser_type}/assignment-workbench")
 async def get_mobile_task_assignment_workbench(
     parser_type: str,
     user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
-    """Return a lightweight, address-sorted queue of unassigned tasks."""
+    """Return an indexed, address-sorted queue of unassigned tasks.
+
+    The legacy expression ``ORDER BY {_address_order(parser_type)}`` is kept
+    out of the SQL path; the projection now stores its normalized sort key.
+    """
+    started_at = time.monotonic()
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
     user = _require_task_edit_user(user)
@@ -2990,9 +3119,7 @@ async def get_mobile_task_assignment_workbench(
         context,
         "all" if context.get("admin_mode") else "community",
     )
-    assignment_source_condition = "projection.conflict=0"
-    if local_data_source_enabled():
-        assignment_source_condition = f"{_active_source_count_sql(parser_type)} <= 1"
+    assignment_source_condition = "projection.assignment_queue_ready=1"
     async with conn.cursor() as cur:
         if not local_data_source_enabled() and not await _writeback_enabled(cur):
             raise HTTPException(503, "在线回写已由超级管理员暂停")
@@ -3002,38 +3129,22 @@ async def get_mobile_task_assignment_workbench(
             FROM _online_source_projection AS projection
             WHERE projection.parser_type=%s
               AND {scope_where}
-              AND TRIM(COALESCE(projection.inspector, ''))=''
-              AND projection.task_state<>'completed'
               AND {assignment_source_condition}
-              AND EXISTS (
-                  SELECT 1 FROM _online_source_rows AS source_row
-                  WHERE source_row.parser_type=projection.parser_type
-                    AND source_row.row_key=projection.row_key
-                    AND source_row.archived_at IS NULL
-                    {active_source_sql_filter(parser_type, 'source_row')}
-              )
             """,
             [parser_type, *scope_params],
         )
         available_total = int((await cur.fetchone())[0] or 0)
         await cur.execute(
             f"""
-            SELECT projection.row_key, projection.community, projection.small_community_name,
-                   projection.address_match_status, projection.values_json
+            SELECT projection.row_key, projection.community,
+                   projection.small_community_name, projection.address_match_status,
+                   projection.assignment_source_label,
+                   projection.assignment_address_display
             FROM _online_source_projection AS projection
             WHERE projection.parser_type=%s
               AND {scope_where}
-              AND TRIM(COALESCE(projection.inspector, ''))=''
-              AND projection.task_state<>'completed'
               AND {assignment_source_condition}
-              AND EXISTS (
-                  SELECT 1 FROM _online_source_rows AS source_row
-                  WHERE source_row.parser_type=projection.parser_type
-                    AND source_row.row_key=projection.row_key
-                    AND source_row.archived_at IS NULL
-                    {active_source_sql_filter(parser_type, 'source_row')}
-              )
-            ORDER BY {_address_order(parser_type)}, projection.row_key
+            ORDER BY projection.assignment_address_sort_key, projection.row_key
             LIMIT %s
             """,
             [parser_type, *scope_params, MAX_BULK_ASSIGNMENT_TASKS],
@@ -3052,14 +3163,8 @@ async def get_mobile_task_assignment_workbench(
               AND {scope_where}
               AND TRIM(COALESCE(projection.inspector, ''))<>''
               AND projection.task_state<>'completed'
-              AND {assignment_source_condition}
-              AND EXISTS (
-                  SELECT 1 FROM _online_source_rows AS source_row
-                  WHERE source_row.parser_type=projection.parser_type
-                    AND source_row.row_key=projection.row_key
-                    AND source_row.archived_at IS NULL
-                    {active_source_sql_filter(parser_type, 'source_row')}
-              )
+              AND projection.source_count=1
+              AND projection.conflict=0
             GROUP BY projection.community, projection.inspector
             """,
             [parser_type, *scope_params],
@@ -3069,18 +3174,18 @@ async def get_mobile_task_assignment_workbench(
     aliases = assignment_context["community_aliases"]
     inspectors_by_community = assignment_context["inspectors_by_community"]
     items: list[dict[str, str]] = []
-    for row_key, raw_community, raw_small_community, raw_match_status, raw_values in rows:
+    for row_key, raw_community, raw_small_community, raw_match_status, raw_source, raw_address in rows:
         community = aliases.get(str(raw_community or "").strip(), "")
         if not community:
             community = str(raw_community or "").strip() or "社区未识别"
-        items.append(_assignment_candidate(
-            parser_type,
-            str(row_key),
-            community,
-            json_value(raw_values, {}),
-            str(raw_small_community or ""),
-            str(raw_match_status or "unmatched"),
-        ))
+        items.append({
+            "row_key": str(row_key),
+            "community": community,
+            "small_community": str(raw_small_community or ""),
+            "match_status": str(raw_match_status or "unmatched"),
+            "source": str(raw_source or TASK_WORKFLOWS[parser_type].label),
+            "address": str(raw_address or "未填写地址"),
+        })
     community_counts: dict[str, int] = {}
     for item in items:
         community_counts[item["community"]] = community_counts.get(item["community"], 0) + 1
@@ -3120,6 +3225,8 @@ async def get_mobile_task_assignment_workbench(
             for community in all_communities
         },
         "assigned_totals_by_community": assigned_totals_by_community,
+        "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+        "query_mode": "indexed_projection",
     }
 
 
@@ -4614,6 +4721,7 @@ async def bulk_assign_mobile_tasks(
         inspector=inspector,
         mode=data.mode,
         assignment_counts=successful_assignment_counts,
+        duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
     )
     await record_admin_audit(
         user,

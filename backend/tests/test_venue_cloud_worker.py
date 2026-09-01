@@ -177,6 +177,16 @@ def test_enabled_configuration_requires_all_five_secret_locations(monkeypatch, t
         validate_venue_cloud_configuration()
 
 
+def test_application_lifespan_stops_venue_cloud_scheduler_independently():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "main.py").read_text(encoding="utf-8")
+    assert "venue_cloud_task = asyncio.create_task(run_venue_cloud_scheduler())" in source
+    assert "venue_cloud_task.cancel()" in source
+    assert "with suppress(asyncio.CancelledError):\n            await venue_cloud_task" in source
+    assert "await local_report_task\n            await venue_cloud_task" not in source
+
+
 async def _async_next(values):
     return next(values)
 
