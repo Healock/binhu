@@ -2884,7 +2884,8 @@ class DatabaseManager:
                 # take longer than the deployment health window and make a
                 # healthy container appear unavailable.  The maintenance
                 # command (or a separately scheduled worker) runs the actual
-                # backfill after the API is ready.
+                # backfill after the API is ready; this schema step is cheap
+                # and remains safe to repeat on every startup.
 
         # 归档查询和后续移除归档使用与当前表相同的标准字段；旧归档表也要
         # 在启动时平滑补齐，既不改历史记录，也不要求重建归档库。
