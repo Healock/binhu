@@ -2,6 +2,8 @@
 
 生产环境固定按 ``measure -> migrate --apply -> verify`` 执行。写入前备份
 OnlineData；工具只重算本地任务投影，不修改任务原始地址、原始社区或人工确认。
+重算后只有一个逻辑小区候选的历史记录应进入 ``suggested``，真实多候选继续保留
+``ambiguous`` 供人工处理。
 """
 
 from __future__ import annotations
