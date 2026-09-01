@@ -458,6 +458,24 @@ async def create_ticket(
                 # 已有已发布流程仍可能把申请理由标为必填。快捷入口不再让
                 # 网格员重复填写，用内部占位通过旧流程校验，详情中仍保存为空。
                 submitted_form_data["request_reason"] = "在线任务快捷申请"
+            if is_task_photo_request:
+                # 同一业务任务只允许存在一个未结束的调照片工单。
+                # 入口恢复或网络重试时，直接返回可识别的冲突，避免重复写入名单和通知。
+                await cur.execute(
+                    "SELECT detail.work_order_id FROM photo_request_details detail "
+                    "JOIN work_orders order_row ON order_row.id=detail.work_order_id "
+                    "WHERE detail.source_parser_type=%s AND detail.source_row_key=%s "
+                    "AND order_row.status NOT IN ('completed','rejected','cancelled') "
+                    "ORDER BY detail.work_order_id DESC LIMIT 1",
+                    (str(submitted_form_data.get("source_parser_type") or "").strip()[:100],
+                     str(submitted_form_data.get("source_row_key") or "").strip()[:190]),
+                )
+                existing_photo_request = await cur.fetchone()
+                if existing_photo_request:
+                    raise HTTPException(
+                        409,
+                        f"该任务已有未结束的照片工单（#{int(existing_photo_request[0])}），请勿重复提交",
+                    )
             form_data = _validate_form_data(version[1], submitted_form_data)
             steps = await _published_steps(cur, int(version[0]))
             if not steps:

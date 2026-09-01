@@ -339,7 +339,9 @@ export default function MobileTaskTable({
       }
       if (autosaveKey) setSaveStates(current => ({ ...current, [task.task_key]: 'saved' }))
       if (!options?.silent) message.success(result.message)
-      await onSaved()
+      // 自动保存已经把当前行的编辑器状态合并到本地，不要再次刷新所有已加载页面。
+      // 非静默保存（例如显式领取、房屋关联）仍由父列表执行一次必要的同步。
+      if (!options?.silent) await onSaved()
     } catch (reason: any) {
       if (autosaveKey && autosaveSequenceRef.current[autosaveKey] === requestSequence) {
         const [, ...fieldParts] = autosaveKey.split(':')
@@ -458,6 +460,15 @@ export default function MobileTaskTable({
       const currentItem = editorItemsRef.current[task.task_key] || item
       void saveField(task, currentItem, field, value, true)
     }, 700)
+  }
+
+  const cancelScheduledFieldSave = (taskKey: string, field: string) => {
+    const key = `${taskKey}:${field}`
+    const timer = autosaveTimersRef.current[key]
+    if (timer) {
+      window.clearTimeout(timer)
+      delete autosaveTimersRef.current[key]
+    }
   }
 
   const retryAutosave = (taskKey: string) => {
@@ -859,7 +870,11 @@ export default function MobileTaskTable({
                         }))
                         scheduleFieldSave(task, item, field, nextValue)
                       }}
-                      onBlur={() => void saveField(task, item, field, values[field] || '')}
+                      onBlur={() => {
+                        // 离焦是立即保存，但必须取消尚未到期的防抖定时器，避免同一次编辑发送两次请求。
+                        cancelScheduledFieldSave(task.task_key, field)
+                        void saveField(task, item, field, values[field] || '')
+                      }}
                     />
                   )}
                   {isSecondaryFeedback && resultNeedsSecondaryFollowup && (
