@@ -434,6 +434,8 @@ jobs:
         working-directory: mobile/apps/android-tauri
       - name: Build signed Android arm64 APK
         shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: |
           npm.cmd run android:build:release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

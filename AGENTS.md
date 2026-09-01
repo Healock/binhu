@@ -285,6 +285,7 @@
   - `android`：检查 Android 构建、签名和产物；
   - `build`：检查 Win7/Win10 架构、Full/Delta、签名、打包路径与产物校验；
   - `publish`：检查更新服务器、平台清单、校验文件和 GitHub Release 审计归档。
+- Android 正式构建会在 Tauri `beforeBuildCommand` 中再次执行完整前端生产构建。若日志已经完成模块转换和产物统计，随后出现 `heap out of memory`，这是 Node 默认堆上限不足，不是 Android 签名、Gradle、Rust 或证书故障。正式工作流必须为该步骤保留明确的 `NODE_OPTIONS=--max-old-space-size=8192`；修复后重新走主线 CI 和完整 Client release，不得手工补传 APK 或只重跑失败 Job。
 - 准备正式版本前必须先读取更新服务器当前 Win7、Win10/11 和 Android 的版本与发布提交，再比较该线上提交到待发布提交的客户端发布面。发现发布面有差异时，必须先提升版本并准备发布日志；不能等工作流失败后才补版本号。
 - 发布状态汇报必须留下可核对的层次：主线 CI 是否通过、`Client release` 是 `skipped` 还是 `failure`、失败 Job/Step、版本门禁是否通过、更新服务器是否发布、GitHub Release 是否归档、实机是否验收。只有后四项按流程完成后，才能报告客户端新版本可供验收。
 - 更新服务器发布使用受限的 `binhu-update-publish` 账号和固定网关。并发锁只能使用 `/srv/binhu-updates/state/publish.lock`；禁止重新使用更新根目录下的 `publish.lock`，也不能把 root SSH、Docker Socket 或任意 Shell 权限交给 GitHub Actions。正式更新地址固定为 `https://47.100.44.36/updates/win7-x64/` 和 `https://47.100.44.36/updates/win10-x64/`。
