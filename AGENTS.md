@@ -203,6 +203,14 @@
 
 ## Pull Request 与远程 CI 门禁
 
+### GitHub Actions 构建内存故障记录（2026-09-01）
+
+- 2026 年 9 月 1 日，PR #479 的 `Frontend checks` 和 `Desktop clients` 在 GitHub-hosted runner 上于 Vite 渲染完整 bundle 阶段失败，日志为 `FATAL ERROR: ... heap out of memory`，Node 堆接近约 2 GiB；同一提交在本地构建通过，后端测试也正常。这类结果应判断为 runner 的 Node 堆上限/资源约束，不得误报成业务代码测试失败。
+- 重跑同一 run 后仍在相同构建阶段 OOM，说明不是简单网络抖动。读取 `gh run view <run-id> --log-failed` 的失败步骤和堆栈后再归类，不能只凭红叉猜测。
+- 前端和桌面 Vite 构建步骤统一设置 `NODE_OPTIONS=--max-old-space-size=8192`；这是 CI 构建资源配置，不等于放宽业务运行时内存，也不应通过无意义空提交“刷绿”。
+- OOM 修复后必须重新触发一次有实际工作流配置变化的 `pull_request` 检查，并确认新 run 检查的是最新提交。远程检查未全部进入 `success` 前，仍不得建议合并。
+- 其他常见失败要区分：PR 正文模板校验、后端测试、前端测试、桌面架构检查、依赖安装、构建资源和实现缺陷。每类都要保留失败 run、错误摘要和修复依据；环境问题不能被写成代码通过，代码问题也不能借口环境跳过修复。
+
 本项目的“本地检查通过”不等于 Pull Request 已通过。任何 Agent（包括副开发 Codex）都必须把 GitHub 远程检查当作合并门禁，不能凭本机测试结果提前汇报“可以合并”或“已上线”。
 
 ### 创建或更新 PR 前
