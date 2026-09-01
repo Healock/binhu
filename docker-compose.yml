@@ -181,6 +181,31 @@ services:
       mysql:
         condition: service_healthy
       redis:
+      condition: service_healthy
+
+  diagnostic-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: binhu-backend
+    container_name: binhu-diagnostic-worker
+    restart: unless-stopped
+    command: ["python", "-m", "services.diagnostic_worker"]
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${BINHU_MYSQL_USER:-binhu}
+      MYSQL_PASSWORD: ${BINHU_MYSQL_PASSWORD:?Set BINHU_MYSQL_PASSWORD in .env}
+      MYSQL_POOL_SIZE: 3
+      MYSQL_ONLINE_DATA_DB: OnlineData
+      MYSQL_PLATFORM_DB: PlatformData
+      MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}
+      REDIS_URL: redis://:${BINHU_REDIS_PASSWORD:?Set BINHU_REDIS_PASSWORD in .env}@redis:6379/0
+      ENCRYPTION_KEY: ${BINHU_ENCRYPTION_KEY:?Set BINHU_ENCRYPTION_KEY in .env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   ops-agent:

@@ -180,6 +180,28 @@ export interface OpsOverview {
   }
 }
 
+export interface DiagnosticJob {
+  job_id: string
+  mode: string
+  status: string
+  task_id: string | null
+  page_url: string
+  error_code: string
+  error_message: string
+  request_summary: Record<string, unknown>
+  created_at: string | null
+  finished_at: string | null
+}
+
+export interface DiagnosticReport {
+  report_id: string
+  overall_status: string
+  summary: Array<{ code: string; status: string; summary: string }>
+  technical: Array<Record<string, unknown>>
+  created_at: string | null
+  finished_at: string | null
+}
+
 export interface AuditEvent {
   id: number
   user_id: number | null

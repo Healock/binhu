@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type {
   StatsResponse, StatsItem, AppNotification,
-  OpsOverview, OpsDatabase, BackupSchedule,
+  OpsOverview, OpsDatabase, BackupSchedule, DiagnosticJob, DiagnosticReport,
   BackupJob, AuditActionOption, AuditEvent, User, UserPreferences, ReportColumnMode,
   WorkLogDraft, WorkLogDraftSummary, WorkLogMissingItem, WorkLogSchema,
   PublicProfile, PublicProfileSummary,
@@ -687,6 +687,21 @@ export async function downloadDiagnostics(): Promise<Blob> {
     null,
     { responseType: 'blob', timeout: 120000 },
   )
+  return data
+}
+
+export async function queryDiagnosticIncidents(userName: string, hours = 1): Promise<{ data: DiagnosticJob[] }> {
+  const { data } = await api.get('/admin/ops/diagnostic/query', { params: { user_name: userName, hours } })
+  return data
+}
+
+export async function getDiagnosticJob(jobId: string): Promise<{ job: DiagnosticJob; report: DiagnosticReport | null }> {
+  const { data } = await api.get(`/admin/ops/diagnostic/${encodeURIComponent(jobId)}`)
+  return data
+}
+
+export async function runDiagnostic(jobId: string): Promise<{ job_id: string; status: string }> {
+  const { data } = await api.post('/admin/ops/diagnostic/run', { job_id: jobId })
   return data
 }
 

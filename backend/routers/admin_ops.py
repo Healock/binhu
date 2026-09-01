@@ -39,6 +39,7 @@ from services.ops_database import (
 )
 from services.ops_overview import build_operations_overview
 from services.ops_redaction import redact_text, sanitize_detail
+from services.diagnostics import get_job, query_incidents, queue_job
 
 
 router = APIRouter(prefix="/api/admin/ops", tags=["超级管理员运维中心"])
@@ -56,6 +57,10 @@ class BackupScheduleRequest(BaseModel):
 
 class PasswordRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
+
+
+class DiagnosticRunRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=64)
 
 
 def _require_log_source(source: str) -> str:
@@ -532,3 +537,75 @@ async def diagnostic_package(
             )
         },
     )
+
+
+@router.get("/diagnostic/query")
+async def query_diagnostic_incidents(
+    user_name: str = Query(..., min_length=1, max_length=64),
+    hours: int = Query(default=1, ge=1, le=168),
+    user: dict = Depends(require_super_admin),
+):
+    return {"data": await query_incidents(user_name, hours)}
+
+
+@router.get("/diagnostic/{job_id}")
+async def get_diagnostic_job(
+    job_id: str,
+    user: dict = Depends(require_super_admin),
+):
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="诊断记录不存在")
+    pool = db_manager.get_pool("platform")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT report_id, overall_status, summary_json, technical_json, created_at, finished_at FROM diagnostic_reports WHERE job_id=%s",
+                (job_id,),
+            )
+            row = await cur.fetchone()
+    finally:
+        pool.release(conn)
+    report = None
+    if row:
+        summary = row[2]
+        technical = row[3]
+        if isinstance(summary, str):
+            try:
+                summary = json.loads(summary)
+            except json.JSONDecodeError:
+                summary = []
+        if isinstance(technical, str):
+            try:
+                technical = json.loads(technical)
+            except json.JSONDecodeError:
+                technical = []
+        report = {
+            "report_id": row[0],
+            "overall_status": row[1],
+            "summary": sanitize_detail(summary or []),
+            "technical": sanitize_detail(technical or []),
+            "created_at": row[4].isoformat() + "Z" if row[4] else None,
+            "finished_at": row[5].isoformat() + "Z" if row[5] else None,
+        }
+    return {"job": job, "report": report}
+
+
+@router.post("/diagnostic/run", status_code=202)
+async def run_diagnostic(
+    payload: DiagnosticRunRequest,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
+    if not await queue_job(payload.job_id):
+        raise HTTPException(status_code=409, detail="该诊断记录当前不可执行")
+    await record_admin_audit(
+        user,
+        "diagnostic.run",
+        target_type="diagnostic_job",
+        target_name=payload.job_id,
+        detail={"mode": "incident"},
+        **request_audit_fields(request),
+    )
+    return {"job_id": payload.job_id, "status": "queued"}

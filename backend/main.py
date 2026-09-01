@@ -83,6 +83,7 @@ from routers.presence import router as presence_router
 from routers.events import router as events_router
 from services.venue_cleanup import run_venue_cleanup_scheduler
 from services.local_report_scheduler import run_local_report_scheduler
+from services.diagnostics import capture_incident
 
 
 @asynccontextmanager
@@ -179,6 +180,36 @@ app = FastAPI(
 )
 
 app.add_middleware(ClientCompatibilityMiddleware)
+
+
+@app.middleware("http")
+async def diagnostic_incident_middleware(request, call_next):
+    """记录失败现场，不读取业务正文，也不阻塞原请求。"""
+    ignored = request.url.path.startswith((
+        "/api/health", "/api/admin/diagnostic", "/api/auth/login",
+    ))
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        if not ignored:
+            asyncio.create_task(
+                capture_incident(
+                    request,
+                    status_code=500,
+                    exception=exc,
+                )
+            )
+        raise
+    if response.status_code >= 400 and not ignored:
+        asyncio.create_task(
+            capture_incident(
+                request,
+                status_code=response.status_code,
+                error_code=f"http_{response.status_code}",
+                error_message="服务暂时不可用",
+            )
+        )
+    return response
 
 # 网页继续走 Nginx 同源代理；桌面客户端来源必须由显式白名单逐项放行。
 add_cors_middleware(app, settings.cors_allowed_origins)

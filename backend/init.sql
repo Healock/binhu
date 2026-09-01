@@ -20,6 +20,51 @@ GRANT ALL PRIVILEGES ON RegistryData.* TO 'binhu'@'%';
 GRANT ALL PRIVILEGES ON WorkflowData.* TO 'binhu'@'%';
 FLUSH PRIVILEGES;
 
+USE PlatformData;
+
+CREATE TABLE IF NOT EXISTS diagnostic_jobs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_id CHAR(36) NOT NULL UNIQUE,
+    requested_by INT DEFAULT NULL,
+    user_name VARCHAR(64) NOT NULL DEFAULT '',
+    mode VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'captured',
+    task_id VARCHAR(64) DEFAULT NULL,
+    page_url VARCHAR(512) NOT NULL DEFAULT '',
+    error_code VARCHAR(100) NOT NULL DEFAULT '',
+    error_message VARCHAR(1000) NOT NULL DEFAULT '',
+    request_summary_json JSON DEFAULT NULL,
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    priority TINYINT NOT NULL DEFAULT 0,
+    queued_at DATETIME DEFAULT NULL,
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_diagnostic_user_created (user_name, created_at),
+    INDEX idx_diagnostic_status_created (status, created_at),
+    INDEX idx_diagnostic_task_created (task_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS diagnostic_reports (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    report_id CHAR(36) NOT NULL UNIQUE,
+    job_id CHAR(36) NOT NULL,
+    mode VARCHAR(20) NOT NULL,
+    task_id VARCHAR(64) DEFAULT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'succeeded',
+    overall_status VARCHAR(20) NOT NULL DEFAULT 'healthy',
+    summary_json JSON NOT NULL,
+    technical_json JSON DEFAULT NULL,
+    rules_version VARCHAR(30) NOT NULL DEFAULT '1',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME DEFAULT NULL,
+    expires_at DATETIME NOT NULL,
+    UNIQUE KEY uk_diagnostic_report_job (job_id),
+    INDEX idx_diagnostic_report_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ============================================================
 -- OnlineData 库：配置表 + 腾讯文档业务表 + 走访导入表
 -- ============================================================
