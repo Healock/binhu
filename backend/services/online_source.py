@@ -111,6 +111,35 @@ def source_row_hash(values: dict[str, str]) -> str:
     return hashlib.sha256(stable_json(values).encode("utf-8")).hexdigest()
 
 
+def assignment_projection_fields(
+    parser_type: str,
+    values: dict[str, str],
+    *,
+    community: str,
+    source_count: int,
+    conflict: bool,
+    task_state_value: str,
+) -> tuple[str, str, str, int]:
+    """Return the small, indexed projection used by the assignment workbench.
+
+    Keep the display values deliberately derived from the parser summary so the
+    workbench does not need to deserialize the complete source JSON.  The sort
+    key is intentionally conservative: case-folding and whitespace removal are
+    stable across MySQL collations and match the previous UI ordering closely.
+    """
+    summary = TASK_WORKFLOWS[parser_type].summary(values)
+    source_label = str(summary.get("source") or TASK_WORKFLOWS[parser_type].label).strip()
+    address_display = str(summary.get("address") or "未填写地址").strip()
+    sort_key = "".join(address_display.casefold().split())
+    queue_ready = int(
+        not str(values.get("核查人") or "").strip()
+        and task_state_value != "completed"
+        and int(source_count or 0) == 1
+        and not conflict
+    )
+    return source_label, address_display, sort_key, queue_ready
+
+
 def match_source_cache_rows(
     existing_rows: list[dict[str, Any]],
     incoming_rows: list[dict[str, Any]],
@@ -450,6 +479,21 @@ async def rebuild_projection(
                 entries_by_id=address_entries_by_id,
             )
         match_candidate = address_match.get("candidate") or {}
+        projected_task_state = task_state(
+            parser_type,
+            parent,
+            registration_status=str(
+                (registration_links.get(row_key) or {}).get("status") or ""
+            ),
+        )
+        assignment_source_label, assignment_address_display, assignment_address_sort_key, assignment_queue_ready = assignment_projection_fields(
+            parser_type,
+            parent,
+            community=parser.community_value(parent),
+            source_count=len(source_rows),
+            conflict=conflict,
+            task_state_value=projected_task_state,
+        )
         address_match_rows.append((
             parser_type,
             row_key,
@@ -496,17 +540,15 @@ async def rebuild_projection(
                 ])),
                 previous_first_dispatch.get(row_key),
             ),
-            task_state(
-                parser_type,
-                parent,
-                registration_status=str(
-                    (registration_links.get(row_key) or {}).get("status") or ""
-                ),
-            ),
+            projected_task_state,
             len(source_rows),
             int(conflict),
             "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS),
             pending_states.get(row_key, ""),
+            assignment_source_label,
+            assignment_address_display,
+            assignment_address_sort_key,
+            assignment_queue_ready,
         ))
 
     if address_match_rows:
@@ -560,9 +602,30 @@ async def rebuild_projection(
                 address_match_method, address_match_reason,
                 address_match_candidates, address_match_version, inspector,
                 identity_hmac, first_dispatch_at, task_state,
-                source_count, conflict, search_text, pending_state
+                source_count, conflict, search_text, pending_state,
+                assignment_source_label, assignment_address_display,
+                assignment_address_sort_key, assignment_queue_ready
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s)
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                values_json=VALUES(values_json), community=VALUES(community),
+                small_community_id=VALUES(small_community_id),
+                small_community_name=VALUES(small_community_name),
+                address_match_status=VALUES(address_match_status),
+                address_match_score=VALUES(address_match_score),
+                address_match_method=VALUES(address_match_method),
+                address_match_reason=VALUES(address_match_reason),
+                address_match_candidates=VALUES(address_match_candidates),
+                address_match_version=VALUES(address_match_version),
+                inspector=VALUES(inspector), identity_hmac=VALUES(identity_hmac),
+                first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),
+                task_state=VALUES(task_state), source_count=VALUES(source_count),
+                conflict=VALUES(conflict), search_text=VALUES(search_text),
+                pending_state=VALUES(pending_state),
+                assignment_source_label=VALUES(assignment_source_label),
+                assignment_address_display=VALUES(assignment_address_display),
+                assignment_address_sort_key=VALUES(assignment_address_sort_key),
+                assignment_queue_ready=VALUES(assignment_queue_ready)
             """,
             projection_rows,
         )
@@ -719,13 +782,26 @@ async def rebuild_projection_keys(
             )
         candidate = address_match.get("candidate") or {}
         address_rows.append((parser_type, row_key, address, candidate.get("entry_id"), candidate.get("community_id"), candidate.get("community_name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", matcher.version), stored.get("confirmed_entry_id") if stored else None, stored.get("confirmed_by") if stored else None, stored.get("confirmed_at") if stored else None))
-        projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), task_state(parser_type, parent, registration_status=str((registration_links.get(row_key) or {}).get("status") or "")), len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), ""))
+        projected_task_state = task_state(
+            parser_type,
+            parent,
+            registration_status=str((registration_links.get(row_key) or {}).get("status") or ""),
+        )
+        assignment_source_label, assignment_address_display, assignment_address_sort_key, assignment_queue_ready = assignment_projection_fields(
+            parser_type,
+            parent,
+            community=parser.community_value(parent),
+            source_count=len(source_rows),
+            conflict=conflict,
+            task_state_value=projected_task_state,
+        )
+        projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), projected_task_state, len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), "", assignment_source_label, assignment_address_display, assignment_address_sort_key, assignment_queue_ready))
     if address_rows:
         await cur.executemany(
             "INSERT INTO _online_task_address_matches (parser_type,row_key,original_address,suggested_entry_id,suggested_community_id,suggested_community_name,match_status,match_score,match_method,match_reason,candidates_json,matcher_version,confirmed_entry_id,confirmed_by,confirmed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE original_address=VALUES(original_address),suggested_entry_id=VALUES(suggested_entry_id),suggested_community_id=VALUES(suggested_community_id),suggested_community_name=VALUES(suggested_community_name),match_status=VALUES(match_status),match_score=VALUES(match_score),match_method=VALUES(match_method),match_reason=VALUES(match_reason),candidates_json=VALUES(candidates_json),matcher_version=VALUES(matcher_version),confirmed_entry_id=VALUES(confirmed_entry_id),confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at)", address_rows)
     if projection_rows:
         await cur.executemany(
-            "INSERT INTO _online_source_projection (parser_type,row_key,values_json,community,small_community_id,small_community_name,address_match_status,address_match_score,address_match_method,address_match_reason,address_match_candidates,address_match_version,inspector,identity_hmac,first_dispatch_at,task_state,source_count,conflict,search_text,pending_state) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE values_json=VALUES(values_json),community=VALUES(community),small_community_id=VALUES(small_community_id),small_community_name=VALUES(small_community_name),address_match_status=VALUES(address_match_status),address_match_score=VALUES(address_match_score),address_match_method=VALUES(address_match_method),address_match_reason=VALUES(address_match_reason),address_match_candidates=VALUES(address_match_candidates),address_match_version=VALUES(address_match_version),inspector=VALUES(inspector),identity_hmac=VALUES(identity_hmac),first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),task_state=VALUES(task_state),source_count=VALUES(source_count),conflict=VALUES(conflict),search_text=VALUES(search_text),pending_state=VALUES(pending_state)", projection_rows)
+            "INSERT INTO _online_source_projection (parser_type,row_key,values_json,community,small_community_id,small_community_name,address_match_status,address_match_score,address_match_method,address_match_reason,address_match_candidates,address_match_version,inspector,identity_hmac,first_dispatch_at,task_state,source_count,conflict,search_text,pending_state,assignment_source_label,assignment_address_display,assignment_address_sort_key,assignment_queue_ready) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE values_json=VALUES(values_json),community=VALUES(community),small_community_id=VALUES(small_community_id),small_community_name=VALUES(small_community_name),address_match_status=VALUES(address_match_status),address_match_score=VALUES(address_match_score),address_match_method=VALUES(address_match_method),address_match_reason=VALUES(address_match_reason),address_match_candidates=VALUES(address_match_candidates),address_match_version=VALUES(address_match_version),inspector=VALUES(inspector),identity_hmac=VALUES(identity_hmac),first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),task_state=VALUES(task_state),source_count=VALUES(source_count),conflict=VALUES(conflict),search_text=VALUES(search_text),pending_state=VALUES(pending_state),assignment_source_label=VALUES(assignment_source_label),assignment_address_display=VALUES(assignment_address_display),assignment_address_sort_key=VALUES(assignment_address_sort_key),assignment_queue_ready=VALUES(assignment_queue_ready)", projection_rows)
     await sync_current_task_snapshots_for_keys(cur, parser_type, keys)
     return {"processed": len(projection_rows), "deleted": len(keys) - len(projection_rows)}
 

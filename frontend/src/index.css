@@ -497,6 +497,19 @@ html.desktop-shell .ant-notification-topRight {
   user-select: none;
 }
 
+.mobile-task-assignment-virtual {
+  position: relative;
+  width: 100%;
+  user-select: none;
+}
+
+.mobile-task-assignment-virtual-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
 .mobile-task-assignment-item {
   display: grid;
   min-width: 0;
