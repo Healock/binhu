@@ -44,7 +44,7 @@ const STATE_LABELS = {
 
 const ADDRESS_MATCH_LABELS: Record<string, { text: string; color: string }> = {
   unmatched: { text: '未关联小区', color: 'default' },
-  suggested: { text: '系统建议', color: 'processing' },
+  suggested: { text: '自动匹配', color: 'processing' },
   ambiguous: { text: '多候选待确认', color: 'warning' },
   conflict: { text: '地址冲突', color: 'error' },
   confirmed: { text: '已人工确认', color: 'success' },
