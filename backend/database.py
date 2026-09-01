@@ -816,11 +816,12 @@ async def ensure_online_editor_schema(cur) -> None:
                 parser_type, identity_hmac
             ),
             INDEX idx_source_projection_assignment_global (
-                parser_type, assignment_queue_ready, assignment_address_sort_key, row_key
+                parser_type, assignment_queue_ready,
+                assignment_address_sort_key(191), row_key
             ),
             INDEX idx_source_projection_assignment_community (
                 parser_type, community, assignment_queue_ready,
-                assignment_address_sort_key, row_key
+                assignment_address_sort_key(191), row_key
             )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
@@ -945,7 +946,8 @@ async def ensure_online_editor_schema(cur) -> None:
         "_online_source_projection",
         "idx_source_projection_assignment_global",
         "INDEX idx_source_projection_assignment_global "
-        "(parser_type, assignment_queue_ready, assignment_address_sort_key, row_key)",
+        "(parser_type, assignment_queue_ready, "
+        "assignment_address_sort_key(191), row_key)",
     )
     await _ensure_index(
         cur,
@@ -953,7 +955,7 @@ async def ensure_online_editor_schema(cur) -> None:
         "idx_source_projection_assignment_community",
         "INDEX idx_source_projection_assignment_community "
         "(parser_type, community, assignment_queue_ready, "
-        "assignment_address_sort_key, row_key)",
+        "assignment_address_sort_key(191), row_key)",
     )
     # 只读取已有来源缓存完成兼容回填，不访问或改写腾讯文档。
     await cur.execute("""

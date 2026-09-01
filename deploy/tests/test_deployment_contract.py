@@ -70,6 +70,16 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("permissions:\n  contents: write\n  pull-requests: read", workflow)
         self.assertIn("gh pr list", workflow)
 
+    def test_client_release_frontend_build_has_explicit_node_heap(self) -> None:
+        workflow = (ROOT / ".github/workflows/desktop-release.yml").read_text(
+            encoding="utf-8"
+        )
+        frontend_job = workflow.split("\n  frontend:\n", 1)[1].split(
+            "\n  baseline:\n", 1
+        )[0]
+        self.assertIn("NODE_OPTIONS: --max-old-space-size=8192", frontend_job)
+        self.assertIn("npm test && npm run build -- --mode desktop", frontend_job)
+
     def test_server_script_keeps_database_restore_out_of_automatic_path(self) -> None:
         script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
         self.assertIn("sync or backup task is active", script)
@@ -89,6 +99,10 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertNotIn("sha256sum -c", script)
         self.assertNotRegex(script, re.compile(r"mysql\s+[^\n]*<"))
         self.assertIn("rollback_after_error", script)
+        fail_function = script.split("fail() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("declare -F rollback_after_error", fail_function)
+        self.assertIn('[[ "${switched:-0}" -eq 1 ]]', fail_function)
+        self.assertIn("rollback_after_error 1", fail_function)
         self.assertIn("archive exceeds extraction limits", script)
         self.assertIn("BINHU_DEPLOY_PUBLIC_URL", script)
         self.assertIn("curl --http1.1 --fail", script)
