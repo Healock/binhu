@@ -49,6 +49,7 @@ jobs:
     environment: production
     env:
       MYSQL_PASSWORD: test-password
+      NODE_OPTIONS: --max-old-space-size=8192
       EXPECTED_VERSION: ${{ inputs.expected_version }}
       BACKUP_SCOPE: ${{ inputs.backup_scope }}
       REQUESTED_RELEASE_SCOPE: ${{ inputs.release_scope }}

@@ -22,6 +22,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("group: production-deploy", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("environment: production", workflow)
+        self.assertIn("NODE_OPTIONS: --max-old-space-size=8192", workflow)
         self.assertIn("release_scope:", workflow)
         self.assertIn("deploy/resolve_release_scope.py", workflow)
         self.assertIn("- frontend", workflow)
@@ -61,6 +62,13 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("push:", workflow)
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("binhu-deploy@", workflow)
+
+    def test_client_release_can_read_merged_pull_requests_for_notes(self) -> None:
+        workflow = (ROOT / ".github/workflows/desktop-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("permissions:\n  contents: write\n  pull-requests: read", workflow)
+        self.assertIn("gh pr list", workflow)
 
     def test_server_script_keeps_database_restore_out_of_automatic_path(self) -> None:
         script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
