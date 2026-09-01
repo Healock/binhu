@@ -49,6 +49,14 @@ jobs:
         working-directory: backend
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
+      - name: Validate Docker Compose configuration
+        env:
+          BINHU_MYSQL_ROOT_PASSWORD: compose-validation
+          BINHU_MYSQL_PASSWORD: compose-validation
+          BINHU_REDIS_PASSWORD: compose-validation
+          BINHU_ENCRYPTION_KEY: compose-validation
+          BINHU_OPS_AGENT_TOKEN: compose-validation
+        run: docker compose config --quiet
       - name: Run release notes tests
         run: python -m unittest desktop/scripts/test_generate_release_notes.py
       - name: Run desktop update gateway tests
