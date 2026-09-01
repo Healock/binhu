@@ -2016,6 +2016,25 @@ export async function confirmMobileTaskAddressMatch(
   return data
 }
 
+export async function resolveMobileTaskAddressConflict(
+  parserType: string,
+  rowKey: string,
+  smallCommunityId: number,
+  expectedRevision: number,
+  expectedRowHash: string,
+): Promise<MobileTaskSaveResult> {
+  const { data } = await api.post(
+    `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/resolve-conflict`,
+    {
+      small_community_id: smallCommunityId,
+      expected_revision: expectedRevision,
+      expected_row_hash: expectedRowHash,
+    },
+    activeRequest,
+  )
+  return data
+}
+
 export async function getMobileTaskFilterOptions(
   parserType: string,
   scope: MobileTaskScope,

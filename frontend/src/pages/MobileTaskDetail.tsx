@@ -24,6 +24,7 @@ import {
   getMobileTaskAnalysisDetail,
   getMobileTaskResidenceDetail,
   confirmMobileTaskAddressMatch,
+  resolveMobileTaskAddressConflict,
   manuallyConfirmRegistration,
   getQmfLegacyStatus,
   searchRegistrationProperties,
@@ -181,6 +182,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [manualConfirming, setManualConfirming] = useState(false)
   const [addressMatchEntryId, setAddressMatchEntryId] = useState<number | undefined>()
   const [addressMatchConfirming, setAddressMatchConfirming] = useState(false)
+  const [addressConflictResolving, setAddressConflictResolving] = useState(false)
   const autosaveTimerRef = useRef<number | null>(null)
   const saveRef = useRef<(() => Promise<void>) | null>(null)
   const savingRef = useRef(false)
@@ -877,6 +879,50 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       reason: String(candidate.reason || ''),
     }))
     .filter(candidate => candidate.entryId > 0 && candidate.name)
+  const canResolveAddressConflict = Boolean(
+    user && (
+      ['基础管控', '中队长', '所队领导'].includes(String(user.member?.position || ''))
+      || ['admin', 'super_admin'].includes(String(user.role || ''))
+    ),
+  )
+  const canManageAddressLibrary = Boolean((user?.permissions || []).includes('police.address.manage'))
+  const resolveAddressConflict = async () => {
+    const source = selectedSource
+    const entryId = addressMatchEntryId || addressMatchCandidates[0]?.entryId
+    if (!source || !entryId || addressMatch?.status !== 'conflict') return
+    const candidate = addressMatchCandidates.find(item => item.entryId === entryId)
+    const targetCommunity = candidate?.communityName || '候选所属社区'
+    Modal.confirm({
+      title: '处理地址冲突？',
+      content: `这会把任务社区从“${data?.task.community || '未填写'}”修正为“${targetCommunity}”，并重新生成小区匹配。原始地址仍会保留，是否继续？`,
+      okText: '修正并重新匹配',
+      cancelText: '取消',
+      onOk: async () => {
+        setAddressConflictResolving(true)
+        try {
+          const result = await resolveMobileTaskAddressConflict(
+            parserType,
+            rowKey,
+            entryId,
+            source.revision,
+            source.row_hash,
+          )
+          setData(current => current ? {
+            ...current,
+            task: result.task_update ? { ...current.task, ...result.task_update } : current.task,
+            address_match: result.task_update?.address_match || current.address_match,
+          } : current)
+          setAddressMatchEntryId(undefined)
+          message.success(result.message)
+        } catch (reason: any) {
+          message.error(detailError(reason, '地址冲突处理失败，请刷新后重试'))
+          throw reason
+        } finally {
+          setAddressConflictResolving(false)
+        }
+      },
+    })
+  }
   const reviewFlow = data.task.review_flow || null
   const qmfLegacyStatusView = qmfLegacyStatus ? (() => {
     switch (qmfLegacyStatus.state) {
@@ -996,10 +1042,62 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               <span>方式：{addressMatch.method} · {Math.round((addressMatch.score || 0) * 100)} 分</span>
             )}
           </div>
+          {addressMatch?.status === 'conflict' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="这条任务不是无法处理，而是需要先解决社区归属冲突"
+              description={addressMatchCandidates.length > 0
+                ? `候选小区：${addressMatchCandidates.slice(0, 3).map(item => `${item.name}${item.communityName ? `（${item.communityName}）` : ''}`).join('、')}。确认地址后，可由基础管控及以上岗位将任务社区修正为候选所属社区并重新匹配。`
+                : '暂未找到可安全处理的候选。请联系基础管控或管理员修正任务地址、维护小区地址库后重新匹配。'}
+            />
+          )}
+          {addressMatch?.status === 'conflict' && addressMatchCandidates.length === 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-[var(--app-text-secondary)]">下一步：联系基础管控或管理员处理地址冲突。</span>
+              {canManageAddressLibrary && (
+                <Button onClick={() => navigate('/police-addresses')}>维护小区地址库</Button>
+              )}
+            </div>
+          )}
           {addressMatchCandidates.length > 0 && (
             <div className="mobile-task-address-match__candidates">
               <span>候选小区</span>
-              {canManageAddressMatch && !interactionLocked ? (
+              {addressMatch?.status === 'conflict' ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {addressMatchCandidates.slice(0, 5).map(candidate => (
+                    <Tag key={candidate.entryId} color={addressMatchEntryId === candidate.entryId ? 'gold' : undefined}>
+                      {candidate.name}{candidate.communityName ? ` · ${candidate.communityName}` : ''} · {Math.round(candidate.score * 100)} 分
+                    </Tag>
+                  ))}
+                  {canResolveAddressConflict && !interactionLocked && (
+                    <>
+                      {addressMatchCandidates.length > 1 && (
+                        <Select
+                          showSearch
+                          optionFilterProp="label"
+                          value={addressMatchEntryId}
+                          placeholder="选择要采用的候选"
+                          options={addressMatchCandidates.map(candidate => ({
+                            value: candidate.entryId,
+                            label: `${candidate.name}${candidate.communityName ? ` · ${candidate.communityName}` : ''} · ${Math.round(candidate.score * 100)} 分`,
+                          }))}
+                          onChange={setAddressMatchEntryId}
+                        />
+                      )}
+                      <Button
+                        type="primary"
+                        loading={addressConflictResolving}
+                        onClick={() => void resolveAddressConflict()}
+                      >按候选社区修正并重新匹配</Button>
+                    </>
+                  )}
+                  {!canResolveAddressConflict && <span className="text-[var(--app-text-secondary)]">请联系基础管控或管理员处理</span>}
+                  {canManageAddressLibrary && (
+                    <Button onClick={() => navigate('/police-addresses')}>维护小区地址库</Button>
+                  )}
+                </div>
+              ) : canManageAddressMatch && !interactionLocked ? (
                 <Select
                   showSearch
                   optionFilterProp="label"
@@ -1019,7 +1117,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   ))}
                 </div>
               )}
-              {canManageAddressMatch && !interactionLocked && (
+              {addressMatch?.status !== 'conflict' && canManageAddressMatch && !interactionLocked && (
                 <Button
                   type="primary"
                   loading={addressMatchConfirming}

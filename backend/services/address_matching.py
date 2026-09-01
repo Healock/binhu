@@ -141,6 +141,53 @@ def _is_low_information(parsed: dict[str, str]) -> bool:
     )
 
 
+def _score_candidate(parsed: dict[str, str], raw: dict[str, Any]) -> AddressCandidate | None:
+    """Score one address entry without applying street/community hard constraints."""
+    parts = _entry_parts(raw)
+    score = 0.0
+    methods: list[str] = []
+    if parsed["normalized"] == parts["detail"] and parts["detail"]:
+        score += 0.58
+        methods.append("完整地址")
+    if parts["name"] and parts["name"] in parsed["normalized"]:
+        score += 0.48
+        methods.append("小区名")
+    elif parts["aliases"] and any(alias and alias in parsed["normalized"] for alias in parts["aliases"].split("|")):
+        score += 0.42
+        methods.append("小区别名")
+    if parts["detail"] and parts["detail"] in parsed["normalized"]:
+        score += 0.25
+        methods.append("地址片段")
+    if parsed.get("road") and parts.get("road") and parsed["road"] == parts["road"]:
+        score += 0.16
+        methods.append("道路")
+    if parsed.get("house_number") and parsed["house_number"] in parts["detail"]:
+        score += 0.12
+        methods.append("门牌")
+    if parsed.get("building") and parts.get("building") and parsed["building"] == parts["building"]:
+        score += 0.12
+        methods.append("楼栋")
+    if parsed.get("room") and parts.get("room") and parsed["room"] == parts["room"]:
+        score += 0.1
+        methods.append("房号")
+    overlap = len(_tokens(parsed["normalized"]) & _tokens(parts["all"]))
+    union = len(_tokens(parsed["normalized"]) | _tokens(parts["all"])) or 1
+    score += min(0.12, 0.12 * overlap / union)
+    similarity = SequenceMatcher(None, parsed["normalized"], parts["all"]).ratio()
+    score += min(0.08, similarity * 0.08)
+    if score <= 0.08:
+        return None
+    return AddressCandidate(
+        entry_id=int(raw["id"]),
+        name=str(raw.get("name") or ""),
+        community_id=int(raw["community_id"]) if raw.get("community_id") is not None else None,
+        community_name=str(raw.get("community_name") or ""),
+        score=round(min(score, 1.0), 4),
+        method="+".join(methods) or "规则",
+        reason="；".join(methods) or "字符相似",
+    )
+
+
 def match_address(
     address: Any,
     entries: Iterable[dict[str, Any]],
@@ -163,6 +210,7 @@ def match_address(
     requested_community = normalize_address_text(community_name)
     requested_street = normalize_address_text(street_name or parsed.get("street"))
     candidates: list[AddressCandidate] = []
+    conflicting_candidates: list[AddressCandidate] = []
     street_conflicts = 0
     community_conflicts = 0
     for raw in entries:
@@ -171,56 +219,38 @@ def match_address(
         parts = _entry_parts(raw)
         candidate_street = parts.get("street", "")
         if requested_street and candidate_street and requested_street != candidate_street:
+            candidate = _score_candidate(parsed, raw)
+            if candidate:
+                conflicting_candidates.append(candidate)
             street_conflicts += 1
             continue
         candidate_community = normalize_address_text(raw.get("community_name", ""))
         if requested_community and candidate_community and requested_community != candidate_community:
+            candidate = _score_candidate(parsed, raw)
+            if candidate:
+                conflicting_candidates.append(candidate)
             community_conflicts += 1
             continue
-        score = 0.0
-        methods: list[str] = []
-        if parsed["normalized"] == parts["detail"] and parts["detail"]:
-            score += 0.58
-            methods.append("完整地址")
-        if parts["name"] and parts["name"] in parsed["normalized"]:
-            score += 0.48
-            methods.append("小区名")
-        elif parts["aliases"] and any(alias and alias in parsed["normalized"] for alias in parts["aliases"].split("|")):
-            score += 0.42
-            methods.append("小区别名")
-        if parts["detail"] and parts["detail"] in parsed["normalized"]:
-            score += 0.25
-            methods.append("地址片段")
-        if parsed.get("road") and parts.get("road") and parsed["road"] == parts["road"]:
-            score += 0.16
-            methods.append("道路")
-        if parsed.get("house_number") and parsed["house_number"] in parts["detail"]:
-            score += 0.12
-            methods.append("门牌")
-        if parsed.get("building") and parts.get("building") and parsed["building"] == parts["building"]:
-            score += 0.12
-            methods.append("楼栋")
-        if parsed.get("room") and parts.get("room") and parsed["room"] == parts["room"]:
-            score += 0.1
-            methods.append("房号")
-        overlap = len(_tokens(parsed["normalized"]) & _tokens(parts["all"]))
-        union = len(_tokens(parsed["normalized"]) | _tokens(parts["all"])) or 1
-        score += min(0.12, 0.12 * overlap / union)
-        similarity = SequenceMatcher(None, parsed["normalized"], parts["all"]).ratio()
-        score += min(0.08, similarity * 0.08)
-        if score <= 0.08:
+        candidate = _score_candidate(parsed, raw)
+        if not candidate:
             continue
-        candidates.append(AddressCandidate(
-            entry_id=int(raw["id"]),
-            name=str(raw.get("name") or ""),
-            community_id=int(raw["community_id"]) if raw.get("community_id") is not None else None,
-            community_name=str(raw.get("community_name") or ""),
-            score=round(min(score, 1.0), 4),
-            method="+".join(methods) or "规则",
-            reason="；".join(methods) or "字符相似",
-        ))
+        candidates.append(candidate)
     candidates = deduplicate_candidates(candidates)[:top_n]
+    conflicting_candidates = deduplicate_candidates(conflicting_candidates)[:5]
     if not candidates:
+        if conflicting_candidates:
+            best_conflict = conflicting_candidates[0]
+            conflict_reason = (
+                "任务地址与候选小区街道不一致"
+                if street_conflicts and not community_conflicts
+                else "任务社区与候选小区归属不一致"
+            )
+            return {
+                "status": "conflict", "score": best_conflict.score, "method": best_conflict.method,
+                "reason": conflict_reason, "candidate": best_conflict.as_dict(),
+                "candidates": [item.as_dict() for item in conflicting_candidates],
+                "version": MATCHER_VERSION,
+            }
         if street_conflicts:
             return {
                 "status": "conflict", "score": 0.0, "method": "rule",

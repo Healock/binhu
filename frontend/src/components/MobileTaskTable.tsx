@@ -621,7 +621,20 @@ export default function MobileTaskTable({
           {match?.method && <span>{match.method}</span>}
           {match?.reason && <span>{match.reason}</span>}
         </div>
-        {canManageAddressMatches && match?.status !== 'confirmed' && options.length > 0 && (
+        {match?.status === 'conflict' && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {options.slice(0, 5).map(option => (
+              <Tag key={option.value}>{option.label}</Tag>
+            ))}
+            <span className="text-[var(--app-text-secondary)]">
+              请打开详情，由基础管控或管理员处理社区冲突
+            </span>
+            <Button size="small" onClick={() => onOpen(task)}>
+              打开详情处理
+            </Button>
+          </div>
+        )}
+        {canManageAddressMatches && match?.status !== 'confirmed' && match?.status !== 'conflict' && options.length > 0 && (
           <Select
             showSearch
             optionFilterProp="label"

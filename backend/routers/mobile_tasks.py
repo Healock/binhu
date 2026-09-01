@@ -457,6 +457,14 @@ class AddressMatchConfirm(BaseModel):
     small_community_id: int = Field(gt=0)
 
 
+class AddressMatchConflictResolution(BaseModel):
+    """管理员确认冲突候选后，将任务社区改为候选正式社区并重新匹配。"""
+
+    small_community_id: int = Field(gt=0)
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
+
+
 class SyncConflictResolution(BaseModel):
     choice: Literal["platform", "tencent"]
     fields: list[str] = Field(min_length=1, max_length=5)
@@ -2971,6 +2979,120 @@ async def confirm_mobile_task_address_match(
         **request_audit_fields(request),
     )
     return {"message": "小区归属已确认", "address_match": result}
+
+
+@router.post("/{parser_type}/{row_key}/address-match/resolve-conflict")
+async def resolve_mobile_task_address_conflict(
+    parser_type: str,
+    row_key: str,
+    data: AddressMatchConflictResolution,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """提供地址冲突的可执行处理路径，并在修正后重新生成匹配结果。"""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    if not local_data_source_enabled():
+        raise HTTPException(409, "本地业务数据源尚未启用，暂不能处理地址冲突")
+    scoped_user = _require_unverifiable_reviewer(user)
+    context = await _flow_context(conn, scoped_user)
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    parser = get_parser(parser_type)
+    community_field = parser.COMMUNITY_COLUMN
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT source.id, source.row_key, source.revision, source.row_hash,
+                   source.values_json, projection.address_match_status,
+                   projection.address_match_candidates, projection.community,
+                   projection.source_count, projection.conflict
+            FROM _online_source_rows AS source
+            JOIN _online_source_projection AS projection
+              ON projection.parser_type=source.parser_type
+             AND projection.row_key=source.row_key
+            WHERE source.id=(
+                SELECT candidate_source.id FROM _online_source_rows AS candidate_source
+                WHERE candidate_source.parser_type=%s
+                  AND candidate_source.row_key=%s
+                  AND candidate_source.archived_at IS NULL
+                {active_source_sql_filter(parser_type, 'candidate_source')}
+                ORDER BY id LIMIT 1
+            )
+              AND source.parser_type=%s
+              AND source.archived_at IS NULL
+              AND {scope_where}
+            """,
+            (parser_type, row_key, parser_type, *scope_params),
+        )
+        source = await cur.fetchone()
+        if not source:
+            raise HTTPException(404, "任务不存在或不在当前账号可处理范围内")
+        if str(source[1] or "") != row_key:
+            raise HTTPException(409, "任务主键已变化，请刷新后重试")
+        if int(source[2] or 0) != data.expected_revision or str(source[3] or "") != data.expected_row_hash:
+            raise HTTPException(409, "任务已被其他人更新，请刷新后重试")
+        if int(source[8] or 0) != 1 or bool(source[9]):
+            raise HTTPException(409, "任务存在重复或冲突来源，请先处理来源异常")
+        if str(source[5] or "") != "conflict":
+            raise HTTPException(409, "该任务当前已不处于地址冲突状态，请刷新后重试")
+        candidates = json_value(source[6], [])
+        selected = next(
+            (item for item in candidates if int(item.get("entry_id") or 0) == data.small_community_id),
+            None,
+        )
+        if not selected:
+            raise HTTPException(400, "所选小区不是本次冲突匹配生成的候选，请刷新后重新选择")
+        await cur.execute(
+            """
+            SELECT entry.id, entry.name, entry.community_id, community.name
+            FROM _police_address_entries AS entry
+            JOIN _communities AS community ON community.id=entry.community_id
+            WHERE entry.id=%s AND entry.enabled=1 AND community.is_active=1
+            """,
+            (data.small_community_id,),
+        )
+        entry = await cur.fetchone()
+        if not entry:
+            raise HTTPException(404, "候选小区不存在、已停用或所属社区已停用")
+        target_community = str(entry[3] or "").strip()
+        if not target_community:
+            raise HTTPException(409, "候选小区尚未设置有效所属社区，请先维护小区地址库")
+        current_values = json_value(source[4], {})
+
+    result = await queue_source_fields(
+        parser_type=parser_type,
+        source_id=int(source[0]),
+        changes={community_field: target_community},
+        base_values={community_field: str(current_values.get(community_field) or "")},
+        expected_revision=data.expected_revision,
+        request=request,
+        user=scoped_user,
+        conn=conn,
+        explicit_text_edit=True,
+        allowed_columns={community_field},
+        audit_action="address_match.resolve_conflict",
+        record_unverifiable_save=False,
+    )
+    await record_admin_audit(
+        scoped_user,
+        "mobile_tasks.address_match.resolve_conflict",
+        target_type="mobile_task_address_match",
+        target_name=f"{parser_type}:{row_key}",
+        detail={
+            "small_community_id": int(entry[0]),
+            "target_community": target_community,
+        },
+        **request_audit_fields(request),
+    )
+    return {
+        **result,
+        "message": f"已将任务社区修正为{target_community}，正在重新匹配",
+        **await _mobile_task_save_context(conn, parser_type, str(result["row_key"])),
+    }
 
 
 @router.get("/{parser_type}/assignment-workbench")

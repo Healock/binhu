@@ -68,6 +68,8 @@ def test_community_and_street_conflicts_are_not_suggested():
         community_name="横扇社区",
     )
     assert community_conflict["status"] == "conflict"
+    assert community_conflict["candidate"]["entry_id"] == 1
+    assert community_conflict["candidates"][0]["community_name"] == "长板社区"
 
     street_entries = [{
         **ENTRIES[1],
@@ -79,6 +81,7 @@ def test_community_and_street_conflicts_are_not_suggested():
         street_name="八坼街道",
     )
     assert street_conflict["status"] == "conflict"
+    assert street_conflict["candidate"]["entry_id"] == 2
 
 
 def test_same_name_in_multiple_communities_and_close_scores_require_review():
