@@ -72,6 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      # Vite currently needs more than the default ~2 GiB Node heap on the
+      # hosted runner while rendering the full application bundle.
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check out source
@@ -89,6 +91,8 @@ jobs:
         run: npm test
         working-directory: frontend
       - name: Build frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: npm run build
         working-directory: frontend
 
@@ -116,9 +120,14 @@ jobs:
             desktop/apps/win10-tauri/package-lock.json
       - name: Build local desktop frontend
         shell: pwsh
+        env:
+          # Keep the Windows hosted runner from failing at Vite chunk rendering
+          # before the desktop architecture checks can run.
+          NODE_OPTIONS: --max-old-space-size=8192
         run: |
           npm.cmd ci --prefix frontend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_OPTIONS = '--max-old-space-size=8192'
           npm.cmd run build --prefix frontend -- --mode desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & desktop/scripts/build-local-frontend.ps1 -SkipBuild -FrontendDist frontend/dist

@@ -1013,7 +1013,7 @@ export default function MobileTaskList({
               <span className="mobile-task-filter-field__label">业务类型</span>
               {analysisOnly ? <Select
                 mode="multiple"
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 value={analysisParserSelection}
                 maxTagCount={responsiveLayout.isWide ? 2 : 1}
                 optionFilterProp="label"
@@ -1023,7 +1023,7 @@ export default function MobileTaskList({
                   ...ANALYSIS_TASK_TYPES.map(value => ({ value, label: value })),
                 ]}
               /> : <Select
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 value={parserType}
                 onChange={value => updateQuery(value, scope)}
                 options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
@@ -1048,7 +1048,7 @@ export default function MobileTaskList({
             <label className="mobile-task-filter-field mobile-task-filter-field--search">
               <span className="mobile-task-filter-field__label">快速搜索</span>
               <Input
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 allowClear
                 value={keywordInput}
                 prefix={<SearchOutlined />}
@@ -1064,7 +1064,7 @@ export default function MobileTaskList({
               <span className="mobile-task-filter-field__label">社区</span>
               <Select
                 mode="multiple"
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 value={communities}
                 loading={optionsLoading}
                 maxTagCount={responsiveLayout.isWide ? 2 : 1}
@@ -1083,7 +1083,7 @@ export default function MobileTaskList({
               <span className="mobile-task-filter-field__label">小区</span>
               <Select
                 mode="multiple"
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 value={smallCommunities}
                 loading={optionsLoading}
                 maxTagCount={responsiveLayout.isWide ? 2 : 1}
@@ -1102,7 +1102,7 @@ export default function MobileTaskList({
               <span className="mobile-task-filter-field__label">核查人</span>
               <Select
                 mode="multiple"
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 value={inspectors}
                 loading={optionsLoading}
                 maxTagCount={responsiveLayout.isWide ? 2 : 1}
@@ -1121,7 +1121,7 @@ export default function MobileTaskList({
               <span className="mobile-task-filter-field__label">匹配状态</span>
               <Select
                 mode="multiple"
-                size="large"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
                 value={matchStatuses}
                 loading={optionsLoading}
                 maxTagCount={responsiveLayout.isWide ? 2 : 1}

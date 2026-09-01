@@ -23,6 +23,7 @@ from services.qmf_registration import valid_identity, normalize_identity
 from services.registry_security import hmac_digest, normalize_phone
 from services.online_source import source_row_hash, rebuild_projection_rows
 from services.parsers import get_parser
+from services.watch_matching import sync_current_task_snapshots_for_keys
 
 
 MODEL_THREE_PARSER = "疑似未注销模型三"
@@ -536,7 +537,9 @@ async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[
     matched = await cur.fetchall()
     updated = skipped = 0
     updated_row_keys: list[str] = []
+    matched_row_keys: list[str] = []
     for row_key, raw_values, source_count, conflict in matched:
+        matched_row_keys.append(str(row_key))
         values = raw_values if isinstance(raw_values, dict) else json.loads(raw_values or "{}")
         current = str(values.get("核查结果") or "").strip()
         await cur.execute(
@@ -580,6 +583,7 @@ async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[
         "updated_tasks": updated,
         "skipped_tasks": skipped,
         "updated_row_keys": updated_row_keys,
+        "matched_row_keys": matched_row_keys,
     }
 
 
@@ -663,6 +667,15 @@ async def apply_self_owned_import(conn, *, parsed: ParsedSelfOwned, file_name: s
             # rows. Rebuilding the entire business projection here made large
             # ZIP imports exceed the request timeout; refresh just those rows.
             matched_keys = list(match_stats.pop("updated_row_keys", []))
+            # A self-owned tag is also a current personnel-archive fact.  If
+            # a task already had a result, the result update is correctly
+            # skipped, but its tag snapshot still needs to be materialized so
+            # the model-three list can display the tag immediately.
+            matched_snapshot_keys = list(match_stats.pop("matched_row_keys", []))
+            if matched_snapshot_keys:
+                await sync_current_task_snapshots_for_keys(
+                    cur, MODEL_THREE_PARSER, matched_snapshot_keys
+                )
             for offset in range(0, len(matched_keys), PROJECTION_REFRESH_BATCH_SIZE):
                 await rebuild_projection_rows(
                     cur,
