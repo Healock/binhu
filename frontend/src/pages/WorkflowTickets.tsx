@@ -6,6 +6,7 @@ import {
   Descriptions,
   Divider,
   Drawer,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -673,11 +674,25 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
 
             <Space wrap className="workflow-ticket-detail__actions">
               {detail.status === 'queued' && canHandle && <Button type="primary" onClick={() => void claim(detail)}>领取</Button>}
-              {canProcessDetail && <Button onClick={() => openAction('approve')}>通过</Button>}
-              {canProcessDetail && <Button onClick={() => openAction('complete')}>完成</Button>}
-              {canProcessDetail && <Button onClick={() => openAction('return')}>退回补充</Button>}
-              {canProcessDetail && <Button danger onClick={() => openAction('reject')}>驳回</Button>}
-              {canProcessDetail && <Button onClick={() => openAction('transfer')}>转派</Button>}
+              {canProcessDetail && (() => {
+                const hasPendingNextStep = (detail.steps || []).some(step => step.status === 'pending')
+                return (
+                  <>
+                    <Button type="primary" onClick={() => openAction(hasPendingNextStep ? 'approve' : 'complete')}>
+                      {hasPendingNextStep ? '通过并进入下一节点' : '完成工单'}
+                    </Button>
+                    <Dropdown
+                      menu={{ items: [
+                        { key: 'return', label: '退回补充', onClick: () => openAction('return') },
+                        { key: 'reject', label: '驳回', danger: true, onClick: () => openAction('reject') },
+                        { key: 'transfer', label: '转派', onClick: () => openAction('transfer') },
+                      ] }}
+                    >
+                      <Button>更多处理</Button>
+                    </Dropdown>
+                  </>
+                )
+              })()}
               {requesterOwnsDetail && detail.status === 'pending_requester' && <Button type="primary" onClick={() => openAction('supplement')}>补充材料</Button>}
               {canRestoreQueued && detail.status === 'pending_requester' && (
                 <Button type="primary" onClick={() => openAction('restore_queued')}>恢复待领取</Button>
