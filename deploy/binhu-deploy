@@ -15,6 +15,10 @@ log() {
 
 fail() {
   printf '[binhu-deploy] ERROR: %s\n' "$*" >&2
+  if declare -F rollback_after_error >/dev/null \
+    && [[ "${switched:-0}" -eq 1 ]]; then
+    rollback_after_error 1 "${BASH_LINENO[0]:-0}"
+  fi
   exit 1
 }
 

@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -8,6 +9,12 @@ from services.online_source import assignment_projection_fields
 
 
 class AssignmentProjectionTests(unittest.TestCase):
+    def test_assignment_indexes_keep_utf8mb4_keys_below_mysql_limit(self):
+        database_source = (
+            Path(__file__).resolve().parents[1] / "database.py"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(database_source.count("assignment_address_sort_key(191)"), 4)
+
     def test_ready_projection_contains_display_and_sort_fields(self):
         source, address, sort_key, ready = assignment_projection_fields(
             "疑似未注销模型三",
