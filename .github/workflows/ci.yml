@@ -87,6 +87,8 @@ jobs:
         run: npm test
         working-directory: frontend
       - name: Build frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: npm run build
         working-directory: frontend
 
@@ -112,6 +114,8 @@ jobs:
             desktop/apps/win10-tauri/package-lock.json
       - name: Build local desktop frontend
         shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: |
           npm.cmd ci --prefix frontend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
