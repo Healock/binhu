@@ -22,6 +22,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("group: production-deploy", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("environment: production", workflow)
+        self.assertIn("NODE_OPTIONS: --max-old-space-size=8192", workflow)
         self.assertIn("release_scope:", workflow)
         self.assertIn("deploy/resolve_release_scope.py", workflow)
         self.assertIn("- frontend", workflow)
