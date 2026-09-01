@@ -257,6 +257,28 @@ class QmfLegacyStatusTests(unittest.IsolatedAsyncioTestCase):
         unavailable = await query({"unexpected": []})
         self.assertEqual(unavailable.state, STATUS_UNAVAILABLE)
 
+    async def test_broad_total_does_not_mark_single_identity_as_ambiguous(self):
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "code": 200,
+                "data": {
+                    # Some deployments return the unfiltered page total even
+                    # though the list contains the requested identity only.
+                    "total": 2,
+                    "list": [response_row()],
+                },
+            })
+
+        config = QmfStatusConfig(**{
+            **status_config().__dict__,
+            "authorization": "fixture-token",
+        })
+        result = await QmfLegacyStatusClient(
+            config=config,
+            transport=httpx.MockTransport(handler),
+        ).query(identity=VALID_IDENTITY, expected_result="在吴")
+        self.assertEqual(result.state, STATUS_COMPLETED_MATCH)
+
     async def test_retry_policy_retries_gateway_error_once_but_not_http_500(self):
         attempts = 0
 

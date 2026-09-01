@@ -2307,6 +2307,34 @@ html.desktop-shell .ant-notification-topRight {
   padding: 14px;
 }
 
+/* Desktop task filters are intentionally dense; the same controls remain
+   available, but their visual weight no longer dominates the task list. */
+.mobile-task-filter-card--wide {
+  padding: 10px 12px;
+}
+
+.mobile-task-filter-card--wide .mobile-task-filter-layout {
+  gap: 8px;
+}
+
+.mobile-task-filter-card--wide .mobile-task-filter-primary,
+.mobile-task-filter-card--wide .mobile-task-filter-secondary {
+  gap: 8px;
+}
+
+.mobile-task-filter-card--wide .mobile-task-filter-field {
+  gap: 3px;
+}
+
+.mobile-task-filter-card--wide .mobile-task-filter-field__label {
+  font-size: 11px;
+}
+
+.mobile-task-filter-card--wide .mobile-task-filter-controls {
+  min-height: 28px;
+  padding-top: 6px;
+}
+
 .mobile-task-filter-card .list-toolbar__filters {
   display: block;
   width: 100%;
