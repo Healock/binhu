@@ -62,6 +62,13 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("binhu-deploy@", workflow)
 
+    def test_client_release_can_read_merged_pull_requests_for_notes(self) -> None:
+        workflow = (ROOT / ".github/workflows/desktop-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("permissions:\n  contents: write\n  pull-requests: read", workflow)
+        self.assertIn("gh pr list", workflow)
+
     def test_server_script_keeps_database_restore_out_of_automatic_path(self) -> None:
         script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
         self.assertIn("sync or backup task is active", script)
