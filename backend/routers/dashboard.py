@@ -32,8 +32,11 @@ from services.permissions import (
     VISIT_SUMMARY_VIEW,
     has_permission,
 )
-from services.report_overview import SUMMARY_TYPE, get_online_overview
-from services.report_range import get_summary_range
+from services.report_overview import (
+    SUMMARY_TYPE,
+    get_online_community_breakdown,
+    get_online_overview,
+)
 from services.task_workflow import SUMMARY_TASK_TYPES, TASK_WORKFLOWS
 from services.visit_summary import (
     VISIT_CATEGORY_RENTAL,
@@ -309,25 +312,18 @@ async def _load_online_overview(
         start_date.isoformat(), business_date.isoformat(), SUMMARY_TYPE,
         communities, inspector=inspector,
     )
-    report = await get_summary_range(start_date.isoformat(), business_date.isoformat())
     breakdown_communities = communities
     if not inspector and communities is None:
         breakdown_communities = await _active_community_names(cur)
-    breakdown = [] if inspector else _community_breakdown(report, breakdown_communities)
-    if inspector:
-        accepted_communities = set(communities or [])
-        unable = sum(
-            _count(row.get("无法见底数"))
-            for row in (report.get("inspector") or {}).get("data") or []
-            if str(row.get("姓名") or "").strip().casefold()
-            == inspector.casefold()
-            and (
-                communities is None
-                or str(row.get("社区") or "").strip() in accepted_communities
-            )
-        )
-    else:
-        unable = sum(item["unable_to_verify"] for item in breakdown)
+    community_rows = await get_online_community_breakdown(
+        start_date.isoformat(),
+        business_date.isoformat(),
+        SUMMARY_TYPE,
+        breakdown_communities,
+        inspector=inspector,
+    )
+    breakdown = [] if inspector else community_rows
+    unable = sum(item["unable_to_verify"] for item in community_rows)
     return {
         "scope": "responsibility",
         "scope_label": responsibility_label(member_position(user), communities),

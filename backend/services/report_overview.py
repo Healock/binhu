@@ -19,6 +19,10 @@ from typing import Any
 
 from database import db_manager
 from services.report_builders import BUILDERS
+from services.report_members import (
+    canonical_community,
+    get_community_alias_lookup,
+)
 from services.parsers import get_parser
 from services.task_workflow import TASK_WORKFLOWS
 
@@ -196,7 +200,9 @@ async def _load_effective_tasks(
             latest.row_key,
             latest.task_state,
             first_event.report_date,
-            first_event.source
+            first_event.source,
+            latest.community,
+            latest.unable_to_verify
         FROM latest_ranked AS latest
         JOIN first_ranked AS first_event
           ON first_event.parser_type = latest.parser_type
@@ -252,7 +258,7 @@ async def _find_new_activity_keys(
         ) in runs
     }
     activity_by_run: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for parser_type, row_key, _, first_date, source in tasks:
+    for parser_type, row_key, _, first_date, source, *_ in tasks:
         if str(source) == "activity":
             activity_by_run[
                 (str(first_date), str(parser_type))
@@ -297,7 +303,7 @@ def _task_change_category(
     task: tuple[Any, ...],
     new_keys: set[tuple[str, str]],
 ) -> str:
-    parser_type, row_key, _, _, source = task
+    parser_type, row_key, _, _, source = task[:5]
     if str(source) == "carryover":
         return "carryover"
     if (str(parser_type), str(row_key)) in new_keys:
@@ -347,10 +353,33 @@ async def _resolve_communities(
     community: str | list[str] | None,
 ) -> list[str] | None:
     if isinstance(community, list):
-        return list(dict.fromkeys(
+        normalized = list(dict.fromkeys(
             str(value).strip() for value in community
             if str(value).strip()
         ))
+        if not normalized:
+            return []
+        placeholders = ", ".join(["%s"] * len(normalized))
+        await cur.execute(
+            f"""
+            SELECT c.name
+            FROM OnlineData._communities AS c
+            WHERE c.name IN ({placeholders})
+            UNION
+            SELECT a.alias
+            FROM OnlineData._community_aliases AS a
+            JOIN OnlineData._communities AS c
+              ON c.id=a.community_id
+            WHERE c.name IN ({placeholders})
+            """,
+            (*normalized, *normalized),
+        )
+        resolved = [
+            str(row[0]).strip()
+            for row in await cur.fetchall()
+            if str(row[0]).strip()
+        ]
+        return list(dict.fromkeys((*normalized, *resolved)))
     if community is None:
         return None
     if not community:
@@ -373,6 +402,59 @@ async def _resolve_communities(
         str(row[0]).strip()
         for row in await cur.fetchall()
     ] or [community]
+
+
+def _community_breakdown_from_tasks(
+    tasks: list[tuple[Any, ...]],
+    alias_lookup: dict[str, str],
+    communities: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Aggregate valid task ledger rows without requiring complete coverage."""
+    requested = None
+    if communities is not None:
+        requested = list(dict.fromkeys(
+            canonical_community(value, alias_lookup)
+            for value in communities
+            if str(value or "").strip()
+        ))
+    accepted = set(requested or []) if requested is not None else None
+    totals: dict[str, dict[str, int]] = {}
+    for task in tasks:
+        if len(task) < 7:
+            continue
+        community_name = canonical_community(task[5], alias_lookup)
+        if accepted is not None and community_name not in accepted:
+            continue
+        bucket = totals.setdefault(
+            community_name,
+            {"total": 0, "completed": 0, "unable_to_verify": 0},
+        )
+        bucket["total"] += 1
+        if str(task[2] or "") == "completed":
+            bucket["completed"] += 1
+        if bool(task[6]):
+            bucket["unable_to_verify"] += 1
+
+    community_names = requested if requested is not None else sorted(totals)
+    result = []
+    for community_name in community_names:
+        bucket = totals.get(
+            community_name,
+            {"total": 0, "completed": 0, "unable_to_verify": 0},
+        )
+        total = int(bucket["total"])
+        completed = int(bucket["completed"])
+        pending = max(total - completed, 0)
+        unable = min(int(bucket["unable_to_verify"]), pending)
+        result.append({
+            "community": community_name,
+            "total": total,
+            "pending": pending,
+            "completed": completed,
+            "unable_to_verify": unable,
+            "completion_rate": _ratio(completed, total),
+        })
+    return sorted(result, key=lambda item: (-item["pending"], item["community"]))
 
 
 async def _load_latest_task_metadata(
@@ -583,7 +665,7 @@ async def get_online_overview_details(
 
         data = []
         for task in selected:
-            parser_name, row_key, task_state, first_date, _ = task
+            parser_name, row_key, task_state, first_date, *_ = task
             key = (str(parser_name), str(row_key))
             task_meta = metadata.get(key, {})
             values = snapshots.get(key, {})
@@ -691,8 +773,8 @@ async def get_online_overview(
         changed_tasks = len(_filter_tasks_by_category(tasks, new_keys, "changed"))
         completed_tasks = sum(
             1
-            for _, _, state, _, _ in tasks
-            if str(state) == "completed"
+            for task in tasks
+            if str(task[2]) == "completed"
         )
         return {
             "exists": True,
@@ -718,5 +800,57 @@ async def get_online_overview(
             "completed_tasks": completed_tasks,
             "completion_rate": _ratio(completed_tasks, total_tasks),
         }
+    finally:
+        pool.release(conn)
+
+
+async def get_online_community_breakdown(
+    start_date: str,
+    end_date: str,
+    parser_type: str,
+    community: str | list[str] | None = None,
+    inspector: str | None = None,
+    parser_types_override: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return per-community totals from every valid ledger run in the range.
+
+    The dashboard intentionally tolerates a missing run for one parser type:
+    existing valid runs remain visible instead of becoming all-zero rows.
+    """
+    if start_date > end_date:
+        raise ValueError("开始日期不能晚于结束日期")
+    if parser_type != SUMMARY_TYPE and parser_type not in BUILDERS:
+        raise ValueError(f"未实现的类型：{parser_type}")
+
+    pool = db_manager.get_pool("daily_report")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            parser_types = await _resolve_parser_types(
+                cur, parser_type, parser_types_override
+            )
+            resolved_communities = await _resolve_communities(cur, community)
+            tasks = await _load_effective_tasks(
+                cur,
+                start_date,
+                end_date,
+                parser_types,
+                resolved_communities,
+                inspector,
+            )
+            alias_lookup = await get_community_alias_lookup(cur)
+
+        requested_communities: list[str] | None
+        if isinstance(community, list):
+            requested_communities = community
+        elif community is None:
+            requested_communities = None
+        else:
+            requested_communities = [community]
+        return _community_breakdown_from_tasks(
+            tasks,
+            alias_lookup,
+            requested_communities,
+        )
     finally:
         pool.release(conn)

@@ -1,5 +1,7 @@
 import pytest
 
+from migrations.address_match_feedback import _candidate_group_count
+
 from services.address_match_feedback import (
     ACTIVE,
     CONFLICT,
@@ -33,6 +35,35 @@ def test_feedback_hmac_is_stable_and_does_not_expose_plain_address():
     assert len(first) == 64
     assert "示例" not in first
     assert feedback_hmac("", "示例社区") == ""
+
+
+def test_legacy_ambiguous_candidates_are_counted_by_logical_community():
+    duplicate_rows = [
+        {
+            "entry_id": 10,
+            "name": "长安花园",
+            "community_id": 3,
+            "community_name": "长板社区",
+        },
+        {
+            "entry_id": 11,
+            "name": "长安花园",
+            "community_id": 3,
+            "community_name": "长板社区",
+        },
+    ]
+    real_multi = [
+        duplicate_rows[0],
+        {
+            "entry_id": 12,
+            "name": "长安新苑",
+            "community_id": 3,
+            "community_name": "长板社区",
+        },
+    ]
+
+    assert _candidate_group_count(duplicate_rows) == 1
+    assert _candidate_group_count(real_multi) == 2
 
 
 def test_consistent_feedback_stays_active_and_conflicting_feedback_is_fused():
