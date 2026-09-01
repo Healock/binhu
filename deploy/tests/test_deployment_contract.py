@@ -156,6 +156,11 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('switched=1', script)
         self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
 
+    def test_assignment_projection_backfill_does_not_block_api_bootstrap(self) -> None:
+        database = (ROOT / "backend/database.py").read_text(encoding="utf-8")
+        self.assertIn("ensure_assignment_projection_backfill_schema(cur)", database)
+        self.assertNotIn("await run_assignment_projection_backfill(conn)", database)
+
     @unittest.skipIf(os.name == "nt", "受限部署网关测试需要 Linux bash")
     def test_gateway_rejects_any_command_outside_fixed_grammar(self) -> None:
         gateway = ROOT / "deploy/binhu-deploy-gateway"
