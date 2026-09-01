@@ -298,7 +298,7 @@
 - 普通前端 CI 和桌面客户端 CI 同样会完整执行 Vite 构建，模块规模较大时也会在渲染分块阶段超过 Node 默认约 2 GB 堆上限。两处构建步骤都必须显式保留 `NODE_OPTIONS=--max-old-space-size=8192`；尤其是 `desktop-release.yml` 的独立 `frontend` Job，不能只给 Android、生产部署或其他 Job 配置内存。日志在模块转换完成后出现 `Reached heap limit` 或 `Ineffective mark-compacts` 时先按 OOM 处理，不得误判为业务代码、桌面壳或签名故障。
 - WebView2 的 `go.microsoft.com/fwlink` 是会随微软更新而变化的跳转地址，不能与单个固定 SHA256 组合用作可复现发布依赖；否则上游正常换包也会表现为哈希不一致。正式工作流必须固定到已核验的微软静态文件地址及对应 SHA256，更新依赖时同时验证 Authenticode 签名属于 Microsoft Corporation，再在独立 PR 中更新地址和哈希；不得仅删除哈希校验或在失败后手工补传客户端包。
 - 生产启动期新增 `utf8mb4` 复合索引时必须按最坏四字节字符计算总键长，并控制在 InnoDB 3072 字节以内；长地址排序字段应使用受控前缀索引。固定发布器在程序已经切换后遇到显式校验失败，也必须进入程序与镜像自动回退，不能只依赖 Bash `ERR` trap，因为 `fail()` 主动退出不会稳定触发该 trap。
-- 大型历史任务投影回填不得阻塞 API 启动或部署健康检查；启动阶段只创建回填状态表，实际 `assignment_projection_backfill` 必须由独立维护/后台任务以可恢复批次执行，并记录进度与失败原因。
+- 大型历史任务投影回填不得阻塞 API 启动或部署健康检查；启动阶段只创建回填状态表，实际 `assignment_projection_backfill` 必须由独立维护/后台任务以可恢复批次执行，并记录进度、耗时与失败原因。
 - 准备正式版本前必须先读取更新服务器当前 Win7、Win10/11 和 Android 的版本与发布提交，再比较该线上提交到待发布提交的客户端发布面。发现发布面有差异时，必须先提升版本并准备发布日志；不能等工作流失败后才补版本号。
 - 发布状态汇报必须留下可核对的层次：主线 CI 是否通过、`Client release` 是 `skipped` 还是 `failure`、失败 Job/Step、版本门禁是否通过、更新服务器是否发布、GitHub Release 是否归档、实机是否验收。只有后四项按流程完成后，才能报告客户端新版本可供验收。
 - 更新服务器发布使用受限的 `binhu-update-publish` 账号和固定网关。并发锁只能使用 `/srv/binhu-updates/state/publish.lock`；禁止重新使用更新根目录下的 `publish.lock`，也不能把 root SSH、Docker Socket 或任意 Shell 权限交给 GitHub Actions。正式更新地址固定为 `https://47.100.44.36/updates/win7-x64/` 和 `https://47.100.44.36/updates/win10-x64/`。
