@@ -222,6 +222,7 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
     scope: taskScope,
     status,
   }))
+  const goUnverifiable = () => navigate(buildUrl('/police-analysis', { review_stage: 'all', status: 'pending' }))
   const totalTasks = Number(week.total_tasks || 0)
   const completedTasks = Number(week.completed_tasks || 0)
   const isComplete = totalTasks > 0 && completedTasks >= totalTasks
@@ -231,7 +232,7 @@ function OnlineOverview({ data }: { data: RoleDashboardData }) {
         <DashboardCard label="任务总数" value={metric(week.total_tasks)} tone="blue" />
         <DashboardCard label="待完成" value={metric(week.pending_tasks)} tone="red" onClick={() => go('pending')} />
         <DashboardCard label="已完成" value={metric(week.completed_tasks)} tone="green" onClick={() => go('completed')} />
-        <DashboardCard label="当前无法核实" value={metric(week.unable_to_verify)} tone="amber" />
+        <DashboardCard label="当前无法核实" value={metric(week.unable_to_verify)} tone="amber" onClick={week.unable_to_verify ? goUnverifiable : undefined} />
         <DashboardCard
           label="完成率"
           value={percent(week.completion_rate)}
