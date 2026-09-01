@@ -43,6 +43,7 @@
 - 后端测试：`1148 passed, 147 subtests passed, 1 skipped`；本机另有 2 个既有 Linux 资源换行检查失败，涉及未由本 PR 修改的 `desktop/server/binhu-obtain-ip-certificate` 和 `nginx/binhu-updates-acme.inc`。
 - 前端测试：`293 passed`。
 - 生产构建：通过（Vite 6.4.3；保留既有大包体积提示）。
+- 远程构建门禁：为 Linux/Windows runner 的完整 Vite 构建设置 `NODE_OPTIONS=--max-old-space-size=8192`，避免默认堆上限导致 OOM；该行与 #479/#480 的 CI 修改存在合并顺序冲突。
 - Python 编译：通过。
 - 部署合同检查：不适用。
 - 敏感信息扫描：通过，未发现真实业务数据、凭据、照片或设备值。
