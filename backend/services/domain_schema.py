@@ -644,6 +644,19 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_venue_community (community_id, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    for column, definition in [
+        ("config_revision", "BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER encrypted_token"),
+        ("token_version", "BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER config_revision"),
+        ("cloud_sync_status", "VARCHAR(20) NOT NULL DEFAULT 'local_only' AFTER token_version"),
+        ("cloud_synced_revision", "BIGINT UNSIGNED DEFAULT NULL AFTER cloud_sync_status"),
+        ("cloud_synced_at", "DATETIME DEFAULT NULL AFTER cloud_synced_revision"),
+        ("cloud_sync_error_code", "VARCHAR(100) DEFAULT NULL AFTER cloud_synced_at"),
+        ("pending_token_hmac", "CHAR(64) DEFAULT NULL AFTER cloud_sync_error_code"),
+        ("pending_encrypted_token", "TEXT DEFAULT NULL AFTER pending_token_hmac"),
+        ("pending_token_version", "BIGINT UNSIGNED DEFAULT NULL AFTER pending_encrypted_token"),
+    ]:
+        await _ensure_column(cur, "_venue_codes", column, definition)
+    await _ensure_index(cur, "_venue_codes", "idx_venue_cloud_sync", "INDEX idx_venue_cloud_sync (cloud_sync_status,config_revision)")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _venue_visits (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -664,6 +677,10 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_venue_visit_retention (retention_until, deleted_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(cur, "_venue_visits", "cloud_submission_id", "CHAR(36) DEFAULT NULL AFTER source")
+    await _ensure_column(cur, "_venue_visits", "cloud_received_at", "DATETIME DEFAULT NULL AFTER cloud_submission_id")
+    await _ensure_column(cur, "_venue_visits", "cloud_key_id", "VARCHAR(100) DEFAULT NULL AFTER cloud_received_at")
+    await _ensure_index(cur, "_venue_visits", "uk_venue_cloud_submission", "UNIQUE KEY uk_venue_cloud_submission (cloud_submission_id)")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _venue_visit_photos (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -688,6 +705,38 @@ async def ensure_registry_schema(cur) -> None:
             consumed_at DATETIME DEFAULT NULL,
             UNIQUE KEY uk_venue_form_token (token_hmac),
             INDEX idx_venue_form_token_expiry (issued_at, consumed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _venue_cloud_outbox (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            venue_id BIGINT NOT NULL,
+            config_revision BIGINT UNSIGNED NOT NULL,
+            action VARCHAR(20) NOT NULL,
+            request_id CHAR(36) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+            next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_error_code VARCHAR(100) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_venue_cloud_outbox_request (request_id),
+            UNIQUE KEY uk_venue_cloud_outbox_revision (venue_id,config_revision),
+            INDEX idx_venue_cloud_outbox_pending (status,next_attempt_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _venue_cloud_ingest_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            cloud_submission_id CHAR(36) NOT NULL,
+            venue_id BIGINT DEFAULT NULL,
+            result_status VARCHAR(20) NOT NULL,
+            safe_reason_code VARCHAR(100) DEFAULT NULL,
+            key_id VARCHAR(100) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_venue_cloud_ingest_result (cloud_submission_id,result_status),
+            INDEX idx_venue_cloud_ingest_created (created_at),
+            INDEX idx_venue_cloud_ingest_result_status (result_status,created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
 

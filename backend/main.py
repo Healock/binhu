@@ -84,6 +84,7 @@ from routers.events import router as events_router
 from services.venue_cleanup import run_venue_cleanup_scheduler
 from services.local_report_scheduler import run_local_report_scheduler
 from services.diagnostics import capture_incident
+from services.venue_cloud import run_venue_cloud_scheduler
 
 
 @asynccontextmanager
@@ -132,6 +133,7 @@ async def lifespan(app: FastAPI):
     unverifiable_review_task = asyncio.create_task(run_unverifiable_review_scheduler())
     venue_cleanup_task = asyncio.create_task(run_venue_cleanup_scheduler())
     local_report_task = asyncio.create_task(run_local_report_scheduler())
+    venue_cloud_task = asyncio.create_task(run_venue_cloud_scheduler())
     try:
         yield
     finally:
@@ -144,6 +146,7 @@ async def lifespan(app: FastAPI):
         unverifiable_review_task.cancel()
         venue_cleanup_task.cancel()
         local_report_task.cancel()
+        venue_cloud_task.cancel()
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
@@ -163,6 +166,7 @@ async def lifespan(app: FastAPI):
             await venue_cleanup_task
         with suppress(asyncio.CancelledError):
             await local_report_task
+            await venue_cloud_task
         await stop_backup_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()

@@ -25,6 +25,7 @@ from services.audit import record_admin_audit, request_audit_fields
 from services.permissions import VENUE_EXPORT, VENUE_MANAGE, VENUE_VIEW
 from services.qmf_config import decrypt_secret, encrypt_secret
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
+from services.venue_cloud import enqueue_venue_cloud_outbox, get_venue_cloud_status
 
 
 router = APIRouter(tags=["场所码"])
@@ -36,6 +37,11 @@ _PHOTO_MAGIC = {
     "image/webp": (b"RIFF",),
 }
 _FORM_TOKEN_SUFFIX_LENGTH = 22
+_VENUE_SELECT = (
+    "id,name,venue_type,address,community_id,community_name_snapshot,status,token_hmac,encrypted_token,"
+    "created_by,created_at,updated_at,config_revision,token_version,cloud_sync_status,cloud_synced_revision,"
+    "cloud_synced_at,cloud_sync_error_code,pending_token_version"
+)
 
 
 async def get_venue_db():
@@ -68,7 +74,7 @@ def _token_digest(token: str) -> str:
 
 
 def _public_venue_url(token: str) -> str:
-    base_url = str(settings.PUBLIC_WEB_BASE_URL or "").strip().rstrip("/")
+    base_url = str(settings.VENUE_PUBLIC_BASE_URL or "").strip().rstrip("/")
     if not base_url:
         raise HTTPException(503, "场所码公开访问地址尚未配置")
 
@@ -167,6 +173,13 @@ def _venue_payload(row, include_token: bool = False) -> dict:
         "community_name": str(row[5] or ""), "status": str(row[6]),
         "created_at": row[10].isoformat() if len(row) > 10 and row[10] else None,
         "updated_at": row[11].isoformat() if len(row) > 11 and row[11] else None,
+        "config_revision": int(row[12]) if len(row) > 12 and row[12] is not None else 1,
+        "token_version": int(row[13]) if len(row) > 13 and row[13] is not None else 1,
+        "cloud_sync_status": str(row[14]) if len(row) > 14 and row[14] else "local_only",
+        "cloud_synced_revision": int(row[15]) if len(row) > 15 and row[15] is not None else None,
+        "cloud_synced_at": row[16].isoformat() if len(row) > 16 and row[16] else None,
+        "cloud_sync_error_code": str(row[17]) if len(row) > 17 and row[17] else None,
+        "pending_token_version": int(row[18]) if len(row) > 18 and row[18] is not None else None,
     }
     if include_token and len(row) > 8:
         payload["token"] = decrypt_secret(row[8])
@@ -176,7 +189,10 @@ def _venue_payload(row, include_token: bool = False) -> dict:
 @admin_router.get("/venue-codes")
 async def list_venues(user: dict = Depends(require_permission(VENUE_VIEW)), conn=Depends(get_venue_db)):
     async with conn.cursor() as cur:
-        await cur.execute("SELECT id,name,venue_type,address,community_id,community_name_snapshot,status,token_hmac,encrypted_token,created_by,created_at,updated_at FROM _venue_codes WHERE status<>'deleted' ORDER BY updated_at DESC,id DESC")
+        await cur.execute(
+            f"SELECT {_VENUE_SELECT} FROM _venue_codes "
+            "WHERE status<>'deleted' OR cloud_sync_status IN ('pending','error') ORDER BY updated_at DESC,id DESC"
+        )
         return {"data": [_venue_payload(row) for row in await cur.fetchall()]}
 
 
@@ -184,32 +200,78 @@ async def list_venues(user: dict = Depends(require_permission(VENUE_VIEW)), conn
 async def create_venue(data: VenueCreate, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
     token = secrets.token_urlsafe(32)
     public_url = _public_venue_url(token)
-    async with conn.cursor() as cur:
-        await cur.execute("INSERT INTO _venue_codes (name,venue_type,address,community_id,community_name_snapshot,status,token_hmac,encrypted_token,created_by,updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (data.name.strip(), data.venue_type.strip(), data.address.strip(), data.community_id, data.community_name.strip(), data.status, _token_digest(token), encrypt_secret(token), user["id"], user["id"]))
-        venue_id = int(cur.lastrowid)
+    cloud_status = "pending" if settings.VENUE_CLOUD_SYNC_ENABLED else "local_only"
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO _venue_codes (name,venue_type,address,community_id,community_name_snapshot,status,"
+                "token_hmac,encrypted_token,cloud_sync_status,created_by,updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (data.name.strip(), data.venue_type.strip(), data.address.strip(), data.community_id, data.community_name.strip(), data.status, _token_digest(token), encrypt_secret(token), cloud_status, user["id"], user["id"]),
+            )
+            venue_id = int(cur.lastrowid)
+            await enqueue_venue_cloud_outbox(cur, venue_id, 1, "create")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     await record_admin_audit(user, "venue.create", target_type="venue", target_name=str(venue_id), detail={"status": data.status}, **request_audit_fields(request))
-    return {"id": venue_id, "token": token, "url": public_url}
+    result = {"id": venue_id, "cloud_sync_status": cloud_status}
+    if not settings.VENUE_CLOUD_SYNC_ENABLED:
+        result.update({"token": token, "url": public_url})
+    return result
 
 
 @admin_router.put("/venue-codes/{venue_id}")
 async def update_venue(venue_id: int, data: VenueCreate, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
-    async with conn.cursor() as cur:
-        await cur.execute("UPDATE _venue_codes SET name=%s,venue_type=%s,address=%s,community_id=%s,community_name_snapshot=%s,status=%s,updated_by=%s WHERE id=%s AND status<>'deleted'", (data.name.strip(), data.venue_type.strip(), data.address.strip(), data.community_id, data.community_name.strip(), data.status, user["id"], venue_id))
-        if cur.rowcount != 1:
-            raise HTTPException(404, "场所不存在")
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT config_revision,pending_token_version FROM _venue_codes WHERE id=%s AND status<>'deleted' FOR UPDATE", (venue_id,))
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(404, "场所不存在")
+            if len(row) > 1 and row[1] is not None:
+                raise HTTPException(409, "二维码轮换尚未完成云端确认，暂不能编辑场所")
+            revision = int(row[0]) + 1
+            cloud_status = "pending" if settings.VENUE_CLOUD_SYNC_ENABLED else "local_only"
+            await cur.execute(
+                "UPDATE _venue_codes SET name=%s,venue_type=%s,address=%s,community_id=%s,community_name_snapshot=%s,"
+                "status=%s,config_revision=%s,cloud_sync_status=%s,cloud_sync_error_code=NULL,updated_by=%s WHERE id=%s",
+                (data.name.strip(), data.venue_type.strip(), data.address.strip(), data.community_id, data.community_name.strip(), data.status, revision, cloud_status, user["id"], venue_id),
+            )
+            await enqueue_venue_cloud_outbox(cur, venue_id, revision, "disable" if data.status == "inactive" else "update")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     await record_admin_audit(user, "venue.update", target_type="venue", target_name=str(venue_id), detail={"status": data.status}, **request_audit_fields(request))
     return {"message": "场所已更新"}
 
 
 @admin_router.delete("/venue-codes/{venue_id}")
 async def delete_venue(venue_id: int, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "UPDATE _venue_codes SET status='deleted',updated_by=%s WHERE id=%s AND status<>'deleted'",
-            (user["id"], venue_id),
-        )
-        if cur.rowcount != 1:
-            raise HTTPException(404, "场所不存在")
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT config_revision,pending_token_version FROM _venue_codes WHERE id=%s AND status<>'deleted' FOR UPDATE", (venue_id,))
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(404, "场所不存在")
+            if len(row) > 1 and row[1] is not None:
+                raise HTTPException(409, "二维码轮换尚未完成云端确认，暂不能移除场所")
+            revision = int(row[0]) + 1
+            cloud_status = "pending" if settings.VENUE_CLOUD_SYNC_ENABLED else "local_only"
+            await cur.execute(
+                "UPDATE _venue_codes SET status='deleted',config_revision=%s,cloud_sync_status=%s,"
+                "cloud_sync_error_code=NULL,updated_by=%s WHERE id=%s",
+                (revision, cloud_status, user["id"], venue_id),
+            )
+            await enqueue_venue_cloud_outbox(cur, venue_id, revision, "delete")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     await record_admin_audit(
         user,
         "venue.delete",
@@ -218,28 +280,61 @@ async def delete_venue(venue_id: int, request: Request, user: dict = Depends(req
         detail={"history_retained": True},
         **request_audit_fields(request),
     )
-    return {"message": "场所已移除"}
+    return {
+        "message": "云端删除待确认" if settings.VENUE_CLOUD_SYNC_ENABLED else "场所已移除",
+        "cloud_sync_status": cloud_status,
+    }
 
 
 @admin_router.post("/venue-codes/{venue_id}/rotate-token")
 async def rotate_token(venue_id: int, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
     token = secrets.token_urlsafe(32)
     public_url = _public_venue_url(token)
-    async with conn.cursor() as cur:
-        await cur.execute("UPDATE _venue_codes SET token_hmac=%s,encrypted_token=%s,updated_by=%s WHERE id=%s AND status<>'deleted'", (_token_digest(token), encrypt_secret(token), user["id"], venue_id))
-        if cur.rowcount != 1:
-            raise HTTPException(404, "场所不存在")
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT config_revision,token_version,pending_token_version FROM _venue_codes WHERE id=%s AND status<>'deleted' FOR UPDATE", (venue_id,))
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(404, "场所不存在")
+            if len(row) > 2 and row[2] is not None:
+                raise HTTPException(409, "二维码轮换尚未完成云端确认，不能重复轮换")
+            revision = int(row[0]) + 1
+            token_version = int(row[1]) + 1
+            if settings.VENUE_CLOUD_SYNC_ENABLED:
+                await cur.execute(
+                    "UPDATE _venue_codes SET pending_token_hmac=%s,pending_encrypted_token=%s,pending_token_version=%s,"
+                    "config_revision=%s,cloud_sync_status='pending',cloud_sync_error_code=NULL,updated_by=%s WHERE id=%s",
+                    (_token_digest(token), encrypt_secret(token), token_version, revision, user["id"], venue_id),
+                )
+                await enqueue_venue_cloud_outbox(cur, venue_id, revision, "rotate")
+            else:
+                await cur.execute(
+                    "UPDATE _venue_codes SET token_hmac=%s,encrypted_token=%s,token_version=%s,config_revision=%s,"
+                    "cloud_sync_status='local_only',updated_by=%s WHERE id=%s",
+                    (_token_digest(token), encrypt_secret(token), token_version, revision, user["id"], venue_id),
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
     await record_admin_audit(user, "venue.rotate_token", target_type="venue", target_name=str(venue_id), **request_audit_fields(request))
-    return {"token": token, "url": public_url}
+    if settings.VENUE_CLOUD_SYNC_ENABLED:
+        return {"cloud_sync_status": "pending", "message": "新二维码正在同步，云端确认前旧二维码继续有效"}
+    return {"token": token, "url": public_url, "cloud_sync_status": "local_only"}
 
 
 @admin_router.get("/venue-codes/{venue_id}/qrcode")
 async def venue_qrcode(venue_id: int, format: str = Query(default="json", pattern="^(json|png)$"), user: dict = Depends(require_permission(VENUE_VIEW)), conn=Depends(get_venue_db)):
     async with conn.cursor() as cur:
-        await cur.execute("SELECT id,name,venue_type,address,community_id,community_name_snapshot,status,token_hmac,encrypted_token,created_by,created_at,updated_at FROM _venue_codes WHERE id=%s AND status<>'deleted'", (venue_id,))
+        await cur.execute(f"SELECT {_VENUE_SELECT} FROM _venue_codes WHERE id=%s AND status<>'deleted'", (venue_id,))
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "场所不存在")
+    if str(row[6]) != "active":
+        raise HTTPException(409, "场所未启用，不能生成二维码")
+    if settings.VENUE_CLOUD_SYNC_ENABLED and row[15] is None:
+        raise HTTPException(409, "场所尚未完成云端同步，暂不能生成二维码")
     token = decrypt_secret(row[8])
     url = _public_venue_url(token)
     if format == "png":
@@ -250,7 +345,16 @@ async def venue_qrcode(venue_id: int, format: str = Query(default="json", patter
             return StreamingResponse(output, media_type="image/png")
         except ImportError as exc:
             raise HTTPException(503, "二维码图片生成依赖尚未安装") from exc
-    return {"venue": _venue_payload(row), "token": token, "url": url, "image_url": f"/api/venue-codes/{venue_id}/qrcode?format=png"}
+    return {
+        "venue": _venue_payload(row), "token": token, "url": url,
+        "image_url": f"/api/venue-codes/{venue_id}/qrcode?format=png",
+        "rotation_pending": row[18] is not None,
+    }
+
+
+@admin_router.get("/venue-cloud/status")
+async def venue_cloud_status(user: dict = Depends(require_permission(VENUE_VIEW))):
+    return await get_venue_cloud_status()
 
 
 @admin_router.get("/venue-visits")
@@ -295,6 +399,13 @@ async def export_visits(request: Request, user: dict = Depends(require_permissio
 
 @router.get("/venue/{token}", response_class=HTMLResponse)
 async def public_venue_form(token: str, conn=Depends(get_venue_db)):
+    if not settings.VENUE_LOCAL_PUBLIC_ENTRY_ENABLED:
+        return HTMLResponse(
+            "<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>二维码已更换</title><h2>二维码已更换</h2><p>请联系工作人员获取新的场所码。</p>",
+            status_code=410,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
     digest = _token_digest(token)
     async with conn.cursor() as cur:
         await cur.execute("SELECT id,name,status FROM _venue_codes WHERE token_hmac=%s AND status='active'", (digest,))
@@ -308,6 +419,8 @@ async def public_venue_form(token: str, conn=Depends(get_venue_db)):
 
 @router.get("/api/public/venue-codes/{token}")
 async def public_venue_info(token: str, conn=Depends(get_venue_db)):
+    if not settings.VENUE_LOCAL_PUBLIC_ENTRY_ENABLED:
+        raise HTTPException(410, "二维码已更换，请联系工作人员获取新场所码")
     _rate_limit(f"venue-token:{_token_digest(token)}", limit=60)
     digest = _token_digest(token)
     async with conn.cursor() as cur:
@@ -320,6 +433,8 @@ async def public_venue_info(token: str, conn=Depends(get_venue_db)):
 
 @router.post("/api/public/venue-visits")
 async def public_submit_venue_visit(request: Request, venue_id: int = Form(...), form_token: str = Form(...), name: str = Form(...), identity_number: str = Form(...), phone: str = Form(...), address: str = Form(...), photo: UploadFile = File(...), conn=Depends(get_venue_db)):
+    if not settings.VENUE_LOCAL_PUBLIC_ENTRY_ENABLED:
+        raise HTTPException(410, "本地匿名登记入口已停止使用")
     client_ip = request.client.host if request.client else "unknown"
     _rate_limit(f"venue:{venue_id}:ip:{client_ip}")
     _rate_limit(f"venue:{venue_id}:device:{hashlib.sha256((request.headers.get('user-agent', '') + '|' + client_ip).encode()).hexdigest()}")

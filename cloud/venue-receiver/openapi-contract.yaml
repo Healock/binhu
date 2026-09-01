@@ -1,0 +1,48 @@
+openapi: 3.1.0
+info:
+  title: 滨湖场所码云端接收服务
+  version: "1.0"
+paths:
+  /venue/{token}:
+    get:
+      summary: 返回同源移动登记页面
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string, minLength: 32, maxLength: 200 }
+      responses:
+        "200": { description: HTML 登记页面 }
+        "410": { description: 二维码已更换 }
+  /api/public/venues/{token}:
+    get:
+      summary: 读取场所名称并签发一次性表单令牌
+      responses:
+        "200": { description: 场所和 15 分钟表单令牌 }
+        "410": { description: 二维码已更换 }
+  /api/public/submissions:
+    post:
+      summary: 幂等接收并加密暂存登记
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [submission_id, venue_token, form_token, device_id, name, identity_number, phone, address, photo]
+      responses:
+        "202": { description: 已加密排队或返回原幂等结果 }
+        "409": { description: submission_id 与原请求内容不同 }
+        "429": { description: 超出限流 }
+  /api/internal/venues/{local_venue_id}:
+    put: { summary: 按 config_revision 幂等同步场所, responses: { "200": { description: 已应用或已有更新版本 } } }
+  /api/internal/venues/reconcile:
+    post: { summary: 对账本地有效场所摘要, responses: { "200": { description: 漂移清单 } } }
+  /api/internal/submissions/pull:
+    post: { summary: 租赁最多 50 条登记, responses: { "200": { description: 签名后的租约和密文清单 } } }
+  /api/internal/submissions/ack:
+    post: { summary: 确认 accepted/rejected/retry_later/uncertain, responses: { "200": { description: 已应用结果 } } }
+  /api/internal/submissions/renew-lease:
+    post: { summary: 续租当前批次, responses: { "200": { description: 新租约时间 } } }
+  /api/internal/status:
+    get: { summary: 返回队列与安全健康状态, responses: { "200": { description: 签名后的状态 } } }

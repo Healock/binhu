@@ -1,0 +1,18 @@
+{
+  "canonical_request": {
+    "method": "POST",
+    "path": "/api/internal/submissions/pull",
+    "timestamp": "1787961600",
+    "nonce": "nonce-test-0000000000000001",
+    "request_id": "00000000-0000-4000-8000-000000000001",
+    "body": "{\"limit\":50}",
+    "body_sha256": "2a8276f650319ab72da96dfdddb5ea2b42884eb8b8691099d76cdb56df8ca66e",
+    "canonical_sha256": "f2782d51651bfb84f324bd4cd2dc723ce669bbd35c81749c25aa43d68e00d820"
+  },
+  "keyed_digest": {
+    "key_ascii": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+    "purpose": "venue-token",
+    "value": "test-token",
+    "sha256": "637ed3e524862459a9f86bcdec36e5d7ae6c75e63ec40ca6719830a1e63ed010"
+  }
+}

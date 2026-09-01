@@ -83,9 +83,39 @@ export interface VenueCodeItem {
   address: string
   community_id: number | null
   community_name: string
-  status: 'active' | 'inactive'
+  status: 'active' | 'inactive' | 'deleted'
   created_at?: string | null
   updated_at?: string | null
+  config_revision: number
+  token_version: number
+  cloud_sync_status: 'local_only' | 'pending' | 'confirmed' | 'error'
+  cloud_synced_revision: number | null
+  cloud_synced_at: string | null
+  cloud_sync_error_code: string | null
+  pending_token_version: number | null
+}
+
+export interface VenueCodeInput {
+  name: string
+  venue_type: string
+  address: string
+  community_id: number | null
+  community_name: string
+  status: 'active' | 'inactive'
+}
+
+export interface VenueCloudStatus {
+  enabled: boolean
+  sync_enabled: boolean
+  pull_enabled: boolean
+  local_public_entry_enabled: boolean
+  outbox_pending: number
+  outbox_failed: number
+  uncertain_count: number
+  last_success_at: string | null
+  last_error_code: string | null
+  last_pull_count: number
+  last_reconcile_at: string | null
 }
 
 export interface VenueVisitItem {
@@ -103,16 +133,16 @@ export interface VenueVisitItem {
 export async function listVenueCodes(): Promise<{ data: VenueCodeItem[] }> {
   return (await api.get('/venue-codes')).data
 }
-export async function createVenueCode(payload: Omit<VenueCodeItem, 'id' | 'created_at' | 'updated_at'>): Promise<{ id: number; token: string; url: string }> {
+export async function createVenueCode(payload: VenueCodeInput): Promise<{ id: number; token?: string; url?: string; cloud_sync_status: VenueCodeItem['cloud_sync_status'] }> {
   return (await api.post('/venue-codes', payload)).data
 }
-export async function updateVenueCode(id: number, payload: Omit<VenueCodeItem, 'id' | 'created_at' | 'updated_at'>): Promise<void> {
+export async function updateVenueCode(id: number, payload: VenueCodeInput): Promise<void> {
   await api.put(`/venue-codes/${id}`, payload)
 }
 export async function deleteVenueCode(id: number): Promise<void> {
   await api.delete(`/venue-codes/${id}`)
 }
-export async function rotateVenueCodeToken(id: number): Promise<{ token: string; url: string }> {
+export async function rotateVenueCodeToken(id: number): Promise<{ token?: string; url?: string; cloud_sync_status: VenueCodeItem['cloud_sync_status']; message?: string }> {
   return (await api.post(`/venue-codes/${id}/rotate-token`, {})).data
 }
 export function resolveVenueCodeQrImageUrl(
@@ -127,6 +157,9 @@ export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem
     ...data,
     image_url: resolveVenueCodeQrImageUrl(data.image_url),
   }
+}
+export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
+  return (await api.get('/venue-cloud/status', passiveRequest)).data
 }
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data

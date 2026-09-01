@@ -40,7 +40,7 @@ def test_photo_magic_validation():
 
 
 def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch):
-    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test/")
+    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", "https://portal.example.test/")
 
     assert _public_venue_url("token_value") == "https://portal.example.test/venue/token_value"
 
@@ -56,7 +56,7 @@ def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch)
     ],
 )
 def test_public_venue_url_rejects_missing_or_unsafe_configuration(monkeypatch, base_url):
-    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", base_url)
+    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", base_url)
 
     with pytest.raises(HTTPException) as exc_info:
         _public_venue_url("token")
@@ -90,7 +90,7 @@ async def test_qrcode_png_encodes_the_same_absolute_public_url(monkeypatch):
         def cursor(self):
             return FakeCursor()
 
-    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test")
+    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", "https://portal.example.test")
     monkeypatch.setattr(venue_codes, "decrypt_secret", lambda _value: "public_token")
     monkeypatch.setitem(
         sys.modules,
@@ -110,6 +110,7 @@ async def test_delete_venue_soft_deletes_without_removing_visit_history(monkeypa
 
     class FakeCursor:
         rowcount = 1
+        fetch_results = [(4, None)]
 
         async def __aenter__(self):
             return self
@@ -120,9 +121,25 @@ async def test_delete_venue_soft_deletes_without_removing_visit_history(monkeypa
         async def execute(self, query, params):
             statements.append((query, params))
 
+        async def fetchone(self):
+            return self.fetch_results.pop(0)
+
     class FakeConnection:
+        began = False
+        committed = False
+        rolled_back = False
+
         def cursor(self):
             return FakeCursor()
+
+        async def begin(self):
+            self.began = True
+
+        async def commit(self):
+            self.committed = True
+
+        async def rollback(self):
+            self.rolled_back = True
 
     audit = AsyncMock()
     monkeypatch.setattr(venue_codes, "record_admin_audit", audit)
@@ -135,9 +152,10 @@ async def test_delete_venue_soft_deletes_without_removing_visit_history(monkeypa
         conn=FakeConnection(),
     )
 
-    assert result == {"message": "场所已移除"}
-    assert len(statements) == 1
-    assert "SET status='deleted'" in statements[0][0]
-    assert "_venue_visits" not in statements[0][0]
-    assert statements[0][1] == (3, 7)
+    assert result == {"message": "场所已移除", "cloud_sync_status": "local_only"}
+    assert len(statements) == 2
+    assert "SELECT config_revision" in statements[0][0]
+    assert "SET status='deleted'" in statements[1][0]
+    assert "_venue_visits" not in statements[1][0]
+    assert statements[1][1] == (5, "local_only", 3, 7)
     audit.assert_awaited_once()
