@@ -38,6 +38,8 @@ from services.online_source import (
     rebuild_projection,
     rebuild_projection_rows,
 )
+from services.address_matching import MATCHER_VERSION
+from services.address_match_feedback import record_feedback_confirmation
 from services.online_local_writeback import (
     apply_local_system_changes,
     launch_local_change_processing,
@@ -2873,8 +2875,11 @@ async def confirm_mobile_task_address_match(
             await cur.execute(
                 f"""
                 SELECT projection.community, projection.source_count,
-                       projection.conflict
+                       projection.conflict, address_match.original_address
                 FROM _online_source_projection AS projection
+                LEFT JOIN _online_task_address_matches AS address_match
+                  ON address_match.parser_type=projection.parser_type
+                 AND address_match.row_key=projection.row_key
                 WHERE projection.parser_type=%s AND projection.row_key=%s
                   AND {scope_where}
                 FOR UPDATE
@@ -2908,6 +2913,16 @@ async def confirm_mobile_task_address_match(
             entry_community = aliases.get(str(entry[3] or "").strip(), "")
             if not task_community or not entry_community or task_community != entry_community:
                 raise HTTPException(409, "所选小区与任务正式社区不一致，请先处理地址冲突")
+            await record_feedback_confirmation(
+                cur,
+                parser_type=parser_type,
+                row_key=row_key,
+                address=str(projection[3] or ""),
+                community_name=str(entry[3] or ""),
+                community_id=int(entry[2]),
+                confirmed_entry_id=int(entry[0]),
+                confirmed_by=int(user["id"]),
+            )
             await cur.execute(
                 """
                 INSERT INTO _online_task_address_matches (
@@ -2920,7 +2935,7 @@ async def confirm_mobile_task_address_match(
                 )
                 SELECT parser_type, row_key, '', %s, %s, %s,
                        'confirmed', 1, '人工确认', '管理员已确认小区归属',
-                       JSON_ARRAY(), 'rule-v1', %s, %s, UTC_TIMESTAMP()
+                       JSON_ARRAY(), %s, %s, %s, UTC_TIMESTAMP()
                 FROM _online_source_projection
                 WHERE parser_type=%s AND row_key=%s
                 ON DUPLICATE KEY UPDATE
@@ -2930,14 +2945,15 @@ async def confirm_mobile_task_address_match(
                     match_status='confirmed', match_score=1,
                     match_method='人工确认',
                     match_reason='管理员已确认小区归属',
-                    matcher_version='rule-v1',
+                    matcher_version=VALUES(matcher_version),
                     confirmed_entry_id=VALUES(confirmed_entry_id),
                     confirmed_by=VALUES(confirmed_by),
                     confirmed_at=VALUES(confirmed_at)
                 """,
                 (
                     int(entry[0]), int(entry[2]), str(entry[3] or ""),
-                    int(entry[0]), int(user["id"]), parser_type, row_key,
+                    MATCHER_VERSION, int(entry[0]), int(user["id"]),
+                    parser_type, row_key,
                 ),
             )
             await rebuild_projection_rows(cur, parser_type, [row_key])

@@ -29,6 +29,7 @@ from services.registry_certificate_status import certificate_status_summary
 from services.registry_visit_history import filter_property_ids_by_visit, load_property_visit_summaries
 from services.watch_matching import backfill_assignment_snapshots
 from services.registry_watch_backfill import ensure_watch_person_registry_link
+from services.address_matching import MATCHER_VERSION
 
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
@@ -836,7 +837,8 @@ async def confirm_property_small_communities(
                     raise HTTPException(409, f"房屋 {property_id} 与所选小区的社区归属不一致")
                 rows.append((
                     property_id, entry_id, entry["name"], entry["community_id"],
-                    entry["community_name"], int(user["id"]), property_row["version"],
+                    entry["community_name"], MATCHER_VERSION,
+                    int(user["id"]), property_row["version"],
                 ))
             await cur.executemany(
                 "INSERT INTO registry_property_small_community_links ("
@@ -844,12 +846,12 @@ async def confirm_property_small_communities(
                 "community_name_snapshot,match_status,match_score,match_method,match_reason,"
                 "match_evidence,matcher_version,confirmed_by,confirmed_at,property_version) "
                 "VALUES (%s,%s,%s,%s,%s,'confirmed',1,'人工确认','管理员已确认小区归属',"
-                "JSON_OBJECT('source','manual'),'rule-v1',%s,UTC_TIMESTAMP(),%s) "
+                "JSON_OBJECT('source','manual'),%s,%s,UTC_TIMESTAMP(),%s) "
                 "ON DUPLICATE KEY UPDATE small_community_id=VALUES(small_community_id),"
                 "small_community_name=VALUES(small_community_name),community_id=VALUES(community_id),"
                 "community_name_snapshot=VALUES(community_name_snapshot),match_status='confirmed',"
                 "match_score=1,match_method='人工确认',match_reason='管理员已确认小区归属',"
-                "match_evidence=VALUES(match_evidence),matcher_version='rule-v1',"
+                "match_evidence=VALUES(match_evidence),matcher_version=VALUES(matcher_version),"
                 "confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at),"
                 "property_version=VALUES(property_version)",
                 rows,

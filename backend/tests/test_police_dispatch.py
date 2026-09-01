@@ -1061,8 +1061,9 @@ def _delete_batch_conn(*rows: tuple):
 
 def test_super_admin_can_delete_never_published_batch(monkeypatch):
     conn, cursor = _delete_batch_conn(
-        (7, None, None),
-        (528, 0, 0),
+        (7,),
+        (528, 0, 0, 0, 0),
+        (0, 0),
     )
     audit = AsyncMock()
     monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
@@ -1078,18 +1079,58 @@ def test_super_admin_can_delete_never_published_batch(monkeypatch):
         conn=conn,
     ))
 
-    assert result == {"message": "批次已删除", "deleted_task_count": 528}
+    assert result == {"message": "批次已撤销", "deleted_task_count": 528}
     conn.begin.assert_awaited_once()
     conn.commit.assert_awaited_once()
     conn.rollback.assert_not_awaited()
     sql = "\n".join(call.args[0] for call in cursor.execute.await_args_list)
+    assert "DELETE item FROM _police_dispatch_publish_run_items" in sql
+    assert "DELETE FROM _police_dispatch_publish_runs" in sql
+    assert "DELETE result FROM _police_dispatch_publish_results" in sql
+    assert "DELETE FROM _police_dispatch_import_issues" in sql
     assert "DELETE FROM _police_dispatch_tasks" in sql
     assert "DELETE FROM _police_dispatch_batches" in sql
     assert audit.await_args.args[1] == "police_dispatch.delete"
-    assert audit.await_args.kwargs["detail"] == {"row_count": 528}
+    assert audit.await_args.kwargs["detail"] == {
+        "row_count": 528,
+        "publish_result_count": 0,
+        "publish_run_count": 0,
+    }
 
 
-def test_started_or_linked_batch_cannot_be_deleted(monkeypatch):
+def test_conflicted_batch_without_successful_local_publish_can_be_deleted(monkeypatch):
+    conn, cursor = _delete_batch_conn(
+        (9,),
+        (1, 0, 0, 1, 0),
+        (1, 0),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    request = Request({
+        "type": "http", "method": "DELETE", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+
+    result = asyncio.run(delete_batch(
+        batch_id=9,
+        request=request,
+        user={"id": 1, "username": "root", "role": "super_admin"},
+        conn=conn,
+    ))
+
+    assert result == {"message": "批次已撤销", "deleted_task_count": 1}
+    sql = "\n".join(call.args[0] for call in cursor.execute.await_args_list)
+    assert "DELETE result FROM _police_dispatch_publish_results" in sql
+    assert "DELETE FROM _police_dispatch_publish_runs" in sql
+    assert "DELETE FROM _online_source_rows" not in sql
+    assert audit.await_args.kwargs["detail"] == {
+        "row_count": 1,
+        "publish_result_count": 1,
+        "publish_run_count": 1,
+    }
+
+
+def test_running_or_successfully_published_batch_cannot_be_deleted(monkeypatch):
     monkeypatch.setattr(
         "routers.police_dispatch.record_admin_audit",
         AsyncMock(),
@@ -1099,32 +1140,37 @@ def test_started_or_linked_batch_cannot_be_deleted(monkeypatch):
         "client": ("127.0.0.1", 1),
     })
 
+    running_conn, _ = _delete_batch_conn(
+        (7,),
+        (3, 0, 1, 1, 0),
+        (1, 1),
+    )
+    with pytest.raises(HTTPException) as running_error:
+        asyncio.run(delete_batch(
+            batch_id=7,
+            request=request,
+            user={"id": 1, "role": "super_admin"},
+            conn=running_conn,
+        ))
+    assert running_error.value.status_code == 409
+    assert "正在处理" in str(running_error.value.detail)
+    running_conn.rollback.assert_awaited_once()
+
     published_conn, _ = _delete_batch_conn(
-        (7, date(2026, 8, 6), datetime(2026, 8, 6, 1, 0)),
+        (8,),
+        (3, 1, 0, 1, 1),
+        (1, 0),
     )
     with pytest.raises(HTTPException) as published_error:
         asyncio.run(delete_batch(
-            batch_id=7,
+            batch_id=8,
             request=request,
             user={"id": 1, "role": "super_admin"},
             conn=published_conn,
         ))
     assert published_error.value.status_code == 409
+    assert "成功进入本地任务池" in str(published_error.value.detail)
     published_conn.rollback.assert_awaited_once()
-
-    linked_conn, _ = _delete_batch_conn(
-        (8, None, None),
-        (3, 1, 1),
-    )
-    with pytest.raises(HTTPException) as linked_error:
-        asyncio.run(delete_batch(
-            batch_id=8,
-            request=request,
-            user={"id": 1, "role": "super_admin"},
-            conn=linked_conn,
-        ))
-    assert linked_error.value.status_code == 409
-    linked_conn.rollback.assert_awaited_once()
 
 
 def test_business_field_update_audit_contains_only_names_and_digest(monkeypatch):

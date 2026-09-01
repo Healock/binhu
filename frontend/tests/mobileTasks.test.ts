@@ -24,6 +24,7 @@ import {
   readMobileTaskListRestoration,
   writeMobileTaskListRestoration,
 } from '../src/utils/mobileTaskListState.ts'
+import { retainAvailableMobileTaskFilters } from '../src/utils/mobileTaskFilters.ts'
 import {
   canAccessFlowTaskWorkbench,
   canBulkAssignMobileTasks,
@@ -404,7 +405,7 @@ test('有待办的业务优先，零任务业务沉底', () => {
     { ...base, parser_type: 'c', label: '业务丙', pending: 2 },
   ])
   assert.deepEqual(sorted.map(item => item.parser_type), ['a', 'c', 'b'])
-  assert.equal(mobileTaskPhoneValue('193-9261 0106'), '19392610106')
+  assert.equal(mobileTaskPhoneValue('123-4567 8901'), '12345678901')
 })
 
 test('连续或分隔保存的多个手机号会拆成独立拨号选项', () => {
@@ -930,7 +931,8 @@ test('唯一可靠建议作为自动匹配直接参与分配', () => {
     'utf8',
   )
 
-  assert.match(pageSource, /筛选小区/)
+  assert.match(pageSource, />小区</)
+  assert.match(pageSource, /placeholder="全部小区"/)
   assert.match(pageSource, /匹配状态/)
   assert.match(tableSource, /小区归属/)
   assert.match(tableSource, /confirmMobileTaskAddressMatch/)
@@ -1085,6 +1087,107 @@ test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更�
   assert.equal(pageSource.includes("next.set('keyword'"), false)
 })
 
+test('指令核查筛选区按业务顺序响应式排列并集中展示生效条件', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const styleSource = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+
+  const businessIndex = pageSource.indexOf('>业务类型</')
+  const scopeIndex = pageSource.indexOf('>数据范围</')
+  const searchIndex = pageSource.indexOf('>快速搜索</')
+  const communityIndex = pageSource.indexOf('>社区</')
+  const smallCommunityIndex = pageSource.indexOf('>小区</')
+  const inspectorIndex = pageSource.indexOf('>核查人</')
+  const matchStatusIndex = pageSource.indexOf('>匹配状态</')
+  const secondarySource = pageSource.match(
+    /<div className=\{`mobile-task-filter-secondary[\s\S]*?<div className="mobile-task-filter-controls">/,
+  )?.[0] ?? ''
+
+  assert.ok(businessIndex >= 0)
+  assert.ok(scopeIndex > businessIndex)
+  assert.ok(searchIndex > scopeIndex)
+  assert.ok(communityIndex > searchIndex)
+  assert.ok(smallCommunityIndex > communityIndex)
+  assert.ok(inspectorIndex > smallCommunityIndex)
+  assert.ok(matchStatusIndex > inspectorIndex)
+  assert.ok((secondarySource.match(/mode="multiple"/g) || []).length >= 4)
+  assert.doesNotMatch(secondarySource, /disabled=\{[^}]*communities/)
+  assert.match(pageSource, /useResponsiveLayout\(pageRootRef\)/)
+  assert.match(pageSource, /mobile-task-filter-card--\$\{responsiveLayout\.mode\}/)
+  assert.match(styleSource, /\.mobile-task-filter-primary\s*\{[\s\S]*grid-template-columns: minmax\(170px, 0\.8fr\) minmax\(132px, 0\.55fr\) minmax\(320px, 2fr\)/)
+  assert.match(styleSource, /mobile-task-filter-card--standard[\s\S]*mobile-task-filter-secondary[\s\S]*repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(styleSource, /mobile-task-filter-card--compact[\s\S]*mobile-task-filter-field--search[\s\S]*order: -1/)
+  assert.match(pageSource, /mobile-task-filter-secondary\$\{analysisOnly \? ' mobile-task-filter-secondary--analysis' : ''\}/)
+  assert.match(styleSource, /\.mobile-task-filter-secondary--analysis\s*\{[\s\S]*repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(pageSource, /aria-label="当前生效筛选条件"/)
+  assert.match(pageSource, /activeFilterChips\.map\(chip =>/)
+  assert.match(pageSource, /<Tag key=\{chip\.key\} closable onClose=\{chip\.remove\}>/)
+})
+
+test('社区变化后只移除不兼容筛选，选项加载期间保留旧值', () => {
+  assert.deepEqual(
+    retainAvailableMobileTaskFilters(
+      ['长板社区', '湖滨社区'],
+      [{ value: '湖滨社区' }, { value: '东门社区' }],
+    ),
+    ['湖滨社区'],
+  )
+
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const loadOptionsSource = pageSource.match(/const loadOptions = useCallback\([\s\S]*?\n  \}, \[[^\n]+\]\)/)?.[0] ?? ''
+
+  assert.match(loadOptionsSource, /const requestId = \+\+optionsRequestId\.current/)
+  assert.match(loadOptionsSource, /if \(requestId !== optionsRequestId\.current\) return/)
+  assert.match(loadOptionsSource, /retainAvailableMobileTaskFilters\(smallCommunities, result\.small_communities \|\| \[\]\)/)
+  assert.match(loadOptionsSource, /retainAvailableMobileTaskFilters\(inspectors, result\.inspectors\)/)
+  assert.match(loadOptionsSource, /刷新失败时保留已有选项/)
+  assert.doesNotMatch(pageSource, /onChange=\{values => \{\s*setCommunities\(values\)[\s\S]*?setSmallCommunities\(\[\]\)/)
+  assert.match(pageSource, /已移除 \$\{removedCount\} 个不适用于当前范围的筛选条件/)
+  assert.match(pageSource, /const counts = new Map\(matchStatusOptions\.map\(option => \[option\.value, option\.count\]\)\)/)
+  assert.match(pageSource, /`\$\{option\.label\}（\$\{counts\.get\(option\.value\)\}）`/)
+})
+
+test('筛选更多项、重置和导出使用同一组完整条件', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+  const clearFiltersSource = pageSource.match(
+    /const clearFilters = \(\) => \{[\s\S]*?\n  \}/,
+  )?.[0] ?? ''
+
+  assert.match(pageSource, /const advancedFilterCount = useMemo/)
+  assert.match(pageSource, /if \(advancedFilterCount > 0\) setMoreOpen\(true\)/)
+  assert.match(pageSource, /更多筛选'}\{advancedFilterCount \? `（\$\{advancedFilterCount\}）` : ''\}/)
+  assert.match(clearFiltersSource, /setCommunities\(\[\]\)[\s\S]*setKeywordInput\(''\)[\s\S]*setMoreOpen\(false\)/)
+  assert.doesNotMatch(clearFiltersSource, /setAnalysisParserSelection/)
+  assert.doesNotMatch(clearFiltersSource, /updateQuery/)
+  assert.match(pageSource, /exportMobileTasks\(\{[\s\S]*communities,[\s\S]*small_communities: smallCommunities,[\s\S]*match_status: matchStatuses,[\s\S]*inspectors,[\s\S]*watch_categories: watchCategories,[\s\S]*priority,[\s\S]*sort,[\s\S]*keyword:/)
+  assert.match(pageSource, /exportMobileTaskAnalysis\(\{[\s\S]*parser_types: analysisParserTypes,[\s\S]*review_stage: reviewStage,[\s\S]*communities,[\s\S]*inspectors,[\s\S]*watch_categories: watchCategories,[\s\S]*sort,[\s\S]*keyword:/)
+  assert.match(pageSource, /onPressEnter=\{\(\) => setKeywordFlush\(current => current \+ 1\)\}/)
+  assert.match(pageSource, /useDebouncedValue\(keywordInput\.trim\(\), 350, keywordFlush\)/)
+})
+
+test('全所范围为只读说明，普通用户仍可切换我的和社区', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /aria-label="数据范围：全所"/)
+  assert.match(pageSource, />\s*全所数据\s*</)
+  assert.match(pageSource, /<Segmented[\s\S]*label: '我的'[\s\S]*label: '社区'/)
+  assert.doesNotMatch(pageSource, /<Button[^>]*>全所<\/Button>/)
+})
+
 test('流口任务支持按地址或身份证号对完整结果排序', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
@@ -1102,7 +1205,8 @@ test('流口任务支持按地址或身份证号对完整结果排序', () => {
   assert.match(pageSource, /默认（状态 \+ 地址）/)
   assert.match(pageSource, /地址升序[\s\S]*?address_asc/)
   assert.match(pageSource, /身份证号升序[\s\S]*?identity_asc/)
-  assert.match(pageSource, /placeholder="排序方式"/)
+  assert.match(pageSource, />排序方式</)
+  assert.match(pageSource, /options=\{SORT_OPTIONS\}/)
   assert.match(pageSource, /sort=\{sort\}/)
   assert.match(pageSource, /onSortChange=\{setSort\}/)
   assert.match(tableSource, /title: '身份证号码'[\s\S]*?sorter: true[\s\S]*?sort === 'identity_asc'/)

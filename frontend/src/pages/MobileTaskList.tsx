@@ -59,9 +59,11 @@ import UnverifiableReviewNotice from '../components/UnverifiableReviewNotice'
 import FullchainArchivePanel from '../components/FullchainArchivePanel'
 import { ListToolbar } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
 import { downloadBlob } from '../utils/fileDownload'
+import { retainAvailableMobileTaskFilters } from '../utils/mobileTaskFilters'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
@@ -89,6 +91,14 @@ const STATUS_OPTIONS = [
   { label: '已完成', value: 'completed' },
   { label: '全部', value: 'all' },
 ] satisfies Array<{ label: string; value: MobileTaskStatus }>
+
+const REVIEW_STAGE_OPTIONS = [
+  { label: '全部复核', value: 'all' },
+  { label: '初步待研判', value: 'initial_pending' },
+  { label: '初步复核中', value: 'initial_extension' },
+  { label: '深度待研判', value: 'deep_pending' },
+  { label: '深度复核中', value: 'deep_extension' },
+] satisfies Array<{ label: string; value: MobileTaskReviewStage }>
 
 const PRIORITY_OPTIONS = [
   { label: '全部优先级', value: 'all' },
@@ -150,6 +160,20 @@ const EMPTY_ASSIGNMENT = {
   enabled: false,
   community_aliases: {} as Record<string, string>,
   inspectors_by_community: {} as Record<string, string[]>,
+}
+
+interface ActiveFilterChip {
+  key: string
+  label: string
+  remove: () => void
+}
+
+function optionText<T extends string | number>(
+  value: T,
+  options: Array<{ value: T; label: string }>,
+  fallback?: string,
+) {
+  return options.find(option => option.value === value)?.label || fallback || String(value)
 }
 
 function readMulti(searchParams: URLSearchParams, key: string) {
@@ -282,11 +306,13 @@ export default function MobileTaskList({
   }
   const restorationStartedRef = useRef(false)
   const pageRootRef = useRef<HTMLDivElement>(null)
+  const responsiveLayout = useResponsiveLayout(pageRootRef)
   const [keywordInput, setKeywordInput] = useState(() => restorationRef.current?.keyword || '')
   const [keywordFlush, setKeywordFlush] = useState(0)
   const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
   const [smallCommunityOptions, setSmallCommunityOptions] = useState<MobileTaskFilterOption[]>([])
+  const [matchStatusOptions, setMatchStatusOptions] = useState<MobileTaskFilterOption[]>([])
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
   const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
   const [watchCategoryOptions, setWatchCategoryOptions] = useState<Array<{ value: number; label: string; color: string; alert_level: string; count: number }>>([])
@@ -299,7 +325,13 @@ export default function MobileTaskList({
   const [loading, setLoading] = useState(() => !snapshotRef.current)
   const [loadingMore, setLoadingMore] = useState(false)
   const [optionsLoading, setOptionsLoading] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(() => (
+    status !== 'all'
+    || reviewStage !== 'all'
+    || sort !== 'priority'
+    || watchCategories.length > 0
+    || qmfFeedbackStates.length > 0
+  ))
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState(() => snapshotRef.current?.source_message || '')
   const [qmfScan, setQmfScan] = useState<QmfStatusScanRun | null>(null)
@@ -379,24 +411,34 @@ export default function MobileTaskList({
       if (requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
       setSmallCommunityOptions(result.small_communities || [])
+      setMatchStatusOptions(result.match_statuses || [])
       setInspectorOptions(result.inspectors)
       setAssignment(result.assignment || EMPTY_ASSIGNMENT)
       setWatchCategoryOptions(result.watch_categories || [])
-      const communityValues = new Set(result.communities.map(option => option.value))
-      const smallCommunityValues = new Set((result.small_communities || []).map(option => option.value))
-      const inspectorValues = new Set(result.inspectors.map(option => option.value))
-      setCommunities(current => {
-        const next = current.filter(value => communityValues.has(value))
-        return next.length === current.length ? current : next
-      })
-      setSmallCommunities(current => {
-        const next = current.filter(value => smallCommunityValues.has(value))
-        return next.length === current.length ? current : next
-      })
-      setInspectors(current => {
-        const next = current.filter(value => inspectorValues.has(value))
-        return next.length === current.length ? current : next
-      })
+      const nextCommunities = retainAvailableMobileTaskFilters(communities, result.communities)
+      const nextSmallCommunities = analysisOnly
+        ? smallCommunities
+        : retainAvailableMobileTaskFilters(smallCommunities, result.small_communities || [])
+      const nextMatchStatuses = analysisOnly
+        ? matchStatuses
+        : retainAvailableMobileTaskFilters(matchStatuses, result.match_statuses || [])
+      const nextInspectors = retainAvailableMobileTaskFilters(inspectors, result.inspectors)
+      const removedCount = (
+        communities.length - nextCommunities.length
+        + smallCommunities.length - nextSmallCommunities.length
+        + matchStatuses.length - nextMatchStatuses.length
+        + inspectors.length - nextInspectors.length
+      )
+      if (nextCommunities.length !== communities.length) setCommunities(nextCommunities)
+      if (nextSmallCommunities.length !== smallCommunities.length) setSmallCommunities(nextSmallCommunities)
+      if (nextMatchStatuses.length !== matchStatuses.length) setMatchStatuses(nextMatchStatuses)
+      if (nextInspectors.length !== inspectors.length) setInspectors(nextInspectors)
+      if (removedCount > 0) {
+        message.info({
+          key: 'mobile-task-filter-reconciled',
+          content: `已移除 ${removedCount} 个不适用于当前范围的筛选条件`,
+        })
+      }
       const watchValues = new Set((result.watch_categories || []).map(option => option.value))
       setWatchCategories(current => current.filter(value => watchValues.has(value)))
     } catch {
@@ -405,7 +447,7 @@ export default function MobileTaskList({
     } finally {
       if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
-  }, [analysisOnly, analysisParserTypes, communities, matchStatuses, parserType, reviewStage, scope, smallCommunities])
+  }, [analysisOnly, analysisParserTypes, communities, inspectors, matchStatuses, parserType, reviewStage, scope, smallCommunities])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
 
@@ -703,11 +745,11 @@ export default function MobileTaskList({
     setSort('priority')
     setStatus('all')
     setReviewStage('all')
+    setMoreOpen(false)
     setSearchParams(next)
   }
 
   const clearFilters = () => {
-    if (analysisOnly) setAnalysisParserSelection([ALL_ANALYSIS_TYPES])
     setCommunities([])
     setSmallCommunities([])
     setMatchStatuses([])
@@ -719,6 +761,7 @@ export default function MobileTaskList({
     setStatus('all')
     setReviewStage('all')
     setKeywordInput('')
+    setMoreOpen(false)
   }
 
   const updateAnalysisParserSelection = (values: string[]) => {
@@ -756,18 +799,98 @@ export default function MobileTaskList({
     setPriority(nextPriority)
   }
 
-  const filtersActive = communities.length > 0
-    || smallCommunities.length > 0
-    || matchStatuses.length > 0
-    || inspectors.length > 0
-    || watchCategories.length > 0
-    || (isModelThree && qmfFeedbackStates.length > 0)
-    || (analysisOnly && !analysisParserSelection.includes(ALL_ANALYSIS_TYPES))
-    || (!analysisOnly && priority !== 'all')
-    || (!analysisOnly && status !== 'all')
-    || (!analysisOnly && reviewStage !== 'all')
-    || sort !== 'priority'
-    || Boolean(keywordInput.trim())
+  const matchStatusSelectOptions = useMemo(() => {
+    const counts = new Map(matchStatusOptions.map(option => [option.value, option.count]))
+    return MATCH_STATUS_OPTIONS
+      .filter(option => !matchStatusOptions.length || counts.has(option.value) || matchStatuses.includes(option.value))
+      .map(option => ({
+        ...option,
+        label: counts.has(option.value)
+          ? `${option.label}（${counts.get(option.value)}）`
+          : option.label,
+      }))
+  }, [matchStatusOptions, matchStatuses])
+
+  const advancedFilterCount = useMemo(() => [
+    !analysisOnly && status !== 'all',
+    !analysisOnly && reviewStage !== 'all',
+    sort !== 'priority',
+    watchCategories.length > 0,
+    isModelThree && qmfFeedbackStates.length > 0,
+  ].filter(Boolean).length, [analysisOnly, isModelThree, qmfFeedbackStates.length, reviewStage, sort, status, watchCategories.length])
+
+  useEffect(() => {
+    if (advancedFilterCount > 0) setMoreOpen(true)
+  }, [advancedFilterCount])
+
+  const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
+    const chips: ActiveFilterChip[] = []
+    if (analysisOnly && !analysisParserSelection.includes(ALL_ANALYSIS_TYPES)) {
+      analysisParserSelection.forEach(value => chips.push({
+        key: `type:${value}`,
+        label: `业务：${value}`,
+        remove: () => updateAnalysisParserSelection(analysisParserSelection.filter(item => item !== value)),
+      }))
+    }
+    communities.forEach(value => chips.push({
+      key: `community:${value}`,
+      label: `社区：${optionText(value, communityOptions, value)}`,
+      remove: () => setCommunities(current => current.filter(item => item !== value)),
+    }))
+    if (!analysisOnly) smallCommunities.forEach(value => chips.push({
+      key: `small-community:${value}`,
+      label: `小区：${optionText(value, smallCommunityOptions, value)}`,
+      remove: () => setSmallCommunities(current => current.filter(item => item !== value)),
+    }))
+    inspectors.forEach(value => chips.push({
+      key: `inspector:${value}`,
+      label: `核查人：${optionText(value, inspectorOptions, value)}`,
+      remove: () => setInspectors(current => current.filter(item => item !== value)),
+    }))
+    if (!analysisOnly) matchStatuses.forEach(value => chips.push({
+      key: `match-status:${value}`,
+      label: `匹配：${optionText(value, MATCH_STATUS_OPTIONS, value)}`,
+      remove: () => setMatchStatuses(current => current.filter(item => item !== value)),
+    }))
+    if (!analysisOnly && status !== 'all') chips.push({
+      key: 'status',
+      label: `状态：${optionText(status, STATUS_OPTIONS, status)}`,
+      remove: () => setStatus('all'),
+    })
+    if (reviewStage !== 'all') chips.push({
+      key: 'review-stage',
+      label: `复核：${optionText(reviewStage, REVIEW_STAGE_OPTIONS, reviewStage)}`,
+      remove: () => setReviewStage('all'),
+    })
+    if (!analysisOnly && priority !== 'all') chips.push({
+      key: 'priority',
+      label: `快捷：${optionText(priority, PRIORITY_OPTIONS, priority)}`,
+      remove: () => setPriority('all'),
+    })
+    if (sort !== 'priority') chips.push({
+      key: 'sort',
+      label: `排序：${optionText(sort, SORT_OPTIONS, sort)}`,
+      remove: () => setSort('priority'),
+    })
+    watchCategories.forEach(value => chips.push({
+      key: `watch:${value}`,
+      label: `标签：${optionText(value, watchCategoryOptions, String(value))}`,
+      remove: () => setWatchCategories(current => current.filter(item => item !== value)),
+    }))
+    if (isModelThree) qmfFeedbackStates.forEach(value => chips.push({
+      key: `qmf:${value}`,
+      label: `全民防：${optionText(value, QMF_FEEDBACK_OPTIONS, value)}`,
+      remove: () => setQmfFeedbackStates(current => current.filter(item => item !== value)),
+    }))
+    if (keywordInput.trim()) chips.push({
+      key: 'keyword',
+      label: `搜索：${keywordInput.trim()}`,
+      remove: () => setKeywordInput(''),
+    })
+    return chips
+  }, [analysisOnly, analysisParserSelection, communities, communityOptions, inspectors, inspectorOptions, isModelThree, keywordInput, matchStatuses, priority, qmfFeedbackStates, reviewStage, smallCommunities, smallCommunityOptions, sort, status, watchCategories, watchCategoryOptions])
+
+  const filtersActive = activeFilterChips.length > 0
 
   const dial = async (phone: string) => {
     await recordActivity().catch(() => {})
@@ -883,110 +1006,238 @@ export default function MobileTaskList({
   return (
     <div ref={pageRootRef} className="mobile-task-page">
       <ListToolbar
-        className="mobile-task-filter-card"
-        filters={<div className="mobile-task-filter-grid">
-          {analysisOnly ? <Select
-            mode="multiple"
-            size="large"
-            value={analysisParserSelection}
-            maxTagCount="responsive"
-            optionFilterProp="label"
-            onChange={updateAnalysisParserSelection}
-            options={[
-              { value: ALL_ANALYSIS_TYPES, label: '全部数据' },
-              ...ANALYSIS_TASK_TYPES.map(value => ({ value, label: value })),
-            ]}
-          /> : <Select
-            size="large"
-            value={parserType}
-            onChange={value => updateQuery(value, scope)}
-            options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
-          />}
-          {analysisOnly || adminMode ? (
-            <Tag color="blue" className="mobile-task-scope-tag">全所</Tag>
-          ) : (
-            <Segmented
-              className="mobile-task-scope-switch"
-              value={scope}
-              onChange={value => updateQuery(parserType, value as MobileTaskScope)}
-              options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
-            />
-          )}
-          <Select
-            mode="multiple"
-            size="large"
-            value={communities}
-            loading={optionsLoading}
-            maxTagCount="responsive"
-            showSearch
-            allowClear
-            optionFilterProp="label"
-            placeholder="筛选社区"
-            options={communityOptions.map(option => ({
-              value: option.value,
-              label: `${option.label}（${option.count}）`,
-            }))}
-            onChange={values => {
-              setCommunities(values)
-              setSmallCommunities([])
-              setInspectors([])
-              setInspectorOptions([])
-            }}
-          />
-          {!analysisOnly && <Select
-            mode="multiple"
-            size="large"
-            value={smallCommunities}
-            loading={optionsLoading}
-            maxTagCount="responsive"
-            showSearch
-            allowClear
-            optionFilterProp="label"
-            placeholder="筛选小区"
-            options={smallCommunityOptions.map(option => ({
-              value: option.value,
-              label: `${option.label}（${option.count}）`,
-            }))}
-            onChange={values => setSmallCommunities(values)}
-          />}
-          {!analysisOnly && <Select
-            mode="multiple"
-            size="large"
-            value={matchStatuses}
-            maxTagCount="responsive"
-            allowClear
-            placeholder="匹配状态"
-            options={MATCH_STATUS_OPTIONS}
-            onChange={values => setMatchStatuses(values)}
-          />}
-          <Select
-            mode="multiple"
-            size="large"
-            value={inspectors}
-            loading={optionsLoading}
-            maxTagCount="responsive"
-            showSearch
-            allowClear
-            optionFilterProp="label"
-            placeholder="筛选核查人"
-            options={inspectorOptions.map(option => ({
-              value: option.value,
-              label: `${option.label}（${option.count}）`,
-            }))}
-            onChange={values => setInspectors(values)}
-          />
-          <div className="mobile-task-filter-search flex gap-2">
-            <Input
-              allowClear
-              value={keywordInput}
-              prefix={<SearchOutlined />}
-              placeholder="搜索姓名、电话或地址"
-              onChange={event => setKeywordInput(event.target.value)}
-              onPressEnter={() => setKeywordFlush(current => current + 1)}
-            />
+        className={`mobile-task-filter-card mobile-task-filter-card--${responsiveLayout.mode}`}
+        filters={<div className={`mobile-task-filter-layout mobile-task-filter-layout--${responsiveLayout.mode}`}>
+          <div className="mobile-task-filter-primary">
+            <label className="mobile-task-filter-field mobile-task-filter-field--business">
+              <span className="mobile-task-filter-field__label">业务类型</span>
+              {analysisOnly ? <Select
+                mode="multiple"
+                size="large"
+                value={analysisParserSelection}
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                optionFilterProp="label"
+                onChange={updateAnalysisParserSelection}
+                options={[
+                  { value: ALL_ANALYSIS_TYPES, label: '全部数据' },
+                  ...ANALYSIS_TASK_TYPES.map(value => ({ value, label: value })),
+                ]}
+              /> : <Select
+                size="large"
+                value={parserType}
+                onChange={value => updateQuery(value, scope)}
+                options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
+              />}
+            </label>
+            <div className="mobile-task-filter-field mobile-task-filter-field--scope">
+              <span className="mobile-task-filter-field__label">数据范围</span>
+              {analysisOnly || adminMode ? (
+                <div className="mobile-task-scope-context" aria-label="数据范围：全所">
+                  <span className="mobile-task-scope-context__dot" aria-hidden="true" />
+                  全所数据
+                </div>
+              ) : (
+                <Segmented
+                  className="mobile-task-scope-switch"
+                  value={scope}
+                  onChange={value => updateQuery(parserType, value as MobileTaskScope)}
+                  options={[{ label: '我的', value: 'mine' }, { label: '社区', value: 'community' }]}
+                />
+              )}
+            </div>
+            <label className="mobile-task-filter-field mobile-task-filter-field--search">
+              <span className="mobile-task-filter-field__label">快速搜索</span>
+              <Input
+                size="large"
+                allowClear
+                value={keywordInput}
+                prefix={<SearchOutlined />}
+                placeholder="搜索姓名、电话或地址"
+                onChange={event => setKeywordInput(event.target.value)}
+                onPressEnter={() => setKeywordFlush(current => current + 1)}
+              />
+            </label>
           </div>
+
+          <div className={`mobile-task-filter-secondary${analysisOnly ? ' mobile-task-filter-secondary--analysis' : ''}`}>
+            <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">社区</span>
+              <Select
+                mode="multiple"
+                size="large"
+                value={communities}
+                loading={optionsLoading}
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                showSearch
+                allowClear
+                optionFilterProp="label"
+                placeholder="全部社区"
+                options={communityOptions.map(option => ({
+                  value: option.value,
+                  label: `${option.label}（${option.count}）`,
+                }))}
+                onChange={setCommunities}
+              />
+            </label>
+            {!analysisOnly && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">小区</span>
+              <Select
+                mode="multiple"
+                size="large"
+                value={smallCommunities}
+                loading={optionsLoading}
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                showSearch
+                allowClear
+                optionFilterProp="label"
+                placeholder="全部小区"
+                options={smallCommunityOptions.map(option => ({
+                  value: option.value,
+                  label: `${option.label}（${option.count}）`,
+                }))}
+                onChange={setSmallCommunities}
+              />
+            </label>}
+            <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">核查人</span>
+              <Select
+                mode="multiple"
+                size="large"
+                value={inspectors}
+                loading={optionsLoading}
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                showSearch
+                allowClear
+                optionFilterProp="label"
+                placeholder="全部核查人"
+                options={inspectorOptions.map(option => ({
+                  value: option.value,
+                  label: `${option.label}（${option.count}）`,
+                }))}
+                onChange={setInspectors}
+              />
+            </label>
+            {!analysisOnly && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">匹配状态</span>
+              <Select
+                mode="multiple"
+                size="large"
+                value={matchStatuses}
+                loading={optionsLoading}
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                allowClear
+                placeholder="全部匹配状态"
+                options={matchStatusSelectOptions}
+                onChange={setMatchStatuses}
+              />
+            </label>}
+          </div>
+
+          <div className="mobile-task-filter-controls">
+            <span className="mobile-task-filter-controls__summary">
+              {filtersActive ? `已启用 ${activeFilterChips.length} 个筛选条件` : '可组合选择社区、小区、核查人和匹配状态'}
+            </span>
+            <div className="mobile-task-filter-controls__actions">
+              <Button type="link" onClick={() => setMoreOpen(value => !value)}>
+                {moreOpen ? '收起更多筛选' : '更多筛选'}{advancedFilterCount ? `（${advancedFilterCount}）` : ''}
+              </Button>
+              {filtersActive && <Button type="link" onClick={clearFilters}>重置筛选</Button>}
+            </div>
+          </div>
+
+          {moreOpen && <div className="mobile-task-more-grid">
+            {!analysisOnly && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">精确任务状态</span>
+              <Select
+                value={status}
+                options={[
+                  ...STATUS_OPTIONS.slice(0, 3),
+                  ...(mobileTaskUsesRegistrationClosure(parserType)
+                    ? [{
+                        label: `登记复核（${facets.registration_review_count}）`,
+                        value: 'registration_review' as MobileTaskStatus,
+                      }]
+                    : []),
+                  ...STATUS_OPTIONS.slice(3),
+                ]}
+                onChange={value => setStatus(value as MobileTaskStatus)}
+              />
+            </label>}
+            {!analysisOnly && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">复核阶段</span>
+              <Select
+                value={reviewStage}
+                options={REVIEW_STAGE_OPTIONS}
+                onChange={value => setReviewStage(value as MobileTaskReviewStage)}
+              />
+            </label>}
+            {!analysisOnly && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">快捷分类</span>
+              <Select
+                value={priority}
+                options={PRIORITY_OPTIONS}
+                onChange={value => setPriority(value as MobileTaskPriority)}
+              />
+            </label>}
+            <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">排序方式</span>
+              <Select
+                value={sort}
+                options={SORT_OPTIONS}
+                onChange={value => setSort(value as MobileTaskSort)}
+              />
+            </label>
+            <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">人员标签分类</span>
+              <Select
+                mode="multiple"
+                value={watchCategories}
+                options={watchCategoryOptions.map(option => ({
+                  value: option.value,
+                  label: `${option.label}（${option.count}）`,
+                }))}
+                onChange={setWatchCategories}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder="全部人员标签"
+              />
+            </label>
+            {isModelThree && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">全民防反馈状态</span>
+              <Select
+                mode="multiple"
+                value={qmfFeedbackStates}
+                options={QMF_FEEDBACK_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: `${option.label}（${facets.qmf_feedback_counts[option.value] || 0}）`,
+                }))}
+                onChange={values => {
+                  const next = values as QmfFeedbackState[]
+                  setQmfFeedbackStates(next)
+                  if (next.length) {
+                    setStatus('completed')
+                    setPriority('all')
+                    setReviewStage('all')
+                  }
+                }}
+                allowClear
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                placeholder="全部反馈状态"
+              />
+            </label>}
+          </div>}
+
+          {filtersActive && <div className="mobile-task-active-filters" aria-label="当前生效筛选条件">
+            <span className="mobile-task-active-filters__label">当前筛选</span>
+            <div className="mobile-task-active-filters__tags">
+              {activeFilterChips.map(chip => (
+                <Tag key={chip.key} closable onClose={chip.remove}>{chip.label}</Tag>
+              ))}
+            </div>
+          </div>}
         </div>}
-        extra={<>
+        extra={
           <div className={`mobile-task-priority-grid${analysisOnly ? ' mobile-task-analysis-stage-grid' : ''}`} aria-label={analysisOnly ? '研判阶段筛选' : '任务快捷筛选'}>
             {(analysisOnly
               ? [
@@ -1025,92 +1276,7 @@ export default function MobileTaskList({
               )
             })}
           </div>
-
-        <div className="mobile-task-more-toggle">
-          <Button type="link" onClick={() => setMoreOpen(value => !value)}>
-            {moreOpen ? '收起更多筛选' : '更多筛选'}
-          </Button>
-          {filtersActive && (
-            <Button type="link" onClick={clearFilters}>清除筛选</Button>
-          )}
-        </div>
-        {moreOpen && (
-          <div className="mobile-task-more-grid">
-            {!analysisOnly && <Select
-              value={status}
-              options={[
-                ...STATUS_OPTIONS.slice(0, 3),
-                ...(mobileTaskUsesRegistrationClosure(parserType)
-                  ? [{
-                      label: `登记复核（${facets.registration_review_count}）`,
-                      value: 'registration_review' as MobileTaskStatus,
-                    }]
-                  : []),
-                ...STATUS_OPTIONS.slice(3),
-              ]}
-              onChange={value => setStatus(value as MobileTaskStatus)}
-              placeholder="精确任务状态"
-            />}
-            {!analysisOnly && <Select
-              value={reviewStage}
-              options={[
-                { label: '全部复核', value: 'all' },
-                { label: '初步待研判', value: 'initial_pending' },
-                { label: '初步复核中', value: 'initial_extension' },
-                { label: '深度待研判', value: 'deep_pending' },
-                { label: '深度复核中', value: 'deep_extension' },
-              ]}
-              onChange={value => setReviewStage(value as MobileTaskReviewStage)}
-              placeholder="复核阶段"
-            />}
-            {!analysisOnly && <Select
-              value={priority}
-              options={PRIORITY_OPTIONS}
-              onChange={value => setPriority(value as MobileTaskPriority)}
-              placeholder="优先级"
-            />}
-            <Select
-              value={sort}
-              options={SORT_OPTIONS}
-              onChange={value => setSort(value as MobileTaskSort)}
-              placeholder="排序方式"
-            />
-            <Select
-              mode="multiple"
-              value={watchCategories}
-              options={watchCategoryOptions.map(option => ({
-                value: option.value,
-                label: `${option.label}（${option.count}）`,
-              }))}
-              onChange={setWatchCategories}
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              placeholder="人员标签分类"
-            />
-            {isModelThree && <Select
-              mode="multiple"
-              value={qmfFeedbackStates}
-              options={QMF_FEEDBACK_OPTIONS.map(option => ({
-                value: option.value,
-                label: `${option.label}（${facets.qmf_feedback_counts[option.value] || 0}）`,
-              }))}
-              onChange={values => {
-                const next = values as QmfFeedbackState[]
-                setQmfFeedbackStates(next)
-                if (next.length) {
-                  setStatus('completed')
-                  setPriority('all')
-                  setReviewStage('all')
-                }
-              }}
-              allowClear
-              maxTagCount="responsive"
-              placeholder="全民防反馈状态"
-            />}
-          </div>
-          )}
-        </>}
+        }
         meta={<><span>当前筛选共 {total} 条</span>{keywordInput && <button type="button" className="text-[var(--app-primary)]" onClick={() => setKeywordInput('')}>清除搜索</button>}</>}
         actions={<>
           <Button onClick={() => void load()} loading={loading}>刷新</Button>

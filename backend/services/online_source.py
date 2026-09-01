@@ -25,6 +25,10 @@ from services.watch_matching import (
 )
 from services.local_source import local_data_source_enabled
 from services.address_matching import RuleMatcher
+from services.address_match_feedback import (
+    apply_feedback_memory,
+    load_feedback_memories,
+)
 
 
 ACTIVE_LOCAL_CHANGE_STATUSES = {"pending", "processing", "retry", "conflict"}
@@ -56,6 +60,22 @@ async def _address_match_entries(cur) -> list[dict[str, Any]]:
             "enabled": bool(row[7]),
         })
     return result
+
+
+def _task_match_address(parser_type: str, values: dict[str, str]) -> str:
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    address_fields = tuple(
+        field
+        for field in getattr(workflow, "address_fields", ())
+        if field != "现住址"
+    ) or tuple(getattr(workflow, "address_fields", ()))
+    return next((
+        str(values.get(field) or "").strip()
+        for field in address_fields
+        if str(values.get(field) or "").strip()
+    ), "")
+
+
 def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
     """Limit task-facing source queries to the active data ownership model.
 
@@ -371,19 +391,18 @@ async def rebuild_projection(
         parser_type,
         list(grouped),
     )
+    task_addresses = {
+        row_key: _task_match_address(parser_type, parent)
+        for row_key, (parent, _) in merged_rows.items()
+    }
+    feedback_memories = await load_feedback_memories(cur, (
+        (task_addresses.get(row_key, ""), parser.community_value(parent))
+        for row_key, (parent, _) in merged_rows.items()
+    ))
 
     for row_key, source_rows in grouped.items():
         parent, conflict = merged_rows[row_key]
-        address = ""
-        address_fields = tuple(
-            field
-            for field in getattr(TASK_WORKFLOWS.get(parser_type), "address_fields", ())
-            if field != "现住址"
-        ) or tuple(getattr(TASK_WORKFLOWS.get(parser_type), "address_fields", ()))
-        for field in address_fields:
-            if str(parent.get(field) or "").strip():
-                address = str(parent.get(field) or "").strip()
-                break
+        address = task_addresses.get(row_key, "")
         address_match = matcher.match(
             address,
             address_entries,
@@ -422,6 +441,14 @@ async def rebuild_projection(
                     "candidates": stored.get("candidates") or [],
                     "version": str(stored.get("version") or matcher.version),
                 }
+        else:
+            address_match = apply_feedback_memory(
+                address_match,
+                address=address,
+                community_name=parser.community_value(parent),
+                memories=feedback_memories,
+                entries_by_id=address_entries_by_id,
+            )
         match_candidate = address_match.get("candidate") or {}
         address_match_rows.append((
             parser_type,
@@ -641,6 +668,7 @@ async def rebuild_projection_keys(
     matcher = RuleMatcher()
     projection_rows: list[tuple] = []
     address_rows: list[tuple] = []
+    prepared_rows: dict[str, tuple[dict[str, str], bool, str, str, Any]] = {}
     for row_key in keys:
         source_rows = grouped.get(row_key, [])
         if not source_rows:
@@ -658,20 +686,37 @@ async def rebuild_projection_keys(
             else:
                 parent = merged
         identity_hmac = projection_identity(parser_type, parent, parser.COLUMNS)
+        workflow = TASK_WORKFLOWS.get(parser_type)
+        address = _task_match_address(parser_type, parent)
+        prepared_rows[row_key] = (parent, conflict, identity_hmac, address, workflow)
+
+    feedback_memories = await load_feedback_memories(cur, (
+        (address, parser.community_value(parent))
+        for parent, _, _, address, _ in prepared_rows.values()
+    ))
+    for row_key, prepared in prepared_rows.items():
+        parent, conflict, identity_hmac, address, workflow = prepared
         await ensure_missing_registration_review(
             cur, parser_type=parser_type, row_key=row_key, values=parent,
             source_contexts=source_contexts.get(row_key, []), identity_hmac=identity_hmac,
             task_community=parser.community_value(parent),
         )
-        workflow = TASK_WORKFLOWS.get(parser_type)
-        address_fields = tuple(field for field in getattr(workflow, "address_fields", ()) if field != "现住址") or tuple(getattr(workflow, "address_fields", ()))
-        address = next((str(parent.get(field) or "").strip() for field in address_fields if str(parent.get(field) or "").strip()), "")
         address_match = matcher.match(address, address_entries, community_name=parser.community_value(parent))
         stored = stored_matches.get(row_key)
         if stored and stored.get("status") == "confirmed":
             confirmed = address_entries_by_id.get(int(stored.get("confirmed_entry_id") or 0))
             if confirmed:
                 address_match = {"status": "confirmed", "score": float(stored.get("score") or 1), "method": "人工确认", "reason": str(stored.get("reason") or "管理员已确认小区归属"), "candidate": {"entry_id": int(confirmed["id"]), "name": str(confirmed.get("name") or ""), "community_id": confirmed.get("community_id"), "community_name": str(confirmed.get("community_name") or ""), "score": float(stored.get("score") or 1), "method": "人工确认", "reason": "管理员已确认小区归属"}, "candidates": stored.get("candidates") or [], "version": str(stored.get("version") or matcher.version)}
+            else:
+                address_match = {"status": "conflict", "score": float(stored.get("score") or 0), "method": "人工确认复核", "reason": "已确认的小区已停用或不存在，需要重新确认", "candidate": None, "candidates": stored.get("candidates") or [], "version": str(stored.get("version") or matcher.version)}
+        else:
+            address_match = apply_feedback_memory(
+                address_match,
+                address=address,
+                community_name=parser.community_value(parent),
+                memories=feedback_memories,
+                entries_by_id=address_entries_by_id,
+            )
         candidate = address_match.get("candidate") or {}
         address_rows.append((parser_type, row_key, address, candidate.get("entry_id"), candidate.get("community_id"), candidate.get("community_name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", matcher.version), stored.get("confirmed_entry_id") if stored else None, stored.get("confirmed_by") if stored else None, stored.get("confirmed_at") if stored else None))
         projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), task_state(parser_type, parent, registration_status=str((registration_links.get(row_key) or {}).get("status") or "")), len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), ""))

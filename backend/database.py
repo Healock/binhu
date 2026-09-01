@@ -43,6 +43,7 @@ from services.local_source import ensure_local_source_schema, run_local_source_m
 from services.domain_events import ensure_outbox_schema
 from services.diagnostics import ensure_diagnostic_schema
 from services.help_docs import ensure_help_docs_schema
+from services.address_match_feedback import ensure_address_match_feedback_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -972,6 +973,7 @@ async def ensure_online_editor_schema(cur) -> None:
             INDEX idx_task_address_match_community (parser_type, suggested_community_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await ensure_address_match_feedback_schema(cur)
     # 修复旧版本把正确结果“近期返吴”或“非本辖区”误判为未核查的投影状态。
     # 历史错拼值仍按已完成兼容；这里只更新本地投影，不写腾讯来源表。
     await cur.execute("""
