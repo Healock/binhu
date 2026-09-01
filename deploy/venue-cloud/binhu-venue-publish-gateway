@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+set -f
+
+command_text=${SSH_ORIGINAL_COMMAND:-}
+set -- $command_text
+
+if [ "${1:-}" = "status" ] && [ "$#" -eq 1 ]; then
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-venue-publish-gateway.py status
+fi
+if [ "${1:-}" != "publish" ] || [ "$#" -ne 4 ]; then
+    echo "Only status or publish <commit> <size> <sha256> is allowed." >&2
+    exit 64
+fi
+exec /usr/bin/sudo -n /usr/local/libexec/binhu-venue-publish-gateway.py publish "$2" "$3" "$4"

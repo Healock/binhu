@@ -184,6 +184,20 @@ class Settings(BaseSettings):
     POLICE_DISPATCH_IMPORT_DIR: str = "../police-dispatch-imports"
     VENUE_PHOTO_DIR: str = "../venue-photos"
     VENUE_PHOTO_MAX_BYTES: int = 5 * 1024 * 1024
+    VENUE_CLOUD_SYNC_ENABLED: bool = False
+    VENUE_CLOUD_PULL_ENABLED: bool = False
+    VENUE_LOCAL_PUBLIC_ENTRY_ENABLED: bool = True
+    VENUE_CLOUD_BASE_URL: str = ""
+    VENUE_PUBLIC_BASE_URL: str = ""
+    VENUE_CLOUD_CLIENT_CERT_PATH: str = "/run/secrets/venue-cloud/mtls-client.pem"
+    VENUE_CLOUD_CLIENT_KEY_PATH: str = "/run/secrets/venue-cloud/mtls-client.key"
+    VENUE_CLOUD_REQUEST_SIGNING_KEY_PATH: str = "/run/secrets/venue-cloud/local-request-signing.key"
+    VENUE_CLOUD_RESPONSE_SIGNING_PUBLIC_KEY_PATH: str = "/run/secrets/venue-cloud/cloud-response-signing.pub"
+    VENUE_CLOUD_DECRYPTION_KEY_DIR: str = "/run/secrets/venue-cloud/decryption"
+    VENUE_CLOUD_WORKER_ID: str = "binhu-primary"
+    VENUE_CLOUD_PULL_INTERVAL_SECONDS: int = 30
+    VENUE_CLOUD_PULL_BATCH_SIZE: int = 50
+    VENUE_CLOUD_REQUEST_TIMEOUT_SECONDS: int = 30
     FULLCHAIN_ARCHIVE_MAX_ROWS: int = 5000
     LOG_EXPORT_MAX_BYTES: int = 10 * 1024 * 1024
 

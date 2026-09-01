@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+aiomysql==0.2.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-multipart==0.0.32
+cryptography==44.0.0
+Pillow==12.2.0
+

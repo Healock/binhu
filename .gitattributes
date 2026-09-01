@@ -5,6 +5,9 @@
 *.service text eol=lf
 *.timer text eol=lf
 *.conf text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+deploy/venue-cloud/binhu-venue-publish-gateway text eol=lf
 deploy/binhu-nginx-profile text eol=lf
 deploy/binhu-deploy text eol=lf
 deploy/binhu-deploy-gateway text eol=lf

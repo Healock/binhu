@@ -1,0 +1,96 @@
+name: Deploy venue cloud
+run-name: Deploy venue cloud from ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit already merged into main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: venue-cloud-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: venue-cloud-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Verify immutable main commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${{ inputs.ref }}" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          [[ "$(git rev-parse HEAD)" == "${{ inputs.ref }}" ]]
+          git merge-base --is-ancestor HEAD origin/main
+          echo "RELEASE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: cloud/venue-receiver/requirements.txt
+      - name: Test receiver
+        run: |
+          python -m pip install --disable-pip-version-check -r cloud/venue-receiver/requirements.txt pytest
+          python -m pytest cloud/venue-receiver/tests -q
+          python -m compileall -q cloud/venue-receiver/app deploy/venue-cloud
+      - name: Build immutable image bundle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          image="binhu-venue-receiver:$RELEASE_COMMIT"
+          docker build --pull --tag "$image" cloud/venue-receiver
+          mkdir -p release-output
+          docker save "$image" --output release-output/image.tar
+          image_sha="$(sha256sum release-output/image.tar | awk '{print $1}')"
+          python - "$RELEASE_COMMIT" "$image_sha" > release-output/manifest.json <<'PY'
+          import json, sys
+          commit, image_sha = sys.argv[1:]
+          print(json.dumps({"commit": commit, "image": f"binhu-venue-receiver:{commit}", "image_sha256": image_sha}, separators=(",", ":")))
+          PY
+          tar -C release-output -cf release-output/venue-cloud.tar manifest.json image.tar
+      - name: Prepare restricted SSH identity
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.BINHU_VENUE_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_VENUE_DEPLOY_KNOWN_HOSTS }}
+          EXPECTED_HOST_KEY_FINGERPRINT: ${{ secrets.BINHU_VENUE_DEPLOY_HOST_KEY_SHA256 }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/venue-ssh"
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/venue-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/venue-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/venue-ssh/key" "$RUNNER_TEMP/venue-ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/venue-ssh/key" >/dev/null
+          test -n "$EXPECTED_HOST_KEY_FINGERPRINT"
+          ssh-keygen -lf "$RUNNER_TEMP/venue-ssh/known_hosts" | grep -F -- "$EXPECTED_HOST_KEY_FINGERPRINT"
+      - name: Publish through fixed gateway
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_VENUE_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_VENUE_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.BINHU_VENUE_DEPLOY_USER }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_USER"
+          bundle=release-output/venue-cloud.tar
+          size="$(wc -c < "$bundle")"
+          sha="$(sha256sum "$bundle" | awk '{print $1}')"
+          ssh -F /dev/null -i "$RUNNER_TEMP/venue-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/venue-ssh/known_hosts" \
+            -o ConnectTimeout=15 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "publish $RELEASE_COMMIT $size $sha" < "$bundle"
