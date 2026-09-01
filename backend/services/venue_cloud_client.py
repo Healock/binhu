@@ -26,30 +26,84 @@ class VenueCloudClientError(RuntimeError):
         self.reason_code = reason_code
 
 
+def validate_wait_response(value: dict[str, Any]) -> dict[str, Any]:
+    available = value.get("available")
+    pending_count = value.get("pending_count")
+    wake_reason = value.get("wake_reason")
+    if (
+        type(available) is not bool
+        or type(pending_count) is not int
+        or pending_count < 0
+        or wake_reason not in {"available", "timeout"}
+    ):
+        raise VenueCloudClientError("invalid_cloud_response")
+    if available != (pending_count > 0) or (available and wake_reason != "available") or (
+        not available and wake_reason != "timeout"
+    ):
+        raise VenueCloudClientError("invalid_cloud_response")
+    return {
+        "available": available,
+        "pending_count": pending_count,
+        "wake_reason": wake_reason,
+    }
+
+
+def validate_status_response(value: dict[str, Any]) -> dict[str, Any]:
+    pending_count = value.get("pending_count")
+    uncertain_count = value.get("uncertain_count")
+    active_venue_count = value.get("active_venue_count")
+    active_key_id = value.get("active_key_id")
+    if (
+        value.get("status") != "ok"
+        or type(pending_count) is not int
+        or pending_count < 0
+        or type(uncertain_count) is not int
+        or uncertain_count < 0
+        or type(active_venue_count) is not int
+        or active_venue_count < 0
+        or not isinstance(active_key_id, str)
+        or not active_key_id
+    ):
+        raise VenueCloudClientError("invalid_cloud_response")
+    return value
+
+
+def validate_venue_cloud_configuration() -> str:
+    required = {
+        "client_certificate_missing": settings.VENUE_CLOUD_CLIENT_CERT_PATH,
+        "client_key_missing": settings.VENUE_CLOUD_CLIENT_KEY_PATH,
+        "request_signing_key_missing": settings.VENUE_CLOUD_REQUEST_SIGNING_KEY_PATH,
+        "response_verify_key_missing": settings.VENUE_CLOUD_RESPONSE_SIGNING_PUBLIC_KEY_PATH,
+    }
+    for reason, path in required.items():
+        if not path or not Path(path).is_file():
+            raise VenueCloudClientError(reason)
+    decryption_dir = Path(settings.VENUE_CLOUD_DECRYPTION_KEY_DIR)
+    if not settings.VENUE_CLOUD_DECRYPTION_KEY_DIR or not decryption_dir.is_dir():
+        raise VenueCloudClientError("decryption_key_directory_missing")
+    base_url = settings.VENUE_CLOUD_BASE_URL.rstrip("/")
+    try:
+        parsed = urlsplit(base_url)
+        valid_port = parsed.port in (None, 443)
+    except ValueError as exc:
+        raise VenueCloudClientError("valid_cloud_endpoint_required") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not valid_port
+        or parsed.path not in ("", "/")
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise VenueCloudClientError("valid_cloud_endpoint_required")
+    return base_url
+
+
 class VenueCloudClient:
     def __init__(self):
-        required = {
-            "client_certificate_missing": settings.VENUE_CLOUD_CLIENT_CERT_PATH,
-            "client_key_missing": settings.VENUE_CLOUD_CLIENT_KEY_PATH,
-            "request_signing_key_missing": settings.VENUE_CLOUD_REQUEST_SIGNING_KEY_PATH,
-            "response_verify_key_missing": settings.VENUE_CLOUD_RESPONSE_SIGNING_PUBLIC_KEY_PATH,
-        }
-        for reason, path in required.items():
-            if not path or not Path(path).is_file():
-                raise VenueCloudClientError(reason)
-        self.base_url = settings.VENUE_CLOUD_BASE_URL.rstrip("/")
-        parsed = urlsplit(self.base_url)
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "47.100.44.36"
-            or parsed.port not in (None, 443)
-            or parsed.path not in ("", "/")
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise VenueCloudClientError("fixed_cloud_endpoint_required")
+        self.base_url = validate_venue_cloud_configuration()
         self.request_key = load_request_signing_key(settings.VENUE_CLOUD_REQUEST_SIGNING_KEY_PATH)
         self.response_key = load_response_verify_key(settings.VENUE_CLOUD_RESPONSE_SIGNING_PUBLIC_KEY_PATH)
         self.client = httpx.AsyncClient(
@@ -114,6 +168,20 @@ class VenueCloudClient:
         if not isinstance(value, dict):
             raise VenueCloudClientError("invalid_cloud_response")
         return value
+
+    async def wait_for_submissions(self, worker_id: str, timeout_seconds: int = 20) -> dict[str, Any]:
+        bounded_timeout = min(20, max(1, int(timeout_seconds)))
+        return validate_wait_response(
+            await self.request_json(
+                "POST",
+                "/api/internal/submissions/wait",
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "worker_id": worker_id,
+                    "timeout_seconds": bounded_timeout,
+                },
+            )
+        )
 
     async def download_photo(self, path: str, request_id: str, expected_size: int, expected_sha256: str) -> bytes:
         if not path.startswith("/api/internal/submissions/") or ".." in path:

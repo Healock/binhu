@@ -12,6 +12,15 @@ server_source=/etc/binhu-venue/nginx-server-locations.conf
 http_target="$bt_dir/00-binhu-venue-http.conf"
 state_root=/srv/binhu-venue/state/nginx-backups
 python=/usr/bin/python3.11
+public_origin=${BINHU_VENUE_PUBLIC_ORIGIN:?BINHU_VENUE_PUBLIC_ORIGIN is required}
+update_probe_url=${BINHU_UPDATE_PROBE_URL:?BINHU_UPDATE_PROBE_URL is required}
+public_origin=${public_origin%/}
+
+case "$public_origin" in https://*) ;; *) echo "BINHU_VENUE_PUBLIC_ORIGIN must use HTTPS" >&2; exit 1 ;; esac
+case "$update_probe_url" in
+  https://*/updates/*/releases.stable.json) ;;
+  *) echo "BINHU_UPDATE_PROBE_URL must be an HTTPS stable update manifest" >&2; exit 1 ;;
+esac
 
 for command in nginx curl "$python"; do
   command -v "$command" >/dev/null 2>&1 || { echo "missing command: $command" >&2; exit 1; }
@@ -84,23 +93,23 @@ mv "$active.binhu-new" "$active"
 
 test_output=$(nginx -t 2>&1)
 printf '%s\n' "$test_output"
-if printf '%s\n' "$test_output" | grep -F 'conflicting server name "47.100.44.36"' >/dev/null; then
-  echo "duplicate IP virtual host warning still exists" >&2
+if printf '%s\n' "$test_output" | grep -F 'conflicting server name' >/dev/null; then
+  echo "duplicate virtual host warning still exists" >&2
   exit 1
 fi
 systemctl reload nginx
 
-curl --fail --silent --show-error https://47.100.44.36/updates/win10-x64/releases.stable.json >/dev/null
+curl --fail --silent --show-error "$update_probe_url" >/dev/null
 internal_code=""
 i=0
 while [ "$i" -lt 10 ]; do
-  internal_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' https://47.100.44.36/api/internal/status || true)
+  internal_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$public_origin/api/internal/status" || true)
   [ "$internal_code" = 403 ] && break
   i=$((i + 1))
   sleep 1
 done
 [ "$internal_code" = 403 ] || { echo "internal API without mTLS returned $internal_code" >&2; exit 1; }
-public_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' https://47.100.44.36/venue/not-a-real-token)
+public_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "$public_origin/venue/not-a-real-token")
 case "$public_code" in 502|503|504) echo "venue proxy is unavailable: $public_code" >&2; exit 1 ;; esac
 
 success=true

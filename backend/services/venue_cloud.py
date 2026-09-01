@@ -17,7 +17,7 @@ from config import settings
 from database import db_manager
 from services.qmf_config import decrypt_secret, encrypt_secret
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
-from services.venue_cloud_client import VenueCloudClient, VenueCloudClientError
+from services.venue_cloud_client import VenueCloudClient, VenueCloudClientError, validate_status_response
 from services.venue_cloud_security import VenueCloudSecurityError, decrypt_submission
 
 
@@ -345,7 +345,7 @@ async def pull_submissions_once(client: VenueCloudClient) -> int:
         },
     )
     lease_id = str(response.get("lease_id") or "")
-    items = response.get("items") or []
+    items = response.get("items")
     if not lease_id or not isinstance(items, list):
         raise VenueCloudClientError("invalid_cloud_response")
     if not items:
@@ -368,18 +368,50 @@ async def pull_submissions_once(client: VenueCloudClient) -> int:
                 },
             )
             try:
+                if str(renewed.get("lease_id") or "") != lease_id:
+                    raise VenueCloudClientError("invalid_cloud_response")
                 lease_expires_at = datetime.fromisoformat(
                     str(renewed["lease_expires_at"]).replace("Z", "+00:00")
                 ).replace(tzinfo=None)
             except (KeyError, ValueError):
                 raise VenueCloudClientError("invalid_cloud_response")
         results.append(await _ingest_item(client, lease_id, item))
-    await client.request_json(
+    acknowledgement = await client.request_json(
         "POST",
         "/api/internal/submissions/ack",
         {"request_id": str(uuid.uuid4()), "lease_id": lease_id, "results": results},
     )
+    applied = acknowledgement.get("applied")
+    expected = {(item["submission_id"], item["status"]) for item in results}
+    if not isinstance(applied, list):
+        raise VenueCloudClientError("invalid_cloud_response")
+    try:
+        actual = {(str(item["submission_id"]), str(item["status"])) for item in applied}
+    except (KeyError, TypeError):
+        raise VenueCloudClientError("invalid_cloud_response")
+    if actual != expected or len(applied) != len(expected):
+        raise VenueCloudClientError("acknowledgement_incomplete")
     return len(results)
+
+
+async def drain_submissions(client: VenueCloudClient) -> int:
+    total = 0
+    while True:
+        pulled = await pull_submissions_once(client)
+        total += pulled
+        if pulled == 0:
+            return total
+
+
+async def wait_for_and_drain(client: VenueCloudClient, *, fallback_due: bool = False) -> int:
+    if not settings.VENUE_CLOUD_PULL_ENABLED:
+        return 0
+    if fallback_due:
+        return await drain_submissions(client)
+    signal = await client.wait_for_submissions(settings.VENUE_CLOUD_WORKER_ID, timeout_seconds=20)
+    if signal["available"]:
+        return await drain_submissions(client)
+    return 0
 
 
 async def reconcile_venues_once(client: VenueCloudClient) -> int:
@@ -450,17 +482,29 @@ async def run_venue_cloud_scheduler() -> None:
     if not cloud_enabled():
         while True:
             await asyncio.sleep(3600)
-    delay = max(5, settings.VENUE_CLOUD_PULL_INTERVAL_SECONDS)
+    idle_delay = max(5, settings.VENUE_CLOUD_PULL_INTERVAL_SECONDS)
     client: VenueCloudClient | None = None
     next_reconcile = 0.0
+    next_safety_pull = 0.0
+    consecutive_failures = 0
     try:
+        try:
+            client = VenueCloudClient()
+        except VenueCloudClientError as exc:
+            _runtime_status["last_error_code"] = exc.reason_code
+            while True:
+                await asyncio.sleep(3600)
         while True:
             try:
-                if client is None:
-                    client = VenueCloudClient()
                 await process_outbox_once(client)
-                pulled = await pull_submissions_once(client)
-                cloud_status = await client.request_json("GET", "/api/internal/status")
+                now = asyncio.get_running_loop().time()
+                fallback_due = settings.VENUE_CLOUD_PULL_ENABLED and now >= next_safety_pull
+                pulled = await wait_for_and_drain(client, fallback_due=fallback_due)
+                if fallback_due:
+                    next_safety_pull = asyncio.get_running_loop().time() + 300
+                cloud_status = validate_status_response(
+                    await client.request_json("GET", "/api/internal/status")
+                )
                 _runtime_status.update(
                     cloud_pending_count=int(cloud_status.get("pending_count") or 0),
                     cloud_oldest_pending_at=cloud_status.get("oldest_pending_at"),
@@ -472,15 +516,19 @@ async def run_venue_cloud_scheduler() -> None:
                     _runtime_status["last_reconcile_at"] = _utcnow().isoformat()
                     next_reconcile = asyncio.get_running_loop().time() + 86400
                 _runtime_status.update(last_success_at=_utcnow().isoformat(), last_error_code=None, last_pull_count=pulled)
-                await asyncio.sleep(delay)
+                consecutive_failures = 0
+                if not settings.VENUE_CLOUD_PULL_ENABLED:
+                    await asyncio.sleep(idle_delay)
             except asyncio.CancelledError:
                 raise
             except VenueCloudClientError as exc:
                 _runtime_status["last_error_code"] = exc.reason_code
-                await asyncio.sleep(min(300, delay * 2 + random.randint(0, 5)))
+                consecutive_failures += 1
+                await asyncio.sleep(min(300, 2 ** min(consecutive_failures, 8) + random.uniform(0, 5)))
             except Exception:
                 _runtime_status["last_error_code"] = "unexpected_worker_error"
-                await asyncio.sleep(min(300, delay * 2 + random.randint(0, 5)))
+                consecutive_failures += 1
+                await asyncio.sleep(min(300, 2 ** min(consecutive_failures, 8) + random.uniform(0, 5)))
     finally:
         if client is not None:
             await client.close()

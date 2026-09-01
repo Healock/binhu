@@ -40,7 +40,8 @@ def test_photo_magic_validation():
 
 
 def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch):
-    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", "https://portal.example.test/")
+    monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", False)
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test/")
 
     assert _public_venue_url("token_value") == "https://portal.example.test/venue/token_value"
 
@@ -56,7 +57,8 @@ def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch)
     ],
 )
 def test_public_venue_url_rejects_missing_or_unsafe_configuration(monkeypatch, base_url):
-    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", base_url)
+    monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", False)
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", base_url)
 
     with pytest.raises(HTTPException) as exc_info:
         _public_venue_url("token")
@@ -84,13 +86,17 @@ async def test_qrcode_png_encodes_the_same_absolute_public_url(monkeypatch):
             return None
 
         async def fetchone(self):
-            return (7, "测试场所", "", "", None, "", "active", "digest", "encrypted", 1, None, None)
+            return (
+                7, "测试场所", "", "", None, "", "active", "digest", "encrypted", 1, None, None,
+                1, 1, "local_only", None, None, None, None,
+            )
 
     class FakeConnection:
         def cursor(self):
             return FakeCursor()
 
-    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", "https://portal.example.test")
+    monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", False)
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test")
     monkeypatch.setattr(venue_codes, "decrypt_secret", lambda _value: "public_token")
     monkeypatch.setitem(
         sys.modules,
@@ -102,6 +108,47 @@ async def test_qrcode_png_encodes_the_same_absolute_public_url(monkeypatch):
 
     assert response.media_type == "image/png"
     assert encoded_values == ["https://portal.example.test/venue/public_token"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_qrcode_requires_current_revision_confirmation(monkeypatch):
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, _query, _params):
+            return None
+
+        async def fetchone(self):
+            return (
+                7, "测试场所", "", "", None, "", "active", "digest", "encrypted", 1, None, None,
+                3, 1, "confirmed", 2, None, None, None,
+            )
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", True)
+    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", "https://venue-cloud.example.test")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await venue_qrcode(7, format="json", user={}, conn=FakeConnection())
+
+    assert exc_info.value.status_code == 409
+    assert "当前版本" in exc_info.value.detail
+
+
+def test_public_venue_url_uses_cloud_origin_only_when_sync_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://platform.example.test")
+    monkeypatch.setattr(settings, "VENUE_PUBLIC_BASE_URL", "https://venue-cloud.example.test")
+    monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", False)
+    assert _public_venue_url("token") == "https://platform.example.test/venue/token"
+    monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", True)
+    assert _public_venue_url("token") == "https://venue-cloud.example.test/venue/token"
 
 
 @pytest.mark.asyncio

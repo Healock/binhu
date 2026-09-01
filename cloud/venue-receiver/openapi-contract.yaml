@@ -1,7 +1,176 @@
 openapi: 3.1.0
 info:
   title: 滨湖场所码云端接收服务
-  version: "1.0"
+  version: "1.1"
+  description: 公共登记与主业务服务器主动拉取合同。内部接口同时要求 mTLS 和 Ed25519 请求签名。
+components:
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+    requestSignature:
+      type: apiKey
+      in: header
+      name: X-Binhu-Signature
+      description: 同时发送 X-Binhu-Timestamp、X-Binhu-Nonce 和 X-Binhu-Request-Id。
+  parameters:
+    RequestTimestamp:
+      in: header
+      name: X-Binhu-Timestamp
+      required: true
+      description: Unix 秒时间戳，允许与云端相差最多 5 分钟。
+      schema: { type: string, pattern: '^[0-9]{10}$' }
+    RequestNonce:
+      in: header
+      name: X-Binhu-Nonce
+      required: true
+      description: 单次请求随机数，云端保留 10 分钟防止重放。
+      schema: { type: string, minLength: 16, maxLength: 200 }
+    RequestId:
+      in: header
+      name: X-Binhu-Request-Id
+      required: true
+      description: 必须与 JSON 正文中的 request_id 一致。
+      schema: { type: string, format: uuid }
+    RequestSignature:
+      in: header
+      name: X-Binhu-Signature
+      required: true
+      description: Ed25519 签名，覆盖方法、路径、时间戳、随机数、request_id 和正文 SHA-256。
+      schema: { type: string }
+  headers:
+    ResponseTimestamp:
+      description: 云端生成响应签名时使用的 Unix 秒时间戳。
+      schema: { type: string, pattern: '^[0-9]{10}$' }
+    ResponseSignature:
+      description: Ed25519 响应签名，覆盖 request_id、响应时间戳和响应正文 SHA-256。
+      schema: { type: string }
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+    VenueUpdate:
+      type: object
+      required: [request_id, display_name, status, token, token_version, config_revision]
+      properties:
+        request_id: { type: string, format: uuid }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        status: { type: string, enum: [active, inactive, deleted] }
+        token: { type: string, minLength: 32, maxLength: 200 }
+        token_version: { type: integer, minimum: 1 }
+        config_revision: { type: integer, minimum: 1 }
+    VenueSummary:
+      allOf:
+        - $ref: '#/components/schemas/VenueUpdate'
+        - type: object
+          required: [local_venue_id]
+          properties:
+            local_venue_id: { type: integer, minimum: 1 }
+    ReconcileRequest:
+      type: object
+      required: [request_id, venues]
+      properties:
+        request_id: { type: string, format: uuid }
+        venues:
+          type: array
+          maxItems: 10000
+          items: { $ref: '#/components/schemas/VenueSummary' }
+    WaitRequest:
+      type: object
+      required: [request_id, worker_id, timeout_seconds]
+      properties:
+        request_id: { type: string, format: uuid }
+        worker_id: { type: string, minLength: 8, maxLength: 100 }
+        timeout_seconds: { type: integer, minimum: 1, maximum: 20 }
+    WaitResponse:
+      type: object
+      required: [available, pending_count, wake_reason]
+      properties:
+        available: { type: boolean }
+        pending_count: { type: integer, minimum: 0 }
+        wake_reason: { type: string, enum: [available, timeout] }
+    PullRequest:
+      type: object
+      required: [request_id, worker_id, limit, supported_encryption_versions]
+      properties:
+        request_id: { type: string, format: uuid }
+        worker_id: { type: string, minLength: 8, maxLength: 100 }
+        limit: { type: integer, minimum: 1, maximum: 50 }
+        supported_encryption_versions:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: string }
+    SubmissionEnvelope:
+      type: object
+      required: [submission_id, local_venue_id, encrypted_payload, wrapped_data_key, key_id, algorithm_version, payload_nonce, ciphertext_sha256, photo_nonce, photo_ciphertext_sha256, photo_size, photo_mime_type, photo_download_path]
+      properties:
+        submission_id: { type: string, format: uuid }
+        local_venue_id: { type: integer, minimum: 1 }
+        encrypted_payload: { type: string }
+        wrapped_data_key: { type: string }
+        key_id: { type: string }
+        algorithm_version: { type: string }
+        payload_nonce: { type: string }
+        ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        photo_nonce: { type: string }
+        photo_ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        photo_size: { type: integer, minimum: 1 }
+        photo_mime_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        received_at: { type: string, format: date-time }
+        photo_download_path: { type: string }
+    PullResponse:
+      type: object
+      required: [lease_id, lease_expires_at, items]
+      properties:
+        lease_id: { type: string, format: uuid }
+        lease_expires_at: { type: string, format: date-time }
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/SubmissionEnvelope' }
+    AckItem:
+      type: object
+      required: [submission_id, status]
+      properties:
+        submission_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, rejected, retry_later, uncertain] }
+        reason_code: { type: string, maxLength: 100, pattern: '^[a-z0-9_]*$' }
+    AckRequest:
+      type: object
+      required: [request_id, lease_id, results]
+      properties:
+        request_id: { type: string, format: uuid }
+        lease_id: { type: string, format: uuid }
+        results:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/AckItem' }
+    RenewLeaseRequest:
+      type: object
+      required: [request_id, lease_id, worker_id]
+      properties:
+        request_id: { type: string, format: uuid }
+        lease_id: { type: string, format: uuid }
+        worker_id: { type: string, minLength: 8, maxLength: 100 }
+  responses:
+    AuthenticationError:
+      description: mTLS 或请求签名无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: 幂等冲突、重放或协议版本冲突
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: 请求字段或文件不合法
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
 paths:
   /venue/{token}:
     get:
@@ -13,12 +182,19 @@ paths:
           schema: { type: string, minLength: 32, maxLength: 200 }
       responses:
         "200": { description: HTML 登记页面 }
+        "404": { description: 二维码不存在 }
         "410": { description: 二维码已更换 }
   /api/public/venues/{token}:
     get:
       summary: 读取场所名称并签发一次性表单令牌
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string, minLength: 32, maxLength: 200 }
       responses:
         "200": { description: 场所和 15 分钟表单令牌 }
+        "404": { description: 场所不存在 }
         "410": { description: 二维码已更换 }
   /api/public/submissions:
     post:
@@ -30,19 +206,179 @@ paths:
             schema:
               type: object
               required: [submission_id, venue_token, form_token, device_id, name, identity_number, phone, address, photo]
+              properties:
+                submission_id: { type: string, format: uuid }
+                venue_token: { type: string }
+                form_token: { type: string }
+                device_id: { type: string, minLength: 16, maxLength: 200 }
+                name: { type: string, maxLength: 100 }
+                identity_number: { type: string, maxLength: 18 }
+                phone: { type: string, maxLength: 20 }
+                address: { type: string, maxLength: 500 }
+                photo: { type: string, format: binary }
       responses:
         "202": { description: 已加密排队或返回原幂等结果 }
-        "409": { description: submission_id 与原请求内容不同 }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "422": { $ref: '#/components/responses/ValidationError' }
         "429": { description: 超出限流 }
   /api/internal/venues/{local_venue_id}:
-    put: { summary: 按 config_revision 幂等同步场所, responses: { "200": { description: 已应用或已有更新版本 } } }
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    put:
+      summary: 按 config_revision 幂等同步场所
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      parameters:
+        - in: path
+          name: local_venue_id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VenueUpdate' }
+      responses:
+        "200": { description: 已应用或已有更新版本 }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "409": { $ref: '#/components/responses/Conflict' }
   /api/internal/venues/reconcile:
-    post: { summary: 对账本地有效场所摘要, responses: { "200": { description: 漂移清单 } } }
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    post:
+      summary: 对账本地有效场所摘要
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReconcileRequest' }
+      responses:
+        "200": { description: 漂移清单 }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+  /api/internal/submissions/wait:
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    post:
+      summary: 最多等待 20 秒的新登记信号
+      description: 先检查数据库队列；无数据时长轮询，结束前再次检查数据库。响应包含 Ed25519 签名头。
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WaitRequest' }
+      responses:
+        "200":
+          description: 有数据立即返回，或正常超时
+          headers:
+            X-Binhu-Response-Timestamp: { $ref: '#/components/headers/ResponseTimestamp' }
+            X-Binhu-Response-Signature: { $ref: '#/components/headers/ResponseSignature' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WaitResponse' }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "409": { $ref: '#/components/responses/Conflict' }
   /api/internal/submissions/pull:
-    post: { summary: 租赁最多 50 条登记, responses: { "200": { description: 签名后的租约和密文清单 } } }
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    post:
+      summary: 租赁最多 50 条登记
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PullRequest' }
+      responses:
+        "200":
+          description: 签名后的租约和密文清单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PullResponse' }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "409": { $ref: '#/components/responses/Conflict' }
+  /api/internal/submissions/{submission_id}/photo/{lease_id}:
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    get:
+      summary: 下载当前租约中的加密照片
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      parameters:
+        - in: path
+          name: submission_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: lease_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 加密照片；X-Content-SHA256 给出密文摘要
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "404": { description: 租约或照片不存在 }
   /api/internal/submissions/ack:
-    post: { summary: 确认 accepted/rejected/retry_later/uncertain, responses: { "200": { description: 已应用结果 } } }
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    post:
+      summary: 确认 accepted/rejected/retry_later/uncertain
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AckRequest' }
+      responses:
+        "200": { description: 已应用结果 }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
   /api/internal/submissions/renew-lease:
-    post: { summary: 续租当前批次, responses: { "200": { description: 新租约时间 } } }
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    post:
+      summary: 续租当前批次
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RenewLeaseRequest' }
+      responses:
+        "200": { description: 新租约时间 }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "404": { description: 租约不存在 }
   /api/internal/status:
-    get: { summary: 返回队列与安全健康状态, responses: { "200": { description: 签名后的状态 } } }
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    get:
+      summary: 返回队列与安全健康状态
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      responses:
+        "200": { description: 签名后的状态 }
+        "401": { $ref: '#/components/responses/AuthenticationError' }

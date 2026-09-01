@@ -304,6 +304,17 @@ class MySQLRepository:
                 await conn.rollback()
                 raise
 
+    async def available_submission_count(self) -> int:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COUNT(*) FROM submissions WHERE "
+                    "(state='queued' OR (state='leased' AND lease_expires_at<UTC_TIMESTAMP())) "
+                    "AND expires_at>=UTC_TIMESTAMP()"
+                )
+                row = await cur.fetchone()
+        return int(row[0] if row else 0)
+
     async def get_leased_photo(self, submission_id: str, lease_id: str) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -326,7 +337,8 @@ class MySQLRepository:
                         reason = result.get("reason_code") or None
                         if state == "retry_later":
                             await cur.execute(
-                                "UPDATE submissions SET state='queued',lease_id=NULL,lease_owner=NULL,lease_expires_at=NULL,safe_reason_code=%s "
+                                "UPDATE submissions SET state='leased',lease_id=NULL,lease_owner=NULL,"
+                                "lease_expires_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 MINUTE),safe_reason_code=%s "
                                 "WHERE submission_id=%s AND lease_id=%s AND state='leased'",
                                 (reason, result["submission_id"], lease_id),
                             )

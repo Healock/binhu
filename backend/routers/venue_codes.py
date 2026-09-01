@@ -74,9 +74,15 @@ def _token_digest(token: str) -> str:
 
 
 def _public_venue_url(token: str) -> str:
-    base_url = str(settings.VENUE_PUBLIC_BASE_URL or "").strip().rstrip("/")
+    configured_url = (
+        settings.VENUE_PUBLIC_BASE_URL
+        if settings.VENUE_CLOUD_SYNC_ENABLED
+        else settings.PUBLIC_WEB_BASE_URL
+    )
+    base_url = str(configured_url or "").strip().rstrip("/")
     if not base_url:
-        raise HTTPException(503, "场所码公开访问地址尚未配置")
+        target = "云端场所码公开地址" if settings.VENUE_CLOUD_SYNC_ENABLED else "平台公开访问地址"
+        raise HTTPException(503, f"{target}尚未配置")
 
     parsed = urlsplit(base_url)
     local_hosts = {"localhost", "127.0.0.1", "::1"}
@@ -333,8 +339,11 @@ async def venue_qrcode(venue_id: int, format: str = Query(default="json", patter
         raise HTTPException(404, "场所不存在")
     if str(row[6]) != "active":
         raise HTTPException(409, "场所未启用，不能生成二维码")
-    if settings.VENUE_CLOUD_SYNC_ENABLED and row[15] is None:
-        raise HTTPException(409, "场所尚未完成云端同步，暂不能生成二维码")
+    if settings.VENUE_CLOUD_SYNC_ENABLED:
+        synced_revision = int(row[15]) if row[15] is not None else None
+        current_revision = int(row[12])
+        if str(row[14]) != "confirmed" or synced_revision != current_revision:
+            raise HTTPException(409, "场所当前版本尚未完成云端同步，暂不能生成二维码")
     token = decrypt_secret(row[8])
     url = _public_venue_url(token)
     if format == "png":

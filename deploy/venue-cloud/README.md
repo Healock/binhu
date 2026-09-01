@@ -1,6 +1,6 @@
 # 场所码云端部署单元
 
-该目录用于 `47.100.44.36` 的场所码接收服务，不与 `/srv/binhu-updates`、客户端更新网关或滨湖主业务数据库共用目录、数据库账号和发布命令。
+该目录用于独立云服务器上的场所码接收服务，不与 `/srv/binhu-updates`、客户端更新网关或滨湖主业务数据库共用目录、数据库账号和发布命令。真实主机、端口和指纹只保存在 GitHub Environment Secrets 与私密运维记录中。
 
 ## 首次准备
 
@@ -37,6 +37,8 @@ docker compose -f /etc/binhu-venue/docker-compose.yml ps
 `binhu-venue-install-docker` 只安装 Docker Engine、Buildx 和 Compose 插件并启动 Docker 服务，不启动场所码容器。它要求至少 10 GiB 可用空间；发现冲突包时停止并要求人工审计，不会自动卸载系统组件。
 
 `binhu-venue-activate-nginx` 只能在 Receiver 的 `/health/ready` 已同时通过应用与 MySQL 检查后运行。它会备份当前 HTTPS 配置、HTTP 上下文配置和重复的 `bt_proxy.conf`，再把重复文件改为非 `.conf` 后缀，将场所码 include 加入现有更新站点。`nginx -t`、更新清单、无证书内部接口或场所码反代任一验收失败时，脚本恢复原配置并重新加载 Nginx。
+
+运行 Nginx 激活工具时必须显式提供 `BINHU_VENUE_PUBLIC_ORIGIN` 和 `BINHU_UPDATE_PROBE_URL`；共享脚本不保存真实服务器地址。
 
 现有宝塔 MySQL 不属于本部署单元。正式安装 Docker 前必须从服务器外部确认公网 TCP 3306 不可达；若仍可达，应先在云厂商安全组收紧，不能由本脚本擅自修改现有 MySQL 或启用主机防火墙。
 

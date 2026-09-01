@@ -16,7 +16,7 @@ import secrets
 import sys
 import uuid
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import aiomysql
 
@@ -91,8 +91,22 @@ async def run(args: argparse.Namespace) -> dict:
 
             output_rows = []
             base_url = settings.VENUE_PUBLIC_BASE_URL.rstrip("/")
-            if base_url != "https://47.100.44.36":
-                raise RuntimeError("VENUE_PUBLIC_BASE_URL must be https://47.100.44.36 for cutover")
+            try:
+                parsed = urlsplit(base_url)
+                valid_port = parsed.port in (None, 443)
+            except ValueError as exc:
+                raise RuntimeError("VENUE_PUBLIC_BASE_URL must be a dedicated HTTPS origin for cutover") from exc
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or not valid_port
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or parsed.path not in ("", "/")
+            ):
+                raise RuntimeError("VENUE_PUBLIC_BASE_URL must be a dedicated HTTPS origin for cutover")
             for row in rows:
                 token = secrets.token_urlsafe(32)
                 token_version = int(row["token_version"]) + 1

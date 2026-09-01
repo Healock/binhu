@@ -39,14 +39,19 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn('Cache-Control "no-store"', nginx)
         self.assertIn("/www/wwwlogs/binhu-venue-access.log", nginx)
         self.assertIn("/www/wwwlogs/binhu-venue-internal.log", nginx)
+        self.assertIn("proxy_read_timeout 40s", nginx)
         self.assertNotIn("/var/log/nginx", nginx)
         self.assertNotIn("location /updates", nginx)
+        log_format = (ROOT / "deploy/venue-cloud/nginx-http-context.conf").read_text(encoding="utf-8")
+        self.assertNotIn("$http_referer", log_format)
 
     def test_workflow_is_manual_and_uses_restricted_gateway(self):
         workflow = (ROOT / ".github/workflows/venue-cloud-deploy.yml").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
-        self.assertIn("binhu-venue-publish@47.100.44.36", workflow)
-        self.assertIn("-p 51234", workflow)
+        self.assertIn("BINHU_VENUE_DEPLOY_HOST", workflow)
+        self.assertIn("BINHU_VENUE_DEPLOY_PORT", workflow)
+        self.assertIn("BINHU_VENUE_DEPLOY_USER", workflow)
+        self.assertNotRegex(workflow, r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
         self.assertIn("git merge-base --is-ancestor", workflow)
         self.assertNotIn("BINHU_UPDATE_SSH_KEY", workflow)
 
@@ -76,6 +81,10 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("/usr/local/sbin/binhu-venue-migrate", installer)
         self.assertIn("/usr/local/sbin/binhu-venue-install-docker", installer)
         self.assertIn("/usr/local/sbin/binhu-venue-activate-nginx", installer)
+        tool = (ROOT / "backend/tools/venue_cloud_preflight.py").read_text(encoding="utf-8")
+        self.assertIn("/api/internal/status", tool)
+        self.assertIn("wait_for_submissions", tool)
+        self.assertNotIn("submissions/pull", tool)
 
     def test_nginx_activation_is_gated_and_reversible(self):
         activation = (ROOT / "deploy/venue-cloud/activate-nginx.sh").read_text(encoding="utf-8")
@@ -83,7 +92,7 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("nginx -t", activation)
         self.assertIn("restore()", activation)
         self.assertIn("bt_proxy.conf.disabled-binhu-venue", activation)
-        self.assertIn("/updates/win10-x64/releases.stable.json", activation)
+        self.assertIn("BINHU_UPDATE_PROBE_URL", activation)
         self.assertIn("internal API without mTLS", activation)
         self.assertIn("while [ \"$i\" -lt 10 ]", activation)
 
@@ -97,6 +106,21 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
     def test_publish_gateway_waits_for_database_readiness(self):
         implementation = (ROOT / "deploy/venue-cloud/binhu-venue-publish-gateway.py").read_text(encoding="utf-8")
         self.assertIn("http://127.0.0.1:48727/health/ready", implementation)
+
+    def test_openapi_covers_wait_pull_photo_ack_and_signing_contract(self):
+        contract = (ROOT / "cloud/venue-receiver/openapi-contract.yaml").read_text(encoding="utf-8")
+        for path in (
+            "/api/internal/submissions/wait",
+            "/api/internal/submissions/pull",
+            "/api/internal/submissions/{submission_id}/photo/{lease_id}",
+            "/api/internal/submissions/ack",
+            "/api/internal/submissions/renew-lease",
+        ):
+            self.assertIn(path, contract)
+        self.assertIn("X-Binhu-Timestamp", contract)
+        self.assertIn("X-Binhu-Nonce", contract)
+        self.assertIn("X-Binhu-Request-Id", contract)
+        self.assertIn("X-Binhu-Response-Signature", contract)
 
 
 if __name__ == "__main__":

@@ -75,3 +75,22 @@ def test_verify_response_rejects_expired_timestamp():
             signature=signature,
             body=body,
         )
+
+
+def test_verify_response_rejects_forged_signature():
+    trusted_key = ed25519.Ed25519PrivateKey.generate()
+    forged_key = ed25519.Ed25519PrivateKey.generate()
+    body = json.dumps({"status": "ok"}, separators=(",", ":")).encode()
+    request_id = "00000000-0000-4000-8000-000000000002"
+    timestamp = str(int(time.time()))
+    canonical = "\n".join((request_id, timestamp, hashlib.sha256(body).hexdigest())).encode()
+    signature = _b64(forged_key.sign(canonical))
+
+    with pytest.raises(VenueCloudSecurityError, match="签名无效"):
+        verify_response(
+            trusted_key.public_key(),
+            request_id=request_id,
+            timestamp=timestamp,
+            signature=signature,
+            body=body,
+        )

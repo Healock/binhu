@@ -64,6 +64,12 @@ class PullRequest(BaseModel):
     supported_encryption_versions: list[str] = Field(min_length=1, max_length=10)
 
 
+class WaitRequest(BaseModel):
+    request_id: uuid.UUID
+    worker_id: str = Field(min_length=8, max_length=100)
+    timeout_seconds: int = Field(default=20, ge=1, le=20)
+
+
 class AckItem(BaseModel):
     submission_id: uuid.UUID
     status: Literal["accepted", "rejected", "retry_later", "uncertain"]
@@ -80,6 +86,34 @@ class RenewLeaseRequest(BaseModel):
     request_id: uuid.UUID
     lease_id: uuid.UUID
     worker_id: str = Field(min_length=8, max_length=100)
+
+
+class SubmissionNotifier:
+    def __init__(self) -> None:
+        self._condition = asyncio.Condition()
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    async def notify(self) -> None:
+        async with self._condition:
+            self._generation += 1
+            self._condition.notify_all()
+
+    async def wait_for_change(self, generation: int, timeout_seconds: int) -> bool:
+        async with self._condition:
+            if self._generation != generation:
+                return True
+            try:
+                await asyncio.wait_for(
+                    self._condition.wait_for(lambda: self._generation != generation),
+                    timeout=timeout_seconds,
+                )
+            except TimeoutError:
+                return False
+            return True
 
 
 def _utcnow() -> datetime:
@@ -174,6 +208,7 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             application.state.repo = owned_repo
         else:
             application.state.repo = repo
+        application.state.submission_notifier = SubmissionNotifier()
         app_config.PHOTO_DIR.mkdir(parents=True, exist_ok=True)
         application.state.encryptor = EnvelopeEncryptor(
             app_config.ENCRYPTION_PUBLIC_KEY_DIR,
@@ -394,6 +429,8 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             temp.unlink(missing_ok=True)
             target.unlink(missing_ok=True)
             raise
+        with suppress(Exception):
+            await request.app.state.submission_notifier.notify()
         return {"submission_id": submission_uuid, "status": "queued"}
 
     @application.put("/api/internal/venues/{local_venue_id}")
@@ -444,6 +481,27 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
                 "photo_download_path": f"/api/internal/submissions/{submission_id}/photo/{lease_id}",
             })
         return signed_json(request, {"lease_id": lease_id, "lease_expires_at": _iso(expires_at), "items": items})
+
+    @application.post("/api/internal/submissions/wait")
+    async def wait_for_submissions(data: WaitRequest, request: Request, _: str = Depends(internal_request)):
+        notifier = request.app.state.submission_notifier
+        generation = notifier.generation
+        pending_count = await request.app.state.repo.available_submission_count()
+        if pending_count > 0:
+            return signed_json(
+                request,
+                {"available": True, "pending_count": pending_count, "wake_reason": "available"},
+            )
+        await notifier.wait_for_change(generation, data.timeout_seconds)
+        pending_count = await request.app.state.repo.available_submission_count()
+        return signed_json(
+            request,
+            {
+                "available": pending_count > 0,
+                "pending_count": pending_count,
+                "wake_reason": "available" if pending_count > 0 else "timeout",
+            },
+        )
 
     @application.get("/api/internal/submissions/{submission_id}/photo/{lease_id}")
     async def leased_photo(submission_id: str, lease_id: str, request: Request, _: str = Depends(internal_request)):

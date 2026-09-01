@@ -65,6 +65,7 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.BINHU_VENUE_DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.BINHU_VENUE_DEPLOY_KNOWN_HOSTS }}
+          EXPECTED_HOST_KEY_FINGERPRINT: ${{ secrets.BINHU_VENUE_DEPLOY_HOST_KEY_SHA256 }}
         run: |
           set -Eeuo pipefail
           install -d -m 700 "$RUNNER_TEMP/venue-ssh"
@@ -72,16 +73,24 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/venue-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/venue-ssh/key" "$RUNNER_TEMP/venue-ssh/known_hosts"
           ssh-keygen -y -f "$RUNNER_TEMP/venue-ssh/key" >/dev/null
-          ssh-keygen -lf "$RUNNER_TEMP/venue-ssh/known_hosts" | grep -F 'SHA256:YlKDIaF4ugAEz52NpFCAxmBxTeYfWoCxhND9pPJRYCw'
+          test -n "$EXPECTED_HOST_KEY_FINGERPRINT"
+          ssh-keygen -lf "$RUNNER_TEMP/venue-ssh/known_hosts" | grep -F -- "$EXPECTED_HOST_KEY_FINGERPRINT"
       - name: Publish through fixed gateway
         shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_VENUE_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_VENUE_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.BINHU_VENUE_DEPLOY_USER }}
         run: |
           set -Eeuo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_USER"
           bundle=release-output/venue-cloud.tar
           size="$(wc -c < "$bundle")"
           sha="$(sha256sum "$bundle" | awk '{print $1}')"
           ssh -F /dev/null -i "$RUNNER_TEMP/venue-ssh/key" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/venue-ssh/known_hosts" \
-            -o ConnectTimeout=15 -p 51234 binhu-venue-publish@47.100.44.36 \
+            -o ConnectTimeout=15 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "publish $RELEASE_COMMIT $size $sha" < "$bundle"
