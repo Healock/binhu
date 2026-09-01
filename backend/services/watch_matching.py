@@ -342,7 +342,8 @@ async def task_watch_payload(cur, parser_type: str, row_keys: list[str]) -> dict
         (parser_type, *row_keys),
     )
     result: dict[str, dict] = {}
-    for row in await cur.fetchall():
+    rows = await cur.fetchall()
+    for row in rows:
         item = result.setdefault(str(row[0]), {"first_dispatch_at": row[1], "watch_marks": []})
         item["watch_marks"].append({
             "category_id": int(row[2]), "name": str(row[3]), "color": str(row[4]),
@@ -350,4 +351,51 @@ async def task_watch_payload(cur, parser_type: str, row_keys: list[str]) -> dict
             "source_type": str(row[7]), "snapshot_status": str(row[8]),
             "snapshot_reason": str(row[9]),
         })
+
+    # Model-three self-owned imports may be added after a task was dispatched.
+    # In that case the historical validity window intentionally prevents a
+    # snapshot from being backfilled, but the current personnel-archive tag
+    # still needs to be visible on the live task.  Fill only missing
+    # row/assignment pairs from the current active assignment state.
+    if parser_type == "疑似未注销模型三":
+        await cur.execute(
+            f"""
+            SELECT projection.row_key, projection.first_dispatch_at,
+                   category.id, category.name, category.color, category.alert_level,
+                   assignment.status, assignment.source_type,
+                   'active', 'current_registry_tag'
+            FROM _online_source_projection projection
+            JOIN `{registry}`.watch_people person
+              ON person.identity_hmac=projection.identity_hmac
+             AND person.status='active'
+            JOIN `{registry}`.watch_assignments assignment
+              ON assignment.person_id=person.id
+             AND assignment.status='active'
+             AND assignment.valid_from<=UTC_TIMESTAMP()
+             AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP())
+             AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP())
+            JOIN `{registry}`.watch_categories category
+              ON category.id=assignment.category_id
+             AND category.is_active=1
+            WHERE projection.parser_type=%s
+              AND projection.row_key IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1
+                FROM `{registry}`.online_task_watch_snapshots snapshot
+                WHERE snapshot.parser_type=projection.parser_type
+                  AND snapshot.row_key=projection.row_key
+                  AND snapshot.assignment_id=assignment.id
+              )
+            ORDER BY category.sort_order, category.id
+            """,
+            (parser_type, *row_keys),
+        )
+        for row in await cur.fetchall():
+            item = result.setdefault(str(row[0]), {"first_dispatch_at": row[1], "watch_marks": []})
+            item["watch_marks"].append({
+                "category_id": int(row[2]), "name": str(row[3]), "color": str(row[4]),
+                "alert_level": str(row[5]), "assignment_status": str(row[6]),
+                "source_type": str(row[7]), "snapshot_status": str(row[8]),
+                "snapshot_reason": str(row[9]),
+            })
     return result
