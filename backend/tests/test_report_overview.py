@@ -53,7 +53,32 @@ class EffectiveTaskCursor:
         return []
 
 
+class CommunityAliasCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.call = None
+
+    async def execute(self, sql, params=None):
+        self.call = (" ".join(sql.split()), params)
+
+    async def fetchall(self):
+        return list(self.rows)
+
+
 class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_community_list_scope_expands_configured_aliases(self):
+        cursor = CommunityAliasCursor([("长板社区",), ("长板村",)])
+
+        result = await report_overview._resolve_communities(
+            cursor,
+            ["长板社区"],
+        )
+
+        self.assertEqual(result, ["长板社区", "长板村"])
+        sql, params = cursor.call
+        self.assertIn("FROM OnlineData._community_aliases", sql)
+        self.assertEqual(params, ("长板社区", "长板社区"))
+
     async def test_run_queries_only_accept_existing_snapshot_tables(self):
         cursor = EffectiveTaskCursor()
 
@@ -137,6 +162,8 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("JOIN OnlineData._grid_members AS person", sql)
         self.assertIn("department.department_type='community'", sql)
         self.assertIn("person.position IN ('组长', '组员')", sql)
+        self.assertIn("latest.community", sql)
+        self.assertIn("latest.unable_to_verify", sql)
 
     async def test_effective_tasks_can_limit_to_linked_inspector(self):
         cursor = EffectiveTaskCursor()
@@ -238,6 +265,83 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["completion_rate"], 0.3333)
         self.assertEqual(result["available_data_days"], 4)
         self.assertEqual(result["selected_data_days"], 1)
+        self.assertTrue(pool.released)
+
+    def test_community_breakdown_uses_valid_tasks_and_canonical_aliases(self):
+        tasks = [
+            (
+                "全链条", "completed", "completed", "2026-08-31",
+                "activity", "长板村", 0,
+            ),
+            (
+                "全链条", "unable", "checked", "2026-08-31",
+                "activity", "长板社区", 1,
+            ),
+            (
+                "寄递业", "pending", "unchecked", "2026-08-31",
+                "activity", "长板社区", 0,
+            ),
+            (
+                "寄递业", "other", "completed", "2026-08-31",
+                "activity", "龙河社区", 0,
+            ),
+        ]
+
+        result = report_overview._community_breakdown_from_tasks(
+            tasks,
+            {"长板村": "长板社区", "长板社区": "长板社区"},
+            ["长板社区", "冬梅社区"],
+        )
+
+        changban = next(row for row in result if row["community"] == "长板社区")
+        self.assertEqual(changban["total"], 3)
+        self.assertEqual(changban["completed"], 1)
+        self.assertEqual(changban["pending"], 2)
+        self.assertEqual(changban["unable_to_verify"], 1)
+        self.assertEqual(changban["completion_rate"], 0.3333)
+        winter = next(row for row in result if row["community"] == "冬梅社区")
+        self.assertEqual(winter["total"], 0)
+
+    async def test_community_breakdown_does_not_require_every_parser_run(self):
+        pool = FakePool()
+        valid_tasks = [
+            (
+                "全链条", "available-task", "checked", "2026-08-31",
+                "activity", "长板社区", 1,
+            ),
+        ]
+        with (
+            patch.object(report_overview.db_manager, "get_pool", return_value=pool),
+            patch.object(
+                report_overview,
+                "_resolve_parser_types",
+                new=AsyncMock(return_value=["全链条", "寄递业"]),
+            ),
+            patch.object(
+                report_overview,
+                "_resolve_communities",
+                new=AsyncMock(return_value=["长板社区"]),
+            ),
+            patch.object(
+                report_overview,
+                "_load_effective_tasks",
+                new=AsyncMock(return_value=valid_tasks),
+            ),
+            patch.object(
+                report_overview,
+                "get_community_alias_lookup",
+                new=AsyncMock(return_value={"长板社区": "长板社区"}),
+            ),
+        ):
+            result = await report_overview.get_online_community_breakdown(
+                "2026-08-26",
+                "2026-09-01",
+                report_overview.SUMMARY_TYPE,
+                ["长板社区"],
+            )
+
+        self.assertEqual(result[0]["total"], 1)
+        self.assertEqual(result[0]["unable_to_verify"], 1)
         self.assertTrue(pool.released)
 
     def test_detail_categories_partition_and_match_state_totals(self):
