@@ -80,6 +80,23 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("NODE_OPTIONS: --max-old-space-size=8192", frontend_job)
         self.assertIn("npm test && npm run build -- --mode desktop", frontend_job)
 
+    def test_client_release_pins_webview2_bootstrapper_file_and_hash(self) -> None:
+        workflow = (ROOT / ".github/workflows/desktop-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("go.microsoft.com/fwlink", workflow)
+        self.assertRegex(
+            workflow,
+            re.compile(
+                r"WEBVIEW2_BOOTSTRAPPER_URL: https://msedge\.sf\.dl\.delivery\.mp\.microsoft\.com/filestreamingservice/files/[0-9a-f-]+/MicrosoftEdgeWebview2Setup\.exe"
+            ),
+        )
+        self.assertRegex(
+            workflow,
+            re.compile(r"WEBVIEW2_BOOTSTRAPPER_SHA256: [0-9a-f]{64}"),
+        )
+        self.assertIn("WebView2 bootstrapper hash mismatch", workflow)
+
     def test_server_script_keeps_database_restore_out_of_automatic_path(self) -> None:
         script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
         self.assertIn("sync or backup task is active", script)
