@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Input, Modal, Select, Switch, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
@@ -62,6 +62,23 @@ export default function UserManagement() {
   const [temporary, setTemporary] = useState(true)
   const [saving, setSaving] = useState(false)
   const [keyword, setKeyword] = useState('')
+  const formSnapshot = useRef('')
+
+  const currentFormSnapshot = () => JSON.stringify({ username, displayName, password, memberId, mode, groupIds, temporary })
+  const closeEditor = () => {
+    if (!open || !formSnapshot.current || formSnapshot.current === currentFormSnapshot()) {
+      setOpen(false)
+      return
+    }
+    Modal.confirm({
+      title: '放弃未保存修改？',
+      content: '当前账号资料还有未保存内容，关闭后这些修改会丢失。',
+      okText: '放弃修改',
+      cancelText: '继续编辑',
+      okButtonProps: { danger: true },
+      onOk: () => setOpen(false),
+    })
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -98,6 +115,7 @@ export default function UserManagement() {
     setMode('inherited')
     setGroupIds([])
     setTemporary(true)
+    formSnapshot.current = JSON.stringify({ username: '', displayName: '', password: '', memberId: null, mode: 'inherited', groupIds: [], temporary: true })
     setOpen(true)
   }
 
@@ -113,6 +131,7 @@ export default function UserManagement() {
       || (user.permission_group ? [user.permission_group.id] : []),
     )
     setTemporary(user.password_is_temporary)
+    formSnapshot.current = JSON.stringify({ username: user.username, displayName: user.display_name, password: '', memberId: user.member_id, mode: user.assignment_mode, groupIds: user.permission_groups?.map(group => group.id) || (user.permission_group ? [user.permission_group.id] : []), temporary: user.password_is_temporary })
     setOpen(true)
   }
 
@@ -277,7 +296,7 @@ export default function UserManagement() {
         cancelText="取消"
         confirmLoading={saving}
         onOk={save}
-        onCancel={() => setOpen(false)}
+        onCancel={closeEditor}
       >
         <div className="space-y-4 pt-2">
           <div>

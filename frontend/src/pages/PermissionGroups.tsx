@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -48,6 +48,24 @@ export default function PermissionGroups() {
   const [permissions, setPermissions] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const initialGroupForm = useRef('')
+
+  const currentGroupForm = () => JSON.stringify({ name, description, dataScope, permissions })
+  const closeEditor = () => {
+    if (!initialGroupForm.current || initialGroupForm.current === currentGroupForm()) {
+      setCreating(false)
+      setEditing(null)
+      return
+    }
+    Modal.confirm({
+      title: '放弃未保存修改？',
+      content: '权限组还有未保存内容，关闭后这些修改会丢失。',
+      okText: '放弃修改',
+      cancelText: '继续编辑',
+      okButtonProps: { danger: true },
+      onOk: () => { setCreating(false); setEditing(null) },
+    })
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -84,6 +102,7 @@ export default function PermissionGroups() {
     setDescription('')
     setDataScope('all')
     setPermissions([])
+    initialGroupForm.current = JSON.stringify({ name: '', description: '', dataScope: 'all', permissions: [] })
   }
 
   const openEdit = (group: PermissionGroupItem) => {
@@ -93,6 +112,7 @@ export default function PermissionGroups() {
     setDescription(group.description || '')
     setDataScope(group.data_scope)
     setPermissions(group.permissions)
+    initialGroupForm.current = JSON.stringify({ name: group.name, description: group.description || '', dataScope: group.data_scope, permissions: group.permissions })
   }
 
   const saveGroup = async () => {
@@ -250,7 +270,7 @@ export default function PermissionGroups() {
         cancelText="取消"
         confirmLoading={saving}
         onOk={saveGroup}
-        onCancel={() => { setCreating(false); setEditing(null) }}
+        onCancel={closeEditor}
         width={720}
       >
         {editing && editing.user_count > 0 && (
