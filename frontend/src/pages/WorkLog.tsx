@@ -859,6 +859,16 @@ export default function WorkLog() {
               description="你可以查看和导出；需要修改时请主动接管编辑权。"
             />
           )}
+          {saveState === 'conflict' && (
+            <Alert
+              className="mb-4"
+              type="warning"
+              showIcon
+              message="日报草稿已被其他人更新"
+              description="当前草稿已停止自动保存。请先重新加载最新内容，确认后再继续编辑。"
+              action={<Button size="small" onClick={() => void loadDraft(businessDate.format('YYYY-MM-DD'))}>重新加载</Button>}
+            />
+          )}
           {draft.system_snapshot.legacy_v1 && (
             <Alert
               className="mb-4"
