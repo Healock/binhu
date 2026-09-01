@@ -71,6 +71,7 @@ ACTION_LABELS: dict[str, str] = {
     "online.local_create": "新增本地业务数据",
     "online.local_delete": "归档并移除本地业务数据",
     "mobile_tasks.address_match_confirm": "确认任务小区归属",
+    "mobile_tasks.address_match.resolve_conflict": "处理任务地址社区冲突",
     "spreadsheet.config.update": "批量修改在线表格配置",
     "spreadsheet.create": "新增在线表格配置",
     "spreadsheet.update": "修改在线表格配置",
