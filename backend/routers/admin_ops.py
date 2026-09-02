@@ -40,6 +40,7 @@ from services.ops_database import (
 from services.ops_overview import build_operations_overview
 from services.ops_redaction import redact_text, sanitize_detail
 from services.diagnostics import get_job, query_incidents, queue_job
+from services.platform_performance import build_performance_snapshot
 
 
 router = APIRouter(prefix="/api/admin/ops", tags=["超级管理员运维中心"])
@@ -74,6 +75,15 @@ async def operations_overview(
     user: dict = Depends(require_super_admin),
 ):
     return await build_operations_overview()
+
+
+@router.get("/performance")
+async def performance_overview(
+    minutes: int = Query(default=15, ge=1, le=60),
+    user: dict = Depends(require_super_admin),
+):
+    del user
+    return await build_performance_snapshot(minutes)
 
 
 @router.get("/outbox")

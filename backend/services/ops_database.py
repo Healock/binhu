@@ -235,13 +235,25 @@ async def get_mysql_status() -> dict:
         async with conn.cursor() as cur:
             await cur.execute("SELECT VERSION(), @@max_connections")
             version, max_connections = await cur.fetchone()
-            await cur.execute("SHOW GLOBAL STATUS LIKE 'Threads_connected'")
-            connected_row = await cur.fetchone()
+            await cur.execute(
+                "SHOW GLOBAL STATUS WHERE Variable_name IN "
+                "('Threads_connected','Threads_running',"
+                "'Innodb_row_lock_current_waits','Slow_queries')"
+            )
+            status_rows = {
+                str(row[0]): int(row[1] or 0)
+                for row in await cur.fetchall()
+            }
             return {
                 "connected": True,
                 "version": version,
-                "connections": int(connected_row[1]) if connected_row else 0,
+                "connections": status_rows.get("Threads_connected", 0),
                 "max_connections": int(max_connections),
+                "threads_running": status_rows.get("Threads_running", 0),
+                "lock_waits": status_rows.get(
+                    "Innodb_row_lock_current_waits", 0
+                ),
+                "slow_queries": status_rows.get("Slow_queries", 0),
             }
     finally:
         pool.release(conn)

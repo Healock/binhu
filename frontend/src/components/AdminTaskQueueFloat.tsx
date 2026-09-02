@@ -241,6 +241,16 @@ export default function AdminTaskQueueFloat() {
     }
   }, [allowed, open, refresh])
 
+  useEffect(() => {
+    if (!allowed) return
+    const openQueue = () => {
+      setOpen(true)
+      void refresh(true)
+    }
+    window.addEventListener('binhu:open-task-queue', openQueue)
+    return () => window.removeEventListener('binhu:open-task-queue', openQueue)
+  }, [allowed, refresh])
+
   const activeItems = useMemo(
     () => data?.items.filter(item => item.active) || [],
     [data],

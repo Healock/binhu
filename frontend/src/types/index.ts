@@ -180,6 +180,109 @@ export interface OpsOverview {
   }
 }
 
+export type OpsPerformanceState = 'normal' | 'busy' | 'congested' | 'recovering' | 'warming_up'
+
+export interface OpsPerformanceSnapshot {
+  generated_at: string
+  monitoring_started_at: string
+  window_minutes: number
+  state: OpsPerformanceState
+  state_label: string
+  summary: {
+    requests: number
+    average_ms: number
+    p50_ms: number
+    p95_ms: number
+    p99_ms: number
+    max_ms: number
+    errors_5xx: number
+    error_rate: number
+    conflicts_409: number
+    timeouts: number
+    cancelled: number
+    inflight_peak: number
+    requests_per_minute: number
+    requests_per_second: number
+    inflight_current: number
+    inflight_peak_since_start: number
+  }
+  event_loop: {
+    current_ms: number
+    average_ms: number
+    max_ms: number
+  }
+  signals: Array<{
+    level: 'warning' | 'critical'
+    code: string
+    title: string
+    detail: string
+    recommended_action: string
+    action_tab: string
+  }>
+  timeline: Array<{
+    bucket_at: string
+    requests: number
+    average_ms: number
+    p50_ms: number
+    p95_ms: number
+    p99_ms: number
+    errors_5xx: number
+    conflicts_409: number
+    timeouts: number
+    cancelled: number
+    inflight_peak: number
+  }>
+  endpoint_groups: Array<{
+    group: string
+    group_label: string
+    method: string
+    route: string
+    requests: number
+    average_ms: number
+    p50_ms: number
+    p95_ms: number
+    p99_ms: number
+    errors_5xx: number
+    error_rate: number
+    conflicts_409: number
+    timeouts: number
+  }>
+  database: {
+    pools: Array<{
+      name: string
+      size: number
+      used: number
+      free: number
+      max_size: number
+      usage_percent: number
+    }>
+    mysql: {
+      connected: boolean
+      connections?: number
+      max_connections?: number
+      threads_running?: number
+      lock_waits?: number
+      slow_queries?: number
+      error?: string
+    }
+  }
+  background: {
+    active_count: number
+    queued_count: number
+    running_count: number
+    attention_count: number
+    oldest_active_seconds: number
+    occupancy_score: number
+    categories: Array<{
+      category: string
+      active: number
+      queued: number
+      running: number
+    }>
+    unavailable_sources: string[]
+  }
+}
+
 export interface DiagnosticJob {
   job_id: string
   mode: string
