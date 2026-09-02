@@ -156,7 +156,7 @@ python .\shadowctl.py verify --run-id $env:LOAD_TEST_RUN_ID --production-proof .
 ```json
 {
   "run_id": "LT-20260902-01",
-  "checked_at": "2026-09-03T10:00:00+08:00",
+  "checked_at": "2026-09-02T10:00:00+08:00",
   "checked_scopes": [
     "shadow_source_refs",
     "shadow_usernames",
