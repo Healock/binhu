@@ -13,6 +13,10 @@ if [[ ! -r "${schema_source}" ]]; then
   exit 1
 fi
 
+MYSQL_PWD="${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}" \
+  mysql --protocol=socket -uroot \
+  -e "ALTER DATABASE \`${shadow_database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+
 # The production initializer uses separate logical databases. The isolated
 # shadow environment deliberately routes every domain to one run-scoped
 # database, so rewrite only the known database identifiers and remove grants
@@ -29,5 +33,5 @@ sed \
   -e "s/OnlineData/${shadow_database}/g" \
   -e '/^GRANT ALL PRIVILEGES/d' \
   -e '/^FLUSH PRIVILEGES/d' \
-  "${schema_source}" | MYSQL_PWD="${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}" \
+  "${schema_source}" | MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" \
     mysql --protocol=socket -uroot --database="${shadow_database}"

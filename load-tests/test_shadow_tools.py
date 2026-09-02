@@ -105,7 +105,29 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("../backend/init.sql:/shadow-schema/backend-init.sql:ro", compose)
         self.assertIn('^LoadTest_[A-Za-z0-9_]+$', bootstrap)
         self.assertIn("mysql --protocol=socket", bootstrap)
+        self.assertIn("ALTER DATABASE", bootstrap)
+        self.assertIn("utf8mb4_unicode_ci", bootstrap)
         self.assertIn("s/OnlineData/", bootstrap)
+
+    def test_runtime_index_joins_use_explicit_shadow_collation(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            source.count("projection.parser_type COLLATE utf8mb4_unicode_ci"),
+            3,
+        )
+        self.assertGreaterEqual(
+            source.count("projection.row_key COLLATE utf8mb4_unicode_ci"),
+            3,
+        )
+
+    def test_seed_uses_active_local_source_kind_with_run_scoped_reference(self):
+        seed = (Path(__file__).parent / "seed_shadow.py").read_text(encoding="utf-8")
+        controller = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn('source_kind="local_table"', seed)
+        self.assertNotIn('source_kind="shadow_loadtest"', seed)
+        self.assertIn('f"shadow:{run_id}:task:', seed)
+        self.assertIn("source_kind='local_table'", controller)
+        self.assertIn("spreadsheet_id=0", controller)
 
     def test_guard_rejects_wrong_environment_project_and_port(self):
         env = shadow_env()
@@ -216,7 +238,10 @@ class ShadowToolTests(unittest.TestCase):
             path.write_text(
                 '{"run_id":"LT-20260902-01","matching_rows":0,'
                 '"checked_at":"2026-09-02T12:00:00Z",'
-                '"checked_scopes":["users","tasks"]}',
+                '"checked_scopes":["shadow_source_refs","shadow_usernames",'
+                '"loadtest_prefixes","legacy_shadow_source_kind"],'
+                '"scope_counts":{"shadow_source_refs":0,"shadow_usernames":0,'
+                '"loadtest_prefixes":0,"legacy_shadow_source_kind":0}}',
                 encoding="utf-8",
             )
             result = _verify_production_proof(path, RUN_ID)
@@ -224,7 +249,10 @@ class ShadowToolTests(unittest.TestCase):
             path.write_text(
                 '{"run_id":"LT-20260902-01","matching_rows":1,'
                 '"checked_at":"2026-09-02T12:00:00Z",'
-                '"checked_scopes":["tasks"]}',
+                '"checked_scopes":["shadow_source_refs","shadow_usernames",'
+                '"loadtest_prefixes","legacy_shadow_source_kind"],'
+                '"scope_counts":{"shadow_source_refs":1,"shadow_usernames":0,'
+                '"loadtest_prefixes":0,"legacy_shadow_source_kind":0}}',
                 encoding="utf-8",
             )
             with self.assertRaises(ShadowSafetyError):

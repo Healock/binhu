@@ -24,6 +24,12 @@ ARTIFACTS = ROOT / "artifacts"
 DURATION_RE = re.compile(r"^[1-9][0-9]*(?:s|m|h)$")
 IMAGE_DIGEST_RE = re.compile(r"(?:^|@)sha256:[0-9a-fA-F]{64}$")
 CONTAINER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+REQUIRED_PRODUCTION_PROOF_SCOPES = {
+    "shadow_source_refs",
+    "shadow_usernames",
+    "loadtest_prefixes",
+    "legacy_shadow_source_kind",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -128,8 +134,11 @@ def _write_runtime_index(context: ShadowContext) -> dict[str, int]:
                 "expectation.source_id,expectation.initial_revision,expectation.scenario,"
                 "expectation.property_id,expectation.property_version,projection.community,"
                 "projection.inspector FROM _shadow_loadtest_expectations expectation "
-                "JOIN _online_source_projection projection ON projection.parser_type=expectation.parser_type "
-                "AND projection.row_key=expectation.row_key WHERE expectation.run_id=%s "
+                "JOIN _online_source_projection projection "
+                "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                "expectation.row_key COLLATE utf8mb4_unicode_ci WHERE expectation.run_id=%s "
                 "ORDER BY expectation.ordinal_no",
                 (context.run_id,),
             )
@@ -425,8 +434,11 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             expectation_count = int(cursor.fetchone()["count"])
             cursor.execute(
                 "SELECT COUNT(*) AS count FROM _shadow_loadtest_expectations expectation "
-                "JOIN _online_source_projection projection ON projection.parser_type=expectation.parser_type "
-                "AND projection.row_key=expectation.row_key WHERE expectation.run_id=%s",
+                "JOIN _online_source_projection projection "
+                "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                "expectation.row_key COLLATE utf8mb4_unicode_ci WHERE expectation.run_id=%s",
                 (context.run_id,),
             )
             projection_count = int(cursor.fetchone()["count"])
@@ -436,8 +448,8 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             )
             property_count = int(cursor.fetchone()["count"])
             cursor.execute(
-                "SELECT COUNT(*) AS count FROM _online_source_rows WHERE source_kind='shadow_loadtest' "
-                "AND source_ref LIKE %s AND archived_at IS NULL",
+                "SELECT COUNT(*) AS count FROM _online_source_rows WHERE source_kind='local_table' "
+                "AND source_ref LIKE %s AND spreadsheet_id=0 AND archived_at IS NULL",
                 (f"shadow:{context.run_id}:task:%",),
             )
             source_count = int(cursor.fetchone()["count"])
@@ -481,8 +493,10 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
                     "SELECT expectation.source_id,projection.inspector "
                     "FROM _shadow_loadtest_expectations expectation "
                     "JOIN _online_source_projection projection "
-                    "ON projection.parser_type=expectation.parser_type "
-                    "AND projection.row_key=expectation.row_key "
+                    "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                    "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                    "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                    "expectation.row_key COLLATE utf8mb4_unicode_ci "
                     f"WHERE expectation.run_id=%s AND expectation.source_id IN ({placeholders})",
                     (context.run_id, *chunk),
                 )
@@ -600,10 +614,22 @@ def _verify_production_proof(path: Path | None, run_id: str) -> dict[str, Any]:
         raise ShadowSafetyError("正式库只读证明的 run_id 不一致")
     if int(data.get("matching_rows", -1)) != 0:
         raise ShadowSafetyError("正式库只读证明发现压测数据，必须立即停止")
-    if not data.get("checked_at") or not data.get("checked_scopes"):
+    checked_scopes = {str(item) for item in data.get("checked_scopes") or []}
+    if not data.get("checked_at") or not REQUIRED_PRODUCTION_PROOF_SCOPES <= checked_scopes:
         raise ShadowSafetyError("正式库只读证明缺少检查时间或范围")
+    scope_counts = data.get("scope_counts")
+    if not isinstance(scope_counts, dict):
+        raise ShadowSafetyError("正式库只读证明缺少逐范围计数")
+    for scope in REQUIRED_PRODUCTION_PROOF_SCOPES:
+        try:
+            count = int(scope_counts[scope])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ShadowSafetyError(f"正式库只读证明缺少有效计数：{scope}") from exc
+        if count != 0:
+            raise ShadowSafetyError(f"正式库只读证明发现压测数据：{scope}")
     return {"provided": True, "matching_rows": 0,
-            "checked_at": data["checked_at"], "checked_scopes": data["checked_scopes"]}
+            "checked_at": data["checked_at"], "checked_scopes": sorted(checked_scopes),
+            "scope_counts": {scope: 0 for scope in sorted(REQUIRED_PRODUCTION_PROOF_SCOPES)}}
 
 
 def verify(run_id: str, production_proof: Path | None) -> int:
