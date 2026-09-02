@@ -128,8 +128,11 @@ def _write_runtime_index(context: ShadowContext) -> dict[str, int]:
                 "expectation.source_id,expectation.initial_revision,expectation.scenario,"
                 "expectation.property_id,expectation.property_version,projection.community,"
                 "projection.inspector FROM _shadow_loadtest_expectations expectation "
-                "JOIN _online_source_projection projection ON projection.parser_type=expectation.parser_type "
-                "AND projection.row_key=expectation.row_key WHERE expectation.run_id=%s "
+                "JOIN _online_source_projection projection "
+                "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                "expectation.row_key COLLATE utf8mb4_unicode_ci WHERE expectation.run_id=%s "
                 "ORDER BY expectation.ordinal_no",
                 (context.run_id,),
             )
@@ -425,8 +428,11 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             expectation_count = int(cursor.fetchone()["count"])
             cursor.execute(
                 "SELECT COUNT(*) AS count FROM _shadow_loadtest_expectations expectation "
-                "JOIN _online_source_projection projection ON projection.parser_type=expectation.parser_type "
-                "AND projection.row_key=expectation.row_key WHERE expectation.run_id=%s",
+                "JOIN _online_source_projection projection "
+                "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                "expectation.row_key COLLATE utf8mb4_unicode_ci WHERE expectation.run_id=%s",
                 (context.run_id,),
             )
             projection_count = int(cursor.fetchone()["count"])
@@ -481,8 +487,10 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
                     "SELECT expectation.source_id,projection.inspector "
                     "FROM _shadow_loadtest_expectations expectation "
                     "JOIN _online_source_projection projection "
-                    "ON projection.parser_type=expectation.parser_type "
-                    "AND projection.row_key=expectation.row_key "
+                    "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                    "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                    "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                    "expectation.row_key COLLATE utf8mb4_unicode_ci "
                     f"WHERE expectation.run_id=%s AND expectation.source_id IN ({placeholders})",
                     (context.run_id, *chunk),
                 )

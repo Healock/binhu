@@ -105,7 +105,20 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("../backend/init.sql:/shadow-schema/backend-init.sql:ro", compose)
         self.assertIn('^LoadTest_[A-Za-z0-9_]+$', bootstrap)
         self.assertIn("mysql --protocol=socket", bootstrap)
+        self.assertIn("ALTER DATABASE", bootstrap)
+        self.assertIn("utf8mb4_unicode_ci", bootstrap)
         self.assertIn("s/OnlineData/", bootstrap)
+
+    def test_runtime_index_joins_use_explicit_shadow_collation(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            source.count("projection.parser_type COLLATE utf8mb4_unicode_ci"),
+            3,
+        )
+        self.assertGreaterEqual(
+            source.count("projection.row_key COLLATE utf8mb4_unicode_ci"),
+            3,
+        )
 
     def test_guard_rejects_wrong_environment_project_and_port(self):
         env = shadow_env()
