@@ -10,20 +10,12 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 
 RUN_ID_RE = re.compile(r"^LT-[0-9]{8}-[0-9]{2}$")
 PROJECT_PREFIX = "binhu-loadtest-"
-PRODUCTION_HOSTS = {
-    "binhu-mysql",
-    "binhu-backend",
-    "production",
-    "prod",
-    "localhost",
-    "127.0.0.1",
-    "::1",
-}
+SHADOW_DB_HOST = "127.0.0.1"
+SHADOW_DB_PORT = 47126
 
 
 class ShadowSafetyError(RuntimeError):
@@ -35,8 +27,8 @@ class ShadowContext:
     run_id: str
     project: str
     db_host: str
+    db_port: int
     db_name: str
-    marker_file: Path
 
 
 def _required(env: dict[str, str], key: str) -> str:
@@ -66,18 +58,20 @@ def validate_shadow_environment(run_id: str, environ: dict[str, str] | None = No
     if project != expected_project:
         raise ShadowSafetyError(f"Compose 项目必须严格为 {expected_project}")
     db_host = _required(env, "SHADOW_DB_HOST").lower()
-    if db_host in PRODUCTION_HOSTS or db_host.startswith("binhu-"):
-        raise ShadowSafetyError("数据库主机看起来是正式环境，已拒绝")
+    try:
+        db_port = int(_required(env, "SHADOW_DB_PORT"))
+    except ValueError as exc:
+        raise ShadowSafetyError("SHADOW_DB_PORT 必须是整数") from exc
+    if db_host != SHADOW_DB_HOST or db_port != SHADOW_DB_PORT:
+        raise ShadowSafetyError(
+            f"影子数据库只允许连接 {SHADOW_DB_HOST}:{SHADOW_DB_PORT}"
+        )
     db_name = _required(env, "SHADOW_DB_NAME")
+    if not re.fullmatch(r"LoadTest_[A-Za-z0-9_]+", db_name):
+        raise ShadowSafetyError("影子数据库名称必须以 LoadTest_ 开头且只含字母、数字和下划线")
     if db_name.lower() in {"onlinedata", "registrydata", "daily_report", "platformdata"}:
         raise ShadowSafetyError("数据库名称属于正式业务库，已拒绝")
-    marker_file = Path(_required(env, "SHADOW_MARKER_FILE")).resolve()
-    if not marker_file.is_file():
-        raise ShadowSafetyError("影子标记文件不存在；请确认影子数据库已初始化")
-    marker = marker_file.read_text(encoding="utf-8").strip()
-    if marker != f"shadow:{normalized_run_id}":
-        raise ShadowSafetyError("影子标记与运行编号不一致")
-    return ShadowContext(normalized_run_id, project, db_host, db_name, marker_file)
+    return ShadowContext(normalized_run_id, project, db_host, db_port, db_name)
 
 
 def require_shadow_context(run_id: str) -> ShadowContext:

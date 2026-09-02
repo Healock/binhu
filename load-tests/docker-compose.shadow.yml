@@ -9,6 +9,7 @@ services:
       MYSQL_USER: ${SHADOW_DB_USER:?Set a shadow-only database user}
       MYSQL_PASSWORD: ${SHADOW_DB_PASSWORD:?Set a shadow-only database password}
     command: ["mysqld", "--max_connections=151", "--innodb_buffer_pool_size=1G"]
+    ports: ["127.0.0.1:47126:3306"]
     volumes:
       - shadow_mysql_data:/var/lib/mysql
       - ./shadow-marker.sql:/docker-entrypoint-initdb.d/00-shadow-marker.sql:ro
@@ -40,6 +41,9 @@ services:
       APP_ENVIRONMENT_LABEL: 影子压测环境
       LOAD_TEST_RUN_ID: ${LOAD_TEST_RUN_ID:?Set the run id}
       SESSION_COOKIE_NAME: binhu_shadow_session
+      SESSION_COOKIE_SECURE: "true"
+      BOOTSTRAP_ADMIN_USERNAME: observer@shadow
+      BOOTSTRAP_ADMIN_PASSWORD: ${SHADOW_BOOTSTRAP_PASSWORD:?Set a temporary shadow bootstrap password}
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_USER: ${SHADOW_DB_USER}
@@ -51,6 +55,7 @@ services:
       MYSQL_VISIT_DB: ${SHADOW_DB_NAME}
       MYSQL_DISPATCH_DB: ${SHADOW_DB_NAME}
       MYSQL_REGISTRY_DB: ${SHADOW_DB_NAME}
+      MYSQL_WORKFLOW_DB: ${SHADOW_DB_NAME}
       REDIS_URL: redis://:${SHADOW_REDIS_PASSWORD}@redis:6379/0
       ENCRYPTION_KEY: ${SHADOW_ENCRYPTION_KEY:?Set a shadow-only encryption key}
       LOCAL_DATA_SOURCE_ENABLED: "true"
@@ -63,16 +68,16 @@ services:
       VISIT_SOURCE_BASE_URL: ""
       QMF_SOURCE_BASE_URL: ""
       PUBLIC_WEB_BASE_URL: ""
+    volumes:
+      - ./:/load-tests:ro
     networks: [shadow]
     cpus: 2
     mem_limit: 768m
-
-  event-relay:
-    image: ${SHADOW_EVENT_RELAY_IMAGE:?Pin a shadow-only event relay image}
-    networks: [shadow]
-    command: ["sh", "-c", "exec sleep infinity"]
-    cpus: 1
-    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:37125/api/health', timeout=2)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
 networks:
   shadow:
