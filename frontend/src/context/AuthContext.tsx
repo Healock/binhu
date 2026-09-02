@@ -10,12 +10,23 @@ import {
 import type { User, UserPreferences } from '../types'
 import { clearRoleDashboardCaches } from '../utils/dashboardCache'
 import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
+import {
+  assertApiEnvironmentIdentity,
+  environmentForUsername,
+  getApiEnvironment,
+  resetApiEnvironment,
+  setApiEnvironment,
+  type AppEnvironment,
+} from '../utils/apiEnvironment.ts'
 
 interface AuthContextValue {
   user: User | null
   clientVersion: string
   serverVersion: string
   systemTimezone: string
+  environment: AppEnvironment
+  environmentLabel: string
+  loadTestRunId: string
   loading: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
@@ -31,6 +42,9 @@ const AuthContext = createContext<AuthContextValue>({
   clientVersion: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
   serverVersion: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0',
   systemTimezone: 'Asia/Shanghai',
+  environment: 'production',
+  environmentLabel: '正式环境',
+  loadTestRunId: '',
   loading: true,
   login: async () => {},
   logout: async () => {},
@@ -49,21 +63,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
   const [systemTimezone, setSystemTimezone] = useState('Asia/Shanghai')
   const [loading, setLoading] = useState(true)
+  const [environment, setEnvironment] = useState<AppEnvironment>(() => getApiEnvironment())
+  const [environmentLabel, setEnvironmentLabel] = useState('正式环境')
+  const [loadTestRunId, setLoadTestRunId] = useState('')
+
+  const applyBootstrap = (payload: Awaited<ReturnType<typeof getAppBootstrap>>, expected: AppEnvironment) => {
+    assertApiEnvironmentIdentity(payload.environment, expected)
+    if (payload.server_version) setServerVersion(payload.server_version)
+    if (payload.timezone) setSystemTimezone(payload.timezone)
+    setEnvironment(expected)
+    setEnvironmentLabel(payload.environment_label || (expected === 'shadow' ? '影子压测环境' : '正式环境'))
+    setLoadTestRunId(payload.load_test_run_id || '')
+  }
 
   useEffect(() => {
-    getAppBootstrap()
-      .then(payload => {
-        if (payload.server_version) setServerVersion(payload.server_version)
-        if (payload.timezone) setSystemTimezone(payload.timezone)
-      })
-      .catch(() => {})
-    getCurrentUser()
-      .then(setUser)
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    const expected = getApiEnvironment()
+    const restoreSession = async () => {
+      try {
+        const payload = await getAppBootstrap()
+        applyBootstrap(payload, expected)
+        setUser(await getCurrentUser())
+      } catch (error) {
+        setUser(null)
+        if (expected === 'shadow') {
+          const message = error instanceof Error ? error.message : '影子压测环境当前不可用'
+          sessionStorage.setItem('auth_exit_reason', JSON.stringify({
+            code: 'shadow_environment_unavailable',
+            message,
+          }))
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+    void restoreSession()
   }, [])
 
   const login = async (username: string, password: string) => {
+    const targetEnvironment = environmentForUsername(username)
+    setApiEnvironment(targetEnvironment)
+    setEnvironment(targetEnvironment)
+    try {
+      const bootstrap = await getAppBootstrap()
+      applyBootstrap(bootstrap, targetEnvironment)
+    } catch (error) {
+      if (targetEnvironment === 'shadow') {
+        throw new Error(
+          error instanceof Error && /非影子服务/.test(error.message)
+            ? error.message
+            : '影子压测环境当前未开启，请联系管理员启动后重试',
+        )
+      }
+      throw error
+    }
     const res = await fetchWithAuth('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -95,6 +147,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ).catch(() => {})
     clearRoleDashboardCaches(window.sessionStorage)
     setUser(null)
+    resetApiEnvironment()
+    setEnvironment('production')
+    setEnvironmentLabel('正式环境')
+    setLoadTestRunId('')
   }
 
   const updatePreferences = async (preferences: UserPreferences) => {
@@ -121,6 +177,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clientVersion,
       serverVersion,
       systemTimezone,
+      environment,
+      environmentLabel,
+      loadTestRunId,
       loading,
       login,
       logout,

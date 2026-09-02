@@ -1,5 +1,13 @@
 # 开发与运维手册
 
+## 影子压测入口
+
+正式客户端保留受控影子入口：普通账号使用 `/api`，用户名以 `@shadow` 结尾时使用同一 HTTPS 站点的 `/shadow-api`。环境选择仅保存在当前客户端会话中，影子后端必须通过 Bootstrap 返回 `environment=shadow`，否则客户端终止登录且不得回退生产。
+
+服务器上的影子入口默认关闭。Nginx 可以长期保留 `/shadow-api/` 到本机 `127.0.0.1:47125` 的反向代理；独立影子 Backend 未启动时，对外返回 `shadow_environment_offline` 结构化 503。启用前必须确认影子 Compose 项目、数据卷、网络、密码和数据库都与生产隔离，且所有外部读取、写入、同步和云服务开关保持关闭。
+
+生产使用 `APP_ENVIRONMENT=production` 与 `binhu_session`；影子使用 `APP_ENVIRONMENT=shadow`、非空 `LOAD_TEST_RUN_ID` 与 `binhu_shadow_session`。正式数据库禁止创建 `@shadow` 后缀账号。压测资源的启动与清理必须使用精确运行编号，不允许执行宽泛的数据卷删除。
+
 ## 腾讯表下线迁移维护窗口（阶段一）
 
 - 生产切换前先设置 `LOCAL_DATA_SOURCE_ENABLED=true`、`TXDOCS_ENABLED=false`、`TXDOCS_MIGRATION_MODE=readonly`，并为 `TXDOCS_CUTOFF_AT` 填写维护窗口时间。

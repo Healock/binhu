@@ -9,13 +9,14 @@ import type {
   PresenceHeartbeatResponse, PresenceUsersResponse,
 } from '../types'
 import { getClientDeviceHeaders } from '../utils/device.ts'
-import { resolveApiAssetUrl } from '../utils/apiUrl.ts'
-
-const configuredApiBaseUrl = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '')
-const apiBaseUrl = configuredApiBaseUrl || '/api'
+import {
+  getApiBaseUrl,
+  resolveRuntimeApiUrl,
+  resolveRuntimeAssetUrl,
+} from '../utils/apiEnvironment.ts'
 
 const api = axios.create({
-  baseURL: apiBaseUrl,
+  baseURL: getApiBaseUrl(),
   timeout: 30000,
   withCredentials: true,
 })
@@ -72,7 +73,7 @@ export async function resetHelpDocument(
 function normalizeUserAssets(user: User): User {
   return {
     ...user,
-    avatar_url: resolveApiAssetUrl(user.avatar_url, configuredApiBaseUrl),
+    avatar_url: resolveRuntimeAssetUrl(user.avatar_url),
   }
 }
 
@@ -147,9 +148,14 @@ export async function rotateVenueCodeToken(id: number): Promise<{ token?: string
 }
 export function resolveVenueCodeQrImageUrl(
   imageUrl: string | null | undefined,
-  apiBaseUrl = configuredApiBaseUrl,
+  apiBaseUrl?: string,
 ): string | undefined {
-  return resolveApiAssetUrl(imageUrl, apiBaseUrl) || undefined
+  if (!apiBaseUrl) return resolveRuntimeAssetUrl(imageUrl) || undefined
+  if (!imageUrl) return undefined
+  if (/^[a-z][a-z\d+.-]*:/i.test(imageUrl) || imageUrl.startsWith('//')) return imageUrl
+  const normalized = apiBaseUrl.replace(/\/+$/, '')
+  if (imageUrl.startsWith('/api/')) return `${normalized}${imageUrl.slice(4)}`
+  return `${normalized}/${imageUrl.replace(/^\/+/, '')}`
 }
 export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem; token: string; url: string; image_url?: string }> {
   const data = (await api.get(`/venue-codes/${id}/qrcode`)).data
@@ -185,6 +191,9 @@ export interface MaintenanceStatus {
 export interface AppBootstrapSummary {
   server_version: string
   timezone: string
+  environment: 'production' | 'shadow'
+  environment_label: string
+  load_test_run_id: string
 }
 
 export interface LoginSessionSummary {
@@ -284,10 +293,9 @@ export interface AuthFetchOptions {
 }
 
 function resolveApiRequest(input: RequestInfo | URL): RequestInfo | URL {
-  if (!configuredApiBaseUrl || input instanceof URL) return input
-  if (typeof input !== 'string' || /^https?:\/\//i.test(input)) return input
-  if (input.startsWith('/api')) return `${configuredApiBaseUrl}${input.slice(4)}`
-  return `${configuredApiBaseUrl}${input.startsWith('/') ? input : `/${input}`}`
+  if (input instanceof URL) return input
+  if (typeof input !== 'string') return input
+  return resolveRuntimeApiUrl(input)
 }
 
 export function handleUnauthorized(detail?: unknown): void {
@@ -312,6 +320,21 @@ export function handleMaintenance(detail?: unknown): boolean {
   const payload = detail && typeof detail === 'object'
     ? detail as { code?: unknown; message?: unknown }
     : null
+  if (payload?.code === 'shadow_environment_offline') {
+    if (window.location.pathname.includes('/login') || unauthorizedRedirectStarted) {
+      return true
+    }
+    const message = typeof payload.message === 'string'
+      ? payload.message
+      : '影子压测环境当前未开启'
+    unauthorizedRedirectStarted = true
+    sessionStorage.setItem('auth_exit_reason', JSON.stringify({
+      code: 'shadow_environment_offline',
+      message,
+    }))
+    window.location.href = '/login'
+    return true
+  }
   if (payload?.code !== 'maintenance_mode') {
     return false
   }
@@ -368,7 +391,7 @@ export async function fetchWithAuth(
   } else if (response.status === 503 && options.handleUnauthorized !== false) {
     const body = await response.clone().json().catch(() => null)
     const detail = body && typeof body === 'object'
-      ? (body as { detail?: unknown }).detail
+      ? ((body as { detail?: unknown }).detail ?? body)
       : null
     handleMaintenance(detail)
   }
@@ -392,6 +415,7 @@ export async function fetchAuthenticatedImageBlob(input: RequestInfo | URL): Pro
 }
 
 api.interceptors.request.use((config) => {
+  config.baseURL = getApiBaseUrl()
   const deviceHeaders = getClientDeviceHeaders()
   config.headers.set('X-Binhu-Client-Platform', deviceHeaders['X-Binhu-Client-Platform'])
   config.headers.set('X-Binhu-Device-Id', deviceHeaders['X-Binhu-Device-Id'])
@@ -413,7 +437,7 @@ api.interceptors.response.use(
     if (error?.response?.status === 401) {
       handleUnauthorized(error?.response?.data?.detail)
     } else if (error?.response?.status === 503) {
-      handleMaintenance(error?.response?.data?.detail)
+      handleMaintenance(error?.response?.data?.detail ?? error?.response?.data)
     }
     return Promise.reject(error)
   }
@@ -472,7 +496,7 @@ export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> 
   const { data } = await api.post('/auth/avatar', form)
   return {
     ...data,
-    avatar_url: resolveApiAssetUrl(data.avatar_url, configuredApiBaseUrl) || '',
+    avatar_url: resolveRuntimeAssetUrl(data.avatar_url) || '',
   }
 }
 
@@ -483,7 +507,19 @@ export async function getAppBootstrap(): Promise<AppBootstrapSummary> {
     { handleUnauthorized: false, markActivity: false },
   )
   if (!response.ok) {
-    throw new Error('无法读取平台版本')
+    const body = await response.json().catch(() => null) as {
+      detail?: unknown
+      message?: unknown
+    } | null
+    const detail = body?.detail && typeof body.detail === 'object'
+      ? body.detail as { message?: unknown }
+      : null
+    const message = typeof body?.message === 'string'
+      ? body.message
+      : typeof detail?.message === 'string'
+        ? detail.message
+        : '无法读取平台版本'
+    throw new Error(message)
   }
   return response.json()
 }
@@ -508,7 +544,7 @@ export async function getPresenceUsers(): Promise<PresenceUsersResponse> {
     ...data,
     users: (data.users || []).map((user: PresenceUsersResponse['users'][number]) => ({
       ...user,
-      avatar_url: resolveApiAssetUrl(user.avatar_url, configuredApiBaseUrl),
+      avatar_url: resolveRuntimeAssetUrl(user.avatar_url),
     })),
   }
 }
@@ -2759,7 +2795,7 @@ export async function extractGridMembers(): Promise<{ new_count: number; new_nam
 }
 
 export function exportGridMembersUrl(): string {
-  return '/api/grid-members/export'
+  return resolveRuntimeApiUrl('/api/grid-members/export')
 }
 
 export type WeekendDutyDay = 'saturday' | 'sunday'
@@ -3589,7 +3625,7 @@ export async function confirmPoliceDispatchImport(
 }
 
 export function policeDispatchSourceFileUrl(batchId: number): string {
-  return `/api/police-dispatch/batches/${batchId}/source-file`
+  return resolveRuntimeApiUrl(`/api/police-dispatch/batches/${batchId}/source-file`)
 }
 
 export async function getPoliceDispatchBatch(id: number): Promise<{
@@ -3749,7 +3785,7 @@ export async function getPoliceDispatchPublishRun(
 }
 
 export function policeDispatchFeedbackUrl(id: number): string {
-  return `/api/police-dispatch/batches/${id}/feedback.xlsx`
+  return resolveRuntimeApiUrl(`/api/police-dispatch/batches/${id}/feedback.xlsx`)
 }
 
 export function apiErrorMessage(reason: unknown, fallback: string): string {
@@ -3845,7 +3881,7 @@ export async function listFullchainPoliceRawUploads() {
 }
 
 export function fullchainPoliceRawDownloadUrl(id: number) {
-  return `/api/police-dispatch/fullchain-archive/police-raw/uploads/${id}/download`
+  return resolveRuntimeApiUrl(`/api/police-dispatch/fullchain-archive/police-raw/uploads/${id}/download`)
 }
 
 export async function searchFullchainArchiveCandidates(params: {
@@ -3897,7 +3933,7 @@ export async function listFullchainArchiveExports(parserType?: string) {
 }
 
 export function fullchainArchiveDownloadUrl(id: number) {
-  return `/api/police-dispatch/fullchain-archive/exports/${id}/download`
+  return resolveRuntimeApiUrl(`/api/police-dispatch/fullchain-archive/exports/${id}/download`)
 }
 
 // ---- System Config ----
@@ -4848,7 +4884,9 @@ export const workflowApi = {
     })).data
   },
   attachmentUrl(id: number, fileId: string, inline = false) {
-    return `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`
+    return resolveRuntimeApiUrl(
+      `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`,
+    )
   },
   async pendingPhotoRequests(payload: {
     keyword?: string

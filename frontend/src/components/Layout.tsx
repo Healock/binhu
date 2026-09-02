@@ -7,7 +7,7 @@ import {
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Popover } from 'antd'
+import { Alert, Button, Popover, Tag } from 'antd'
 import { useAuth } from '../context/AuthContext'
 import { getUserDisplayName, ROLE_LABELS } from '../types'
 import {
@@ -36,7 +36,15 @@ export default function Layout() {
   ))
   const [accountOpen, setAccountOpen] = useState(false)
   const mainRef = useRef<HTMLElement>(null)
-  const { user, logout, clientVersion } = useAuth()
+  const {
+    user,
+    logout,
+    clientVersion,
+    environment,
+    environmentLabel,
+    loadTestRunId,
+  } = useAuth()
+  const isShadow = environment === 'shadow'
   const navigate = useNavigate()
   const location = useLocation()
   const layout = useResponsiveLayout()
@@ -84,6 +92,12 @@ export default function Layout() {
   }, [layout.isCompact])
 
   useEffect(() => {
+    const baseTitle = '滨湖智慧平台'
+    document.title = isShadow ? `${baseTitle} · 影子环境` : baseTitle
+    return () => { document.title = baseTitle }
+  }, [isShadow])
+
+  useEffect(() => {
     if (location.pathname === '/') {
       mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
       window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
@@ -98,7 +112,14 @@ export default function Layout() {
   }
 
   return (
-    <div className={`app-shell app-shell--${layout.mode} flex`}>
+    <div className={`app-shell app-shell--${layout.mode} ${isShadow ? 'app-shell--shadow' : ''} flex`}>
+      {isShadow && (
+        <div className="shadow-environment-banner" role="status">
+          <strong>{environmentLabel || '影子压测环境'}</strong>
+          <span>全部为虚构数据 · 不会写入正式业务</span>
+          {loadTestRunId && <span>运行编号：{loadTestRunId}</span>}
+        </div>
+      )}
       <RealtimeCoordinator />
       <header className="mobile-app-header md:hidden fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-4">
         {mobileNavigationMode === 'sidebar' && (
@@ -141,6 +162,7 @@ export default function Layout() {
                     <div className="text-xs text-slate-500">
                       {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                     </div>
+                    {isShadow && <Tag color="orange" className="mt-2">影子环境</Tag>}
                   </div>
                   <Button
                     block
@@ -209,6 +231,7 @@ export default function Layout() {
           <div className="app-sidebar__identity min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900">滨湖智慧平台</div>
             <div className="text-xs text-slate-500">v{clientVersion}</div>
+            {isShadow && <div className="text-[10px] font-semibold text-orange-700">影子环境</div>}
           </div>
           <button
             type="button"
@@ -287,6 +310,7 @@ export default function Layout() {
                 <div className="mt-0.5 truncate text-xs text-slate-500">
                   {user.username} · {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                 </div>
+                {isShadow && <div className="mt-0.5 truncate text-[10px] font-semibold text-orange-700">影子压测环境</div>}
               </button>
               {!mobile && <NotificationCenter />}
             </div>

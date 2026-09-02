@@ -76,6 +76,7 @@ import { ListToolbar, Panel } from '../components/ui'
 import AppTable from '../components/AppTable'
 import useSystemTime from '../hooks/useSystemTime'
 import { downloadBlob } from '../utils/fileDownload'
+import { resolveRuntimeApiUrl } from '../utils/apiEnvironment'
 
 const STATUS_COLORS: Record<string, string> = {
   running: 'processing',
@@ -542,7 +543,7 @@ function LogsTab() {
     setLines([])
     setConnected(false)
     const stream = new EventSource(
-      `/api/admin/ops/logs/stream?source=${encodeURIComponent(source)}&tail=${tail}&since_minutes=${sinceMinutes}`,
+      resolveRuntimeApiUrl(`/api/admin/ops/logs/stream?source=${encodeURIComponent(source)}&tail=${tail}&since_minutes=${sinceMinutes}`),
       { withCredentials: true },
     )
     stream.onopen = () => setConnected(true)
@@ -582,7 +583,9 @@ function LogsTab() {
       : lines
   }, [keyword, lines])
 
-  const exportUrl = `/api/admin/ops/logs/export?source=${encodeURIComponent(source)}&since_minutes=${sinceMinutes}`
+  const exportUrl = resolveRuntimeApiUrl(
+    `/api/admin/ops/logs/export?source=${encodeURIComponent(source)}&since_minutes=${sinceMinutes}`,
+  )
 
   return (
     <div className="operations-log-layout">

@@ -5554,6 +5554,48 @@ html[data-theme='dark'] .login-maintenance-alert.ant-alert-info {
   background: var(--app-bg);
 }
 
+.shadow-environment-banner {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 70;
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 6px 16px;
+  background: #c2410c;
+  color: #fff7ed;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.app-shell--shadow {
+  padding-top: 32px;
+}
+
+.app-shell--shadow .app-sidebar {
+  top: 32px !important;
+  bottom: 0 !important;
+  height: calc(100vh - 32px) !important;
+}
+
+.app-shell--shadow .mobile-app-header {
+  top: 32px !important;
+}
+
+@media (max-width: 640px) {
+  .shadow-environment-banner {
+    gap: 6px 10px;
+    flex-wrap: wrap;
+  }
+
+  .shadow-environment-banner span:last-child {
+    display: none;
+  }
+}
+
 @container (max-width: 980px) {
   .mobile-task-table-inline-editor {
     flex-wrap: wrap;

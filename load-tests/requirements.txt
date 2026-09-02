@@ -1,0 +1,5 @@
+locust==2.32.10
+httpx==0.28.1
+PyMySQL==1.1.1
+psutil==6.1.1
+bcrypt==4.2.1
