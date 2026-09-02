@@ -31,6 +31,18 @@ import {
   RightOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  ResponsiveContainer,
+  Tooltip as ChartTooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import dayjs, { Dayjs } from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -41,6 +53,7 @@ import {
   getOpsDatabaseTables,
   getOpsDatabases,
   getOpsOverview,
+  getOpsPerformance,
   getOpsTableStructure,
   getDiagnosticJob,
   queryDiagnosticIncidents,
@@ -56,6 +69,7 @@ import type {
   OpsContainer,
   OpsDatabase,
   OpsOverview,
+  OpsPerformanceSnapshot,
   DiagnosticJob,
 } from '../types'
 import { ListToolbar, Panel } from '../components/ui'
@@ -307,6 +321,204 @@ function OverviewTab({
         </div>
       </Panel>
 
+    </div>
+  )
+}
+
+const PERFORMANCE_STATE_META = {
+  normal: { color: 'success', description: '关键指标处于正常范围' },
+  busy: { color: 'warning', description: '部分指标开始承压，请关注原因' },
+  congested: { color: 'error', description: '平台已出现明显拥堵或阻塞信号' },
+  recovering: { color: 'processing', description: '压力已下降，正在观察是否稳定恢复' },
+  warming_up: { color: 'default', description: '请求样本不足，正在采集数据' },
+} as const
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds} 秒`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`
+  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分钟`
+}
+
+function PerformanceTab({
+  onNavigate,
+  overview,
+}: {
+  onNavigate: (tab: string) => void
+  overview: OpsOverview | null
+}) {
+  const [windowMinutes, setWindowMinutes] = useState(15)
+  const [data, setData] = useState<OpsPerformanceSnapshot | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const load = async (showLoading = false) => {
+    if (showLoading) setLoading(true)
+    try {
+      setData(await getOpsPerformance(windowMinutes))
+    } catch {
+      if (showLoading) message.error('平台负载数据暂时无法读取')
+    } finally {
+      if (showLoading) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load(true)
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load(false)
+    }, 5_000)
+    return () => window.clearInterval(interval)
+  }, [windowMinutes])
+
+  if (!data && loading) return <Skeleton active paragraph={{ rows: 10 }} />
+  if (!data) return <Empty description="平台负载数据暂时不可用" />
+
+  const stateMeta = PERFORMANCE_STATE_META[data.state]
+  const backend = overview?.containers.find(item => item.source === 'backend')
+  const mysql = overview?.containers.find(item => item.source === 'mysql')
+  const chartData = data.timeline.map(item => ({
+    ...item,
+    label: dayjs(item.bucket_at).format(windowMinutes <= 15 ? 'HH:mm:ss' : 'HH:mm'),
+  }))
+
+  return (
+    <div className="ops-performance-content">
+      <div className="ops-performance-toolbar">
+        <div>
+          <Badge status={stateMeta.color} text={<strong>当前状态：{data.state_label}</strong>} />
+          <div className="mt-1 text-xs text-slate-500">{stateMeta.description} · 每 5 秒自动刷新</div>
+        </div>
+        <Space wrap>
+          <Select
+            value={windowMinutes}
+            onChange={setWindowMinutes}
+            options={[5, 15, 30, 60].map(value => ({ value, label: `最近 ${value} 分钟` }))}
+          />
+          <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load(true)}>立即刷新</Button>
+        </Space>
+      </div>
+
+      {!!data.signals.length && (
+        <div className="ops-performance-signals">
+          {data.signals.map(signal => (
+            <Alert
+              key={signal.code}
+              showIcon
+              type={signal.level === 'critical' ? 'error' : 'warning'}
+              message={signal.title}
+              description={<span>{signal.detail} {signal.recommended_action}</span>}
+              action={signal.action_tab !== 'performance' ? (
+                <Button size="small" onClick={() => onNavigate(signal.action_tab)}>
+                  去处理
+                </Button>
+              ) : undefined}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="ops-performance-kpis">
+        <Card><Statistic title="平均响应速度" value={data.summary.average_ms} precision={0} suffix="ms" /></Card>
+        <Card><Statistic title="P95 响应速度" value={data.summary.p95_ms} precision={0} suffix="ms" /></Card>
+        <Card><Statistic title="当前并发请求" value={data.summary.inflight_current} suffix={` / 峰值 ${data.summary.inflight_peak_since_start}`} /></Card>
+        <Card><Statistic title="每分钟请求" value={data.summary.requests_per_minute} precision={1} /></Card>
+        <Card><Statistic title="服务端错误率" value={data.summary.error_rate} precision={2} suffix="%" valueStyle={{ color: data.summary.error_rate > 2 ? 'var(--app-danger)' : undefined }} /></Card>
+        <Card><Statistic title="事件循环最大阻塞" value={data.event_loop.max_ms} precision={0} suffix="ms" /></Card>
+      </div>
+
+      <div className="ops-performance-chart-grid">
+        <Panel title="响应速度趋势" description="P95 表示 95% 的请求比该数值更快；平均值只作为辅助参考">
+          <div className="ops-performance-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--app-border)" />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={28} />
+                <YAxis tick={{ fontSize: 10 }} unit="ms" />
+                <ChartTooltip />
+                <Legend />
+                <Area type="monotone" dataKey="p50_ms" name="P50" stroke="#1677ff" fill="#1677ff" fillOpacity={0.05} isAnimationActive={false} />
+                <Area type="monotone" dataKey="p95_ms" name="P95" stroke="#fa8c16" fill="#fa8c16" fillOpacity={0.08} isAnimationActive={false} />
+                <Area type="monotone" dataKey="p99_ms" name="P99" stroke="#f5222d" fill="#f5222d" fillOpacity={0.04} isAnimationActive={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Panel title="请求量与异常趋势" description="409 并发冲突单独统计，不计入服务端错误率">
+          <div className="ops-performance-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--app-border)" />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={28} />
+                <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                <ChartTooltip />
+                <Legend />
+                <Bar dataKey="requests" name="请求数" fill="#1677ff" isAnimationActive={false} />
+                <Bar dataKey="conflicts_409" name="409 冲突" fill="#faad14" isAnimationActive={false} />
+                <Bar dataKey="errors_5xx" name="5xx 错误" fill="#f5222d" isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      </div>
+
+      <Panel
+        title="后台任务占用"
+        description="占用量按运行中和排队任务估算，用于判断任务池压力，不等同于精确 CPU 归因"
+        extra={<Button onClick={() => window.dispatchEvent(new Event('binhu:open-task-queue'))}>打开后台任务</Button>}
+      >
+        <div className="ops-background-summary">
+          <Statistic title="运行中" value={data.background.running_count} />
+          <Statistic title="排队中" value={data.background.queued_count} />
+          <Statistic title="需关注" value={data.background.attention_count} />
+          <Statistic title="估算占用量" value={data.background.occupancy_score} />
+          <Statistic title="最久活动任务" value={data.background.oldest_active_seconds ? formatDuration(data.background.oldest_active_seconds) : '无'} />
+        </div>
+        {data.background.categories.length ? (
+          <div className="ops-background-categories">
+            {data.background.categories.map(item => (
+              <div key={item.category} className="ops-background-category">
+                <span>{item.category}</span>
+                <strong>{item.active}</strong>
+                <Tag color="processing">运行 {item.running}</Tag>
+                <Tag>排队 {item.queued}</Tag>
+              </div>
+            ))}
+          </div>
+        ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有活动后台任务" />}
+      </Panel>
+
+      <Panel title="数据库与资源阻塞信号" description="连接池占满、MySQL 锁等待或应用线程阻塞会直接影响保存和分配速度">
+        <div className="ops-performance-resource-grid">
+          {data.database.pools.map(pool => (
+            <Card key={pool.name} size="small">
+              <div className="flex items-center justify-between gap-3"><strong>{pool.name}</strong><span>{pool.used}/{pool.max_size}</span></div>
+              <Progress percent={pool.usage_percent} status={pool.usage_percent >= 100 ? 'exception' : pool.usage_percent >= 80 ? 'active' : 'normal'} size="small" />
+            </Card>
+          ))}
+          <Card size="small"><Statistic title="MySQL 运行线程" value={data.database.mysql.threads_running || 0} /></Card>
+          <Card size="small"><Statistic title="MySQL 当前锁等待" value={data.database.mysql.lock_waits || 0} /></Card>
+          <Card size="small"><Statistic title="后端 CPU" value={backend?.cpu_percent || 0} suffix="%" /></Card>
+          <Card size="small"><Statistic title="MySQL CPU" value={mysql?.cpu_percent || 0} suffix="%" /></Card>
+        </div>
+      </Panel>
+
+      <Panel title="最慢接口" description="只记录接口模板、请求方式和聚合耗时，不记录查询内容、人员信息或业务正文">
+        <AppTable
+          rowKey={row => `${row.method}:${row.route}`}
+          dataSource={data.endpoint_groups}
+          pagination={false}
+          scroll={{ x: 860 }}
+          columns={[
+            { title: '业务环节', dataIndex: 'group_label', width: 150 },
+            { title: '接口', dataIndex: 'route', ellipsis: true, width: 300 },
+            { title: '方式', dataIndex: 'method', width: 80 },
+            { title: '请求数', dataIndex: 'requests', width: 90 },
+            { title: '平均', dataIndex: 'average_ms', width: 90, render: value => `${Math.round(value)} ms` },
+            { title: 'P95', dataIndex: 'p95_ms', width: 90, render: value => `${Math.round(value)} ms` },
+            { title: '5xx', dataIndex: 'errors_5xx', width: 70 },
+            { title: '409', dataIndex: 'conflicts_409', width: 70 },
+          ]}
+        />
+      </Panel>
     </div>
   )
 }
@@ -968,6 +1180,7 @@ export default function OperationsCenter() {
   const [overview, setOverview] = useState<OpsOverview | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [diagnosing, setDiagnosing] = useState(false)
+  const [activeTab, setActiveTab] = useState('overview')
 
   const loadOverview = async () => {
     setOverviewLoading(true)
@@ -1018,11 +1231,18 @@ export default function OperationsCenter() {
       <Tabs
         className="ops-tabs min-w-0"
         destroyInactiveTabPane={false}
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'overview',
             label: '运行概况',
             children: <OverviewTab data={overview} loading={overviewLoading} refresh={loadOverview} />,
+          },
+          {
+            key: 'performance',
+            label: '性能与拥堵',
+            children: <PerformanceTab onNavigate={setActiveTab} overview={overview} />,
           },
           { key: 'logs', label: '系统日志', children: <LogsTab /> },
           { key: 'databases', label: '数据库', children: <DatabasesTab /> },

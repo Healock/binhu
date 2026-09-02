@@ -85,6 +85,7 @@ from services.venue_cleanup import run_venue_cleanup_scheduler
 from services.local_report_scheduler import run_local_report_scheduler
 from services.diagnostics import capture_incident
 from services.venue_cloud import run_venue_cloud_scheduler
+from services.platform_performance import performance_metrics, run_performance_sampler
 
 
 @asynccontextmanager
@@ -134,6 +135,7 @@ async def lifespan(app: FastAPI):
     venue_cleanup_task = asyncio.create_task(run_venue_cleanup_scheduler())
     local_report_task = asyncio.create_task(run_local_report_scheduler())
     venue_cloud_task = asyncio.create_task(run_venue_cloud_scheduler())
+    performance_sampler_task = asyncio.create_task(run_performance_sampler())
     try:
         yield
     finally:
@@ -147,6 +149,7 @@ async def lifespan(app: FastAPI):
         venue_cleanup_task.cancel()
         local_report_task.cancel()
         venue_cloud_task.cancel()
+        performance_sampler_task.cancel()
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
@@ -167,6 +170,8 @@ async def lifespan(app: FastAPI):
             await local_report_task
         with suppress(asyncio.CancelledError):
             await venue_cloud_task
+        with suppress(asyncio.CancelledError):
+            await performance_sampler_task
         await stop_backup_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()
@@ -184,6 +189,40 @@ app = FastAPI(
 )
 
 app.add_middleware(ClientCompatibilityMiddleware)
+
+
+@app.middleware("http")
+async def performance_metrics_middleware(request, call_next):
+    """Record safe route-level latency without request or response bodies."""
+    path = request.url.path
+    if path.startswith(("/assets/", "/static/")) or path.startswith(
+        ("/api/health", "/api/admin/ops/performance")
+    ):
+        return await call_next(request)
+    started_at, inflight = performance_metrics.begin_request()
+    status_code = 500
+    cancelled = False
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except asyncio.CancelledError:
+        cancelled = True
+        status_code = 499
+        raise
+    finally:
+        route = request.scope.get("route")
+        # Unknown routes may contain arbitrary user-provided path segments.
+        # Aggregate them under one safe label instead of retaining the raw URL.
+        route_path = getattr(route, "path", None) or "/unmatched"
+        performance_metrics.finish_request(
+            started_at=started_at,
+            method=request.method,
+            route=route_path,
+            status_code=status_code,
+            inflight=inflight,
+            cancelled=cancelled,
+        )
 
 
 @app.middleware("http")

@@ -646,6 +646,14 @@ export async function getOpsOverview(): Promise<OpsOverview> {
   return data
 }
 
+export async function getOpsPerformance(minutes = 15): Promise<import('../types').OpsPerformanceSnapshot> {
+  const { data } = await api.get('/admin/ops/performance', {
+    params: { minutes },
+    ...passiveRequest,
+  })
+  return data
+}
+
 export async function getOpsDatabases(): Promise<OpsDatabase[]> {
   const { data } = await api.get('/admin/ops/databases')
   return data.data
