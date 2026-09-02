@@ -51,6 +51,7 @@ from services.session_management import (
     invalidate_all_sessions,
     invalidate_all_sessions_for_users,
 )
+from services.environment_identity import production_username_allowed
 
 router = APIRouter(prefix="/api/grid-members", tags=["人员管理"])
 
@@ -96,6 +97,8 @@ class GridMemberCreate(BaseModel):
         normalized = value.strip()
         if len(normalized) < 2:
             raise ValueError("登录用户名至少需要 2 个字符")
+        if not production_username_allowed(normalized):
+            raise ValueError("正式环境不能创建以 @shadow 结尾的账号")
         return normalized
 
     @field_validator("position")

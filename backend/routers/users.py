@@ -13,6 +13,7 @@ from database import db_manager
 from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.session_management import invalidate_all_sessions
+from services.environment_identity import production_username_allowed
 
 
 router = APIRouter(prefix="/api/users", tags=["用户管理"])
@@ -282,6 +283,8 @@ async def create_user(
     username = req.username.strip()
     if not username:
         raise HTTPException(400, "用户名不能为空")
+    if not production_username_allowed(username):
+        raise HTTPException(400, "正式环境不能创建以 @shadow 结尾的账号")
     display_name = req.display_name.strip()
     if not display_name:
         raise HTTPException(400, "姓名不能为空")

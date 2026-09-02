@@ -7,6 +7,18 @@ from app_version import is_semver
 
 
 class Settings(BaseSettings):
+    APP_ENVIRONMENT: str = "production"
+    APP_ENVIRONMENT_LABEL: str = ""
+    LOAD_TEST_RUN_ID: str = ""
+
+    @field_validator("APP_ENVIRONMENT")
+    @classmethod
+    def validate_app_environment(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"production", "shadow"}:
+            raise ValueError("APP_ENVIRONMENT 只允许 production 或 shadow")
+        return normalized
+
     # MySQL（同一实例，八个按业务域划分的数据库）
     MYSQL_HOST: str = "localhost"
     MYSQL_PORT: int = 3306
@@ -167,6 +179,12 @@ class Settings(BaseSettings):
     def validate_cross_site_cookie_security(self):
         if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
             raise ValueError("SameSite=None 必须同时启用 Secure Cookie")
+        if self.APP_ENVIRONMENT == "shadow" and self.SESSION_COOKIE_NAME != "binhu_shadow_session":
+            raise ValueError("影子环境必须使用 binhu_shadow_session Cookie")
+        if self.APP_ENVIRONMENT == "shadow" and not self.LOAD_TEST_RUN_ID.strip():
+            raise ValueError("影子环境必须配置非空 LOAD_TEST_RUN_ID")
+        if self.APP_ENVIRONMENT == "production" and self.SESSION_COOKIE_NAME == "binhu_shadow_session":
+            raise ValueError("正式环境不得使用影子环境 Cookie")
         return self
 
     # Fresh databases only: bootstrap one administrator without a built-in password.

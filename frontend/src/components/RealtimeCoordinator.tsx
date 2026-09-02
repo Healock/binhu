@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { resolveRuntimeApiUrl } from '../utils/apiEnvironment.ts'
 
 const EVENT_NAME = 'binhu:domain-event'
 
 export default function RealtimeCoordinator() {
-  const { user } = useAuth()
+  const { user, environment } = useAuth()
   const sourceRef = useRef<EventSource | null>(null)
   const seenRef = useRef<string[]>([])
   const revisionsRef = useRef<Map<string, number>>(new Map())
@@ -12,10 +13,7 @@ export default function RealtimeCoordinator() {
   useEffect(() => {
     if (!user || typeof window === 'undefined' || typeof EventSource === 'undefined') return undefined
     const seen = seenRef.current
-    const configuredBase = String(import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '')
-    const streamUrl = configuredBase
-      ? (configuredBase.endsWith('/api') ? `${configuredBase}/events/stream` : `${configuredBase}/api/events/stream`)
-      : '/api/events/stream'
+    const streamUrl = resolveRuntimeApiUrl('/api/events/stream')
     const source = new EventSource(streamUrl, { withCredentials: true })
     sourceRef.current = source
     const fallbackTimer = window.setInterval(() => {
@@ -53,7 +51,7 @@ export default function RealtimeCoordinator() {
       window.clearInterval(fallbackTimer)
       sourceRef.current = null
     }
-  }, [user])
+  }, [environment, user])
 
   return null
 }
