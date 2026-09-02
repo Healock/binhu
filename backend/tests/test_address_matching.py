@@ -128,6 +128,70 @@ def test_duplicate_rows_for_one_logical_small_community_do_not_force_review():
     assert result["candidate"]["name"] == "芦风华庭"
 
 
+def test_historical_name_redirects_to_current_entry_and_beats_nearby_address():
+    entries = [
+        {
+            "id": 40,
+            "name": "旧府名",
+            "detail_address": "龙河路288号",
+            "aliases": [],
+            "community_id": 2,
+            "community_name": "长安社区",
+            "enabled": True,
+        },
+        {
+            "id": 90,
+            "name": "新园名",
+            "detail_address": "龙河路288号",
+            "aliases": ["旧府名"],
+            "community_id": 2,
+            "community_name": "长安社区",
+            "enabled": True,
+        },
+        {
+            "id": 91,
+            "name": "附近花园",
+            "detail_address": "龙河路288号",
+            "aliases": [],
+            "community_id": 2,
+            "community_name": "长安社区",
+            "enabled": True,
+        },
+    ]
+    result = match_address("龙河路288号旧府名", entries, community_name="长安社区")
+    assert result["status"] == "suggested"
+    assert result["candidate"]["entry_id"] == 90
+    assert result["candidate"]["name"] == "新园名"
+    assert len(result["candidates"]) == 1
+
+
+def test_exact_historical_alias_beats_same_address_candidates():
+    entries = [
+        {
+            "id": 39,
+            "name": "中央花园",
+            "detail_address": "中山南路988号",
+            "aliases": ["商务广场"],
+            "community_id": 2,
+            "community_name": "长安社区",
+            "enabled": True,
+        },
+        {
+            "id": 40,
+            "name": "长安花园",
+            "detail_address": "中山南路988号",
+            "aliases": [],
+            "community_id": 2,
+            "community_name": "长安社区",
+            "enabled": True,
+        },
+    ]
+    result = match_address("商务广场中山南路988号", entries, community_name="长安社区")
+    assert result["status"] == "suggested"
+    assert result["candidate"]["entry_id"] == 39
+    assert len(result["candidates"]) == 1
+
+
 def test_disabled_entries_are_never_candidates():
     result = match_address("芦风华庭", [{**ENTRIES[0], "enabled": False}])
     assert result["status"] == "unmatched"

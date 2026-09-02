@@ -13,7 +13,7 @@ from difflib import SequenceMatcher
 from typing import Any, Iterable, Protocol
 
 
-MATCHER_VERSION = "rule-v2"
+MATCHER_VERSION = "rule-v3"
 LOW_INFORMATION_MARKERS = ("派出所", "公司", "厂房", "商场旁", "附近", "日期")
 CHINESE_DIGITS = str.maketrans("零〇一二三四五六七八九", "00123456789")
 
@@ -132,6 +132,27 @@ def _entry_parts(entry: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _entry_name_terms(entry: dict[str, Any]) -> tuple[str, set[str]]:
+    """Return the canonical name and explicit historical-name aliases."""
+    aliases = entry.get("aliases") or entry.get("aliases_json") or []
+    if isinstance(aliases, str):
+        try:
+            import json
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = []
+    if isinstance(aliases, dict):
+        aliases = list(aliases.values())
+    if not isinstance(aliases, list):
+        aliases = []
+    canonical = normalize_address_text(entry.get("name", ""))
+    return canonical, {
+        normalize_address_text(alias)
+        for alias in aliases
+        if normalize_address_text(alias)
+    }
+
+
 def _is_low_information(parsed: dict[str, str]) -> bool:
     text = parsed["normalized"]
     if not text or len(text) < 4:
@@ -209,19 +230,53 @@ def match_address(
         }
     requested_community = normalize_address_text(community_name)
     requested_street = normalize_address_text(street_name or parsed.get("street"))
+    enabled_entries = [
+        raw for raw in entries
+        if raw.get("enabled", True) and raw.get("community_id")
+    ]
+    entry_terms = {
+        int(raw["id"]): _entry_name_terms(raw)
+        for raw in enabled_entries
+    }
+    alias_owners: dict[tuple[str, int], set[int]] = {}
+    for raw in enabled_entries:
+        entry_id = int(raw["id"])
+        community_id = int(raw["community_id"])
+        _, aliases = entry_terms[entry_id]
+        for alias in aliases:
+            alias_owners.setdefault((alias, community_id), set()).add(entry_id)
+    redirected_entry_ids: set[int] = set()
+    for raw in enabled_entries:
+        entry_id = int(raw["id"])
+        community_id = int(raw["community_id"])
+        canonical, _ = entry_terms[entry_id]
+        owners = alias_owners.get((canonical, community_id), set()) - {entry_id}
+        if len(owners) == 1:
+            redirected_entry_ids.add(entry_id)
+
     candidates: list[AddressCandidate] = []
     conflicting_candidates: list[AddressCandidate] = []
+    explicit_candidate_ids: set[int] = set()
+    explicit_conflict_ids: set[int] = set()
     street_conflicts = 0
     community_conflicts = 0
-    for raw in entries:
-        if not raw.get("enabled", True) or not raw.get("community_id"):
+    for raw in enabled_entries:
+        entry_id = int(raw["id"])
+        if entry_id in redirected_entry_ids:
             continue
+        canonical, aliases = entry_terms[entry_id]
+        explicit_hit = bool(
+            (canonical and canonical in parsed["normalized"])
+            or any(alias in parsed["normalized"] for alias in aliases)
+        )
         parts = _entry_parts(raw)
         candidate_street = parts.get("street", "")
         if requested_street and candidate_street and requested_street != candidate_street:
             candidate = _score_candidate(parsed, raw)
             if candidate:
                 conflicting_candidates.append(candidate)
+                if explicit_hit:
+                    explicit_conflict_ids.add(entry_id)
             street_conflicts += 1
             continue
         candidate_community = normalize_address_text(raw.get("community_name", ""))
@@ -229,14 +284,31 @@ def match_address(
             candidate = _score_candidate(parsed, raw)
             if candidate:
                 conflicting_candidates.append(candidate)
+                if explicit_hit:
+                    explicit_conflict_ids.add(entry_id)
             community_conflicts += 1
             continue
         candidate = _score_candidate(parsed, raw)
         if not candidate:
             continue
         candidates.append(candidate)
+        if explicit_hit:
+            explicit_candidate_ids.add(entry_id)
     candidates = deduplicate_candidates(candidates)[:top_n]
     conflicting_candidates = deduplicate_candidates(conflicting_candidates)[:5]
+    explicit_candidates = [
+        item for item in candidates if item.entry_id in explicit_candidate_ids
+    ]
+    if explicit_candidates:
+        # A canonical or historical name hit is stronger evidence than nearby
+        # entries recalled only because they share a road or house number.
+        candidates = explicit_candidates
+    explicit_conflicts = [
+        item for item in conflicting_candidates
+        if item.entry_id in explicit_conflict_ids
+    ]
+    if explicit_conflicts:
+        conflicting_candidates = explicit_conflicts
     if not candidates:
         if conflicting_candidates:
             best_conflict = conflicting_candidates[0]
