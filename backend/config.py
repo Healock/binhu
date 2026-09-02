@@ -181,6 +181,8 @@ class Settings(BaseSettings):
             raise ValueError("SameSite=None 必须同时启用 Secure Cookie")
         if self.APP_ENVIRONMENT == "shadow" and self.SESSION_COOKIE_NAME != "binhu_shadow_session":
             raise ValueError("影子环境必须使用 binhu_shadow_session Cookie")
+        if self.APP_ENVIRONMENT == "shadow" and not self.LOAD_TEST_RUN_ID.strip():
+            raise ValueError("影子环境必须配置非空 LOAD_TEST_RUN_ID")
         if self.APP_ENVIRONMENT == "production" and self.SESSION_COOKIE_NAME == "binhu_shadow_session":
             raise ValueError("正式环境不得使用影子环境 Cookie")
         return self

@@ -16,6 +16,7 @@ class EnvironmentIdentityTests(unittest.TestCase):
             ENCRYPTION_KEY="test-encryption-key",
             APP_ENVIRONMENT="SHADOW",
             SESSION_COOKIE_NAME="binhu_shadow_session",
+            LOAD_TEST_RUN_ID="LT-20260902-01",
         )
         self.assertEqual(configured.APP_ENVIRONMENT, "shadow")
         with self.assertRaises(ValueError):
@@ -32,6 +33,17 @@ class EnvironmentIdentityTests(unittest.TestCase):
                 ENCRYPTION_KEY="test-encryption-key",
                 APP_ENVIRONMENT="shadow",
                 SESSION_COOKIE_NAME="binhu_session",
+                LOAD_TEST_RUN_ID="LT-20260902-01",
+            )
+
+    def test_shadow_environment_requires_a_run_id(self):
+        with self.assertRaises(ValueError):
+            Settings(
+                MYSQL_PASSWORD="test-password",
+                ENCRYPTION_KEY="test-encryption-key",
+                APP_ENVIRONMENT="shadow",
+                SESSION_COOKIE_NAME="binhu_shadow_session",
+                LOAD_TEST_RUN_ID="",
             )
 
     def test_production_rejects_reserved_shadow_suffix(self):

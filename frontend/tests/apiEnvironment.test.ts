@@ -12,7 +12,16 @@ import {
   resolveRuntimeApiUrl,
   setApiEnvironment,
 } from '../src/utils/apiEnvironment.ts'
-import { fetchWithAuth } from '../src/api/client.ts'
+import {
+  exportGridMembersUrl,
+  fetchWithAuth,
+  fullchainArchiveDownloadUrl,
+  fullchainPoliceRawDownloadUrl,
+  policeDispatchFeedbackUrl,
+  policeDispatchSourceFileUrl,
+  resetUnauthorizedRedirectForTests,
+  workflowApi,
+} from '../src/api/client.ts'
 
 function installSessionStorage() {
   const values = new Map<string, string>()
@@ -84,7 +93,8 @@ test('authenticated fetch follows shadow state and never falls back to productio
     value: async (input: RequestInfo | URL) => {
       requested = String(input)
       return new Response(JSON.stringify({
-        detail: { code: 'shadow_environment_offline', message: '影子压测环境当前未开启' },
+        code: 'shadow_environment_offline',
+        message: '影子压测环境当前未开启',
       }), { status: 503, headers: { 'Content-Type': 'application/json' } })
     },
   })
@@ -98,6 +108,32 @@ test('authenticated fetch follows shadow state and never falls back to productio
   assert.equal(response.status, 503)
   assert.equal(requested, '/shadow-api/app/bootstrap')
   assert.equal(getApiEnvironment(), 'shadow')
+})
+
+test('an offline shadow backend returns the user to login without changing environment', async () => {
+  const storage = installSessionStorage()
+  resetUnauthorizedRedirectForTests()
+  setApiEnvironment('shadow')
+  window.location.pathname = '/mobile-tasks'
+  window.location.href = '/mobile-tasks'
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => new Response(JSON.stringify({
+      code: 'shadow_environment_offline',
+      message: '影子压测环境当前未开启',
+    }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+  })
+
+  const response = await fetchWithAuth('/api/auth/me')
+
+  assert.equal(response.status, 503)
+  assert.equal(window.location.href, '/login')
+  assert.equal(getApiEnvironment(), 'shadow')
+  assert.deepEqual(JSON.parse(storage.get('auth_exit_reason') || '{}'), {
+    code: 'shadow_environment_offline',
+    message: '影子压测环境当前未开启',
+  })
+  resetUnauthorizedRedirectForTests()
 })
 
 test('authenticated UI keeps a persistent shadow marker and environment-bound realtime route', () => {
@@ -116,4 +152,25 @@ test('authenticated UI keeps a persistent shadow marker and environment-bound re
   assert.match(styles, /\.shadow-environment-banner\s*\{/)
   assert.match(realtimeSource, /resolveRuntimeApiUrl\('\/api\/events\/stream'\)/)
   assert.match(realtimeSource, /\[environment, user\]/)
+})
+
+test('download and attachment helpers stay inside the selected shadow route', () => {
+  installSessionStorage()
+  setApiEnvironment('shadow')
+
+  assert.equal(exportGridMembersUrl(), '/shadow-api/grid-members/export')
+  assert.equal(policeDispatchSourceFileUrl(7), '/shadow-api/police-dispatch/batches/7/source-file')
+  assert.equal(policeDispatchFeedbackUrl(7), '/shadow-api/police-dispatch/batches/7/feedback.xlsx')
+  assert.equal(
+    fullchainPoliceRawDownloadUrl(8),
+    '/shadow-api/police-dispatch/fullchain-archive/police-raw/uploads/8/download',
+  )
+  assert.equal(
+    fullchainArchiveDownloadUrl(9),
+    '/shadow-api/police-dispatch/fullchain-archive/exports/9/download',
+  )
+  assert.equal(
+    workflowApi.attachmentUrl(10, 'file name', true),
+    '/shadow-api/workflow/tickets/10/attachments/file%20name?inline=true',
+  )
 })

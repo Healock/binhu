@@ -21,6 +21,7 @@ import { downloadBlob } from '../utils/fileDownload'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import AuthenticatedImage from '../components/AuthenticatedImage'
+import { resolveRuntimeApiUrl } from '../utils/apiEnvironment'
 
 const emptyVenue: VenueCodeInput = {
   name: '',
@@ -288,7 +289,7 @@ export function PublicVenuePage() {
       if (key !== 'photo' && value != null) body.append(key, String(value))
     })
     body.append('photo', values.photo.file)
-    const response = await fetch('/api/public/venue-visits', { method: 'POST', body })
+    const response = await fetch(resolveRuntimeApiUrl('/api/public/venue-visits'), { method: 'POST', body })
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}))
       throw new Error(payload.detail || '提交失败')
