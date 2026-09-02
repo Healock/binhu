@@ -285,7 +285,11 @@ async def _seed(run_id: str) -> dict[str, object]:
                             values = _task_values(task)
                             source = await create_local_source_row(
                                 cur, parser_type, values,
-                                source_kind="shadow_loadtest",
+                                # Exercise the same active local-source path as
+                                # production. The run-scoped source_ref keeps
+                                # shadow fixtures identifiable without adding
+                                # a shadow-only source kind to business code.
+                                source_kind="local_table",
                                 source_ref=(
                                     f"shadow:{run_id}:task:{int(task['ordinal']):04d}"
                                 ),

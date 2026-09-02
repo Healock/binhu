@@ -24,7 +24,7 @@ APP_ENVIRONMENT=shadow
 LOAD_TEST_RUN_ID=LT-20260902-01
 COMPOSE_PROJECT_NAME=binhu-loadtest-lt-20260902-01
 
-SHADOW_BACKEND_IMAGE=sha256:<正式 0.28.2 Backend 的完整镜像 ID>
+SHADOW_BACKEND_IMAGE=sha256:<正式 0.28.3 Backend 的完整镜像 ID>
 SHADOW_MYSQL_IMAGE=mysql@sha256:<已核对的完整 digest>
 SHADOW_REDIS_IMAGE=redis@sha256:<已核对的完整 digest>
 
@@ -62,7 +62,7 @@ python .\shadowctl.py verify --run-id $env:LOAD_TEST_RUN_ID
 2. 数据库必须带有 Compose 初始化的影子标记；
 3. 造数脚本必须在精确 Backend 镜像内部运行，并再次核对 `APP_ENVIRONMENT`、运行编号和数据库主机。
 
-随后脚本通过正式 `create_local_source_row()`、待登记房屋关联和投影服务写入数据。任务按每批 100 条提交，重复执行不会重复创建未修改的数据；如果该运行已被压测修改，重新 seed 会因内容冲突而停止，不能偷偷重置结果。
+随后脚本通过正式 `create_local_source_row()`、待登记房屋关联和投影服务写入数据。任务使用生产正常识别的 `local_table` 来源类型，并通过唯一的 `shadow:<run_id>:task:<ordinal>` 来源引用限制在当前影子运行内；正式业务代码不增加影子专用来源分支。任务按每批 100 条提交，重复执行不会重复创建未修改的数据；如果该运行已被压测修改，重新 seed 会因内容冲突而停止，不能偷偷重置结果。
 
 造数完成后会生成：
 
@@ -156,13 +156,24 @@ python .\shadowctl.py verify --run-id $env:LOAD_TEST_RUN_ID --production-proof .
 ```json
 {
   "run_id": "LT-20260902-01",
-  "checked_at": "2026-09-02T10:00:00+08:00",
-  "checked_scopes": ["账号后缀", "来源类型", "压测前缀"],
+  "checked_at": "2026-09-03T10:00:00+08:00",
+  "checked_scopes": [
+    "shadow_source_refs",
+    "shadow_usernames",
+    "loadtest_prefixes",
+    "legacy_shadow_source_kind"
+  ],
+  "scope_counts": {
+    "shadow_source_refs": 0,
+    "shadow_usernames": 0,
+    "loadtest_prefixes": 0,
+    "legacy_shadow_source_kind": 0
+  },
   "matching_rows": 0
 }
 ```
 
-证明文件只能来自独立、只读的正式库检查。本工具故意不接受正式数据库连接参数，避免“为了证明没串写，反而让压测工具具备正式库访问能力”。
+证明文件只能来自独立、只读的正式库检查，并且必须分别确认：不存在 `shadow:%` 来源引用、不存在 `@shadow` 后缀账号、不存在压测前缀社区/人员/业务数据，也不存在旧的 `shadow_loadtest` 来源类型。本工具故意不接受正式数据库连接参数，避免“为了证明没串写，反而让压测工具具备正式库访问能力”。
 
 ## 清理
 
