@@ -56,10 +56,24 @@ def rewrite_domain_sql(sql: str | bytes) -> str | bytes:
     for table, (switch_name, target_schema) in sorted(TABLE_DOMAINS.items(), key=lambda item: -len(item[0])):
         if not _enabled(switch_name):
             continue
-        escaped_schema = re.escape(settings.MYSQL_ONLINE_DATA_DB)
+        # A few legacy queries still qualify tables with the historical
+        # ``OnlineData`` schema name.  In a shadow or split-domain deployment
+        # the configured online schema can be a run-scoped name (for example
+        # ``LoadTest_<run>``), so recognize both spellings.  This keeps the
+        # compatibility rewrite effective without creating an ``OnlineData``
+        # database or granting the shadow user access to a production-named
+        # schema.
+        escaped_schemas = {
+            re.escape(str(settings.MYSQL_ONLINE_DATA_DB)),
+            re.escape("OnlineData"),
+        }
         escaped_table = re.escape(table)
         # 旧代码中偶尔已经写成 OnlineData._table，也一起迁到目标库。
-        qualified = re.compile(rf"`?{escaped_schema}`?\s*\.\s*`?{escaped_table}`?", re.IGNORECASE)
+        qualified = re.compile(
+            rf"(?:{'|'.join(sorted(escaped_schemas, key=len, reverse=True))})"
+            rf"\s*\.\s*`?{escaped_table}`?",
+            re.IGNORECASE,
+        )
         text = qualified.sub(f"`{target_schema}`.`{table}`", text)
         # 只替换没有点号前缀的短表名。字段名、参数和已限定表名不命中。
         unqualified = re.compile(rf"(?<![A-Za-z0-9_`.])`?{escaped_table}`?(?![A-Za-z0-9_])")

@@ -30,6 +30,20 @@ def test_domain_sql_routes_unqualified_and_legacy_qualified_tables():
     assert "`VisitData`.`t_visit_details`" in sql
 
 
+def test_domain_sql_routes_historical_online_schema_in_shadow_database():
+    with patch.object(settings, "MYSQL_ONLINE_DATA_DB", "LoadTest_LT_20260902_01"), patch.object(
+        settings, "PLATFORM_DOMAIN_ACTIVE", True
+    ):
+        sql = rewrite_domain_sql(
+            "SELECT config_value FROM OnlineData._system_config "
+            "WHERE config_key = 'timezone'"
+        )
+    assert sql == (
+        "SELECT config_value FROM `PlatformData`.`_system_config` "
+        "WHERE config_key = 'timezone'"
+    )
+
+
 def test_qmf_registration_runs_are_stored_in_platform_domain():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql(
