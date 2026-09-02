@@ -1812,6 +1812,11 @@ async def ensure_bootstrap_admin(cur) -> bool:
             "BOOTSTRAP_ADMIN_PASSWORD 创建首个超级管理员。"
         )
 
+    from services.environment_identity import production_username_allowed
+
+    if not production_username_allowed(username):
+        raise RuntimeError("正式环境不能创建以 @shadow 结尾的初始管理员")
+
     import bcrypt
 
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()

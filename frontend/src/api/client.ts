@@ -9,13 +9,14 @@ import type {
   PresenceHeartbeatResponse, PresenceUsersResponse,
 } from '../types'
 import { getClientDeviceHeaders } from '../utils/device.ts'
-import { resolveApiAssetUrl } from '../utils/apiUrl.ts'
-
-const configuredApiBaseUrl = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '')
-const apiBaseUrl = configuredApiBaseUrl || '/api'
+import {
+  getApiBaseUrl,
+  resolveRuntimeApiUrl,
+  resolveRuntimeAssetUrl,
+} from '../utils/apiEnvironment.ts'
 
 const api = axios.create({
-  baseURL: apiBaseUrl,
+  baseURL: getApiBaseUrl(),
   timeout: 30000,
   withCredentials: true,
 })
@@ -72,7 +73,7 @@ export async function resetHelpDocument(
 function normalizeUserAssets(user: User): User {
   return {
     ...user,
-    avatar_url: resolveApiAssetUrl(user.avatar_url, configuredApiBaseUrl),
+    avatar_url: resolveRuntimeAssetUrl(user.avatar_url),
   }
 }
 
@@ -147,9 +148,14 @@ export async function rotateVenueCodeToken(id: number): Promise<{ token?: string
 }
 export function resolveVenueCodeQrImageUrl(
   imageUrl: string | null | undefined,
-  apiBaseUrl = configuredApiBaseUrl,
+  apiBaseUrl?: string,
 ): string | undefined {
-  return resolveApiAssetUrl(imageUrl, apiBaseUrl) || undefined
+  if (!apiBaseUrl) return resolveRuntimeAssetUrl(imageUrl) || undefined
+  if (!imageUrl) return undefined
+  if (/^[a-z][a-z\d+.-]*:/i.test(imageUrl) || imageUrl.startsWith('//')) return imageUrl
+  const normalized = apiBaseUrl.replace(/\/+$/, '')
+  if (imageUrl.startsWith('/api/')) return `${normalized}${imageUrl.slice(4)}`
+  return `${normalized}/${imageUrl.replace(/^\/+/, '')}`
 }
 export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem; token: string; url: string; image_url?: string }> {
   const data = (await api.get(`/venue-codes/${id}/qrcode`)).data
@@ -185,6 +191,9 @@ export interface MaintenanceStatus {
 export interface AppBootstrapSummary {
   server_version: string
   timezone: string
+  environment: 'production' | 'shadow'
+  environment_label: string
+  load_test_run_id: string
 }
 
 export interface LoginSessionSummary {
@@ -284,10 +293,9 @@ export interface AuthFetchOptions {
 }
 
 function resolveApiRequest(input: RequestInfo | URL): RequestInfo | URL {
-  if (!configuredApiBaseUrl || input instanceof URL) return input
-  if (typeof input !== 'string' || /^https?:\/\//i.test(input)) return input
-  if (input.startsWith('/api')) return `${configuredApiBaseUrl}${input.slice(4)}`
-  return `${configuredApiBaseUrl}${input.startsWith('/') ? input : `/${input}`}`
+  if (input instanceof URL) return input
+  if (typeof input !== 'string') return input
+  return resolveRuntimeApiUrl(input)
 }
 
 export function handleUnauthorized(detail?: unknown): void {
@@ -392,6 +400,7 @@ export async function fetchAuthenticatedImageBlob(input: RequestInfo | URL): Pro
 }
 
 api.interceptors.request.use((config) => {
+  config.baseURL = getApiBaseUrl()
   const deviceHeaders = getClientDeviceHeaders()
   config.headers.set('X-Binhu-Client-Platform', deviceHeaders['X-Binhu-Client-Platform'])
   config.headers.set('X-Binhu-Device-Id', deviceHeaders['X-Binhu-Device-Id'])
@@ -472,7 +481,7 @@ export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> 
   const { data } = await api.post('/auth/avatar', form)
   return {
     ...data,
-    avatar_url: resolveApiAssetUrl(data.avatar_url, configuredApiBaseUrl) || '',
+    avatar_url: resolveRuntimeAssetUrl(data.avatar_url) || '',
   }
 }
 
@@ -508,7 +517,7 @@ export async function getPresenceUsers(): Promise<PresenceUsersResponse> {
     ...data,
     users: (data.users || []).map((user: PresenceUsersResponse['users'][number]) => ({
       ...user,
-      avatar_url: resolveApiAssetUrl(user.avatar_url, configuredApiBaseUrl),
+      avatar_url: resolveRuntimeAssetUrl(user.avatar_url),
     })),
   }
 }

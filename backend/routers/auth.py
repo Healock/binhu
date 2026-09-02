@@ -33,6 +33,7 @@ from services.session_devices import (
     user_agent_family,
 )
 from services.session_management import invalidate_all_sessions, invalidate_session
+from services.environment_identity import production_username_allowed
 
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
@@ -82,6 +83,8 @@ class UserPreferencesRequest(BaseModel):
 @router.post("/login")
 async def login(req: LoginRequest, request: Request, response: Response):
     """登录并把该账号之前的设备会话替换为当前会话。"""
+    if not production_username_allowed(req.username):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:

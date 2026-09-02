@@ -66,6 +66,16 @@ async def get_app_bootstrap(
     response.headers["Cache-Control"] = "no-store"
     return {
         "server_version": APP_VERSION,
+        "environment": settings.APP_ENVIRONMENT,
+        "environment_label": (
+            settings.APP_ENVIRONMENT_LABEL.strip()
+            or ("影子压测环境" if settings.APP_ENVIRONMENT == "shadow" else "正式环境")
+        ),
+        "load_test_run_id": (
+            settings.LOAD_TEST_RUN_ID.strip()
+            if settings.APP_ENVIRONMENT == "shadow"
+            else ""
+        ),
         "minimum_supported_versions": minimum_versions,
         "must_upgrade": (
             compatibility["must_upgrade"] or compatibility["write_blocked"]
