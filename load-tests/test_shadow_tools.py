@@ -89,6 +89,24 @@ class ShadowToolTests(unittest.TestCase):
                 for community in manifest["communities"]
             ))
 
+    def test_shadow_database_bootstrap_includes_legacy_sync_table(self):
+        bootstrap = (Path(__file__).parent / "shadow-marker.sql").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CREATE TABLE IF NOT EXISTS _shadow_loadtest_marker", bootstrap)
+        self.assertIn("CREATE TABLE IF NOT EXISTS _sync_log", bootstrap)
+        self.assertIn("VALUES ('__UNSEEDED__', 'shadow')", bootstrap)
+
+    def test_shadow_database_bootstrap_loads_complete_local_schema(self):
+        root = Path(__file__).parent
+        compose = (root / "docker-compose.shadow.yml").read_text(encoding="utf-8")
+        bootstrap = (root / "shadow-schema-bootstrap.sh").read_text(encoding="utf-8")
+        self.assertIn("./shadow-schema-bootstrap.sh:/docker-entrypoint-initdb.d/01-shadow-schema-bootstrap.sh:ro", compose)
+        self.assertIn("../backend/init.sql:/shadow-schema/backend-init.sql:ro", compose)
+        self.assertIn('^LoadTest_[A-Za-z0-9_]+$', bootstrap)
+        self.assertIn("mysql --protocol=socket", bootstrap)
+        self.assertIn("s/OnlineData/", bootstrap)
+
     def test_guard_rejects_wrong_environment_project_and_port(self):
         env = shadow_env()
         env["APP_ENVIRONMENT"] = "production"
