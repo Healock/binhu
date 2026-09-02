@@ -19,6 +19,7 @@
 - 房屋档案要验证小区列、匹配状态、候选依据、待确认数量、单条修正、批量确认和详情展示；页面不得把匹配对象渲染成 `[object Object]`。
 - 房屋维护命令固定为：`python backend/migrations/property_small_community_matching.py measure`、`migrate --apply`、`verify`。生产写入前备份 `RegistryData`；若同次发布包含在线任务投影结构，则备份范围提升为 `OnlineData + RegistryData`。
 - 在线任务匹配规则升级固定执行：`python -m migrations.address_match_feedback measure`、`migrate --apply`、`verify`。先记录单候选误报数量，写入前备份 `OnlineData`，重算后核对 `ambiguous` 只剩真实多候选或无候选记录；人工 `confirmed` 数量和目标小区必须保持不变。
+- 小区改名必须测试两种路径：直接修改正式名称时旧名自动进入历史别名；历史上已经形成新旧两条记录时，使用 `python -m migrations.small_community_renames measure`、`migrate --apply`、`verify` 归并身份。归并前备份 `OnlineData` 与 `RegistryData`，核对旧小区顶层引用清零、现名称和别名完整、房屋与任务人工确认元数据保持，再执行房屋及在线任务匹配重算。
 - 本机没有真实 MySQL 时只交付模拟测试、完整自动化测试和静态检查，并在 PR 中明确“真实 MySQL 结构、驱动和维护命令尚未验证”；不得在生产库制造测试数据补齐这一项。
 - Elasticsearch 和 MGeo 未启用时，依赖、配置、网络调用和后台任务都不应出现；以后接入也只能参与召回/精排，不得绕过街道、社区、唯一性和有效状态硬约束，也不得覆盖人工确认。
 

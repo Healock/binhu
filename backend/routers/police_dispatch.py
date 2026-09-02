@@ -1228,13 +1228,21 @@ async def update_address(
         _assert_address_scope(data.community_id, allowed_ids)
         await _assert_community(cur, data.community_id, require_enabled=True)
         await cur.execute(
-            "SELECT id, community_id FROM _police_address_entries WHERE id=%s",
+            "SELECT id, community_id, name FROM _police_address_entries WHERE id=%s",
             (entry_id,),
         )
         current = await cur.fetchone()
         if not current:
             raise HTTPException(404, "地址记录不存在")
         _assert_address_scope(int(current[1]), allowed_ids)
+        payload = data
+        old_name = str(current[2] or "").strip()
+        if old_name and normalize_lookup(old_name) != normalize_lookup(data.name):
+            aliases = list(dict.fromkeys([
+                *(alias.strip() for alias in data.aliases if alias.strip()),
+                old_name,
+            ]))
+            payload = data.model_copy(update={"aliases": aliases})
         try:
             await cur.execute("""
                 UPDATE _police_address_entries SET
@@ -1242,14 +1250,17 @@ async def update_address(
                     address_type=%s, pattern=%s, community_id=%s,
                     aliases_json=%s, enabled=%s, updated_by=%s
                 WHERE id=%s
-            """, (*_address_payload(data), user["id"], entry_id))
+            """, (*_address_payload(payload), user["id"], entry_id))
         except Exception as exc:
             if getattr(exc, "args", [None])[0] == 1062:
                 raise HTTPException(409, "同一社区已经存在同名地址记录") from exc
             raise
     await record_admin_audit(
         user, "police_address.update", target_type="police_address",
-        target_name=str(entry_id), detail={"enabled": data.enabled},
+        target_name=str(entry_id), detail={
+            "enabled": data.enabled,
+            "renamed": bool(old_name and normalize_lookup(old_name) != normalize_lookup(data.name)),
+        },
         **request_audit_fields(request),
     )
     return {"message": "地址记录已更新"}

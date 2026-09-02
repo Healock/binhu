@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import io
+import json
 import os
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -445,6 +446,42 @@ def test_address_update_and_delete_reject_cross_community(monkeypatch):
         asyncio.run(delete_address(9, request, user=user, conn=delete_conn))
     assert delete_error.value.status_code == 403
     delete_conn.rollback.assert_awaited_once()
+
+
+def test_address_rename_preserves_old_name_as_historical_alias(monkeypatch):
+    cursor = MagicMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchone = AsyncMock(return_value=(9, 6, "旧小区名"))
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=_CursorContext(cursor))
+    monkeypatch.setattr(
+        "routers.police_dispatch._communities",
+        AsyncMock(return_value=[{"id": 6, "name": "冬梅", "enabled": True}]),
+    )
+    monkeypatch.setattr("routers.police_dispatch._address_scope_community_ids", lambda *_: None)
+    monkeypatch.setattr("routers.police_dispatch._assert_community", AsyncMock())
+    audit = AsyncMock()
+    monkeypatch.setattr("routers.police_dispatch.record_admin_audit", audit)
+    request = Request({
+        "type": "http", "method": "PUT", "path": "/", "headers": [],
+        "client": ("127.0.0.1", 1),
+    })
+    user = {
+        "id": 5,
+        "member": {"position": "组长"},
+        "permission_scopes": {POLICE_ADDRESS_MANAGE: "all"},
+        "departments": [],
+    }
+    payload = AddressCreate(
+        name="新小区名", community_id=6, aliases=["已有别名"],
+    )
+
+    result = asyncio.run(update_address(9, payload, request, user=user, conn=conn))
+
+    assert result == {"message": "地址记录已更新"}
+    update_call = cursor.execute.await_args_list[-1]
+    assert json.loads(update_call.args[1][6]) == ["已有别名", "旧小区名"]
+    assert audit.await_args.kwargs["detail"] == {"enabled": True, "renamed": True}
 
 
 def test_police_access_requires_all_scope_and_hard_position_limit():
