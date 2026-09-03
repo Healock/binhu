@@ -28,7 +28,8 @@ initialize_online_database() {
   # revisions no longer have uk_row_key, so the legacy DROP INDEX clause is
   # not safe during a fresh shadow bootstrap (MySQL 1091).
   # Keep this transform deliberately narrow: only the obsolete archive index
-  # clause is removed; all other init.sql constraints remain intact.
+  # clause is removed; all other init.sql constraints remain intact.  This
+  # remains scoped to the shadow bootstrap and never changes production DDL.
   sed \
   -e "s/OnlineDataArchive/${shadow_database}/g" \
   -e "s/daily_report/${shadow_database}/g" \
