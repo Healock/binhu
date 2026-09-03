@@ -111,9 +111,22 @@ def _production_container_states(names: tuple[str, ...]) -> dict[str, dict[str, 
             states[name] = {"error": "inspect_failed"}
             continue
         try:
-            states[name] = json.loads(result.stdout.strip())
+            raw = json.loads(result.stdout.strip())
         except json.JSONDecodeError:
             states[name] = {"error": "invalid_inspect_output"}
+            continue
+        state = raw.get("State") or {}
+        health = state.get("Health") or {}
+        # docker inspect contains mounts, environment variables and command
+        # arguments.  Monitoring only needs this explicit allowlist; never
+        # persist the complete inspection payload in load-test artifacts.
+        states[name] = {
+            "running": bool(state.get("Running")),
+            "restarting": bool(state.get("Restarting")),
+            "oom_killed": bool(state.get("OOMKilled")),
+            "health": str(health.get("Status") or ""),
+            "restart_count": int(raw.get("RestartCount") or 0),
+        }
     return states
 
 
@@ -186,7 +199,7 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
     stop_reason = ""
     initial_states = _production_container_states(config.production_containers)
     baseline_restarts = {
-        name: int(state.get("RestartCount") or 0)
+        name: int(state.get("restart_count") or 0)
         for name, state in initial_states.items()
         if "error" not in state
     }
@@ -243,11 +256,11 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
         elif any("error" in state for state in production_states.values()):
             stop_reason = "production_container_inspection_failed"
         elif any(
-            state.get("State", {}).get("OOMKilled")
-            or state.get("State", {}).get("Restarting")
-            or not state.get("State", {}).get("Running", False)
-            or state.get("State", {}).get("Health", {}).get("Status") == "unhealthy"
-            or int(state.get("RestartCount") or 0) > baseline_restarts.get(name, 0)
+            state.get("oom_killed")
+            or state.get("restarting")
+            or not state.get("running", False)
+            or state.get("health") == "unhealthy"
+            or int(state.get("restart_count") or 0) > baseline_restarts.get(name, 0)
             for name, state in production_states.items()
         ):
             stop_reason = "production_container_unhealthy_or_restarted"

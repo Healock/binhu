@@ -37,6 +37,7 @@ SHADOW_MYSQL_ROOT_PASSWORD=<影子专用 root 密码>
 SHADOW_REDIS_PASSWORD=<影子专用 Redis 密码>
 SHADOW_ENCRYPTION_KEY=<影子专用加密密钥>
 SHADOW_BOOTSTRAP_PASSWORD=<仅用于首次启动的临时密码>
+SHADOW_OPS_AGENT_TOKEN=<影子专用运维采集令牌>
 
 SHADOW_BASE_URL=https://<现有可信域名>
 PRODUCTION_HEALTH_URL=https://<现有可信域名>/api/health
@@ -44,6 +45,8 @@ PRODUCTION_CONTAINER_NAMES=binhu-backend,binhu-mysql,binhu-redis
 ```
 
 `SHADOW_BASE_URL` 只填写 HTTPS origin，不带 `/shadow-api`。负载脚本固定追加 `/shadow-api`，因此无法被配置成任意外部路径。
+
+影子环境包含独立的只读运维采集器，只允许读取当前运行编号下的 Backend、MySQL 和 Redis 容器状态。采集器与正式运维网络隔离，令牌必须使用本次运行的随机值；运维中心出现“容器状态暂时不可用”时不得开始正式压测，因为此时无法完整判断 OOM、重启和资源饱和。
 
 ## 启动和造数
 

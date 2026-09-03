@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixture import BUSINESS_TYPES, make_tasks, make_users, write_manifest
-from metrics import summarize
+from metrics import _production_container_states, summarize
 from shadow_guard import ShadowSafetyError, validate_shadow_environment
 from shadowctl import (
     _conflict_groups,
@@ -109,6 +109,18 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("utf8mb4_unicode_ci", bootstrap)
         self.assertIn("s/OnlineData/", bootstrap)
 
+    def test_shadow_compose_supports_desktop_sessions_and_resource_monitoring(self):
+        compose = (Path(__file__).parent / "docker-compose.shadow.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("SESSION_COOKIE_SAMESITE: none", compose)
+        self.assertIn("http://tauri.localhost", compose)
+        self.assertIn("OPS_AGENT_URL: http://ops-agent:9001", compose)
+        self.assertIn("SHADOW_OPS_AGENT_TOKEN", compose)
+        self.assertIn("OPS_AGENT_CONTAINERS:", compose)
+        self.assertIn("${COMPOSE_PROJECT_NAME}-backend-1", compose)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose)
+
     def test_runtime_index_joins_use_explicit_shadow_collation(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(
@@ -198,6 +210,37 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn('target.get("property_candidates")', source)
         self.assertIn('"kind": "claim" if claim else "write"', source)
         self.assertIn("response.success()", source)
+        self.assertIn("if not eligible:", source)
+        self.assertLess(
+            source.index('range(31, 36)'),
+            source.index('range(1, 31)'),
+        )
+
+    def test_container_monitor_persists_only_safe_state_fields(self):
+        inspect_payload = {
+            "RestartCount": 2,
+            "State": {
+                "Running": True,
+                "Restarting": False,
+                "OOMKilled": False,
+                "Health": {"Status": "healthy", "Log": [{"Output": "secret"}]},
+            },
+            "Config": {"Env": ["PASSWORD=must-not-be-recorded"]},
+            "Mounts": [{"Source": "/private/path"}],
+        }
+        completed = __import__("subprocess").CompletedProcess(
+            ["docker"], 0, stdout=__import__("json").dumps(inspect_payload), stderr=""
+        )
+        with patch("metrics.subprocess.run", return_value=completed):
+            states = _production_container_states(("binhu-backend",))
+        self.assertEqual(states["binhu-backend"], {
+            "running": True,
+            "restarting": False,
+            "oom_killed": False,
+            "health": "healthy",
+            "restart_count": 2,
+        })
+        self.assertNotIn("PASSWORD", __import__("json").dumps(states))
 
     def test_expected_409_is_excluded_and_latest_success_uses_revision_order(self):
         events = [
@@ -265,6 +308,10 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn('"member", 35', source)
         self.assertIn('"leader", 8', source)
         self.assertNotIn("burst-", source)
+        self.assertIn("def on_start", source)
+        self.assertIn("def hold_session", source)
+        self.assertNotIn("StopUser", source)
+        self.assertNotIn("self.stop(True)", source)
 
     def test_metrics_summary_excludes_aggregated_duplicate(self):
         with tempfile.TemporaryDirectory() as directory:

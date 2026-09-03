@@ -6,6 +6,8 @@ import hashlib
 import itertools
 import threading
 
+import time
+
 from locust import HttpUser, between, task
 
 
@@ -26,9 +28,6 @@ class ConcentratedLoginUser(HttpUser):
     def on_start(self) -> None:
         with _lock:
             self.index = next(_counter)
-
-    @task
-    def login_once(self) -> None:
         username = _accounts()[self.index % 50]
         password = f"LoadTest-{hashlib.sha256(username.encode()).hexdigest()[:16]}!"
         with self.client.post(
@@ -40,4 +39,10 @@ class ConcentratedLoginUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"login {response.status_code}")
-        self.stop(True)
+
+    @task
+    def hold_session(self) -> None:
+        # Keep the user alive after the single on_start login.  Ending it here
+        # makes Locust spawn a replacement user, turning a 50-account burst
+        # into an unbounded stream of logins.
+        time.sleep(60)
