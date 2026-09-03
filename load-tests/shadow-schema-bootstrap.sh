@@ -38,7 +38,7 @@ initialize_online_database() {
   -e "s/OnlineData/${shadow_database}/g" \
   -e '/^GRANT ALL PRIVILEGES/d' \
   -e '/^FLUSH PRIVILEGES/d' \
-  -e 's/^[[:space:]]*DROP INDEX uk_row_key,[[:space:]]*$//' \
+  -e 's/,[[:space:]]*DROP INDEX uk_row_key//g' \
   "${schema_source}" | MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" \
     mysql --protocol=socket -uroot --database="${shadow_database}"
 }
