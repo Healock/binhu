@@ -31,6 +31,7 @@ SHADOW_REDIS_IMAGE=redis@sha256:<已核对的完整 digest>
 SHADOW_DB_HOST=127.0.0.1
 SHADOW_DB_PORT=47126
 SHADOW_DB_NAME=LoadTest_LT_20260902_01
+SHADOW_DAILY_DB_NAME=LoadTest_LT_20260902_01_daily
 SHADOW_DB_USER=<影子专用用户>
 SHADOW_DB_PASSWORD=<影子专用密码>
 SHADOW_MYSQL_ROOT_PASSWORD=<影子专用 root 密码>
@@ -45,6 +46,9 @@ PRODUCTION_CONTAINER_NAMES=binhu-backend,binhu-mysql,binhu-redis
 ```
 
 `SHADOW_BASE_URL` 只填写 HTTPS origin，不带 `/shadow-api`。负载脚本固定追加 `/shadow-api`，因此无法被配置成任意外部路径。
+
+日报刷新使用 `SHADOW_DAILY_DB_NAME` 独立数据库。不要把它配置成在线业务库；独立 schema
+用于避免日报快照刷新申请元数据锁时阻塞流口任务的读写请求。
 
 影子环境包含独立的只读运维采集器，只允许读取当前运行编号下的 Backend、MySQL 和 Redis 容器状态。采集器与正式运维网络隔离，令牌必须使用本次运行的随机值；运维中心出现“容器状态暂时不可用”时不得开始正式压测，因为此时无法完整判断 OOM、重启和资源饱和。
 

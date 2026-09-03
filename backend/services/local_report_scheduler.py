@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import uuid
 from datetime import date
 from typing import Any, Iterable
 
@@ -13,6 +12,7 @@ from services.business_time import get_business_date
 from services.report_builders import BUILDERS
 from services.report_builders.summary import _load_summary_types, build_summary
 from services.report_table_utils import table_exists
+from config import settings
 
 
 REPORT_REFRESH_LOCK = "binhu_local_daily_report_refresh"
@@ -24,6 +24,14 @@ _SUFFIX = re.compile(r"^[A-Za-z0-9]+$")
 
 def _identifier(value: str) -> str:
     return f"`{value}`"
+
+
+def _schema(value: str) -> str:
+    """Quote a configured schema name after rejecting SQL metacharacters."""
+    text = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]+", text):
+        raise ValueError(f"非法数据库名：{value}")
+    return _identifier(text)
 
 
 def _validated_builders(
@@ -59,135 +67,59 @@ async def _release_refresh_lock(conn) -> None:
         await cur.fetchone()
 
 
-async def _drop_tables(cur, table_names: Iterable[str]) -> None:
-    for table_name in table_names:
-        try:
-            await cur.execute(
-                f"DROP TABLE IF EXISTS daily_report.{_identifier(table_name)}"
-            )
-        except Exception as exc:
-            print(
-                "[LOCAL_REPORT] 临时表清理失败："
-                f"{table_name}，{type(exc).__name__}: {str(exc)[:200]}"
-            )
-
-
 async def replace_local_report_snapshots(
     conn,
     parser_types: Iterable[str] | None = None,
 ) -> str:
     """Atomically replace the current business day's local-table snapshots."""
     builders = _validated_builders(parser_types)
-    token = uuid.uuid4().hex[:12]
+    online_schema = _schema(settings.MYSQL_ONLINE_DATA_DB)
+    report_schema = _schema(settings.MYSQL_DAILY_REPORT_DB)
     staged = [
-        (
-            parser_type,
-            f"tmp_lreport_{token}_{index}",
-            f"{{report_date}}_snapshot_{builder.table_suffix}",
-            builder.source_table,
-        )
-        for index, (parser_type, builder) in enumerate(builders)
+        (parser_type, f"{{report_date}}_snapshot_{builder.table_suffix}", builder.source_table)
+        for parser_type, builder in builders
     ]
 
     async with conn.cursor() as cur:
         report_date = (await get_business_date(cur)).isoformat()
         staged = [
-            (
-                parser_type,
-                stage_name,
-                final_pattern.format(report_date=report_date),
-                source,
-            )
-            for parser_type, stage_name, final_pattern, source in staged
+            (parser_type, final_pattern.format(report_date=report_date), source)
+            for parser_type, final_pattern, source in staged
         ]
+        # Stable snapshot tables avoid the metadata-lock convoy caused by a
+        # runtime RENAME TABLE.  DELETE/INSERT are transactional InnoDB
+        # operations and readers continue to see the previous committed
+        # snapshot while a refresh is in progress.
+        await conn.begin()
         try:
-            # 先创建空表，再在同一个一致性读事务中填充全部业务类型。
-            # 这样各业务快照来自同一个数据库视图，且任何一张读取失败都不会
-            # 替换当前正在使用的日报快照。
-            for _, stage_name, _, source_table in staged:
-                await cur.execute(
-                    f"CREATE TABLE daily_report.{_identifier(stage_name)} LIKE "
-                    f"OnlineData.{_identifier(source_table)}"
-                )
-            await conn.begin()
-            try:
-                for _, stage_name, _, source_table in staged:
+            for _, final_name, source_table in staged:
+                if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, final_name):
                     await cur.execute(
-                        f"INSERT INTO daily_report.{_identifier(stage_name)} "
-                        f"SELECT * FROM OnlineData.{_identifier(source_table)}"
+                        f"CREATE TABLE {report_schema}.{_identifier(final_name)} LIKE "
+                        f"{online_schema}.{_identifier(source_table)}"
                     )
-                await conn.commit()
-            except BaseException:
-                await conn.rollback()
-                raise
-
-            backup_by_final: dict[str, str] = {}
-            rename_parts: list[str] = []
-            for index, (_, stage_name, final_name, _) in enumerate(staged):
-                if await table_exists(cur, "daily_report", final_name):
-                    backup_name = f"tmp_lreport_old_{token}_{index}"
-                    backup_by_final[final_name] = backup_name
-                    rename_parts.append(
-                        f"daily_report.{_identifier(final_name)} TO "
-                        f"daily_report.{_identifier(backup_name)}"
-                    )
-                rename_parts.append(
-                    f"daily_report.{_identifier(stage_name)} TO "
-                    f"daily_report.{_identifier(final_name)}"
-                )
-            await cur.execute("RENAME TABLE " + ", ".join(rename_parts))
-
-            metadata_values = ", ".join(
-                ["(%s, %s, %s, 'snapshot')"] * len(staged)
-            )
-            metadata_params: list[str] = []
-            for parser_type, _, final_name, _ in staged:
-                metadata_params.extend(
-                    [final_name, report_date, f"{parser_type}_snapshot"]
-                )
-            try:
                 await cur.execute(
-                    "INSERT INTO daily_report._daily_report_meta "
-                    "(table_name, report_date, parser_type, generation_method) "
-                    f"VALUES {metadata_values} "
-                    "ON DUPLICATE KEY UPDATE generated_at=NOW(), "
-                    "generation_method='snapshot'",
-                    metadata_params,
+                    f"DELETE FROM {report_schema}.{_identifier(final_name)}"
                 )
-            except BaseException:
-                # 元数据写入失败时把整批旧快照原子恢复，避免表内容和
-                # generated_at 口径不一致。没有旧快照的业务则恢复为不存在。
-                rollback_parts: list[str] = []
-                failed_names: list[str] = []
-                for index, (_, _, final_name, _) in enumerate(staged):
-                    failed_name = f"tmp_lreport_failed_{token}_{index}"
-                    failed_names.append(failed_name)
-                    rollback_parts.append(
-                        f"daily_report.{_identifier(final_name)} TO "
-                        f"daily_report.{_identifier(failed_name)}"
-                    )
-                    backup_name = backup_by_final.get(final_name)
-                    if backup_name:
-                        rollback_parts.append(
-                            f"daily_report.{_identifier(backup_name)} TO "
-                            f"daily_report.{_identifier(final_name)}"
-                        )
-                try:
-                    await cur.execute("RENAME TABLE " + ", ".join(rollback_parts))
-                except BaseException as rollback_exc:
-                    raise RuntimeError(
-                        "日报快照元数据写入失败，且旧快照恢复失败"
-                    ) from rollback_exc
-                await _drop_tables(cur, failed_names)
-                raise
+                await cur.execute(
+                    f"INSERT INTO {report_schema}.{_identifier(final_name)} "
+                    f"SELECT * FROM {online_schema}.{_identifier(source_table)}"
+                )
 
-            await _drop_tables(cur, backup_by_final.values())
-        except BaseException:
-            # 原子切换前出错时只存在临时表；切换后的异常会在上方恢复旧表。
-            await _drop_tables(
-                cur,
-                [stage_name for _, stage_name, _, _ in staged],
+            metadata_values = ", ".join(["(%s, %s, %s, 'snapshot')"] * len(staged))
+            metadata_params: list[str] = []
+            for parser_type, final_name, _ in staged:
+                metadata_params.extend([final_name, report_date, f"{parser_type}_snapshot"])
+            await cur.execute(
+                f"INSERT INTO {report_schema}._daily_report_meta "
+                "(table_name, report_date, parser_type, generation_method) "
+                f"VALUES {metadata_values} "
+                "ON DUPLICATE KEY UPDATE generated_at=NOW(), generation_method='snapshot'",
+                metadata_params,
             )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
             raise
 
     return report_date

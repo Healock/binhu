@@ -116,6 +116,8 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("SESSION_COOKIE_SAMESITE: none", compose)
         self.assertIn("http://tauri.localhost", compose)
         self.assertIn("OPS_AGENT_URL: http://ops-agent:9001", compose)
+        self.assertIn("SHADOW_DAILY_DB_NAME", compose)
+        self.assertIn('DAILY_DOMAIN_ACTIVE: "true"', compose)
         self.assertIn("SHADOW_OPS_AGENT_TOKEN", compose)
         self.assertIn("OPS_AGENT_CONTAINERS:", compose)
         self.assertIn("${COMPOSE_PROJECT_NAME}-backend-1", compose)
