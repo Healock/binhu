@@ -104,6 +104,15 @@ def test_legacy_daily_report_qualifier_routes_to_shadow_daily_schema():
     assert "`LoadTest_LT_20260904_04_daily`.`2026_snapshot_fullchain`" in sql
 
 
+def test_legacy_daily_report_qualifier_preserves_bytes_queries():
+    with patch.object(settings, "MYSQL_DAILY_REPORT_DB", "LoadTest_LT_20260904_04_daily"), patch.object(
+        settings, "DAILY_DOMAIN_ACTIVE", True
+    ):
+        sql = rewrite_domain_sql(b"SELECT 1 FROM daily_report._daily_report_meta")
+    assert isinstance(sql, bytes)
+    assert b"`LoadTest_LT_20260904_04_daily`._daily_report_meta" in sql
+
+
 def test_already_target_qualified_table_is_not_rewritten_twice():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql("SELECT * FROM `PlatformData`.`_users`")
