@@ -101,6 +101,7 @@ def test_legacy_daily_report_qualifier_routes_to_shadow_daily_schema():
             "JOIN daily_report.`2026_snapshot_fullchain` s ON 1=1"
         )
     assert "`LoadTest_LT_20260904_04_daily`._daily_report_meta" in sql
+    assert "daily_report." not in sql
     assert "`LoadTest_LT_20260904_04_daily`. `2026_snapshot_fullchain`" not in sql
     assert "`LoadTest_LT_20260904_04_daily`.`2026_snapshot_fullchain`" in sql
 
