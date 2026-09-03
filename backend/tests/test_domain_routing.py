@@ -91,6 +91,31 @@ def test_help_documents_are_stored_in_platform_domain():
     assert "`PlatformData`.`_help_documents`" in sql
 
 
+def test_legacy_daily_report_qualifier_routes_to_shadow_daily_schema():
+    """Split-schema shadow runs must never fall back to the production name."""
+    with patch.object(settings, "MYSQL_DAILY_REPORT_DB", "LoadTest_LT_20260904_04_daily"), patch.object(
+        settings, "DAILY_DOMAIN_ACTIVE", True
+    ):
+        sql = rewrite_domain_sql(
+            "SELECT 1 FROM daily_report._daily_report_meta "
+            "JOIN daily_report.`2026_snapshot_fullchain` s ON 1=1"
+        )
+    assert "`LoadTest_LT_20260904_04_daily`._daily_report_meta" in sql
+    assert "daily_report." not in sql
+    assert "`LoadTest_LT_20260904_04_daily`. `2026_snapshot_fullchain`" not in sql
+    assert "`LoadTest_LT_20260904_04_daily`.`2026_snapshot_fullchain`" in sql
+
+
+def test_legacy_daily_report_qualifier_preserves_bytes_queries():
+    """The cursor rewrite also preserves aiomysql byte-query callers."""
+    with patch.object(settings, "MYSQL_DAILY_REPORT_DB", "LoadTest_LT_20260904_04_daily"), patch.object(
+        settings, "DAILY_DOMAIN_ACTIVE", True
+    ):
+        sql = rewrite_domain_sql(b"SELECT 1 FROM daily_report._daily_report_meta")
+    assert isinstance(sql, bytes)
+    assert b"`LoadTest_LT_20260904_04_daily`._daily_report_meta" in sql
+
+
 def test_already_target_qualified_table_is_not_rewritten_twice():
     with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
         sql = rewrite_domain_sql("SELECT * FROM `PlatformData`.`_users`")

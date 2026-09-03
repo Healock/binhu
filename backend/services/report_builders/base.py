@@ -5,6 +5,7 @@
 """
 
 from database import db_manager
+from config import settings
 from services.report_table_utils import table_exists
 
 
@@ -167,9 +168,9 @@ class BaseReportBuilder:
                         "message": f"{date_str} 没有同步快照，不能生成日报",
                     }
 
-                if not await table_exists(cur, "daily_report", inspector_table):
+                if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, inspector_table):
                     await cur.execute(f"CREATE TABLE {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-                if not await table_exists(cur, "daily_report", community_table):
+                if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, community_table):
                     await cur.execute(f"CREATE TABLE {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
                 from services.report_ledger import (
                     aggregate_ledger_into_reports,
