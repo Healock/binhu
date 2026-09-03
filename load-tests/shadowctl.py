@@ -30,16 +30,15 @@ REQUIRED_PRODUCTION_PROOF_SCOPES = {
     "loadtest_prefixes",
     "legacy_shadow_source_kind",
 }
-REQUIRED_SHADOW_TABLES = {
-    "_daily_report_meta",
-    "_daily_task_ledger",
+REQUIRED_SHADOW_ONLINE_TABLES = {
     "_sessions",
     "_user_presence_clients",
     "_users",
     "_online_source_projection",
     "_shadow_loadtest_marker",
-    "_shadow_loadtest_expectations",
 }
+REQUIRED_SHADOW_DAILY_TABLES = {"_daily_report_meta", "_daily_task_ledger"}
+REQUIRED_SHADOW_SEEDED_TABLES = {"_shadow_loadtest_expectations"}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -69,7 +68,7 @@ def _require_database_credentials() -> tuple[str, str]:
     return user, password
 
 
-def _connect(context: ShadowContext):
+def _connect(context: ShadowContext, database: str | None = None):
     try:
         import pymysql
     except ImportError as exc:
@@ -80,7 +79,7 @@ def _connect(context: ShadowContext):
         port=context.db_port,
         user=user,
         password=password,
-        database=context.db_name,
+        database=database or context.db_name,
         connect_timeout=5,
         read_timeout=30,
         write_timeout=30,
@@ -111,25 +110,45 @@ def _verify_marker(context: ShadowContext, *, allow_placeholder: bool) -> list[s
     return rows
 
 
-def _verify_shadow_schema(context: ShadowContext) -> None:
-    """Fail closed before seed or traffic if the isolated schema is partial."""
-    connection = _connect(context)
+def _verify_tables(context: ShadowContext, database: str, required: set[str]) -> list[str]:
+    connection = _connect(context, database)
     try:
         with connection.cursor() as cursor:
-            placeholders = ",".join(["%s"] * len(REQUIRED_SHADOW_TABLES))
+            placeholders = ",".join(["%s"] * len(required))
             cursor.execute(
                 "SELECT TABLE_NAME FROM information_schema.TABLES "
                 "WHERE TABLE_SCHEMA=%s AND TABLE_NAME IN (" + placeholders + ")",
-                (context.db_name, *sorted(REQUIRED_SHADOW_TABLES)),
+                (database, *sorted(required)),
             )
             present = {str(row["TABLE_NAME"]) for row in cursor.fetchall()}
     finally:
         connection.close()
-    missing = sorted(REQUIRED_SHADOW_TABLES - present)
-    if missing:
-        raise ShadowSafetyError(
-            "影子环境 schema 不完整，缺少必需表：" + ", ".join(missing)
-        )
+    return sorted(required - present)
+
+
+def _verify_shadow_schema(context: ShadowContext, *, seeded: bool = False) -> None:
+    """Fail closed before seed or traffic if either isolated schema is partial.
+
+    The expectations table is created by seed itself, so it is intentionally
+    checked only for run/verify.  Daily-report metadata belongs to the
+    separate run-scoped daily database, never the online database.
+    """
+    daily_database = os.environ.get("SHADOW_DAILY_DB_NAME", "").strip()
+    if not daily_database or not re.fullmatch(r"LoadTest_[A-Za-z0-9_]+_daily", daily_database):
+        raise ShadowSafetyError("缺少有效的 SHADOW_DAILY_DB_NAME")
+    missing_online = _verify_tables(context, context.db_name, REQUIRED_SHADOW_ONLINE_TABLES)
+    missing_daily = _verify_tables(context, daily_database, REQUIRED_SHADOW_DAILY_TABLES)
+    missing_seeded = (
+        _verify_tables(context, context.db_name, REQUIRED_SHADOW_SEEDED_TABLES)
+        if seeded else []
+    )
+    details = [
+        *(f"在线库.{item}" for item in missing_online),
+        *(f"日报库.{item}" for item in missing_daily),
+        *(f"在线库.{item}" for item in missing_seeded),
+    ]
+    if details:
+        raise ShadowSafetyError("影子环境 schema 不完整，缺少必需表：" + ", ".join(details))
 
 
 def _docker() -> str:
@@ -303,7 +322,7 @@ def _validate_run_shape(scenario: str, users: int, duration: str) -> None:
 def run(run_id: str, users: int, duration: str, scenario: str) -> int:
     context = require_shadow_context(run_id)
     _verify_pinned_images()
-    _verify_shadow_schema(context)
+    _verify_shadow_schema(context, seeded=True)
     _validate_run_shape(scenario, users, duration)
     _verify_marker(context, allow_placeholder=False)
     manifest = _manifest(context.run_id)
@@ -676,7 +695,7 @@ def _verify_production_proof(path: Path | None, run_id: str) -> dict[str, Any]:
 
 def verify(run_id: str, production_proof: Path | None) -> int:
     context = require_shadow_context(run_id)
-    _verify_shadow_schema(context)
+    _verify_shadow_schema(context, seeded=True)
     _verify_marker(context, allow_placeholder=False)
     path = _manifest(context.run_id)
     runtime_path = _runtime_index(context.run_id)
