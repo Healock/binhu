@@ -27,6 +27,8 @@ initialize_online_database() {
   # Archive tables are created from the current local schema. Some schema
   # revisions no longer have uk_row_key, so the legacy DROP INDEX clause is
   # not safe during a fresh shadow bootstrap (MySQL 1091).
+  # Keep this transform deliberately narrow: only the obsolete archive index
+  # clause is removed; all other init.sql constraints remain intact.
   sed \
   -e "s/OnlineDataArchive/${shadow_database}/g" \
   -e "s/daily_report/${shadow_database}/g" \
@@ -38,8 +40,6 @@ initialize_online_database() {
   -e "s/OnlineData/${shadow_database}/g" \
   -e '/^GRANT ALL PRIVILEGES/d' \
   -e '/^FLUSH PRIVILEGES/d' \
-  # Keep this transform deliberately narrow: only the obsolete archive index
-  # clause is removed; all other init.sql constraints remain intact.
   -e 's/,[[:space:]]*DROP INDEX uk_row_key//g' \
   "${schema_source}" | MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" \
     mysql --protocol=socket -uroot --database="${shadow_database}"
