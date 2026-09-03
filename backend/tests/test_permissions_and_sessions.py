@@ -348,6 +348,13 @@ class SessionPolicyTests(unittest.IsolatedAsyncioTestCase):
                 await get_current_user(request())
         self.assertEqual(raised.exception.status_code, 503)
 
+    async def test_bootstrap_treats_stale_session_as_anonymous(self):
+        cursor = FakeCursor(None)
+        with patch("deps.db_manager.get_pool", return_value=FakePool(cursor)):
+            user = await get_bootstrap_user(request())
+
+        self.assertIsNone(user)
+
 
 if __name__ == "__main__":
     unittest.main()

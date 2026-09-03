@@ -476,7 +476,15 @@ async def get_bootstrap_user(request: Request) -> dict | None:
     """bootstrap 允许匿名访问，并在维护期间保留当前账号能力信息。"""
     if not request.cookies.get(settings.SESSION_COOKIE_NAME):
         return None
-    return await _load_current_user(request, check_maintenance=False)
+    try:
+        return await _load_current_user(request, check_maintenance=False)
+    except HTTPException as exc:
+        # Bootstrap is also the login page's environment/readiness probe.  An
+        # expired or replaced cookie must be treated as an anonymous request;
+        # otherwise the client cannot reach login to replace that stale cookie.
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        raise
 
 
 def require_permission(permission: str) -> Callable:
