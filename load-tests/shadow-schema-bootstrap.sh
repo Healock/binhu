@@ -23,29 +23,33 @@ MYSQL_PWD="${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}" \
 # database, so rewrite only the known database identifiers and remove grants
 # that target the production application user. The script runs only inside the
 # official MySQL initialization container and connects through its local socket.
-initialize_database() {
-  local target_database="$1"
+initialize_online_database() {
   sed \
   -e "s/OnlineDataArchive/${shadow_database}/g" \
-  -e "s/daily_report/${daily_database}/g" \
+  -e "s/daily_report/${shadow_database}/g" \
   -e "s/PlatformData/${shadow_database}/g" \
   -e "s/VisitData/${shadow_database}/g" \
   -e "s/DispatchData/${shadow_database}/g" \
   -e "s/RegistryData/${shadow_database}/g" \
   -e "s/WorkflowData/${shadow_database}/g" \
-  -e "s/OnlineData/${target_database}/g" \
+  -e "s/OnlineData/${shadow_database}/g" \
   -e '/^GRANT ALL PRIVILEGES/d' \
   -e '/^FLUSH PRIVILEGES/d' \
   "${schema_source}" | MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" \
-    mysql --protocol=socket -uroot --database="${target_database}"
+    mysql --protocol=socket -uroot --database="${shadow_database}"
 }
 
-initialize_database "${shadow_database}"
+initialize_online_database
 
-# The daily-report connection uses its own schema.  Seed only the common
-# metadata and report tables there; the full initializer is idempotent and
-# also creates any auxiliary tables required by report builders.
-initialize_database "${daily_database}"
+# The daily-report connection uses its own schema.  Re-run only the explicit
+# daily-report section of init.sql against the isolated daily database; the
+# online/archive/platform sections must never be replayed there.
+MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql --protocol=socket -uroot \
+  -e "GRANT ALL PRIVILEGES ON \`${daily_database}\`.* TO '${MYSQL_USER}'@'%'; FLUSH PRIVILEGES"
+awk '/^-- daily_report 库：元数据表/{found=1} found {print}' "${schema_source}" \
+  | sed -e "s/daily_report/${daily_database}/g" \
+        -e "s/USE ${daily_database}/USE ${daily_database}/g" \
+  | MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql --protocol=socket -uroot --database="${daily_database}"
 
 # Keep the observability metadata contract explicit.  Older init.sql snapshots
 # and pre-existing named volumes may not contain this table even though the
