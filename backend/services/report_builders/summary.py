@@ -4,6 +4,7 @@
 """
 
 import json
+from config import settings
 from database import db_manager
 from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
@@ -166,7 +167,7 @@ async def build_summary(
                     "message": f"{date_str} 没有可用快照和分汇总表，不能生成总汇总表",
                 }
 
-            if not await table_exists(cur, "daily_report", summary_table):
+            if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, summary_table):
                 await cur.execute(
                     f"CREATE TABLE {t_summary} ({SUMMARY_COLS}) "
                     f"ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"

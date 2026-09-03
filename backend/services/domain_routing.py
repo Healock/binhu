@@ -78,6 +78,18 @@ def rewrite_domain_sql(sql: str | bytes) -> str | bytes:
         # 只替换没有点号前缀的短表名。字段名、参数和已限定表名不命中。
         unqualified = re.compile(rf"(?<![A-Za-z0-9_`.])`?{escaped_table}`?(?![A-Za-z0-9_])")
         text = unqualified.sub(f"`{target_schema}`.`{table}`", text)
+    # Legacy report queries occasionally qualify the historical schema
+    # explicitly. In a shadow run the daily domain is a run-scoped database,
+    # so rewrite that qualifier to the configured schema too.
+    if _enabled("DAILY_DOMAIN_ACTIVE"):
+        daily_schema = str(settings.MYSQL_DAILY_REPORT_DB)
+        if daily_schema != "daily_report":
+            text = re.sub(
+                r"(?<![A-Za-z0-9_`])`?daily_report`?\s*\.\s*",
+                f"`{daily_schema}`.",
+                text,
+                flags=re.IGNORECASE,
+            )
     return text.encode("utf-8") if is_bytes else text
 
 

@@ -9,6 +9,7 @@ import hashlib
 from dataclasses import dataclass
 
 from services.txdocs_client import TxDocsClient
+from config import settings
 from services.parsers import get_parser
 from services.business_time import get_business_date
 from services.schema_compat import get_database_column_map, quote_identifier
@@ -447,7 +448,7 @@ class SyncEngine:
     async def _has_daily_report_snapshot(self, conn, snapshot_name: str) -> bool:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT 1 FROM daily_report._daily_report_meta "
+                f"SELECT 1 FROM `{settings.MYSQL_DAILY_REPORT_DB}`._daily_report_meta "
                 "WHERE table_name=%s LIMIT 1",
                 (snapshot_name,),
             )
@@ -750,13 +751,15 @@ class SyncEngine:
         async with conn.cursor() as cur:
             today = (await get_business_date(cur)).isoformat()
             snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
-            if await table_exists(cur, "daily_report", snapshot_table):
-                await cur.execute(f"DROP TABLE daily_report.`{snapshot_table}`")
+            if await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, snapshot_table):
+                await cur.execute(f"DROP TABLE `{settings.MYSQL_DAILY_REPORT_DB}`.`{snapshot_table}`")
             await cur.execute(
-                f"CREATE TABLE daily_report.`{snapshot_table}` AS SELECT * FROM OnlineData.`{table}`"
+                f"CREATE TABLE `{settings.MYSQL_DAILY_REPORT_DB}`.`{snapshot_table}` AS "
+                f"SELECT * FROM `{settings.MYSQL_ONLINE_DATA_DB}`.`{table}`"
             )
             await cur.execute(
-                "INSERT INTO daily_report._daily_report_meta (table_name, report_date, parser_type, generation_method) "
+                f"INSERT INTO `{settings.MYSQL_DAILY_REPORT_DB}`._daily_report_meta "
+                "(table_name, report_date, parser_type, generation_method) "
                 "VALUES (%s, %s, %s, 'snapshot') ON DUPLICATE KEY UPDATE generated_at = NOW()",
                 (snapshot_table, today, f"{parser_type}_snapshot"),
             )
