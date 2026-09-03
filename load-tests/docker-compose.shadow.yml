@@ -6,6 +6,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${SHADOW_MYSQL_ROOT_PASSWORD:?Set a shadow-only root password}
       MYSQL_DATABASE: ${SHADOW_DB_NAME:?Set a non-production database name}
+      SHADOW_DAILY_DB_NAME: ${SHADOW_DAILY_DB_NAME:?Set a separate shadow daily-report database name}
       MYSQL_USER: ${SHADOW_DB_USER:?Set a shadow-only database user}
       MYSQL_PASSWORD: ${SHADOW_DB_PASSWORD:?Set a shadow-only database password}
     command: ["mysqld", "--max_connections=151", "--innodb_buffer_pool_size=1G"]
@@ -46,14 +47,12 @@ services:
       APP_VERSION: "0.28.3"
       MYSQL_DOMAIN_DATABASES_ENABLED: "true"
       PLATFORM_DOMAIN_ACTIVE: "true"
-      # The first shadow readiness pass only exercises the platform and
-      # online-task paths.  The split-domain migrations for the other
-      # databases are kept disabled until their schema bootstrap is verified
-      # independently; enabling all domains at once makes legacy init SQL
-      # route into an incompatible split schema and prevents startup.
+      # The first shadow readiness pass exercises platform and online-task
+      # paths.  Keep the daily-report domain separate so its snapshot refresh
+      # DML/DDL cannot queue behind online task writes.
       VISIT_DOMAIN_ACTIVE: "false"
       DISPATCH_DOMAIN_ACTIVE: "false"
-      DAILY_DOMAIN_ACTIVE: "false"
+      DAILY_DOMAIN_ACTIVE: "true"
       REGISTRY_ADDRESS_DOMAIN_ACTIVE: "false"
       SESSION_COOKIE_NAME: binhu_shadow_session
       SESSION_COOKIE_SECURE: "true"
@@ -69,7 +68,7 @@ services:
       MYSQL_PASSWORD: ${SHADOW_DB_PASSWORD}
       MYSQL_ONLINE_DATA_DB: ${SHADOW_DB_NAME}
       MYSQL_ARCHIVE_DB: ${SHADOW_DB_NAME}
-      MYSQL_DAILY_REPORT_DB: ${SHADOW_DB_NAME}
+      MYSQL_DAILY_REPORT_DB: ${SHADOW_DAILY_DB_NAME:?Set a separate shadow daily-report database name}
       MYSQL_PLATFORM_DB: ${SHADOW_DB_NAME}
       MYSQL_VISIT_DB: ${SHADOW_DB_NAME}
       MYSQL_DISPATCH_DB: ${SHADOW_DB_NAME}

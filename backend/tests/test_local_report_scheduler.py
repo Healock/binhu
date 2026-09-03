@@ -25,7 +25,7 @@ def cursor_connection():
 
 
 class LocalReportSnapshotTests(unittest.IsolatedAsyncioTestCase):
-    async def test_replaces_all_snapshots_in_one_atomic_rename(self):
+    async def test_replaces_all_snapshots_without_runtime_metadata_rename(self):
         connection, cursor = cursor_connection()
         fullchain = MagicMock(source_table="t_fullchain", table_suffix="fullChain")
         rental = MagicMock(source_table="t_rental_check", table_suffix="rentalCheck")
@@ -42,10 +42,6 @@ class LocalReportSnapshotTests(unittest.IsolatedAsyncioTestCase):
             local_report_scheduler,
             "table_exists",
             new=AsyncMock(side_effect=[True, False]),
-        ), patch.object(
-            local_report_scheduler.uuid,
-            "uuid4",
-            return_value=MagicMock(hex="abcdef1234567890"),
         ):
             result = await local_report_scheduler.replace_local_report_snapshots(
                 connection
@@ -55,29 +51,21 @@ class LocalReportSnapshotTests(unittest.IsolatedAsyncioTestCase):
         sql = [call.args[0] for call in cursor.execute.await_args_list]
         create_positions = [
             index for index, statement in enumerate(sql)
-            if statement.startswith("CREATE TABLE daily_report")
+            if statement.startswith("CREATE TABLE")
         ]
         insert_positions = [
             index for index, statement in enumerate(sql)
-            if statement.startswith("INSERT INTO daily_report.`tmp_lreport")
+            if statement.startswith("INSERT INTO") and "snapshot_" in statement
         ]
-        rename_position = next(
-            index for index, statement in enumerate(sql)
-            if statement.startswith("RENAME TABLE")
-        )
-        self.assertEqual(len(create_positions), 2)
+        # The second table is created on first use; existing tables are reused.
+        self.assertEqual(len(create_positions), 1)
         self.assertEqual(len(insert_positions), 2)
-        self.assertTrue(
-            all(index < rename_position for index in create_positions + insert_positions)
-        )
         connection.begin.assert_awaited_once()
         connection.commit.assert_awaited_once()
         connection.rollback.assert_not_awaited()
-        rename_sql = sql[rename_position]
-        self.assertIn("2026-08-30_snapshot_fullChain", rename_sql)
-        self.assertIn("2026-08-30_snapshot_rentalCheck", rename_sql)
+        self.assertFalse(any(item.startswith("RENAME TABLE") for item in sql))
         self.assertEqual(
-            sum("INSERT INTO daily_report._daily_report_meta" in item for item in sql),
+            sum("_daily_report_meta" in item for item in sql),
             1,
         )
 
@@ -110,12 +98,12 @@ class LocalReportSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item.startswith("RENAME TABLE") for item in sql))
         connection.rollback.assert_awaited_once()
 
-    async def test_metadata_failure_restores_previous_snapshots(self):
+    async def test_metadata_failure_rolls_back_stable_snapshot_tables(self):
         connection, cursor = cursor_connection()
         fullchain = MagicMock(source_table="t_fullchain", table_suffix="fullChain")
 
         async def execute(sql, params=None):
-            if str(sql).startswith("INSERT INTO daily_report._daily_report_meta"):
+            if "_daily_report_meta" in str(sql):
                 raise RuntimeError("metadata failed")
 
         cursor.execute.side_effect = execute
@@ -131,23 +119,15 @@ class LocalReportSnapshotTests(unittest.IsolatedAsyncioTestCase):
             local_report_scheduler,
             "table_exists",
             new=AsyncMock(return_value=True),
-        ), patch.object(
-            local_report_scheduler.uuid,
-            "uuid4",
-            return_value=MagicMock(hex="abcdef1234567890"),
         ):
             with self.assertRaisesRegex(RuntimeError, "metadata failed"):
                 await local_report_scheduler.replace_local_report_snapshots(connection)
 
-        rename_sql = [
-            call.args[0]
+        self.assertFalse(any(
+            call.args[0].startswith("RENAME TABLE")
             for call in cursor.execute.await_args_list
-            if call.args[0].startswith("RENAME TABLE")
-        ]
-        self.assertEqual(len(rename_sql), 2)
-        self.assertIn("tmp_lreport_old_abcdef123456", rename_sql[1])
-        self.assertIn("tmp_lreport_failed_abcdef123456", rename_sql[1])
-        self.assertIn("2026-08-30_snapshot_fullChain", rename_sql[1])
+        ))
+        connection.rollback.assert_awaited_once()
 
 
 class LocalReportRefreshTests(unittest.IsolatedAsyncioTestCase):
