@@ -113,6 +113,7 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("s/OnlineData/", bootstrap)
         self.assertIn("DROP INDEX uk_row_key", bootstrap)
         self.assertIn("MySQL 1091", bootstrap)
+        self.assertIn("not safe during a fresh shadow bootstrap", bootstrap)
 
     def test_shadow_compose_supports_desktop_sessions_and_resource_monitoring(self):
         compose = (Path(__file__).parent / "docker-compose.shadow.yml").read_text(
