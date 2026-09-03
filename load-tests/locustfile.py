@@ -38,8 +38,14 @@ def _password(username: str) -> str:
 
 
 def _core_accounts() -> list[str]:
-    names: list[str] = []
-    for role, count in (("member", 35), ("leader", 8), ("internal_business", 4), ("admin", 2), ("super_admin", 1)):
+    # The first five users form the smoke cohort.  The fixture deliberately
+    # assigns pending-registration rows to members 31-35, so put them first to
+    # make the five-user gate exercise the atomic registration path as well as
+    # ordinary reads and saves.  The 50-user run still uses every core account
+    # exactly once.
+    names = [f"loadtest-member-{index:02d}" for index in range(31, 36)]
+    names.extend(f"loadtest-member-{index:02d}" for index in range(1, 31))
+    for role, count in (("leader", 8), ("internal_business", 4), ("admin", 2), ("super_admin", 1)):
         names.extend(f"loadtest-{role}-{index:02d}" for index in range(1, count + 1))
     return names
 
@@ -192,7 +198,13 @@ class FlowUser(HttpUser):
 
     def _save(self, changes: dict[str, str], *, scenario: str = "assigned", claim: bool = False) -> None:
         eligible = self._eligible_rows(scenario)
-        target = random.choice(eligible) if eligible else None
+        # Never fall back to the user's last-opened ordinary task when a
+        # scenario has no eligible fixture.  That would turn, for example, a
+        # pending-registration request into an invalid save without a selected
+        # property and pollute the load-test failure rate with harness errors.
+        if not eligible:
+            return
+        target = random.choice(eligible)
         source_info = self._source(target)
         if not source_info:
             return
@@ -201,6 +213,18 @@ class FlowUser(HttpUser):
             (RESULT_FIELDS[parser_type] if field == "__result__" else field): value
             for field, value in changes.items()
         }
+        # A user may pick the same task more than once during a run.  The
+        # API intentionally rejects a no-op save with 400; that is a harness
+        # condition, not a platform failure.  Drop unchanged fields before
+        # constructing the request so the workload measures real writes.
+        current_values = source.get("values") or {}
+        changes = {
+            field: value
+            for field, value in changes.items()
+            if str(current_values.get(field) or "").strip() != str(value or "").strip()
+        }
+        if not changes:
+            return
         source_id = str(source.get("id") or source.get("source_id") or "")
         revision = int(source.get("revision") or 1)
         body: dict[str, object] = {"changes": changes, "base_values": source.get("values") or {},

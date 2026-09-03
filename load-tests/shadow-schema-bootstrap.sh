@@ -35,3 +35,22 @@ sed \
   -e '/^FLUSH PRIVILEGES/d' \
   "${schema_source}" | MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" \
     mysql --protocol=socket -uroot --database="${shadow_database}"
+
+# Keep the observability metadata contract explicit.  Older init.sql snapshots
+# and pre-existing named volumes may not contain this table even though the
+# application starts successfully; create it in the run-scoped database before
+# any shadow traffic is admitted.
+MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql --protocol=socket -uroot \
+  --database="${shadow_database}" <<'SQL'
+CREATE TABLE IF NOT EXISTS _daily_report_meta (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    table_name VARCHAR(100) NOT NULL,
+    report_date DATE NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    generation_method VARCHAR(20) DEFAULT 'auto',
+    generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_table_name (table_name),
+    INDEX idx_date (report_date),
+    INDEX idx_type (parser_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SQL

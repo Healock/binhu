@@ -30,6 +30,16 @@ REQUIRED_PRODUCTION_PROOF_SCOPES = {
     "loadtest_prefixes",
     "legacy_shadow_source_kind",
 }
+REQUIRED_SHADOW_TABLES = {
+    "_daily_report_meta",
+    "_daily_task_ledger",
+    "_sessions",
+    "_user_presence_clients",
+    "_users",
+    "_online_source_projection",
+    "_shadow_loadtest_marker",
+    "_shadow_loadtest_expectations",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -99,6 +109,27 @@ def _verify_marker(context: ShadowContext, *, allow_placeholder: bool) -> list[s
     if context.run_id not in rows and "__UNSEEDED__" not in rows:
         raise ShadowSafetyError("影子数据库标记与运行编号不一致")
     return rows
+
+
+def _verify_shadow_schema(context: ShadowContext) -> None:
+    """Fail closed before seed or traffic if the isolated schema is partial."""
+    connection = _connect(context)
+    try:
+        with connection.cursor() as cursor:
+            placeholders = ",".join(["%s"] * len(REQUIRED_SHADOW_TABLES))
+            cursor.execute(
+                "SELECT TABLE_NAME FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=%s AND TABLE_NAME IN (" + placeholders + ")",
+                (context.db_name, *sorted(REQUIRED_SHADOW_TABLES)),
+            )
+            present = {str(row["TABLE_NAME"]) for row in cursor.fetchall()}
+    finally:
+        connection.close()
+    missing = sorted(REQUIRED_SHADOW_TABLES - present)
+    if missing:
+        raise ShadowSafetyError(
+            "影子环境 schema 不完整，缺少必需表：" + ", ".join(missing)
+        )
 
 
 def _docker() -> str:
@@ -199,6 +230,7 @@ def _write_runtime_index(context: ShadowContext) -> dict[str, int]:
 def seed(run_id: str) -> int:
     context = require_shadow_context(run_id)
     _verify_pinned_images()
+    _verify_shadow_schema(context)
     _verify_marker(context, allow_placeholder=True)
     path = write_manifest(ARTIFACTS, context.run_id)
     command = _compose_command(
@@ -271,6 +303,7 @@ def _validate_run_shape(scenario: str, users: int, duration: str) -> None:
 def run(run_id: str, users: int, duration: str, scenario: str) -> int:
     context = require_shadow_context(run_id)
     _verify_pinned_images()
+    _verify_shadow_schema(context)
     _validate_run_shape(scenario, users, duration)
     _verify_marker(context, allow_placeholder=False)
     manifest = _manifest(context.run_id)
@@ -447,10 +480,19 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
                 "AND source_ref LIKE %s", (f"shadow:{context.run_id}:property:%",),
             )
             property_count = int(cursor.fetchone()["count"])
+            # ``create_local_source_row`` is intentionally idempotent by
+            # business key.  If an earlier seed attempt created a row before
+            # it was interrupted, a later seed reuses that canonical row and
+            # keeps its original source_ref (for example t_fullchain:31).
+            # Count the rows actually owned by this run through the immutable
+            # expectation mapping instead of requiring every source_ref to be
+            # run-scoped; otherwise a safe retry is reported as data loss.
             cursor.execute(
-                "SELECT COUNT(*) AS count FROM _online_source_rows WHERE source_kind='local_table' "
-                "AND source_ref LIKE %s AND spreadsheet_id=0 AND archived_at IS NULL",
-                (f"shadow:{context.run_id}:task:%",),
+                "SELECT COUNT(*) AS count FROM _shadow_loadtest_expectations expectation "
+                "JOIN _online_source_rows source ON source.id=expectation.source_id "
+                "WHERE expectation.run_id=%s AND source.source_kind='local_table' "
+                "AND source.spreadsheet_id=0 AND source.archived_at IS NULL",
+                (context.run_id,),
             )
             source_count = int(cursor.fetchone()["count"])
 
@@ -634,6 +676,7 @@ def _verify_production_proof(path: Path | None, run_id: str) -> dict[str, Any]:
 
 def verify(run_id: str, production_proof: Path | None) -> int:
     context = require_shadow_context(run_id)
+    _verify_shadow_schema(context)
     _verify_marker(context, allow_placeholder=False)
     path = _manifest(context.run_id)
     runtime_path = _runtime_index(context.run_id)

@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
+import asyncio
+import logging
 import uuid
 from typing import Any, Literal
 
@@ -37,6 +39,8 @@ from services.environment_identity import production_username_allowed
 
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+logger = logging.getLogger(__name__)
+LOGIN_TRANSACTION_RETRIES = 3
 
 
 def _resolve_avatar(storage_key: str) -> Path:
@@ -86,9 +90,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
     if not production_username_allowed(req.username):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     pool = db_manager.get_pool("online_data")
+    # bcrypt is deliberately outside the transaction so concurrent logins do
+    # not hold row locks while performing the expensive password check.
     conn = await pool.acquire()
     try:
-        await conn.begin()
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, username, password_hash, role, "
@@ -101,126 +106,133 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 (req.username,),
             )
             row = await cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=401, detail="用户名或密码错误")
-            (
-                user_id,
-                username,
-                password_hash,
-                role,
-                table_display_mode,
-                report_column_mode,
-                mobile_navigation_mode,
-                mobile_dock_config,
-                theme_mode,
-                display_name,
-                avatar_storage_key,
-                task_display_mode,
-            ) = row
-            if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
-                raise HTTPException(status_code=401, detail="用户名或密码错误")
-
-            device_type = infer_device_type(
-                requested=req.device_type,
-                platform_header=request.headers.get("X-Binhu-Client-Platform"),
-                user_agent=request.headers.get("User-Agent"),
-                mobile_hint=request.headers.get("Sec-CH-UA-Mobile"),
-            )
-            device_id_hash = hash_device_id(req.device_id)
-            client_platform = device_type
-            ua_family = user_agent_family(request.headers.get("User-Agent"))
-
-            # 登录阶段也必须拦截普通账号，避免维护期间创建新会话。
-            await cur.execute(
-                "SELECT config_key, config_value FROM _system_config "
-                "WHERE config_key IN "
-                "('maintenance_enabled', 'maintenance_start_at', "
-                "'maintenance_end_at', 'maintenance_message', 'timezone')"
-            )
-            maintenance_config = {
-                str(item[0]): str(item[1] or "")
-                for item in await cur.fetchall()
-            }
-            await cur.execute("SELECT UTC_TIMESTAMP()")
-            maintenance_server_time_row = await cur.fetchone()
-            maintenance_server_time = (
-                maintenance_server_time_row[0]
-                if maintenance_server_time_row
-                else None
-            )
-            current_maintenance = maintenance_status(
-                maintenance_config,
-                now=maintenance_server_time,
-            )
-            if current_maintenance["active"] and not await is_database_user_super_admin(
-                cur, int(user_id), str(role)
-            ):
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "maintenance_mode",
-                        "message": current_maintenance["message"],
-                        "maintenance": current_maintenance,
-                    },
-                    headers={"Retry-After": "300"},
-                )
-
-            await cur.execute(
-                "SELECT id FROM _users WHERE id=%s FOR UPDATE",
-                (user_id,),
-            )
-            session_id = create_session(user_id)
-            expires_at = datetime.utcnow() + timedelta(hours=settings.SESSION_EXPIRE_HOURS)
-            await cur.execute(
-                "SELECT active_desktop_session_id, active_mobile_session_id, "
-                "active_session_id FROM _users WHERE id=%s FOR UPDATE",
-                (user_id,),
-            )
-            active_slots = await cur.fetchone() or (None, None, None)
-            slot_column = (
-                "active_mobile_session_id"
-                if device_type == "mobile"
-                else "active_desktop_session_id"
-            )
-            if settings.MULTI_DEVICE_SESSION_ENABLED:
-                previous_session = active_slots[1 if device_type == "mobile" else 0]
-            else:
-                previous_session = active_slots[2]
-            if previous_session and previous_session != session_id:
-                await invalidate_session(cur, str(previous_session))
-            management_id = str(uuid.uuid4())
-            await cur.execute(
-                "INSERT INTO _sessions "
-                "(session_id, management_id, user_id, device_type, device_id_hash, "
-                "client_platform, user_agent_family, last_activity_at, expires_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(), %s)",
-                (
-                    session_id,
-                    management_id,
-                    user_id,
-                    device_type,
-                    device_id_hash,
-                    client_platform,
-                    ua_family,
-                    expires_at,
-                ),
-            )
-            await cur.execute(
-                f"UPDATE _users SET {slot_column}=%s, "
-                "active_session_id=%s WHERE id=%s",
-                (session_id, session_id, user_id),
-            )
-            await cur.execute(
-                "DELETE FROM _sessions WHERE user_id=%s "
-                "AND expires_at<=UTC_TIMESTAMP() AND session_id<>%s",
-                (user_id, session_id),
-            )
-            await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
     finally:
         pool.release(conn)
+    if not row:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    (
+        user_id, username, password_hash, role, table_display_mode,
+        report_column_mode, mobile_navigation_mode, mobile_dock_config,
+        theme_mode, display_name, avatar_storage_key, task_display_mode,
+    ) = row
+    if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    device_type = infer_device_type(
+        requested=req.device_type,
+        platform_header=request.headers.get("X-Binhu-Client-Platform"),
+        user_agent=request.headers.get("User-Agent"),
+        mobile_hint=request.headers.get("Sec-CH-UA-Mobile"),
+    )
+    device_id_hash = hash_device_id(req.device_id)
+    client_platform = device_type
+    ua_family = user_agent_family(request.headers.get("User-Agent"))
+
+    for attempt in range(LOGIN_TRANSACTION_RETRIES):
+        conn = await pool.acquire()
+        try:
+            await conn.begin()
+            async with conn.cursor() as cur:
+                # Lock the user first. All login mutations then follow the
+                # same user -> session order, avoiding the old double-lock
+                # through invalidate_session().
+                await cur.execute(
+                    "SELECT id, role, active_desktop_session_id, "
+                    "active_mobile_session_id, active_session_id "
+                    "FROM _users WHERE id=%s FOR UPDATE",
+                    (user_id,),
+                )
+                locked_user = await cur.fetchone()
+                if not locked_user:
+                    raise HTTPException(status_code=401, detail="用户名或密码错误")
+                locked_role = str(locked_user[1] or role)
+
+                # 登录阶段也必须拦截普通账号，避免维护期间创建新会话。
+                await cur.execute(
+                    "SELECT config_key, config_value FROM _system_config "
+                    "WHERE config_key IN "
+                    "('maintenance_enabled', 'maintenance_start_at', "
+                    "'maintenance_end_at', 'maintenance_message', 'timezone')"
+                )
+                maintenance_config = {
+                    str(item[0]): str(item[1] or "")
+                    for item in await cur.fetchall()
+                }
+                await cur.execute("SELECT UTC_TIMESTAMP()")
+                maintenance_server_time_row = await cur.fetchone()
+                current_maintenance = maintenance_status(
+                    maintenance_config,
+                    now=maintenance_server_time_row[0]
+                    if maintenance_server_time_row else None,
+                )
+                if current_maintenance["active"] and not await is_database_user_super_admin(
+                    cur, int(user_id), locked_role
+                ):
+                    raise HTTPException(
+                        status_code=503,
+                        detail={
+                            "code": "maintenance_mode",
+                            "message": current_maintenance["message"],
+                            "maintenance": current_maintenance,
+                        },
+                        headers={"Retry-After": "300"},
+                    )
+
+                active_slots = locked_user[2:]
+                previous_session = (
+                    active_slots[1 if device_type == "mobile" else 0]
+                    if settings.MULTI_DEVICE_SESSION_ENABLED
+                    else active_slots[2]
+                )
+                session_id = create_session(user_id)
+                management_id = str(uuid.uuid4())
+                expires_at = datetime.utcnow() + timedelta(hours=settings.SESSION_EXPIRE_HOURS)
+                if previous_session and previous_session != session_id:
+                    # Deleting the old row is sufficient to invalidate it: the
+                    # user row is overwritten below while already locked. Do
+                    # not issue the former session_id-based UPDATE _users.
+                    await cur.execute(
+                        "DELETE FROM _user_presence_clients WHERE session_id=%s",
+                        (str(previous_session),),
+                    )
+                    await cur.execute(
+                        "DELETE FROM _sessions WHERE session_id=%s",
+                        (str(previous_session),),
+                    )
+                await cur.execute(
+                    "INSERT INTO _sessions "
+                    "(session_id, management_id, user_id, device_type, device_id_hash, "
+                    "client_platform, user_agent_family, last_activity_at, expires_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(), %s)",
+                    (session_id, management_id, user_id, device_type, device_id_hash,
+                     client_platform, ua_family, expires_at),
+                )
+                slot_column = (
+                    "active_mobile_session_id"
+                    if device_type == "mobile"
+                    else "active_desktop_session_id"
+                )
+                await cur.execute(
+                    f"UPDATE _users SET {slot_column}=%s, active_session_id=%s WHERE id=%s",
+                    (session_id, session_id, user_id),
+                )
+                await conn.commit()
+            break
+        except HTTPException:
+            await conn.rollback()
+            raise
+        except Exception as exc:
+            await conn.rollback()
+            error_code = exc.args[0] if getattr(exc, "args", None) else None
+            if error_code not in (1205, 1213) or attempt + 1 >= LOGIN_TRANSACTION_RETRIES:
+                raise
+            logger.warning(
+                "login transaction retry code=%s attempt=%d/%d",
+                error_code, attempt + 1, LOGIN_TRANSACTION_RETRIES,
+            )
+            await asyncio.sleep(0.05 * (attempt + 1))
+        finally:
+            pool.release(conn)
 
     cookie_cfg = get_session_cookie_config()
     response.set_cookie(value=session_id, **cookie_cfg)
