@@ -352,7 +352,10 @@ class FlowUser(HttpUser):
             barrier.wait(timeout=5)
         except threading.BrokenBarrierError:
             return
-        changes = {"备注": f"压测冲突-{self.device_id}-{time.time_ns()}"}
+        # All six seeded parser schemas expose 现住址 as an editable field.
+        # 备注 is not part of every parser contract and made an otherwise
+        # correctly coordinated request fail with 400 before revision locking.
+        changes = {"现住址": f"压测冲突地址-{self.device_id}-{time.time_ns()}"}
         with self.client.patch(
             _api(f"/mobile-tasks/{quote(parser_type, safe='')}/source-rows/{source_id}"),
             json={"changes": changes, "base_values": source.get("values") or {},
