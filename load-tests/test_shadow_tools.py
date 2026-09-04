@@ -52,6 +52,12 @@ class ShadowToolTests(unittest.TestCase):
     def test_conflict_scenario_uses_only_coordinated_task(self):
         self.assertEqual(_conflict_tasks(FlowUser), [FlowUser.concurrent_conflict])
 
+    def test_conflict_scenario_uses_shared_editable_address_field(self):
+        source = (Path(__file__).parent / "locustfile.py").read_text(encoding="utf-8")
+        conflict_body = source.split("def concurrent_conflict", 1)[1]
+        self.assertIn('changes = {"现住址":', conflict_body)
+        self.assertNotIn('changes = {"备注":', conflict_body)
+
     def test_broken_conflict_barrier_is_replaced(self):
         pair_index = 999
         broken = threading.Barrier(2)
