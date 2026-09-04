@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -74,6 +76,11 @@ from services.task_assignment_responsibility import (
     migrate_responsibility_row_key,
     task_update_is_credited_to,
 )
+from services.online_projection_jobs import (
+    enqueue_projection_jobs,
+    new_save_operation_id,
+    update_lightweight_projection,
+)
 
 
 router = APIRouter(
@@ -82,6 +89,9 @@ router = APIRouter(
     dependencies=[Depends(require_admin_account)],
 )
 QUERY_TYPES = [item for item in PARSER_REGISTRY if item != "default"]
+logger = logging.getLogger(__name__)
+LOCAL_SAVE_TRANSACTION_RETRIES = 3
+LOCAL_SAVE_LOCK_WAIT_SECONDS = 3
 
 
 async def _connection_transaction_call(conn, method_name: str) -> None:
@@ -621,14 +631,15 @@ async def _insert_writeback_audit(
     before_values: dict | None,
     after_values: dict | None,
     sync_status: str = "pending",
+    operation_id: str = "",
 ) -> int:
     await cur.execute(
         """
         INSERT INTO _online_writeback_audit (
             user_id, username, action, parser_type, spreadsheet_id,
             sheet_id, physical_row, column_name, row_key_before,
-            row_key_after, before_values, after_values, sync_status
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            row_key_after, before_values, after_values, sync_status, operation_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             user["id"],
@@ -644,6 +655,7 @@ async def _insert_writeback_audit(
             stable_json(before_values) if before_values is not None else None,
             stable_json(after_values) if after_values is not None else None,
             sync_status,
+            operation_id,
         ),
     )
     return int(cur.lastrowid)
@@ -670,7 +682,65 @@ async def _update_writeback_audit(
     )
 
 
+def _mysql_error_number(exc: BaseException) -> int | None:
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        args = getattr(current, "args", ())
+        if args and isinstance(args[0], int):
+            return int(args[0])
+        current = current.__cause__ or current.__context__
+    return None
+
+
 async def _update_local_source_fields(
+    **kwargs,
+) -> dict:
+    """Retry only complete local-save transactions on transient lock errors."""
+    conn = kwargs["conn"]
+    operation_id = new_save_operation_id()
+    for attempt in range(LOCAL_SAVE_TRANSACTION_RETRIES):
+        try:
+            return await _update_local_source_fields_once(
+                **kwargs,
+                operation_id=operation_id,
+            )
+        except HTTPException:
+            await _connection_transaction_call(conn, "rollback")
+            raise
+        except Exception as exc:
+            await _connection_transaction_call(conn, "rollback")
+            errno = _mysql_error_number(exc)
+            if errno not in {1205, 1213}:
+                raise
+            logger.warning(
+                "local task save transaction retry code=%s attempt=%d/%d",
+                errno,
+                attempt + 1,
+                LOCAL_SAVE_TRANSACTION_RETRIES,
+            )
+            if attempt + 1 >= LOCAL_SAVE_TRANSACTION_RETRIES:
+                code = "task_save_timeout" if errno == 1205 else "task_save_busy"
+                message = (
+                    "任务保存等待数据库锁超时，当前草稿未丢失，请稍后手动重试"
+                    if errno == 1205
+                    else "系统正在处理其他任务，当前草稿未丢失，请稍后手动重试"
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": code,
+                        "message": message,
+                        "operation_id": operation_id,
+                    },
+                    headers={"Retry-After": "1"},
+                ) from exc
+            await asyncio.sleep(0.05 * (attempt + 1))
+    raise RuntimeError("unreachable local save retry state")
+
+
+async def _update_local_source_fields_once(
     *,
     parser_type: str,
     source_id: int,
@@ -690,6 +760,7 @@ async def _update_local_source_fields(
     transaction_prepare=None,
     transaction_callback=None,
     record_unverifiable_save: bool = True,
+    operation_id: str,
 ) -> dict:
     """本地数据源的事务更新路径，不访问腾讯文档。"""
     parser = get_parser(parser_type)
@@ -713,6 +784,11 @@ async def _update_local_source_fields(
         raise RuntimeError("system-managed edit must use an exact field whitelist")
     ordered_columns = [column for column in parser.COLUMNS if column in normalized_changes]
 
+    async with conn.cursor() as settings_cur:
+        await settings_cur.execute(
+            "SET SESSION innodb_lock_wait_timeout=%s",
+            (LOCAL_SAVE_LOCK_WAIT_SECONDS,),
+        )
     await _connection_transaction_call(conn, "begin")
     async with conn.cursor() as cur:
         source = await _load_source_row(cur, parser_type, source_id, lock=True)
@@ -737,8 +813,30 @@ async def _update_local_source_fields(
                 ),
             )
             source = await _load_source_row(cur, parser_type, source_id, lock=True)
-        if source["revision"] != expected_revision:
-            raise HTTPException(409, "该任务已被更新，请刷新后重试")
+        # Every local write follows source row -> canonical local source ->
+        # authoritative business row.  The explicit reads remove the former
+        # inversion where concurrent saves acquired the latter two locks in
+        # whichever order their UPDATE statements happened to execute.
+        source_ref = f"{parser.table_name}:{source['physical_row']}"
+        source_records_to_lock = sorted({
+            ("local_table", source_ref),
+            (str(source.get("source_kind") or ""), str(source.get("source_ref") or "")),
+        })
+        for source_kind, locked_source_ref in source_records_to_lock:
+            if not source_kind or not locked_source_ref:
+                continue
+            await cur.execute(
+                "SELECT id FROM _local_source_records "
+                "WHERE source_kind=%s AND source_ref=%s FOR UPDATE",
+                (source_kind, locked_source_ref),
+            )
+            await cur.fetchone()
+        await cur.execute(
+            f"SELECT id FROM `{parser.table_name}` WHERE _row_key=%s FOR UPDATE",
+            (source["row_key"],),
+        )
+        if not await cur.fetchone():
+            raise HTTPException(409, "本地任务已被删除或更新，请刷新后重试")
         current_values = {
             column: str(source["values"].get(column, "") or "")
             for column in parser.COLUMNS
@@ -769,7 +867,8 @@ async def _update_local_source_fields(
             sheet_id=local_sheet_id(parser_type),
             inspector_context=inspector_context,
         )
-        if source["revision"] != expected_revision:
+        locked_revision = int(source["revision"])
+        if locked_revision != expected_revision:
             submitted_base = {
                 str(field): str(value or "").strip()
                 for field, value in (base_values or {}).items()
@@ -785,8 +884,14 @@ async def _update_local_source_fields(
             ]
             if changed_since_load:
                 raise HTTPException(409, {
+                    "code": "task_revision_conflict",
                     "message": "所编辑字段已被其他平台用户更新，请重新确认",
                     "columns": changed_since_load,
+                    "current_values": {
+                        field: current_values.get(field, "")
+                        for field in changed_since_load
+                    },
+                    "current_revision": locked_revision,
                 })
         ordered_columns = [
             column for column in parser.COLUMNS
@@ -847,12 +952,7 @@ async def _update_local_source_fields(
 
         # 同步更新对应的本地业务表和统一来源记录，整个过程在同一事务内完成。
         assignments = ", ".join(f"`{column}`=%s" for column in ordered_columns)
-        source_ref = f"{parser.table_name}:{source['physical_row']}"
-        await cur.execute(
-            "SELECT source_kind,source_ref FROM _online_source_rows WHERE id=%s FOR UPDATE",
-            (source_id,),
-        )
-        previous_source = await cur.fetchone()
+        previous_source = (source.get("source_kind"), source.get("source_ref"))
         await cur.execute(
             f"UPDATE `{parser.table_name}` SET {assignments}, `_row_key`=%s, _last_updated_at=UTC_TIMESTAMP() "
             "WHERE _row_key=%s",
@@ -864,7 +964,7 @@ async def _update_local_source_fields(
             "UPDATE _online_source_rows SET row_key=%s,row_hash=%s,values_json=%s,"
             "revision=revision+1,refreshed_at=UTC_TIMESTAMP(),source_kind='local_table',source_ref=%s "
             "WHERE id=%s AND revision=%s",
-            (new_key, local_row_hash(after), stable_json(after), source_ref, source_id, expected_revision),
+            (new_key, local_row_hash(after), stable_json(after), source_ref, source_id, locked_revision),
         )
         if cur.rowcount != 1:
             raise HTTPException(409, "该任务已被更新，请刷新后重试")
@@ -880,11 +980,12 @@ async def _update_local_source_fields(
         await cur.execute(
             "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
             "business_key=%s, values_json=%s, content_hash=%s, "
-            "revision=revision+1, status='active', archived_at=NULL, "
+            "revision=%s, status='active', archived_at=NULL, "
             "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
             (
                 parser_type, int(source["physical_row"]), new_key,
-                stable_json(after), local_row_hash(after), source_ref,
+                stable_json(after), local_row_hash(after), locked_revision + 1,
+                source_ref,
             ),
         )
         if cur.rowcount == 0:
@@ -894,7 +995,7 @@ async def _update_local_source_fields(
                 "values_json,content_hash,status,revision) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active',%s)",
                 (
                     parser_type, int(source["physical_row"]), new_key, source_ref,
-                    stable_json(after), local_row_hash(after), expected_revision + 1,
+                    stable_json(after), local_row_hash(after), locked_revision + 1,
                 ),
             )
         audit_id = await _insert_writeback_audit(
@@ -911,6 +1012,7 @@ async def _update_local_source_fields(
             before_values=None if redact_audit_values else current_values,
             after_values=None if redact_audit_values else after,
             sync_status="local",
+            operation_id=operation_id,
         )
         if transaction_callback is not None:
             await transaction_callback(
@@ -920,7 +1022,7 @@ async def _update_local_source_fields(
                 after=after,
                 row_key_before=str(source["row_key"]),
                 row_key_after=str(new_key),
-                revision=expected_revision + 1,
+                revision=locked_revision + 1,
             )
         await migrate_responsibility_row_key(
             cur,
@@ -953,26 +1055,26 @@ async def _update_local_source_fields(
                     after=after,
                     changes=normalized_changes,
                     row_key_after=str(new_key),
-                    revision=expected_revision + 1,
+                    revision=locked_revision + 1,
                     actor_user_id=int(user.get("id")) if user.get("id") else None,
                 )
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-        await rebuild_projection_rows(
-            cur,
-            parser_type,
-            [str(source["row_key"]), str(new_key)],
-            reconcile_graph=False,
-        )
-        await reconcile_online_task_graph(
+        await update_lightweight_projection(
             cur,
             parser_type=parser_type,
             row_key_before=str(source["row_key"]),
             row_key_after=str(new_key),
-            before=current_values,
-            after=after,
-            actor_user_id=int(user.get("id")) if user.get("id") else None,
-            event_type="online_task_save",
+            values=after,
+            revision=locked_revision + 1,
+        )
+        await enqueue_projection_jobs(
+            cur,
+            parser_type=parser_type,
+            row_keys=[str(source["row_key"]), str(new_key)],
+            source_id=source_id,
+            revision=locked_revision + 1,
+            operation_id=operation_id,
         )
         community = parser.community_value(after)
         audiences = ["authenticated"]
@@ -984,7 +1086,7 @@ async def _update_local_source_fields(
             event_type="online.task.changed",
             aggregate_type="online_task",
             aggregate_id=f"{parser_type}:{new_key}",
-            aggregate_revision=expected_revision + 1,
+            aggregate_revision=locked_revision + 1,
             audiences=audiences,
         )
         activity_credited = await task_update_is_credited_to(
@@ -994,16 +1096,34 @@ async def _update_local_source_fields(
             str((user.get("member") or {}).get("name") or ""),
         )
         await conn.commit()
-        await record_admin_audit(
-            user,
-            "online.local_update",
-            target_type="local_source_row",
-            target_name=f"{parser_type}:{source_id}",
-            detail={"source_id": source_id, "columns": ordered_columns},
-            **request_audit_fields(request),
-        )
+        # These secondary platform ledgers use separate database domains.  A
+        # failure after the authoritative transaction has committed must not
+        # be surfaced as a failed save or cause the transaction retry wrapper
+        # to submit the same user edit again.
+        try:
+            await record_admin_audit(
+                user,
+                "online.local_update",
+                target_type="local_source_row",
+                target_name=f"{parser_type}:{source_id}",
+                detail={"source_id": source_id, "columns": ordered_columns},
+                **request_audit_fields(request),
+            )
+        except Exception as exc:
+            logger.warning(
+                "local task post-commit admin audit failed operation_id=%s error=%s",
+                operation_id,
+                type(exc).__name__,
+            )
         if is_actual_online_work(ordered_columns) and activity_credited:
-            await record_work_activity(user, ONLINE_TASK_UPDATE, event_key=f"local:{audit_id}")
+            try:
+                await record_work_activity(user, ONLINE_TASK_UPDATE, event_key=f"local:{audit_id}")
+            except Exception as exc:
+                logger.warning(
+                    "local task post-commit work activity failed operation_id=%s error=%s",
+                    operation_id,
+                    type(exc).__name__,
+                )
         warnings = []
         if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
             inspector_context,
@@ -1016,7 +1136,9 @@ async def _update_local_source_fields(
             "values": after,
             "row_key": new_key,
             "row_hash": local_row_hash(after),
-            "revision": expected_revision + 1,
+            "revision": locked_revision + 1,
+            "operation_id": operation_id,
+            "derived_status": "queued",
             "pending_sync": False,
             "warnings": warnings,
             "inspector_mismatch": bool(warnings),

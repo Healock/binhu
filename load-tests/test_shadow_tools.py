@@ -263,6 +263,19 @@ class ShadowToolTests(unittest.TestCase):
         latest = _latest_successful_fields(events)
         self.assertEqual(latest[(7, "备注")][1], "revision-3")
 
+    def test_later_committed_revision_wins_even_when_response_arrives_first(self):
+        events = [
+            {"status": 200, "source_id": 7, "returned_revision": 5, "at": 10,
+             "operation_id": "op-new", "changes": {"备注": "revision-5"}},
+            {"status": 200, "source_id": 7, "returned_revision": 4, "at": 20,
+             "operation_id": "op-old", "changes": {"备注": "revision-4"}},
+            {"status": 503, "source_id": 7, "returned_revision": 99, "at": 30,
+             "failed_operation_id": "op-failed", "changes": {"备注": "failed"}},
+        ]
+        latest = _latest_successful_fields(events)
+        self.assertEqual(latest[(7, "备注")][0][0], 5)
+        self.assertEqual(latest[(7, "备注")][1], "revision-5")
+
     def test_conflict_events_group_by_pair_source_and_revision(self):
         events = [
             {"kind": "conflict", "pair": 1, "source_id": 7, "read_revision": 2,

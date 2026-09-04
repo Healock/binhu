@@ -4668,8 +4668,6 @@ async def bulk_assign_mobile_tasks(
                         )
                     finally:
                         await cur.execute("RELEASE SAVEPOINT bulk_assign_task")
-                if successful_keys:
-                    await rebuild_projection_rows(cur, parser_type, successful_keys)
             await conn.commit()
         except Exception:
             await conn.rollback()
@@ -4840,12 +4838,6 @@ async def cancel_mobile_task_assignments(
                     changed += 1
                 except (ValueError, LookupError) as exc:
                     skipped.append({"row_key": str(row_key), "reason": str(exc) or "任务已变化，请刷新后重试"})
-            if changed:
-                await rebuild_projection_rows(
-                    cur,
-                    parser_type,
-                    [str(row[1]) for row in rows if str(row[1] or "").strip()],
-                )
         await conn.commit()
     except Exception:
         await conn.rollback()

@@ -60,10 +60,14 @@ class LocalReportSnapshotTests(unittest.IsolatedAsyncioTestCase):
         # The second table is created on first use; existing tables are reused.
         self.assertEqual(len(create_positions), 1)
         self.assertEqual(len(insert_positions), 2)
-        connection.begin.assert_awaited_once()
+        connection.begin.assert_not_awaited()
         connection.commit.assert_awaited_once()
         connection.rollback.assert_not_awaited()
         self.assertFalse(any(item.startswith("RENAME TABLE") for item in sql))
+        self.assertEqual(
+            sum(item == "START TRANSACTION WITH CONSISTENT SNAPSHOT" for item in sql),
+            1,
+        )
         self.assertEqual(
             sum("_daily_report_meta" in item for item in sql),
             1,

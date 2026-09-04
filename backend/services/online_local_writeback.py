@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from typing import Any
+import uuid
 
 from database import db_manager
 from services.local_source import (
@@ -329,6 +330,25 @@ async def apply_local_system_changes(
     previous_source_kind = str(previous_source[0] or "")
     previous_source_ref = str(previous_source[1] or "")
     local_source_ref = f"{table_name}:{physical_id}"
+    await cur.execute("SET SESSION innodb_lock_wait_timeout=3")
+    for source_kind, locked_source_ref in sorted({
+        ("local_table", local_source_ref),
+        (previous_source_kind, previous_source_ref),
+    }):
+        if not source_kind or not locked_source_ref:
+            continue
+        await cur.execute(
+            "SELECT id FROM _local_source_records "
+            "WHERE source_kind=%s AND source_ref=%s FOR UPDATE",
+            (source_kind, locked_source_ref),
+        )
+        await cur.fetchone()
+    await cur.execute(
+        f"SELECT id FROM `{table_name}` WHERE id=%s AND `_row_key`=%s FOR UPDATE",
+        (physical_id, old_key),
+    )
+    if not await cur.fetchone():
+        raise ValueError("本地任务已被删除或更新")
     assignments = ", ".join(f"`{field}`=%s" for field in changed)
     await cur.execute(
         f"UPDATE `{table_name}` SET {assignments}, `_row_key`=%s, "
@@ -381,24 +401,43 @@ async def apply_local_system_changes(
             ),
         )
     actor = user or {"id": 0, "username": "system"}
+    operation_id = str(uuid.uuid4())
     await cur.execute(
         """
         INSERT INTO _online_writeback_audit
             (user_id,username,action,parser_type,spreadsheet_id,sheet_id,
              physical_row,column_name,row_key_before,row_key_after,
-             before_values,after_values,sync_status)
-        VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,'local')
+             before_values,after_values,sync_status,operation_id)
+        VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,'local',%s)
         """,
         (
             int(actor.get("id") or 0), str(actor.get("username") or "system")[:50],
             action, parser_type, local_sheet_id(parser_type), physical_id,
             "、".join(changed), old_key, new_key, stable_json(current),
-            stable_json(after),
+            stable_json(after), operation_id,
         ),
     )
     audit_id = int(cur.lastrowid)
-    if rebuild:
-        await rebuild_projection(cur, parser_type)
+    from services.online_projection_jobs import (
+        enqueue_projection_jobs,
+        update_lightweight_projection,
+    )
+    await update_lightweight_projection(
+        cur,
+        parser_type=parser_type,
+        row_key_before=old_key,
+        row_key_after=new_key,
+        values=after,
+        revision=next_revision,
+    )
+    await enqueue_projection_jobs(
+        cur,
+        parser_type=parser_type,
+        row_keys=[old_key, new_key],
+        source_id=source_id,
+        revision=next_revision,
+        operation_id=operation_id,
+    )
     return audit_id, next_revision, after, new_key
 
 

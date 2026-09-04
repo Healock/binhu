@@ -136,6 +136,13 @@ export default function MobileTaskTable({
     field: string
     value: string
   }>>({})
+  const activeAutosavesRef = useRef<Set<string>>(new Set())
+  const queuedAutosavesRef = useRef<Record<string, {
+    task: MobileTaskItem
+    item: MobileTaskInlineEditorItem
+    field: string
+    value: string
+  }>>({})
   const [saveStates, setSaveStates] = useState<Record<string, 'saving' | 'saved' | 'error' | 'conflict'>>({})
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
@@ -285,10 +292,10 @@ export default function MobileTaskTable({
     claim = false,
     registrationProperty?: { id: number; version: number },
     options?: { autosaveKey?: string; silent?: boolean },
-  ) => {
+  ): Promise<boolean> => {
     const detail = item.detail
     const source = detail?.sources[0]
-    if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return
+    if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return false
     setSavingRowKey(task.task_key)
     const autosaveKey = options?.autosaveKey
     const requestSequence = autosaveKey
@@ -320,18 +327,22 @@ export default function MobileTaskTable({
         source.cell_meta,
       )
       const isLatest = !autosaveKey || autosaveSequenceRef.current[autosaveKey] === requestSequence
-      if (!isLatest) return
+      if (!isLatest) return true
       if (autosaveKey) delete autosaveRetryRef.current[autosaveKey]
-      setEditorItems(current => ({
-        ...current,
-        [task.task_key]: {
+      setEditorItems(current => {
+        const next = {
+          ...current,
+          [task.task_key]: {
           ...item,
           detail: detail ? {
             ...detail,
             sources: [{ ...source, values: savedValues, revision: result.revision }],
           } : detail,
-        },
-      }))
+          },
+        }
+        editorItemsRef.current = next
+        return next
+      })
       setEditorValues(current => ({ ...current, [task.task_key]: savedValues }))
       if (registrationProperty) {
         setRegistrationProperties(current => ({
@@ -347,6 +358,7 @@ export default function MobileTaskTable({
       // 自动保存已经把当前行的编辑器状态合并到本地，不要再次刷新所有已加载页面。
       // 非静默保存（例如显式领取、房屋关联）仍由父列表执行一次必要的同步。
       if (!options?.silent) await onSaved()
+      return true
     } catch (reason: any) {
       if (autosaveKey && autosaveSequenceRef.current[autosaveKey] === requestSequence) {
         const [, ...fieldParts] = autosaveKey.split(':')
@@ -364,7 +376,42 @@ export default function MobileTaskTable({
           [task.task_key]: Number(reason?.response?.status) === 409 ? 'conflict' : 'error',
         }))
       }
-      message.error(errorMessage(reason, '保存失败，请稍后重试'))
+      const status = Number(reason?.response?.status)
+      const code = reason?.response?.data?.detail?.code
+      const conflictDetail = reason?.response?.data?.detail
+      if (status === 409 && code === 'task_revision_conflict') {
+        const conflictValues = conflictDetail?.current_values || {}
+        const conflictRevision = Number(conflictDetail?.current_revision || 0)
+        setEditorItems(current => {
+          const currentItem = current[task.task_key] || item
+          const currentDetail = currentItem.detail
+          const currentSource = currentDetail?.sources[0]
+          if (!currentDetail || !currentSource || !conflictRevision) return current
+          const next = {
+            ...current,
+            [task.task_key]: {
+              ...currentItem,
+              detail: {
+                ...currentDetail,
+                sources: [{
+                  ...currentSource,
+                  values: { ...currentSource.values, ...conflictValues },
+                  revision: conflictRevision,
+                }],
+              },
+            },
+          }
+          editorItemsRef.current = next
+          return next
+        })
+      }
+      message.error(
+        status === 503 || code === 'task_save_busy' || code === 'task_save_timeout'
+          ? '系统繁忙，草稿未丢失，请稍后手动重试保存'
+          : status === 409
+            ? '数据冲突，当前草稿已保留，请核对后重试'
+            : errorMessage(reason, '保存失败，当前草稿已保留'),
+      )
       if (registrationProperty) {
         const existingProperty = detail?.registration_link?.property
         setEditorValues(current => ({
@@ -379,9 +426,10 @@ export default function MobileTaskTable({
           },
         }))
       }
-      if (registrationProperty || [409, 502, 503].includes(Number(reason?.response?.status))) {
+      if (registrationProperty) {
         await requestEditors([task.task_key], true)
       }
+      return false
     } finally {
       setSavingRowKey('')
     }
@@ -421,6 +469,11 @@ export default function MobileTaskTable({
     value: string,
     autosave = false,
   ) => {
+    const autosaveKey = `${task.task_key}:${field}`
+    if (autosave && activeAutosavesRef.current.has(autosaveKey)) {
+      queuedAutosavesRef.current[autosaveKey] = { task, item, field, value }
+      return
+    }
     const currentItem = editorItemsRef.current[task.task_key] || item
     const source = currentItem.detail?.sources[0]
     if (!source) return
@@ -442,10 +495,21 @@ export default function MobileTaskTable({
       return
     }
     if (autosave) {
-      await saveEditor(task, currentItem, changes, claim, undefined, {
-        autosaveKey: `${task.task_key}:${field}`,
+      activeAutosavesRef.current.add(autosaveKey)
+      const saved = await saveEditor(task, currentItem, changes, claim, undefined, {
+        autosaveKey,
         silent: true,
       })
+      activeAutosavesRef.current.delete(autosaveKey)
+      const queued = queuedAutosavesRef.current[autosaveKey]
+      delete queuedAutosavesRef.current[autosaveKey]
+      if (queued) {
+        if (saved) {
+          void saveField(queued.task, queued.item, queued.field, queued.value, true)
+        } else {
+          autosaveRetryRef.current[autosaveKey] = queued
+        }
+      }
     } else {
       await saveEditor(task, item, changes, claim)
     }
@@ -487,6 +551,8 @@ export default function MobileTaskTable({
     Object.values(autosaveTimersRef.current).forEach(timer => window.clearTimeout(timer))
     autosaveTimersRef.current = {}
     autosaveSequenceRef.current = {}
+    activeAutosavesRef.current.clear()
+    queuedAutosavesRef.current = {}
   }, [])
 
   const searchRegistrationProperty = async (task: MobileTaskItem, keyword: string) => {
@@ -808,10 +874,13 @@ export default function MobileTaskTable({
                       {saveStates[task.task_key] === 'saving' && '保存中'}
                       {saveStates[task.task_key] === 'saved' && '已保存'}
                       {saveStates[task.task_key] === 'error' && <>
-                        <span>保存失败</span>
-                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key)}>重试</Button>
+                        <span>系统繁忙，草稿未丢失</span>
+                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key)}>重试保存</Button>
                       </>}
-                      {saveStates[task.task_key] === 'conflict' && '数据冲突，请刷新后重试'}
+                      {saveStates[task.task_key] === 'conflict' && <>
+                        <span>数据冲突，草稿已保留</span>
+                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key)}>核对后重试</Button>
+                      </>}
                     </small>
                   )}
                   {registrationAddressField ? (

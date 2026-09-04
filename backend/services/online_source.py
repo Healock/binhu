@@ -314,6 +314,7 @@ async def rebuild_projection(
             local_by_source[int(source_id)][str(field_name)] = str(local_value or "")
     grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
     source_contexts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    source_revisions: dict[str, int] = {}
     for source_id, row_key, raw_values, revision, row_hash in source_records:
         values = json_value(raw_values, {})
         values.update(local_by_source.get(int(source_id), {}))
@@ -326,6 +327,9 @@ async def rebuild_projection(
             "revision": int(revision),
             "row_hash": str(row_hash or ""),
         })
+        source_revisions[str(row_key)] = max(
+            source_revisions.get(str(row_key), 0), int(revision)
+        )
 
     audit_filter = ""
     audit_params: list[object] = [parser_type]
@@ -549,6 +553,7 @@ async def rebuild_projection(
             assignment_address_display,
             assignment_address_sort_key,
             assignment_queue_ready,
+            source_revisions.get(row_key, 0),
         ))
 
     if address_match_rows:
@@ -604,10 +609,12 @@ async def rebuild_projection(
                 identity_hmac, first_dispatch_at, task_state,
                 source_count, conflict, search_text, pending_state,
                 assignment_source_label, assignment_address_display,
-                assignment_address_sort_key, assignment_queue_ready
+                assignment_address_sort_key, assignment_queue_ready,
+                source_revision
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+                source_revision=VALUES(source_revision),
                 values_json=VALUES(values_json), community=VALUES(community),
                 small_community_id=VALUES(small_community_id),
                 small_community_name=VALUES(small_community_name),
@@ -722,11 +729,15 @@ async def rebuild_projection_keys(
             local_by_source[int(source_id)][str(field_name)] = str(local_value or "")
     grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
     source_contexts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    source_revisions: dict[str, int] = {}
     for source_id, row_key, raw_values, revision, row_hash in source_records:
         values = json_value(raw_values, {})
         values.update(local_by_source.get(int(source_id), {}))
         grouped[str(row_key)].append({column: str(values.get(column, "") or "").strip() for column in parser.COLUMNS})
         source_contexts[str(row_key)].append({"id": int(source_id), "revision": int(revision), "row_hash": str(row_hash or "")})
+        source_revisions[str(row_key)] = max(
+            source_revisions.get(str(row_key), 0), int(revision)
+        )
     registration_links = await registration_links_by_rows(cur, parser_type, keys)
     matcher = RuleMatcher()
     projection_rows: list[tuple] = []
@@ -795,13 +806,13 @@ async def rebuild_projection_keys(
             conflict=conflict,
             task_state_value=projected_task_state,
         )
-        projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), projected_task_state, len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), "", assignment_source_label, assignment_address_display, assignment_address_sort_key, assignment_queue_ready))
+        projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), projected_task_state, len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), "", assignment_source_label, assignment_address_display, assignment_address_sort_key, assignment_queue_ready, source_revisions.get(row_key, 0)))
     if address_rows:
         await cur.executemany(
             "INSERT INTO _online_task_address_matches (parser_type,row_key,original_address,suggested_entry_id,suggested_community_id,suggested_community_name,match_status,match_score,match_method,match_reason,candidates_json,matcher_version,confirmed_entry_id,confirmed_by,confirmed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE original_address=VALUES(original_address),suggested_entry_id=VALUES(suggested_entry_id),suggested_community_id=VALUES(suggested_community_id),suggested_community_name=VALUES(suggested_community_name),match_status=VALUES(match_status),match_score=VALUES(match_score),match_method=VALUES(match_method),match_reason=VALUES(match_reason),candidates_json=VALUES(candidates_json),matcher_version=VALUES(matcher_version),confirmed_entry_id=VALUES(confirmed_entry_id),confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at)", address_rows)
     if projection_rows:
         await cur.executemany(
-            "INSERT INTO _online_source_projection (parser_type,row_key,values_json,community,small_community_id,small_community_name,address_match_status,address_match_score,address_match_method,address_match_reason,address_match_candidates,address_match_version,inspector,identity_hmac,first_dispatch_at,task_state,source_count,conflict,search_text,pending_state,assignment_source_label,assignment_address_display,assignment_address_sort_key,assignment_queue_ready) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE values_json=VALUES(values_json),community=VALUES(community),small_community_id=VALUES(small_community_id),small_community_name=VALUES(small_community_name),address_match_status=VALUES(address_match_status),address_match_score=VALUES(address_match_score),address_match_method=VALUES(address_match_method),address_match_reason=VALUES(address_match_reason),address_match_candidates=VALUES(address_match_candidates),address_match_version=VALUES(address_match_version),inspector=VALUES(inspector),identity_hmac=VALUES(identity_hmac),first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),task_state=VALUES(task_state),source_count=VALUES(source_count),conflict=VALUES(conflict),search_text=VALUES(search_text),pending_state=VALUES(pending_state),assignment_source_label=VALUES(assignment_source_label),assignment_address_display=VALUES(assignment_address_display),assignment_address_sort_key=VALUES(assignment_address_sort_key),assignment_queue_ready=VALUES(assignment_queue_ready)", projection_rows)
+            "INSERT INTO _online_source_projection (parser_type,row_key,values_json,community,small_community_id,small_community_name,address_match_status,address_match_score,address_match_method,address_match_reason,address_match_candidates,address_match_version,inspector,identity_hmac,first_dispatch_at,task_state,source_count,conflict,search_text,pending_state,assignment_source_label,assignment_address_display,assignment_address_sort_key,assignment_queue_ready,source_revision) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE source_revision=VALUES(source_revision),values_json=VALUES(values_json),community=VALUES(community),small_community_id=VALUES(small_community_id),small_community_name=VALUES(small_community_name),address_match_status=VALUES(address_match_status),address_match_score=VALUES(address_match_score),address_match_method=VALUES(address_match_method),address_match_reason=VALUES(address_match_reason),address_match_candidates=VALUES(address_match_candidates),address_match_version=VALUES(address_match_version),inspector=VALUES(inspector),identity_hmac=VALUES(identity_hmac),first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),task_state=VALUES(task_state),source_count=VALUES(source_count),conflict=VALUES(conflict),search_text=VALUES(search_text),pending_state=VALUES(pending_state),assignment_source_label=VALUES(assignment_source_label),assignment_address_display=VALUES(assignment_address_display),assignment_address_sort_key=VALUES(assignment_address_sort_key),assignment_queue_ready=VALUES(assignment_queue_ready)", projection_rows)
     await sync_current_task_snapshots_for_keys(cur, parser_type, keys)
     return {"processed": len(projection_rows), "deleted": len(keys) - len(projection_rows)}
 

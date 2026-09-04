@@ -35,6 +35,7 @@ REQUIRED_SHADOW_ONLINE_TABLES = {
     "_user_presence_clients",
     "_users",
     "_online_source_projection",
+    "_online_projection_jobs",
     "_shadow_loadtest_marker",
 }
 REQUIRED_SHADOW_DAILY_TABLES = {"_daily_report_meta", "_daily_task_ledger"}
@@ -519,7 +520,8 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             for chunk in _chunks(source_ids):
                 placeholders = ",".join(["%s"] * len(chunk))
                 cursor.execute(
-                    f"SELECT id,revision,values_json FROM _online_source_rows WHERE id IN ({placeholders})",
+                    f"SELECT id,revision,values_json,parser_type,row_key,source_kind,source_ref "
+                    f"FROM _online_source_rows WHERE id IN ({placeholders})",
                     chunk,
                 )
                 for row in cursor.fetchall():
@@ -527,7 +529,79 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
                     values = json.loads(raw) if isinstance(raw, str) else (raw or {})
                     source_values[int(row["id"])] = {
                         "revision": int(row["revision"]), "values": values,
+                        "parser_type": str(row["parser_type"]),
+                        "row_key": str(row["row_key"]),
+                        "source_kind": str(row["source_kind"] or ""),
+                        "source_ref": str(row["source_ref"] or ""),
                     }
+
+            source_id_chunks = list(_chunks(sorted(source_values)))
+            for chunk in source_id_chunks:
+                placeholders = ",".join(["%s"] * len(chunk))
+                cursor.execute(
+                    "SELECT expectation.source_id,local.revision,local.values_json "
+                    "FROM _shadow_loadtest_expectations expectation "
+                    "LEFT JOIN _online_source_rows source ON source.id=expectation.source_id "
+                    "LEFT JOIN _local_source_records local "
+                    "ON local.source_kind=source.source_kind AND local.source_ref=source.source_ref "
+                    f"WHERE expectation.run_id=%s AND expectation.source_id IN ({placeholders})",
+                    (context.run_id, *chunk),
+                )
+                for local in cursor.fetchall():
+                    item = source_values.get(int(local["source_id"]))
+                    if not item:
+                        continue
+                    item["local_revision"] = int(local["revision"]) if local["revision"] is not None else None
+                    item["local_values"] = (
+                        json.loads(local["values_json"])
+                        if isinstance(local["values_json"], str)
+                        else local["values_json"]
+                    )
+                cursor.execute(
+                    "SELECT expectation.source_id,projection.source_revision,projection.values_json "
+                    "FROM _shadow_loadtest_expectations expectation "
+                    "LEFT JOIN _online_source_projection projection "
+                    "ON projection.parser_type COLLATE utf8mb4_unicode_ci="
+                    "expectation.parser_type COLLATE utf8mb4_unicode_ci "
+                    "AND projection.row_key COLLATE utf8mb4_unicode_ci="
+                    "expectation.row_key COLLATE utf8mb4_unicode_ci "
+                    f"WHERE expectation.run_id=%s AND expectation.source_id IN ({placeholders})",
+                    (context.run_id, *chunk),
+                )
+                for projection in cursor.fetchall():
+                    item = source_values.get(int(projection["source_id"]))
+                    if not item:
+                        continue
+                    item["projection_revision"] = (
+                        int(projection["source_revision"])
+                        if projection["source_revision"] is not None else None
+                    )
+                    item["projection_values"] = (
+                        json.loads(projection["values_json"])
+                        if isinstance(projection["values_json"], str)
+                        else projection["values_json"]
+                    )
+
+            failed_operation_ids = sorted({
+                str(event.get("failed_operation_id") or "")
+                for event in events
+                if int(event.get("status") or 0) >= 500
+                and str(event.get("failed_operation_id") or "")
+            })
+            partial_failed_operations: list[str] = []
+            for operation_id in failed_operation_ids:
+                cursor.execute(
+                    "SELECT COUNT(*) AS count FROM _online_writeback_audit WHERE operation_id=%s",
+                    (operation_id,),
+                )
+                audit_count = int(cursor.fetchone()["count"])
+                cursor.execute(
+                    "SELECT COUNT(*) AS count FROM _online_projection_jobs WHERE operation_id=%s",
+                    (operation_id,),
+                )
+                queue_count = int(cursor.fetchone()["count"])
+                if audit_count or queue_count:
+                    partial_failed_operations.append(operation_id)
 
             registration_keys = sorted({
                 (str(event.get("parser_type")), str(event.get("row_key")))
@@ -578,6 +652,8 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
     for key, expected in expected_counts.items():
         if actual_counts[key] != expected:
             issues.append(f"{key}:{actual_counts[key]}!={expected}")
+    for operation_id in partial_failed_operations:
+        issues.append(f"failed_transaction_partial_write:{operation_id}")
 
     successful = [event for event in events if int(event.get("status") or 0) == 200]
     for event in successful:
@@ -587,10 +663,27 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             issues.append(f"revision_not_advanced:{event.get('source_id')}")
 
     latest_field = _latest_successful_fields(events)
-    for (source_id, field), (_, expected_value) in latest_field.items():
-        actual = (source_values.get(source_id) or {}).get("values", {}).get(field)
+    unrecorded_writes: set[int] = set()
+    for (source_id, field), (event_order, expected_value) in latest_field.items():
+        source_item = source_values.get(source_id) or {}
+        actual = source_item.get("values", {}).get(field)
         if actual != expected_value:
-            issues.append(f"saved_value_mismatch:{source_id}:{field}")
+            if int(source_item.get("revision") or 0) > int(event_order[0]):
+                issues.append(f"unrecorded_write:{source_id}:{field}")
+                unrecorded_writes.add(source_id)
+            else:
+                issues.append(f"saved_value_mismatch:{source_id}:{field}")
+
+    for source_id, item in source_values.items():
+        revision = int(item.get("revision") or 0)
+        if item.get("local_revision") != revision:
+            issues.append(f"local_source_revision_mismatch:{source_id}")
+        if item.get("local_values") != item.get("values"):
+            issues.append(f"local_source_values_mismatch:{source_id}")
+        if item.get("projection_revision") != revision:
+            issues.append(f"projection_revision_mismatch:{source_id}")
+        if item.get("projection_values") != item.get("values"):
+            issues.append(f"projection_values_mismatch:{source_id}")
 
     claim_groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for event in events:
@@ -663,6 +756,8 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
         "expected_conflicts": sum(1 for event in events if int(event.get("status") or 0) == 409),
         "verified_conflict_rounds": verified_rounds,
         "verified_claims": verified_claims,
+        "unrecorded_write_sources": len(unrecorded_writes),
+        "verified_failed_transactions": len(failed_operation_ids),
         "issues": issues,
     }
 

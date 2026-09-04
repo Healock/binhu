@@ -101,11 +101,17 @@ class LocalSourceHelpersTest(unittest.TestCase):
                 self.rowcount = 1
                 if compact.startswith("SELECT source_kind,source_ref"):
                     self.one = ("local_dispatch", "police_dispatch_task:7")
+                elif compact.startswith("SELECT id FROM `t_fullchain`"):
+                    self.one = (12,)
                 elif compact.startswith("UPDATE _local_source_records SET parser_type"):
                     self.rowcount = 0
 
             async def fetchone(self):
                 return self.one
+
+            async def executemany(self, sql, params):
+                self.calls.append((" ".join(sql.split()), params))
+                self.rowcount = len(params)
 
         parser = get_parser("全链条")
         values = {column: "" for column in parser.COLUMNS}
@@ -139,6 +145,10 @@ class LocalSourceHelpersTest(unittest.TestCase):
             supersede[0][1],
             ("local_dispatch", "police_dispatch_task:7"),
         )
+        self.assertTrue(any(
+            "INSERT INTO _online_projection_jobs" in call[0]
+            for call in cursor.calls
+        ))
 
     def test_local_query_editing_does_not_depend_on_tencent_writeback_switch(self):
         projection_source = inspect.getsource(query._projection_query)

@@ -610,11 +610,29 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       setSavedMessage('已保存')
     } catch (reason: any) {
       const status = reason?.response?.status
+      const conflictDetail = reason?.response?.data?.detail
+      const code = conflictDetail?.code
       const latestDraft = { ...formValuesRef.current }
       setError(status === 409
-        ? '数据冲突，请刷新核对后重试；当前草稿已保留'
-        : detailError(reason, '保存失败，请稍后重试；当前草稿已保留'))
-      if (status === 409) {
+        ? '数据冲突，请核对冲突字段后重试；其他草稿已保留'
+        : status === 503 || code === 'task_save_busy' || code === 'task_save_timeout'
+          ? '系统繁忙，草稿未丢失，请稍后点击“重试保存”'
+          : detailError(reason, '保存失败，请稍后重试；当前草稿已保留'))
+      if (status === 409 && code === 'task_revision_conflict') {
+        const currentValues = conflictDetail?.current_values || {}
+        const currentRevision = Number(conflictDetail?.current_revision || 0)
+        const reconciledDraft = { ...latestDraft, ...currentValues }
+        setData(current => current ? {
+          ...current,
+          sources: current.sources.map(source => source.id === selectedSource.id ? {
+            ...source,
+            values: { ...source.values, ...currentValues },
+            revision: currentRevision || source.revision,
+          } : source),
+        } : current)
+        formValuesRef.current = reconciledDraft
+        setFormValues(reconciledDraft)
+      } else if (status === 409) {
         await load(selectedSource.id)
         formValuesRef.current = latestDraft
         setFormValues(latestDraft)
@@ -1555,7 +1573,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   <Button type="primary" onClick={() => void save(true)}>领取并保存</Button>
                 )}
                 {error && dirty && !shouldClaimUnassigned && (
-                  <Button onClick={() => void save(true)}>重试</Button>
+                  <Button onClick={() => void save(true)}>重试保存</Button>
                 )}
               </div>
             </div>
