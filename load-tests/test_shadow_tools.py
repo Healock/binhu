@@ -1,6 +1,7 @@
 import csv
 import os
 import tempfile
+import threading
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -12,6 +13,12 @@ from metrics import (
     projection_stop_reason,
     requests_stalled,
     summarize,
+)
+from locustfile import (
+    FlowUser,
+    _barrier_for_pair,
+    _conflict_barriers,
+    _conflict_tasks,
 )
 from shadow_guard import ShadowSafetyError, validate_shadow_environment
 from shadowctl import (
@@ -42,6 +49,19 @@ def shadow_env() -> dict[str, str]:
 
 
 class ShadowToolTests(unittest.TestCase):
+    def test_conflict_scenario_uses_only_coordinated_task(self):
+        self.assertEqual(_conflict_tasks(FlowUser), [FlowUser.concurrent_conflict])
+
+    def test_broken_conflict_barrier_is_replaced(self):
+        pair_index = 999
+        broken = threading.Barrier(2)
+        broken.abort()
+        _conflict_barriers[pair_index] = broken
+        replacement = _barrier_for_pair(pair_index)
+        self.assertIsNot(replacement, broken)
+        self.assertFalse(replacement.broken)
+        _conflict_barriers.pop(pair_index, None)
+
     def test_fixture_counts_and_role_numbering_match_plan(self):
         users = make_users()
         self.assertEqual(len(users), 76)
