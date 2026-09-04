@@ -375,6 +375,7 @@ def run(run_id: str, users: int, duration: str, scenario: str) -> int:
         locust_command, "-f", str(locust_file), "--headless",
         "--users", str(users), "--spawn-rate", str(spawn_rate),
         "--run-time", duration, "--host", base_url,
+        "--stop-timeout", "15",
         "--csv", str(csv_prefix), "--csv-full-history",
         "--html", str(ARTIFACTS / f"{artifact_key}.html"),
     ]
