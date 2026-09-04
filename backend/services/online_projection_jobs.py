@@ -10,6 +10,7 @@ only; no task body or sensitive person data is copied into the queue.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,8 @@ from services.watch_matching import projection_identity
 POLL_SECONDS = 0.35
 LOCK_WAIT_SECONDS = 3
 MAX_ATTEMPTS = 5
+DEFAULT_WORKER_CONCURRENCY = 4
+MAX_WORKER_CONCURRENCY = 8
 
 
 async def ensure_online_projection_job_schema(cur) -> None:
@@ -344,9 +347,30 @@ async def _process_job(job: dict[str, Any]) -> None:
 
 async def process_projection_jobs_once(limit: int = 10) -> int:
     jobs = await _claim_jobs(max(1, min(int(limit), 50)))
-    for job in jobs:
-        await _process_job(job)
+    if not jobs:
+        return 0
+    # Each job owns its own short transaction and connection.  Keep the
+    # fan-out bounded so the worker cannot consume the entire online-data
+    # pool while request traffic is active (the pool has ten connections per
+    # business database in production).
+    semaphore = asyncio.Semaphore(_worker_concurrency())
+
+    async def process_bounded(job: dict[str, Any]) -> None:
+        async with semaphore:
+            await _process_job(job)
+
+    await asyncio.gather(*(process_bounded(job) for job in jobs))
     return len(jobs)
+
+
+def _worker_concurrency() -> int:
+    """Return a safe, bounded worker concurrency from deployment config."""
+    raw = os.environ.get("ONLINE_PROJECTION_WORKER_CONCURRENCY", "")
+    try:
+        value = int(raw) if raw.strip() else DEFAULT_WORKER_CONCURRENCY
+    except ValueError:
+        value = DEFAULT_WORKER_CONCURRENCY
+    return max(1, min(value, MAX_WORKER_CONCURRENCY))
 
 
 async def projection_queue_snapshot() -> dict[str, Any]:
@@ -391,9 +415,10 @@ async def run_online_projection_worker() -> None:
         await conn.commit()
     while True:
         try:
-            # Claim one row at a time so cancellation never leaves an
-            # unbounded group of jobs in running state.
-            processed = await process_projection_jobs_once(limit=1)
+            # Claim a bounded batch and process it concurrently.  Each job
+            # still has an independent transaction, and _process_job marks a
+            # cancelled row retryable before propagating cancellation.
+            processed = await process_projection_jobs_once(limit=_worker_concurrency())
             await asyncio.sleep(0 if processed else POLL_SECONDS)
         except asyncio.CancelledError:
             raise

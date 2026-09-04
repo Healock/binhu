@@ -2,6 +2,14 @@
 
 本目录只服务于隔离的影子环境，不属于正式后端依赖。它会创建虚构账号、社区、小区和 3,600 条虚构流口任务，并通过正式客户端使用的 `/shadow-api` 契约执行压力测试。
 
+投影派生 worker 默认使用 4 路受控并发，生产可通过
+`BINHU_ONLINE_PROJECTION_WORKER_CONCURRENCY` 调整，影子环境固定为 4。后端将取值限制在 1～8，
+不得为了追赶积压而超过数据库连接池余量。压测阶段必须等待 `pending/retry/running` 全部归零后再执行最终 `verify`。
+
+`verify` 会按最高成功 revision 归并重复保存，并使用 `operation_id` 与 `_online_writeback_audit` 交叉核对最终值。
+旧成功响应被更高且已记录的 revision 覆盖时记为 `superseded_write_sources`，不算错误；数据库存在事件日志之外的更高 revision
+时仍以 `unrecorded_write` 硬错误停止后续阶段。409 与 5xx 不参与成功值判断。
+
 ## 安全边界
 
 - 只允许 `APP_ENVIRONMENT=shadow`。
