@@ -33,6 +33,24 @@ _barrier_lock = threading.Lock()
 _conflict_barriers: dict[int, threading.Barrier] = {}
 
 
+def _is_conflict_scenario() -> bool:
+    return os.environ.get("LOAD_TEST_SCENARIO") == "conflict"
+
+
+def _barrier_for_pair(pair_index: int) -> threading.Barrier:
+    """Return a usable two-party barrier for one coordinated conflict pair."""
+    with _barrier_lock:
+        barrier = _conflict_barriers.get(pair_index)
+        if barrier is None or barrier.broken:
+            barrier = threading.Barrier(2)
+            _conflict_barriers[pair_index] = barrier
+        return barrier
+
+
+def _conflict_tasks(user_type: type) -> list:
+    return [user_type.concurrent_conflict]
+
+
 def _password(username: str) -> str:
     return f"LoadTest-{hashlib.sha256(username.encode()).hexdigest()[:16]}!"
 
@@ -128,6 +146,13 @@ class FlowUser(HttpUser):
         self.task_row: dict | None = None
         self.write_index = 0
         self.registration_index = 0
+        # The conflict gate measures one precise contract: two clients read
+        # the same revision and then submit together.  Do not mix the normal
+        # weighted browsing workload into this scenario.  A low-weight
+        # conflict task can otherwise miss its partner, break its barrier and
+        # finish a nominal conflict run without producing a single round.
+        if _is_conflict_scenario():
+            self.tasks = _conflict_tasks(type(self))
 
     def _scope(self) -> str:
         if "-member-" in self.username or self.username.startswith("burst-"):
@@ -310,7 +335,7 @@ class FlowUser(HttpUser):
 
     @task(5)
     def concurrent_conflict(self) -> None:
-        if os.environ.get("LOAD_TEST_SCENARIO") != "conflict":
+        if not _is_conflict_scenario():
             return
         targets = [row for row in RUNTIME_ROWS if row.get("scenario") == "conflict"][:10]
         if not targets:
@@ -322,8 +347,7 @@ class FlowUser(HttpUser):
         parser_type, row_key, source = source_info
         source_id = int(source.get("id") or source.get("source_id") or 0)
         revision = int(source.get("revision") or 1)
-        with _barrier_lock:
-            barrier = _conflict_barriers.setdefault(pair_index, threading.Barrier(2))
+        barrier = _barrier_for_pair(pair_index)
         try:
             barrier.wait(timeout=5)
         except threading.BrokenBarrierError:
