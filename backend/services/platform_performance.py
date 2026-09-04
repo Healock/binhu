@@ -337,15 +337,31 @@ async def _background_pressure() -> dict[str, Any]:
     active = int(queue.get("active_count", 0))
     queued = int(queue.get("queued_count", 0))
     running = int(queue.get("running_count", 0))
+    projection = {}
+    report = {}
+    try:
+        from services.online_projection_jobs import projection_queue_snapshot
+        projection = await projection_queue_snapshot()
+    except Exception:
+        projection = {"unavailable": True}
+    try:
+        from services.local_report_scheduler import local_report_status
+        report = local_report_status()
+    except Exception:
+        report = {"state": "unavailable"}
+    projection_queued = int(projection.get("queued_count", 0) or 0)
+    projection_running = int(projection.get("running_count", 0) or 0)
     return {
         "active_count": active,
-        "queued_count": queued,
-        "running_count": running,
+        "queued_count": queued + projection_queued,
+        "running_count": running + projection_running,
         "attention_count": int(queue.get("attention_count", 0)),
         "oldest_active_seconds": max(0, oldest),
-        "occupancy_score": running * 2 + queued,
+        "occupancy_score": (running + projection_running) * 2 + queued + projection_queued,
         "categories": sorted(categories.values(), key=lambda item: (item["active"], item["running"]), reverse=True),
         "unavailable_sources": queue.get("unavailable_sources", []),
+        "online_projection": projection,
+        "local_report": report,
     }
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "binhu-android-tauri"
-version = "0.28.4"
+version = "0.28.5"
 description = "Binhu Android client shell"
 authors = ["滨湖新城派出所"]
 edition = "2021"

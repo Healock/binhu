@@ -1,6 +1,7 @@
 """MySQL 多数据库连接池管理（同一实例内的八个业务域数据库）。"""
 
 from contextlib import contextmanager
+import asyncio
 import re
 import warnings
 
@@ -44,6 +45,7 @@ from services.domain_events import ensure_outbox_schema
 from services.diagnostics import ensure_diagnostic_schema
 from services.help_docs import ensure_help_docs_schema
 from services.address_match_feedback import ensure_address_match_feedback_schema
+from services.online_projection_jobs import ensure_online_projection_job_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -941,6 +943,12 @@ async def ensure_online_editor_schema(cur) -> None:
         "assignment_queue_ready",
         "TINYINT(1) NOT NULL DEFAULT 0 AFTER assignment_address_sort_key",
     )
+    await _ensure_column(
+        cur,
+        "_online_source_projection",
+        "source_revision",
+        "BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER row_key",
+    )
     await _ensure_index(
         cur,
         "_online_source_projection",
@@ -1064,6 +1072,7 @@ async def ensure_online_editor_schema(cur) -> None:
             before_values JSON DEFAULT NULL,
             after_values JSON DEFAULT NULL,
             sync_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            operation_id CHAR(36) NOT NULL DEFAULT '',
             synced_at DATETIME DEFAULT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_writeback_audit_time (created_at),
@@ -1074,6 +1083,18 @@ async def ensure_online_editor_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur,
+        "_online_writeback_audit",
+        "operation_id",
+        "CHAR(36) NOT NULL DEFAULT '' AFTER sync_status",
+    )
+    await _ensure_index(
+        cur,
+        "_online_writeback_audit",
+        "idx_writeback_audit_operation",
+        "INDEX idx_writeback_audit_operation (operation_id)",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _online_local_changes (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1110,6 +1131,7 @@ async def ensure_online_editor_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
+    await ensure_online_projection_job_schema(cur)
     await cur.execute(
         "INSERT IGNORE INTO _system_config (config_key, config_value) "
         "VALUES ('online_writeback_enabled', '0')"
@@ -3005,8 +3027,27 @@ async def close_db():
 # 依赖注入：默认 online_data 库（兼容现有 Depends(get_db)）
 async def get_db():
     """默认获取 OnlineData 库的连接"""
-    async with db_manager.get_pool("online_data").acquire() as conn:
+    pool = db_manager.get_pool("online_data")
+    try:
+        conn = await asyncio.wait_for(
+            pool.acquire(),
+            timeout=settings.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "database_pool_busy",
+                "message": "数据库连接繁忙，请稍后重试；未提交的草稿不会丢失",
+            },
+            headers={"Retry-After": "1"},
+        ) from exc
+    try:
         yield conn
+    finally:
+        pool.release(conn)
 
 
 def get_db_pool(db_name: str = "online_data"):

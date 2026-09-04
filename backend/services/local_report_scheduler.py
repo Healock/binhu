@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import date
+import time
+from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
 from database import db_manager
@@ -20,6 +21,13 @@ GENERATION_METHOD = "local_scheduler"
 REFRESH_INTERVAL_SECONDS = 600
 _SOURCE_TABLE = re.compile(r"^t_[a-z0-9_]+$")
 _SUFFIX = re.compile(r"^[A-Za-z0-9]+$")
+
+_REPORT_STATUS: dict[str, Any] = {
+    "state": "idle",
+    "last_duration_ms": 0,
+    "last_error_code": "",
+    "last_finished_at": None,
+}
 
 
 def _identifier(value: str) -> str:
@@ -86,18 +94,22 @@ async def replace_local_report_snapshots(
             (parser_type, final_pattern.format(report_date=report_date), source)
             for parser_type, final_pattern, source in staged
         ]
+        # Keep schema preparation outside the snapshot transaction.  This
+        # avoids mixing implicit-commit DDL with the consistent business-data
+        # read and means an existing production schema performs no runtime DDL.
+        for _, final_name, source_table in staged:
+            if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, final_name):
+                await cur.execute(
+                    f"CREATE TABLE {report_schema}.{_identifier(final_name)} LIKE "
+                    f"{online_schema}.{_identifier(source_table)}"
+                )
+
         # Stable snapshot tables avoid the metadata-lock convoy caused by a
-        # runtime RENAME TABLE.  DELETE/INSERT are transactional InnoDB
-        # operations and readers continue to see the previous committed
-        # snapshot while a refresh is in progress.
-        await conn.begin()
+        # runtime RENAME TABLE.  A consistent snapshot reads all OnlineData
+        # source tables from one committed point in time without FOR UPDATE.
+        await cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")
         try:
             for _, final_name, source_table in staged:
-                if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, final_name):
-                    await cur.execute(
-                        f"CREATE TABLE {report_schema}.{_identifier(final_name)} LIKE "
-                        f"{online_schema}.{_identifier(source_table)}"
-                    )
                 await cur.execute(
                     f"DELETE FROM {report_schema}.{_identifier(final_name)}"
                 )
@@ -127,7 +139,11 @@ async def replace_local_report_snapshots(
 
 async def refresh_local_daily_reports_once() -> dict[str, Any]:
     """Refresh all local snapshots, subreports and the configured summary."""
-    pool = db_manager.get_pool("online_data")
+    started = time.perf_counter()
+    _REPORT_STATUS.update(state="running", last_error_code="")
+    # Use a dedicated daily-report connection context.  OnlineData is only
+    # referenced with consistent, non-locking SELECT statements below.
+    pool = db_manager.get_pool("daily_report")
     conn = await pool.acquire()
     locked = False
     try:
@@ -135,6 +151,8 @@ async def refresh_local_daily_reports_once() -> dict[str, Any]:
         if not locked:
             return {"status": "busy", "report_date": None, "report_types": []}
 
+        async with conn.cursor() as cur:
+            await cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         report_types = list(BUILDERS.keys())
         report_date = await replace_local_report_snapshots(conn, report_types)
         subreports: list[dict[str, Any]] = []
@@ -158,23 +176,38 @@ async def refresh_local_daily_reports_once() -> dict[str, Any]:
         )
         if summary.get("implemented") is False:
             raise RuntimeError(summary.get("message") or "总汇总表生成失败")
-        return {
+        result = {
             "status": "success",
             "report_date": report_date,
             "report_types": report_types,
             "subreports": subreports,
             "summary": summary,
         }
+        _REPORT_STATUS.update(state="success")
+        return result
+    except Exception as exc:
+        _REPORT_STATUS.update(
+            state="failed",
+            last_error_code=type(exc).__name__,
+        )
+        raise
     finally:
         try:
             if locked:
                 await _release_refresh_lock(conn)
         finally:
             pool.release(conn)
+            _REPORT_STATUS.update(
+                last_duration_ms=round((time.perf_counter() - started) * 1000, 1),
+                last_finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
 
 
 async def run_local_report_scheduler() -> None:
     """Run immediately on startup, then refresh at the configured interval."""
+    if not settings.LOCAL_REPORT_SCHEDULER_ENABLED:
+        _REPORT_STATUS.update(state="disabled")
+        return
     while True:
         try:
             result = await refresh_local_daily_reports_once()
@@ -191,3 +224,7 @@ async def run_local_report_scheduler() -> None:
                 f"{type(exc).__name__}: {str(exc)[:300]}"
             )
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+
+
+def local_report_status() -> dict[str, Any]:
+    return dict(_REPORT_STATUS)

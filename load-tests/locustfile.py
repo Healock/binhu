@@ -264,6 +264,12 @@ class FlowUser(HttpUser):
                 "source_id": int(source_id), "read_revision": revision,
                 "status": response.status_code,
                 "returned_revision": payload.get("revision"),
+                "operation_id": payload.get("operation_id"),
+                "derived_status": payload.get("derived_status"),
+                "error_code": (payload.get("detail") or {}).get("code")
+                    if isinstance(payload.get("detail"), dict) else "",
+                "failed_operation_id": (payload.get("detail") or {}).get("operation_id")
+                    if isinstance(payload.get("detail"), dict) else "",
                 "property_id": int(selected_property["property_id"]) if selected_property else None,
                 "property_version": int(selected_property["property_version"]) if selected_property else None,
                 "changes_sha256": hashlib.sha256(
@@ -338,7 +344,13 @@ class FlowUser(HttpUser):
                 "kind": "conflict", "pair": pair_index, "username": self.username,
                 "parser_type": parser_type, "row_key": row_key, "source_id": source_id,
                 "read_revision": revision, "status": response.status_code,
-                "returned_revision": payload.get("revision"), "changes": changes,
+                "returned_revision": payload.get("revision"),
+                "operation_id": payload.get("operation_id"),
+                "error_code": (payload.get("detail") or {}).get("code")
+                    if isinstance(payload.get("detail"), dict) else "",
+                "failed_operation_id": (payload.get("detail") or {}).get("operation_id")
+                    if isinstance(payload.get("detail"), dict) else "",
+                "changes": changes,
             })
             if response.status_code == 409:
                 response.success()

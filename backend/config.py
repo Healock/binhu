@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     MYSQL_USER: str = "binhu"
     MYSQL_PASSWORD: str
     MYSQL_POOL_SIZE: int = 10
+    MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS: float = 5.0
+    LOCAL_REPORT_SCHEDULER_ENABLED: bool = True
     MYSQL_ONLINE_DATA_DB: str = "OnlineData"
     MYSQL_ARCHIVE_DB: str = "OnlineDataArchive"
     MYSQL_DAILY_REPORT_DB: str = "daily_report"

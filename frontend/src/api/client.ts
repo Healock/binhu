@@ -1498,6 +1498,8 @@ export interface MobileTaskSaveResult {
   row_key: string
   row_hash: string
   revision: number
+  operation_id?: string
+  derived_status?: 'queued' | 'completed'
   pending_sync: boolean
   sync_state: MobileTaskSyncState
   message: string

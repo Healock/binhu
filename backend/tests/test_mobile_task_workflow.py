@@ -714,17 +714,15 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["details"]), result["skipped"])
         self.assertEqual(len(result["failed_details"]), result["failed"])
 
-    def test_local_bulk_assignment_uses_one_projection_rebuild(self):
+    def test_local_bulk_assignment_queues_post_commit_projection(self):
         from routers.mobile_tasks import bulk_assign_mobile_tasks
 
         source = inspect.getsource(bulk_assign_mobile_tasks)
         local_branch = source.split("if local_data_source_enabled():", 2)[-1]
         self.assertIn('action="bulk_assign_local"', local_branch)
         self.assertIn("rebuild=False", local_branch)
-        self.assertIn(
-            "await rebuild_projection_rows(cur, parser_type, successful_keys)",
-            local_branch,
-        )
+        self.assertNotIn("await rebuild_projection_rows", local_branch)
+        self.assertIn("await apply_local_system_changes", local_branch)
         self.assertIn("successful_keys.append(row_key)", local_branch)
         self.assertNotIn("await rebuild_projection(cur, parser_type)", local_branch)
         self.assertIn("SAVEPOINT bulk_assign_task", local_branch)

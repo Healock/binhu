@@ -439,6 +439,7 @@ CREATE TABLE IF NOT EXISTS _local_source_records (
 CREATE TABLE IF NOT EXISTS _online_source_projection (
     parser_type VARCHAR(50) NOT NULL,
     row_key CHAR(32) NOT NULL,
+    source_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
     values_json JSON NOT NULL,
     community VARCHAR(200) NOT NULL DEFAULT '',
     inspector VARCHAR(100) NOT NULL DEFAULT '',
@@ -743,11 +744,33 @@ CREATE TABLE IF NOT EXISTS _online_writeback_audit (
     before_values JSON DEFAULT NULL,
     after_values JSON DEFAULT NULL,
     sync_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    operation_id CHAR(36) NOT NULL DEFAULT '',
     synced_at DATETIME DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_writeback_audit_time (created_at),
     INDEX idx_writeback_audit_pending (spreadsheet_id, sync_status, created_at),
     INDEX idx_writeback_audit_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _online_projection_jobs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    parser_type VARCHAR(50) NOT NULL,
+    row_key CHAR(32) NOT NULL,
+    source_id BIGINT DEFAULT NULL,
+    source_revision BIGINT UNSIGNED NOT NULL,
+    operation_id CHAR(36) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    error_code VARCHAR(80) NOT NULL DEFAULT '',
+    next_attempt_at DATETIME DEFAULT NULL,
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_projection_job_revision (parser_type, row_key, source_revision),
+    INDEX idx_projection_job_due (status, next_attempt_at, created_at),
+    INDEX idx_projection_job_source (source_id, source_revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _online_local_changes (
