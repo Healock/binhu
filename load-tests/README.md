@@ -126,7 +126,7 @@ python .\shadowctl.py run --run-id $env:LOAD_TEST_RUN_ID --scenario mixed --user
 
 ## 自动停止与报告
 
-每次 `run` 都同时记录主机、正式健康、正式容器、影子容器、影子 MySQL 和 Locust 指标。出现以下任一情况会终止 Locust 并写入 `*-stop-reason.json`：
+每次 `run` 都同时记录主机、正式健康、正式容器、影子容器、影子 MySQL、投影队列和 Locust 指标。每个阶段使用独立的 `*-stop-reason.json`，不会被下一阶段覆盖。出现以下任一情况会终止 Locust：
 
 - 主机可用内存低于 4GiB；
 - Swap 比运行开始增加超过 256MiB；
@@ -137,6 +137,8 @@ python .\shadowctl.py run --run-id $env:LOAD_TEST_RUN_ID --scenario mixed --user
 - 影子数据库表和索引总量达到 10GiB；
 - 至少 100 次请求后，非预期失败率超过 2% 并持续一分钟；
 - 普通自动保存 P95 超过 3 秒并持续两个采样窗口。
+- 非登录场景累计至少 100 次请求后，30 秒没有任何请求完成；
+- 单个投影任务处于运行状态超过 30 秒，或投影任务进入最终失败状态。
 
 Docker 命名卷在不同宿主机上没有统一可靠的硬配额。本工具会以数据库表和索引大小达到 10GiB 为停止线；若生产服务器必须具备硬配额，应在执行前把 MySQL 数据目录放到预先创建的 10GiB quota-backed 文件系统。不能把这里的软停止描述成硬容量限制。
 
@@ -157,6 +159,7 @@ python .\shadowctl.py verify --run-id $env:LOAD_TEST_RUN_ID --production-proof .
 - 自主领取任务最终只有一个成功领取人，且投影核查人与成功方一致；
 - 每轮协调冲突恰好一个 200、一个 409。
 - 冲突任务最终字段值必须来自成功方，不能落入 409 失败方的草稿。
+- 输出投影队列各状态数量与最老等待时间；存在最终失败任务或运行超过 30 秒的任务时校验失败。
 
 正式库只读证明格式：
 

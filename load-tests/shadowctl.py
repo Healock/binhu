@@ -392,6 +392,7 @@ def run(run_id: str, users: int, duration: str, scenario: str) -> int:
         db_name=context.db_name,
         locust_prefix=csv_prefix,
         artifact_dir=ARTIFACTS,
+        scenario=scenario,
         production_health_url=production_health,
         production_containers=production_containers,
     ))
@@ -515,6 +516,25 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
                 (context.run_id,),
             )
             source_count = int(cursor.fetchone()["count"])
+            cursor.execute(
+                "SELECT status,COUNT(*) AS count,"
+                "COALESCE(MAX(TIMESTAMPDIFF(SECOND,"
+                "CASE WHEN status='running' THEN started_at ELSE created_at END,"
+                "UTC_TIMESTAMP())),0) AS oldest_seconds "
+                "FROM _online_projection_jobs GROUP BY status"
+            )
+            projection_queue = {
+                str(row["status"]): {
+                    "count": int(row["count"] or 0),
+                    "oldest_seconds": int(row["oldest_seconds"] or 0),
+                }
+                for row in cursor.fetchall()
+            }
+            if int((projection_queue.get("failed") or {}).get("count") or 0):
+                issues.append("projection_jobs_failed")
+            running = projection_queue.get("running") or {}
+            if int(running.get("count") or 0) and int(running.get("oldest_seconds") or 0) > 30:
+                issues.append("projection_job_stalled")
 
             source_ids = sorted({int(event["source_id"]) for event in events if event.get("source_id")})
             for chunk in _chunks(source_ids):
@@ -758,6 +778,7 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
         "verified_claims": verified_claims,
         "unrecorded_write_sources": len(unrecorded_writes),
         "verified_failed_transactions": len(failed_operation_ids),
+        "projection_queue": projection_queue,
         "issues": issues,
     }
 
