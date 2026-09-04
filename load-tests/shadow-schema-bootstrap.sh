@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# This file is sourced by the official MySQL entrypoint.  Do not enable
+# nounset here: the entrypoint references optional variables (for example
+# MYSQL_ONETIME_PASSWORD) after sourcing init scripts, and inheriting `set -u`
+# would abort an otherwise valid shadow-volume initialization.
+set -eo pipefail
 
 shadow_database="${MYSQL_DATABASE:?MYSQL_DATABASE is required}"
 daily_database="${SHADOW_DAILY_DB_NAME:-${shadow_database}_daily}"

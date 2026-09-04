@@ -121,6 +121,13 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("not safe during a fresh shadow bootstrap", bootstrap)
         self.assertIn("DROP INDEX uk_row_key//g", bootstrap)
 
+    def test_bootstrap_does_not_leak_nounset_into_mysql_entrypoint(self):
+        bootstrap = (Path(__file__).parent / "shadow-schema-bootstrap.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("set -eo pipefail", bootstrap)
+        self.assertNotIn("set -euo pipefail", bootstrap)
+
     def test_shadow_compose_supports_desktop_sessions_and_resource_monitoring(self):
         compose = (Path(__file__).parent / "docker-compose.shadow.yml").read_text(
             encoding="utf-8"
