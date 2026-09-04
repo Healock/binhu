@@ -7,7 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixture import BUSINESS_TYPES, make_tasks, make_users, write_manifest
-from metrics import _production_container_states, summarize
+from metrics import (
+    _production_container_states,
+    projection_stop_reason,
+    requests_stalled,
+    summarize,
+)
 from shadow_guard import ShadowSafetyError, validate_shadow_environment
 from shadowctl import (
     _conflict_groups,
@@ -346,6 +351,31 @@ class ShadowToolTests(unittest.TestCase):
             result = summarize(path)
             self.assertEqual(result["requests"], 10)
             self.assertEqual(result["failures"], 1)
+
+    def test_projection_worker_stall_and_failure_stop_the_stage(self):
+        self.assertEqual(
+            projection_stop_reason({"projection_oldest_running_seconds": 31}),
+            "shadow_projection_job_stalled_above_30_seconds",
+        )
+        self.assertEqual(
+            projection_stop_reason({"projection_failed": 1}),
+            "shadow_projection_job_failed",
+        )
+        self.assertEqual(
+            projection_stop_reason({"projection_oldest_running_seconds": 30}),
+            "",
+        )
+
+    def test_request_plateau_stops_business_traffic_but_not_login_hold(self):
+        self.assertTrue(requests_stalled(
+            scenario="mixed", request_count=100, last_progress_at=10, now=41,
+        ))
+        self.assertFalse(requests_stalled(
+            scenario="mixed", request_count=99, last_progress_at=10, now=50,
+        ))
+        self.assertFalse(requests_stalled(
+            scenario="login", request_count=50, last_progress_at=10, now=500,
+        ))
 
 
 if __name__ == "__main__":

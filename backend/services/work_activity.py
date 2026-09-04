@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
+from config import settings
 from database import db_manager
 from services.business_time import resolve_timezone
 
@@ -64,6 +66,7 @@ async def record_work_activity(
     *,
     event_key: str,
     units: int = 1,
+    conn=None,
 ) -> bool:
     """Insert one idempotent event; contribution failure never breaks the work."""
     if activity_type not in ACTIVITY_LABELS:
@@ -73,8 +76,14 @@ async def record_work_activity(
         return False
     try:
         profile_key, user_id, member_id = profile_identity(user)
-        pool = db_manager.get_pool("online_data")
-        conn = await pool.acquire()
+        pool = None
+        owns_connection = conn is None
+        if owns_connection:
+            pool = db_manager.get_pool("online_data")
+            conn = await asyncio.wait_for(
+                pool.acquire(),
+                timeout=settings.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
+            )
         try:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -96,7 +105,8 @@ async def record_work_activity(
                 )
                 return cur.rowcount == 1
         finally:
-            pool.release(conn)
+            if owns_connection and pool is not None:
+                pool.release(conn)
     except Exception as exc:  # contribution is secondary to the completed work
         logger.warning(
             "Failed to record privacy-safe work activity type=%s: %s",

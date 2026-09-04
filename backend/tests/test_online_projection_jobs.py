@@ -84,8 +84,10 @@ class ProjectionQueueTests(unittest.IsolatedAsyncioTestCase):
             patch.object(online_projection_jobs, "reconcile_projection_task_graph_rows", new=AsyncMock()) as reconcile,
         ):
             await online_projection_jobs._process_job(job)
-        connection.rollback.assert_awaited_once()
-        finish.assert_awaited_once_with(1, "skipped", "stale_revision")
+        connection.commit.assert_awaited_once()
+        connection.rollback.assert_not_awaited()
+        finish.assert_not_awaited()
+        self.assertIn("status='skipped'", cursor.execute.await_args_list[-1].args[0])
         rebuild.assert_not_awaited()
         reconcile.assert_not_awaited()
 

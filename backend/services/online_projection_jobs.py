@@ -295,8 +295,18 @@ async def _process_job(job: dict[str, Any]) -> None:
                     row = await cur.fetchone()
                     current_revision = int(row[0]) if row and row[0] is not None else None
                     if current_revision is not None and current_revision > int(job["revision"]):
-                        await conn.rollback()
-                        await _finish_job(job["id"], "skipped", "stale_revision")
+                        # Finish the stale row with the connection already held
+                        # by this worker.  Acquiring a second online-data
+                        # connection here can deadlock the whole pool when
+                        # request traffic temporarily occupies every other
+                        # slot.
+                        await cur.execute(
+                            "UPDATE _online_projection_jobs SET status='skipped',"
+                            "error_code='stale_revision',finished_at=UTC_TIMESTAMP(),"
+                            "next_attempt_at=NULL WHERE id=%s",
+                            (job["id"],),
+                        )
+                        await conn.commit()
                         projection_job_telemetry.skipped += 1
                         return
                     await rebuild_projection_keys(

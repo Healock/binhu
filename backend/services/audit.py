@@ -1,7 +1,9 @@
 """Super-administrator audit events without request bodies or secrets."""
 
+import asyncio
 from typing import Any
 
+from config import settings
 from database import db_manager
 from services.ops_redaction import sanitized_json
 
@@ -16,9 +18,16 @@ async def record_admin_audit(
     detail: Any = None,
     ip_address: str = "",
     user_agent: str = "",
+    conn=None,
 ) -> int:
-    pool = db_manager.get_pool("online_data")
-    conn = await pool.acquire()
+    pool = None
+    owns_connection = conn is None
+    if owns_connection:
+        pool = db_manager.get_pool("online_data")
+        conn = await asyncio.wait_for(
+            pool.acquire(),
+            timeout=settings.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
+        )
     try:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -42,7 +51,8 @@ async def record_admin_audit(
             )
             return int(cur.lastrowid)
     finally:
-        pool.release(conn)
+        if owns_connection and pool is not None:
+            pool.release(conn)
 
 
 def request_audit_fields(request) -> dict[str, str]:

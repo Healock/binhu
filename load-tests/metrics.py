@@ -78,6 +78,7 @@ class MonitorConfig:
     db_name: str
     locust_prefix: Path
     artifact_dir: Path
+    scenario: str = "mixed"
     production_health_url: str = ""
     production_containers: tuple[str, ...] = ()
     poll_seconds: int = 5
@@ -140,7 +141,9 @@ def _shadow_database(config: MonitorConfig) -> dict[str, int]:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SHOW STATUS WHERE Variable_name IN ('Threads_connected','Threads_running')"
+                "SHOW STATUS WHERE Variable_name IN ("
+                "'Threads_connected','Threads_running',"
+                "'Innodb_row_lock_current_waits','Innodb_row_lock_time_max')"
             )
             status = {
                 str(row["Variable_name"]): int(row["Value"])
@@ -152,12 +155,31 @@ def _shadow_database(config: MonitorConfig) -> dict[str, int]:
                 (config.db_name,),
             )
             database_bytes = int(cursor.fetchone()["bytes"] or 0)
+            cursor.execute(
+                "SELECT "
+                "COALESCE(SUM(status IN ('pending','retry')),0) AS queued,"
+                "COALESCE(SUM(status='running'),0) AS running,"
+                "COALESCE(SUM(status='failed'),0) AS failed,"
+                "COALESCE(MAX(CASE WHEN status IN ('pending','retry') THEN "
+                "TIMESTAMPDIFF(SECOND,created_at,UTC_TIMESTAMP()) END),0) AS oldest_wait,"
+                "COALESCE(MAX(CASE WHEN status='running' THEN "
+                "TIMESTAMPDIFF(SECOND,started_at,UTC_TIMESTAMP()) END),0) AS oldest_running "
+                "FROM _online_projection_jobs"
+            )
+            queue = cursor.fetchone() or {}
     finally:
         connection.close()
     return {
         "connections": status.get("Threads_connected", 0),
         "running_threads": status.get("Threads_running", 0),
         "database_bytes": database_bytes,
+        "innodb_row_lock_current_waits": status.get("Innodb_row_lock_current_waits", 0),
+        "innodb_row_lock_time_max_ms": status.get("Innodb_row_lock_time_max", 0),
+        "projection_queued": int(queue.get("queued") or 0),
+        "projection_running": int(queue.get("running") or 0),
+        "projection_failed": int(queue.get("failed") or 0),
+        "projection_oldest_wait_seconds": int(queue.get("oldest_wait") or 0),
+        "projection_oldest_running_seconds": int(queue.get("oldest_running") or 0),
     }
 
 
@@ -183,11 +205,33 @@ def _stop_process(process: subprocess.Popen) -> None:
         process.wait(timeout=5)
 
 
+def projection_stop_reason(database: dict[str, Any]) -> str:
+    if int(database.get("projection_failed", 0)) > 0:
+        return "shadow_projection_job_failed"
+    if int(database.get("projection_oldest_running_seconds", 0)) > 30:
+        return "shadow_projection_job_stalled_above_30_seconds"
+    return ""
+
+
+def requests_stalled(
+    *,
+    scenario: str,
+    request_count: int,
+    last_progress_at: float,
+    now: float,
+) -> bool:
+    return (
+        scenario != "login"
+        and request_count >= 100
+        and now - last_progress_at > 30
+    )
+
+
 def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[str, Any]:
     """Watch the host and both environments; terminate Locust on a stop rule."""
     config.artifact_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = config.artifact_dir / f"{config.run_id}-metrics.jsonl"
-    stop_path = config.artifact_dir / f"{config.run_id}-stop-reason.json"
+    stop_path = config.artifact_dir / f"{config.locust_prefix.name}-stop-reason.json"
     baseline_swap = int(
         os.environ.get("SHADOW_BASELINE_SWAP_USED_BYTES") or psutil.swap_memory().used
     )
@@ -196,6 +240,8 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
     iowait_high_since: float | None = None
     failure_high_since: float | None = None
     autosave_high_windows = 0
+    last_request_count = 0
+    last_request_progress_at = time.time()
     stop_reason = ""
     initial_states = _production_container_states(config.production_containers)
     baseline_restarts = {
@@ -228,6 +274,10 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
                 "error": type(exc).__name__,
             }
         locust = locust_snapshot(config.locust_prefix)
+        request_count = int(locust["requests"] or 0)
+        if request_count > last_request_count:
+            last_request_count = request_count
+            last_request_progress_at = now
         sample = {
             "at": now,
             "host": {
@@ -272,6 +322,8 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
             stop_reason = "shadow_mysql_running_threads_above_30"
         elif int(database.get("database_bytes", -1)) >= 10 * GIB:
             stop_reason = "shadow_database_size_reached_10gib"
+        else:
+            stop_reason = projection_stop_reason(database)
         if load_1m > 28:
             load_high_since = load_high_since or now
         else:
@@ -296,6 +348,13 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
             stop_reason = "shadow_unexpected_failure_rate_above_2_percent_for_60_seconds"
         if not stop_reason and autosave_high_windows >= 2:
             stop_reason = "autosave_p95_above_3_seconds_for_two_windows"
+        if not stop_reason and requests_stalled(
+            scenario=config.scenario,
+            request_count=request_count,
+            last_progress_at=last_request_progress_at,
+            now=now,
+        ):
+            stop_reason = "shadow_requests_stalled_for_30_seconds"
 
         if stop_reason:
             _stop_process(process)

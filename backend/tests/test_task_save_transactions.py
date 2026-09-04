@@ -85,6 +85,8 @@ class LocalTaskSaveRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(commit_position, activity_position)
         self.assertIn("post-commit admin audit failed", source)
         self.assertIn("post-commit work activity failed", source)
+        self.assertIn("conn=conn", source[audit_position:activity_position])
+        self.assertIn("conn=conn", source[activity_position:])
 
 
 if __name__ == "__main__":

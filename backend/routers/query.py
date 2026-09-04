@@ -1107,6 +1107,7 @@ async def _update_local_source_fields_once(
                 target_type="local_source_row",
                 target_name=f"{parser_type}:{source_id}",
                 detail={"source_id": source_id, "columns": ordered_columns},
+                conn=conn,
                 **request_audit_fields(request),
             )
         except Exception as exc:
@@ -1117,7 +1118,12 @@ async def _update_local_source_fields_once(
             )
         if is_actual_online_work(ordered_columns) and activity_credited:
             try:
-                await record_work_activity(user, ONLINE_TASK_UPDATE, event_key=f"local:{audit_id}")
+                await record_work_activity(
+                    user,
+                    ONLINE_TASK_UPDATE,
+                    event_key=f"local:{audit_id}",
+                    conn=conn,
+                )
             except Exception as exc:
                 logger.warning(
                     "local task post-commit work activity failed operation_id=%s error=%s",
