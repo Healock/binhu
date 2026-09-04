@@ -17,6 +17,8 @@ from shadow_guard import ShadowSafetyError, validate_shadow_environment
 from shadowctl import (
     _conflict_groups,
     _latest_successful_fields,
+    _successful_revisions,
+    _classify_field_verification,
     _validate_https_origin,
     _validate_production_health_url,
     _validate_run_shape,
@@ -141,6 +143,7 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("OPS_AGENT_CONTAINERS:", compose)
         self.assertIn("${COMPOSE_PROJECT_NAME}-backend-1", compose)
         self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose)
+        self.assertIn('ONLINE_PROJECTION_WORKER_CONCURRENCY: "4"', compose)
 
     def test_runtime_index_joins_use_explicit_shadow_collation(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
@@ -287,6 +290,36 @@ class ShadowToolTests(unittest.TestCase):
         latest = _latest_successful_fields(events)
         self.assertEqual(latest[(7, "备注")][0][0], 5)
         self.assertEqual(latest[(7, "备注")][1], "revision-5")
+
+    def test_successful_revisions_ignore_conflicts_and_failures(self):
+        events = [
+            {"status": 200, "source_id": 7, "returned_revision": 3},
+            {"status": 409, "source_id": 7, "returned_revision": 4},
+            {"status": 503, "source_id": 7, "returned_revision": 5},
+            {"status": 200, "source_id": 7, "returned_revision": 6},
+        ]
+        self.assertEqual(_successful_revisions(events), {7: {3, 6}})
+
+    def test_field_verification_distinguishes_superseded_and_unrecorded(self):
+        common = {
+            "actual_revision": 7, "actual_value": "new",
+            "event_revision": 6, "expected_value": "old", "field": "备注",
+        }
+        self.assertEqual(
+            _classify_field_verification(
+                **common, successful_revisions={7},
+                successful_operations={"op-7"},
+                audit_after_values=[("op-7", {"备注": "new"})],
+            ),
+            "superseded",
+        )
+        self.assertEqual(
+            _classify_field_verification(
+                **common, successful_revisions=set(),
+                successful_operations=set(), audit_after_values=[],
+            ),
+            "unrecorded",
+        )
 
     def test_conflict_events_group_by_pair_source_and_revision(self):
         events = [

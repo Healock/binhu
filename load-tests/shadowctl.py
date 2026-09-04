@@ -448,6 +448,43 @@ def _latest_successful_fields(
     return latest
 
 
+def _successful_revisions(events: list[dict[str, Any]]) -> dict[int, set[int]]:
+    """Index committed revisions observed in the client event stream."""
+    revisions: dict[int, set[int]] = defaultdict(set)
+    for event in events:
+        if int(event.get("status") or 0) != 200:
+            continue
+        source_id = int(event.get("source_id") or 0)
+        revision = int(event.get("returned_revision") or 0)
+        if source_id and revision:
+            revisions[source_id].add(revision)
+    return revisions
+
+
+def _classify_field_verification(
+    *,
+    actual_revision: int,
+    actual_value: Any,
+    event_revision: int,
+    expected_value: Any,
+    successful_revisions: set[int],
+    successful_operations: set[str],
+    audit_after_values: list[tuple[str, dict[str, Any]]],
+    field: str,
+) -> str:
+    if actual_value == expected_value:
+        return "matched"
+    if actual_revision <= event_revision:
+        return "mismatch"
+    observed_final_value = any(
+        operation_id in successful_operations and after.get(field) == actual_value
+        for operation_id, after in audit_after_values
+    )
+    if actual_revision in successful_revisions and observed_final_value:
+        return "superseded"
+    return "unrecorded"
+
+
 def _conflict_groups(
     events: list[dict[str, Any]],
 ) -> dict[tuple[int, int, int], list[dict[str, Any]]]:
@@ -467,6 +504,8 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
     connection = _connect(context)
     issues: list[str] = []
     source_values: dict[int, dict[str, Any]] = {}
+    audit_operations: dict[int, set[str]] = defaultdict(set)
+    audit_after_values: dict[int, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
     registration_links: dict[tuple[str, str], dict[str, Any]] = {}
     claimed_inspectors: dict[int, str] = {}
     try:
@@ -601,6 +640,32 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
                         if isinstance(projection["values_json"], str)
                         else projection["values_json"]
                     )
+                # Cross-check the durable audit trail as well as the Locust
+                # event stream.  A response can be lost while the committed
+                # transaction and its operation id remain present in the
+                # database; that is different from an unrecorded write.
+                cursor.execute(
+                    "SELECT source.id AS source_id,a.operation_id,a.after_values "
+                    "FROM _online_source_rows source "
+                    "JOIN _online_writeback_audit a "
+                    "ON a.parser_type=source.parser_type "
+                    "AND a.row_key_after=source.row_key "
+                    f"WHERE source.id IN ({placeholders})",
+                    chunk,
+                )
+                for audit in cursor.fetchall():
+                    sid = int(audit["source_id"])
+                    operation_id = str(audit.get("operation_id") or "")
+                    if operation_id:
+                        audit_operations[sid].add(operation_id)
+                    raw_after = audit.get("after_values")
+                    if raw_after:
+                        try:
+                            parsed_after = json.loads(raw_after) if isinstance(raw_after, str) else raw_after
+                        except (TypeError, ValueError):
+                            parsed_after = None
+                        if isinstance(parsed_after, dict):
+                            audit_after_values[sid].append((operation_id, parsed_after))
 
             failed_operation_ids = sorted({
                 str(event.get("failed_operation_id") or "")
@@ -683,16 +748,35 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             issues.append(f"revision_not_advanced:{event.get('source_id')}")
 
     latest_field = _latest_successful_fields(events)
+    successful_revisions = _successful_revisions(events)
+    successful_operations: dict[int, set[str]] = defaultdict(set)
+    for event in successful:
+        sid = int(event.get("source_id") or 0)
+        operation_id = str(event.get("operation_id") or "")
+        if sid and operation_id:
+            successful_operations[sid].add(operation_id)
     unrecorded_writes: set[int] = set()
+    superseded_writes: set[int] = set()
     for (source_id, field), (event_order, expected_value) in latest_field.items():
         source_item = source_values.get(source_id) or {}
         actual = source_item.get("values", {}).get(field)
-        if actual != expected_value:
-            if int(source_item.get("revision") or 0) > int(event_order[0]):
-                issues.append(f"unrecorded_write:{source_id}:{field}")
-                unrecorded_writes.add(source_id)
-            else:
-                issues.append(f"saved_value_mismatch:{source_id}:{field}")
+        outcome = _classify_field_verification(
+            actual_revision=int(source_item.get("revision") or 0),
+            actual_value=actual,
+            event_revision=int(event_order[0]),
+            expected_value=expected_value,
+            successful_revisions=successful_revisions.get(source_id, set()),
+            successful_operations=successful_operations.get(source_id, set()),
+            audit_after_values=audit_after_values.get(source_id, []),
+            field=field,
+        )
+        if outcome == "superseded":
+            superseded_writes.add(source_id)
+        elif outcome == "unrecorded":
+            issues.append(f"unrecorded_write:{source_id}:{field}")
+            unrecorded_writes.add(source_id)
+        elif outcome == "mismatch":
+            issues.append(f"saved_value_mismatch:{source_id}:{field}")
 
     for source_id, item in source_values.items():
         revision = int(item.get("revision") or 0)
@@ -777,6 +861,7 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
         "verified_conflict_rounds": verified_rounds,
         "verified_claims": verified_claims,
         "unrecorded_write_sources": len(unrecorded_writes),
+        "superseded_write_sources": len(superseded_writes),
         "verified_failed_transactions": len(failed_operation_ids),
         "projection_queue": projection_queue,
         "issues": issues,
