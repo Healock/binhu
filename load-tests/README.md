@@ -136,6 +136,8 @@ python .\shadowctl.py run --run-id $env:LOAD_TEST_RUN_ID --scenario mixed --user
 
 每次 `run` 都同时记录主机、正式健康、正式容器、影子容器、影子 MySQL、投影队列和 Locust 指标。每个阶段使用独立的 `*-stop-reason.json`，不会被下一阶段覆盖。出现以下任一情况会终止 Locust：
 
+运行时限到达后会额外等待最多 15 秒，让已经收到成功响应的请求完成事件落盘，避免把测试收尾瞬间的已提交写入误报为 `unrecorded_write`。
+
 - 主机可用内存低于 4GiB；
 - Swap 比运行开始增加超过 256MiB；
 - 一分钟负载超过 28 或 I/O Wait 超过 20% 并持续一分钟；

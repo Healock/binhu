@@ -240,6 +240,10 @@ class ShadowToolTests(unittest.TestCase):
             source.index('range(1, 31)'),
         )
 
+    def test_runner_waits_for_in_flight_requests_before_exit(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn('"--stop-timeout", "15"', source)
+
     def test_container_monitor_persists_only_safe_state_fields(self):
         inspect_payload = {
             "RestartCount": 2,
