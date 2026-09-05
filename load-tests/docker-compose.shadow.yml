@@ -34,7 +34,7 @@ services:
     mem_limit: 256m
 
   backend:
-    image: ${SHADOW_BACKEND_IMAGE:?Pass the exact verified 0.28.3 backend image ID}
+    image: ${SHADOW_BACKEND_IMAGE:?Pass the exact verified 0.28.8 backend image ID}
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_started}
@@ -44,8 +44,10 @@ services:
       APP_ENVIRONMENT: shadow
       APP_ENVIRONMENT_LABEL: 影子压测环境
       LOAD_TEST_RUN_ID: ${LOAD_TEST_RUN_ID:?Set the run id}
-      APP_VERSION: "0.28.7"
-      ONLINE_PROJECTION_WORKER_CONCURRENCY: "4"
+      APP_VERSION: "0.28.8"
+      ONLINE_PROJECTION_WORKER_CONCURRENCY: "3"
+      ONLINE_PROJECTION_CLAIM_LIMIT: "100"
+      ONLINE_PROJECTION_MICRO_BATCH_SIZE: "25"
       LOCAL_REPORT_SCHEDULER_ENABLED: "false"
       MYSQL_DOMAIN_DATABASES_ENABLED: "true"
       PLATFORM_DOMAIN_ACTIVE: "true"
@@ -100,7 +102,7 @@ services:
       retries: 30
 
   ops-agent:
-    image: ${SHADOW_BACKEND_IMAGE:?Pass the exact verified 0.28.3 backend image ID}
+    image: ${SHADOW_BACKEND_IMAGE:?Pass the exact verified 0.28.8 backend image ID}
     command: ["uvicorn", "ops_agent:app", "--host", "0.0.0.0", "--port", "9001"]
     environment:
       OPS_AGENT_TOKEN: ${SHADOW_OPS_AGENT_TOKEN:?Set a shadow-only operations token}

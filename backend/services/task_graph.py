@@ -570,6 +570,23 @@ async def reconcile_projection_task_graph_rows(
         str(row_key): (raw if isinstance(raw, dict) else json.loads(raw or "{}"))
         for row_key, raw in await cur.fetchall()
     }
+    schema = _workflow_schema()
+    await cur.execute(
+        f"SELECT DISTINCT source_ref FROM {schema}.task_graph_nodes "
+        "WHERE provider='online' AND parser_type=%s "
+        f"AND source_ref IN ({placeholders})",
+        (parser_type, *normalized_keys),
+    )
+    existing_keys = {str(row[0]) for row in await cur.fetchall()}
+    # The common edit path has no analysis graph at all.  Resolve relevance in
+    # one query for the whole micro-batch so ordinary rows do not each perform
+    # node/dependency lookups. Existing graph rows are still reconciled so a
+    # result change can close or cancel an earlier workflow safely.
+    values_by_key = {
+        row_key: values
+        for row_key, values in values_by_key.items()
+        if row_key in existing_keys or analysis_graph_state(parser_type, values) is not None
+    }
     result = {"processed": 0, "changed": 0, "source_missing": 0}
     for row_key, values in values_by_key.items():
         outcome = await reconcile_online_task_graph(

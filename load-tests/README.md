@@ -2,8 +2,9 @@
 
 本目录只服务于隔离的影子环境，不属于正式后端依赖。它会创建虚构账号、社区、小区和 3,600 条虚构流口任务，并通过正式客户端使用的 `/shadow-api` 契约执行压力测试。
 
-投影派生 worker 默认使用 4 路受控并发，生产可通过
-`BINHU_ONLINE_PROJECTION_WORKER_CONCURRENCY` 调整，影子环境固定为 4。后端将取值限制在 1～8，
+投影派生 worker 每轮最多领取 100 条任务，按业务类型以默认 25 条微批处理，并最多使用 3 路受控并发。
+可通过 `ONLINE_PROJECTION_CLAIM_LIMIT`、`ONLINE_PROJECTION_MICRO_BATCH_SIZE` 和
+`ONLINE_PROJECTION_WORKER_CONCURRENCY` 下调；后端分别限制为最多 100、50 和 3，
 不得为了追赶积压而超过数据库连接池余量。压测阶段必须等待 `pending/retry/running` 全部归零后再执行最终 `verify`。
 
 `verify` 会按最高成功 revision 归并重复保存，并使用 `operation_id` 与 `_online_writeback_audit` 交叉核对最终值。
@@ -32,7 +33,7 @@ APP_ENVIRONMENT=shadow
 LOAD_TEST_RUN_ID=LT-20260902-01
 COMPOSE_PROJECT_NAME=binhu-loadtest-lt-20260902-01
 
-SHADOW_BACKEND_IMAGE=sha256:<正式 0.28.3 Backend 的完整镜像 ID>
+SHADOW_BACKEND_IMAGE=sha256:<0.28.8 PR 候选 Backend 的完整镜像 ID>
 SHADOW_MYSQL_IMAGE=mysql@sha256:<已核对的完整 digest>
 SHADOW_REDIS_IMAGE=redis@sha256:<已核对的完整 digest>
 
@@ -148,11 +149,11 @@ python .\shadowctl.py run --run-id $env:LOAD_TEST_RUN_ID --scenario mixed --user
 - 至少 100 次请求后，非预期失败率超过 2% 并持续一分钟；
 - 普通自动保存 P95 超过 3 秒并持续两个采样窗口。
 - 非登录场景累计至少 100 次请求后，30 秒没有任何请求完成；
-- 单个投影任务处于运行状态超过 30 秒，或投影任务进入最终失败状态。
+- 单个投影任务处于运行状态超过 30 秒、最老排队任务等待超过 30 秒，或投影任务进入最终失败状态。
 
 Docker 命名卷在不同宿主机上没有统一可靠的硬配额。本工具会以数据库表和索引大小达到 10GiB 为停止线；若生产服务器必须具备硬配额，应在执行前把 MySQL 数据目录放到预先创建的 10GiB quota-backed 文件系统。不能把这里的软停止描述成硬容量限制。
 
-输出包括 Locust HTML/CSV、逐阶段 JSONL 指标、虚构写入事件和停止原因。事件只包含压测账号、任务定位、revision 及虚构变更，不包含正式人员资料。
+输出包括 Locust HTML/CSV、逐阶段 JSONL 指标、虚构写入事件和停止原因。每次 `run` 都保存本阶段的精确事件文件，随后不带 `--event-log` 的 `verify` 默认只核对最近阶段；也可显式传入本运行下的阶段文件。事件只包含压测账号、任务定位、revision 及虚构变更，不包含正式人员资料。
 
 ## 最终一致性校验
 

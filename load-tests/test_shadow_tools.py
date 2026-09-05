@@ -31,6 +31,7 @@ from shadowctl import (
     _validate_run_shape,
     _verify_pinned_images,
     _verify_production_proof,
+    _projection_index_map,
 )
 
 
@@ -169,7 +170,46 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("OPS_AGENT_CONTAINERS:", compose)
         self.assertIn("${COMPOSE_PROJECT_NAME}-backend-1", compose)
         self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose)
-        self.assertIn('ONLINE_PROJECTION_WORKER_CONCURRENCY: "4"', compose)
+        self.assertIn('ONLINE_PROJECTION_WORKER_CONCURRENCY: "3"', compose)
+        self.assertIn('ONLINE_PROJECTION_CLAIM_LIMIT: "100"', compose)
+        self.assertIn('ONLINE_PROJECTION_MICRO_BATCH_SIZE: "25"', compose)
+
+    def test_0288_shadow_preflight_requires_projection_performance_schema(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn("migrations.online_projection_queue_performance", source)
+        self.assertIn("idx_projection_job_available", source)
+        self.assertIn("idx_online_source_ref", source)
+        self.assertIn("_verify_projection_performance_schema(context)", source)
+
+    def test_projection_preflight_accepts_mysql_metadata_column_casing(self):
+        rows = [
+            {"INDEX_NAME": "idx_projection_job_available", "COLUMNS_LIST": "status,available_at,created_at,id"},
+            {"index_name": "idx_online_source_ref", "columns_list": "source_kind,source_ref"},
+        ]
+        self.assertEqual(
+            _projection_index_map(rows),
+            {
+                "idx_projection_job_available": "status,available_at,created_at,id",
+                "idx_online_source_ref": "source_kind,source_ref",
+            },
+        )
+
+    def test_verify_treats_already_claimed_retry_as_expected_contention(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn("all(status == 409 for status in statuses)", source)
+
+    def test_verify_allows_cancelled_registration_after_result_change(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn('link_status != "cancelled" or result_value == "待登记"', source)
+
+    def test_run_creates_empty_event_log_for_login_stage(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn("event_log.touch()", source)
+
+    def test_conflict_users_attempt_one_round_only(self):
+        source = (Path(__file__).parent / "locustfile.py").read_text(encoding="utf-8")
+        self.assertIn("self.conflict_attempted = False", source)
+        self.assertIn("if self.conflict_attempted:", source)
 
     def test_runtime_index_joins_use_explicit_shadow_collation(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
@@ -261,6 +301,9 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn('"kind": "claim" if claim else "write"', source)
         self.assertIn("response.success()", source)
         self.assertIn("if not eligible:", source)
+        self.assertIn("self.live_rows", source)
+        self.assertIn("self.invalid_targets", source)
+        self.assertIn('response.failure(f"detail {response.status_code}")', source)
         self.assertLess(
             source.index('range(31, 36)'),
             source.index('range(1, 31)'),
@@ -435,6 +478,16 @@ class ShadowToolTests(unittest.TestCase):
             projection_stop_reason({"projection_oldest_running_seconds": 30}),
             "",
         )
+        self.assertEqual(
+            projection_stop_reason({"projection_oldest_wait_seconds": 31}),
+            "shadow_projection_queue_wait_above_30_seconds",
+        )
+
+    def test_verify_defaults_to_the_latest_stage_event_file(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn("-last-stage.json", source)
+        self.assertIn('parser.add_argument("--event-log"', source)
+        self.assertIn("selected_event_log", source)
 
     def test_request_plateau_stops_business_traffic_but_not_login_hold(self):
         self.assertTrue(requests_stalled(

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,6 +21,54 @@ def _db_manager():
 
 DIAGNOSTIC_RETENTION_DAYS = 90
 DIAGNOSTIC_STATUSES = ("queued", "running", "succeeded", "failed", "captured")
+EXPECTED_HTTP_STATUSES = {400, 401, 403, 404, 409, 422}
+_incident_samples: dict[tuple[str, str, int, int], float] = {}
+_incident_status_counts: Counter[int] = Counter()
+_captured_incidents = 0
+_suppressed_duplicate_incidents = 0
+
+
+def should_capture_incident(request: Any, status_code: int) -> bool:
+    """Keep expected business responses out of the durable diagnostic queue.
+
+    Unexpected server failures retain one safe sample per route, method, status
+    and UTC minute. Aggregate request metrics remain authoritative for counts.
+    """
+    global _captured_incidents, _suppressed_duplicate_incidents
+    status = int(status_code)
+    _incident_status_counts[status] += 1
+    if status in EXPECTED_HTTP_STATUSES or status < 500:
+        return False
+    route = request.scope.get("route") if hasattr(request, "scope") else None
+    route_path = str(getattr(route, "path", None) or "/unmatched")[:200]
+    method = str(getattr(request, "method", "") or "")[:10]
+    bucket = int(time.time() // 60)
+    key = (method, route_path, status, bucket)
+    if key in _incident_samples:
+        _suppressed_duplicate_incidents += 1
+        return False
+    _incident_samples[key] = time.monotonic()
+    if len(_incident_samples) > 500:
+        oldest_buckets = sorted(_incident_samples, key=lambda item: item[3])[:-250]
+        for old_key in oldest_buckets:
+            _incident_samples.pop(old_key, None)
+    _captured_incidents += 1
+    return True
+
+
+def incident_capture_snapshot() -> dict[str, Any]:
+    return {
+        "expected_response_count": sum(
+            count for status, count in _incident_status_counts.items()
+            if status in EXPECTED_HTTP_STATUSES
+        ),
+        "expected_by_status": {
+            str(status): int(_incident_status_counts.get(status, 0))
+            for status in sorted(EXPECTED_HTTP_STATUSES)
+        },
+        "captured_incident_count": _captured_incidents,
+        "suppressed_duplicate_count": _suppressed_duplicate_incidents,
+    }
 
 
 def ensure_diagnostic_schema_sql() -> tuple[str, str]:

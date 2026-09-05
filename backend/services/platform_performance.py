@@ -349,19 +349,40 @@ async def _background_pressure() -> dict[str, Any]:
         report = local_report_status()
     except Exception:
         report = {"state": "unavailable"}
+    try:
+        from services.diagnostics import incident_capture_snapshot
+        diagnostic_capture = incident_capture_snapshot()
+    except Exception:
+        diagnostic_capture = {}
+    try:
+        from services.runtime_telemetry import snapshot as runtime_telemetry_snapshot
+        runtime_telemetry = runtime_telemetry_snapshot()
+    except Exception:
+        runtime_telemetry = {}
     projection_queued = int(projection.get("queued_count", 0) or 0)
     projection_running = int(projection.get("running_count", 0) or 0)
+    projection_failed = int(projection.get("failed_count", 0) or 0)
+    projection_oldest = int(projection.get("oldest_wait_seconds", 0) or 0)
+    if projection_queued or projection_running or projection_failed:
+        categories["派生任务"] = {
+            "category": "派生任务",
+            "active": projection_queued + projection_running,
+            "queued": projection_queued,
+            "running": projection_running,
+        }
     return {
-        "active_count": active,
+        "active_count": active + projection_queued + projection_running,
         "queued_count": queued + projection_queued,
         "running_count": running + projection_running,
-        "attention_count": int(queue.get("attention_count", 0)),
-        "oldest_active_seconds": max(0, oldest),
+        "attention_count": int(queue.get("attention_count", 0)) + projection_failed,
+        "oldest_active_seconds": max(0, oldest, projection_oldest),
         "occupancy_score": (running + projection_running) * 2 + queued + projection_queued,
         "categories": sorted(categories.values(), key=lambda item: (item["active"], item["running"]), reverse=True),
         "unavailable_sources": queue.get("unavailable_sources", []),
         "online_projection": projection,
         "local_report": report,
+        "diagnostic_capture": diagnostic_capture,
+        "runtime_telemetry": runtime_telemetry,
     }
 
 

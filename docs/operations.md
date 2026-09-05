@@ -1545,3 +1545,11 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - 输出仅包含汇总数量，不包含姓名、身份证号、手机号、地址或原始标签内容。缺少身份证摘要、摘要冲突或关联不唯一的数据会安全跳过并计数，不覆盖已有档案字段。
 - 中断后可直接重复执行；已完成的关联不会重复创建。若必须回退，先停止迁移并保留幂等结果，确需恢复时使用迁移前备份，并评估其对迁移后正常业务写入的影响。
 - 首次部署只发布代码，不自动执行 `--apply`。执行后使用 `verify` 核对有效标签人数、已关联人数、摘要一致性和联系电话数量，再开放人员档案页面。
+
+### 0.28.8 派生队列索引迁移
+
+- 本版为 `OnlineData._online_projection_jobs` 增加 `available_at` 调度列和 `(status, available_at, created_at, id)` 索引，并为 `_online_source_rows` 增加 `(source_kind, source_ref)` 查询索引。应用启动不会隐式修改已有大表。
+- 生产执行前备份 `OnlineData`，确认没有并行部署、批量导入或维护任务。先执行只读测量：`python -m migrations.online_projection_queue_performance measure`。输出会记录队列行数、积压、重复来源、表与索引体积以及两个热查询的 `EXPLAIN`。
+- `python -m migrations.online_projection_queue_performance migrate` 仅预览；获得维护授权后执行 `python -m migrations.online_projection_queue_performance migrate --apply`。命令可重复执行，不重复创建列或索引，旧 `next_attempt_at` 字段保留一个兼容版本。
+- 写入结束后执行 `python -m migrations.online_projection_queue_performance verify`，必须确认 `ready=true`、`available_at_null_rows=0`，并核对两个索引列顺序。随后重启 Backend，使所有 worker 立即使用新索引，再观察运维中心的写入速率、处理速率、最老等待、失败数和旧腾讯元数据查询数。
+- 新索引可在程序回滚时保留，不删除业务数据。若迁移失败，停止发布并保留命令输出；不要在应用启动阶段重试 DDL，也不要通过扩大连接池或 worker 并发绕过问题。

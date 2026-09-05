@@ -16,6 +16,11 @@ test('运维中心提供性能、拥堵和后台任务占用面板', () => {
   assert.match(page, /事件循环最大阻塞/)
   assert.match(page, /后台任务占用/)
   assert.match(page, /打开后台任务/)
+  assert.match(page, /派生写入\/分钟/)
+  assert.match(page, /派生处理\/分钟/)
+  assert.match(page, /跳过过期版本/)
+  assert.match(page, /锁冲突拆批/)
+  assert.match(page, /旧腾讯元数据查询/)
   assert.match(api, /\/admin\/ops\/performance/)
 })
 

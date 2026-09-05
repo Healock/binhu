@@ -76,17 +76,18 @@ class LocalTaskSaveRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"revision": locked_revision + 1', source)
         self.assertNotIn('"revision": expected_revision + 1', source)
 
-    def test_post_commit_ledgers_cannot_reenter_transaction_retry(self):
+    def test_local_audit_is_not_duplicated_and_work_activity_is_transactional(self):
         source = inspect.getsource(query._update_local_source_fields_once)
         commit_position = source.index("await conn.commit()")
-        audit_position = source.index("await record_admin_audit(")
         activity_position = source.index("await record_work_activity(")
-        self.assertLess(commit_position, audit_position)
-        self.assertLess(commit_position, activity_position)
-        self.assertIn("post-commit admin audit failed", source)
-        self.assertIn("post-commit work activity failed", source)
-        self.assertIn("conn=conn", source[audit_position:activity_position])
-        self.assertIn("conn=conn", source[activity_position:])
+        self.assertLess(activity_position, commit_position)
+        self.assertNotIn("await record_admin_audit(", source)
+        self.assertIn("conn=conn", source[activity_position:commit_position])
+
+    def test_assignment_options_are_only_loaded_for_assignment_fields(self):
+        source = inspect.getsource(query._update_local_source_fields_once)
+        self.assertIn("needs_assignment_context", source)
+        self.assertIn("include_assignment_options=needs_assignment_context", source)
 
 
 if __name__ == "__main__":

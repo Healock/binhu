@@ -144,8 +144,11 @@ class FlowUser(HttpUser):
                 response.failure(f"login {response.status_code}")
         self.parser_type = random.choice(PARSERS)
         self.task_row: dict | None = None
+        self.live_rows: list[dict] = []
+        self.invalid_targets: set[tuple[str, str]] = set()
         self.write_index = 0
         self.registration_index = 0
+        self.conflict_attempted = False
         # The conflict gate measures one precise contract: two clients read
         # the same revision and then submit together.  Do not mix the normal
         # weighted browsing workload into this scenario.  A low-weight
@@ -160,7 +163,12 @@ class FlowUser(HttpUser):
         return "community" if "-leader-" in self.username else "all"
 
     def _eligible_rows(self, scenario: str) -> list[dict]:
-        rows = [row for row in RUNTIME_ROWS if row.get("scenario") == scenario]
+        rows = [
+            row for row in RUNTIME_ROWS
+            if row.get("scenario") == scenario
+            and (str(row.get("parser_type") or ""), str(row.get("row_key") or ""))
+            not in self.invalid_targets
+        ]
         if "-member-" in self.username or self.username.startswith("burst-"):
             if scenario == "unassigned":
                 return [row for row in rows if row.get("community") == self.community]
@@ -181,6 +189,7 @@ class FlowUser(HttpUser):
         if response.ok:
             payload = response.json()
             rows = payload.get("data") or payload.get("items") or []
+            self.live_rows = list(rows)
             if rows:
                 self.task_row = rows[0]
             return payload
@@ -196,13 +205,17 @@ class FlowUser(HttpUser):
             row_key = str((self.task_row or {}).get("row_key") or "")
         if not row_key:
             return None
-        response = self.client.get(
+        with self.client.get(
             _api(f"/mobile-tasks/{quote(parser_type, safe='')}/{quote(row_key, safe='')}"),
             name="GET /shadow-api/mobile-tasks/{parser_type}/{row_key}",
-        )
-        if not response.ok:
-            return None
-        payload = response.json()
+            catch_response=True,
+        ) as response:
+            if not response.ok:
+                self.invalid_targets.add((parser_type, row_key))
+                self.task_row = None
+                response.failure(f"detail {response.status_code}")
+                return None
+            payload = response.json()
         sources = payload.get("sources") or payload.get("task", {}).get("sources") or []
         return (parser_type, row_key, sources[0]) if sources else None
 
@@ -222,7 +235,16 @@ class FlowUser(HttpUser):
         self._source()
 
     def _save(self, changes: dict[str, str], *, scenario: str = "assigned", claim: bool = False) -> None:
-        eligible = self._eligible_rows(scenario)
+        if scenario == "assigned":
+            self._list()
+            eligible = [
+                {"parser_type": self.parser_type, "row_key": row.get("row_key")}
+                for row in self.live_rows
+                if row.get("row_key")
+                and (self.parser_type, str(row.get("row_key"))) not in self.invalid_targets
+            ]
+        else:
+            eligible = self._eligible_rows(scenario)
         # Never fall back to the user's last-opened ordinary task when a
         # scenario has no eligible fixture.  That would turn, for example, a
         # pending-registration request into an invalid save without a selected
@@ -337,6 +359,13 @@ class FlowUser(HttpUser):
     def concurrent_conflict(self) -> None:
         if not _is_conflict_scenario():
             return
+        # One coordinated attempt per virtual account keeps each pair tied to
+        # a single read revision. Reusing the same fixture in a loop can make
+        # one participant read the revision written by an earlier round,
+        # which is a harness artifact rather than a concurrency result.
+        if self.conflict_attempted:
+            return
+        self.conflict_attempted = True
         targets = [row for row in RUNTIME_ROWS if row.get("scenario") == "conflict"][:10]
         if not targets:
             return

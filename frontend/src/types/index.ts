@@ -280,6 +280,38 @@ export interface OpsPerformanceSnapshot {
       running: number
     }>
     unavailable_sources: string[]
+    online_projection?: {
+      queued_count: number
+      running_count: number
+      succeeded_count: number
+      skipped_count: number
+      failed_count: number
+      oldest_wait_seconds: number
+      enqueue_rate_1m: number
+      process_rate_1m: number
+      claimed_count: number
+      coalesced_count: number
+      processed_key_count: number
+      revision_skipped_count: number
+      split_retry_count: number
+      lock_split_count: number
+      retry_count: number
+      micro_batch_size: number
+      average_batch_size: number
+      batch_p50_ms: number
+      batch_p95_ms: number
+      max_duration_ms: number
+      recent_error_code: string
+    }
+    diagnostic_capture?: {
+      expected_response_count: number
+      expected_by_status: Record<string, number>
+      captured_incident_count: number
+      suppressed_duplicate_count: number
+    }
+    runtime_telemetry?: {
+      legacy_metadata_query_count?: number
+    }
   }
 }
 

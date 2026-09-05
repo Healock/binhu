@@ -81,6 +81,7 @@ from services.online_projection_jobs import (
     new_save_operation_id,
     update_lightweight_projection,
 )
+from services.runtime_telemetry import increment as increment_runtime_counter
 
 
 router = APIRouter(
@@ -233,6 +234,7 @@ async def _cached_result_options(
     sheet_id: str | None = None,
 ) -> list[dict]:
     """从同业务已缓存的非空单元格复用腾讯原始选项 ID。"""
+    increment_runtime_counter("legacy_metadata_query_count")
     options_path = f'$."{field}".options'
     scope_sql = ""
     params: list[Any] = [parser_type, options_path]
@@ -271,6 +273,7 @@ async def _managed_column_metadata(
     spreadsheet_id: int | None = None,
     sheet_id: str | None = None,
     inspector_context: dict | None = None,
+    include_assignment_options: bool = True,
 ) -> dict[str, dict]:
     """补齐社区、核查人和业务结果的稳定下拉选项。"""
     metadata = {}
@@ -280,7 +283,7 @@ async def _managed_column_metadata(
         source.setdefault("write_multiple", bool(source.get("multiple", False)))
         source.setdefault("write_options", list(source.get("options") or []))
         metadata[column] = source
-    if parser.COMMUNITY_COLUMN in parser.COLUMNS:
+    if include_assignment_options and parser.COMMUNITY_COLUMN in parser.COLUMNS:
         if inspector_context is not None:
             communities = sorted({
                 str(value).strip()
@@ -305,7 +308,7 @@ async def _managed_column_metadata(
             metadata[parser.COMMUNITY_COLUMN],
             [{"id": name, "text": name} for name in communities],
         )
-    if "核查人" in parser.COLUMNS:
+    if include_assignment_options and "核查人" in parser.COLUMNS:
         members = list((inspector_context or {}).get("fallback_inspectors") or [])
         if not inspector_context:
             await cur.execute(
@@ -337,7 +340,7 @@ async def _managed_column_metadata(
     if workflow and workflow.result_field in parser.COLUMNS:
         result_field = workflow.result_field
         options = _usable_select_options(metadata.get(result_field))
-        if not options:
+        if not options and not local_data_source_enabled():
             options = await _cached_result_options(
                 cur,
                 parser.parser_type,
@@ -858,7 +861,12 @@ async def _update_local_source_fields_once(
                 raise HTTPException(400, f"字段不存在：{'、'.join(unknown)}")
         if current_values_validator is not None:
             current_values_validator(current_values)
-        inspector_context = await inspector_option_context(cur, user)
+        assignment_columns = {parser.COMMUNITY_COLUMN, "核查人"}
+        needs_assignment_context = bool(assignment_columns.intersection(normalized_changes))
+        inspector_context = (
+            await inspector_option_context(cur, user)
+            if needs_assignment_context else None
+        )
         metadata = await _managed_column_metadata(
             cur,
             parser,
@@ -866,6 +874,7 @@ async def _update_local_source_fields_once(
             spreadsheet_id=0,
             sheet_id=local_sheet_id(parser_type),
             inspector_context=inspector_context,
+            include_assignment_options=needs_assignment_context,
         )
         locked_revision = int(source["revision"])
         if locked_revision != expected_revision:
@@ -924,10 +933,10 @@ async def _update_local_source_fields_once(
                 await validate_row_changes(cur, user, parser, current_values, after, ordered_columns)
             except PermissionError as exc:
                 raise HTTPException(403, str(exc)) from exc
-        if "核查人" in ordered_columns:
+        if needs_assignment_context and str(after.get("核查人") or "").strip():
             try:
                 validate_inspector_assignment(
-                    inspector_context,
+                    inspector_context or {},
                     parser.community_value(after),
                     after.get("核查人"),
                 )
@@ -1095,44 +1104,17 @@ async def _update_local_source_fields_once(
             str(new_key),
             str((user.get("member") or {}).get("name") or ""),
         )
-        await conn.commit()
-        # These secondary platform ledgers use separate database domains.  A
-        # failure after the authoritative transaction has committed must not
-        # be surfaced as a failed save or cause the transaction retry wrapper
-        # to submit the same user edit again.
-        try:
-            await record_admin_audit(
-                user,
-                "online.local_update",
-                target_type="local_source_row",
-                target_name=f"{parser_type}:{source_id}",
-                detail={"source_id": source_id, "columns": ordered_columns},
-                conn=conn,
-                **request_audit_fields(request),
-            )
-        except Exception as exc:
-            logger.warning(
-                "local task post-commit admin audit failed operation_id=%s error=%s",
-                operation_id,
-                type(exc).__name__,
-            )
         if is_actual_online_work(ordered_columns) and activity_credited:
-            try:
-                await record_work_activity(
-                    user,
-                    ONLINE_TASK_UPDATE,
-                    event_key=f"local:{audit_id}",
-                    conn=conn,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "local task post-commit work activity failed operation_id=%s error=%s",
-                    operation_id,
-                    type(exc).__name__,
-                )
+            await record_work_activity(
+                user,
+                ONLINE_TASK_UPDATE,
+                event_key=f"local:{audit_id}",
+                conn=conn,
+            )
+        await conn.commit()
         warnings = []
-        if "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
-            inspector_context,
+        if inspector_context is not None and "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
+            inspector_context or {},
             parser.community_value(after),
             after.get("核查人"),
         ):
