@@ -87,7 +87,8 @@ class OutboxRelay:
                            aggregate_type, aggregate_id, aggregate_revision,
                            audiences_json, status, attempt_count, available_at,
                            locked_by, locked_until, last_error_code,
-                           last_error_summary, occurred_at, published_at
+                           last_error_summary, occurred_at, published_at,
+                           task_id, source_id, operation_id, changed_fields_json
                     FROM `{OUTBOX_TABLE}`
                     WHERE (status IN ('pending','retry') AND available_at<=UTC_TIMESTAMP())
                        OR (status='publishing' AND locked_until<UTC_TIMESTAMP())

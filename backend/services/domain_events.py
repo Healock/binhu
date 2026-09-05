@@ -8,6 +8,7 @@ failure therefore never rolls back a successful business write.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Iterable
@@ -15,6 +16,7 @@ from typing import Any, Iterable
 
 OUTBOX_TABLE = "_domain_event_outbox"
 OUTBOX_STATUSES = {"pending", "publishing", "published", "retry", "blocked", "dead_letter"}
+MAX_CHANGED_FIELDS = 64
 
 
 def ensure_outbox_schema_sql(table: str = OUTBOX_TABLE) -> str:
@@ -37,6 +39,10 @@ def ensure_outbox_schema_sql(table: str = OUTBOX_TABLE) -> str:
         last_error_summary VARCHAR(500) NOT NULL DEFAULT '',
         occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         published_at DATETIME DEFAULT NULL,
+        task_id VARCHAR(190) DEFAULT NULL,
+        source_id BIGINT DEFAULT NULL,
+        operation_id CHAR(36) DEFAULT NULL,
+        changed_fields_json JSON DEFAULT NULL,
         INDEX idx_domain_event_pending (status, available_at, occurred_at),
         INDEX idx_domain_event_lease (locked_until, status),
         INDEX idx_domain_event_aggregate (aggregate_type, aggregate_id, aggregate_revision)
@@ -76,6 +82,55 @@ def _safe_text(value: Any, limit: int) -> str:
     return text
 
 
+def _normalise_changed_fields(value: Iterable[str] | None) -> list[str] | None:
+    """Validate the small, metadata-only changed-field summary.
+
+    A string is deliberately rejected instead of being treated as an iterable
+    of characters.  The summary is bounded and contains field names only; it
+    must never become a transport for task values or arbitrary log text.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray, dict)):
+        raise ValueError("changed fields must be a sequence of field names")
+    try:
+        items = list(value)
+    except TypeError as exc:
+        raise ValueError("changed fields must be a sequence of field names") from exc
+    if len(items) > MAX_CHANGED_FIELDS:
+        raise ValueError("too many changed fields")
+    result: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            raise ValueError("changed field must be text")
+        field_name = _safe_text(item, 100)
+        # Field names are identifiers, not a free-form channel for values.
+        # Unicode ``\w`` keeps existing Chinese parser columns compatible.
+        if not re.fullmatch(r"[\w.:-]+", field_name, flags=re.UNICODE):
+            raise ValueError("invalid changed field name")
+        result.add(field_name)
+    return sorted(result)
+
+
+def _decode_changed_fields(value: Any) -> list[str]:
+    """Decode and validate both MySQL JSON text and driver-decoded JSON."""
+    if value is None:
+        return []
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("invalid changed fields") from exc
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid changed fields") from exc
+    if not isinstance(value, list):
+        raise ValueError("changed fields must be a JSON array")
+    return _normalise_changed_fields(value) or []
+
+
 async def enqueue_event(
     cur,
     *,
@@ -85,6 +140,10 @@ async def enqueue_event(
     aggregate_id: str | int,
     aggregate_revision: int,
     audiences: Iterable[str],
+    task_id: str | None = None,
+    source_id: int | None = None,
+    operation_id: str | None = None,
+    changed_fields: Iterable[str] | None = None,
     event_id: str | None = None,
     occurred_at: datetime | None = None,
 ) -> str:
@@ -97,16 +156,29 @@ async def enqueue_event(
     aggregate_id = _safe_text(aggregate_id, 160)
     if aggregate_revision < 0:
         raise ValueError("aggregate revision must be non-negative")
+    if task_id is not None:
+        task_id = _safe_text(task_id, 190)
+    if source_id is not None and int(source_id) < 1:
+        raise ValueError("source id must be positive")
+    if operation_id is not None:
+        operation_id = _safe_text(operation_id, 36)
+    normalised_changed_fields = _normalise_changed_fields(changed_fields)
+    changed_fields_json = (
+        json.dumps(normalised_changed_fields, ensure_ascii=False, separators=(",", ":"))
+        if normalised_changed_fields is not None else None
+    )
     audiences_json = json.dumps(_safe_audiences(audiences), ensure_ascii=False, separators=(",", ":"))
     await cur.execute(
         f"""
         INSERT INTO `{OUTBOX_TABLE}` (
             event_id, schema_version, domain, event_type, aggregate_type,
-            aggregate_id, aggregate_revision, audiences_json, occurred_at
-        ) VALUES (%s, 1, %s, %s, %s, %s, %s, %s, COALESCE(%s, UTC_TIMESTAMP()))
+            aggregate_id, aggregate_revision, audiences_json, occurred_at,
+            task_id, source_id, operation_id, changed_fields_json
+        ) VALUES (%s, 2, %s, %s, %s, %s, %s, %s, COALESCE(%s, UTC_TIMESTAMP()), %s, %s, %s, %s)
         """,
         (event_id, domain, event_type, aggregate_type, aggregate_id,
-         int(aggregate_revision), audiences_json, occurred_at),
+         int(aggregate_revision), audiences_json, occurred_at, task_id,
+         source_id, operation_id, changed_fields_json),
     )
     return event_id
 
@@ -122,8 +194,9 @@ def decode_event_row(row: Any) -> dict[str, Any]:
             "audiences_json", "status", "attempt_count", "available_at",
             "locked_by", "locked_until", "last_error_code",
             "last_error_summary", "occurred_at", "published_at",
+            "task_id", "source_id", "operation_id", "changed_fields_json",
         )
-        get = lambda key: row[names.index(key)]
+        get = lambda key: row[names.index(key)] if names.index(key) < len(row) else None
     audiences = get("audiences_json")
     if isinstance(audiences, str):
         audiences = json.loads(audiences or "[]")
@@ -139,4 +212,8 @@ def decode_event_row(row: Any) -> dict[str, Any]:
         "aggregate_revision": int(get("aggregate_revision") or 0),
         "audiences": [str(item) for item in audiences],
         "occurred_at": (get("occurred_at").isoformat() if get("occurred_at") else None),
+        "task_id": get("task_id"),
+        "source_id": int(get("source_id")) if get("source_id") is not None else None,
+        "operation_id": get("operation_id"),
+        "changed_fields": _decode_changed_fields(get("changed_fields_json")),
     }

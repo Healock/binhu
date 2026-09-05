@@ -1,5 +1,17 @@
 # 系统是怎么工作的
 
+## 事件总线、统一回读与实时派生（长期目标）
+
+MySQL 仍是业务唯一真相。业务事务提交时在同一事务写入 Outbox，独立 relay 以至少一次语义发布 Kafka；Kafka 不是业务存储，也不能替代 revision、权限、领取、分配或冲突校验。所有业务 Outbox 最终纳入统一事件清单，派生队列 `_online_projection_jobs` 继续保持独立职责。
+
+事件只携带元数据和变更摘要：`event_id`、事件类型、`task_id`、`source_id`、`aggregate_revision`、`operation_id`、变更字段名摘要和时间。禁止写入完整任务正文、完整地址、身份证号、手机号或人员资料。任务定位以 `task_id + source_id` 为长期合同，旧 `parser_type + row_key` 只保留兼容映射。
+
+Flink 等消费者必须通过版本化内部 HTTP JSON 接口 `/internal/v1/derived-input/tasks/{task_id}` 回读最小字段，禁止自行连接数据库或编写业务 SQL。接口执行独立服务凭据、字段白名单、影子环境隔离、revision 校验，并返回 `task_id`、`source_id`、`revision`、`content_hash`、`readback_hash`；消费者提交结果前必须重新检查 revision。当前实现为空凭据即 fail-closed，尚未启用生产消费者。
+
+Kafka KRaft 三节点只用于影子环境协议、副本、故障、恢复、重复投递和回放验证，不代表生产容量。事件量超过约 10 万/天时必须另行评估分区、副本、磁盘和吞吐。Flink checkpoint 只覆盖 Flink 状态恢复，跨系统一致性依靠幂等键、revision fence、重试、DLQ 和对账。
+
+Python worker 是双轨对照和回退路径。双轨必须连续 7 天且累计至少 100,000 条事件，字段值、revision、任务状态、任务图、错误分类、漏/重事件和最终投影均一致；任一未归因差异立即阻断并重新开始观察窗口。Redis 结果必须保存 revision、生成时间和来源标识，低版本不得覆盖高版本。
+
 > 当前基线（v0.22.5）：任务流改为自由画布，任务卡不再被固定父节点或卡组限制，用户可以自由拖动、连线和排列。
 
 ## 腾讯表下线与本地数据源切换（2026-08）

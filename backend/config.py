@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     CLIENT_WRITE_VERSION_ENFORCEMENT_ENABLED: bool = True
     CLIENT_WRITE_IDENTIFICATION_REQUIRED: bool = False
     ONLINE_PROJECTION_WORKER_CONCURRENCY: int = 4
+    # Dedicated credential for the versioned derived-consumer readback API.
+    # Empty keeps the endpoint fail-closed until shadow infrastructure is ready.
+    DERIVED_READBACK_TOKEN: str = ""
 
     @field_validator(
         "WINDOWS_MIN_SUPPORTED_VERSION",

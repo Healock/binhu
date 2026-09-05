@@ -74,6 +74,18 @@ async def run(command: str, apply: bool) -> dict:
                     if apply:
                         await cur.execute("SET SESSION lock_wait_timeout=5")
                         await cur.execute(ensure_outbox_schema_sql())
+                        columns = (await table_info(cur, database))["columns"]
+                        additions = [
+                            ("task_id", "VARCHAR(190) DEFAULT NULL"),
+                            ("source_id", "BIGINT DEFAULT NULL"),
+                            ("operation_id", "CHAR(36) DEFAULT NULL"),
+                            ("changed_fields_json", "JSON DEFAULT NULL"),
+                        ]
+                        for name, definition in additions:
+                            if name not in columns:
+                                await cur.execute(
+                                    f"ALTER TABLE `_domain_event_outbox` ADD COLUMN `{name}` {definition}"
+                                )
                     result["databases"].append(await table_info(cur, database))
                 else:
                     info = await table_info(cur, database)
@@ -83,6 +95,7 @@ async def run(command: str, apply: bool) -> dict:
                         "audiences_json", "status", "attempt_count", "available_at",
                         "locked_by", "locked_until", "last_error_code",
                         "last_error_summary", "occurred_at", "published_at",
+                        "task_id", "source_id", "operation_id", "changed_fields_json",
                     }
                     info["consistent"] = info["exists"] and required.issubset(set(info["columns"]))
                     result["databases"].append(info)

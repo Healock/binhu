@@ -81,6 +81,7 @@ from services.unverifiable_review import (
 )
 from routers.presence import router as presence_router
 from routers.events import router as events_router
+from routers.derived_inputs import router as derived_inputs_router
 from services.venue_cleanup import run_venue_cleanup_scheduler
 from services.local_report_scheduler import run_local_report_scheduler
 from services.diagnostics import capture_incident, should_capture_incident
@@ -279,6 +280,7 @@ async def health_check():
 app.include_router(auth_router)
 app.include_router(presence_router)
 app.include_router(events_router)
+app.include_router(derived_inputs_router)
 app.include_router(maintenance_router)
 app.include_router(app_bootstrap_router)
 app.include_router(help_docs_router)

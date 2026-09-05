@@ -2,6 +2,25 @@
 
 这里记录已经确定方向、但本次还不实施的功能。真正开始开发前，仍要重新核对业务需求和现有代码。
 
+## 事件总线与实时计算基础设施（长期演进，影子阶段）
+
+目标是在保持 MySQL 为唯一业务真相的前提下，逐步建设 Kafka 事件总线、Flink 实时派生、Redis 版本缓存和可观测回放能力。75 人突发复测只作为阶段趋势指标，不作为采用该架构的唯一依据。
+
+当前状态：设计完成，第一阶段实现中。生产业务仍使用 MySQL + Python 派生 worker；Kafka、Flink、Redis 先在隔离影子环境验证。
+
+阶段顺序：
+
+1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。
+2. 建立元数据事件合同：`event_id`、事件类型、`task_id`、`source_id`、revision、operation_id、变更字段摘要和时间；禁止完整任务正文及敏感人员资料进入事件。
+3. 统一消费者回读接口为 `/internal/v1/derived-input` 版本化 HTTP JSON；消费者禁止自建 SQL。接口使用独立服务凭据、字段白名单、revision fence 和回读审计。
+4. 在独立 Compose 项目验证 Kafka KRaft 三节点、Schema Registry、relay、重试/DLQ、故障恢复和回放。三节点只代表协议与故障行为；事件量超过约 10 万/天时另立容量评估。
+5. Flink 与 Python worker 双轨运行，Redis 结果必须带 revision；连续 7 天且累计至少 100,000 条事件、零未归因差异后才允许结束双轨观察。任何差异立即阻断并重新计时。
+6. 每个阶段完成后关联同口径 75 人复测，记录接口延迟、锁/死锁、Kafka lag、Flink checkpoint、Redis 命中、队列排空和零串写；失败时分别分析事务、查询、消费、派生与缓存。
+
+当前明确不做：不把 Kafka/Flink/Redis 设为最终数据源；不在生产启用影子入口；不以三节点配置推导生产容量；不恢复腾讯文档路径；不删除 Python worker 回退路径；不宣称跨 Kafka、Flink、Redis、MySQL 的天然 Exactly-Once。
+
+每阶段必须留下状态、阻塞项、下一步、配置/版本、测试命令、故障演练、差异样本、回滚结果和证据目录。恢复工作时先读取本节，再核对实际代码和服务器状态。
+
 ## 腾讯表时代数据模型退场（0.29.x）
 
 平台已经以本地 MySQL 业务表作为唯一主数据源，但在线任务接口和部分表结构仍保留腾讯表时期的缓存、物理行定位和多重正文副本。`0.28.8` 只停止本地热路径读取腾讯元数据并优化派生队列，不更换生产主键、不删除历史表。

@@ -1553,3 +1553,12 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - `python -m migrations.online_projection_queue_performance migrate` 仅预览；获得维护授权后执行 `python -m migrations.online_projection_queue_performance migrate --apply`。命令可重复执行，不重复创建列或索引，旧 `next_attempt_at` 字段保留一个兼容版本。
 - 写入结束后执行 `python -m migrations.online_projection_queue_performance verify`，必须确认 `ready=true`、`available_at_null_rows=0`，并核对两个索引列顺序。随后重启 Backend，使所有 worker 立即使用新索引，再观察运维中心的写入速率、处理速率、最老等待、失败数和旧腾讯元数据查询数。
 - 新索引可在程序回滚时保留，不删除业务数据。若迁移失败，停止发布并保留命令输出；不要在应用启动阶段重试 DDL，也不要通过扩大连接池或 worker 并发绕过问题。
+
+## Kafka/Flink/Redis 影子验证（长期阶段）
+
+- 使用独立 Compose 项目、网络、卷、账号、密码和运行编号；不得连接生产数据库、腾讯、全民防、居住证或互联网业务路径。
+- 启动前检查 `APP_ENVIRONMENT=shadow`、非空 `LOAD_TEST_RUN_ID`、影子数据库、项目名和标记表；任一检查失败立即退出。
+- 首期仅验证 KRaft 三节点协议、副本、节点停止/恢复、重复投递、顺序、7 天留存配置、重试/DLQ 和回放。三节点结果不得解释为生产容量；超过约 10 万事件/天时另立容量评估。
+- Flink 通过 `/internal/v1/derived-input` 回读，不得自行连接 MySQL。生产前必须完成连续 7 天且累计 100,000 事件的双轨一致性，任一未归因差异都重新计时。
+- 影子阶段保留 Python worker、MySQL 查询和原有回滚路径；Kafka、Flink 或 Redis 故障只允许降级/回退，不得阻断业务主事务。
+- 每次阶段复测保存 Kafka 速率/lag、Flink checkpoint、Redis 命中/版本冲突、队列排空、75 人复测结果和正式库零串写证据。当前本机无 Docker/真实 MySQL，Compose 校验和容器演练必须在目标服务器完成。
