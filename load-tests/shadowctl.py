@@ -12,7 +12,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 from fixture import make_tasks, write_manifest
@@ -176,10 +176,7 @@ def _verify_projection_performance_schema(context: ShadowContext) -> None:
                 "GROUP BY table_name,index_name",
                 (context.db_name,),
             )
-            indexes = {
-                str(row["index_name"]): str(row["columns_list"] or "")
-                for row in cursor.fetchall()
-            }
+            indexes = _projection_index_map(cursor.fetchall())
     finally:
         connection.close()
     if not available_at:
@@ -191,6 +188,23 @@ def _verify_projection_performance_schema(context: ShadowContext) -> None:
     missing = [name for name, columns in expected.items() if indexes.get(name) != columns]
     if missing:
         raise ShadowSafetyError("影子环境缺少 0.28.8 性能索引：" + ", ".join(missing))
+
+
+def _projection_index_map(rows: Iterable[Mapping[str, object]]) -> dict[str, str]:
+    """Normalize information_schema metadata returned by different MySQL cursors.
+
+    DictCursor implementations may preserve aliases as lowercase names or expose
+    them in uppercase (for example ``INDEX_NAME``/``COLUMNS_LIST``).  The shadow
+    preflight must accept both forms without weakening the exact index checks.
+    """
+    indexes: dict[str, str] = {}
+    for row in rows:
+        index_name = row.get("index_name", row.get("INDEX_NAME"))
+        columns = row.get("columns_list", row.get("COLUMNS_LIST"))
+        if index_name is None:
+            continue
+        indexes[str(index_name)] = str(columns or "")
+    return indexes
 
 
 def _docker() -> str:

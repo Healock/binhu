@@ -31,6 +31,7 @@ from shadowctl import (
     _validate_run_shape,
     _verify_pinned_images,
     _verify_production_proof,
+    _projection_index_map,
 )
 
 
@@ -179,6 +180,19 @@ class ShadowToolTests(unittest.TestCase):
         self.assertIn("idx_projection_job_available", source)
         self.assertIn("idx_online_source_ref", source)
         self.assertIn("_verify_projection_performance_schema(context)", source)
+
+    def test_projection_preflight_accepts_mysql_metadata_column_casing(self):
+        rows = [
+            {"INDEX_NAME": "idx_projection_job_available", "COLUMNS_LIST": "status,available_at,created_at,id"},
+            {"index_name": "idx_online_source_ref", "columns_list": "source_kind,source_ref"},
+        ]
+        self.assertEqual(
+            _projection_index_map(rows),
+            {
+                "idx_projection_job_available": "status,available_at,created_at,id",
+                "idx_online_source_ref": "source_kind,source_ref",
+            },
+        )
 
     def test_runtime_index_joins_use_explicit_shadow_collation(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
