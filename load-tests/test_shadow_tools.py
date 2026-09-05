@@ -194,6 +194,10 @@ class ShadowToolTests(unittest.TestCase):
             },
         )
 
+    def test_run_creates_empty_event_log_for_login_stage(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn("event_log.touch()", source)
+
     def test_runtime_index_joins_use_explicit_shadow_collation(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(

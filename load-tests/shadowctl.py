@@ -421,6 +421,10 @@ def run(run_id: str, users: int, duration: str, scenario: str) -> int:
     artifact_key = f"{context.run_id}-{scenario}-{users}-{stamp}"
     csv_prefix = ARTIFACTS / artifact_key
     event_log = ARTIFACTS / f"{context.run_id}-events-{scenario}-{stamp}.jsonl"
+    # Login-only scenarios do not emit business write events, but verify still
+    # needs an explicit empty stage log so a completed run is distinguishable
+    # from a missing or corrupted artifact.
+    event_log.touch()
     child_env = os.environ.copy()
     child_env["LOAD_TEST_SCENARIO"] = scenario
     child_env["SHADOW_RUNTIME_INDEX"] = str(runtime_index)
