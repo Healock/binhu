@@ -884,6 +884,12 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
     for source_id, group in claim_groups.items():
         winners = [event for event in group if int(event.get("status") or 0) == 200]
         if len(winners) != 1:
+            statuses = [int(event.get("status") or 0) for event in group]
+            # A task may already have been claimed by an earlier load stage.
+            # A later attempt then correctly returns only 409 responses; this
+            # is expected contention, not evidence of a missing winner.
+            if not winners and statuses and all(status == 409 for status in statuses):
+                continue
             issues.append(f"claim_winner_count_invalid:{source_id}:{len(winners)}")
             continue
         expected_inspector = str(winners[0].get("inspector") or "")
@@ -913,8 +919,21 @@ def _verify_database(context: ShadowContext, events: list[dict[str, Any]]) -> di
             issues.append(f"registration_property_mismatch:{key[0]}:{key[1]}")
         if int(link["property_version"] or 0) != int(event.get("property_version") or 0):
             issues.append(f"registration_property_version_mismatch:{key[0]}:{key[1]}")
-        if str(link["status"] or "") not in {"awaiting_match", "matched_once"}:
-            issues.append(f"registration_status_invalid:{key[0]}:{key[1]}")
+        link_status = str(link["status"] or "")
+        if link_status not in {"awaiting_match", "matched_once"}:
+            # A subsequent ordinary edit may intentionally move a task away
+            # from 待登记, which cancels its previous property link.  Accept
+            # that terminal state only when the current business value is no
+            # longer 待登记; otherwise retain the consistency error.
+            source_item = next(
+                (item for item in source_values.values()
+                 if item.get("parser_type") == key[0] and item.get("row_key") == key[1]),
+                None,
+            )
+            current_values = (source_item or {}).get("values") or {}
+            result_value = str(current_values.get("核查结果") or current_values.get("result") or "")
+            if link_status != "cancelled" or result_value == "待登记":
+                issues.append(f"registration_status_invalid:{key[0]}:{key[1]}")
 
     conflict_groups = _conflict_groups(events)
     verified_rounds = 0

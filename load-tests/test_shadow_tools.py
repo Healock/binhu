@@ -194,6 +194,14 @@ class ShadowToolTests(unittest.TestCase):
             },
         )
 
+    def test_verify_treats_already_claimed_retry_as_expected_contention(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn("all(status == 409 for status in statuses)", source)
+
+    def test_verify_allows_cancelled_registration_after_result_change(self):
+        source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
+        self.assertIn('link_status != "cancelled" or result_value == "待登记"', source)
+
     def test_run_creates_empty_event_log_for_login_stage(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
         self.assertIn("event_log.touch()", source)
