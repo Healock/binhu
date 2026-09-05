@@ -1,0 +1,80 @@
+name: ${POC_PROJECT:?set POC_PROJECT=binhu-flink-poc-20260906}
+
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:?set a verified MySQL image digest}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set a random POC root password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE=FlinkPOC_20260906}
+    command: ["--server-id=1001", "--log-bin=mysql-bin", "--binlog-format=ROW", "--binlog-row-image=FULL"]
+    labels:
+      binhu.poc: "20260906"
+      binhu.poc.database: "FlinkPOC_20260906"
+      binhu.poc.run_id: ${POC_RUN_ID:?set a unique synthetic run id}
+    networks: [internal]
+    volumes: [mysql-data:/var/lib/mysql, ./mysql/init.rendered.sql:/docker-entrypoint-initdb.d/01-init.sql:ro]
+    mem_limit: 768m
+    deploy: { resources: { limits: { memory: 768m } } }
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  jobmanager:
+    image: ${FLINK_RUNTIME_IMAGE:-binhu-flink-poc-runtime:20260906}
+    build:
+      context: ./flink
+      args:
+        BASE_IMAGE: ${FLINK_IMAGE:?set a verified Flink image digest}
+        CDC_VERSION: ${CDC_VERSION:?set CDC_VERSION}
+        CDC_SHA256: ${CDC_SHA256:?set the verified CDC JAR SHA256}
+    command: jobmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.bind-address: 0.0.0.0
+        jobmanager.memory.process.size: 768m
+    labels:
+      binhu.poc: "20260906"
+      binhu.poc.run_id: ${POC_RUN_ID:?set a unique synthetic run id}
+    networks: [internal]
+    volumes: [checkpoints:/opt/flink/checkpoints, ./sql:/opt/flink/sql:ro]
+    mem_limit: 768m
+    deploy: { resources: { limits: { memory: 768m } } }
+
+  taskmanager:
+    image: ${FLINK_RUNTIME_IMAGE:-binhu-flink-poc-runtime:20260906}
+    build:
+      context: ./flink
+      args:
+        BASE_IMAGE: ${FLINK_IMAGE:?set a verified Flink image digest}
+        CDC_VERSION: ${CDC_VERSION:?set CDC_VERSION}
+        CDC_SHA256: ${CDC_SHA256:?set the verified CDC JAR SHA256}
+    command: taskmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 1
+        taskmanager.memory.process.size: 1536m
+        execution.checkpointing.interval: 10 s
+    labels:
+      binhu.poc: "20260906"
+      binhu.poc.run_id: ${POC_RUN_ID:?set a unique synthetic run id}
+    networks: [internal]
+    volumes: [checkpoints:/opt/flink/checkpoints]
+    mem_limit: 1536m
+    deploy: { resources: { limits: { memory: 1536m } } }
+
+networks:
+  internal:
+    name: binhu_flink_poc_internal
+    internal: true
+
+volumes:
+  mysql-data:
+    name: binhu_flink_poc_mysql_20260906
+  checkpoints:
+    name: binhu_flink_poc_checkpoints_20260906

@@ -1,0 +1,17 @@
+CREATE DATABASE IF NOT EXISTS `FlinkPOC_20260906`;
+CREATE USER IF NOT EXISTS 'flink_cdc'@'%' IDENTIFIED BY '__CDC_PASSWORD__';
+GRANT SELECT, LOCK TABLES ON `FlinkPOC_20260906`.* TO 'flink_cdc'@'%';
+GRANT RELOAD, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'flink_cdc'@'%';
+FLUSH PRIVILEGES;
+USE `FlinkPOC_20260906`;
+CREATE TABLE IF NOT EXISTS poc_identity (
+    id TINYINT PRIMARY KEY,
+    project_name VARCHAR(128) NOT NULL,
+    database_name VARCHAR(128) NOT NULL,
+    run_id VARCHAR(128) NOT NULL,
+    synthetic TINYINT NOT NULL
+);
+INSERT IGNORE INTO poc_identity (id, project_name, database_name, run_id, synthetic)
+VALUES (1, 'binhu-flink-poc-20260906', 'FlinkPOC_20260906', '__POC_RUN_ID__', 1);
+CREATE TABLE synthetic_events (id BIGINT PRIMARY KEY, payload VARCHAR(255), revision INT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP);
+INSERT INTO synthetic_events VALUES (1,'synthetic-seed',1,NOW());
