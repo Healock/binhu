@@ -52,6 +52,13 @@ initialize_online_database() {
 
 initialize_online_database
 
+# Complete the fresh-volume performance schema before the backend starts.
+# CREATE TABLE IF NOT EXISTS in backend-init.sql cannot add these definitions
+# to the legacy table it just created.  Existing volumes still use the explicit
+# maintenance migration; never replay this full initializer over business data.
+MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql --protocol=socket -uroot \
+  --database="${shadow_database}" < /shadow-schema/shadow-performance-schema.sql
+
 # The daily-report connection uses its own schema.  Re-run only the explicit
 # daily-report section of init.sql against the isolated daily database; the
 # online/archive/platform sections must never be replayed there.
