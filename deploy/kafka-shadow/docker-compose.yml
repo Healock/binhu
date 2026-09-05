@@ -1,0 +1,67 @@
+name: ${KAFKA_PROJECT:?set a unique shadow project name}
+
+services:
+  kafka-1:
+    image: ${KAFKA_IMAGE:?set a verified Kafka image digest}
+    hostname: kafka-1
+    environment: &kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_CLUSTER_ID: ${KAFKA_CLUSTER_ID:?set a generated cluster id}
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
+    networks: [internal]
+    volumes: [kafka-1-data:/var/lib/kafka/data]
+  kafka-2:
+    image: ${KAFKA_IMAGE:?set a verified Kafka image digest}
+    hostname: kafka-2
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
+    networks: [internal]
+    volumes: [kafka-2-data:/var/lib/kafka/data]
+  kafka-3:
+    image: ${KAFKA_IMAGE:?set a verified Kafka image digest}
+    hostname: kafka-3
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
+    networks: [internal]
+    volumes: [kafka-3-data:/var/lib/kafka/data]
+  schema-registry:
+    image: ${APICURIO_IMAGE:?set a verified Apicurio image digest}
+    environment:
+      QUARKUS_PROFILE: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
+    networks: [internal]
+
+networks:
+  internal:
+    name: ${KAFKA_NETWORK:?set an isolated internal network}
+    internal: true
+
+volumes:
+  kafka-1-data: {name: binhu_kafka_shadow_1_20260906}
+  kafka-2-data: {name: binhu_kafka_shadow_2_20260906}
+  kafka-3-data: {name: binhu_kafka_shadow_3_20260906}
