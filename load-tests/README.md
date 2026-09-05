@@ -62,6 +62,13 @@ PRODUCTION_CONTAINER_NAMES=binhu-backend,binhu-mysql,binhu-redis
 
 ## 启动和造数
 
+全新卷的 MySQL bootstrap 会在后端启动前执行受限的
+`shadow-performance-schema.sql`，补齐派生队列 `available_at`、
+`idx_projection_job_available` 和来源引用 `idx_online_source_ref`。
+SQL 只由已校验 `LoadTest_` 数据库名称的初始化脚本通过容器本地 socket 执行，
+列和索引已存在时不重复创建。已有卷仍走显式维护迁移，不得重放完整初始化脚本。
+验收必须使用全新运行及全新卷，并在 seed 前核实结构，不能用手工补过 DDL 的旧卷作基线。
+
 先安装工具依赖，再启动独立 Compose：
 
 ```powershell

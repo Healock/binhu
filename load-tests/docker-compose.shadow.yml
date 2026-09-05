@@ -16,6 +16,7 @@ services:
       - ./shadow-marker.sql:/docker-entrypoint-initdb.d/00-shadow-marker.sql:ro
       - ./shadow-schema-bootstrap.sh:/docker-entrypoint-initdb.d/01-shadow-schema-bootstrap.sh:ro
       - ../backend/init.sql:/shadow-schema/backend-init.sql:ro
+      - ./shadow-performance-schema.sql:/shadow-schema/shadow-performance-schema.sql:ro
     networks: [shadow]
     cpus: 4
     mem_limit: 3g
