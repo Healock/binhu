@@ -206,6 +206,11 @@ class ShadowToolTests(unittest.TestCase):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
         self.assertIn("event_log.touch()", source)
 
+    def test_conflict_users_attempt_one_round_only(self):
+        source = (Path(__file__).parent / "locustfile.py").read_text(encoding="utf-8")
+        self.assertIn("self.conflict_attempted = False", source)
+        self.assertIn("if self.conflict_attempted:", source)
+
     def test_runtime_index_joins_use_explicit_shadow_collation(self):
         source = (Path(__file__).parent / "shadowctl.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(

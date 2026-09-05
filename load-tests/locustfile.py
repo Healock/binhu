@@ -148,6 +148,7 @@ class FlowUser(HttpUser):
         self.invalid_targets: set[tuple[str, str]] = set()
         self.write_index = 0
         self.registration_index = 0
+        self.conflict_attempted = False
         # The conflict gate measures one precise contract: two clients read
         # the same revision and then submit together.  Do not mix the normal
         # weighted browsing workload into this scenario.  A low-weight
@@ -358,6 +359,13 @@ class FlowUser(HttpUser):
     def concurrent_conflict(self) -> None:
         if not _is_conflict_scenario():
             return
+        # One coordinated attempt per virtual account keeps each pair tied to
+        # a single read revision. Reusing the same fixture in a loop can make
+        # one participant read the revision written by an earlier round,
+        # which is a harness artifact rather than a concurrency result.
+        if self.conflict_attempted:
+            return
+        self.conflict_attempted = True
         targets = [row for row in RUNTIME_ROWS if row.get("scenario") == "conflict"][:10]
         if not targets:
             return
