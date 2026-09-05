@@ -50,6 +50,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--users", type=int, default=50, choices=(5, 20, 50, 75))
     parser.add_argument("--duration", default="30m")
     parser.add_argument("--production-proof", type=Path)
+    parser.add_argument("--event-log", type=Path,
+                        help="verify 只核对本阶段事件文件；省略时兼容核对本运行全部事件")
     return parser
 
 
@@ -59,6 +61,10 @@ def _manifest(run_id: str) -> Path:
 
 def _runtime_index(run_id: str) -> Path:
     return ARTIFACTS / f"shadow-runtime-{run_id}.json"
+
+
+def _last_stage_index(run_id: str) -> Path:
+    return ARTIFACTS / f"{run_id}-last-stage.json"
 
 
 def _require_database_credentials() -> tuple[str, str]:
@@ -150,6 +156,41 @@ def _verify_shadow_schema(context: ShadowContext, *, seeded: bool = False) -> No
     ]
     if details:
         raise ShadowSafetyError("影子环境 schema 不完整，缺少必需表：" + ", ".join(details))
+
+
+def _verify_projection_performance_schema(context: ShadowContext) -> None:
+    connection = _connect(context)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=%s AND table_name='_online_projection_jobs' "
+                "AND column_name='available_at'",
+                (context.db_name,),
+            )
+            available_at = bool(cursor.fetchone())
+            cursor.execute(
+                "SELECT index_name,GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns_list "
+                "FROM information_schema.statistics WHERE table_schema=%s "
+                "AND table_name IN ('_online_projection_jobs','_online_source_rows') "
+                "GROUP BY table_name,index_name",
+                (context.db_name,),
+            )
+            indexes = {
+                str(row["index_name"]): str(row["columns_list"] or "")
+                for row in cursor.fetchall()
+            }
+    finally:
+        connection.close()
+    if not available_at:
+        raise ShadowSafetyError("影子环境 schema 不完整：派生队列缺少 available_at")
+    expected = {
+        "idx_projection_job_available": "status,available_at,created_at,id",
+        "idx_online_source_ref": "source_kind,source_ref",
+    }
+    missing = [name for name, columns in expected.items() if indexes.get(name) != columns]
+    if missing:
+        raise ShadowSafetyError("影子环境缺少 0.28.8 性能索引：" + ", ".join(missing))
 
 
 def _docker() -> str:
@@ -252,6 +293,17 @@ def seed(run_id: str) -> int:
     _verify_pinned_images()
     _verify_shadow_schema(context)
     _verify_marker(context, allow_placeholder=True)
+    migration = subprocess.run(
+        _compose_command(
+            context, "exec", "-T", "backend", "python", "-m",
+            "migrations.online_projection_queue_performance", "migrate", "--apply",
+        ),
+        cwd=ROOT,
+        check=False,
+    )
+    if migration.returncode:
+        return migration.returncode
+    _verify_projection_performance_schema(context)
     path = write_manifest(ARTIFACTS, context.run_id)
     command = _compose_command(
         context, "exec", "-T", "backend", "python",
@@ -324,6 +376,7 @@ def run(run_id: str, users: int, duration: str, scenario: str) -> int:
     context = require_shadow_context(run_id)
     _verify_pinned_images()
     _verify_shadow_schema(context, seeded=True)
+    _verify_projection_performance_schema(context)
     _validate_run_shape(scenario, users, duration)
     _verify_marker(context, allow_placeholder=False)
     manifest = _manifest(context.run_id)
@@ -397,6 +450,14 @@ def run(run_id: str, users: int, duration: str, scenario: str) -> int:
         production_health_url=production_health,
         production_containers=production_containers,
     ))
+    _last_stage_index(context.run_id).write_text(json.dumps({
+        "run_id": context.run_id,
+        "scenario": scenario,
+        "users": users,
+        "event_log": str(event_log),
+        "artifact_key": artifact_key,
+        "finished_at": time.time(),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({
         "run_id": context.run_id,
         "scenario": scenario,
@@ -409,9 +470,16 @@ def run(run_id: str, users: int, duration: str, scenario: str) -> int:
     return int(process.returncode or 0)
 
 
-def _load_events(run_id: str) -> list[dict[str, Any]]:
+def _load_events(run_id: str, event_log: Path | None = None) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for path in sorted(ARTIFACTS.glob(f"{run_id}-events-*.jsonl")):
+    if event_log is not None:
+        resolved = event_log.resolve()
+        if resolved.parent != ARTIFACTS.resolve() or not resolved.name.startswith(f"{run_id}-events-"):
+            raise ShadowSafetyError("事件日志不属于本次运行 artifacts")
+        paths = [resolved]
+    else:
+        paths = sorted(ARTIFACTS.glob(f"{run_id}-events-*.jsonl"))
+    for path in paths:
         for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
                 continue
@@ -895,9 +963,10 @@ def _verify_production_proof(path: Path | None, run_id: str) -> dict[str, Any]:
             "scope_counts": {scope: 0 for scope in sorted(REQUIRED_PRODUCTION_PROOF_SCOPES)}}
 
 
-def verify(run_id: str, production_proof: Path | None) -> int:
+def verify(run_id: str, production_proof: Path | None, event_log: Path | None = None) -> int:
     context = require_shadow_context(run_id)
     _verify_shadow_schema(context, seeded=True)
+    _verify_projection_performance_schema(context)
     _verify_marker(context, allow_placeholder=False)
     path = _manifest(context.run_id)
     runtime_path = _runtime_index(context.run_id)
@@ -918,7 +987,13 @@ def verify(run_id: str, production_proof: Path | None) -> int:
     state_counts = defaultdict(int)
     for task in make_tasks():
         state_counts[str(task["state"])] += 1
-    events = _load_events(context.run_id)
+    selected_event_log = event_log
+    if selected_event_log is None and _last_stage_index(context.run_id).is_file():
+        stage = json.loads(_last_stage_index(context.run_id).read_text(encoding="utf-8"))
+        if str(stage.get("run_id") or "").upper() != context.run_id:
+            raise ShadowSafetyError("最近阶段索引的运行编号不一致")
+        selected_event_log = Path(str(stage.get("event_log") or ""))
+    events = _load_events(context.run_id, selected_event_log)
     database = _verify_database(context, events)
     production = _verify_production_proof(production_proof, context.run_id)
     result = {
@@ -927,6 +1002,7 @@ def verify(run_id: str, production_proof: Path | None) -> int:
         "state_counts": dict(state_counts),
         "database": database,
         "production_zero_data_proof": production,
+        "event_scope": str(selected_event_log) if selected_event_log else "all_run_events",
         "passed": not database["issues"],
     }
     output = ARTIFACTS / f"{context.run_id}-verify.json"
@@ -971,7 +1047,7 @@ def main() -> int:
         if args.command == "run":
             return run(args.run_id, args.users, args.duration, args.scenario)
         if args.command == "verify":
-            return verify(args.run_id, args.production_proof)
+            return verify(args.run_id, args.production_proof, args.event_log)
         return cleanup(args.run_id)
     except (ShadowSafetyError, FileNotFoundError, json.JSONDecodeError) as exc:
         print(f"安全检查失败：{exc}", file=sys.stderr)

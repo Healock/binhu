@@ -83,7 +83,7 @@ from routers.presence import router as presence_router
 from routers.events import router as events_router
 from services.venue_cleanup import run_venue_cleanup_scheduler
 from services.local_report_scheduler import run_local_report_scheduler
-from services.diagnostics import capture_incident
+from services.diagnostics import capture_incident, should_capture_incident
 from services.venue_cloud import run_venue_cloud_scheduler
 from services.platform_performance import performance_metrics, run_performance_sampler
 from services.online_projection_jobs import run_online_projection_worker
@@ -239,7 +239,7 @@ async def diagnostic_incident_middleware(request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        if not ignored:
+        if not ignored and should_capture_incident(request, 500):
             asyncio.create_task(
                 capture_incident(
                     request,
@@ -248,7 +248,11 @@ async def diagnostic_incident_middleware(request, call_next):
                 )
             )
         raise
-    if response.status_code >= 400 and not ignored:
+    if (
+        response.status_code >= 400
+        and not ignored
+        and should_capture_incident(request, response.status_code)
+    ):
         asyncio.create_task(
             capture_incident(
                 request,

@@ -485,6 +485,46 @@ function PerformanceTab({
             ))}
           </div>
         ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有活动后台任务" />}
+        {data.background.online_projection && (
+          <div className="ops-background-summary" style={{ marginTop: 16 }}>
+            <Statistic title="派生写入/分钟" value={data.background.online_projection.enqueue_rate_1m} />
+            <Statistic title="派生处理/分钟" value={data.background.online_projection.process_rate_1m} />
+            <Statistic title="合并旧版本" value={data.background.online_projection.coalesced_count} />
+            <Statistic title="跳过过期版本" value={data.background.online_projection.revision_skipped_count} />
+            <Statistic title="锁冲突拆批" value={data.background.online_projection.lock_split_count} />
+            <Statistic title="最老等待" value={formatDuration(data.background.online_projection.oldest_wait_seconds)} />
+            <Statistic title="批处理 P95" value={data.background.online_projection.batch_p95_ms} suffix="ms" />
+            <Statistic
+              title="队列状态"
+              value={
+                data.background.online_projection.queued_count === 0
+                  ? '已达到稳态'
+                  : data.background.online_projection.process_rate_1m >= data.background.online_projection.enqueue_rate_1m
+                    ? '正在追平'
+                    : '写入快于处理'
+              }
+            />
+          </div>
+        )}
+        <div className="ops-background-summary" style={{ marginTop: 12 }}>
+          <Statistic
+            title="预期业务响应"
+            value={data.background.diagnostic_capture?.expected_response_count || 0}
+          />
+          <Statistic
+            title="诊断样本"
+            value={data.background.diagnostic_capture?.captured_incident_count || 0}
+          />
+          <Statistic
+            title="重复诊断已合并"
+            value={data.background.diagnostic_capture?.suppressed_duplicate_count || 0}
+          />
+          <Statistic
+            title="旧腾讯元数据查询"
+            value={data.background.runtime_telemetry?.legacy_metadata_query_count || 0}
+            valueStyle={(data.background.runtime_telemetry?.legacy_metadata_query_count || 0) > 0 ? { color: '#cf1322' } : undefined}
+          />
+        </div>
       </Panel>
 
       <Panel title="数据库与资源阻塞信号" description="连接池占满、MySQL 锁等待或应用线程阻塞会直接影响保存和分配速度">

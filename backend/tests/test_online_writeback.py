@@ -1211,14 +1211,15 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             },
         })
 
-        metadata = await _managed_column_metadata(
-            cursor,
-            parser,
-            {"核查结果": {
-                "type": "select",
-                "options": [{"id": "", "text": ""}],
-            }},
-        )
+        with patch("routers.query.local_data_source_enabled", return_value=False):
+            metadata = await _managed_column_metadata(
+                cursor,
+                parser,
+                {"核查结果": {
+                    "type": "select",
+                    "options": [{"id": "", "text": ""}],
+                }},
+            )
 
         self.assertEqual(
             [item["text"] for item in metadata["核查结果"]["options"]],
@@ -1248,6 +1249,27 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             ["cellValue"],
             {"text": "待登记"},
         )
+
+    async def test_local_result_options_never_scan_tencent_cell_metadata(self):
+        parser = get_parser("全链条")
+        cursor = ManagedMetadataCursor({
+            "核查结果": {
+                "type": "select",
+                "options": [{"id": "legacy", "text": "旧选项"}],
+            },
+        })
+        with (
+            patch("routers.query.local_data_source_enabled", return_value=True),
+            patch("routers.query._cached_result_options", AsyncMock()) as cached,
+        ):
+            metadata = await _managed_column_metadata(
+                cursor,
+                parser,
+                {"核查结果": {"type": "select", "options": []}},
+                include_assignment_options=False,
+            )
+        cached.assert_not_awaited()
+        self.assertIn("待登记", [item["text"] for item in metadata["核查结果"]["options"]])
 
     async def test_result_options_have_business_fallback_without_cached_metadata(self):
         parser = get_parser("疑似未注销模型三")

@@ -167,6 +167,15 @@ def _shadow_database(config: MonitorConfig) -> dict[str, int]:
                 "FROM _online_projection_jobs"
             )
             queue = cursor.fetchone() or {}
+            cursor.execute(
+                "SELECT "
+                "COALESCE(SUM(created_at>=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 MINUTE)),0) AS enqueued_1m,"
+                "COALESCE(SUM(finished_at>=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 MINUTE) "
+                "AND status IN ('succeeded','skipped')),0) AS processed_1m,"
+                "COALESCE(SUM(error_code='coalesced_revision'),0) AS coalesced "
+                "FROM _online_projection_jobs"
+            )
+            queue_rate = cursor.fetchone() or {}
     finally:
         connection.close()
     return {
@@ -180,6 +189,9 @@ def _shadow_database(config: MonitorConfig) -> dict[str, int]:
         "projection_failed": int(queue.get("failed") or 0),
         "projection_oldest_wait_seconds": int(queue.get("oldest_wait") or 0),
         "projection_oldest_running_seconds": int(queue.get("oldest_running") or 0),
+        "projection_enqueue_rate_1m": int(queue_rate.get("enqueued_1m") or 0),
+        "projection_process_rate_1m": int(queue_rate.get("processed_1m") or 0),
+        "projection_coalesced": int(queue_rate.get("coalesced") or 0),
     }
 
 
@@ -210,6 +222,8 @@ def projection_stop_reason(database: dict[str, Any]) -> str:
         return "shadow_projection_job_failed"
     if int(database.get("projection_oldest_running_seconds", 0)) > 30:
         return "shadow_projection_job_stalled_above_30_seconds"
+    if int(database.get("projection_oldest_wait_seconds", 0)) > 30:
+        return "shadow_projection_queue_wait_above_30_seconds"
     return ""
 
 
