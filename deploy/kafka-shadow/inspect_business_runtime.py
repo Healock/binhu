@@ -367,7 +367,7 @@ def _compose_network(config: Mapping[str, Any], project: str) -> str:
     name = settings.get("name")
     if not isinstance(name, str) or not name:
         _fail("Compose internal network has no concrete name")
-    expected = {f"{project}-network", f"{project}_network", project}
+    expected = {project + suffix for suffix in ("", "-network", "_network", "-internal", "_internal", "_default")}
     if name not in expected:
         _fail("Compose network is not scoped to the project")
     return name

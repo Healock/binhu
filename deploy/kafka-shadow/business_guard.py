@@ -104,7 +104,7 @@ def validate_network(value: Any, project: str) -> str:
     network = _required_string(value, "network")
     if NETWORK_RE.fullmatch(network) is None:
         _fail("network is not a scoped binhu-kafka-shadow network")
-    allowed = {f"{project}-network", f"{project}_network", project}
+    allowed = {project + suffix for suffix in ("", "-network", "_network", "-internal", "_internal", "_default")}
     if network not in allowed:
         _fail("network is not scoped to the requested project")
     return network

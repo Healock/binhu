@@ -21,7 +21,23 @@ from inspect_business_runtime import (  # noqa: E402
     parse_dotenv_identity,
     _required_env_alias,
     validate_current_root,
+    parse_compose_config,
+    _compose_network,
 )
+from business_guard import validate_network
+
+
+@pytest.mark.parametrize('suffix', ['_default', '-internal', '_internal'])
+def test_project_network_names_require_exact_project_scope(suffix):
+    project = 'binhu-kafka-shadow-business02'
+    name = project + suffix
+    config = {'networks': {'internal': {'name': name, 'internal': True}}}
+    assert _compose_network(config, project) == name
+    assert validate_network(name, project) == name
+    with pytest.raises(RuntimeInspectionError):
+        _compose_network(config, project + '-other')
+    with pytest.raises(BusinessGuardError):
+        validate_network(name, project + '-other')
 
 
 RUN_ID = "KSHADOW-20260907T031500Z-biz01"

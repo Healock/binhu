@@ -8,9 +8,11 @@
 
 当前状态：设计完成，第一阶段实现中。生产业务仍使用 MySQL + Python 派生 worker；Kafka、Flink、Redis 先在隔离影子环境验证。
 
+最新恢复入口（2026-09-07）：[business02 预检停止记录](eventbus-business02-diagnostic-20260907.md)。本轮任务 ledger 已排空至 3598 published / 2 dead_letter，但完整预检在三轮修补后仍失败，已按用户停止线暂停服务器变更与压测，等待人工介入。business02 不作为最终干净压测卷，75 人复测尚未执行。
+
 阶段顺序：
 
-1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。领域 Outbox 已完成严格元数据转换器和独立 ledger/relay 组件验证，仍未接入真实业务事务；照片同步与场所云 Outbox 先按各自事件合同登记，禁止伪装成任务领域事件。
+1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。领域 Outbox 已接入部分本地业务事务并完成影子创建事件往返，尚未全量验收；照片同步与场所云已有独立合同及合成来源验证，真实业务接线仍待完成，禁止伪装成任务领域事件。
 2. 建立元数据事件合同：`event_id`、事件类型、`task_id`、`source_id`、revision、operation_id、变更字段摘要和时间；禁止完整任务正文及敏感人员资料进入事件。
 3. 统一消费者回读接口为 `/internal/v1/derived-input` 版本化 HTTP JSON；消费者禁止自建 SQL。接口使用独立服务凭据、字段白名单、revision fence 和回读审计。
 4. 在独立 Compose 项目验证 Kafka KRaft 三节点、Schema Registry、relay、重试/DLQ、故障恢复和回放。三节点只代表协议与故障行为；事件量超过约 10 万/天时另立容量评估。
@@ -33,7 +35,7 @@
 | 镜像准备 | Kafka、Apicurio、Flink 1.20.1 完整镜像均已通过代理取得，固定 digest；Relay 离线镜像已构建 | 所有基础镜像、应用构建和依赖继续保留锁与哈希 |
 | Kafka 三节点 | 三业务主题均为 3 分区/2 副本；单 Leader 停止 30 秒后选举、恢复 ISR、旧消息回读及新消息投递均已通过协议烟测 | 协议通过不等于 Relay 业务闭环；服务认证/ACL 尚未实现 |
 | Apicurio | 2.6.5.Final 已运行，`/health/ready` 全部 UP；Draft 7 Schema 已注册、回读一致，兼容变更返回 200，不兼容字段类型变更返回 409；`mem` 仅用于协议实验 | 恢复前导入同一版本 schema；持久化 Registry 仍未完成 |
-| Outbox → Kafka | 独立投递状态机、真实隔离 MySQL ledger 与 12 条 Kafka 往返已通过；回滚、重复 ID、租约 fencing、分区键均有证据 | 接入真实业务 Outbox 事务、进程崩溃、重试与 DLQ；旧 Redis relay 保留 |
+| Outbox → Kafka | 已接入部分本地业务事务；business02 的 3600 条合成任务对应 3598 条 published、2 条 dead_letter，待投递排空 | 核对 Kafka 消费与 DLQ 实际内容、归档回放；补齐辅助来源及业务分类；不能据 ledger 宣称全量一致 |
 | 回读接口 | 已有骨架和模拟测试，真实 task_id 映射与版本快照待复审 | 鉴权先于取连接、影子范围、真实字段、同一 revision 输入 |
   | Flink / Redis | Flink Kafka checkpoint 协议烟测、Redis revision fence 和真实恢复验证已通过；业务派生、MySQL/Redis 输出和双轨比对仍未开始 | 先接入真实业务事件，再做地址匹配、人员标签、任务图、日报、条件写入和双轨验证 |
 | 双轨 | 尚未开始；不得累计假想事件或观察时长 | 独立输出、连续 7 天且至少 100000 个唯一事件，无差异 |
@@ -46,14 +48,14 @@
 
 | 来源 | 业务性质 | Kafka 处理边界 | 当前状态 |
 | --- | --- | --- | --- |
-| `_domain_event_outbox` | 任务领域事件 | 使用 `binhu.task.events.v1` 严格元数据合同，回读任务正文 | 转换器、ledger、真实影子投递和 SIGKILL 窗口已验证；尚未挂入 Backend 事务 |
+| `_domain_event_outbox` | 任务领域事件 | 使用 `binhu.task.events.v1` 严格元数据合同，回读任务正文 | 部分创建/保存/分配/归档已接入 Backend 事务；领取/研判复用保存链路，当前需细分事件分类，不应重复投递 |
 | `photo_sheet_outbox` | 照片名单外部写回意图 | 单独事件类型/主题，保留 work order 与 action 元数据；不得写入任务正文或照片 | 已盘点，独立元数据合同已实现；真实 relay 接入待实现 |
 | `_venue_cloud_outbox` | 场所云外部同步意图 | 单独事件类型/主题，保留 venue ID、配置 revision、action、request ID | 已盘点，事件合同和权限/重试边界待实现 |
 | `_online_projection_jobs` | 本地派生队列 | 保持独立队列，不转换为领域事件 | 继续由 Python worker 管理，Flink 接入另立阶段 |
 
 全量接入的完成条件是每个来源均有版本化元数据合同、同事务写入/源记录关联、至少一次 relay、有限重试/DLQ、消费者幂等和回放证据；“有 Kafka 主题”不算完成。
 
-可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。影子 Compose 的独立 `kafka-relay` 已启动并通过项目/运行号标签核验，但当前无 Backend 影子业务写入，因此十项仍待真实业务闭环验收，不能用单元测试或 Kafka CLI 替代。
+可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。已有 Backend 影子创建事件往返，但十项尚未完成完整业务闭环验收，不能用单元测试或 Kafka CLI 替代。
 
 本次基础设施运行编号为 `KSHADOW-20260906T084957Z-fcbad2`，项目名为 `binhu-kafka-shadow-20260906`。现场证据包括 `deployment-identity.json`、`kafka-shadow-images.lock.json`、`quorum-after-tmpfs.txt` 和三个主题的 `*-describe.txt`。主题显式配置 `retention.ms=604800000`、`min.insync.replicas=2`；这只证明配置，尚未证明自然 7 天删除。Apache 镜像隐含的两个匿名卷已改为有界 tmpfs，并仅重建本次项目容器；数据卷保持项目作用域。当前网络内使用 PLAINTEXT、无宿主机发布端口，不能声称认证故障项已覆盖。
 
