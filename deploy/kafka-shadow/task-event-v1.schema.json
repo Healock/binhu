@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binhu.invalid/kafka-shadow/task-event-v1.schema.json",
+  "title": "Binhu Kafka shadow task metadata event v1",
+  "description": "The new isolated Kafka contract. It is metadata-only and is not the Redis domain_events contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "task_id",
+    "source_id",
+    "revision",
+    "operation_id",
+    "changed_fields",
+    "timestamp",
+    "environment",
+    "run_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "format": "uuid"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "task.saved",
+        "task.claimed",
+        "task.assigned",
+        "task.reviewed",
+        "task.archived",
+        "task.created",
+        "task.deleted"
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "maxLength": 39,
+      "pattern": "^(?:t_delivery_industry|t_fullchain|t_group_rental|t_police_stats|t_rental_check|t_suspect_return|t_suspect_unrevoked|t_suzhou_police|t_traffic_police):",
+      "allOf": [
+        {
+          "$ref": "#/$defs/local_source_ref"
+        }
+      ]
+    },
+    "source_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "format": "uuid"
+    },
+    "changed_fields": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "address",
+          "community",
+          "inspector",
+          "check_result",
+          "task_state",
+          "small_community",
+          "person_tags",
+          "task_graph",
+          "daily_report"
+        ]
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$",
+      "format": "date-time"
+    },
+    "environment": {
+      "const": "shadow",
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "maxLength": 72,
+      "pattern": "^KSHADOW-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    }
+  },
+  "$defs": {
+    "local_source_ref": {
+      "type": "string",
+      "pattern": "^[^:]+:(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$"
+    }
+  }
+}
