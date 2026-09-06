@@ -1,5 +1,20 @@
 # Overlay with the Kafka and derived compose files, based at the isolated root.
 services:
+  flink-init-checkpoints:
+    image: ${FLINK_IMAGE:?verified digest required}
+    pull_policy: never
+    profiles: [init]
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown 9999:9999 /checkpoints && chmod 750 /checkpoints"]
+    network_mode: none
+    volumes: ["flink-checkpoints:/checkpoints"]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
   flink-jobmanager:
     image: ${FLINK_IMAGE:?verified digest required}
     pull_policy: never
