@@ -1,16 +1,60 @@
-"""Strict projection from existing domain Outbox to Kafka v1 metadata."""
+"""Strict conversion of a MySQL domain Outbox row to Kafka metadata.
+
+This pure adapter does not enqueue, acknowledge or modify the existing SSE Outbox.
+Missing historical task mappings remain rejected for explicit migration review.
+"""
 from __future__ import annotations
+
+import json
 from datetime import datetime, timezone
-from .domain_events import decode_event_row
-from .kafka_event_contract import validate_task_event, EventContractError
-_EVENT_MAP={"task.saved":"task.saved","task.claimed":"task.claimed","task.assigned":"task.assigned","task.reviewed":"task.reviewed","task.archived":"task.archived","task.created":"task.created","task.deleted":"task.deleted"}
-def _utc_z(value):
- dt=value if isinstance(value,datetime) else datetime.fromisoformat(str(value).replace("Z","+00:00"))
- if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
- return dt.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00","Z")
+
+from .kafka_event_contract import EventContractError, validate_task_event
+
+# Existing SELECT * order, including the four additive metadata columns.
+_COLUMNS = (
+    "event_id", "schema_version", "domain", "event_type", "aggregate_type",
+    "aggregate_id", "aggregate_revision", "audiences_json", "status",
+    "attempt_count", "available_at", "locked_by", "locked_until",
+    "last_error_code", "last_error_summary", "occurred_at", "published_at",
+    "task_id", "source_id", "operation_id", "changed_fields_json",
+)
+
+
 def domain_row_to_task_event(row, *, run_id, environment="shadow"):
- source=decode_event_row(row)
- if environment!="shadow" or not run_id.startswith("KSHADOW-"): raise EventContractError("shadow identity")
- if source["event_type"] not in _EVENT_MAP: raise EventContractError("event_type")
- if not source.get("task_id") or source.get("source_id") is None or not source.get("operation_id"): raise EventContractError("task source mapping required")
- return validate_task_event({"schema_version":1,"event_id":source["event_id"],"event_type":_EVENT_MAP[source["event_type"]],"task_id":source["task_id"],"source_id":source["source_id"],"revision":source["aggregate_revision"],"operation_id":source["operation_id"],"changed_fields":source.get("changed_fields",[]),"timestamp":_utc_z(source["occurred_at"]),"environment":environment,"run_id":run_id})
+    """Convert explicit local metadata; never infer identity from legacy keys."""
+    if isinstance(row, dict):
+        source = row
+    elif isinstance(row, (tuple, list)) and len(row) == len(_COLUMNS):
+        source = dict(zip(_COLUMNS, row))
+    else:
+        raise EventContractError("task source mapping required")
+    if environment != "shadow":
+        raise EventContractError("shadow identity required")
+    occurred = source.get("occurred_at")
+    if not isinstance(occurred, datetime):
+        raise EventContractError("Outbox UTC datetime required")
+    # MySQL DATETIME is read in a connection configured to UTC.
+    if occurred.tzinfo is None:
+        occurred = occurred.replace(tzinfo=timezone.utc)
+    fields = source.get("changed_fields_json")
+    try:
+        if isinstance(fields, (str, bytes, bytearray)):
+            fields = json.loads(fields)
+    except (ValueError, TypeError):
+        raise EventContractError("invalid changed fields") from None
+    event = {
+        "schema_version": 1,
+        "event_id": source.get("event_id"),
+        "event_type": source.get("event_type"),
+        "task_id": source.get("task_id"),
+        "source_id": source.get("source_id"),
+        "revision": source.get("aggregate_revision"),
+        "operation_id": source.get("operation_id"),
+        "changed_fields": fields,
+        "timestamp": occurred.astimezone(timezone.utc).isoformat(
+            timespec="microseconds").replace("+00:00", "Z"),
+        "environment": environment,
+        "run_id": run_id,
+    }
+    # Validate raw types before any coercion: True must never become revision 1.
+    return validate_task_event(event)
