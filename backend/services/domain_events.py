@@ -146,8 +146,18 @@ async def enqueue_event(
     changed_fields: Iterable[str] | None = None,
     event_id: str | None = None,
     occurred_at: datetime | None = None,
+    kafka_event: dict[str, Any] | None = None,
+    kafka_run_id: str | None = None,
 ) -> str:
-    """Insert an outbox event in the caller's active transaction."""
+    """Insert an outbox event in the caller's active transaction.
+
+    When ``kafka_event`` and ``kafka_run_id`` are supplied, append the Kafka
+    delivery intent with the same cursor and transaction.  The bridge is
+    explicit and shadow-only; callers own commit/rollback, so a failed ledger
+    write aborts the business transaction instead of losing an event.
+    """
+    if (kafka_event is None) != (kafka_run_id is None):
+        raise ValueError("kafka event and run id must be supplied together")
     event_id = event_id or str(uuid.uuid4())
     _safe_text(event_id, 36)
     domain = _safe_text(domain, 40)
@@ -180,6 +190,11 @@ async def enqueue_event(
          int(aggregate_revision), audiences_json, occurred_at, task_id,
          source_id, operation_id, changed_fields_json),
     )
+    if kafka_event is not None:
+        if kafka_event.get("event_id") != event_id:
+            raise ValueError("Kafka event id must match outbox event id")
+        from .kafka_delivery_store import enqueue_delivery
+        await enqueue_delivery(cur, kafka_event, run_id=kafka_run_id)
     return event_id
 
 

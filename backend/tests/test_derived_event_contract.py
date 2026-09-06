@@ -134,6 +134,46 @@ def test_enqueue_event_normalises_changed_fields_and_never_accepts_a_string():
         ))
 
 
+def test_enqueue_event_can_bind_kafka_delivery_to_same_transaction(monkeypatch):
+    cursor = _Cursor()
+    delivery = AsyncMock()
+    monkeypatch.setattr("services.kafka_delivery_store.enqueue_delivery", delivery)
+    event_id = "event-transaction-bridge"
+    kafka_event = {"event_id": event_id, "run_id": "KSHADOW-test"}
+
+    result = asyncio.run(enqueue_event(
+        cursor,
+        domain="online",
+        event_type="online.task.changed",
+        aggregate_type="online_task",
+        aggregate_id="t_fullchain:27",
+        aggregate_revision=3,
+        audiences=["authenticated"],
+        event_id=event_id,
+        kafka_event=kafka_event,
+        kafka_run_id="KSHADOW-test",
+    ))
+
+    assert result == event_id
+    delivery.assert_awaited_once_with(cursor, kafka_event, run_id="KSHADOW-test")
+
+
+def test_enqueue_event_rejects_partial_or_mismatched_kafka_binding():
+    cursor = _Cursor()
+    kwargs = dict(
+        domain="online", event_type="online.task.changed",
+        aggregate_type="online_task", aggregate_id="t_fullchain:27",
+        aggregate_revision=3, audiences=["authenticated"],
+    )
+    with pytest.raises(ValueError, match="supplied together"):
+        asyncio.run(enqueue_event(cursor, **kwargs, kafka_run_id="KSHADOW-test"))
+    with pytest.raises(ValueError, match="must match"):
+        asyncio.run(enqueue_event(
+            cursor, **kwargs, event_id="event-a",
+            kafka_event={"event_id": "event-b"}, kafka_run_id="KSHADOW-test",
+        ))
+
+
 def test_derived_readback_rejects_unknown_fields_before_query():
     conn = _Connection()
     with pytest.raises(HTTPException) as error:
