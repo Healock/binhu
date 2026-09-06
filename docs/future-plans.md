@@ -124,6 +124,7 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 - 2026-09-07：新增 `deploy/kafka-shadow/verify_dlq_visibility.py`，等待消费者组完成 assignment 后按 event_id 校验 DLQ 消息。clean 影子环境执行通过，event `9fb9cb60-bbad-43c7-86c3-cd028b2797a2` 在 partition 0/offset 0 可见；该脚本只读主题，不提交 offset。
 - 2026-09-07：Flink `event_id` 去重修复已完成本地提交，但 clean 服务器仅有旧构建目录，尝试用锁定 Flink 镜像离线编译时主机缺少 `jar` 打包命令，未替换运行中的作业；未把未部署代码记为运行时通过。
 - 2026-09-07：clean 项目已恢复固定 digest 的 Flink JobManager/TaskManager 与 checkpoint 卷，服务均为 `running`；当前 Flink REST 作业列表为空，尚未提交 clean 运行号对应的 JAR，故不计入 Flink 业务验收。
+- 2026-09-07：clean Flink 新 JAR 已用服务器 `build.py` 成功构建（source hash `ccb7f244ea5bace3`、job SHA-256 `468144db71d5858ccbd6a461fb6c2eb4f72a7be4c140991b82d2b2efa1d49f`），并完成 TaskManager 注册。提交前发现 compose 仍缺少作业环境变量且旧作业常量绑定历史运行号，未提交作业或宣称通过；后续需先生成 clean 专用 topic/运行号适配包。
 - 2026-09-07：定位首轮失败原因为常驻 relay 与一次性 fixture 竞争同一运行号的事件。停止常驻 relay 后，clean 项目真实 SIGKILL ACK 窗口验收通过：已确认事件消费 1 次，不确定 ACK 事件消费 2 次，租约 90 秒后重投，最终 ledger 均为 `published`（attempts 1/2）。范围为 `synthetic_ledger_real_sigkill_ack_window`，仍不等价于 Backend 业务副作用幂等。
 
 
