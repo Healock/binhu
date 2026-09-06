@@ -1,5 +1,7 @@
 """应用配置 - 通过环境变量读取（docker-compose 或 .env 注入）"""
 
+import re
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
@@ -194,7 +196,10 @@ class Settings(BaseSettings):
         if self.KAFKA_TASK_EVENTS_ENABLED:
             if self.APP_ENVIRONMENT != "shadow":
                 raise ValueError("Kafka task events require shadow environment")
-            if not self.LOAD_TEST_RUN_ID.strip().startswith("KSHADOW-"):
+            if re.fullmatch(
+                r"KSHADOW-[A-Za-z0-9][A-Za-z0-9_-]{0,63}",
+                self.LOAD_TEST_RUN_ID.strip(),
+            ) is None:
                 raise ValueError("Kafka task events require a KSHADOW run id")
         return self
 

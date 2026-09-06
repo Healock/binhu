@@ -66,7 +66,7 @@ def test_build_task_event_uses_stable_local_task_source_and_revision_metadata():
     }
 
 
-def test_build_task_event_preserves_strict_integer_contract_and_archives_local_deletes():
+def test_build_task_event_preserves_strict_integer_contract_and_delete_semantics():
     settings = _event_settings()
     with pytest.raises(ValueError):
         task_outbox_bridge.build_task_event(
@@ -89,7 +89,21 @@ def test_build_task_event_preserves_strict_integer_contract_and_archives_local_d
         operation_id="00000000-0000-0000-0000-000000000002",
         changed_fields=["任务状态"],
     )
-    assert event["event_type"] == "task.archived"
+    assert event["event_type"] == "task.deleted"
+
+
+def test_archive_override_requires_explicit_delete_context():
+    kwargs = dict(
+        event_id="00000000-0000-0000-0000-000000000001",
+        event_type="online.task.deleted", task_id="t_fullchain:27",
+        source_id=44, revision=9,
+        operation_id="00000000-0000-0000-0000-000000000002",
+        changed_fields=["task_state"], kafka_event_type="task.archived",
+    )
+    assert task_outbox_bridge.build_task_event(_event_settings(), **kwargs)["event_type"] == "task.archived"
+    kwargs["event_type"] = "online.task.changed"
+    with pytest.raises(ValueError):
+        task_outbox_bridge.build_task_event(_event_settings(), **kwargs)
 
 
 def test_enqueue_task_event_binds_delivery_to_the_callers_cursor(monkeypatch):

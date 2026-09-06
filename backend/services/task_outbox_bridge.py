@@ -7,6 +7,7 @@ the Kafka delivery intent and the business event use the caller's transaction.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -16,10 +17,13 @@ from .domain_events import enqueue_event
 from .kafka_event_contract import validate_task_event
 
 
+_RUN_ID_RE = re.compile(r"^KSHADOW-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
 _EVENT_TYPE_MAP = {
     "online.task.created": "task.created",
     "online.task.changed": "task.saved",
-    "online.task.deleted": "task.archived",
+    "online.task.deleted": "task.deleted",
     "online.task.claimed": "task.claimed",
     "online.task.assigned": "task.assigned",
     "online.task.reviewed": "task.reviewed",
@@ -56,7 +60,7 @@ def bridge_config(settings: Settings) -> dict[str, str] | None:
     if settings.APP_ENVIRONMENT != "shadow":
         raise ValueError("Kafka task events require shadow environment")
     run_id = str(settings.LOAD_TEST_RUN_ID or "").strip()
-    if not run_id.startswith("KSHADOW-") or len(run_id) <= len("KSHADOW-"):
+    if _RUN_ID_RE.fullmatch(run_id) is None:
         raise ValueError("Kafka task events require a KSHADOW run id")
     return {"environment": "shadow", "run_id": run_id}
 
@@ -64,6 +68,8 @@ def bridge_config(settings: Settings) -> dict[str, str] | None:
 def _public_changed_fields(changed_fields: Iterable[str] | None) -> list[str]:
     if changed_fields is None:
         return []
+    if isinstance(changed_fields, (str, bytes, bytearray, dict)):
+        raise ValueError("changed fields must be a sequence")
     result: set[str] = set()
     for field in changed_fields:
         mapped = _FIELD_MAP.get(str(field))
@@ -83,6 +89,7 @@ def build_task_event(
     operation_id: str,
     changed_fields: Iterable[str] | None,
     occurred_at: datetime | None = None,
+    kafka_event_type: str | None = None,
 ) -> dict[str, Any]:
     config = bridge_config(settings)
     if config is None:
@@ -90,6 +97,10 @@ def build_task_event(
     mapped_type = _EVENT_TYPE_MAP.get(event_type)
     if mapped_type is None:
         raise ValueError("unsupported task event type")
+    if kafka_event_type is not None:
+        if (event_type, kafka_event_type) != ("online.task.deleted", "task.archived"):
+            raise ValueError("unsupported explicit task event mapping")
+        mapped_type = kafka_event_type
     timestamp = occurred_at or datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
@@ -102,8 +113,8 @@ def build_task_event(
         "event_id": event_id,
         "event_type": mapped_type,
         "task_id": task_id,
-        "source_id": int(source_id),
-        "revision": int(revision),
+        "source_id": source_id,
+        "revision": revision,
         "operation_id": operation_id,
         "changed_fields": _public_changed_fields(changed_fields),
         "timestamp": timestamp.astimezone(timezone.utc).isoformat(
@@ -131,7 +142,7 @@ async def enqueue_task_event(
     changed_fields: Iterable[str] | None = None,
     occurred_at: datetime | None = None,
     event_id: str | None = None,
-    **kwargs: Any,
+    kafka_event_type: str | None = None,
 ) -> str:
     """Insert the domain outbox and, when enabled, its Kafka delivery intent."""
     config = bridge_config(settings)
@@ -147,6 +158,7 @@ async def enqueue_task_event(
             operation_id=operation_id,
             changed_fields=changed_fields,
             occurred_at=occurred_at,
+            kafka_event_type=kafka_event_type,
         )
         if config is not None
         else None
@@ -167,5 +179,4 @@ async def enqueue_task_event(
         occurred_at=occurred_at,
         kafka_event=kafka_event,
         kafka_run_id=config["run_id"] if config is not None else None,
-        **kwargs,
     )

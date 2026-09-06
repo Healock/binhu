@@ -129,6 +129,17 @@ def new_row_required_fields(parser) -> list[str]:
     return [column for column in parser.COLUMNS if column in required]
 
 
+def _local_task_event_identity(parser, *, physical_row: int, source_id: int) -> tuple[str, int]:
+    """Build the public task identity from the local business row.
+
+    ``_online_source_rows.id`` is the source-record locator carried separately
+    as ``source_id``. It is intentionally not substituted for the local
+    business table id in ``task_id``; the two values can differ after source
+    migration or reconciliation.
+    """
+    return f"{parser.table_name}:{int(physical_row)}", int(source_id)
+
+
 def _same_value(left: str, right: str, cell_type: str) -> bool:
     if cell_type == "number":
         try:
@@ -1099,7 +1110,7 @@ async def _update_local_source_fields_once(
             aggregate_id=f"{parser_type}:{new_key}",
             aggregate_revision=locked_revision + 1,
             audiences=audiences,
-            task_id=f"{parser.table_name}:{source_id}",
+            task_id=f"{parser.table_name}:{source['physical_row']}",
             source_id=source_id,
             revision=locked_revision + 1,
             operation_id=operation_id,
@@ -1753,6 +1764,9 @@ async def queue_source_fields(
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
             await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
+            task_id, event_source_id = _local_task_event_identity(
+                parser, physical_row=source["physical_row"], source_id=source_id
+            )
             await enqueue_task_event(
                 cur,
                 settings=settings,
@@ -1762,10 +1776,10 @@ async def queue_source_fields(
                 aggregate_id=f"{parser_type}:{new_key}",
                 aggregate_revision=revision,
                 audiences=["authenticated"],
-                task_id=f"{parser.table_name}:{source_id}",
-                source_id=source_id,
+                task_id=task_id,
+                source_id=event_source_id,
                 revision=revision,
-                operation_id=operation_id,
+                operation_id=str(uuid.uuid4()),
                 changed_fields=ordered_columns,
             )
             await reconcile_online_task_graph(
@@ -2482,12 +2496,11 @@ async def create_source_row(
                 ),
             )
             await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
-            # Fetch the stable source-row id before appending the event.  The
-            # Kafka contract uses this id together with the parser table as
-            # the task identity; the business-table auto-increment id is only
-            # a compatibility row locator.
+            # Fetch both locators before appending the event.  Kafka task_id
+            # uses the local business-table id; source_id remains the stable
+            # _online_source_rows locator carried as separate metadata.
             await cur.execute(
-                "SELECT id FROM _online_source_rows "
+                "SELECT id, physical_row FROM _online_source_rows "
                 "WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s "
                 "AND archived_at IS NULL LIMIT 1",
                 (parser_type, new_key),
@@ -2495,6 +2508,9 @@ async def create_source_row(
             source_row = await cur.fetchone()
             if not source_row:
                 raise HTTPException(500, "本地来源记录创建失败")
+            task_id, event_source_id = _local_task_event_identity(
+                parser, physical_row=source_row[1], source_id=source_row[0]
+            )
             create_operation_id = str(uuid.uuid4())
             await enqueue_task_event(
                 cur,
@@ -2505,15 +2521,14 @@ async def create_source_row(
                 aggregate_id=f"{parser_type}:{new_key}",
                 aggregate_revision=1,
                 audiences=["authenticated"],
-                task_id=f"{parser.table_name}:{int(source_row[0])}",
-                source_id=int(source_row[0]),
+                task_id=task_id,
+                source_id=event_source_id,
                 revision=1,
                 operation_id=create_operation_id,
                 changed_fields=list(parser.COLUMNS),
             )
-            # The business-table auto-increment id is only the local physical
-            # row used by the compatibility layer.  API callers must receive
-            # the stable source-row id used by edit/detail endpoints.
+            # API callers receive the stable source-row id used by edit/detail
+            # endpoints; the business-table id remains the physical local row.
             await cur.execute(
                 "SELECT id, revision FROM _online_source_rows "
                 "WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s "
@@ -2675,8 +2690,10 @@ async def delete_source_row(
                     raise HTTPException(409, "该任务已被更新，请刷新后重试")
                 archive_columns = ["_row_key", *parser.COLUMNS]
                 quoted = ", ".join(f"`{column}`" for column in archive_columns)
+                archive_database = quote_identifier(settings.MYSQL_ARCHIVE_DB)
+                archive_table = quote_identifier(f"{parser.table_name}_archive")
                 await cur.execute(
-                    f"INSERT INTO OnlineDataArchive.`{parser.table_name}_archive` ({quoted}) "
+                    f"INSERT INTO {archive_database}.{archive_table} ({quoted}) "
                     f"SELECT {quoted} FROM `{parser.table_name}` WHERE id=%s",
                     (source["physical_row"],),
                 )
@@ -2703,11 +2720,12 @@ async def delete_source_row(
                     aggregate_id=f"{parser_type}:{source['row_key']}",
                     aggregate_revision=source["revision"] + 1,
                     audiences=["authenticated"],
-                    task_id=f"{parser.table_name}:{source_id}",
+                    task_id=f"{parser.table_name}:{source['physical_row']}",
                     source_id=source_id,
                     revision=source["revision"] + 1,
                     operation_id=str(uuid.uuid4()),
                     changed_fields=["task_state"],
+                    kafka_event_type="task.archived",
                 )
                 await conn.commit()
         except Exception:
