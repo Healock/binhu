@@ -15,9 +15,12 @@
 3. 统一消费者回读接口为 `/internal/v1/derived-input` 版本化 HTTP JSON；消费者禁止自建 SQL。接口使用独立服务凭据、字段白名单、revision fence 和回读审计。
 4. 在独立 Compose 项目验证 Kafka KRaft 三节点、Schema Registry、relay、重试/DLQ、故障恢复和回放。三节点只代表协议与故障行为；事件量超过约 10 万/天时另立容量评估。
 5. Flink 与 Python worker 双轨运行，Redis 结果必须带 revision；连续 7 天且累计至少 100,000 条事件、零未归因差异后才允许结束双轨观察。任何差异立即阻断并重新计时。
-6. 每个阶段完成后关联同口径 75 人复测，记录接口延迟、锁/死锁、Kafka lag、Flink checkpoint、Redis 命中、队列排空和零串写；失败时分别分析事务、查询、消费、派生与缓存。
+6. 多级缓存：在 Backend 内增加本地缓存层（如 Caffeine），存放字典数据（任务类型、状态枚举、小区列表、核查人选项），减少 Redis 网络 IO；Redis 保留为分布式缓存层，存放用户会话、任务详情投影、列表缓存。本地缓存采用启动时加载 + 定时刷新策略，更新频率极低的元数据全部命中本地缓存。
+7. 多实例 + API 网关：Backend 扩展为多个容器实例，由 API 网关（Kong/APISIX）统一接入。网关负责认证前置、限流熔断、TLS 终止、敏感数据脱敏、负载均衡和灰度发布。Backend 实例无状态化，共享 Redis 会话和缓存。
+8. 链路追踪 + 持续剖析：接入 SkyWalking（链路追踪）和 Pyroscope（持续剖析）。链路追踪覆盖从网关到 Backend 到 MySQL/Redis 的完整请求路径，支持按 Trace ID 定位慢请求；持续剖析采集 CPU 和内存火焰图，定位热点函数。采样策略按比例或按错误触发，不在生产环境全量开启。
+9. 每个阶段完成后关联同口径 75 人复测，记录接口延迟、锁/死锁、Kafka lag、Flink checkpoint、Redis 命中、队列排空和零串写；失败时分别分析事务、查询、消费、派生与缓存。
 
-当前明确不做：不把 Kafka/Flink/Redis 设为最终数据源；不在生产启用影子入口；不以三节点配置推导生产容量；不恢复腾讯文档路径；不删除 Python worker 回退路径；不宣称跨 Kafka、Flink、Redis、MySQL 的天然 Exactly-Once。
+当前明确不做：不把 Kafka/Flink/Redis 设为最终数据源；不把多级缓存作为唯一数据来源，MySQL 仍是权威数据源；不在无网关的情况下直接暴露多实例；不在生产环境全量开启链路追踪采样；不在生产启用影子入口；不以三节点配置推导生产容量；不恢复腾讯文档路径；不删除 Python worker 回退路径；不宣称跨 Kafka、Flink、Redis、MySQL 的天然 Exactly-Once。
 
 每阶段必须留下状态、阻塞项、下一步、配置/版本、测试命令、故障演练、差异样本、回滚结果和证据目录。恢复工作时先读取本节，再核对实际代码和服务器状态。
 
@@ -34,6 +37,9 @@
 | 回读接口 | 已有骨架和模拟测试，真实 task_id 映射与版本快照待复审 | 鉴权先于取连接、影子范围、真实字段、同一 revision 输入 |
   | Flink / Redis | Flink Kafka checkpoint 静态骨架尚未纳入本分支；当前仍只有 CDC SQL 烟测。Redis 版本缓存尚未实现 | 先锁定 Flink connector/JAR 并部署协议烟测，再做真正任务派生、条件写入、checkpoint 恢复、缓存重建 |
 | 双轨 | 尚未开始；不得累计假想事件或观察时长 | 独立输出、连续 7 天且至少 100000 个唯一事件，无差异 |
+| 多级缓存 | 未开始 | 本地缓存选型、字典数据清单、刷新策略设计；Redis 缓存分层方案 |
+| 多实例 + API 网关 | 未开始 | 网关选型、无状态化改造、灰度发布流程设计 |
+| 链路追踪 + 持续剖析 | 未开始 | SkyWalking/Pyroscope 影子部署、采样策略、仪表盘设计 |
 | 75 人复测 | 本架构尚未执行 | 集成完成后全新卷、75 人/5 分钟，保存原停止线和排空证据 |
 
 可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。当前十项均待真实集群验收，不能用单元测试或 Kafka CLI 替代 Backend/Flink 业务闭环。
