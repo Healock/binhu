@@ -990,6 +990,7 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
             )
 
         kwargs = queue_mock.await_args.kwargs
+        self.assertEqual(kwargs["task_event_type"], "online.task.claimed")
         self.assertEqual(
             kwargs["changes"],
             {"核查人": "组员甲", "核查结果": "已登记"},

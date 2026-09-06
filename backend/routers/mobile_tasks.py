@@ -3804,6 +3804,7 @@ async def decide_mobile_task_unverifiable_review(
         current_values_validator=validate_source,
         redact_audit_values=True,
         audit_action="unverifiable_review_decision",
+        task_event_type="online.task.reviewed",
         transaction_prepare=transaction_prepare,
         transaction_callback=transaction_callback,
         record_unverifiable_save=False,
@@ -3867,6 +3868,7 @@ async def update_mobile_task_analysis(
         allowed_columns=analysis_fields,
         current_values_validator=validate_analysis_source,
         redact_audit_values=True,
+        task_event_type="online.task.reviewed",
     )
 
 
@@ -4183,6 +4185,7 @@ async def claim_mobile_task(
         conn=conn,
         explicit_text_edit=True,
         current_values_validator=validate_unassigned,
+        task_event_type="online.task.claimed",
         registration_mode=registration_mode,
         transaction_prepare=transaction_prepare,
         transaction_callback=transaction_callback,

@@ -776,8 +776,11 @@ async def _update_local_source_fields_once(
     transaction_callback=None,
     record_unverifiable_save: bool = True,
     operation_id: str,
+    task_event_type: str = "online.task.changed",
 ) -> dict:
     """本地数据源的事务更新路径，不访问腾讯文档。"""
+    if task_event_type not in {"online.task.changed", "online.task.claimed", "online.task.reviewed"}:
+        raise ValueError("unsupported task save event type")
     parser = get_parser(parser_type)
     normalized_changes = {
         str(column): str(value or "").strip()
@@ -1105,7 +1108,7 @@ async def _update_local_source_fields_once(
             cur,
             settings=settings,
             domain="online",
-            event_type="online.task.changed",
+            event_type=task_event_type,
             aggregate_type="online_task",
             aggregate_id=f"{parser_type}:{new_key}",
             aggregate_revision=locked_revision + 1,
@@ -1508,6 +1511,7 @@ async def queue_source_fields(
     transaction_prepare=None,
     transaction_callback=None,
     record_unverifiable_save: bool = True,
+    task_event_type: str = "online.task.changed",
 ) -> dict:
     """先保存平台有效值，再由后台按字段安全写回腾讯。"""
     if parser_type not in QUERY_TYPES:
@@ -1531,6 +1535,7 @@ async def queue_source_fields(
             transaction_prepare=transaction_prepare,
             transaction_callback=transaction_callback,
             record_unverifiable_save=record_unverifiable_save,
+            task_event_type=task_event_type,
         )
     parser = get_parser(parser_type)
     normalized_changes = {

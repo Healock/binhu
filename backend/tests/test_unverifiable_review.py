@@ -352,6 +352,7 @@ class UnverifiableReviewTests(unittest.IsolatedAsyncioTestCase):
                 changes={"研判": "继续核查"},
             )
             captured["record_unverifiable_save"] = kwargs["record_unverifiable_save"]
+            captured["task_event_type"] = kwargs["task_event_type"]
             return {"message": "queued"}
 
         user = {
@@ -389,6 +390,7 @@ class UnverifiableReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["prepared_changes"]["二次反馈"], "")
         self.assertEqual(captured["prepared_changes"]["截止日期"], "2026-08-29")
         self.assertFalse(captured["record_unverifiable_save"])
+        self.assertEqual(captured["task_event_type"], "online.task.reviewed")
 
     async def test_read_only_audit_only_returns_unverifiable_rows(self):
         cursor = _AuditCursor()
