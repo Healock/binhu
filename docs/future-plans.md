@@ -29,10 +29,10 @@
 | --- | --- | --- |
 | 镜像准备 | Kafka、Apicurio、Flink 1.20.1 完整镜像均已通过代理取得，固定 digest；Relay 离线镜像已构建 | 所有基础镜像、应用构建和依赖继续保留锁与哈希 |
 | Kafka 三节点 | 三业务主题均为 3 分区/2 副本；单 Leader 停止 30 秒后选举、恢复 ISR、旧消息回读及新消息投递均已通过协议烟测 | 协议通过不等于 Relay 业务闭环；服务认证/ACL 尚未实现 |
-| Apicurio | 2.6.5.Final 已运行，`/health/ready` 全部 UP；`mem` 仅用于协议实验 | schema 注册/兼容性校验；恢复前导入同一版本 schema |
-| Outbox → Kafka | 新增独立投递状态机与 `_kafka_event_delivery`；真实隔离 MySQL 已验证回滚无记录、提交 pending、重复 ID 不可改、租约 fencing | 接入真实业务 Outbox 事务、真实 Kafka ACK、进程崩溃、重试与 DLQ；旧 Redis relay 保留 |
+| Apicurio | 2.6.5.Final 已运行，`/health/ready` 全部 UP；Draft 7 Schema 已注册、回读一致，兼容变更返回 200，不兼容字段类型变更返回 409；`mem` 仅用于协议实验 | 恢复前导入同一版本 schema；持久化 Registry 仍未完成 |
+| Outbox → Kafka | 独立投递状态机、真实隔离 MySQL ledger 与 12 条 Kafka 往返已通过；回滚、重复 ID、租约 fencing、分区键均有证据 | 接入真实业务 Outbox 事务、进程崩溃、重试与 DLQ；旧 Redis relay 保留 |
 | 回读接口 | 已有骨架和模拟测试，真实 task_id 映射与版本快照待复审 | 鉴权先于取连接、影子范围、真实字段、同一 revision 输入 |
-| Flink / Redis | 现有 POC 仅为 CDC SQL 烟测，无 Kafka 业务派生作业 | 真正任务派生、条件写入、checkpoint 恢复、缓存重建 |
+  | Flink / Redis | Flink Kafka checkpoint 静态骨架尚未纳入本分支；当前仍只有 CDC SQL 烟测。Redis 版本缓存尚未实现 | 先锁定 Flink connector/JAR 并部署协议烟测，再做真正任务派生、条件写入、checkpoint 恢复、缓存重建 |
 | 双轨 | 尚未开始；不得累计假想事件或观察时长 | 独立输出、连续 7 天且至少 100000 个唯一事件，无差异 |
 | 75 人复测 | 本架构尚未执行 | 集成完成后全新卷、75 人/5 分钟，保存原停止线和排空证据 |
 
