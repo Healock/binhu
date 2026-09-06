@@ -56,7 +56,7 @@ def bridge_config(settings: Settings) -> dict[str, str] | None:
     if settings.APP_ENVIRONMENT != "shadow":
         raise ValueError("Kafka task events require shadow environment")
     run_id = str(settings.LOAD_TEST_RUN_ID or "").strip()
-    if not run_id.startswith("KSHADOW-"):
+    if not run_id.startswith("KSHADOW-") or len(run_id) <= len("KSHADOW-"):
         raise ValueError("Kafka task events require a KSHADOW run id")
     return {"environment": "shadow", "run_id": run_id}
 
@@ -93,6 +93,10 @@ def build_task_event(
     timestamp = occurred_at or datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
+    if isinstance(source_id, bool) or not isinstance(source_id, int):
+        raise ValueError("source_id must be an integer")
+    if isinstance(revision, bool) or not isinstance(revision, int):
+        raise ValueError("revision must be an integer")
     event = {
         "schema_version": 1,
         "event_id": event_id,
@@ -126,11 +130,12 @@ async def enqueue_task_event(
     operation_id: str,
     changed_fields: Iterable[str] | None = None,
     occurred_at: datetime | None = None,
+    event_id: str | None = None,
     **kwargs: Any,
 ) -> str:
     """Insert the domain outbox and, when enabled, its Kafka delivery intent."""
     config = bridge_config(settings)
-    event_id = str(uuid.uuid4())
+    event_id = event_id or str(uuid.uuid4())
     kafka_event = (
         build_task_event(
             settings,
