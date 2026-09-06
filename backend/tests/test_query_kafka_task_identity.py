@@ -26,6 +26,8 @@ class FakeCursor:
 
     async def execute(self, sql, params=None):
         self._sql = str(sql)
+        if "source.spreadsheet_id" in self._sql:
+            assert "FROM _online_source_rows AS source" in self._sql, "undeclared source SQL alias"
         self.calls.append((self._sql, params))
 
     async def fetchone(self):
@@ -70,6 +72,7 @@ async def test_create_task_event_uses_business_id_and_source_id_separately(monke
     conn = FakeConn(cursor)
     event = AsyncMock()
     monkeypatch.setattr(query, "local_data_source_enabled", lambda: True)
+    monkeypatch.setattr(query.settings, "LOCAL_DATA_SOURCE_ENABLED", True)
     monkeypatch.setattr(query, "validate_new_row_scope", AsyncMock(return_value=None))
     monkeypatch.setattr(query, "rebuild_projection_rows", AsyncMock())
     monkeypatch.setattr(query, "enqueue_task_event", event)

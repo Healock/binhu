@@ -962,7 +962,7 @@ async def _update_local_source_fields_once(
         new_key = parser.make_row_key(after)
         if new_key != source["row_key"]:
             await cur.execute(
-                "SELECT id FROM _online_source_rows "
+                "SELECT id FROM _online_source_rows AS source "
                 "WHERE parser_type=%s AND row_key=%s AND id<>%s "
                 "AND archived_at IS NULL "
                 f"{active_source_sql_filter(parser_type)} LIMIT 1",
@@ -2164,7 +2164,7 @@ async def _projection_query(
                 for row_key, count in await cur.fetchall()
             }
         await cur.execute(
-            "SELECT cell_meta_json FROM _online_source_rows "
+            "SELECT cell_meta_json FROM _online_source_rows AS source "
             "WHERE parser_type=%s AND archived_at IS NULL "
             f"{active_source_sql_filter(parser_type)} ORDER BY id LIMIT 1",
             (parser_type,),
@@ -2453,7 +2453,7 @@ async def create_source_row(
         if local_data_source_enabled():
             new_key = parser.make_row_key(values)
             await cur.execute(
-                "SELECT id FROM _online_source_rows "
+                "SELECT id FROM _online_source_rows AS source "
                 "WHERE parser_type=%s AND row_key=%s AND archived_at IS NULL "
                 f"{active_source_sql_filter(parser_type)} LIMIT 1",
                 (parser_type, new_key),
