@@ -115,6 +115,7 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 - 2026-09-07：影子 Compose 已按 `derived` profile 启动独立 `kafka-relay`，容器项目、运行号和固定 digest 标签核验通过。复用旧 delivery ledger 验证脚本时因历史运行号已有数据而按设计拒绝执行（`requires unused ledger`）；未删除或覆盖历史证据。下一步需为新的影子运行号和独立 ledger 执行真实业务 Outbox 写入，再验收重试/DLQ 与幂等副作用。
 - 2026-09-07：已创建第二套全新影子项目 `binhu-kafka-shadow-20260907`，使用独立 KRaft/derived MySQL/Redis 卷、网络和运行号 `KSHADOW-20260907T030500Z-poc02`。三节点 Kafka、三个业务主题（3 分区/RF2/7 天 retention）及 `kafka-relay` 均已启动；证据位于服务器 `artifacts/shadow-start-20260907.log`。该环境尚未接入 Backend 业务写入，不能计入业务闭环通过。
 - 2026-09-07：第二套环境启动后发现复制的 derived 初始化脚本仍写入旧影子身份，relay 因身份/ledger 查询不一致退出。未覆盖身份表、删除卷或伪造通过；后续必须使用全新数据库名和全新初始化脚本重新部署，才能开展真实 delivery 验收。
+- 2026-09-07：第三套干净环境 `binhu-kafka-shadow-20260907-clean` 已使用新数据库名、全新卷和运行号 `KSHADOW-20260907T031500Z-clean03` 部署。一次性 verifier 在该真实 MySQL 上通过回滚、提交 pending、重复 ID 不变、租约 fencing 五项 ledger 检查；证据输出为 `scope=ledger_only_no_kafka_ack`。常驻 relay 随后仍因镜像内 relay 与当前 ledger schema 的 `ProgrammingError` 连续三次退出，未将该结果误记为 Kafka 投递通过，下一步需重建 relay 镜像并验证 schema 版本一致性。
 
 
 ### 2026-09-07 Relay 崩溃窗口真实验证
