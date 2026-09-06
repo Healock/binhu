@@ -45,6 +45,8 @@ def test_returns_real_redis_outcome_without_simulating_lua(code, status):
     {"source": "arbitrary"}, {"content_hash": "unbounded"},
     {"fields": {"task_state": {}}}, {"fields": {"phone": "synthetic"}},
     {"fields": {"task_state": float("nan")}}, {"extra": "body"},
+    {"task_id": 5}, {"task_id": "t_unknown:9"}, {"task_id": "t_fullchain:0"},
+    {"source_id": 2**63}, {"source": []},
 ])
 def test_invalid_contract_never_calls_redis(change):
     redis = RedisDouble()
@@ -60,3 +62,11 @@ def test_hash_covers_result_and_ignores_generation_time():
     assert redis.calls[0][2][4] == redis.calls[1][2][4]
     asyncio.run(cache.put(dict(result(), fields={"task_state":"different"})))
     assert redis.calls[0][2][4] != redis.calls[2][2][4]
+
+
+def test_tracks_have_separate_keys_but_comparable_semantic_hashes():
+    redis = RedisDouble(); cache = RevisionCache(redis, "KSHADOW-test")
+    asyncio.run(cache.put(result()))
+    asyncio.run(cache.put(dict(result(), source="python-shadow")))
+    assert redis.calls[0][2][0] != redis.calls[1][2][0]
+    assert redis.calls[0][2][4] == redis.calls[1][2][4]

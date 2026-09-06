@@ -75,3 +75,8 @@
 ### 2026-09-06 Redis revision cache 进展
 
 Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设置 TTL，版本快照按 TTL 过期，避免快照过期后旧事件覆盖新版本。真实 Redis 大整数 revision、乱序、重复、同版本冲突和快照重建验证待在影子服务器执行；Flink 作业尚未部署。
+
+
+### 2026-09-07 影子 Redis 真实验证
+
+真实隔离 Redis 验证已通过：revision=9223372036854775806 写入成功；旧 revision 返回 stale；重复事件返回 duplicate；同 revision 不同内容返回 conflict；高水位 revision 保留，版本快照 TTL=60 秒。证据位于影子服务器 `artifacts/redis-revision-612f5fa9/`。该结果只证明缓存组件合同，不代表 Flink 业务派生或双轨一致性已完成。
