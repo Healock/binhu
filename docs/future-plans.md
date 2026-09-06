@@ -122,6 +122,7 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 - 2026-09-07：第二次 fixture 将 `available_at` 推进后，relay 返回 `dead_letter`，但独立消费者未在超时窗口内观察到对应 DLQ 记录；因此 DLQ 端到端验收仍判定失败，保留 event_id 和运行号供后续排查消费者分配/主题可见性。
 - 2026-09-07：直接查询 clean Kafka 高水位确认 DLQ 分区 0 已有 1 条消息；按固定 partition/offset 消费成功读到 event_id `9fb9cb60-bbad-43c7-86c3-cd028b2797a2`。此前失败是消费者组分配/观察窗口问题，不是 DLQ 写入失败；仍需补一份稳定的自动化消费者验收脚本。
 - 2026-09-07：新增 `deploy/kafka-shadow/verify_dlq_visibility.py`，等待消费者组完成 assignment 后按 event_id 校验 DLQ 消息。clean 影子环境执行通过，event `9fb9cb60-bbad-43c7-86c3-cd028b2797a2` 在 partition 0/offset 0 可见；该脚本只读主题，不提交 offset。
+- 2026-09-07：Flink `event_id` 去重修复已完成本地提交，但 clean 服务器仅有旧构建目录，尝试用锁定 Flink 镜像离线编译时主机缺少 `jar` 打包命令，未替换运行中的作业；未把未部署代码记为运行时通过。
 - 2026-09-07：定位首轮失败原因为常驻 relay 与一次性 fixture 竞争同一运行号的事件。停止常驻 relay 后，clean 项目真实 SIGKILL ACK 窗口验收通过：已确认事件消费 1 次，不确定 ACK 事件消费 2 次，租约 90 秒后重投，最终 ledger 均为 `published`（attempts 1/2）。范围为 `synthetic_ledger_real_sigkill_ack_window`，仍不等价于 Backend 业务副作用幂等。
 
 
