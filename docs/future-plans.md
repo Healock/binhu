@@ -95,3 +95,8 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 新增 `backend/services/kafka_outbox_bridge.py`，将现有 `_domain_event_outbox` 行转换为严格 Kafka v1 元数据；缺少本地 `task_id`、`source_id`、`operation_id`、未登记事件类型或敏感字段摘要的行会被拒绝，不会猜测映射。该模块目前是转换和合同测试，尚未接入生产业务事务或影子 Relay，因此不能称为“全部 Outbox 已接入”。照片同步、场所云 Outbox 和 `_online_projection_jobs` 仍按计划分阶段登记。
 
 - 2026-09-07：再次运行真实隔离 Kafka/derived MySQL ledger 往返：12 条虚构、可清理事件事务提交后被 relay 投递，Kafka 消费到 12 条且 key 与 task_id|source_id 一致，ledger 排空。该测试仍是 ledger-to-Kafka 组件证据，不等价于 Backend 真实事务 Outbox、崩溃窗口、DLQ 或双轨业务验收。
+
+
+### 2026-09-07 Relay 崩溃窗口真实验证
+
+在独立影子 MySQL/Kafka 上完成真实 SIGKILL 验收：一条已确认事件只投递 1 次且不再领取；另一条在 Kafka ACK 后、ledger 提交前被杀死，90 秒租约过期后重投，消费者收到 2 次，最终 ledger `published` 且 `event_attempts=2`。这验证了至少一次语义与 lease fencing；消费者幂等副作用仍需通过真实派生投影表完成，不能把 Kafka broker 的重复消息当作自动幂等。服务器证据为 `artifacts/relay-crash-verification-01.log`。
