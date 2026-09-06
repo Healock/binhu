@@ -10,6 +10,8 @@
 
 最新恢复入口（2026-09-07）：[business02 预检停止记录](eventbus-business02-diagnostic-20260907.md)。本轮任务 ledger 已排空至 3598 published / 2 dead_letter，但完整预检在三轮修补后仍失败，已按用户停止线暂停服务器变更与压测，等待人工介入。business02 不作为最终干净压测卷，75 人复测尚未执行。
 
+暂停期间已完成本地集成：`a61ac04d` 将领取/研判原有单事务事件准确分类为 claimed/reviewed；`aa1c8fbf` 新增独立合成任务 raw 回读，仍缺四类参考输入与输出提交 fence。完整后端 `python -m pytest tests -q`（工作目录 backend）结果 1289 passed、126 subtests passed；本次改动尚未部署，真实 MySQL 未验证。独立 run_business Runner 为未提交草稿，存在宿主机/内部网络可达性及 Seeder 运行索引缺口，不能直接据模拟测试启动复测。
+
 阶段顺序：
 
 1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。领域 Outbox 已接入部分本地业务事务并完成影子创建事件往返，尚未全量验收；照片同步与场所云已有独立合同及合成来源验证，真实业务接线仍待完成，禁止伪装成任务领域事件。
