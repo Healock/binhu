@@ -93,3 +93,5 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 ### 2026-09-07 Outbox 接入准备
 
 新增 `backend/services/kafka_outbox_bridge.py`，将现有 `_domain_event_outbox` 行转换为严格 Kafka v1 元数据；缺少本地 `task_id`、`source_id`、`operation_id`、未登记事件类型或敏感字段摘要的行会被拒绝，不会猜测映射。该模块目前是转换和合同测试，尚未接入生产业务事务或影子 Relay，因此不能称为“全部 Outbox 已接入”。照片同步、场所云 Outbox 和 `_online_projection_jobs` 仍按计划分阶段登记。
+
+- 2026-09-07：再次运行真实隔离 Kafka/derived MySQL ledger 往返：12 条虚构、可清理事件事务提交后被 relay 投递，Kafka 消费到 12 条且 key 与 task_id|source_id 一致，ledger 排空。该测试仍是 ledger-to-Kafka 组件证据，不等价于 Backend 真实事务 Outbox、崩溃窗口、DLQ 或双轨业务验收。
