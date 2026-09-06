@@ -60,3 +60,33 @@ Flink business projections still require implementation and acceptance.
 The protocol skeleton uses PLAINTEXT on the project-only internal network.
 No host ports are published. Service authentication/ACLs must be implemented
 and exercised before this is considered an authenticated business event bus.
+# Auxiliary Outbox verification
+
+`verify_aux_delivery.py` is a component verifier for synthetic source rows in
+the isolated `derived-mysql` database, not a Backend business acceptance test.
+Run it only after the same project/run/database/volume/internal-network checks
+as `verify_kafka_delivery.py`, with the competing relay stopped and the ledger
+drained. No Backend or external photo/venue worker may share this component
+database. Do not run it against production or a workload database.
+
+Before starting the verifier, create each of `binhu.photo.events.v1`,
+`binhu.photo.events.retry.v1`, `binhu.photo.events.dlq.v1`,
+`binhu.venue.events.v1`, `binhu.venue.events.retry.v1` and
+`binhu.venue.events.dlq.v1` using the scoped broker's `kafka-topics.sh`:
+
+```sh
+kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists \
+  --topic "$TOPIC" --partitions 3 --replication-factor 2 \
+  --config retention.ms=604800000 --config min.insync.replicas=2
+```
+
+Describe each topic and archive its partition/replica/configuration output.
+Execute the verifier with the locked relay image and its existing isolated
+identity environment. The last JSON output must report
+`scope=synthetic_aux_source_transaction_and_kafka`, both expected event IDs,
+their topic/partition/offset, source-and-ledger rollback, duplicate
+registration, and unchanged source Outbox status. Kafka ACK changes only the
+delivery ledger; it never means an external write was executed. Synthetic
+rows are retained in the component volume for diagnosis; the result identifies
+their events, and the volume is removed only by the project's scoped cleanup.
+Never activate a legacy external worker to consume these rows.
