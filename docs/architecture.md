@@ -4,6 +4,8 @@
 
 MySQL 仍是业务唯一真相。业务事务提交时在同一事务写入 Outbox，独立 relay 以至少一次语义发布 Kafka；Kafka 不是业务存储，也不能替代 revision、权限、领取、分配或冲突校验。所有业务 Outbox 最终纳入统一事件清单，派生队列 `_online_projection_jobs` 继续保持独立职责。
 
+辅助来源的影子开关 `KAFKA_AUX_EVENTS_ENABLED` 默认关闭，独立于 `KAFKA_TASK_EVENTS_ENABLED`。启用时必须为 KSHADOW 环境，Registry 与 Online 指向同一个已准备的 KShadow 数据库，且场所云 SYNC/PULL 均关闭。场所创建、修改、停用、删除、轮换在原事务同时写 `_venue_cloud_outbox` 和 `_kafka_event_delivery`，使用同一个 request_id/event_id，仅包含元数据；ledger 失败交由路由回滚整笔事务，不另取连接，不改变源同步完成状态。当前限制是单库影子 POC；独立 RegistryData 的生产 relay 与账本布局尚未实现，不能启用此开关绕过限制。照片历史队列属于已下线腾讯链路，不接入新的写回意图；本地照片业务另定义事件。
+
 事件只携带元数据和变更摘要：`event_id`、事件类型、`task_id`、`source_id`、`aggregate_revision`、`operation_id`、变更字段名摘要和时间。禁止写入完整任务正文、完整地址、身份证号、手机号或人员资料。任务定位以 `task_id + source_id` 为长期合同，旧 `parser_type + row_key` 只保留兼容映射。
 
 Flink 等消费者必须通过版本化内部 HTTP JSON 接口 `/internal/v1/derived-input/tasks/{task_id}` 回读最小字段，禁止自行连接数据库或编写业务 SQL。接口执行独立服务凭据、字段白名单、影子环境隔离、revision 校验，并返回 `task_id`、`source_id`、`revision`、`content_hash`、`readback_hash`；消费者提交结果前必须重新检查 revision。当前实现为空凭据即 fail-closed，尚未启用生产消费者。

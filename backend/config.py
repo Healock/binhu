@@ -201,6 +201,8 @@ class Settings(BaseSettings):
                 self.LOAD_TEST_RUN_ID.strip(),
             ) is None:
                 raise ValueError("Kafka task events require a KSHADOW run id")
+        from services.auxiliary_outbox_bridge import auxiliary_bridge_config
+        auxiliary_bridge_config(self)
         return self
 
     # Fresh databases only: bootstrap one administrator without a built-in password.
@@ -247,6 +249,8 @@ class Settings(BaseSettings):
     # Shadow-only task metadata bridge.  Keeping this off by default prevents
     # ordinary production transactions from creating Kafka delivery intents.
     KAFKA_TASK_EVENTS_ENABLED: bool = False
+    # Independent opt-in; external cloud operations remain disabled.
+    KAFKA_AUX_EVENTS_ENABLED: bool = False
 
     @property
     def cors_allowed_origins(self) -> list[str]:

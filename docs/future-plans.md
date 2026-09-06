@@ -51,11 +51,15 @@
 | 来源 | 业务性质 | Kafka 处理边界 | 当前状态 |
 | --- | --- | --- | --- |
 | `_domain_event_outbox` | 任务领域事件 | 使用 `binhu.task.events.v1` 严格元数据合同，回读任务正文 | 部分创建/保存/分配/归档已接入 Backend 事务；领取/研判复用保存链路，当前需细分事件分类，不应重复投递 |
-| `photo_sheet_outbox` | 照片名单外部写回意图 | 单独事件类型/主题，保留 work order 与 action 元数据；不得写入任务正文或照片 | 已盘点，独立元数据合同已实现；真实 relay 接入待实现 |
-| `_venue_cloud_outbox` | 场所云外部同步意图 | 单独事件类型/主题，保留 venue ID、配置 revision、action、request ID | 已盘点，事件合同和权限/重试边界待实现 |
+| `photo_sheet_outbox` | 已退役的腾讯照片名单写回意图 | 历史源仅允许显式只读元数据搬运，不改源状态，不触发腾讯操作；当前照片工单另建本地事件合同 | 合成组件合同已验证；真实历史搬运未实现；发现 enqueue/retry 遗留状态变更，待专项清理 |
+| `_venue_cloud_outbox` | 场所云外部同步意图 | 单独事件类型/主题，保留 venue ID、配置 revision、action、request ID；Kafka ACK 不代表外部云已同步 | 本地新增 KAFKA_AUX_EVENTS_ENABLED 独立开关，五种操作同事务写源 Outbox 与 ledger；外部云开关必须关闭，尚未部署/真实业务验收 |
 | `_online_projection_jobs` | 本地派生队列 | 保持独立队列，不转换为领域事件 | 继续由 Python worker 管理，Flink 接入另立阶段 |
 
 全量接入的完成条件是每个来源均有版本化元数据合同、同事务写入/源记录关联、至少一次 relay、有限重试/DLQ、消费者幂等和回放证据；“有 Kafka 主题”不算完成。
+
+2026-09-07 照片边界复审：正常照片工单创建/完成仍会调用历史 `enqueue_outbox`，存在历史 source 配置时会新建或恢复 pending；执行器和公开同步入口已有永久本地模式拦截，所以没有因此恢复腾讯请求。不得为了接 Kafka 加强这些退役意图。待办是停止新业务产生历史写回意图、纠正历史 retry 的“恢复自动写回”文案/状态变更、定义本地照片创建/结果完成事件，以及只读搬运历史元数据。原 `photo.writeback.requested` 合成验证不能作为当前照片业务全量接入证据。
+
+2026-09-07 场所事务接线本地验证：AUX 默认关闭，开启后拒绝非 KSHADOW、非同库影子 Registry、外部 SYNC/PULL 开启。五类 action 使用原游标登记，真实创建路由和本地二维码轮换路由覆盖 ledger 失败整事务回滚。复审发现并修正 rotate 原先只在外部同步分支登记的遗漏。相关测试 49 passed（venue Kafka、venue codes、cloud worker、aux contract）；轮换修补前完整后端 1305 passed、126 subtests passed，修补后运行相关回归。此轮仅本地提交，未 SSH、未启用服务、未运行 75 人流量；服务器停止线仍待人工解除。
 
 可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。已有 Backend 影子创建事件往返，但十项尚未完成完整业务闭环验收，不能用单元测试或 Kafka CLI 替代。
 

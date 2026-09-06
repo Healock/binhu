@@ -313,13 +313,13 @@ async def rotate_token(venue_id: int, request: Request, user: dict = Depends(req
                     "config_revision=%s,cloud_sync_status='pending',cloud_sync_error_code=NULL,updated_by=%s WHERE id=%s",
                     (_token_digest(token), encrypt_secret(token), token_version, revision, user["id"], venue_id),
                 )
-                await enqueue_venue_cloud_outbox(cur, venue_id, revision, "rotate")
             else:
                 await cur.execute(
                     "UPDATE _venue_codes SET token_hmac=%s,encrypted_token=%s,token_version=%s,config_revision=%s,"
                     "cloud_sync_status='local_only',updated_by=%s WHERE id=%s",
                     (_token_digest(token), encrypt_secret(token), token_version, revision, user["id"], venue_id),
                 )
+            await enqueue_venue_cloud_outbox(cur, venue_id, revision, "rotate")
         await conn.commit()
     except Exception:
         await conn.rollback()

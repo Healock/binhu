@@ -2,6 +2,8 @@
 
 ## Kafka 影子项目镜像与回滚
 
+场所辅助事件开关：本地代码新增 `KAFKA_AUX_EVENTS_ENABLED`，默认关闭，尚未部署验证。恢复影子排障并通过完整预检后，先建立 `binhu.venue.events.v1` / retry / DLQ 主题、Schema 和本运行 ledger，再用包含新代码的固定 digest 镜像显式配置开关。Registry 与 Online 必须指向同一 KShadow 库，`VENUE_CLOUD_SYNC_ENABLED=false` 与 `VENUE_CLOUD_PULL_ENABLED=false` 保持；该开关只记录事件，不授权外部操作。验证失败可关闭 AUX 开关，保留源 Outbox/ledger 和证据供对账，禁止清空源行、伪造 sent 或启动云同步来排空。当前 business02 仍因预检停止线等待人工介入，不执行本段部署。
+
 本阶段仅在另建的 `binhu-eventbus-shadow-*` 目录操作，禁止进入正式项目或既有 `binhu-loadtest-lt-*`。执行前核对实际目录、`artifacts/deployment-identity.json` 的运行编号、Compose 项目、容器标签、网络及卷；配置中不得有宿主机端口、生产挂载或外部网络。
 
 镜像准备使用 [prepare_images.py](../deploy/kafka-shadow/prepare_images.py) 在服务器解析固定版本、验证 SHA256 并生成锁文件。显式使用当前代理的 `repository@sha256` 引用拉取，完成后再用 `docker image inspect` 比对 RepoDigest；禁止 `latest`，不修改 daemon、不重启宿主机 Docker。镜像获取属于部署准备，运行中的影子容器仍仅连接内部网络。

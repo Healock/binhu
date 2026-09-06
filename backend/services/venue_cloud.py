@@ -19,6 +19,9 @@ from services.qmf_config import decrypt_secret, encrypt_secret
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.venue_cloud_client import VenueCloudClient, VenueCloudClientError, validate_status_response
 from services.venue_cloud_security import VenueCloudSecurityError, decrypt_submission
+from services.auxiliary_outbox_bridge import auxiliary_bridge_config
+from services.kafka_aux_outbox_contract import venue_outbox_to_event
+from services.kafka_delivery_store import enqueue_delivery
 
 
 SUPPORTED_ENCRYPTION_VERSION = "rsa-oaep-sha256+aes-256-gcm-v1"
@@ -44,14 +47,24 @@ def cloud_enabled() -> bool:
 
 
 async def enqueue_venue_cloud_outbox(cur, venue_id: int, config_revision: int, action: str) -> str | None:
-    if not settings.VENUE_CLOUD_SYNC_ENABLED:
+    kafka = auxiliary_bridge_config(settings)
+    if not settings.VENUE_CLOUD_SYNC_ENABLED and kafka is None:
         return None
     request_id = str(uuid.uuid4())
+    # Validate before inserting the source intent. The caller owns the one
+    # transaction for venue, source Outbox and ledger; do not catch failures.
+    event = venue_outbox_to_event({
+        'request_id': request_id, 'venue_id': venue_id,
+        'config_revision': config_revision, 'action': action,
+        'timestamp': _utcnow(),
+    }, run_id=kafka['run_id']) if kafka else None
     await cur.execute(
         "INSERT INTO _venue_cloud_outbox (venue_id,config_revision,action,request_id,status) "
         "VALUES (%s,%s,%s,%s,'pending')",
         (venue_id, config_revision, action, request_id),
     )
+    if event is not None:
+        await enqueue_delivery(cur, event, run_id=kafka['run_id'])
     return request_id
 
 
