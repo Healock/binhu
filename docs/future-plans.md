@@ -53,7 +53,7 @@
 
 全量接入的完成条件是每个来源均有版本化元数据合同、同事务写入/源记录关联、至少一次 relay、有限重试/DLQ、消费者幂等和回放证据；“有 Kafka 主题”不算完成。
 
-可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。当前十项均待真实集群验收，不能用单元测试或 Kafka CLI 替代 Backend/Flink 业务闭环。
+可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。影子 Compose 的独立 `kafka-relay` 已启动并通过项目/运行号标签核验，但当前无 Backend 影子业务写入，因此十项仍待真实业务闭环验收，不能用单元测试或 Kafka CLI 替代。
 
 本次基础设施运行编号为 `KSHADOW-20260906T084957Z-fcbad2`，项目名为 `binhu-kafka-shadow-20260906`。现场证据包括 `deployment-identity.json`、`kafka-shadow-images.lock.json`、`quorum-after-tmpfs.txt` 和三个主题的 `*-describe.txt`。主题显式配置 `retention.ms=604800000`、`min.insync.replicas=2`；这只证明配置，尚未证明自然 7 天删除。Apache 镜像隐含的两个匿名卷已改为有界 tmpfs，并仅重建本次项目容器；数据卷保持项目作用域。当前网络内使用 PLAINTEXT、无宿主机发布端口，不能声称认证故障项已覆盖。
 
