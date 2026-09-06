@@ -117,6 +117,7 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 - 2026-09-07：第二套环境启动后发现复制的 derived 初始化脚本仍写入旧影子身份，relay 因身份/ledger 查询不一致退出。未覆盖身份表、删除卷或伪造通过；后续必须使用全新数据库名和全新初始化脚本重新部署，才能开展真实 delivery 验收。
 - 2026-09-07：第三套干净环境 `binhu-kafka-shadow-20260907-clean` 已使用新数据库名、全新卷和运行号 `KSHADOW-20260907T031500Z-clean03` 部署。一次性 verifier 在该真实 MySQL 上通过回滚、提交 pending、重复 ID 不变、租约 fencing 五项 ledger 检查；证据输出为 `scope=ledger_only_no_kafka_ack`。常驻 relay 随后仍因镜像内 relay 与当前 ledger schema 的 `ProgrammingError` 连续三次退出，未将该结果误记为 Kafka 投递通过，下一步需重建 relay 镜像并验证 schema 版本一致性。
 - 2026-09-07：使用固定 Python 基础镜像重建 relay，镜像 digest 更新为 `sha256:a7ce8c13a9971f8cc4dd6581cbe35a7741fcd84243c1658679417f4069bebbd5`。在 clean 项目等待 Kafka consumer coordinator 就绪后，12 条虚构事件已全部由 relay 投递并被 Kafka 消费，ledger 排空，结果 `scope=synthetic_ledger_to_kafka_component`；此前 coordinator 未就绪的失败已保留，不计入通过。
+- 2026-09-07：在同一 clean 项目启动崩溃窗口脚本时，首轮在 relay `run_once` 阶段未返回 `published`，因此未执行 SIGKILL 或宣称通过；该失败需继续诊断 producer/consumer 协调器状态后重跑。
 
 
 ### 2026-09-07 Relay 崩溃窗口真实验证
