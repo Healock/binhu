@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 try:
-    from jsonschema import Draft202012Validator, FormatChecker
+    from jsonschema import Draft7Validator, FormatChecker
 except ImportError:  # pragma: no cover - requirements-test stays lightweight
-    Draft202012Validator = None
+    Draft7Validator = None
     FormatChecker = None
 
 from services.kafka_event_contract import (
@@ -176,7 +176,7 @@ def test_schema_file_is_the_new_strict_kafka_contract():
 
 def test_python_and_jsonschema_agree_on_the_same_valid_and_invalid_samples():
     """The executable validator and published schema reject the same edges."""
-    if Draft202012Validator is None:
+    if Draft7Validator is None:
         pytest.skip("jsonschema is not installed in this lightweight test environment")
 
     schema = json.loads(
@@ -184,7 +184,7 @@ def test_python_and_jsonschema_agree_on_the_same_valid_and_invalid_samples():
             encoding="utf-8"
         )
     )
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator = Draft7Validator(schema, format_checker=FormatChecker())
     validator.check_schema(schema)
 
     valid_samples = [

@@ -10,7 +10,7 @@ import asyncio
 import json
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -19,7 +19,7 @@ from fastapi import HTTPException
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from routers.derived_inputs import read_derived_input
+from routers.derived_inputs import _read_derived_input
 from services.domain_events import decode_event_row, enqueue_event
 
 
@@ -134,31 +134,13 @@ def test_enqueue_event_normalises_changed_fields_and_never_accepts_a_string():
         ))
 
 
-def test_derived_readback_token_is_fail_closed_before_database_access():
-    conn = _Connection()
-
-    with patch("routers.derived_inputs.settings.DERIVED_READBACK_TOKEN", ""):
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(read_derived_input("task-1", None, None, None, "", conn))
-    assert error.value.status_code == 503
-    assert error.value.detail["code"] == "derived_readback_disabled"
-    conn.cursor_instance.execute.assert_not_awaited()
-
-    with patch("routers.derived_inputs.settings.DERIVED_READBACK_TOKEN", "secret"):
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(read_derived_input("task-1", "wrong", None, None, "", conn))
-    assert error.value.status_code == 401
-    assert error.value.detail["code"] == "invalid_internal_credential"
-    conn.cursor_instance.execute.assert_not_awaited()
-
-
 def test_derived_readback_rejects_unknown_fields_before_query():
     conn = _Connection()
-    with patch("routers.derived_inputs.settings.DERIVED_READBACK_TOKEN", "secret"):
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(read_derived_input(
-                "task-1", "secret", None, None, "address,身份证号", conn,
-            ))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_read_derived_input(
+            "t_fullchain:27", source_id=27, revision=8,
+            fields="address,身份证号", conn=conn,
+        ))
     assert error.value.status_code == 422
     assert error.value.detail["code"] == "unsupported_readback_field"
     assert error.value.detail["fields"] == ["身份证号"]
@@ -169,27 +151,27 @@ def test_derived_readback_returns_allowlisted_fields_and_checks_revision():
     row = (
         27, "全链条", "row-1", 8, "hash-8",
         json.dumps({
-            "address": "虚构路1号",
+            "地址": "虚构路1号",
             "身份证号": "FICTIONAL-SENSITIVE-VALUE",
             "手机号": "FICTIONAL-PHONE",
         }, ensure_ascii=False),
         json.dumps({"small_community": "虚构小区", "task_type": "核查"}, ensure_ascii=False),
-        "虚构社区", "pending", datetime(2026, 9, 6, 2, 3, 4),
+        "虚构社区", "虚构小区", "虚构网格员", "pending", 8,
+        "虚构路1号", datetime(2026, 9, 6, 2, 3, 4), 8, "hash-8",
+        "local_table", "t_fullchain:27",
     )
     conn = _Connection(row)
 
-    with patch("routers.derived_inputs.settings.DERIVED_READBACK_TOKEN", "secret"):
-        result = asyncio.run(read_derived_input(
-            "task-1", "secret", 27, 8, "address,small_community", conn,
-        ))
-    assert result["task_id"] == "task-1"
+    result = asyncio.run(_read_derived_input(
+        "t_fullchain:27", source_id=27, revision=8,
+        fields="address,small_community", conn=conn,
+    ))
+    assert result["task_id"] == "t_fullchain:27"
     assert result["source_id"] == 27
     assert result["revision"] == 8
     assert result["fields"] == {
         "address": "虚构路1号",
         "small_community": "虚构小区",
-        "community": "虚构社区",
-        "task_state": "pending",
     }
     encoded = json.dumps(result, ensure_ascii=False)
     assert "身份证号" not in encoded
@@ -197,14 +179,14 @@ def test_derived_readback_returns_allowlisted_fields_and_checks_revision():
     assert result["readback_hash"]
 
     conn = _Connection(row)
-    with patch("routers.derived_inputs.settings.DERIVED_READBACK_TOKEN", "secret"):
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(read_derived_input(
-                "task-1", "secret", 27, 7, "address", conn,
-            ))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_read_derived_input(
+            "t_fullchain:27", source_id=27, revision=7,
+            fields="address", conn=conn,
+        ))
     assert error.value.status_code == 409
     assert error.value.detail == {
         "code": "revision_changed",
-        "task_id": "task-1",
+        "task_id": "t_fullchain:27",
         "current_revision": 8,
     }

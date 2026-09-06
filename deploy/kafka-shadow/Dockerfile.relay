@@ -1,0 +1,12 @@
+ARG PYTHON_IMAGE
+FROM ${PYTHON_IMAGE}
+WORKDIR /app
+COPY wheels/ /wheels/
+RUN python -m pip install --no-index --find-links=/wheels \
+    aiokafka==0.12.0 aiomysql==0.2.0 redis==6.4.0 cryptography==44.0.0 \
+    && rm -rf /wheels
+COPY services/ /app/services/
+COPY scripts/ /app/scripts/
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
+USER 10001:10001
+CMD ["python", "/app/scripts/relay_runtime.py"]

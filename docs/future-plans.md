@@ -27,10 +27,10 @@
 
 | 阶段 | 当前可核实状态 | 下一步 / 退出证据 |
 | --- | --- | --- |
-| 镜像准备 | 代理解析脚本已在服务器成功生成 digest 锁；Kafka 整包拉取成功，Apicurio 仍在下载 | 两镜像均需现场 manifest SHA256、锁文件和 RepoDigest 三者一致 |
-| Kafka 三节点 | 已在新项目启动；重建后仲裁三票、Follower lag=0；三个主题均为 3 分区/2 副本且 ISR 齐全 | 单节点故障与恢复演练；服务认证/ACL 尚未实现 |
-| Apicurio | `mem` 镜像仅用于协议实验，不是持久化 Registry | schema 注册/兼容性校验；恢复前导入同一版本 schema |
-| Outbox → Kafka | 尚无 Kafka Relay；现有 relay 仍投递 Redis | 独立投递状态，不与 SSE 抢同一 pending；事务提交、ACK、租约、重试和 DLQ |
+| 镜像准备 | Kafka、Apicurio、Flink 1.20.1 完整镜像均已通过代理取得，固定 digest；Relay 离线镜像已构建 | 所有基础镜像、应用构建和依赖继续保留锁与哈希 |
+| Kafka 三节点 | 三业务主题均为 3 分区/2 副本；单 Leader 停止 30 秒后选举、恢复 ISR、旧消息回读及新消息投递均已通过协议烟测 | 协议通过不等于 Relay 业务闭环；服务认证/ACL 尚未实现 |
+| Apicurio | 2.6.5.Final 已运行，`/health/ready` 全部 UP；`mem` 仅用于协议实验 | schema 注册/兼容性校验；恢复前导入同一版本 schema |
+| Outbox → Kafka | 新增独立投递状态机与 `_kafka_event_delivery`；真实隔离 MySQL 已验证回滚无记录、提交 pending、重复 ID 不可改、租约 fencing | 接入真实业务 Outbox 事务、真实 Kafka ACK、进程崩溃、重试与 DLQ；旧 Redis relay 保留 |
 | 回读接口 | 已有骨架和模拟测试，真实 task_id 映射与版本快照待复审 | 鉴权先于取连接、影子范围、真实字段、同一 revision 输入 |
 | Flink / Redis | 现有 POC 仅为 CDC SQL 烟测，无 Kafka 业务派生作业 | 真正任务派生、条件写入、checkpoint 恢复、缓存重建 |
 | 双轨 | 尚未开始；不得累计假想事件或观察时长 | 独立输出、连续 7 天且至少 100000 个唯一事件，无差异 |
@@ -39,6 +39,8 @@
 可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。当前十项均待真实集群验收，不能用单元测试或 Kafka CLI 替代 Backend/Flink 业务闭环。
 
 本次基础设施运行编号为 `KSHADOW-20260906T084957Z-fcbad2`，项目名为 `binhu-kafka-shadow-20260906`。现场证据包括 `deployment-identity.json`、`kafka-shadow-images.lock.json`、`quorum-after-tmpfs.txt` 和三个主题的 `*-describe.txt`。主题显式配置 `retention.ms=604800000`、`min.insync.replicas=2`；这只证明配置，尚未证明自然 7 天删除。Apache 镜像隐含的两个匿名卷已改为有界 tmpfs，并仅重建本次项目容器；数据卷保持项目作用域。当前网络内使用 PLAINTEXT、无宿主机发布端口，不能声称认证故障项已覆盖。
+
+故障演练证据：`KSHADOW-20260906T084957Z-fcbad2-protocol-smoke-attempt-02.json` 为通过结果；首次预检因把 Docker `EXPOSE` 的空绑定误判为宿主机端口而停止，未停 broker，诊断保留在首轮文件。修复后完整重跑，停止当时 Leader 3、恢复后消费原 3 条及新增 3 条合成消息。MySQL 组件证据：`delivery-store-verification-02.log`，仅测试独立 ledger，不代表已有 Backend 业务 Outbox 已接入。初轮容器创建前因 YAML 内 tmpfs 逗号解析错误退出，修复并重跑通过；未对业务数据库写入。
 
 验收解释：至少一次投递允许“Kafka 已 ACK、Outbox 尚未记账”崩溃窗口的重复消息，消费者必须防止重复副作用；已持久化确认的投递不得重新领取。认证错误导致 DLQ 也不可写时，保留本地持久化失败状态，不伪造 Kafka DLQ 成功。7 天配置核对、缩短保留期机制实验和自然经过 7 天的验证分别记录；不修改服务器时间或用短实验代替连续 7 天双轨。任何差异修复后重启观察窗口。同一项连续三次修补失败按用户要求停止并留存诊断。
 

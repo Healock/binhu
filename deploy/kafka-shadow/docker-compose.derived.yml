@@ -1,0 +1,65 @@
+# Overlay onto docker-compose.yml after verifying images and fresh DB identity.
+services:
+  derived-mysql:
+    image: ${DERIVED_MYSQL_IMAGE:?set verified digest}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DERIVED_MYSQL_ROOT_PASSWORD:?set independent credential}
+      MYSQL_DATABASE: ${DERIVED_MYSQL_DATABASE:?set shadow database}
+      MYSQL_USER: shadow_derived
+      MYSQL_PASSWORD: ${DERIVED_MYSQL_PASSWORD:?set independent credential}
+    command: ["--innodb-buffer-pool-size=128M", "--max-connections=30"]
+    volumes:
+      - derived-mysql-data:/var/lib/mysql
+      - ./derived-init.sql:/docker-entrypoint-initdb.d/00-identity.sql:ro
+    networks: [internal]
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$${MYSQL_PASSWORD}\" mysql -h 127.0.0.1 -u shadow_derived -D \"$${MYSQL_DATABASE}\" -Nse 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  derived-redis:
+    image: ${DERIVED_REDIS_IMAGE:?set verified digest}
+    command: ["redis-server", "/run/redis.conf"]
+    volumes:
+      - derived-redis-data:/data
+      - ./derived-redis.conf:/run/redis.conf:ro
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+  kafka-relay:
+    image: ${DERIVED_RELAY_IMAGE:?set built verified runtime image}
+    profiles: [derived]
+    environment:
+      APP_ENVIRONMENT: shadow
+      LOAD_TEST_RUN_ID: ${KAFKA_RUN_ID}
+      MYSQL_HOST: derived-mysql
+      MYSQL_DATABASE: ${DERIVED_MYSQL_DATABASE}
+      MYSQL_USER: shadow_derived
+      MYSQL_PASSWORD: ${DERIVED_MYSQL_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    depends_on:
+      derived-mysql: {condition: service_healthy}
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+volumes:
+  derived-mysql-data: {}
+  derived-redis-data: {}
