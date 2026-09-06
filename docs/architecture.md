@@ -8,6 +8,10 @@ MySQL 仍是业务唯一真相。业务事务提交时在同一事务写入 Outb
 
 Flink 等消费者必须通过版本化内部 HTTP JSON 接口 `/internal/v1/derived-input/tasks/{task_id}` 回读最小字段，禁止自行连接数据库或编写业务 SQL。接口执行独立服务凭据、字段白名单、影子环境隔离、revision 校验，并返回 `task_id`、`source_id`、`revision`、`content_hash`、`readback_hash`；消费者提交结果前必须重新检查 revision。当前实现为空凭据即 fail-closed，尚未启用生产消费者。
 
+2026-09-07 独立计算输入边界：上面的兼容接口会读取 Python projection，不能作为 Flink 双轨独立计算的证据。新增 `/internal/v1/derived-input/raw/tasks/{task_id}` 仅允许 KSHADOW 服务身份访问当前运行号在 `_shadow_business_expectations` 标记的合成任务，回读 local source 与 canonical source，不读取 projection。查询参数为 `source_id`、`revision` 和可选 `fields`（address、community、inspector_key、check_result、task_type）；继承 `X-Binhu-Internal-Token`、`X-Binhu-Environment`、`X-Binhu-Run-Id`。认证、环境和字段验证先于取连接，无匹配任务返回 404，版本或内容哈希不一致返回 409，不支持的字段/结果枚举返回 422。返回实际最小合成地址，人员仅返回运行范围 HMAC 标识，不返回身份证、手机号或完整任务正文。
+
+raw 合同版本为 `derived-raw-v1`，返回 source revision/content_hash/readback_hash 与运行标识；`reference_versions` 当前为空，`unavailable_references` 明列地址库、人员标签、任务依赖、日报历史四类缺失输入。因此本次只实现独立输入基础，尚未满足四类 Flink 业务派生，更不满足双轨退出。参考输入版本、输出提交 fence、限流与回读审计仍需独立补齐和验证。此代码尚未部署到影子 Backend，真实 MySQL JOIN 待验证。
+
 Kafka KRaft 三节点只用于影子环境协议、副本、故障、恢复、重复投递和回放验证，不代表生产容量。事件量超过约 10 万/天时必须另行评估分区、副本、磁盘和吞吐。Flink checkpoint 只覆盖 Flink 状态恢复，跨系统一致性依靠幂等键、revision fence、重试、DLQ 和对账。
 
 2026-09-06 实际边界：三节点 Kafka 已在全新隔离项目建立仲裁，三业务主题的分区、副本和 7 天保留配置已核对；网络为内部网络且无宿主机发布端口。当前 Compose 使用 PLAINTEXT，认证和 ACL 仍待实现；Apicurio `mem` 仅为易失协议实验。现有 Redis relay 不能冒充 Kafka Relay，现有 Flink CDC SQL 烟测也不等于任务派生。业务双轨与 75 人复测的执行状态以 [未来计划台账](future-plans.md#执行台账2026-09-06) 为准。

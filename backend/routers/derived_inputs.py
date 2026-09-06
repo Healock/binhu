@@ -412,3 +412,150 @@ async def read_derived_input_route(
     return await _read_derived_input(
         task_id, source_id=source_id, revision=revision, fields=fields, conn=conn,
     )
+
+
+# Raw v1 is deliberately separate from the projection-backed compatibility
+# endpoint above. Only fixture-marked KSHADOW sources can expose the minimum
+# synthetic address/community inputs. Neither a shadow header alone nor a
+# source value containing the word "fictional" proves fixture ownership.
+RAW_VALUE_FIELDS = frozenset({
+    "address", "community", "inspector_key", "check_result", "task_type",
+})
+_RAW_RUN_RE = re.compile(r"^KSHADOW-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_RAW_MISSING_REFERENCES = (
+    "address_catalog", "person_tags", "task_dependencies", "daily_report_history",
+)
+
+
+async def _require_raw_request(
+    task_id: str,
+    source_id: int = Query(..., ge=1),
+    revision: int = Query(..., ge=0),
+    fields: str = Query(default="", max_length=500),
+    authenticated: None = Depends(_require_shadow_context),
+) -> dict[str, Any]:
+    """Finish auth, environment and field checks before acquiring a DB slot."""
+    if not _RAW_RUN_RE.fullmatch(str(settings.LOAD_TEST_RUN_ID or "")):
+        raise HTTPException(503, detail={"code": "derived_raw_input_disabled"})
+    table_name, local_task_id = _parse_local_task_id(task_id)
+    requested = {field.strip() for field in fields.split(",") if field.strip()}
+    if requested - RAW_VALUE_FIELDS:
+        # Do not echo arbitrary requested names into diagnostics.
+        raise HTTPException(422, detail={"code": "unsupported_raw_readback_field"})
+    return {
+        "task_id": task_id, "local_task_id": local_task_id,
+        "parser_type": _LOCAL_TABLE_TO_PARSER[table_name],
+        "source_id": source_id, "revision": revision,
+        "fields": requested or RAW_VALUE_FIELDS,
+    }
+
+
+def _raw_fields(parser_type: str, values: dict[str, Any], requested: set[str]) -> dict[str, str]:
+    from services.task_workflow import TASK_WORKFLOWS
+
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    if workflow is None:
+        raise HTTPException(422, detail={"code": "unsupported_raw_task_type"})
+    selected = {}
+    for field in sorted(requested):
+        if field == "task_type":
+            value = parser_type
+        elif field == "address":
+            value = _first_value(values, tuple(workflow.address_fields))
+        elif field == "community":
+            value = _first_value(values, ("社区", "下发社区", "community"))
+        elif field == "check_result":
+            value = _safe_scalar(values.get(workflow.result_field, ""), field).strip()
+            if value not in {"", *workflow.result_options, *workflow.valid_results}:
+                # Imported free text is not safe to expose as an enum.
+                raise HTTPException(422, detail={"code": "unsupported_raw_result"})
+        else:
+            inspector = _safe_scalar(_first_value(values, ("核查人", "inspector")), field)
+            # This run-scoped pseudonym is not a durable account or person ID.
+            # A versioned person reference contract is still required later.
+            message = json.dumps(
+                ["derived-raw-inspector-v1", settings.LOAD_TEST_RUN_ID, inspector],
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            value = hmac.new(
+                str(settings.DERIVED_READBACK_TOKEN).encode(), message.encode(), hashlib.sha256,
+            ).hexdigest() if inspector else ""
+        selected[field] = _safe_scalar(value, field)
+    return selected
+
+
+@router.get("/raw/tasks/{task_id}")
+async def read_raw_derived_input_route(
+    request: dict[str, Any] = Depends(_require_raw_request),
+    conn=Depends(get_db),
+):
+    """Raw synthetic inputs, independent of every Python-derived projection.
+
+    This is a foundation contract, not the four completed derivations. The
+    address dictionary, person tag references, task dependencies and reporting
+    history need independently versioned contracts before those computations
+    can be compared. Consumers must recheck revision/hash when publishing.
+    """
+    run_id = str(settings.LOAD_TEST_RUN_ID)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT source.id, source.parser_type, source.revision, source.row_hash,
+                   local_source.values_json, local_source.revision,
+                   local_source.content_hash, source.source_kind, source.source_ref,
+                   local_source.updated_at, fixture.run_id
+            FROM _online_source_rows AS source
+            JOIN _local_source_records AS local_source
+              ON local_source.source_kind=source.source_kind
+             AND local_source.source_ref=source.source_ref
+             AND local_source.parser_type=source.parser_type
+             AND local_source.business_key=source.row_key
+             AND local_source.local_task_id=%s
+             AND local_source.status='active'
+             AND local_source.archived_at IS NULL
+            JOIN _shadow_business_expectations AS fixture
+              ON fixture.source_id=source.id AND fixture.run_id=%s
+             AND fixture.parser_type=source.parser_type AND fixture.row_key=source.row_key
+            WHERE source.id=%s AND source.parser_type=%s
+              AND source.source_kind='local_table' AND source.source_ref=%s
+              AND source.archived_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM _local_source_records AS duplicate
+                  WHERE duplicate.parser_type=local_source.parser_type
+                    AND duplicate.business_key=local_source.business_key
+                    AND duplicate.source_kind IN ('local_table','local_dispatch')
+                    AND duplicate.status='active' AND duplicate.archived_at IS NULL
+                    AND duplicate.id<>local_source.id
+              )
+            LIMIT 1
+            """,
+            (request["local_task_id"], run_id, request["source_id"],
+             request["parser_type"], request["task_id"]),
+        )
+        row = await cur.fetchone()
+    if (not row or int(row[0]) != request["source_id"]
+            or str(row[1]) != request["parser_type"] or str(row[7]) != "local_table"
+            or str(row[8]) != request["task_id"] or str(row[10]) != run_id):
+        raise HTTPException(404, detail={"code": "derived_raw_input_not_found"})
+    current_revision = int(row[2])
+    if current_revision != request["revision"]:
+        raise HTTPException(409, detail={
+            "code": "revision_changed", "current_revision": current_revision,
+        })
+    if row[5] is None or int(row[5]) != current_revision:
+        raise HTTPException(409, detail={"code": "source_revision_mismatch"})
+    values = _json_object(row[4])
+    if str(row[3]) != str(row[6]) or str(row[6]) != _hash_payload(values):
+        raise HTTPException(409, detail={"code": "source_content_mismatch"})
+    envelope = {
+        "contract_version": "derived-raw-v1",
+        "task_id": request["task_id"], "source_id": request["source_id"],
+        "revision": current_revision, "content_hash": str(row[6]),
+        "fields": _raw_fields(str(row[1]), values, request["fields"]),
+        "updated_at": _utc_iso(row[9]), "environment": "shadow", "run_id": run_id,
+        "input_scope": "run_marked_synthetic_source",
+        "reference_versions": {},
+        "unavailable_references": list(_RAW_MISSING_REFERENCES),
+    }
+    envelope["readback_hash"] = _hash_payload(envelope)
+    return envelope
