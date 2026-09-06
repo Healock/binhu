@@ -4,6 +4,8 @@ import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -171,6 +173,7 @@ public final class TaskEventCheckpointJob {
         private static final long serialVersionUID = 1L;
         private transient ValueState<Long> countState;
         private transient ValueState<Long> revisionState;
+        private transient MapState<String, Boolean> eventIds;
 
         @Override
         public void open(org.apache.flink.configuration.Configuration parameters) throws Exception {
@@ -178,6 +181,8 @@ public final class TaskEventCheckpointJob {
                     new ValueStateDescriptor<>("event_id-count", Types.LONG);
             countState = getRuntimeContext().getState(descriptor);
             revisionState = getRuntimeContext().getState(new ValueStateDescriptor<>("highest-revision", Types.LONG));
+            eventIds = getRuntimeContext().getMapState(
+                    new MapStateDescriptor<>("processed-event-ids", Types.STRING, Types.BOOLEAN));
         }
 
         @Override
@@ -186,10 +191,14 @@ public final class TaskEventCheckpointJob {
                 Context context,
                 Collector<String> out) throws Exception {
             Long previous = countState.value();
-            long count = previous == null ? 1L : previous + 1L;
-            countState.update(count);
             Long old = revisionState.value();
-            String status = old == null || event.revision > old ? "APPLIED" : event.revision == old ? "DUPLICATE" : "STALE";
+            boolean repeated = eventIds.contains(event.eventId);
+            String status = repeated ? "DUPLICATE" : old == null || event.revision > old ? "APPLIED" : event.revision == old ? "DUPLICATE" : "STALE";
+            long count = previous == null ? 1L : previous + (repeated ? 0L : 1L);
+            if (!repeated) {
+                eventIds.put(event.eventId, Boolean.TRUE);
+            }
+            countState.update(count);
             if (status.equals("APPLIED")) revisionState.update(event.revision);
             // Only fixed envelope metadata is emitted; the input JSON/body is
             // intentionally absent from this output record.
