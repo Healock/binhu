@@ -1574,3 +1574,12 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - Flink 通过 `/internal/v1/derived-input` 回读，不得自行连接 MySQL。生产前必须完成连续 7 天且累计 100,000 事件的双轨一致性，任一未归因差异都重新计时。
 - 影子阶段保留 Python worker、MySQL 查询和原有回滚路径；Kafka、Flink 或 Redis 故障只允许降级/回退，不得阻断业务主事务。
 - 每次阶段复测保存 Kafka 速率/lag、Flink checkpoint、Redis 命中/版本冲突、队列排空、75 人复测结果和正式库零串写证据。当前本机无 Docker/真实 MySQL，Compose 校验和容器演练必须在目标服务器完成。
+
+
+## 影子事件总线与 Flink 运行记录（2026-09-07）
+
+目标服务器项目为 `binhu-kafka-shadow-20260906`，所有组件使用运行编号 `KSHADOW-20260906T084957Z-fcbad2`、独立 internal 网络和命名卷。Kafka、Apicurio、derived MySQL/Redis、Flink JobManager/TaskManager 不发布宿主端口。镜像必须从 `.env` 的固定 digest 读取，不能改成 `latest`。
+
+Flink checkpoint 卷首次创建后必须将宿主卷目录属主设置为容器用户 9999:9999、权限 750；TaskManager 重启恢复测试使用不少于 30 秒固定重试间隔，避免在 TaskManager 注册完成前耗尽重试。失败日志、checkpoint API 摘要和恢复输出保存在服务器 `artifacts/`。任何清理仅允许针对带本运行编号标签的容器、卷和目录，不能使用全局 prune。
+
+当前影子作业停止/回滚只需取消 Flink job 并保留 checkpoint；不会修改 Kafka、业务 MySQL 或生产 Nginx。业务切换前还需要完成真实 Backend Outbox 接入、重试/DLQ/归档闭环、MySQL/Redis 投影、Python/Flink 双轨比对和独立 75 人复测。

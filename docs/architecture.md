@@ -1306,3 +1306,10 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 ## 用户无感问题诊断
 
 业务失败响应由 FastAPI 全局中间件异步记录脱敏现场到 `PlatformData.diagnostic_jobs`，不读取请求正文，不阻塞原请求。运维人员在运维中心按用户姓名检索最近错误，必要时将 `captured` 记录排入独立 `diagnostic-worker`，生成 `diagnostic_reports`。诊断保留 90 天，Redis Stream 仅作为快速唤醒通道，Worker 始终以 MySQL 队列为可靠兜底；诊断自身异常不得影响业务请求。
+
+
+## 事件总线与 Flink 影子边界（2026-09-07）
+
+影子验证已证明 Kafka KRaft 三节点协议、元数据 Schema、独立投递 ledger、Redis revision fence，以及 Flink KafkaSource 的 checkpoint 与 TaskManager 恢复。Flink 当前作业是元数据协议烟测：按 `task_id + source_id` 保存最高 revision，只输出固定元数据分类，不执行地址匹配、人员标签、任务图、日报或任何 MySQL/Redis 投影。
+
+Flink checkpoint 只能恢复 Flink 内部状态。跨系统输出仍必须依靠事件幂等、Redis 高水位 fence、MySQL 条件更新和回读 revision fence；不能把当前烟测描述为跨系统 Exactly-Once。Python worker 仍是现行路径，业务 Outbox 尚未接入该 shadow relay，双轨 7 天/100,000 事件门槛和 75 人复测均未开始。
