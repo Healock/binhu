@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -25,11 +26,13 @@ sys.path.insert(0, "/app")
 sys.path.insert(0, "/load-tests")
 
 from database import close_db, db_manager, init_db  # noqa: E402
+from config import settings  # noqa: E402
 from fixture import make_tasks, make_users, password_hint  # noqa: E402
 from services.local_source import create_local_source_row  # noqa: E402
 from services.online_source import rebuild_projection  # noqa: E402
 from services.parsers import get_parser  # noqa: E402
 from services.task_registration import select_registration_property  # noqa: E402
+from services.task_outbox_bridge import enqueue_task_event  # noqa: E402
 from services.task_workflow import TASK_WORKFLOWS  # noqa: E402
 
 
@@ -476,6 +479,21 @@ async def _seed(run_id: str) -> dict[str, object]:
                                 values,
                                 source_kind="local_table",
                                 source_ref="",
+                            )
+                            await enqueue_task_event(
+                                cursor,
+                                settings=settings,
+                                domain="online",
+                                event_type="online.task.created",
+                                aggregate_type="online_task",
+                                aggregate_id=f"{parser_type}:{source['row_key']}",
+                                aggregate_revision=1,
+                                audiences=["authenticated"],
+                                task_id=f"{get_parser(parser_type).table_name}:{source['local_task_id']}",
+                                source_id=int(source["id"]),
+                                revision=await _read_source_revision(cursor, int(source["id"])),
+                                operation_id=str(uuid.uuid4()),
+                                changed_fields=list(values),
                             )
                             property_id = property_version = None
                             if str(task["state"]) == "pending_registration":
