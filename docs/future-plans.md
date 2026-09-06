@@ -35,7 +35,7 @@
 | Apicurio | 2.6.5.Final 已运行，`/health/ready` 全部 UP；Draft 7 Schema 已注册、回读一致，兼容变更返回 200，不兼容字段类型变更返回 409；`mem` 仅用于协议实验 | 恢复前导入同一版本 schema；持久化 Registry 仍未完成 |
 | Outbox → Kafka | 独立投递状态机、真实隔离 MySQL ledger 与 12 条 Kafka 往返已通过；回滚、重复 ID、租约 fencing、分区键均有证据 | 接入真实业务 Outbox 事务、进程崩溃、重试与 DLQ；旧 Redis relay 保留 |
 | 回读接口 | 已有骨架和模拟测试，真实 task_id 映射与版本快照待复审 | 鉴权先于取连接、影子范围、真实字段、同一 revision 输入 |
-  | Flink / Redis | Flink Kafka checkpoint 静态骨架尚未纳入本分支；当前仍只有 CDC SQL 烟测。Redis 版本缓存尚未实现 | 先锁定 Flink connector/JAR 并部署协议烟测，再做真正任务派生、条件写入、checkpoint 恢复、缓存重建 |
+  | Flink / Redis | Flink Kafka checkpoint 协议烟测、Redis revision fence 和真实恢复验证已通过；业务派生、MySQL/Redis 输出和双轨比对仍未开始 | 先接入真实业务事件，再做地址匹配、人员标签、任务图、日报、条件写入和双轨验证 |
 | 双轨 | 尚未开始；不得累计假想事件或观察时长 | 独立输出、连续 7 天且至少 100000 个唯一事件，无差异 |
 | 多级缓存 | 未开始 | 本地缓存选型、字典数据清单、刷新策略设计；Redis 缓存分层方案 |
 | 多实例 + API 网关 | 未开始 | 网关选型、无状态化改造、灰度发布流程设计 |
