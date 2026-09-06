@@ -12,6 +12,7 @@ import asyncio
 import random
 from dataclasses import dataclass
 from typing import Any
+from services.kafka_envelope import delivery_topic
 
 EVENT_TOPIC = "binhu.task.events.v1"
 DLQ_TOPIC = "binhu.task.events.dlq.v1"
@@ -28,6 +29,7 @@ class Delivery:
     lease_token: str
     attempt: int
     channel: str
+    event_type: str = "task.saved"
 
 
 def retry_delay(attempt: int, *, jitter: bool = True) -> float:
@@ -58,7 +60,7 @@ class KafkaRelay:
             return "idle"
         if delivery.channel not in {"events", "dlq"}:
             raise ValueError("unsupported delivery channel")
-        topic = EVENT_TOPIC if delivery.channel == "events" else DLQ_TOPIC
+        topic = delivery_topic(delivery.event_type, delivery.channel)
         try:
             await asyncio.wait_for(
                 self.producer.send_and_wait(topic, value=delivery.payload, key=delivery.key),

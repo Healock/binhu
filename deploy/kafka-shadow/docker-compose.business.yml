@@ -1,0 +1,142 @@
+# Business-loop overlay for a fresh Kafka shadow run.
+# Apply after docker-compose.yml and docker-compose.derived.yml.  The derived
+# services are redeclared here so their old temporary mounts and volumes cannot
+# accidentally become part of this run.
+services:
+  derived-mysql:
+    environment:
+      MYSQL_ROOT_PASSWORD: ${BUSINESS_MYSQL_ROOT_PASSWORD:?set independent business root password}
+      MYSQL_DATABASE: ${BUSINESS_ONLINE_DATABASE:?set KShadow online database}
+      MYSQL_USER: shadow_derived
+      MYSQL_PASSWORD: ${BUSINESS_RELAY_PASSWORD:?set independent relay password}
+      KAFKA_RUN_ID: ${KAFKA_RUN_ID:?set KSHADOW run id}
+      BUSINESS_ARCHIVE_DATABASE: ${BUSINESS_ARCHIVE_DATABASE:?set KShadow archive database}
+      BUSINESS_DAILY_DATABASE: ${BUSINESS_DAILY_DATABASE:?set KShadow daily database}
+      SHADOW_BACKEND_USER: ${SHADOW_BACKEND_USER:?set isolated backend database user}
+      SHADOW_BACKEND_PASSWORD: ${SHADOW_BACKEND_PASSWORD:?set isolated backend database password}
+    volumes:
+      - kafka-business-mysql-data:/var/lib/mysql
+      - ./business-init.sh:/docker-entrypoint-initdb.d/00-business-init.sh:ro
+      - ../backend/init.sql:/opt/binhu-backend-init.sql:ro
+    networks: [internal]
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+      binhu.shadow.scope: business
+
+  derived-redis:
+    command: ["redis-server", "--appendonly", "no", "--requirepass", "${BUSINESS_REDIS_PASSWORD:?set independent Redis password}"]
+    volumes:
+      - kafka-business-redis-data:/data
+    networks: [internal]
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+      binhu.shadow.scope: business
+
+  backend:
+    image: ${BUSINESS_BACKEND_IMAGE:?set a verified backend image digest}
+    depends_on:
+      derived-mysql: {condition: service_healthy}
+      derived-redis: {condition: service_started}
+    expose: ["37125"]
+    environment:
+      APP_ENVIRONMENT: shadow
+      APP_ENVIRONMENT_LABEL: 影子 Kafka 业务环境
+      LOAD_TEST_RUN_ID: ${KAFKA_RUN_ID}
+      KAFKA_TASK_EVENTS_ENABLED: "true"
+      SESSION_COOKIE_NAME: binhu_shadow_session
+      SESSION_COOKIE_SECURE: "false"
+      SESSION_COOKIE_SAMESITE: lax
+      MYSQL_HOST: derived-mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${SHADOW_BACKEND_USER}
+      MYSQL_PASSWORD: ${SHADOW_BACKEND_PASSWORD}
+      MYSQL_ONLINE_DATA_DB: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_ARCHIVE_DB: ${BUSINESS_ARCHIVE_DATABASE}
+      MYSQL_DAILY_REPORT_DB: ${BUSINESS_DAILY_DATABASE}
+      MYSQL_PLATFORM_DB: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_VISIT_DB: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_DISPATCH_DB: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_REGISTRY_DB: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_WORKFLOW_DB: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_DOMAIN_DATABASES_ENABLED: "false"
+      PLATFORM_DOMAIN_ACTIVE: "false"
+      VISIT_DOMAIN_ACTIVE: "false"
+      DISPATCH_DOMAIN_ACTIVE: "false"
+      DAILY_DOMAIN_ACTIVE: "false"
+      REGISTRY_ADDRESS_DOMAIN_ACTIVE: "false"
+      REGISTRY_FEATURE_ENABLED: "false"
+      WORKFLOW_FEATURE_ENABLED: "false"
+      MYSQL_POOL_SIZE: "10"
+      LOCAL_REPORT_SCHEDULER_ENABLED: "false"
+      REDIS_URL: redis://:${BUSINESS_REDIS_PASSWORD}@derived-redis:6379/0
+      ENCRYPTION_KEY: ${BUSINESS_ENCRYPTION_KEY:?set independent backend encryption key}
+      LOCAL_DATA_SOURCE_ENABLED: "true"
+      TXDOCS_ENABLED: "false"
+      TXDOCS_MIGRATION_MODE: readonly
+      QMF_SOURCE_ACQUISITION_ENABLED: "false"
+      QMF_REGISTRATION_ENABLED: "false"
+      QMF_STATUS_SCAN_ENABLED: "false"
+      VENUE_CLOUD_SYNC_ENABLED: "false"
+      VENUE_CLOUD_PULL_ENABLED: "false"
+      CERTIFICATE_SOURCE_DAILY_ENABLED: "false"
+      VISIT_SOURCE_BASE_URL: ""
+      QMF_SOURCE_BASE_URL: ""
+      PUBLIC_WEB_BASE_URL: ""
+      BOOTSTRAP_ADMIN_USERNAME: observer@shadow
+      BOOTSTRAP_ADMIN_PASSWORD: ${BUSINESS_BOOTSTRAP_PASSWORD:?set fictional shadow bootstrap password}
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:37125/api/health', timeout=2)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+      binhu.shadow.scope: business
+
+  shadow-gateway:
+    image: ${BUSINESS_GATEWAY_IMAGE:?set a verified gateway image digest}
+    depends_on:
+      backend: {condition: service_healthy}
+    expose: ["8080"]
+    volumes:
+      - ./shadow-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [internal]
+    read_only: true
+    tmpfs: ["/var/cache/nginx:size=16m,mode=1777", "/var/run:size=4m,mode=1777", "/tmp:size=4m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+      binhu.shadow.scope: business
+
+  kafka-relay:
+    image: ${BUSINESS_RELAY_IMAGE:?set a verified relay image digest}
+    profiles: []
+    depends_on:
+      derived-mysql: {condition: service_healthy}
+    environment:
+      APP_ENVIRONMENT: shadow
+      LOAD_TEST_RUN_ID: ${KAFKA_RUN_ID}
+      MYSQL_HOST: derived-mysql
+      MYSQL_DATABASE: ${BUSINESS_ONLINE_DATABASE}
+      MYSQL_USER: shadow_derived
+      MYSQL_PASSWORD: ${BUSINESS_RELAY_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    networks: [internal]
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+      binhu.shadow.scope: business
+
+volumes:
+  kafka-business-mysql-data: {}
+  kafka-business-redis-data: {}

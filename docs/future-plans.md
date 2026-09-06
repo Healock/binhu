@@ -134,3 +134,4 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 
 
 - 2026-09-07：clean Flink 运行号 `KSHADOW-20260907T031500Z-clean03` 已创建协议 topic（3 分区、RF2、7 天 retention），固定 digest JAR 上传并提交作业 `efbc05e34d04cabef75edc502eeee688`。4 条虚构元数据事件验证：重复 event_id 输出 `DUPLICATE` 且计数不增加，revision=3 输出 `STALE`，revision=6 输出 `APPLIED`；作业持续 RUNNING，checkpoint 1–10 全部 COMPLETED。范围仍是元数据协议/revision 状态恢复，不代表业务派生、Redis/MySQL 投影或双轨完成。
+- 2026-09-07：clean 运行号辅助 Outbox 真实影子验收通过。使用全新、可追踪合成照片/场所 Outbox 行，在同一隔离 MySQL 事务中验证回滚时源行与 Kafka ledger 均不残留、提交后重复登记保持幂等；relay 按事件类型投递到 `binhu.photo.events.v1` 与 `binhu.venue.events.v1`，未进入任务主题。Kafka ledger 最终 `published`，源 Outbox 状态保持 `pending`/attempt=0，证明 Kafka 确认不会伪造外部照片或场所云副作用。证据：服务器 `artifacts/aux-transport-096732e89649-retry2/result.json`，运行镜像 `sha256:015550036328b5a6996713009b1758a7d84e4351513ad7bd6988133819d57c13`。该结果仍是合成来源闭环，不等价于生产业务 Outbox 全量接入。

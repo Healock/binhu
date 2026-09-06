@@ -11,8 +11,8 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 
-from services.kafka_event_contract import (
-    serialize_task_event, partition_key_bytes, validate_task_event,
+from services.kafka_envelope import (
+    serialize_event, event_partition_key, validate_event,
 )
 from services.kafka_relay import Delivery, LEASE_SECONDS, MAX_ATTEMPTS
 
@@ -44,10 +44,10 @@ async def enqueue_delivery(cur, event: dict, *, run_id: str) -> None:
     The caller owns commit/rollback. Reusing an event id with changed metadata
     fails the transaction instead of silently mutating an earlier event.
     """
-    normalized = validate_task_event(event)
+    normalized = validate_event(event)
     if normalized["run_id"] != run_id:
         raise ValueError("Kafka delivery run mismatch")
-    payload = serialize_task_event(normalized)
+    payload = serialize_event(normalized)
     digest = hashlib.sha256(payload).hexdigest()
     await cur.execute(
         """INSERT INTO _kafka_event_delivery
@@ -103,12 +103,12 @@ class MySQLDeliveryStore:
                     event_id, raw, digest, status, attempts, dlq_attempts = row
                     try:
                         event = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-                        payload = serialize_task_event(event)
+                        payload = serialize_event(event)
                         if event["run_id"] != self.run_id or event["event_id"] != event_id:
                             raise ValueError("stored metadata identity mismatch")
                         if hashlib.sha256(payload).hexdigest() != digest:
                             raise ValueError("stored metadata hash mismatch")
-                        key = partition_key_bytes(event)
+                        key = event_partition_key(event)
                     except (ValueError, TypeError, KeyError):
                         await cur.execute(
                             """UPDATE _kafka_event_delivery SET status='quarantined',
@@ -140,7 +140,8 @@ class MySQLDeliveryStore:
                          event_id, self.run_id),
                     )
                 await conn.commit()
-                return Delivery(event_id, payload, key, token, count + 1, channel)
+                return Delivery(event_id, payload, key, token, count + 1, channel,
+                                event_type=event["event_type"])
             except BaseException:
                 await conn.rollback()
                 raise
