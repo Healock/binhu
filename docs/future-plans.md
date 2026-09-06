@@ -132,3 +132,5 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 
 在独立影子 MySQL/Kafka 上完成真实 SIGKILL 验收：一条已确认事件只投递 1 次且不再领取；另一条在 Kafka ACK 后、ledger 提交前被杀死，90 秒租约过期后重投，消费者收到 2 次，最终 ledger `published` 且 `event_attempts=2`。这验证了至少一次语义与 lease fencing；消费者幂等副作用仍需通过真实派生投影表完成，不能把 Kafka broker 的重复消息当作自动幂等。服务器证据为 `artifacts/relay-crash-verification-01.log`。
 
+
+- 2026-09-07：clean Flink 运行号 `KSHADOW-20260907T031500Z-clean03` 已创建协议 topic（3 分区、RF2、7 天 retention），固定 digest JAR 上传并提交作业 `efbc05e34d04cabef75edc502eeee688`。4 条虚构元数据事件验证：重复 event_id 输出 `DUPLICATE` 且计数不增加，revision=3 输出 `STALE`，revision=6 输出 `APPLIED`；作业持续 RUNNING，checkpoint 1–10 全部 COMPLETED。范围仍是元数据协议/revision 状态恢复，不代表业务派生、Redis/MySQL 投影或双轨完成。
