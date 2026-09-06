@@ -19,6 +19,7 @@ from inspect_business_runtime import (  # noqa: E402
     build_runtime_snapshot,
     filter_identity_env,
     parse_dotenv_identity,
+    _required_env_alias,
     validate_current_root,
 )
 
@@ -239,6 +240,31 @@ def test_dotenv_identity_is_parsed_without_retaining_secret_values():
         "COMPOSE_PROJECT_NAME": PROJECT,
         "KAFKA_NETWORK": NETWORK,
     }
+
+
+def test_dotenv_identity_aliases_must_agree_and_be_non_empty():
+    identity = {"COMPOSE_PROJECT_NAME": PROJECT, "KAFKA_PROJECT": PROJECT}
+    assert _required_env_alias(
+        identity,
+        ("COMPOSE_PROJECT_NAME", "KAFKA_PROJECT"),
+        "project",
+    ) == PROJECT
+
+    identity["KAFKA_PROJECT"] = PROJECT + "-other"
+    with pytest.raises(RuntimeInspectionError):
+        _required_env_alias(
+            identity,
+            ("COMPOSE_PROJECT_NAME", "KAFKA_PROJECT"),
+            "project",
+        )
+
+    identity["KAFKA_PROJECT"] = ""
+    with pytest.raises(RuntimeInspectionError):
+        _required_env_alias(
+            identity,
+            ("COMPOSE_PROJECT_NAME", "KAFKA_PROJECT"),
+            "project",
+        )
 
 
 def test_compose_network_labels_are_optional_until_live_network_inspect():

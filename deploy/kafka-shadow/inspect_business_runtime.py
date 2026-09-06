@@ -208,6 +208,46 @@ def validate_current_root(root: str | Path, cwd: str | Path | None = None) -> st
     return root_text
 
 
+def parse_dotenv_identity(text: str) -> dict[str, str]:
+    """Parse only non-secret identity keys from the project's ``.env``."""
+
+    result: dict[str, str] = {}
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            _fail(f".env line {line_number} is malformed")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            _fail(f".env key on line {line_number} is malformed")
+        if key in result:
+            _fail(f".env repeats identity key {key}")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if "\x00" in value or "\n" in value or "\r" in value:
+            _fail(f".env value on line {line_number} is malformed")
+        if key in IDENTITY_ENV_KEYS or (
+            (key.startswith("MYSQL_") or key.startswith("BUSINESS_"))
+            and (key.endswith("_DB") or key.endswith("DATABASE"))
+        ):
+            result[key] = value
+    return result
+
+
+def _required_env_alias(identity: Mapping[str, str], keys: Sequence[str], label: str) -> str:
+    """Require one non-empty value when an identity field has aliases."""
+
+    values = [identity[key] for key in keys if key in identity]
+    if not values or any(not value.strip() for value in values):
+        _fail(f".env is missing {label}")
+    if len(set(values)) != 1:
+        _fail(f".env {label} aliases disagree")
+    return values[0]
+
+
 def _required_string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         _fail(f"{label} is missing")
@@ -319,7 +359,10 @@ def _compose_network(config: Mapping[str, Any], project: str) -> str:
     if settings.get("external") is True:
         _fail("Compose network cannot be external")
     labels = settings.get("labels")
-    if not isinstance(labels, Mapping) or labels.get("com.docker.compose.project") != project:
+    if labels is not None and (
+        not isinstance(labels, Mapping)
+        or labels.get("com.docker.compose.project") not in (None, project)
+    ):
         _fail("Compose network project label does not match")
     name = settings.get("name")
     if not isinstance(name, str) or not name:
@@ -799,6 +842,7 @@ def collect_runtime(
     env_path = requested / ".env"
     if not env_path.is_file():
         _fail("shadow root is missing .env")
+    env_identity = parse_dotenv_identity(env_path.read_text(encoding="utf-8"))
     manifest_file = (
         requested / "artifacts" / "deployment-identity.json"
         if manifest_path is None
@@ -806,6 +850,20 @@ def collect_runtime(
     )
     manifest = _read_json_file(manifest_file, "deployment manifest")
     project, expected_run, services, volumes = validate_manifest(manifest, root_text, run_id)
+    env_project = _required_env_alias(
+        env_identity,
+        ("COMPOSE_PROJECT_NAME", "KAFKA_PROJECT"),
+        "COMPOSE_PROJECT_NAME or KAFKA_PROJECT",
+    )
+    if env_project != project:
+        _fail(".env project does not match the deployment manifest")
+    env_run = _required_env_alias(
+        env_identity,
+        ("KAFKA_RUN_ID", "LOAD_TEST_RUN_ID"),
+        "KAFKA_RUN_ID or LOAD_TEST_RUN_ID",
+    )
+    if env_run != expected_run:
+        _fail(".env run_id does not match the deployment manifest")
     compose_files = _compose_files(requested)
     compose_output = _execute(
         runner,
@@ -818,6 +876,9 @@ def collect_runtime(
     if not isinstance(compose_config, Mapping):
         _fail("compose config must be a JSON object")
     compose = parse_compose_config(compose_config, manifest)
+    env_network = env_identity.get("KAFKA_NETWORK")
+    if env_network is not None and env_network != compose.network:
+        _fail(".env network does not match the Compose internal network")
     ps_output = _execute(
         runner,
         [
@@ -866,7 +927,7 @@ def collect_runtime(
         phase="docker network ls",
     )
     network_names = _parse_network_names(network_ls_output)
-    if network_names != [compose.network] and set(network_names) != {compose.network}:
+    if len(network_names) != 1 or set(network_names) != {compose.network}:
         _fail("Docker project networks do not match the Compose internal network")
     network_output = _execute(
         runner,
@@ -905,6 +966,10 @@ def collect_runtime(
         phase=phase,
         root=root_text,
     )
+    snapshot["env_identity"] = env_identity
+    snapshot["sha256"] = hashlib.sha256(
+        _canonical_bytes({key: value for key, value in snapshot.items() if key != "sha256"})
+    ).hexdigest()
     if output_path is None:
         stamp = snapshot["collected_at"].replace(":", "").replace("-", "").replace("Z", "")
         output = requested / "artifacts" / f"business-runtime-{expected_run}-{stamp}.json"
