@@ -242,7 +242,7 @@ def validate_runtime_index(
     data = dict(_read_json(path, "runtime index"))
     if set(data) - RUNTIME_INDEX_KEYS:
         _fail("runtime index contains an unknown top-level field")
-    if data.get("schema_version") != 1:
+    if type(data.get("schema_version")) is not int or data.get("schema_version") != 1:
         _fail("runtime index schema_version is unsupported")
     if data.get("run_id") != expected_run:
         _fail("runtime index run_id does not match the requested run")
@@ -593,7 +593,7 @@ def run(
     except BusinessGuardError as exc:
         raise BusinessRunError(str(exc)) from exc
     selected_profile = resolve_profile(profile, users=users, duration=duration)
-    if not isinstance(preflight_timeout, (int, float)) or not 0 < preflight_timeout <= 120:
+    if isinstance(preflight_timeout, bool) or not isinstance(preflight_timeout, (int, float)) or not 0 < preflight_timeout <= 120:
         _fail("preflight timeout must be between 0 and 120 seconds")
     requested_root = (Path.cwd() if root is None else Path(root)).resolve()
     try:
@@ -692,7 +692,7 @@ def run(
     command[image_index:image_index] = env_args
 
     timeout_seconds = selected_profile.duration_seconds + 60 if run_timeout is None else run_timeout
-    if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= MAX_RUN_TIMEOUT_SECONDS:
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= MAX_RUN_TIMEOUT_SECONDS:
         _fail("run timeout must be between 0 and 420 seconds")
     return_code = 127
     timed_out = False
@@ -712,6 +712,7 @@ def run(
                         cwd=str(checked_root),
                         env={"PATH": os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
                         shell=False,
+                        stdin=subprocess.DEVNULL,
                         stdout=stdout,
                         stderr=stderr,
                     )
