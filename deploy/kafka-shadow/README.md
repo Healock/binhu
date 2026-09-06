@@ -90,3 +90,30 @@ delivery ledger; it never means an external write was executed. Synthetic
 rows are retained in the component volume for diagnosis; the result identifies
 their events, and the volume is removed only by the project's scoped cleanup.
 Never activate a legacy external worker to consume these rows.
+
+## Synthetic business runtime index
+
+`export_business_index.py` is an operator-side read-only exporter, not a Flink
+consumer. Deploy it in `<project>/deploy/kafka-shadow/` together with the guard
+and inspector; preserve `<project>/load-tests/fixture.py`. Do not flatten these
+files into the project root. From the verified isolated project directory run:
+
+```sh
+python3 deploy/kafka-shadow/export_business_index.py \
+  --run-id "$KAFKA_RUN_ID" --output artifacts/business-runtime-index.json
+```
+
+This command first collects a fresh live Docker/network/database marker
+snapshot, then reads fixture metadata in a read-only MySQL transaction with
+bounded query/subprocess timeouts. It requires exactly 3600 source/expectation/
+local records and 48 properties, no other run's expectations, unchanged source
+revisions and matching source/local hashes. Community/inspector values come
+from the deterministic fictional fixture; task bodies and credentials are not
+exported. The output records the inspection snapshot SHA256 and refuses to
+overwrite a file or follow `artifacts` outside the project.
+
+The exporter deliberately rejects a used or mixed debug volume. A successful
+export is not proof of fresh-volume provenance, Kafka completeness, derived
+results or capacity. The Runner must perform its own fresh preflight before
+traffic. The current business02 stop remains in force; this command has only
+been tested locally with simulated database output, not executed remotely.

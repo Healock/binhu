@@ -12,6 +12,8 @@
 
 暂停期间已完成本地集成：`a61ac04d` 将领取/研判原有单事务事件准确分类为 claimed/reviewed；`aa1c8fbf` 新增独立合成任务 raw 回读，仍缺四类参考输入与输出提交 fence。完整后端 `python -m pytest tests -q`（工作目录 backend）结果 1289 passed、126 subtests passed；本次改动尚未部署，真实 MySQL 未验证。独立 run_business Runner 为未提交草稿，存在宿主机/内部网络可达性及 Seeder 运行索引缺口，不能直接据模拟测试启动复测。
 
+2026-09-07 压测运行索引补齐：新增 `deploy/kafka-shadow/export_business_index.py`，先现场只读预检，再从同一影子库事务读取 expectation/source/local record 的版本与哈希一致性及房屋定位；严格要求 3600 条任务、48 套房屋，额外 probe、其他运行记录、旧版本和未知字段均拒绝。姓名/社区选项从固定虚构 fixture 重建，不导出人员正文。索引关联预检快照 SHA256，文件仅允许新建于项目内 `artifacts/`，拒绝该目录链接到项目外；同样修正预检快照写入边界。导出器与预检相关测试 41 passed；尚未在真实 MySQL 执行，导出成功不能代替新卷身份、双轨或容量验收。Runner 容器化仍在本地集成中。
+
 阶段顺序：
 
 1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。领域 Outbox 已接入部分本地业务事务并完成影子创建事件往返，尚未全量验收；照片同步与场所云已有独立合同及合成来源验证，真实业务接线仍待完成，禁止伪装成任务领域事件。

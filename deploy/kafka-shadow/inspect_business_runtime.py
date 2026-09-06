@@ -809,7 +809,8 @@ def _ensure_inside(path: Path, root: Path, label: str) -> Path:
 
 
 def write_snapshot(path: Path, snapshot: Mapping[str, Any], root: Path) -> Path:
-    target = _ensure_inside(path, root / "artifacts", "snapshot output")
+    artifacts = _ensure_inside(root / "artifacts", root, "artifacts directory")
+    target = _ensure_inside(path, artifacts, "snapshot output")
     if target.suffix.casefold() != ".json":
         _fail("snapshot output must be a JSON file")
     if target.exists():
