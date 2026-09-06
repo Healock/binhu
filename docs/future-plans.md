@@ -47,7 +47,7 @@
 | 来源 | 业务性质 | Kafka 处理边界 | 当前状态 |
 | --- | --- | --- | --- |
 | `_domain_event_outbox` | 任务领域事件 | 使用 `binhu.task.events.v1` 严格元数据合同，回读任务正文 | 转换器、ledger、真实影子投递和 SIGKILL 窗口已验证；尚未挂入 Backend 事务 |
-| `photo_sheet_outbox` | 照片名单外部写回意图 | 单独事件类型/主题，保留 work order 与 action 元数据；不得写入任务正文或照片 | 已盘点，事件合同和源 ID 映射待实现 |
+| `photo_sheet_outbox` | 照片名单外部写回意图 | 单独事件类型/主题，保留 work order 与 action 元数据；不得写入任务正文或照片 | 已盘点，独立元数据合同已实现；真实 relay 接入待实现 |
 | `_venue_cloud_outbox` | 场所云外部同步意图 | 单独事件类型/主题，保留 venue ID、配置 revision、action、request ID | 已盘点，事件合同和权限/重试边界待实现 |
 | `_online_projection_jobs` | 本地派生队列 | 保持独立队列，不转换为领域事件 | 继续由 Python worker 管理，Flink 接入另立阶段 |
 
@@ -117,3 +117,4 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 ### 2026-09-07 Relay 崩溃窗口真实验证
 
 在独立影子 MySQL/Kafka 上完成真实 SIGKILL 验收：一条已确认事件只投递 1 次且不再领取；另一条在 Kafka ACK 后、ledger 提交前被杀死，90 秒租约过期后重投，消费者收到 2 次，最终 ledger `published` 且 `event_attempts=2`。这验证了至少一次语义与 lease fencing；消费者幂等副作用仍需通过真实派生投影表完成，不能把 Kafka broker 的重复消息当作自动幂等。服务器证据为 `artifacts/relay-crash-verification-01.log`。
+
