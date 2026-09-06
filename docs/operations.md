@@ -1,5 +1,17 @@
 # 开发与运维手册
 
+## Kafka 影子项目镜像与回滚
+
+本阶段仅在另建的 `binhu-eventbus-shadow-*` 目录操作，禁止进入正式项目或既有 `binhu-loadtest-lt-*`。执行前核对实际目录、`artifacts/deployment-identity.json` 的运行编号、Compose 项目、容器标签、网络及卷；配置中不得有宿主机端口、生产挂载或外部网络。
+
+镜像准备使用 [prepare_images.py](../deploy/kafka-shadow/prepare_images.py) 在服务器解析固定版本、验证 SHA256 并生成锁文件。显式使用当前代理的 `repository@sha256` 引用拉取，完成后再用 `docker image inspect` 比对 RepoDigest；禁止 `latest`，不修改 daemon、不重启宿主机 Docker。镜像获取属于部署准备，运行中的影子容器仍仅连接内部网络。
+
+运行配置 `.env` 在服务器以 0600 权限新建，包含独立项目、网络、运行编号和 KRaft cluster ID。`docker compose config --quiet` 通过后检查展开配置，再以 `docker compose up -d --pull never kafka-1 kafka-2 kafka-3` 启动指定服务。镜像声明的两个辅助 VOLUME 用有界 tmpfs 覆盖，实际挂载只允许本项目数据卷。Registry 完整镜像准备好后单独启动并检查 readiness。
+
+每次将 Compose 版本、镜像锁、拉取日志、仲裁、主题 describe、容器挂载和故障演练结果存入该项目 `artifacts/`。Kafka CLI 工具位于 `/opt/kafka/bin/`；三业务主题必须为 3 分区、2 副本、`retention.ms=604800000`、`min.insync.replicas=2`。RF2 下停止一个副本可能暂停受影响分区的 `acks=all` 写入，这是预期行为，需要验证恢复后重试成功。
+
+停止本阶段时，核对身份后在本项目目录执行 `docker compose stop`，保留命名数据卷、镜像与证据，现行 MySQL/Python worker 不受此回滚影响。禁止全局 prune。需要清理数据时先归档证据和核对运行编号，再单独制定本项目清单；不得复用既有压测卷。当前使用的 Apicurio `mem` 重启会丢 schema，须从版本化定义重新注册，尚不满足持久化 Registry 验收。
+
 ## 影子压测入口
 
 正式客户端保留受控影子入口：普通账号使用 `/api`，用户名以 `@shadow` 结尾时使用同一 HTTPS 站点的 `/shadow-api`。环境选择仅保存在当前客户端会话中，影子后端必须通过 Bootstrap 返回 `environment=shadow`，否则客户端终止登录且不得回退生产。

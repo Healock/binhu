@@ -4,6 +4,9 @@ services:
   kafka-1:
     image: ${KAFKA_IMAGE:?set a verified Kafka image digest}
     hostname: kafka-1
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     environment: &kafka-env
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -14,7 +17,15 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LOG_DIRS: /var/lib/kafka/data
-      KAFKA_CLUSTER_ID: ${KAFKA_CLUSTER_ID:?set a generated cluster id}
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?set a generated cluster id}
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 2
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 168
     labels:
@@ -22,9 +33,15 @@ services:
       binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
     networks: [internal]
     volumes: [kafka-1-data:/var/lib/kafka/data]
+    tmpfs: &kafka-tmpfs
+      - /etc/kafka/secrets:size=1m,mode=1777
+      - /mnt/shared/config:size=8m,mode=1777
   kafka-2:
     image: ${KAFKA_IMAGE:?set a verified Kafka image digest}
     hostname: kafka-2
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     environment:
       <<: *kafka-env
       KAFKA_NODE_ID: 2
@@ -34,9 +51,13 @@ services:
       binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
     networks: [internal]
     volumes: [kafka-2-data:/var/lib/kafka/data]
+    tmpfs: *kafka-tmpfs
   kafka-3:
     image: ${KAFKA_IMAGE:?set a verified Kafka image digest}
     hostname: kafka-3
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     environment:
       <<: *kafka-env
       KAFKA_NODE_ID: 3
@@ -46,11 +67,12 @@ services:
       binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
     networks: [internal]
     volumes: [kafka-3-data:/var/lib/kafka/data]
+    tmpfs: *kafka-tmpfs
   schema-registry:
     image: ${APICURIO_IMAGE:?set a verified Apicurio image digest}
-    environment:
-      QUARKUS_PROFILE: prod
-      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    mem_limit: 768m
+    cpus: 0.5
+    pids_limit: 256
     labels:
       binhu.shadow: "true"
       binhu.shadow.run_id: "${KAFKA_RUN_ID:?set a run id}"
@@ -62,6 +84,6 @@ networks:
     internal: true
 
 volumes:
-  kafka-1-data: {name: binhu_kafka_shadow_1_20260906}
-  kafka-2-data: {name: binhu_kafka_shadow_2_20260906}
-  kafka-3-data: {name: binhu_kafka_shadow_3_20260906}
+  kafka-1-data: {}
+  kafka-2-data: {}
+  kafka-3-data: {}
