@@ -1,6 +1,7 @@
 #!/bin/bash
 # Fresh-run initializer for the clean Kafka business shadow.
 # It is executed by the official MySQL image as root, before Backend starts.
+(
 set -Eeuo pipefail
 
 fail() {
@@ -35,12 +36,6 @@ mysql_root() {
 mysql_root <<SQL
 CREATE DATABASE IF NOT EXISTS $archive_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE DATABASE IF NOT EXISTS $daily_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '$backend_user'@'%' IDENTIFIED BY '$backend_password';
-ALTER USER '$backend_user'@'%' IDENTIFIED BY '$backend_password';
-GRANT ALL PRIVILEGES ON $online_db.* TO '$backend_user'@'%';
-GRANT ALL PRIVILEGES ON $archive_db.* TO '$backend_user'@'%';
-GRANT ALL PRIVILEGES ON $daily_db.* TO '$backend_user'@'%';
-REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'shadow_derived'@'%';
 CREATE TABLE IF NOT EXISTS $online_db._shadow_identity (
   environment VARCHAR(16) NOT NULL PRIMARY KEY,
   run_id VARCHAR(80) NOT NULL,
@@ -49,6 +44,21 @@ CREATE TABLE IF NOT EXISTS $online_db._shadow_identity (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE TABLE IF NOT EXISTS $archive_db._shadow_identity LIKE $online_db._shadow_identity;
 CREATE TABLE IF NOT EXISTS $daily_db._shadow_identity LIKE $online_db._shadow_identity;
+SQL
+
+for marker_db in "$online_db" "$archive_db" "$daily_db"; do
+  marker_count="$(mysql_root --batch --skip-column-names -e \
+    "SELECT COUNT(*) FROM ${marker_db}._shadow_identity")"
+  [[ "$marker_count" == "0" ]] || fail "shadow marker already exists in ${marker_db}"
+done
+
+mysql_root <<SQL
+CREATE USER IF NOT EXISTS '$backend_user'@'%' IDENTIFIED BY '$backend_password';
+ALTER USER '$backend_user'@'%' IDENTIFIED BY '$backend_password';
+GRANT ALL PRIVILEGES ON $online_db.* TO '$backend_user'@'%';
+GRANT ALL PRIVILEGES ON $archive_db.* TO '$backend_user'@'%';
+GRANT ALL PRIVILEGES ON $daily_db.* TO '$backend_user'@'%';
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'shadow_derived'@'%';
 CREATE TABLE IF NOT EXISTS $online_db._kafka_event_delivery (
   event_id CHAR(36) PRIMARY KEY,
   run_id VARCHAR(80) NOT NULL,
@@ -66,18 +76,15 @@ CREATE TABLE IF NOT EXISTS $online_db._kafka_event_delivery (
   INDEX pending_delivery (run_id, status, available_at, created_at),
   INDEX expired_delivery (run_id, status, locked_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-DELETE FROM $online_db._shadow_identity;
-INSERT INTO $online_db._shadow_identity (environment, run_id, database_name)
-VALUES ('shadow', '$run_id', '$online_db');
-DELETE FROM $archive_db._shadow_identity;
-INSERT INTO $archive_db._shadow_identity (environment, run_id, database_name)
-VALUES ('shadow', '$run_id', '$archive_db');
-DELETE FROM $daily_db._shadow_identity;
-INSERT INTO $daily_db._shadow_identity (environment, run_id, database_name)
-VALUES ('shadow', '$run_id', '$daily_db');
 GRANT SELECT ON $online_db._shadow_identity TO 'shadow_derived'@'%';
 GRANT SELECT, INSERT, UPDATE ON $online_db._kafka_event_delivery TO 'shadow_derived'@'%';
 FLUSH PRIVILEGES;
+INSERT INTO $online_db._shadow_identity (environment, run_id, database_name)
+VALUES ('shadow', '$run_id', '$online_db');
+INSERT INTO $archive_db._shadow_identity (environment, run_id, database_name)
+VALUES ('shadow', '$run_id', '$archive_db');
+INSERT INTO $daily_db._shadow_identity (environment, run_id, database_name)
+VALUES ('shadow', '$run_id', '$daily_db');
 SQL
 
 # Reuse the canonical application schema.  All canonical domain names are
@@ -86,14 +93,33 @@ SQL
 tmp_sql="$(mktemp)"
 trap 'rm -f "$tmp_sql"' EXIT
 sed \
-  -e "s/OnlineDataArchive/${archive_db}/g" \
-  -e "s/daily_report/${daily_db}/g" \
-  -e "s/PlatformData/${online_db}/g" \
-  -e "s/VisitData/${online_db}/g" \
-  -e "s/DispatchData/${online_db}/g" \
-  -e "s/RegistryData/${online_db}/g" \
-  -e "s/WorkflowData/${online_db}/g" \
-  -e "s/OnlineData/${online_db}/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS OnlineDataArchive /CREATE DATABASE IF NOT EXISTS ${archive_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON OnlineDataArchive\\.\\* /GRANT ALL PRIVILEGES ON ${archive_db}.* /g" \
+  -e "s/USE OnlineDataArchive;/USE ${archive_db};/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS daily_report /CREATE DATABASE IF NOT EXISTS ${daily_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON daily_report\\.\\* /GRANT ALL PRIVILEGES ON ${daily_db}.* /g" \
+  -e "s/USE daily_report;/USE ${daily_db};/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS PlatformData /CREATE DATABASE IF NOT EXISTS ${online_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON PlatformData\\.\\* /GRANT ALL PRIVILEGES ON ${online_db}.* /g" \
+  -e "s/USE PlatformData;/USE ${online_db};/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS VisitData /CREATE DATABASE IF NOT EXISTS ${online_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON VisitData\\.\\* /GRANT ALL PRIVILEGES ON ${online_db}.* /g" \
+  -e "s/USE VisitData;/USE ${online_db};/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS DispatchData /CREATE DATABASE IF NOT EXISTS ${online_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON DispatchData\\.\\* /GRANT ALL PRIVILEGES ON ${online_db}.* /g" \
+  -e "s/USE DispatchData;/USE ${online_db};/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS RegistryData /CREATE DATABASE IF NOT EXISTS ${online_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON RegistryData\\.\\* /GRANT ALL PRIVILEGES ON ${online_db}.* /g" \
+  -e "s/USE RegistryData;/USE ${online_db};/g" \
+  -e "s/CREATE DATABASE IF NOT EXISTS WorkflowData /CREATE DATABASE IF NOT EXISTS ${online_db} /g" \
+  -e "s/GRANT ALL PRIVILEGES ON WorkflowData\\.\\* /GRANT ALL PRIVILEGES ON ${online_db}.* /g" \
+  -e "s/USE WorkflowData;/USE ${online_db};/g" \
+  -e "s/USE OnlineData;/USE ${online_db};/g" \
+  -e "s/LIKE OnlineData\\./LIKE ${online_db}./g" \
+  -e "/DROP INDEX uk_row_key,/s/DROP INDEX uk_row_key,//" \
   -e "s/'binhu'/'${backend_user}'/g" \
   /opt/binhu-backend-init.sql > "$tmp_sql"
 mysql_root < "$tmp_sql"
+# Never schedule backups in the synthetic business environment.
+mysql_root -e "UPDATE ${online_db}._backup_schedule SET enabled=0, next_run_at=NULL WHERE id=1"
+)

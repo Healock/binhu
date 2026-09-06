@@ -4,6 +4,7 @@
 # accidentally become part of this run.
 services:
   derived-mysql:
+    command: ["mysqld", "--max_connections=151", "--innodb_buffer_pool_size=1G"]
     environment:
       MYSQL_ROOT_PASSWORD: ${BUSINESS_MYSQL_ROOT_PASSWORD:?set independent business root password}
       MYSQL_DATABASE: ${BUSINESS_ONLINE_DATABASE:?set KShadow online database}
@@ -14,11 +15,14 @@ services:
       BUSINESS_DAILY_DATABASE: ${BUSINESS_DAILY_DATABASE:?set KShadow daily database}
       SHADOW_BACKEND_USER: ${SHADOW_BACKEND_USER:?set isolated backend database user}
       SHADOW_BACKEND_PASSWORD: ${SHADOW_BACKEND_PASSWORD:?set isolated backend database password}
-    volumes:
+    volumes: !override
       - kafka-business-mysql-data:/var/lib/mysql
       - ./business-init.sh:/docker-entrypoint-initdb.d/00-business-init.sh:ro
-      - ../backend/init.sql:/opt/binhu-backend-init.sql:ro
+      - ${BUSINESS_SCHEMA_PATH:?set absolute project-internal backend init schema}:/opt/binhu-backend-init.sql:ro
     networks: [internal]
+    cpus: 4.0
+    mem_limit: 3g
+    pids_limit: 256
     labels:
       binhu.shadow: "true"
       binhu.shadow.run_id: ${KAFKA_RUN_ID}
@@ -26,7 +30,7 @@ services:
 
   derived-redis:
     command: ["redis-server", "--appendonly", "no", "--requirepass", "${BUSINESS_REDIS_PASSWORD:?set independent Redis password}"]
-    volumes:
+    volumes: !override
       - kafka-business-redis-data:/data
     networks: [internal]
     labels:
@@ -43,6 +47,7 @@ services:
     environment:
       APP_ENVIRONMENT: shadow
       APP_ENVIRONMENT_LABEL: 影子 Kafka 业务环境
+      APP_VERSION: ${BUSINESS_APP_VERSION:?read repository VERSION}
       LOAD_TEST_RUN_ID: ${KAFKA_RUN_ID}
       KAFKA_TASK_EVENTS_ENABLED: "true"
       SESSION_COOKIE_NAME: binhu_shadow_session
@@ -60,18 +65,22 @@ services:
       MYSQL_DISPATCH_DB: ${BUSINESS_ONLINE_DATABASE}
       MYSQL_REGISTRY_DB: ${BUSINESS_ONLINE_DATABASE}
       MYSQL_WORKFLOW_DB: ${BUSINESS_ONLINE_DATABASE}
-      MYSQL_DOMAIN_DATABASES_ENABLED: "false"
-      PLATFORM_DOMAIN_ACTIVE: "false"
+      MYSQL_DOMAIN_DATABASES_ENABLED: "true"
+      PLATFORM_DOMAIN_ACTIVE: "true"
       VISIT_DOMAIN_ACTIVE: "false"
       DISPATCH_DOMAIN_ACTIVE: "false"
-      DAILY_DOMAIN_ACTIVE: "false"
+      DAILY_DOMAIN_ACTIVE: "true"
       REGISTRY_ADDRESS_DOMAIN_ACTIVE: "false"
       REGISTRY_FEATURE_ENABLED: "false"
       WORKFLOW_FEATURE_ENABLED: "false"
       MYSQL_POOL_SIZE: "10"
+      ONLINE_PROJECTION_WORKER_CONCURRENCY: "3"
+      ONLINE_PROJECTION_CLAIM_LIMIT: "100"
+      ONLINE_PROJECTION_MICRO_BATCH_SIZE: "25"
       LOCAL_REPORT_SCHEDULER_ENABLED: "false"
       REDIS_URL: redis://:${BUSINESS_REDIS_PASSWORD}@derived-redis:6379/0
       ENCRYPTION_KEY: ${BUSINESS_ENCRYPTION_KEY:?set independent backend encryption key}
+      DERIVED_READBACK_TOKEN: ${BUSINESS_DERIVED_READBACK_TOKEN:?set isolated readback token}
       LOCAL_DATA_SOURCE_ENABLED: "true"
       TXDOCS_ENABLED: "false"
       TXDOCS_MIGRATION_MODE: readonly
@@ -92,6 +101,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+    cpus: 2.0
+    mem_limit: 768m
+    pids_limit: 256
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
     cap_drop: [ALL]
@@ -103,6 +115,7 @@ services:
 
   shadow-gateway:
     image: ${BUSINESS_GATEWAY_IMAGE:?set a verified gateway image digest}
+    user: "101:101"
     depends_on:
       backend: {condition: service_healthy}
     expose: ["8080"]
@@ -120,7 +133,7 @@ services:
 
   kafka-relay:
     image: ${BUSINESS_RELAY_IMAGE:?set a verified relay image digest}
-    profiles: []
+    profiles: !override []
     depends_on:
       derived-mysql: {condition: service_healthy}
     environment:
