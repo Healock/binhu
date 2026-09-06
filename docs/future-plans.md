@@ -113,6 +113,7 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 
 - 2026-09-07：再次运行真实隔离 Kafka/derived MySQL ledger 往返：12 条虚构、可清理事件事务提交后被 relay 投递，Kafka 消费到 12 条且 key 与 task_id|source_id 一致，ledger 排空。该测试仍是 ledger-to-Kafka 组件证据，不等价于 Backend 真实事务 Outbox、崩溃窗口、DLQ 或双轨业务验收。
 - 2026-09-07：影子 Compose 已按 `derived` profile 启动独立 `kafka-relay`，容器项目、运行号和固定 digest 标签核验通过。复用旧 delivery ledger 验证脚本时因历史运行号已有数据而按设计拒绝执行（`requires unused ledger`）；未删除或覆盖历史证据。下一步需为新的影子运行号和独立 ledger 执行真实业务 Outbox 写入，再验收重试/DLQ 与幂等副作用。
+- 2026-09-07：已创建第二套全新影子项目 `binhu-kafka-shadow-20260907`，使用独立 KRaft/derived MySQL/Redis 卷、网络和运行号 `KSHADOW-20260907T030500Z-poc02`。三节点 Kafka、三个业务主题（3 分区/RF2/7 天 retention）及 `kafka-relay` 均已启动；证据位于服务器 `artifacts/shadow-start-20260907.log`。该环境尚未接入 Backend 业务写入，不能计入业务闭环通过。
 
 
 ### 2026-09-07 Relay 崩溃窗口真实验证
