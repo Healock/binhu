@@ -74,9 +74,17 @@
 
 ### 2026-09-06 Redis revision cache 进展
 
-Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设置 TTL，版本快照按 TTL 过期，避免快照过期后旧事件覆盖新版本。真实 Redis 大整数 revision、乱序、重复、同版本冲突和快照重建验证待在影子服务器执行；Flink 作业尚未部署。
+Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设置 TTL，版本快照按 TTL 过期，避免快照过期后旧事件覆盖新版本。真实 Redis 大整数 revision、乱序、重复、同版本冲突和快照重建验证待在影子服务器执行；Flink Kafka checkpoint 协议烟测已在影子集群部署；业务派生、MySQL/Redis 输出和双轨比对仍未开始。
 
 
 ### 2026-09-07 影子 Redis 真实验证
 
 真实隔离 Redis 验证已通过：revision=9223372036854775806 写入成功；旧 revision 返回 stale；重复事件返回 duplicate；同 revision 不同内容返回 conflict；高水位 revision 保留，版本快照 TTL=60 秒。证据位于影子服务器 `artifacts/redis-revision-612f5fa9/`。该结果只证明缓存组件合同，不代表 Flink 业务派生或双轨一致性已完成。
+
+
+### 2026-09-07 Flink Kafka checkpoint 影子验证
+
+- 在固定 digest 的 Flink 1.20.1 Java17 镜像中，Kafka connector JAR 的 SHA-256 为 `1086f3eee73d727e234860fcd03adafc0d76f2fc70a25d39c36427693fff749d`，离线 Java 编译和 16 项严格元数据合同检查通过。
+- JobManager/TaskManager 使用独立影子网络和 checkpoint 命名卷启动。首轮提交暴露 checkpoint 卷属主错误；修正为容器用户 9999 后通过。TaskManager 重启时首轮因 5 秒重试间隔短于注册时间失败；保留诊断并将固定重试间隔改为 30 秒，从 checkpoint 22 重新提交。
+- 恢复验收通过：作业 `b80fc8cd2d5fb4f59c14f62455487315` 重启前已完成 4 个 checkpoint，TaskManager 重启后恢复计数状态并完成第 5 个 checkpoint；恢复后 revision 3/5/6 分别输出 `STALE`/`DUPLICATE`/`APPLIED`，最高 revision 从 5 到 6。证据位于影子服务器 `artifacts/flink-recovery-02-after.json`、`flink-post-recovery-output.log`。
+- 当前结论只覆盖 KafkaSource、元数据解析、checkpoint 和 revision 状态恢复；它不是地址匹配、人员标签、任务图、日报、Redis/MySQL 投影或 Python/Flink 双轨验收。

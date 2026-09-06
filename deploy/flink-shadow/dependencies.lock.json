@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "offline_build": true,
+  "sha256_algorithm": "SHA-256",
+  "flink_image": {
+    "repository": "docker.1panel.live/library/flink",
+    "tag": "1.20.1-scala_2.12-java17",
+    "digest": "sha256:f3b3025d1100f83a2083eaf33888e3c04a1217441af2432daf985ec5300ae63a"
+  },
+  "artifacts": [
+    {
+      "coordinates": "org.apache.flink:flink-sql-connector-kafka:3.3.0-1.20",
+      "file": "dependencies/flink-sql-connector-kafka-3.3.0-1.20.jar",
+      "role": "KafkaSource runtime connector fat JAR",
+      "sha256": "1086f3eee73d727e234860fcd03adafc0d76f2fc70a25d39c36427693fff749d",
+      "sha256_format": "64 lowercase hex characters"
+    },
+    {
+      "coordinates": "org.eclipse.jdt:ecj:3.38.0",
+      "file": "ecj-3.38.0.jar",
+      "role": "offline compiler only",
+      "sha256": "97c566b120009c203a2fc8b291f4a9adbc171cf1ccb70f06f6b4e1828c00ce8e"
+    }
+  ],
+  "build_inputs": {
+    "source": "TaskEventCheckpointJob.java",
+    "java_release": 17,
+    "compiler": "ECJ pinned JAR on verified Flink JRE; explicit classpath of image lib/*.jar and connector",
+    "packaging": "Python zipfile, Main-Class manifest"
+  }
+}

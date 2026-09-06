@@ -1,0 +1,54 @@
+# Overlay with the Kafka and derived compose files, based at the isolated root.
+services:
+  flink-jobmanager:
+    image: ${FLINK_IMAGE:?verified digest required}
+    pull_policy: never
+    hostname: flink-jobmanager
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: flink-jobmanager
+        rest.bind-address: 0.0.0.0
+        jobmanager.memory.process.size: 768m
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 3
+        restart-strategy.fixed-delay.delay: 30s
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./flink/target/flink-kafka-checkpoint-smoke-1.0.0-shadow.jar:/opt/flink/usrlib/flink-kafka-checkpoint-smoke.jar:ro
+      - ./flink/dependencies/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar:ro
+    networks: [internal]
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+  flink-taskmanager:
+    image: ${FLINK_IMAGE:?verified digest required}
+    pull_policy: never
+    hostname: flink-taskmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.memory.process.size: 1536m
+        taskmanager.numberOfTaskSlots: 1
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+    depends_on: [flink-jobmanager]
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./flink/target/flink-kafka-checkpoint-smoke-1.0.0-shadow.jar:/opt/flink/usrlib/flink-kafka-checkpoint-smoke.jar:ro
+      - ./flink/dependencies/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar:ro
+    networks: [internal]
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 256
+    labels:
+      binhu.shadow: "true"
+      binhu.shadow.run_id: ${KAFKA_RUN_ID}
+volumes:
+  flink-checkpoints: {}
