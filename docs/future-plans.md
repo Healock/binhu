@@ -88,3 +88,8 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 - JobManager/TaskManager 使用独立影子网络和 checkpoint 命名卷启动。首轮提交暴露 checkpoint 卷属主错误；修正为容器用户 9999 后通过。TaskManager 重启时首轮因 5 秒重试间隔短于注册时间失败；保留诊断并将固定重试间隔改为 30 秒，从 checkpoint 22 重新提交。
 - 恢复验收通过：作业 `b80fc8cd2d5fb4f59c14f62455487315` 重启前已完成 4 个 checkpoint，TaskManager 重启后恢复计数状态并完成第 5 个 checkpoint；恢复后 revision 3/5/6 分别输出 `STALE`/`DUPLICATE`/`APPLIED`，最高 revision 从 5 到 6。证据位于影子服务器 `artifacts/flink-recovery-02-after.json`、`flink-post-recovery-output.log`。
 - 当前结论只覆盖 KafkaSource、元数据解析、checkpoint 和 revision 状态恢复；它不是地址匹配、人员标签、任务图、日报、Redis/MySQL 投影或 Python/Flink 双轨验收。
+
+
+### 2026-09-07 Outbox 接入准备
+
+新增 `backend/services/kafka_outbox_bridge.py`，将现有 `_domain_event_outbox` 行转换为严格 Kafka v1 元数据；缺少本地 `task_id`、`source_id`、`operation_id`、未登记事件类型或敏感字段摘要的行会被拒绝，不会猜测映射。该模块目前是转换和合同测试，尚未接入生产业务事务或影子 Relay，因此不能称为“全部 Outbox 已接入”。照片同步、场所云 Outbox 和 `_online_projection_jobs` 仍按计划分阶段登记。
