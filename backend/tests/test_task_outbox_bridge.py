@@ -35,7 +35,7 @@ def test_task_event_bridge_requires_shadow_and_kshadow_run_id():
     with pytest.raises(ValueError):
         _event_settings(LOAD_TEST_RUN_ID="LT-fixture-01")
     with pytest.raises(ValueError):
-        _event_settings(LOAD_TEST_RUN_ID="KSHADOW-")
+        task_outbox_bridge.bridge_config(_event_settings(LOAD_TEST_RUN_ID="KSHADOW-"))
 
 
 def test_build_task_event_uses_stable_local_task_source_and_revision_metadata():

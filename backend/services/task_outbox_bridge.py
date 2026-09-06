@@ -19,7 +19,7 @@ from .kafka_event_contract import validate_task_event
 _EVENT_TYPE_MAP = {
     "online.task.created": "task.created",
     "online.task.changed": "task.saved",
-    "online.task.deleted": "task.deleted",
+    "online.task.deleted": "task.archived",
     "online.task.claimed": "task.claimed",
     "online.task.assigned": "task.assigned",
     "online.task.reviewed": "task.reviewed",
