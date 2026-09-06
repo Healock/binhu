@@ -10,7 +10,11 @@ from starlette.requests import Request
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from routers.workflow_photo_sheet import retry_photo_sheet_outbox, run_photo_sheet_sync
+from routers.workflow_photo_sheet import (
+    retry_photo_sheet_conflict,
+    retry_photo_sheet_outbox,
+    run_photo_sheet_sync,
+)
 
 
 @pytest.mark.asyncio
@@ -84,6 +88,8 @@ class _RetryCursor:
         self.executed.append((self.query, params))
 
     async def fetchone(self):
+        if self.query.startswith("SELECT work_order_id,status,conflict_type"):
+            return (321, "pending", "row_location")
         if self.query.startswith("SELECT work_order_id,status"):
             return (321, "paused", "quota_exhausted")
         return None
@@ -92,6 +98,7 @@ class _RetryCursor:
 class _RetryConnection:
     def __init__(self):
         self.cursor_value = _RetryCursor()
+        self.begins = 0
         self.commits = 0
         self.rollbacks = 0
 
@@ -99,7 +106,7 @@ class _RetryConnection:
         return _CursorContext(self.cursor_value)
 
     async def begin(self):
-        return None
+        self.begins += 1
 
     async def commit(self):
         self.commits += 1
@@ -109,7 +116,7 @@ class _RetryConnection:
 
 
 @pytest.mark.asyncio
-async def test_manual_outbox_retry_resets_attempts_and_launches_processing():
+async def test_manual_outbox_retry_is_rejected_in_local_mode_without_mutation_or_external_processing():
     request = Request({
         "type": "http",
         "method": "POST",
@@ -119,29 +126,70 @@ async def test_manual_outbox_retry_resets_attempts_and_launches_processing():
     })
     connection = _RetryConnection()
     launch = Mock()
+    audit = AsyncMock()
     with (
         patch(
             "routers.workflow_photo_sheet.record_admin_audit",
-            new=AsyncMock(),
+            new=audit,
         ),
         patch(
             "routers.workflow_photo_sheet.launch_outbox_processing",
             new=launch,
         ),
     ):
-        result = await retry_photo_sheet_outbox(
-            outbox_id=12,
-            request=request,
-            user={"id": 7, "username": "synthetic-admin"},
-            conn=connection,
-        )
+        with pytest.raises(HTTPException) as raised:
+            await retry_photo_sheet_outbox(
+                outbox_id=12,
+                request=request,
+                user={"id": 7, "username": "synthetic-admin"},
+                conn=connection,
+            )
 
-    reset_sql = next(
-        query for query, _params in connection.cursor_value.executed
-        if query.startswith("UPDATE photo_sheet_outbox")
-    )
-    assert "status='pending'" in reset_sql
-    assert "attempt_count=0" in reset_sql
-    assert connection.commits == 1
-    launch.assert_called_once_with(321)
-    assert result["status"] == "pending"
+    assert raised.value.status_code == 409
+    assert "腾讯数据源已下线" in raised.value.detail
+    assert connection.begins == 0
+    assert connection.commits == 0
+    assert connection.rollbacks == 0
+    assert connection.cursor_value.executed == []
+    audit.assert_not_awaited()
+    launch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manual_conflict_retry_is_rejected_in_local_mode_without_mutation_or_external_processing():
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/workflow/photo-sheet/conflicts/12/retry",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+    })
+    connection = _RetryConnection()
+    launch = Mock()
+    audit = AsyncMock()
+    with (
+        patch(
+            "routers.workflow_photo_sheet.record_admin_audit",
+            new=audit,
+        ),
+        patch(
+            "routers.workflow_photo_sheet.launch_outbox_processing",
+            new=launch,
+        ),
+    ):
+        with pytest.raises(HTTPException) as raised:
+            await retry_photo_sheet_conflict(
+                conflict_id=12,
+                request=request,
+                user={"id": 7, "username": "synthetic-admin"},
+                conn=connection,
+            )
+
+    assert raised.value.status_code == 409
+    assert "腾讯数据源已下线" in raised.value.detail
+    assert connection.begins == 0
+    assert connection.commits == 0
+    assert connection.rollbacks == 0
+    assert connection.cursor_value.executed == []
+    audit.assert_not_awaited()
+    launch.assert_not_called()

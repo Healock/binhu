@@ -7,6 +7,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from routers.workflow import TicketCreate, create_ticket
+from services import photo_sheet_sync
 
 
 class _CheckingCursor:
@@ -35,6 +36,8 @@ class _CheckingCursor:
             return (1, 24)
         if "FROM workflow_type_versions" in self._query:
             return (2, json.dumps({"fields": []}, ensure_ascii=False))
+        if "FROM photo_sheet_sources" in self._query:
+            return (99,)
         if "._communities community" in self._query:
             return ("冬梅社区",)
         return None
@@ -88,7 +91,7 @@ class WorkflowTicketCreationTests(unittest.IsolatedAsyncioTestCase):
             "member": {"name": "测试申请人"},
         }
 
-        enqueue = AsyncMock(return_value=True)
+        enqueue = AsyncMock(wraps=photo_sheet_sync.enqueue_outbox)
         launch = patch("routers.workflow.launch_outbox_processing")
         with patch("routers.workflow.hmac_digest", return_value=("synthetic-hmac", 1)), \
              patch("routers.workflow.queue_user_ids", new=AsyncMock(return_value=[])), \
@@ -113,7 +116,8 @@ class WorkflowTicketCreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail_insert[0].count("%s"), 18)
         self.assertEqual(len(detail_insert[1]), 18)
         enqueue.assert_awaited_once_with(conn.cursor_instance, 42, "append_request")
-        launch_mock.assert_called_once_with(42)
+        assert not any("photo_sheet_outbox" in query for query, _params in conn.cursor_instance.executed)
+        launch_mock.assert_not_called()
 
     async def test_ticket_does_not_launch_immediate_write_when_source_is_unconfigured(self):
         conn = _FakeConnection()

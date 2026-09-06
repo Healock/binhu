@@ -280,6 +280,8 @@ async def retry_photo_sheet_conflict(
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
     conn=Depends(get_workflow_db),
 ):
+    if local_data_source_enabled():
+        raise HTTPException(409, "腾讯数据源已下线，历史调照片名单写回任务不能重试")
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -320,6 +322,8 @@ async def retry_photo_sheet_outbox(
     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE)),
     conn=Depends(get_workflow_db),
 ):
+    if local_data_source_enabled():
+        raise HTTPException(409, "腾讯数据源已下线，历史调照片名单写回任务不能重试")
     await conn.begin()
     try:
         async with conn.cursor() as cur:

@@ -291,6 +291,18 @@ class PhotoSheetOutboxRetryTests(unittest.TestCase):
         self.assertEqual(plan.error_code, "write_failed_exhausted")
 
 
+class PhotoSheetOutboxLocalGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_enqueue_outbox_is_a_noop_for_the_retired_local_source(self):
+        cursor = type("Cursor", (), {})()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(99,))
+
+        result = await photo_sheet_sync.enqueue_outbox(cursor, 321, "append_request")
+
+        self.assertFalse(result)
+        cursor.execute.assert_not_awaited()
+
+
 class PhotoSheetOutboxCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_relocation_reuses_one_full_source_snapshot(self):
         first_values = ["冬梅社区", "来源甲", "甲", "32050020000101001X", "申请人", "2026/8/11", ""]

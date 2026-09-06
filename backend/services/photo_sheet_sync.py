@@ -1022,6 +1022,8 @@ async def import_online(cur, *, expected_token: str, actor_user_id: int) -> dict
 
 
 async def enqueue_outbox(cur, ticket_id: int, action: str) -> bool:
+    if local_data_source_enabled():
+        return False
     await cur.execute("SELECT id FROM photo_sheet_sources WHERE source_code=%s", (SOURCE_CODE,))
     source = await cur.fetchone()
     if not source:
