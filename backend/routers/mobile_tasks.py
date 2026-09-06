@@ -7,6 +7,7 @@ import json
 import logging
 from io import BytesIO
 import time
+import uuid
 from typing import Literal
 from urllib.parse import quote
 
@@ -73,6 +74,7 @@ from services.task_workflow import (
     TASK_WORKFLOWS,
 )
 from services.task_graph import online_task_blocked
+from services.task_outbox_bridge import enqueue_task_event
 from services.task_assignment_responsibility import (
     capture_first_assignment,
     record_internal_transfer,
@@ -4621,6 +4623,8 @@ async def bulk_assign_mobile_tasks(
     successful_keys: list[str] = []
     successful_assignment_counts = {name: 0 for name in assignment_counts}
     if local_data_source_enabled():
+        parser = get_parser(parser_type)
+        operation_id = str(uuid.uuid4())
         await conn.begin()
         try:
             async with conn.cursor() as cur:
@@ -4636,7 +4640,7 @@ async def bulk_assign_mobile_tasks(
                     source = sources[0]
                     await cur.execute("SAVEPOINT bulk_assign_task")
                     try:
-                        await apply_local_system_changes(
+                        result = await apply_local_system_changes(
                             cur,
                             source={
                                 **source,
@@ -4652,6 +4656,22 @@ async def bulk_assign_mobile_tasks(
                         await cur.execute("ROLLBACK TO SAVEPOINT bulk_assign_task")
                         failures.append({"row_key": row_key, "reason": "任务已变化，请刷新后重试"})
                     else:
+                        _, next_revision, _, new_key = result
+                        await enqueue_task_event(
+                            cur,
+                            settings=settings,
+                            domain="online",
+                            event_type="online.task.assigned",
+                            aggregate_type="online_task",
+                            aggregate_id=f"{parser_type}:{new_key}",
+                            aggregate_revision=next_revision,
+                            audiences=["authenticated"],
+                            task_id=f"{parser.table_name}:{source['physical_row']}",
+                            source_id=int(source["id"]),
+                            revision=next_revision,
+                            operation_id=operation_id,
+                            changed_fields=["inspector"],
+                        )
                         await capture_first_assignment(
                             cur,
                             parser_type=parser_type,
@@ -4786,6 +4806,8 @@ async def cancel_mobile_task_assignments(
 
     changed = 0
     skipped: list[dict[str, str]] = []
+    parser = get_parser(parser_type)
+    operation_id = str(uuid.uuid4())
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -4819,7 +4841,7 @@ async def cancel_mobile_task_assignments(
                 if not str(values.get("核查人") or "").strip():
                     continue
                 try:
-                    await apply_local_system_changes(
+                    _, next_revision, _, new_key = await apply_local_system_changes(
                         cur,
                         source={
                             "id": int(source_id),
@@ -4835,9 +4857,26 @@ async def cancel_mobile_task_assignments(
                         action="bulk_unassign_local",
                         rebuild=False,
                     )
-                    changed += 1
                 except (ValueError, LookupError) as exc:
                     skipped.append({"row_key": str(row_key), "reason": str(exc) or "任务已变化，请刷新后重试"})
+                    continue
+                else:
+                    await enqueue_task_event(
+                        cur,
+                        settings=settings,
+                        domain="online",
+                        event_type="online.task.assigned",
+                        aggregate_type="online_task",
+                        aggregate_id=f"{parser_type}:{new_key}",
+                        aggregate_revision=next_revision,
+                        audiences=["authenticated"],
+                        task_id=f"{parser.table_name}:{physical_row}",
+                        source_id=int(source_id),
+                        revision=next_revision,
+                        operation_id=operation_id,
+                        changed_fields=["inspector"],
+                    )
+                    changed += 1
         await conn.commit()
     except Exception:
         await conn.rollback()
