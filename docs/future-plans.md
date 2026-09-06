@@ -10,7 +10,7 @@
 
 阶段顺序：
 
-1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。
+1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。领域 Outbox 已完成严格元数据转换器和独立 ledger/relay 组件验证，仍未接入真实业务事务；照片同步与场所云 Outbox 先按各自事件合同登记，禁止伪装成任务领域事件。
 2. 建立元数据事件合同：`event_id`、事件类型、`task_id`、`source_id`、revision、operation_id、变更字段摘要和时间；禁止完整任务正文及敏感人员资料进入事件。
 3. 统一消费者回读接口为 `/internal/v1/derived-input` 版本化 HTTP JSON；消费者禁止自建 SQL。接口使用独立服务凭据、字段白名单、revision fence 和回读审计。
 4. 在独立 Compose 项目验证 Kafka KRaft 三节点、Schema Registry、relay、重试/DLQ、故障恢复和回放。三节点只代表协议与故障行为；事件量超过约 10 万/天时另立容量评估。
@@ -41,6 +41,17 @@
 | 多实例 + API 网关 | 未开始 | 网关选型、无状态化改造、灰度发布流程设计 |
 | 链路追踪 + 持续剖析 | 未开始 | SkyWalking/Pyroscope 影子部署、采样策略、仪表盘设计 |
 | 75 人复测 | 本架构尚未执行 | 集成完成后全新卷、75 人/5 分钟，保存原停止线和排空证据 |
+
+### Outbox 全量接入清单（2026-09-07）
+
+| 来源 | 业务性质 | Kafka 处理边界 | 当前状态 |
+| --- | --- | --- | --- |
+| `_domain_event_outbox` | 任务领域事件 | 使用 `binhu.task.events.v1` 严格元数据合同，回读任务正文 | 转换器、ledger、真实影子投递和 SIGKILL 窗口已验证；尚未挂入 Backend 事务 |
+| `photo_sheet_outbox` | 照片名单外部写回意图 | 单独事件类型/主题，保留 work order 与 action 元数据；不得写入任务正文或照片 | 已盘点，事件合同和源 ID 映射待实现 |
+| `_venue_cloud_outbox` | 场所云外部同步意图 | 单独事件类型/主题，保留 venue ID、配置 revision、action、request ID | 已盘点，事件合同和权限/重试边界待实现 |
+| `_online_projection_jobs` | 本地派生队列 | 保持独立队列，不转换为领域事件 | 继续由 Python worker 管理，Flink 接入另立阶段 |
+
+全量接入的完成条件是每个来源均有版本化元数据合同、同事务写入/源记录关联、至少一次 relay、有限重试/DLQ、消费者幂等和回放证据；“有 Kafka 主题”不算完成。
 
 可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。当前十项均待真实集群验收，不能用单元测试或 Kafka CLI 替代 Backend/Flink 业务闭环。
 
