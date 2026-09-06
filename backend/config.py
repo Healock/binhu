@@ -191,6 +191,11 @@ class Settings(BaseSettings):
             raise ValueError("影子环境必须配置非空 LOAD_TEST_RUN_ID")
         if self.APP_ENVIRONMENT == "production" and self.SESSION_COOKIE_NAME == "binhu_shadow_session":
             raise ValueError("正式环境不得使用影子环境 Cookie")
+        if self.KAFKA_TASK_EVENTS_ENABLED:
+            if self.APP_ENVIRONMENT != "shadow":
+                raise ValueError("Kafka task events require shadow environment")
+            if not self.LOAD_TEST_RUN_ID.strip().startswith("KSHADOW-"):
+                raise ValueError("Kafka task events require a KSHADOW run id")
         return self
 
     # Fresh databases only: bootstrap one administrator without a built-in password.
@@ -234,6 +239,9 @@ class Settings(BaseSettings):
     REDIS_STREAM_MAX_ENTRIES: int = 1_000_000
     REDIS_MAX_MEMORY_BYTES: int = 1_073_741_824
     REALTIME_EVENTS_ENABLED: bool = True
+    # Shadow-only task metadata bridge.  Keeping this off by default prevents
+    # ordinary production transactions from creating Kafka delivery intents.
+    KAFKA_TASK_EVENTS_ENABLED: bool = False
 
     @property
     def cors_allowed_origins(self) -> list[str]:

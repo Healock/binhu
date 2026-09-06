@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import re
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -70,7 +71,7 @@ from services.work_activity import (
     is_actual_online_work,
     record_work_activity,
 )
-from services.domain_events import enqueue_event
+from services.task_outbox_bridge import enqueue_task_event
 from services.task_assignment_responsibility import (
     capture_first_assignment,
     migrate_responsibility_row_key,
@@ -1089,14 +1090,20 @@ async def _update_local_source_fields_once(
         audiences = ["authenticated"]
         if community:
             audiences.append(f"community:{community}")
-        await enqueue_event(
+        await enqueue_task_event(
             cur,
+            settings=settings,
             domain="online",
             event_type="online.task.changed",
             aggregate_type="online_task",
             aggregate_id=f"{parser_type}:{new_key}",
             aggregate_revision=locked_revision + 1,
             audiences=audiences,
+            task_id=f"{parser.table_name}:{source_id}",
+            source_id=source_id,
+            revision=locked_revision + 1,
+            operation_id=operation_id,
+            changed_fields=ordered_columns,
         )
         activity_credited = await task_update_is_credited_to(
             cur,
@@ -1746,14 +1753,20 @@ async def queue_source_fields(
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
             await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
-            await enqueue_event(
+            await enqueue_task_event(
                 cur,
+                settings=settings,
                 domain="online",
                 event_type="online.task.changed",
                 aggregate_type="online_task",
                 aggregate_id=f"{parser_type}:{new_key}",
                 aggregate_revision=revision,
                 audiences=["authenticated"],
+                task_id=f"{parser.table_name}:{source_id}",
+                source_id=source_id,
+                revision=revision,
+                operation_id=operation_id,
+                changed_fields=ordered_columns,
             )
             await reconcile_online_task_graph(
                 cur,
@@ -2469,14 +2482,34 @@ async def create_source_row(
                 ),
             )
             await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
-            await enqueue_event(
+            # Fetch the stable source-row id before appending the event.  The
+            # Kafka contract uses this id together with the parser table as
+            # the task identity; the business-table auto-increment id is only
+            # a compatibility row locator.
+            await cur.execute(
+                "SELECT id FROM _online_source_rows "
+                "WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s "
+                "AND archived_at IS NULL LIMIT 1",
+                (parser_type, new_key),
+            )
+            source_row = await cur.fetchone()
+            if not source_row:
+                raise HTTPException(500, "本地来源记录创建失败")
+            create_operation_id = str(uuid.uuid4())
+            await enqueue_task_event(
                 cur,
+                settings=settings,
                 domain="online",
                 event_type="online.task.created",
                 aggregate_type="online_task",
                 aggregate_id=f"{parser_type}:{new_key}",
                 aggregate_revision=1,
                 audiences=["authenticated"],
+                task_id=f"{parser.table_name}:{int(source_row[0])}",
+                source_id=int(source_row[0]),
+                revision=1,
+                operation_id=create_operation_id,
+                changed_fields=list(parser.COLUMNS),
             )
             # The business-table auto-increment id is only the local physical
             # row used by the compatibility layer.  API callers must receive
@@ -2661,14 +2694,20 @@ async def delete_source_row(
                 await cur.execute("DELETE FROM _online_local_changes WHERE source_id=%s", (source_id,))
                 await cur.execute("DELETE FROM _online_source_rows WHERE id=%s", (source_id,))
                 await rebuild_projection_rows(cur, parser_type, [str(source["row_key"])])
-                await enqueue_event(
+                await enqueue_task_event(
                     cur,
+                    settings=settings,
                     domain="online",
                     event_type="online.task.deleted",
                     aggregate_type="online_task",
                     aggregate_id=f"{parser_type}:{source['row_key']}",
                     aggregate_revision=source["revision"] + 1,
                     audiences=["authenticated"],
+                    task_id=f"{parser.table_name}:{source_id}",
+                    source_id=source_id,
+                    revision=source["revision"] + 1,
+                    operation_id=str(uuid.uuid4()),
+                    changed_fields=["task_state"],
                 )
                 await conn.commit()
         except Exception:
