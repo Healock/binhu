@@ -34,7 +34,7 @@ def _worker(index: int) -> tuple[str, str, int]:
     return (
         f"burst-{number:02d}",
         f"压测突发组员{number:02d}",
-        worker_index % 12,
+        (number - 1) % 12,
     )
 
 

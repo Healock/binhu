@@ -105,6 +105,18 @@ def test_fixture_shape_and_seed_batches_are_bounded():
     assert max(len(batch) for batch in batches) <= 100
 
 
+def test_all_assigned_fixture_tasks_match_the_account_community():
+    from fixture import make_tasks, make_users
+
+    users = {user['username']: user for user in make_users()}
+    for task in make_tasks():
+        if not task['assigned_username']:
+            continue
+        user = users[task['assigned_username']]
+        assert task['assigned_user'] == user['display_name']
+        assert task['community'] == f"压测社区{user['community_index'] + 1:02d}"
+
+
 def test_run_reuse_is_rejected_without_resetting_existing_fixture():
     seed_business.ensure_run_unused([] , "KSHADOW-test-01")
     with pytest.raises(seed_business.SeedSafetyError, match="already has fixture"):

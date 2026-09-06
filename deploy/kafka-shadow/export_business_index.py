@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -29,7 +30,7 @@ def make_tasks():
 
 TASK_FIELDS = {'kind', 'ordinal', 'parser_type', 'row_key', 'source_id',
                'initial_revision', 'scenario', 'property_id', 'property_version',
-               'source_revision', 'local_revision', 'hashes_match'}
+               'source_revision', 'local_revision', 'hashes_match', 'routing_sha256'}
 PROPERTY_FIELDS = {'kind', 'source_ref', 'property_id', 'property_version'}
 
 
@@ -70,9 +71,13 @@ def build_index(records, run_id, snapshot_sha256):
                 raise IndexExportError('invalid or duplicate fixture task identity')
             scenario = 'conflict' if task['conflict_group'] else task['state']
             revision = row['initial_revision']
+            routing_hash = hashlib.sha256(
+                (task['community'] + '\x1f' + task['assigned_user']).encode('utf-8')
+            ).hexdigest()
             if (row['parser_type'] != task['parser_type'] or row['scenario'] != scenario
                     or not _positive(revision) or row['source_revision'] != revision
-                    or row['local_revision'] != revision or row['hashes_match'] != 1):
+                    or row['local_revision'] != revision or row['hashes_match'] != 1
+                    or row['routing_sha256'] != routing_hash):
                 raise IndexExportError('fixture identity, revision or hash mismatch')
             tasks[n] = row
             source_ids.add(sid)
@@ -116,6 +121,9 @@ SELECT /*+ MAX_EXECUTION_TIME(10000) */ JSON_OBJECT(
  'source_id',e.source_id,'initial_revision',e.initial_revision,'scenario',e.scenario,
  'property_id',e.property_id,'property_version',e.property_version,
  'source_revision',s.revision,'local_revision',l.revision,
+ 'routing_sha256',SHA2(CONCAT(
+     COALESCE(JSON_UNQUOTE(JSON_EXTRACT(l.values_json,'$."社区"')),''),CHAR(31),
+     COALESCE(JSON_UNQUOTE(JSON_EXTRACT(l.values_json,'$."核查人"')),'')),256),
  'hashes_match',IF(s.row_hash=l.content_hash AND s.row_hash<>'',1,0))
 FROM _shadow_business_expectations e
 JOIN _online_source_rows s ON s.id=e.source_id AND s.parser_type=e.parser_type AND s.row_key=e.row_key

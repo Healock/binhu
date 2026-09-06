@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import json
+import shlex
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -23,6 +25,8 @@ def records():
                          scenario='conflict' if task['conflict_group'] else task['state'],
                          property_id=task['property_index'] if pending else None,
                          property_version=1 if pending else None,
+                         routing_sha256=hashlib.sha256(
+                             (task['community'] + '\x1f' + task['assigned_user']).encode()).hexdigest(),
                          source_revision=1, local_revision=1, hashes_match=1))
     for n in range(1, 49):
         rows.append(dict(kind='property', source_ref=f'shadow_loadtest:{RUN}:property:{n:02d}',
@@ -52,6 +56,7 @@ def test_full_index_reconstructs_only_fictional_workload_metadata():
     lambda r: r[1].update(source_revision=2),
     lambda r: r[1].update(local_revision=2),
     lambda r: r[1].update(hashes_match=0),
+    lambda r: r[1].update(routing_sha256='a' * 64),
     lambda r: r[1].update(identity_number='not-exportable'),
     lambda r: r[-1].update(source_ref='shadow_loadtest:other:property:48'),
     lambda r: r[-1].update(property_id=1),
@@ -76,7 +81,8 @@ def test_query_is_readonly_bounded_and_does_not_select_body():
     sql = command[-1]
     assert 'START TRANSACTION READ ONLY' in sql
     assert 'MAX_EXECUTION_TIME(10000)' in sql
-    assert 'values_json' not in sql
+    assert 'JSON_EXTRACT(l.values_json' in sql
+    assert "'routing_sha256',SHA2" in shlex.split(sql)[-1]
     assert 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD"' in sql
     assert '_shadow_business_expectations' in sql
     assert '_online_source_projection' not in sql
