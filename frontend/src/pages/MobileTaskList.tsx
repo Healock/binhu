@@ -279,6 +279,12 @@ export default function MobileTaskList({
       ? requestedReviewStage as MobileTaskReviewStage
       : 'all',
   )
+  const [analysisImportResult, setAnalysisImportResult] = useState<{
+    success_count: number
+    failed_count: number
+    success: Array<{ row: number; task: string; state: string }>
+    failed: Array<{ row: number; reason: string }>
+  } | null>(null)
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
   const [smallCommunities, setSmallCommunities] = useState<string[]>(readMulti(searchParams, 'small_community'))
   const [matchStatuses, setMatchStatuses] = useState<string[]>(readMulti(searchParams, 'match_status'))
@@ -986,8 +992,9 @@ export default function MobileTaskList({
     setImportingAnalysis(true)
     try {
       const result = await importMobileTaskAnalysis(file)
+      setAnalysisImportResult(result)
       if (result.failed_count) {
-        message.warning(`已导入 ${result.success_count} 条，${result.failed_count} 条需要处理`)
+        message.warning(`已导入 ${result.success_count} 条，${result.failed_count} 条需要处理；请查看页面下方的问题明细`)
       } else {
         message.success(`已导入 ${result.success_count} 条研判结果`)
       }
@@ -1355,6 +1362,36 @@ export default function MobileTaskList({
               )
             })}
           </div>
+        </section>
+      )}
+
+      {analysisOnly && analysisImportResult && (
+        <section className="app-card mobile-task-analysis-import-result" aria-live="polite" aria-label="研判导入结果">
+          <div className="mobile-task-analysis-import-result__header">
+            <div>
+              <strong>导入结果</strong>
+              <span>成功 {analysisImportResult.success_count} 条 · 需要处理 {analysisImportResult.failed_count} 条</span>
+            </div>
+            <Button type="text" onClick={() => setAnalysisImportResult(null)}>关闭结果</Button>
+          </div>
+          {analysisImportResult.failed_count > 0 ? <>
+            <Alert
+              type="warning"
+              showIcon
+              message="部分行没有写入，请按下面的行号修正后重新导入"
+              description="已成功的行不会重复产生新的研判记录；问题行保留原文件内容，修正后可以再次选择 XLSX 导入。"
+            />
+            <div className="mobile-task-analysis-import-result__issues" role="list" aria-label="需要处理的导入行">
+              {analysisImportResult.failed.map(item => (
+                <div key={`${item.row}-${item.reason}`} role="listitem">
+                  <strong>第 {item.row} 行</strong><span>{item.reason}</span>
+                </div>
+              ))}
+            </div>
+            <Upload accept=".xlsx" showUploadList={false} beforeUpload={file => { void importAnalysis(file); return false }}>
+              <Button type="primary" loading={importingAnalysis}>重新导入修正后的文件</Button>
+            </Upload>
+          </> : <Alert type="success" showIcon message="全部研判结果已导入" description="列表已刷新，当前筛选下的待研判任务会同步减少。" />}
         </section>
       )}
 

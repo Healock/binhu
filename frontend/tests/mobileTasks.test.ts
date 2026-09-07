@@ -961,6 +961,10 @@ test('唯一可靠建议作为自动匹配直接参与分配', () => {
   assert.match(workbenchSource, /status === 'confirmed' \|\| status === 'suggested'/)
   assert.match(workbenchSource, /自动匹配/)
   assert.match(workbenchSource, /“自动匹配”和“已人工确认”的任务可直接分配/)
+  assert.match(pageSource, /analysisImportResult/)
+  assert.match(pageSource, /需要处理.*条；请查看页面下方的问题明细/)
+  assert.match(pageSource, /重新导入修正后的文件/)
+  assert.match(pageSource, /需要处理的导入行/)
   for (const blocked of ['ambiguous', 'conflict', 'unmatched', 'invalid']) {
     assert.match(workbenchSource, new RegExp(`${blocked}:`))
   }
