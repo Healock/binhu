@@ -511,6 +511,56 @@ html.desktop-shell .ant-notification-topRight {
   overflow: hidden;
 }
 
+.mobile-task-analysis-import-result {
+  display: grid;
+  gap: 12px;
+}
+
+.mobile-task-analysis-import-result__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-task-analysis-import-result__header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.mobile-task-analysis-import-result__header strong {
+  color: var(--app-text-strong);
+  font-size: 16px;
+}
+
+.mobile-task-analysis-import-result__header span {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.mobile-task-analysis-import-result__issues {
+  display: grid;
+  max-height: 240px;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.mobile-task-analysis-import-result__issues > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.mobile-task-analysis-import-result__issues strong {
+  color: var(--app-text-strong);
+}
+
 .mobile-task-assignment-workbench__toolbar {
   display: flex;
   min-width: 0;
