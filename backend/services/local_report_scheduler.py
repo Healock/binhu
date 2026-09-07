@@ -138,6 +138,14 @@ async def replace_local_report_snapshots(
 
 
 async def refresh_local_daily_reports_once() -> dict[str, Any]:
+    # A periodic snapshot must not race the incremental ledger transaction.
+    # Keep the same lock for the startup baseline and the regular refresher.
+    from services.online_summary_updates import _consumer_lock
+    async with _consumer_lock:
+        return await _refresh_local_daily_reports_once()
+
+
+async def _refresh_local_daily_reports_once() -> dict[str, Any]:
     """Refresh all local snapshots, subreports and the configured summary."""
     started = time.perf_counter()
     _REPORT_STATUS.update(state="running", last_error_code="")

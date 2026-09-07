@@ -288,6 +288,8 @@ def merge_community_rows(
 def merge_inspector_rows(
     inspector_rows: Iterable[Sequence[Any]],
     canonical_members: Iterable[tuple[str, str]] = (),
+    *,
+    preserve_community: bool = False,
 ) -> list[tuple[Any, ...]]:
     """合并多张分汇总表的人员行，并按当前名册统一社区和姓名。
 
@@ -302,7 +304,7 @@ def merge_inspector_rows(
         for community, name in canonical_members
         if _normalized_name(name)
     }
-    totals: dict[str, dict[str, Any]] = {}
+    totals: dict[Any, dict[str, Any]] = {}
 
     for row in inspector_rows:
         if len(row) < 9:
@@ -311,12 +313,13 @@ def merge_inspector_rows(
         if not normalized:
             continue
         canonical_member = canonical.get(normalized)
+        key = (str(row[0] or '未分配社区'), normalized) if preserve_community else normalized
         bucket = totals.setdefault(
-            normalized,
+            key,
             {
                 "community": (
                     canonical_member[0]
-                    if canonical_member
+                    if canonical_member and not preserve_community
                     else str(row[0] or "未分配社区")
                 ),
                 "name": (

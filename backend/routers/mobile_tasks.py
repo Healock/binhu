@@ -27,6 +27,7 @@ from routers.query import (
 )
 from routers.workflow import _can_view_ticket as workflow_ticket_access
 from services.business_time import get_business_date
+from services.online_summary_updates import enqueue_online_summary_update
 from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
     effective_view_communities,
@@ -457,6 +458,8 @@ class RegistrationManualConfirm(BaseModel):
 
 class AddressMatchConfirm(BaseModel):
     small_community_id: int = Field(gt=0)
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
 
 
 class AddressMatchConflictResolution(BaseModel):
@@ -2887,11 +2890,16 @@ async def confirm_mobile_task_address_match(
             await cur.execute(
                 f"""
                 SELECT projection.community, projection.source_count,
-                       projection.conflict, address_match.original_address
+                       projection.conflict, address_match.original_address,
+                       source.id, source.revision, source.row_hash, source.physical_row
                 FROM _online_source_projection AS projection
                 LEFT JOIN _online_task_address_matches AS address_match
                   ON address_match.parser_type=projection.parser_type
                  AND address_match.row_key=projection.row_key
+                JOIN _online_source_rows AS source
+                  ON source.parser_type=projection.parser_type
+                 AND source.row_key=projection.row_key
+                 AND source.archived_at IS NULL
                 WHERE projection.parser_type=%s AND projection.row_key=%s
                   AND {scope_where}
                 FOR UPDATE
@@ -2903,6 +2911,8 @@ async def confirm_mobile_task_address_match(
                 raise HTTPException(404, "任务不存在或不在当前账号可操作范围内")
             if bool(projection[2]) or int(projection[1] or 0) != 1:
                 raise HTTPException(409, "任务存在重复或冲突来源，暂不能确认小区")
+            if int(projection[5] or 0) != int(data.expected_revision) or str(projection[6] or "") != str(data.expected_row_hash):
+                raise HTTPException(409, "任务已发生变化，请刷新后重新确认小区")
             await cur.execute(
                 """
                 SELECT entry.id, entry.name, entry.community_id, community.name
@@ -2967,6 +2977,18 @@ async def confirm_mobile_task_address_match(
                     MATCHER_VERSION, int(entry[0]), int(user["id"]),
                     parser_type, row_key,
                 ),
+            )
+            next_revision = int(projection[5]) + 1
+            await cur.execute("UPDATE _online_source_rows SET revision=%s WHERE id=%s", (next_revision, int(projection[4])))
+            await cur.execute(
+                "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND local_task_id=%s AND status='active'",
+                (next_revision, parser_type, int(projection[7])),
+            )
+            await enqueue_online_summary_update(
+                cur, task_id=int(projection[7]), parser_type=parser_type,
+                row_key=row_key, revision=next_revision,
+                business_date=await get_business_date(cur),
+                operation_id=f"address-confirm-{projection[4]}-{next_revision}",
             )
             await rebuild_projection_rows(cur, parser_type, [row_key])
             result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)

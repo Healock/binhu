@@ -1319,3 +1319,9 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 影子验证已证明 Kafka KRaft 三节点协议、元数据 Schema、独立投递 ledger、Redis revision fence，以及 Flink KafkaSource 的 checkpoint 与 TaskManager 恢复。Flink 当前作业是元数据协议烟测：按 `task_id + source_id` 保存最高 revision，只输出固定元数据分类，不执行地址匹配、人员标签、任务图、日报或任何 MySQL/Redis 投影。
 
 Flink checkpoint 只能恢复 Flink 内部状态。跨系统输出仍必须依靠事件幂等、Redis 高水位 fence、MySQL 条件更新和回读 revision fence；不能把当前烟测描述为跨系统 Exactly-Once。Python worker 仍是现行路径，业务 Outbox 尚未接入该 shadow relay，双轨 7 天/100,000 事件门槛和 75 人复测均未开始。
+
+## dev 本地增量汇总与事件总线并存（2026-09-08）
+
+`_online_summary_updates` 属于 OnlineData，保存任务定位、revision、业务日期及操作编号；不保存任务正文。普通本地保存、系统修改和本地归档在业务事务内写入触发记录，worker 回读本地业务表并更新 daily_report 的流水和受影响汇总组。Kafka Outbox 保留独立职责。
+
+`_daily_task_ledger.source_revision` 采用兼容新增列，默认 0 表示周期快照来源。正 revision 的增量结果不被当日周期快照覆盖；消费前和日报提交前检查来源版本，流水行加锁后拒绝相同或更旧 revision。同一进程的周期刷新与增量消费共享互斥锁。跨库回读与提交不是分布式原子事务，跨进程恢复和历史回放仍需影子验收。

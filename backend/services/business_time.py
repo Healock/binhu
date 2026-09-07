@@ -53,8 +53,12 @@ def business_date_range_utc_bounds(
 
 async def get_business_timezone_name(cur) -> str:
     """从系统设置读取有效时区名称。"""
+    from config import settings
+
+    database = str(settings.MYSQL_PLATFORM_DB if settings.PLATFORM_DOMAIN_ACTIVE
+                   else settings.MYSQL_ONLINE_DATA_DB).replace("`", "``")
     await cur.execute(
-        "SELECT config_value FROM OnlineData._system_config "
+        f"SELECT config_value FROM `{database}`.`_system_config` "
         "WHERE config_key = 'timezone'"
     )
     row = await cur.fetchone()

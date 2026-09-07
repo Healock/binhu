@@ -169,6 +169,29 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("responsibility.first_inspector", sql)
 
+    async def test_initial_snapshot_binds_date_predicates_before_responsibility(self):
+        cursor = make_cursor(
+            [
+                (datetime(2026, 7, 29, 1, 0),),
+                None,
+                (1, 1),
+            ]
+        )
+        builder = FullChainBuilder()
+        with patch.object(
+            report_ledger,
+            "get_business_date",
+            new=AsyncMock(return_value=datetime(2026, 7, 29).date()),
+        ), patch.object(
+            report_ledger,
+            "get_business_date_range_utc_bounds",
+            new=AsyncMock(return_value=("START", "END")),
+        ):
+            await report_ledger.refresh_daily_ledger(cursor, builder, "2026-07-29")
+        params = cursor.execute.await_args_list[2].args[1]
+        self.assertEqual(params[-1], builder.parser_type)
+        self.assertEqual(params[-5:-1], ("START", "END", "START", "END"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,10 @@ from services.diagnostics import capture_incident, should_capture_incident
 from services.venue_cloud import run_venue_cloud_scheduler
 from services.platform_performance import performance_metrics, run_performance_sampler
 from services.online_projection_jobs import run_online_projection_worker
+from services.online_summary_updates import (
+    run_online_summary_update_worker,
+    stop_online_summary_update_processing,
+)
 
 
 @asynccontextmanager
@@ -139,6 +143,7 @@ async def lifespan(app: FastAPI):
     venue_cloud_task = asyncio.create_task(run_venue_cloud_scheduler())
     performance_sampler_task = asyncio.create_task(run_performance_sampler())
     online_projection_task = asyncio.create_task(run_online_projection_worker())
+    online_summary_task = asyncio.create_task(run_online_summary_update_worker())
     try:
         yield
     finally:
@@ -154,6 +159,7 @@ async def lifespan(app: FastAPI):
         venue_cloud_task.cancel()
         performance_sampler_task.cancel()
         online_projection_task.cancel()
+        online_summary_task.cancel()
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
@@ -178,6 +184,9 @@ async def lifespan(app: FastAPI):
             await performance_sampler_task
         with suppress(asyncio.CancelledError):
             await online_projection_task
+        with suppress(asyncio.CancelledError):
+            await online_summary_task
+        await stop_online_summary_update_processing()
         await stop_backup_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()
