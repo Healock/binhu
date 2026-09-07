@@ -256,6 +256,9 @@ def validate_runtime_index(
     tasks = data.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         _fail("runtime index contains no tasks")
+    seen_rows: set[tuple[str, str]] = set()
+    seen_sources: set[int] = set()
+    seen_ordinals: set[int] = set()
     for task in tasks:
         if not isinstance(task, Mapping):
             _fail("runtime index task is malformed")
@@ -267,10 +270,17 @@ def validate_runtime_index(
         parser_type = task.get("parser_type")
         if parser_type not in PARSER_TYPES:
             _fail("runtime index parser_type is unsupported")
-        _validate_row_key(task.get("row_key"))
+        row_key = _validate_row_key(task.get("row_key"))
         source_id = task.get("source_id")
         if isinstance(source_id, bool) or not isinstance(source_id, int) or source_id <= 0:
             _fail("runtime index source_id is malformed")
+        row_identity = (str(parser_type), row_key)
+        if row_identity in seen_rows:
+            _fail("runtime index contains a duplicate parser_type and row_key")
+        if source_id in seen_sources:
+            _fail("runtime index contains a duplicate source_id")
+        seen_rows.add(row_identity)
+        seen_sources.add(source_id)
         scenario = task.get("scenario", "assigned")
         if scenario not in RUNTIME_SCENARIOS:
             _fail("runtime index scenario is unsupported")
@@ -280,6 +290,11 @@ def validate_runtime_index(
             number = task[key]
             if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
                 _fail(f"runtime index {key} is malformed")
+        ordinal = task.get("ordinal")
+        if ordinal is not None:
+            if ordinal in seen_ordinals:
+                _fail("runtime index contains a duplicate ordinal")
+            seen_ordinals.add(ordinal)
         for key in ("community", "inspector"):
             if key in task and task[key] is not None and not isinstance(task[key], str):
                 _fail(f"runtime index {key} is malformed")
