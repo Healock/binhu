@@ -10,8 +10,11 @@
 | #520 分配工作台多列 | 已合并 main，00bb6f82 |
 | #521 研判导入结果面板 | 已合并 main，e654f8af |
 | #518 日报 revision fence | 按用户确认合并 dev，054fe295；不进入生产 |
-| 0.28.10 版本同步与发布补强 | 独立 codex/release/0.28.10 分支准备 |
-| 生产部署、客户端发布、标签 | 待发布提交 CI 及部署验收后分别记录 |
+| #522 版本同步与发布补强 | 已合并 main，97d61aea41cbe7ebf160779a5cff8a81ae8b9cb7 |
+| main CI | 34159831425 全部必需检查通过 |
+| 生产部署 | 34160251355 成功，0.28.10，all/full；内外网健康版本校验成功 |
+| Win7 / Win10 / Android | 34160169307 全部成功，三端更新服务器与 GitHub Release 已发布 |
+| 版本标签 | v0.28.10 已公开，指向 97d61aea；未改写既有标签 |
 
 ## 集成验证
 
@@ -32,3 +35,13 @@
 5. 独立 MySQL 证据先复制至项目外 `/srv/binhu-release-evidence-r2810-20260908a`，核对清单和 SHA-256；保留原卷及失败证据，禁止全局清理。
 
 本地浏览器截图和结果位于此发布 worktree 的 `scratch/assignment-grid`、`scratch/address-ux`、`scratch/analysis-import`；不提交业务正文或凭据。
+
+## 已完成的生产验收（2026-09-08）
+
+- 生产提交与版本：`97d61aea41cbe7ebf160779a5cff8a81ae8b9cb7` / `0.28.10`。main、部署和客户端均使用此提交；之后的纯证据文档提交不要求再次部署。
+- 八库及旧程序备份：`/srv/binhu/deploy-backups/automated/0.28.10-97d61aea41cb-20260907_204123`（兼容路径 `/root/binhu/...`）。八个 gzip 完整读取、各 SHA-256 校验一致；旧程序 gzip 可读，SHA-256 为 `440fc3bb2e072798f76a5d47fb8b5cc2a733aafc017490a951dbce2dcf85bdcb`。
+- 健康接口返回 ok / 0.28.10；地址确认、研判和流口任务页面返回 200；未登录 `/api/auth/me` 与实际 SSE `/api/admin/ops/audit/stream` 返回 401。不能把不存在的 `/api/operation-records/stream` SPA fallback 200 当成 SSE 验收。
+- 运行时 `LOCAL_DATA_SOURCE_ENABLED=true`、`TXDOCS_ENABLED=false`、`APP_ENVIRONMENT=production`。后端、运维代理和 MySQL 正常，MySQL 没有重启；发布后 15 分钟检查无 ERROR/Traceback/CRITICAL。
+- MySQL 补查：重新初始化后人工无匹配结论和原因仍保留，来源行与本地记录 revision 均为 2。所有失败和成功日志复制至项目外，SHA-256 一致；隔离容器和网络已移除，卷及证据保留。
+- 正式部署未触发失败回滚；已验证回滚包完整性，不声称在生产实际执行过降级演练。旧代码回退仍须遵循人工状态兼容门禁。
+- 真实 Windows/Android 设备升级、带账号生产业务操作及真实研判 XLSX 写入仍需用户验收；本次未制造生产测试数据。
