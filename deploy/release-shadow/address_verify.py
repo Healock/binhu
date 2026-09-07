@@ -23,6 +23,8 @@ async def main():
         async with db_manager.get_pool('online_data').acquire() as conn:
             async with conn.cursor() as cur:
                 # Empty, new isolated schema only: reconstruct the previous version's shape.
+                await cur.execute('SELECT COUNT(*) FROM _online_task_address_matches')
+                require((await cur.fetchone())[0] == 0, 'schema simulation requires an empty new shadow run')
                 for column in ('manual_unmatched_reason', 'manual_unmatched_address_hmac', 'manual_unmatched_by', 'manual_unmatched_at'):
                     await cur.execute(f'ALTER TABLE _online_task_address_matches DROP COLUMN {column}')
                 for column in ('source_id', 'source_revision'):
@@ -31,7 +33,7 @@ async def main():
                 await ensure_online_editor_schema(cur)
                 await conn.commit()
                 evidence['checks'].append('old_schema_additive_upgrade_and_repeat_initialization')
-                values = {'姓名': '虚构验收任务', '身份证号': 'SYNTHETIC-ADDRESS-RELEASE', '电话号码': 'SYNTHETIC-PHONE', '地址': '虚构验收路1号', '现住址': '', '社区': '虚构验收社区', '核查结果': ''}
+                values = {'下发日期': '2026-09-08', '姓名': '虚构验收任务', '身份证号': 'SYNTHETIC-ADDRESS-RELEASE', '电话号码': 'SYNTHETIC-PHONE', '地址': '虚构验收路1号', '现住址': '', '社区': '虚构验收社区', '核查结果': ''}
                 source = await create_local_source_row(cur, '全链条', values, source_kind='local_table', source_ref='address-release:' + evidence['run_id'])
                 await rebuild_projection_rows(cur, '全链条', [source['row_key']])
                 positive = feedback_hmac(values['地址'], values['社区'])
