@@ -295,3 +295,38 @@ def test_timeout_only_stops_kills_and_removes_current_container(tmp_path, monkey
     assert controls
     assert all(name in call for call in controls)
     assert all("binhu-loadtest" not in call for call in controls)
+
+
+def test_start_failure_still_writes_report_and_removes_owned_container(tmp_path, monkeypatch):
+    root, artifacts, locustfile, snapshot = _fixture(tmp_path)
+    monkeypatch.setattr(run_business, "collect_runtime", lambda *args, **kwargs: snapshot)
+    monkeypatch.setattr(run_business, "validate_current_root", lambda value, cwd=None: str(root))
+    monkeypatch.setattr(
+        run_business,
+        "validate_saved_identities",
+        lambda *args: SimpleNamespace(project=PROJECT, network=NETWORK),
+    )
+    commands: list[list[str]] = []
+
+    def docker_runner(command, **kwargs):
+        commands.append(list(command))
+        return _fake_image_result() if command[:3] == ["docker", "image", "inspect"] else SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def start_failure(*args, **kwargs):
+        raise OSError("docker unavailable")
+
+    result = run_business.run(
+        RUN_ID,
+        root=root,
+        runtime_index=artifacts / f"business-runtime-index-{RUN_ID}.json",
+        locustfile=locustfile,
+        output_dir=artifacts,
+        locust_image=LOCUST_IMAGE,
+        popen_factory=start_failure,
+        docker_runner=docker_runner,
+    )
+    assert result["status"] == "failed"
+    assert result["exit_code"] == 127
+    assert Path(result["container_stdout"]).is_file()
+    assert Path(result["container_stderr"]).is_file()
+    assert any(call[:3] == ["docker", "rm", "-f"] for call in commands)
