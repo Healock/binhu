@@ -20,7 +20,8 @@ export function getResponsiveLayoutMode(width: number, height: number): Responsi
 
 function readViewportSize(container?: HTMLElement | null) {
   return {
-    width: Math.round(container?.getBoundingClientRect().width || window.innerWidth),
+    // Layout width must exclude scrollbars and transient Modal scale animations.
+    width: Math.round(container?.clientWidth || window.innerWidth),
     height: Math.round(window.innerHeight),
   }
 }

@@ -10,6 +10,7 @@ import {
   type MobileTaskAssignmentCandidate,
 } from '../api/client'
 import { mobileTaskSourceTags } from '../utils/mobileTasks'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 
 interface AssignmentProgress {
   total: number
@@ -66,8 +67,12 @@ export default function MobileTaskAssignmentWorkbench({
   const dragRef = useRef<{ active: boolean; select: boolean }>({ active: false, select: true })
   const suppressClickRef = useRef(false)
   const loadRequestRef = useRef(0)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [columnCount, setColumnCount] = useState(1)
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null)
+  // Modal mounts its portal after the parent's open effect. Rebind the shared
+  // layout observer when the real scroll container mounts.
+  const scrollRef = useMemo(() => ({ current: scrollElement }), [scrollElement])
+  const layout = useResponsiveLayout(scrollRef)
+  const columnCount = Math.max(1, Math.floor((layout.width + 10) / 260))
 
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current
@@ -118,21 +123,6 @@ export default function MobileTaskAssignmentWorkbench({
       window.removeEventListener('pointercancel', finishDrag)
     }
   }, [])
-
-  useEffect(() => {
-    const element = scrollRef.current
-    if (!element) return
-    const updateColumnCount = () => {
-      const width = element.clientWidth
-      // Keep the existing card breakpoint (250px cards + 10px gap) while
-      // virtualizing complete rows instead of changing desktop to one column.
-      setColumnCount(Math.max(1, Math.floor((width + 10) / 260)))
-    }
-    updateColumnCount()
-    const observer = new ResizeObserver(updateColumnCount)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [open])
 
   const visible = useMemo(
     () => candidates.filter(item => (
@@ -185,8 +175,9 @@ export default function MobileTaskAssignmentWorkbench({
   }, [columnCount, visible])
   const virtualizer = useVirtualizer({
     count: virtualRows.length,
-    getScrollElement: () => scrollRef.current,
+    getScrollElement: () => scrollElement,
     estimateSize: () => 112,
+    gap: 10,
     overscan: 8,
   })
 
@@ -368,10 +359,10 @@ export default function MobileTaskAssignmentWorkbench({
       onCancel={close}
       destroyOnClose={false}
       className="mobile-task-assignment-modal"
-      style={{ top: 0, maxWidth: '100vw', paddingBottom: 0 }}
+      style={{ top: 0, maxWidth: '100vw', paddingBottom: 0, margin: 0 }}
       styles={{
-        content: { height: '100vh', borderRadius: 0 },
-        body: { height: 'calc(100vh - 55px)', padding: 0, overflow: 'hidden' },
+        container: { height: '100dvh', borderRadius: 0, display: 'flex', flexDirection: 'column', paddingBottom: 0 },
+        body: { flex: 1, minHeight: 0, padding: 0, overflow: 'hidden' },
       }}
     >
       <div className="mobile-task-assignment-workbench">
@@ -478,7 +469,7 @@ export default function MobileTaskAssignmentWorkbench({
           />
         )}
 
-        <div ref={scrollRef} className="mobile-task-assignment-workbench__scroll">
+        <div ref={setScrollElement} className="mobile-task-assignment-workbench__scroll">
           <Spin spinning={loading && candidates.length === 0}>
             {visible.length ? (
               <div
@@ -531,10 +522,11 @@ export default function MobileTaskAssignmentWorkbench({
                           onClick={event => {
                             event.preventDefault()
                             if (!canAssign) return
-                            if (suppressClickRef.current) {
+                            if (suppressClickRef.current && event.detail !== 0) {
                               suppressClickRef.current = false
                               return
                             }
+                            suppressClickRef.current = false
                             setSelectedState(item.row_key, !checked)
                           }}
                         >
