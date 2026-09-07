@@ -563,6 +563,10 @@ html.desktop-shell .ant-notification-topRight {
   min-height: 42px;
 }
 
+.mobile-task-assignment-workbench__notice:empty {
+  display: none;
+}
+
 .mobile-task-assignment-workbench__filters .ant-select {
   min-width: min(320px, 100%);
 }
@@ -743,6 +747,11 @@ html.desktop-shell .ant-notification-topRight {
   .mobile-task-assignment-workbench__actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .mobile-task-assignment-workbench__toolbar > div:first-child,
+  .mobile-task-assignment-workbench__actions {
+    flex: 0 0 auto;
   }
 
   .mobile-task-assignment-workbench__filters {
