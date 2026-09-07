@@ -1585,3 +1585,9 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 Flink checkpoint 卷首次创建后必须将宿主卷目录属主设置为容器用户 9999:9999、权限 750；TaskManager 重启恢复测试使用不少于 30 秒固定重试间隔，避免在 TaskManager 注册完成前耗尽重试。失败日志、checkpoint API 摘要和恢复输出保存在服务器 `artifacts/`。任何清理仅允许针对带本运行编号标签的容器、卷和目录，不能使用全局 prune。
 
 当前影子作业停止/回滚只需取消 Flink job 并保留 checkpoint；不会修改 Kafka、业务 MySQL 或生产 Nginx。业务切换前还需要完成真实 Backend Outbox 接入、重试/DLQ/归档闭环、MySQL/Redis 投影、Python/Flink 双轨比对和独立 75 人复测。
+
+## dev 日报增量适配验收与回退（2026-09-08）
+
+本轮仅提交代码，未部署。影子部署前确认独立数据库身份，备份 OnlineData、daily_report 和现行程序；初始化会新增 `_online_summary_updates` 及 `_daily_task_ledger.source_revision`，保留旧表与默认值。使用虚构数据验证两次启动幂等、保存与触发同事务、乱序/重复消费、归档、周期刷新、停止写入后排空和故障恢复。真实 MySQL 与真实驱动检查未完成前不得标记数据库验收通过。
+
+监控触发队列 pending/retry/failed、最老等待时间、日报版本和汇总数量恒等式。回退时停止当前 Backend/汇总 worker 并恢复上一程序版本，保留新增表列和失败触发用于诊断；不删除证据，不恢复腾讯业务路径。多实例上线前另验收跨进程互斥，当前进程锁不能当作跨实例保证。
