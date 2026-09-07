@@ -154,7 +154,7 @@ function App() {
                 <Route path="/tasks" element={<MobileTaskEntry />} />
                 <Route path="/tasks/:parserType/:rowKey" element={<MobileTaskEntry detail />} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['online.raw.edit', 'online.task.manage']} />}>
+              <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
                 <Route path="/address-confirmation" element={<AddressConfirmation />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.task.manage" />}>

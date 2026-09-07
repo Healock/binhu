@@ -26,6 +26,8 @@ from services.watch_matching import (
 from services.local_source import local_data_source_enabled
 from services.address_matching import RuleMatcher
 from services.address_match_feedback import (
+    MANUAL_UNMATCHED_REASON_LABELS,
+    annotation_hmac,
     apply_feedback_memory,
     load_feedback_memories,
 )
@@ -74,6 +76,22 @@ def _task_match_address(parser_type: str, values: dict[str, str]) -> str:
         for field in address_fields
         if str(values.get(field) or "").strip()
     ), "")
+
+
+def _task_annotation_addresses(
+    parser_type: str,
+    values: dict[str, str],
+) -> tuple[str, str]:
+    """Return original/current address separately for annotation fencing."""
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    fields = tuple(getattr(workflow, "address_fields", ()))
+    original = next((
+        str(values.get(field) or "").strip()
+        for field in fields
+        if field != "现住址" and str(values.get(field) or "").strip()
+    ), "")
+    current = str(values.get("现住址") or "").strip() if "现住址" in fields else ""
+    return original, current
 
 
 def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
@@ -252,7 +270,9 @@ async def rebuild_projection(
                suggested_community_id, suggested_community_name,
                match_status, match_score, match_method, match_reason,
                candidates_json, matcher_version, confirmed_entry_id,
-               confirmed_by, confirmed_at
+               confirmed_by, confirmed_at, manual_unmatched_reason,
+               manual_unmatched_address_hmac, manual_unmatched_by,
+               manual_unmatched_at
         FROM _online_task_address_matches
         WHERE parser_type=%s
         {key_filter}
@@ -274,6 +294,10 @@ async def rebuild_projection(
             "confirmed_entry_id": int(row[11]) if row[11] is not None else None,
             "confirmed_by": row[12],
             "confirmed_at": row[13],
+            "manual_unmatched_reason": str(row[14] or ""),
+            "manual_unmatched_address_hmac": str(row[15] or ""),
+            "manual_unmatched_by": row[16],
+            "manual_unmatched_at": row[17],
         }
         for row in await cur.fetchall()
     }
@@ -442,7 +466,38 @@ async def rebuild_projection(
             community_name=parser.community_value(parent),
         )
         stored = stored_matches.get(row_key)
-        if stored and stored.get("status") == "confirmed":
+        original_address, current_address = _task_annotation_addresses(
+            parser_type, parent
+        )
+        current_annotation_key = annotation_hmac(
+            original_address, current_address, parser.community_value(parent)
+        )
+        manual_unmatched_active = bool(
+            stored
+            and stored.get("status") == "manual_unmatched"
+            and stored.get("manual_unmatched_address_hmac")
+            and stored.get("manual_unmatched_address_hmac") == current_annotation_key
+        )
+        if manual_unmatched_active:
+            address_match = {
+                "status": "manual_unmatched",
+                "score": 0,
+                "method": "人工标注",
+                # ``manual_unmatched_reason`` stores the fixed, display-safe
+                # reason label.  The generic ``reason`` key is the matcher
+                # reason and is not present in the persisted annotation row;
+                # falling back to it used to hide the operator's selected
+                # reason after every projection rebuild.
+                "reason": MANUAL_UNMATCHED_REASON_LABELS.get(
+                    str(stored.get("manual_unmatched_reason") or ""),
+                    str(stored.get("manual_unmatched_reason") or "")
+                    or "已人工标注为无匹配小区",
+                ),
+                "candidate": None,
+                "candidates": [],
+                "version": str(stored.get("version") or matcher.version),
+            }
+        elif stored and stored.get("status") == "confirmed":
             confirmed_entry = address_entries_by_id.get(
                 int(stored.get("confirmed_entry_id") or 0)
             )
@@ -474,6 +529,19 @@ async def rebuild_projection(
                     "candidates": stored.get("candidates") or [],
                     "version": str(stored.get("version") or matcher.version),
                 }
+        elif stored and stored.get("status") == "review_required":
+            # A changed address context is an explicit human-review fence.
+            # Keep it sticky across later projection rebuilds: applying the
+            # rule matcher or a positive feedback memory here would silently
+            # turn the task back into ``suggested`` before an operator has
+            # rechecked the new input.
+            address_match = {
+                "status": "review_required", "score": 0,
+                "method": "人工标注复核",
+                "reason": "原始地址、现住址或任务社区已变化，需要重新核对",
+                "candidate": None, "candidates": [],
+                "version": str(stored.get("version") or matcher.version),
+            }
         else:
             address_match = apply_feedback_memory(
                 address_match,
@@ -481,6 +549,20 @@ async def rebuild_projection(
                 community_name=parser.community_value(parent),
                 memories=feedback_memories,
                 entries_by_id=address_entries_by_id,
+            )
+        if stored and stored.get("status") == "manual_unmatched" and not manual_unmatched_active:
+            address_match = {
+                "status": "review_required", "score": 0,
+                "method": "人工标注复核",
+                "reason": "原始地址、现住址或任务社区已变化，需要重新核对",
+                "candidate": None, "candidates": [],
+                "version": str(matcher.version),
+            }
+            await cur.execute(
+                "UPDATE _online_task_address_matches SET manual_unmatched_reason=NULL, "
+                "manual_unmatched_address_hmac=NULL, manual_unmatched_by=NULL, "
+                "manual_unmatched_at=NULL WHERE parser_type=%s AND row_key=%s",
+                (parser_type, row_key),
             )
         match_candidate = address_match.get("candidate") or {}
         projected_task_state = task_state(
@@ -580,7 +662,11 @@ async def rebuild_projection(
                 matcher_version=VALUES(matcher_version),
                 confirmed_entry_id=VALUES(confirmed_entry_id),
                 confirmed_by=VALUES(confirmed_by),
-                confirmed_at=VALUES(confirmed_at)
+                confirmed_at=VALUES(confirmed_at),
+                manual_unmatched_reason=IF(VALUES(match_status)='manual_unmatched', manual_unmatched_reason, NULL),
+                manual_unmatched_address_hmac=IF(VALUES(match_status)='manual_unmatched', manual_unmatched_address_hmac, NULL),
+                manual_unmatched_by=IF(VALUES(match_status)='manual_unmatched', manual_unmatched_by, NULL),
+                manual_unmatched_at=IF(VALUES(match_status)='manual_unmatched', manual_unmatched_at, NULL)
             """,
             address_match_rows,
         )
@@ -692,7 +778,8 @@ async def rebuild_projection_keys(
     await cur.execute(
         f"SELECT row_key, original_address, suggested_entry_id, suggested_community_id, "
         "suggested_community_name, match_status, match_score, match_method, match_reason, "
-        "candidates_json, matcher_version, confirmed_entry_id, confirmed_by, confirmed_at "
+        "candidates_json, matcher_version, confirmed_entry_id, confirmed_by, confirmed_at, "
+        "manual_unmatched_reason, manual_unmatched_address_hmac, manual_unmatched_by, manual_unmatched_at "
         f"FROM _online_task_address_matches WHERE parser_type=%s AND row_key IN ({placeholders})",
         (parser_type, *keys),
     )
@@ -705,6 +792,9 @@ async def rebuild_projection_keys(
             "candidates": json_value(row[9], []), "version": str(row[10] or ""),
             "confirmed_entry_id": int(row[11]) if row[11] is not None else None,
             "confirmed_by": row[12], "confirmed_at": row[13],
+            "manual_unmatched_reason": str(row[14] or ""),
+            "manual_unmatched_address_hmac": str(row[15] or ""),
+            "manual_unmatched_by": row[16], "manual_unmatched_at": row[17],
         } for row in await cur.fetchall()
     }
     address_entries = await _address_match_entries(cur)
@@ -777,12 +867,38 @@ async def rebuild_projection_keys(
         )
         address_match = matcher.match(address, address_entries, community_name=parser.community_value(parent))
         stored = stored_matches.get(row_key)
-        if stored and stored.get("status") == "confirmed":
+        original_address, current_address = _task_annotation_addresses(parser_type, parent)
+        current_annotation_key = annotation_hmac(
+            original_address, current_address, parser.community_value(parent)
+        )
+        manual_unmatched_active = bool(
+            stored and stored.get("status") == "manual_unmatched"
+            and stored.get("manual_unmatched_address_hmac") == current_annotation_key
+        )
+        if manual_unmatched_active:
+            reason_code = str(stored.get("manual_unmatched_reason") or "")
+            address_match = {"status": "manual_unmatched", "score": 0,
+                             "method": "人工标注",
+                             "reason": MANUAL_UNMATCHED_REASON_LABELS.get(
+                                 reason_code,
+                                 reason_code or "已人工标注为无匹配小区",
+                             ),
+                             "candidate": None, "candidates": [],
+                             "version": str(stored.get("version") or matcher.version)}
+        elif stored and stored.get("status") == "confirmed":
             confirmed = address_entries_by_id.get(int(stored.get("confirmed_entry_id") or 0))
             if confirmed:
                 address_match = {"status": "confirmed", "score": float(stored.get("score") or 1), "method": "人工确认", "reason": str(stored.get("reason") or "管理员已确认小区归属"), "candidate": {"entry_id": int(confirmed["id"]), "name": str(confirmed.get("name") or ""), "community_id": confirmed.get("community_id"), "community_name": str(confirmed.get("community_name") or ""), "score": float(stored.get("score") or 1), "method": "人工确认", "reason": "管理员已确认小区归属"}, "candidates": stored.get("candidates") or [], "version": str(stored.get("version") or matcher.version)}
             else:
                 address_match = {"status": "conflict", "score": float(stored.get("score") or 0), "method": "人工确认复核", "reason": "已确认的小区已停用或不存在，需要重新确认", "candidate": None, "candidates": stored.get("candidates") or [], "version": str(stored.get("version") or matcher.version)}
+        elif stored and stored.get("status") == "review_required":
+            # Preserve the review fence on every subsequent incremental
+            # rebuild until a new human conclusion is written.
+            address_match = {"status": "review_required", "score": 0,
+                             "method": "人工标注复核",
+                             "reason": "原始地址、现住址或任务社区已变化，需要重新核对",
+                             "candidate": None, "candidates": [],
+                             "version": str(stored.get("version") or matcher.version)}
         else:
             address_match = apply_feedback_memory(
                 address_match,
@@ -790,6 +906,20 @@ async def rebuild_projection_keys(
                 community_name=parser.community_value(parent),
                 memories=feedback_memories,
                 entries_by_id=address_entries_by_id,
+            )
+        if stored and stored.get("status") == "manual_unmatched" and not manual_unmatched_active:
+            address_match = {
+                "status": "review_required", "score": 0,
+                "method": "人工标注复核",
+                "reason": "原始地址、现住址或任务社区已变化，需要重新核对",
+                "candidate": None, "candidates": [],
+                "version": str(matcher.version),
+            }
+            await cur.execute(
+                "UPDATE _online_task_address_matches SET manual_unmatched_reason=NULL, "
+                "manual_unmatched_address_hmac=NULL, manual_unmatched_by=NULL, "
+                "manual_unmatched_at=NULL WHERE parser_type=%s AND row_key=%s",
+                (parser_type, row_key),
             )
         candidate = address_match.get("candidate") or {}
         address_rows.append((parser_type, row_key, address, candidate.get("entry_id"), candidate.get("community_id"), candidate.get("community_name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", matcher.version), stored.get("confirmed_entry_id") if stored else None, stored.get("confirmed_by") if stored else None, stored.get("confirmed_at") if stored else None))
@@ -809,7 +939,7 @@ async def rebuild_projection_keys(
         projection_rows.append((parser_type, row_key, stable_json(parent), parser.community_value(parent), candidate.get("entry_id"), candidate.get("name", ""), address_match.get("status", "unmatched"), address_match.get("score", 0), address_match.get("method", ""), address_match.get("reason", ""), stable_json(address_match.get("candidates", [])), address_match.get("version", ""), str(parent.get("核查人", "") or "").strip(), identity_hmac, parse_dispatch_time(parent, list(dict.fromkeys([*(list(workflow.date_fields) if workflow else []), "下发日期", "下发时间", "创建时间", "日期"])), first_dispatch_by_key.get(row_key)), projected_task_state, len(source_rows), int(conflict), "\n".join(str(parent.get(column, "") or "") for column in parser.COLUMNS), "", assignment_source_label, assignment_address_display, assignment_address_sort_key, assignment_queue_ready, source_revisions.get(row_key, 0)))
     if address_rows:
         await cur.executemany(
-            "INSERT INTO _online_task_address_matches (parser_type,row_key,original_address,suggested_entry_id,suggested_community_id,suggested_community_name,match_status,match_score,match_method,match_reason,candidates_json,matcher_version,confirmed_entry_id,confirmed_by,confirmed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE original_address=VALUES(original_address),suggested_entry_id=VALUES(suggested_entry_id),suggested_community_id=VALUES(suggested_community_id),suggested_community_name=VALUES(suggested_community_name),match_status=VALUES(match_status),match_score=VALUES(match_score),match_method=VALUES(match_method),match_reason=VALUES(match_reason),candidates_json=VALUES(candidates_json),matcher_version=VALUES(matcher_version),confirmed_entry_id=VALUES(confirmed_entry_id),confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at)", address_rows)
+            "INSERT INTO _online_task_address_matches (parser_type,row_key,original_address,suggested_entry_id,suggested_community_id,suggested_community_name,match_status,match_score,match_method,match_reason,candidates_json,matcher_version,confirmed_entry_id,confirmed_by,confirmed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE original_address=VALUES(original_address),suggested_entry_id=VALUES(suggested_entry_id),suggested_community_id=VALUES(suggested_community_id),suggested_community_name=VALUES(suggested_community_name),match_status=VALUES(match_status),match_score=VALUES(match_score),match_method=VALUES(match_method),match_reason=VALUES(match_reason),candidates_json=VALUES(candidates_json),matcher_version=VALUES(matcher_version),confirmed_entry_id=VALUES(confirmed_entry_id),confirmed_by=VALUES(confirmed_by),confirmed_at=VALUES(confirmed_at),manual_unmatched_reason=IF(VALUES(match_status)='manual_unmatched',manual_unmatched_reason,NULL),manual_unmatched_address_hmac=IF(VALUES(match_status)='manual_unmatched',manual_unmatched_address_hmac,NULL),manual_unmatched_by=IF(VALUES(match_status)='manual_unmatched',manual_unmatched_by,NULL),manual_unmatched_at=IF(VALUES(match_status)='manual_unmatched',manual_unmatched_at,NULL)", address_rows)
     if projection_rows:
         await cur.executemany(
             "INSERT INTO _online_source_projection (parser_type,row_key,values_json,community,small_community_id,small_community_name,address_match_status,address_match_score,address_match_method,address_match_reason,address_match_candidates,address_match_version,inspector,identity_hmac,first_dispatch_at,task_state,source_count,conflict,search_text,pending_state,assignment_source_label,assignment_address_display,assignment_address_sort_key,assignment_queue_ready,source_revision) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE source_revision=VALUES(source_revision),values_json=VALUES(values_json),community=VALUES(community),small_community_id=VALUES(small_community_id),small_community_name=VALUES(small_community_name),address_match_status=VALUES(address_match_status),address_match_score=VALUES(address_match_score),address_match_method=VALUES(address_match_method),address_match_reason=VALUES(address_match_reason),address_match_candidates=VALUES(address_match_candidates),address_match_version=VALUES(address_match_version),inspector=VALUES(inspector),identity_hmac=VALUES(identity_hmac),first_dispatch_at=COALESCE(_online_source_projection.first_dispatch_at, VALUES(first_dispatch_at)),task_state=VALUES(task_state),source_count=VALUES(source_count),conflict=VALUES(conflict),search_text=VALUES(search_text),pending_state=VALUES(pending_state),assignment_source_label=VALUES(assignment_source_label),assignment_address_display=VALUES(assignment_address_display),assignment_address_sort_key=VALUES(assignment_address_sort_key),assignment_queue_ready=VALUES(assignment_queue_ready)", projection_rows)

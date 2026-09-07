@@ -151,6 +151,12 @@ class AddressConfirmationRevisionTests(unittest.IsolatedAsyncioTestCase):
             "revision": 6, "business_date": date(2026, 9, 7),
             "operation_id": "address-confirm-11-6",
         }])
+        confirm_sql = next(
+            sql for sql, _ in self.conn._cursor.executions
+            if sql.startswith("INSERT INTO _online_task_address_matches")
+        )
+        self.assertIn("manual_unmatched_reason=NULL", confirm_sql)
+        self.assertIn("manual_unmatched_address_hmac=NULL", confirm_sql)
         self.rebuild.assert_awaited_once_with(self.conn._cursor, "全链条", ["synthetic-row"])
         self.assertIs(self.audit.await_args.kwargs["conn"], self.conn)
         committed = copy.deepcopy(self.conn.state)

@@ -1,279 +1,306 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Alert, Button, Empty, Input, Modal, Pagination, Select, Spin, Tag, message } from 'antd'
-import { CheckOutlined, SearchOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Alert, Button, Collapse, Empty, Input, Modal, Pagination, Radio, Select, Spin, Tag, message } from 'antd'
+import { ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, HistoryOutlined, SearchOutlined } from '@ant-design/icons'
 import { ListContent, ListToolbar, PageHeader } from '../components/ui'
-import useDebouncedValue from '../hooks/useDebouncedValue'
 import { useAuth } from '../context/AuthContext'
-import {
-  confirmMobileTaskAddressMatch,
-  getMobileTaskDetail,
-  listMobileTasks,
-  resolveMobileTaskAddressConflict,
-  type MobileTaskDetailData,
-  type MobileTaskItem,
-} from '../api/client'
-import { canEditOnlineQuery, MOBILE_TASK_TYPES } from '../utils/mobileTaskRouting'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
+import useDebouncedValue from '../hooks/useDebouncedValue'
+import useSystemTime from '../hooks/useSystemTime'
+import { confirmMobileTaskAddressMatch, getAddressAnnotationOptions, getMobileTaskDetail, listMobileTasks, markAddressManualUnmatched, resolveMobileTaskAddressConflict, getMobileTaskFilterOptions, type AddressAnnotationOptions, type MobileTaskDetailData, type MobileTaskItem } from '../api/client'
+import { MOBILE_TASK_TYPES, canEditOnlineQuery } from '../utils/mobileTaskRouting'
+import { ADDRESS_STATES, NO_MATCH_REASONS, PENDING_ADDRESS_STATES, readRecentAnnotations, saveRecentAnnotation, type AnnotationLocator } from '../utils/addressAnnotation'
+import { setPendingNavigationChanges, setNavigationDecision } from '../utils/navigationGuard'
 
-const MATCH_STATUSES = ['ambiguous', 'conflict', 'unmatched', 'invalid']
+type Target = { parser_type: string; row_key: string }
+type QueueFilter = { parser: string; community: string; state: string; keyword: string; page: number }
+const stateOptions = [{ value: 'pending', label: '待处理' }, { value: 'suggested', label: '自动匹配' }, { value: 'confirmed', label: '已确认' }, { value: 'manual_unmatched', label: '无匹配小区' }, { value: 'all', label: '全部结果' }]
+const sameTask = (a: Target | null, b: Target | null) => !!a && !!b && a.parser_type === b.parser_type && a.row_key === b.row_key
+function safeError(error: any, fallback: string) { const detail = error?.response?.data?.detail; return typeof detail === 'string' ? detail : detail?.message || fallback }
 
-function statusLabel(status: string) {
-  return ({
-    ambiguous: '多候选待确认',
-    conflict: '地址冲突待处理',
-    unmatched: '未匹配',
-    invalid: '低信息地址',
-  } as Record<string, string>)[status] || status
-}
-
-/** 独立地址标注工作台；流口任务页面只展示匹配结果，不在任务卡片内确认。 */
 export default function AddressConfirmation() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const [params, setParams] = useSearchParams()
   const { user } = useAuth()
-  const canEditQuery = canEditOnlineQuery(
-    user?.member?.position,
-    user?.role,
-    user?.permission_groups?.map(group => group.code),
-    user?.permissions,
-  )
-  const canManageAddressLibrary = Boolean(user?.permissions?.includes('police.address.manage'))
-  const [parserType, setParserType] = useState<string>(MOBILE_TASK_TYPES[0])
-  const [status, setStatus] = useState<string[]>(MATCH_STATUSES)
-  const [keyword, setKeyword] = useState('')
+  const root = useRef<HTMLDivElement>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  const layout = useResponsiveLayout(root)
+  const formatDateTime = useSystemTime()
+  const narrow = layout.width < 900
+  const [queueMode, setQueueMode] = useState(false)
+  const [filter, setFilter] = useState<QueueFilter>({ parser: params.get('parser_type') || MOBILE_TASK_TYPES[0], community: params.get('community') || '', state: params.get('state') || 'pending', keyword: '', page: 1 })
+  const [communities, setCommunities] = useState<Array<{ value: string; label: string }>>([])
   const [rows, setRows] = useState<MobileTaskItem[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [loading, setLoading] = useState(false)
+  const [target, setTarget] = useState<Target | null>(() => params.get('row_key') ? { parser_type: params.get('parser_type') || MOBILE_TASK_TYPES[0], row_key: params.get('row_key')! } : null)
+  const targetRef = useRef(target); targetRef.current = target
   const [detail, setDetail] = useState<MobileTaskDetailData | null>(null)
-  const [detailOpen, setDetailOpen] = useState(false)
+  const [options, setOptions] = useState<AddressAnnotationOptions | null>(null)
+  const [query, setQuery] = useState('')
+  const [optionPage, setOptionPage] = useState(1)
+  const [selection, setSelection] = useState<number | undefined>()
+  const [selectedName, setSelectedName] = useState('')
+  const [resultType, setResultType] = useState<'community' | 'none'>('community')
+  const [reason, setReason] = useState<string | undefined>()
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  const [optionsLoading, setOptionsLoading] = useState(false)
   const [error, setError] = useState('')
-  const debouncedKeyword = useDebouncedValue(keyword, 350)
-  const requestSequenceRef = useRef(0)
-  const detailRequestSequenceRef = useRef(0)
+  const [versionConflict, setVersionConflict] = useState(false)
+  const [queueError, setQueueError] = useState('')
+  const [optionError, setOptionError] = useState('')
+  const [recent, setRecent] = useState<AnnotationLocator[]>([])
+  const [showRecent, setShowRecent] = useState(false)
+  const [resume, setResume] = useState<Target | null>(null)
+  const [completed, setCompleted] = useState(false)
+  const [reload, setReload] = useState(0)
+  const [optionReload, setOptionReload] = useState(0)
+  const queueSequence = useRef(0), detailSequence = useRef(0), optionSequence = useRef(0)
+  const keyword = useDebouncedValue(filter.keyword, 350), optionKeyword = useDebouncedValue(query, 250)
+  const dirtyRef = useRef(dirty); dirtyRef.current = dirty
+  const canEditQuery = canEditOnlineQuery(user?.member?.position, user?.role, user?.permission_groups?.map(group => group.code), user?.permissions)
+  const canManageLibrary = Boolean(user?.permissions?.includes('police.address.manage'))
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    const requestSequence = ++requestSequenceRef.current
+  const allowLeave = useCallback(() => !savingRef.current && (!dirtyRef.current || window.confirm('小区选择尚未提交。确定放弃当前选择并离开吗？')), [])
+  useEffect(() => {
+    setPendingNavigationChanges(dirty || saving)
+    const warn = (event: BeforeUnloadEvent) => { if (dirtyRef.current || savingRef.current) { event.preventDefault(); event.returnValue = '' } }
+    window.addEventListener('beforeunload', warn)
+    return () => { setPendingNavigationChanges(false); window.removeEventListener('beforeunload', warn) }
+  }, [dirty, saving])
+  useEffect(() => {
+    setNavigationDecision(allowLeave)
+    return () => setNavigationDecision(null)
+  }, [allowLeave, location.key])
+  useEffect(() => { setRecent(user?.id ? readRecentAnnotations(user.id) : []); setResume(null) }, [user?.id])
+
+  const open = useCallback((next: Target, review = false) => {
+    if (!allowLeave()) return
+    setQueueMode(!review)
+    if (review && targetRef.current && !sameTask(targetRef.current, next)) { const previousTarget = { ...targetRef.current }; setResume(previous => previous || previousTarget) }
+    dirtyRef.current = false; setDirty(false); setSelection(undefined); setReason(undefined); setResultType('community')
+    setQuery(''); setOptionPage(1); setSelectedName(''); setDetail(null); setOptions(null); setError(''); setVersionConflict(false); setOptionError(''); setCompleted(false)
+    setTarget(next); setReload(value => value + 1)
+    setParams(previous => { const updated = new URLSearchParams(previous); updated.set('parser_type', next.parser_type); updated.set('row_key', next.row_key); return updated }, { replace: true, state: location.state })
+  }, [allowLeave, setParams, location.state])
+
+  const fetchQueue = useCallback(async (pageOverride = filter.page) => {
+    const sequence = ++queueSequence.current
+    setLoading(true); setQueueError('')
     try {
-      const result = await listMobileTasks({
-        parser_type: parserType,
-        scope: 'community',
-        status: 'all',
-        match_status: status,
-        keyword: debouncedKeyword,
-        sort: 'updated_desc',
-        page,
-        page_size: 20,
-      })
-      if (requestSequence !== requestSequenceRef.current) return
-      setRows(result.data)
-      setTotal(result.total)
-    } catch (reason: any) {
-      if (requestSequence !== requestSequenceRef.current) return
-      setRows([])
-      setTotal(0)
-      setError(reason?.response?.data?.detail || '地址标注任务加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [debouncedKeyword, page, parserType, status])
+      const response = await listMobileTasks({ parser_type: filter.parser, scope: 'community', status: 'all', communities: filter.community ? [filter.community] : [], match_status: filter.state === 'pending' ? PENDING_ADDRESS_STATES : filter.state === 'all' ? [] : [filter.state], keyword, sort: 'address_asc', page: pageOverride, page_size: 20 })
+      if (sequence !== queueSequence.current) return null
+      setRows(response.data); setTotal(response.total)
+      return response
+    } catch (failure) { if (sequence === queueSequence.current) setQueueError(safeError(failure, '任务队列加载失败，请重试')); return null }
+    finally { if (sequence === queueSequence.current) setLoading(false) }
+  }, [filter.parser, filter.community, filter.state, filter.page, keyword])
+  useEffect(() => { void fetchQueue(); return () => { queueSequence.current++ } }, [fetchQueue])
+  useEffect(() => {
+    let active = true
+    void getMobileTaskFilterOptions(filter.parser, 'community').then(value => { if (active) setCommunities(value.communities) }).catch(() => { if (active) setCommunities([]) })
+    return () => { active = false }
+  }, [filter.parser])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const sequence = ++detailSequence.current
+    optionSequence.current++
+    if (!target) return
+    setDetailLoading(true); setError(''); setOptions(null)
+    void getMobileTaskDetail(target.parser_type, target.row_key).then(value => {
+      if (sequence !== detailSequence.current) return
+      setDetail(value)
+      setSelection(value.address_match?.small_community_id || undefined)
+      setSelectedName(value.address_match?.small_community_name || '')
+      setResultType(value.address_match?.status === 'manual_unmatched' ? 'none' : 'community')
+      setReason(undefined)
+      setDirty(false)
+      requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }))
+    }).catch(failure => { if (sequence === detailSequence.current) { setDetail(null); setError(safeError(failure, '任务不存在、已归档或不在当前账号权限范围内')) } })
+      .finally(() => { if (sequence === detailSequence.current) setDetailLoading(false) })
+    return () => { detailSequence.current++ }
+  }, [target?.parser_type, target?.row_key, reload])
 
-  const openDetail = async (task: MobileTaskItem) => {
-    const requestSequence = ++detailRequestSequenceRef.current
-    setDetail(null)
-    setDetailOpen(true)
+  useEffect(() => {
+    if (!target || !detail) return
+    const sequence = ++optionSequence.current
+    setOptionsLoading(true); setOptionError('')
+    void getAddressAnnotationOptions(target.parser_type, target.row_key, { keyword: optionKeyword, page: optionPage, page_size: 30, selected_id: detail.address_match?.small_community_id || undefined }).then(value => {
+      if (sequence === optionSequence.current) { setOptions(value); if (!dirtyRef.current) setReason(value.manual_unmatched_reason || NO_MATCH_REASONS.find(item => item.label === detail.address_match?.reason)?.value) }
+    }).catch(failure => { if (sequence === optionSequence.current) { setOptions(null); setOptionError(safeError(failure, '小区选项加载失败，请重试')) } })
+      .finally(() => { if (sequence === optionSequence.current) setOptionsLoading(false) })
+    return () => { optionSequence.current++ }
+  }, [target?.parser_type, target?.row_key, detail, optionKeyword, optionPage, optionReload])
+
+  const changeFilter = (patch: Partial<QueueFilter>) => {
+    if (!allowLeave()) return
+    dirtyRef.current = false; setDirty(false); setTarget(null); setDetail(null); setCompleted(false); setResume(null)
+    const next = { ...filter, ...patch, page: patch.page || 1 }
+    setFilter(next)
+    setParams({ parser_type: next.parser, community: next.community, state: next.state }, { replace: true, state: location.state })
+  }
+  const leaveDetail = () => {
+    if (!allowLeave()) return
+    dirtyRef.current = false; setDirty(false); setTarget(null); setDetail(null); setResume(null)
+    setParams(previous => { const next = new URLSearchParams(previous); next.delete('row_key'); return next }, { replace: true, state: location.state })
+  }
+  const returnToTasks = () => { if (allowLeave()) { dirtyRef.current = false; setDirty(false); setPendingNavigationChanges(false); if (location.state?.fromTask) navigate(-1); else navigate('/tasks') } }
+  const match = detail?.address_match || detail?.task.address_match
+  const label = ADDRESS_STATES[match?.status || 'unmatched'] || ADDRESS_STATES.unmatched
+  const sourceProblem = Boolean(detail && (detail.task.conflict || detail.sources.length !== 1))
+  const canConfirm = Boolean(options?.capabilities.confirm) && !sourceProblem
+  const canMarkNone = Boolean(options?.capabilities.manual_unmatched) && !sourceProblem
+  const candidates = (match?.candidates || []).map(item => ({ id: Number(item.entry_id), name: String(item.name || ''), community_name: String(item.community_name || '') })).filter(item => item.id > 0)
+  const recommendations = candidates.filter(item => options?.community && item.community_name === options.community)
+  const conflicts = candidates.filter(item => item.community_name && options?.community && item.community_name !== options.community)
+  const updateDraftStatus = (type: 'community' | 'none', id = selection, code = reason) => {
+    const initialType = match?.status === 'manual_unmatched' ? 'none' : 'community'
+    const initialReason = options?.manual_unmatched_reason || NO_MATCH_REASONS.find(item => item.label === match?.reason)?.value
+    const changed = type !== initialType || (type === 'community' ? id !== (match?.small_community_id || undefined) : code !== initialReason)
+    dirtyRef.current = changed; setDirty(changed)
+  }
+  const selectCommunity = (id: number) => { updateDraftStatus('community', id); setSelection(id); setSelectedName(options?.items.find(item => item.id === id)?.name || recommendations.find(item => item.id === id)?.name || ''); setError('') }
+
+  const submit = async (next: boolean, conflictId?: number) => {
+    if (!detail || savingRef.current || versionConflict || !target) return
+    const source = detail.sources.find(item => item.row_key === detail.task.row_key) || detail.sources[0]
+    if (!source?.revision || !source.row_hash) { setError('任务缺少有效来源版本，请重新打开任务'); return }
+    if (!conflictId && (resultType === 'community' ? !selection : !reason)) { setError(resultType === 'community' ? '请先选择一个小区' : '请选择无匹配小区的原因'); return }
+    const savedTarget = { ...target }
+    const oldIndex = rows.findIndex(item => sameTask(item, savedTarget))
+    const following = oldIndex >= 0 ? rows[oldIndex + 1] : undefined
+    savingRef.current = true; setSaving(true); setError('')
+    let committed = false
+    try {
+      let resultStatus = resultType === 'none' ? 'manual_unmatched' : 'confirmed'
+      if (conflictId) {
+        await resolveMobileTaskAddressConflict(target.parser_type, target.row_key, source.id, conflictId, source.revision, source.row_hash)
+        resultStatus = 'review'
+      } else if (resultType === 'none') {
+        await markAddressManualUnmatched(target.parser_type, target.row_key, { source_id: source.id, expected_revision: source.revision, expected_row_hash: source.row_hash, reason_code: reason! })
+      } else await confirmMobileTaskAddressMatch(target.parser_type, target.row_key, source.id, selection!, source.revision, source.row_hash)
+      committed = true
+      setDirty(false); dirtyRef.current = false; setPendingNavigationChanges(false)
+      if (user?.id) setRecent(saveRecentAnnotation(user.id, { ...savedTarget, result: resultStatus }))
+      const refreshed = await fetchQueue()
+      if (next && !conflictId) {
+        // Prefer the next item from the original queue; an updated row may move to the first position.
+        let nextTask: Target | undefined = following
+        if (!nextTask && refreshed) {
+          const movedOut = !refreshed.data.some(item => sameTask(item, savedTarget))
+          nextTask = movedOut ? refreshed.data[oldIndex >= 0 ? oldIndex : 0] : undefined
+          if (!nextTask && !movedOut && refreshed.total > filter.page * 20) {
+            const pageData = await fetchQueue(filter.page + 1)
+            if (pageData) { setFilter(value => ({ ...value, page: value.page + 1 })); nextTask = pageData.data[0] }
+          }
+        }
+        savingRef.current = false
+        if (nextTask) open(nextTask)
+        else { setReload(value => value + 1); setCompleted(Boolean(refreshed)); if (!refreshed) setError('已保存，但队列刷新失败。请重试加载队列后继续。') }
+      } else { setReload(value => value + 1); if (conflictId) message.success('任务社区已修正，请核对最新小区归属') }
+    } catch (failure: any) {
+      if (committed) setError('结果已保存，但后续加载失败。请查看最近处理，不要重复提交。')
+      else if (failure?.response?.status === 409) {
+        setVersionConflict(true)
+        setError('任务已被更新。你的选择已保留；请读取最新版本，核对地址和社区后再提交。')
+      } else setError(safeError(failure, '保存失败，选择已保留，请重试'))
+    } finally { savingRef.current = false; setSaving(false) }
+  }
+  const refreshConflict = async () => {
+    if (!target || savingRef.current) return
+    const current = { ...target }, sequence = ++detailSequence.current
     setDetailLoading(true)
     try {
-      const result = await getMobileTaskDetail(task.parser_type, task.row_key)
-      if (requestSequence === detailRequestSequenceRef.current) setDetail(result)
-    } catch (reason: any) {
-      if (requestSequence === detailRequestSequenceRef.current) {
-        message.error(reason?.response?.data?.detail || '任务详情加载失败')
-      }
-    } finally {
-      if (requestSequence === detailRequestSequenceRef.current) setDetailLoading(false)
-    }
+      const latest = await getMobileTaskDetail(current.parser_type, current.row_key)
+      if (sequence !== detailSequence.current || !sameTask(targetRef.current, current)) return
+      setDetail(latest); setVersionConflict(false)
+      setError('已读取最新版本，请对照地址与社区重新核对保留的选择。确认无误后可再次提交。')
+    } catch (failure) { if (sequence === detailSequence.current) setError(safeError(failure, '读取最新版本失败，选择已保留，请重试')) }
+    finally { if (sequence === detailSequence.current) setDetailLoading(false) }
   }
+  const resolveConflict = (id: number, community: string) => Modal.confirm({ title: '修正任务社区', content: `将任务社区从“${detail?.task.community || '未填写'}”改为“${community}”，然后重新匹配。原始地址保留，当前核查人不会自动重新分配。`, okText: '修正并重新匹配', cancelText: '取消', onOk: () => submit(false, id) })
 
-  const closeDetail = () => {
-    detailRequestSequenceRef.current += 1
-    setDetailOpen(false)
-    setDetail(null)
-    setDetailLoading(false)
-  }
-
-  const candidates = useMemo(() => {
-    const values = detail?.address_match?.candidates || detail?.task.address_match?.candidates || []
-    return values.map(item => ({
-      id: Number(item.entry_id || 0),
-      name: String(item.name || '未命名小区'),
-      community: String(item.community_name || ''),
-      score: Number(item.score || 0),
-    })).filter(item => item.id > 0)
-  }, [detail])
-
-  const confirm = async (entryId: number) => {
-    if (!detail) return
-    const source = detail.sources.find(item => item.row_key === detail.task.row_key) || detail.sources[0]
-    if (!source?.revision || !source.row_hash) {
-      message.error('当前任务缺少版本信息，请刷新后重试')
-      return
-    }
-    setConfirming(true)
-    try {
-      if (detail.address_match?.status === 'conflict') {
-        await resolveMobileTaskAddressConflict(
-          detail.task.parser_type,
-          detail.task.row_key,
-          source.id,
-          entryId,
-          source.revision,
-          source.row_hash,
-        )
-      } else {
-        await confirmMobileTaskAddressMatch(
-          detail.task.parser_type,
-          detail.task.row_key,
-          source.id,
-          entryId,
-          source.revision,
-          source.row_hash,
-        )
-      }
-      message.success('小区归属已确认')
-      closeDetail()
-      await load()
-    } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '确认失败，请刷新后重试')
-    } finally {
-      setConfirming(false)
-    }
-  }
-
-  return (
-    <div className="app-page address-confirmation-page grid gap-3 md:gap-4">
-      <PageHeader
-        title="确认地址"
-        description="集中处理待人工标注的小区归属；自动匹配结果无需人工确认。"
-      />
-      <ListToolbar filters={(
-        <>
-          <Select
-            value={parserType}
-            onChange={value => { setParserType(value); setPage(1) }}
-            options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))}
-            className="min-w-48"
-          />
-          <Select
-            mode="multiple"
-            value={status}
-            onChange={value => { setStatus(value); setPage(1) }}
-            options={MATCH_STATUSES.map(value => ({ value, label: statusLabel(value) }))}
-            className="min-w-56"
-            placeholder="匹配状态"
-          />
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            value={keyword}
-            onChange={event => { setKeyword(event.target.value); setPage(1) }}
-            placeholder="搜索姓名、地址或任务"
-            className="min-w-64 max-w-md"
-          />
-        </>
-      )} />
-      {error && <Alert type="error" showIcon message={error} />}
-      <ListContent inset>
-        <Spin spinning={loading}>
-          <div className="address-confirmation-list grid gap-3 md:gap-4">
-          {rows.length === 0 ? <Empty description="没有待人工标注任务" /> : rows.map(task => {
-            const match = task.address_match
-            return (
-              <div key={task.task_key} className="address-confirmation-row flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] pb-3 last:border-0">
-                <div className="grid min-w-0 gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>{task.summary.title || '未填写姓名'}</strong>
-                    <Tag>{statusLabel(match?.status || 'unmatched')}</Tag>
-                  </div>
-                  <span className="text-sm text-[var(--app-text-secondary)]">{task.summary.original_address || '未填写地址'}</span>
-                  <span className="text-xs text-[var(--app-text-muted)]">任务社区：{task.community || '未填写'}</span>
-                </div>
-                <Button icon={<CheckOutlined />} onClick={() => void openDetail(task)}>核对候选</Button>
-              </div>
-            )
-          })}
-          </div>
-        </Spin>
-        {total > 20 && <Pagination current={page} pageSize={20} total={total} onChange={setPage} showSizeChanger={false} />}
-      </ListContent>
-      <Modal
-        open={detailOpen}
-        title="核对小区归属"
-        onCancel={closeDetail}
-        footer={null}
-        width={640}
-      >
-        {detailLoading ? <Spin /> : detail && (
-          <div className="address-confirmation-detail grid gap-3 md:gap-4">
-            <div className="grid gap-1 text-sm">
-              <strong>{detail.task.summary.title || '未填写姓名'}</strong>
-              <span>原始地址：{detail.task.summary.original_address || '未填写'}</span>
-              <span>任务社区：{detail.task.community || '未填写'}</span>
-              <span className="text-xs text-[var(--app-text-secondary)]">确认前会检查任务是否已更新；如有变化，请重新打开核对后再确认。</span>
-            </div>
-            {candidates.length === 0 ? (
-              <div className="grid gap-3">
-                <Empty description="没有可安全确认的候选小区" />
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="需要先补充可执行的处理条件"
-                  description={canEditQuery || canManageAddressLibrary
-                    ? '可以在在线数据查询修改当前地址，或维护小区地址库后重新匹配。'
-                    : '当前账号没有修改入口，请联系基础管控或管理员处理地址和小区地址库。'}
-                  action={(
-                    <div className="flex flex-wrap gap-2">
-                      {canEditQuery && (
-                        <Button size="small" onClick={() => navigate(`/query?type=${encodeURIComponent(detail.task.parser_type)}`)}>在线数据查询修改地址</Button>
-                      )}
-                      {canManageAddressLibrary && (
-                        <Button size="small" onClick={() => navigate('/police-addresses')}>维护小区地址库</Button>
-                      )}
-                    </div>
-                  )}
-                />
-              </div>
-            ) : (
-              <div className="grid gap-3">
-                {detail.address_match?.status === 'conflict' && (
-                  <Alert
-                    type="error"
-                    showIcon
-                    message="任务社区与候选小区所属社区冲突"
-                    description={detail.address_match.reason || '请核对候选社区后再修正任务社区。'}
-                  />
-                )}
-                {candidates.map(candidate => (
-                  <div key={candidate.id} className="address-confirmation-candidate flex flex-wrap items-center justify-between gap-3 rounded border border-[var(--app-border)] p-3">
-                    <div className="grid min-w-0 gap-1">
-                      <strong>{candidate.name}</strong>
-                      <span className="text-sm text-[var(--app-text-secondary)]">候选所属社区：{candidate.community || '未标注社区'} · 匹配度 {Math.round(candidate.score * 100)} 分</span>
-                    </div>
-                    <Button type="primary" loading={confirming} onClick={() => void confirm(candidate.id)}>
-                      {detail.address_match?.status === 'conflict' ? '按候选社区修正' : '确认归属'}
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
+  return <div ref={root} className={`app-page address-workbench ${narrow ? 'is-narrow' : ''} ${target ? 'has-selection' : ''}`}>
+    <PageHeader title="确认地址" description="核对地址，选择小区。每次保存后都可以回看和重新标注。" />
+    <div className="address-workbench-navigation">
+      <Button aria-label="返回流口核查" icon={<ArrowLeftOutlined />} onClick={returnToTasks} disabled={saving}>返回流口核查</Button>
+      <Button icon={<HistoryOutlined />} onClick={() => setShowRecent(value => !value)}>最近处理{recent.length ? `（${recent.length}）` : ''}</Button>
     </div>
-  )
+    {showRecent && <section className="address-recent" aria-label="最近处理">
+      <strong>最近处理 · 当前标签页</strong>
+      <span className="address-muted">刷新后可通过“已确认”或“无匹配小区”筛选找回任务。</span>
+      {!recent.length ? <span>暂未处理任务</span> : <div>{recent.map((item, index) => <Button key={`${item.parser_type}:${item.row_key}`} onClick={() => open(item, true)} disabled={saving}>{index === 0 ? '上一条' : `最近第 ${index + 1} 条`} · {item.parser_type} · {ADDRESS_STATES[item.result]?.text || '社区已修正'}</Button>)}</div>}
+    </section>}
+    <ListContent>
+      <ListToolbar filters={<>
+        <Select aria-label="业务类型" value={filter.parser} disabled={saving} onChange={parser => changeFilter({ parser, community: '' })} options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))} />
+        <Select aria-label="社区" allowClear placeholder="全部授权社区" value={filter.community || undefined} disabled={saving} onChange={community => changeFilter({ community: community || '' })} options={communities} />
+        <Select aria-label="处理状态" value={filter.state} disabled={saving} options={stateOptions} onChange={state => changeFilter({ state })} />
+        <Input aria-label="搜索任务" allowClear prefix={<SearchOutlined />} placeholder="搜索姓名或地址" value={filter.keyword} disabled={saving} onChange={event => changeFilter({ keyword: event.target.value })} />
+      </>} meta={<span>{loading ? '正在更新队列…' : `共 ${total} 条任务`}</span>} />
+      {queueError && <Alert type="error" showIcon message={queueError} action={<Button onClick={() => void fetchQueue()}>重试加载</Button>} />}
+      <div className="address-workbench-columns">
+        <section className="address-queue" aria-label="地址任务队列">
+          <div className="address-section-heading"><strong>任务队列</strong><span>选择一条开始核对</span></div>
+          <Spin spinning={loading}><div className="address-queue-items">
+            {!rows.length && !loading ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选下没有任务" /> : rows.map(task => <button type="button" key={task.task_key} className={`address-queue-row ${sameTask(task, target) ? 'is-selected' : ''}`} aria-current={sameTask(task, target) ? 'true' : undefined} disabled={saving} onClick={() => open(task)}>
+              <span className="address-queue-title"><strong>{task.summary.title || '未填写姓名'}</strong><Tag color={ADDRESS_STATES[task.address_match?.status || 'unmatched']?.color}>{ADDRESS_STATES[task.address_match?.status || 'unmatched']?.text || '待标注'}</Tag></span>
+              <span className="address-queue-address">{task.summary.original_address || '未填写原始地址'}</span>
+              <span className="address-muted">{task.community || '未填写社区'}{task.address_match?.small_community_name ? ` · ${task.address_match.small_community_name}` : ''}</span>
+            </button>)}
+          </div></Spin>
+          {total > 20 && <Pagination simple current={filter.page} pageSize={20} total={total} disabled={saving} onChange={page => changeFilter({ page })} showSizeChanger={false} />}
+        </section>
+        <section className="address-review" aria-label="核对工作区">
+          {recent[0] && <div className="address-saved" role="status"><CheckOutlined /><span>上一条已保存 · {ADDRESS_STATES[recent[0].result]?.text || '社区已修正'}</span><Button type="link" size="small" disabled={saving} onClick={() => open(recent[0], true)}>查看</Button></div>}
+          {resume && !sameTask(resume, target) && <Button onClick={() => { if (allowLeave()) { const next = resume; dirtyRef.current = false; setResume(null); open(next) } }} disabled={saving}>返回刚才正在核对的任务</Button>}
+          {narrow && target && <Button icon={<ArrowLeftOutlined />} onClick={leaveDetail} disabled={saving}>返回任务队列</Button>}
+          {error && <Alert type="error" showIcon message={error} action={target && versionConflict && <Button disabled={saving || detailLoading} onClick={() => void refreshConflict()}>重新核对最新版本</Button>} />}
+          {!target ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="从左侧选择任务，开始核对小区归属" /> : detailLoading ? <div className="address-loading"><Spin aria-label="正在读取最新任务" /></div> : detail && <>
+            <header className="address-review-heading"><div><span className="address-eyebrow">正在核对 · {detail.task.parser_type}</span><h2 ref={heading} tabIndex={-1} aria-live="polite">{detail.task.summary.title || '未填写姓名'}</h2></div><Tag color={label.color}>{label.text}</Tag></header>
+            {!rows.some(item => sameTask(item, target)) && <p className="address-muted">此任务不在当前队列筛选中，正在按任务入口查看。</p>}
+            <section className="address-facts" aria-label="核对地址">
+              <div><span>原始地址</span><strong>{detail.task.summary.original_address || '未填写'}</strong></div>
+              {(detail.sources[0]?.values?.['现住址']) && <div><span>现住址</span><strong>{detail.sources[0].values['现住址']}</strong></div>}
+              <div><span>任务社区</span><strong>{detail.task.community || '未填写'}</strong></div>
+              <div><span>当前小区</span><strong>{match?.small_community_name || (match?.status === 'manual_unmatched' ? '人工核对：无匹配小区' : '尚未确定')}</strong></div>
+            </section>
+            {optionError && <Alert type="error" message={optionError} action={<Button onClick={() => setOptionReload(value => value + 1)}>重新加载</Button>} />}
+            <fieldset className="address-choice" disabled={saving || optionsLoading || !options}>
+              <legend>选择核对结果</legend>
+              <Radio.Group value={resultType} onChange={event => { setResultType(event.target.value); updateDraftStatus(event.target.value) }} options={[{ value: 'community', label: '归属具体小区', disabled: !canConfirm }, { value: 'none', label: '无匹配小区', disabled: !canMarkNone }]} />
+              {resultType === 'community' ? <>
+                {recommendations.length > 0 && <div className="address-recommendations"><span className="address-muted">推荐小区</span><div>{recommendations.map(item => <Button disabled={!canConfirm || saving} key={item.id} type={selection === item.id ? 'primary' : 'default'} onClick={() => selectCommunity(item.id)}>{item.name}</Button>)}</div></div>}
+                {!recommendations.length && <p className="address-muted">暂无可靠推荐，可直接从本社区小区库选择。</p>}
+                <label htmlFor="annotation-community-search">搜索{options?.community || '当前社区'}的小区</label>
+                <Input id="annotation-community-search" prefix={<SearchOutlined />} allowClear value={query} disabled={!canConfirm || saving} placeholder="输入小区名称" onChange={event => { setQuery(event.target.value); setOptionPage(1) }} />
+                <Spin spinning={optionsLoading}><Radio.Group className="address-community-options" value={selection} onChange={event => selectCommunity(event.target.value)} disabled={!canConfirm || saving}>
+                  {options?.items.map(item => <Radio key={item.id} value={item.id}>{item.name}<span className="address-muted"> · {item.community_name}{options.items.filter(option => option.name === item.name).length > 1 ? ` · ${item.detail_address || '地址库编号 ' + item.id}` : ''}</span></Radio>)}
+                </Radio.Group></Spin>
+                {options && !options.items.length && <p>未找到符合条件的小区。可以调整搜索，或选择“无匹配小区”记录结论。</p>}
+                {options && options.total > 30 && <Pagination simple pageSize={30} current={optionPage} total={options.total} disabled={saving} onChange={setOptionPage} showSizeChanger={false} />}
+                {selection && <div className="address-selected">已选：{selectedName || '已选择小区，请清空搜索核对'}</div>}
+              </> : <>
+                <label htmlFor="annotation-reason">无匹配原因</label><Select id="annotation-reason" value={reason} disabled={!canMarkNone || saving} placeholder="选择最符合当前情况的原因" options={NO_MATCH_REASONS} onChange={value => { setReason(value); updateDraftStatus('none', selection, value) }} />
+                <p className="address-muted">保留地址和任务社区，不创建“未知小区”。这条任务暂不能进行依赖小区归属的新分配；补齐信息后可以重新标注。</p>
+              </>}
+            </fieldset>
+            {sourceProblem && <Alert type="warning" showIcon message="任务来源重复或异常，请联系基础管控或管理员核对本地来源记录。修复后重新打开本任务。" />}
+            {options && !sourceProblem && !canConfirm && !canMarkNone && <Alert type="info" showIcon message="当前账号仅可查看，请联系组长或有权管理任务的上级岗位标注" />}
+            {conflicts.length > 0 && <section className="address-conflicts"><strong>发现其他社区候选</strong><p>任务社区：{detail.task.community || '未填写'}。请核对归属后再修正社区。</p>{conflicts.map(item => <div key={item.id}><span>{item.name} · {item.community_name}</span>{options?.capabilities.resolve_conflict && !sourceProblem ? <Button size="small" disabled={saving || dirty} onClick={() => resolveConflict(item.id, item.community_name)}>修正到此社区并重新匹配</Button> : <span className="address-muted">联系基础管控或管理员处理</span>}</div>)}{dirty && <p>请先提交当前选择，或重新核对后再修正社区。</p>}</section>}
+            <Collapse ghost items={[{ key: 'evidence', label: '查看匹配说明与处理记录', children: <div className="address-evidence"><p>{match?.reason || '尚无匹配说明'}</p>{options?.history?.map((item, index) => <p key={index}>{formatDateTime(item.created_at)} · {item.action || '记录无匹配小区'} {NO_MATCH_REASONS.find(reason => reason.value === item.reason_code)?.label || ''}</p>)}<div>{canEditQuery && <Button disabled={saving} onClick={() => { if (allowLeave()) navigate(`/query?type=${encodeURIComponent(detail.task.parser_type)}`) }}>在线数据查询</Button>}{canManageLibrary && <Button disabled={saving} onClick={() => { if (allowLeave()) navigate('/police-addresses') }}>维护小区地址库</Button>}</div></div> }]} />
+            {completed && <Alert type="success" showIcon message={total === 0 ? '当前筛选已处理完，最后一条结果保留在此' : '已到当前队列末尾，最后一条结果保留在此'} action={<Button onClick={leaveDetail}>返回队列</Button>} />}
+            <footer className="address-submit"><span aria-live="polite">{saving ? '正在保存，请稍候…' : dirty ? '选择尚未提交' : '核对后再提交'}</span><div>
+              <Button disabled={saving || versionConflict || !(resultType === 'none' ? canMarkNone && reason : canConfirm && selection)} onClick={() => void submit(!queueMode)}>{!queueMode ? '确认并下一条' : '确认并停留'}</Button>
+              <Button type="primary" aria-label={queueMode ? '确认并下一条' : '确认并停留'} icon={queueMode ? <ArrowRightOutlined /> : <CheckOutlined />} loading={saving} disabled={versionConflict || !(resultType === 'none' ? canMarkNone && reason : canConfirm && selection)} onClick={() => void submit(queueMode)}>{queueMode ? '确认并下一条' : '确认并停留'}</Button>
+            </div></footer>
+          </>}
+        </section>
+      </div>
+    </ListContent>
+  </div>
 }

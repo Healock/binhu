@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -17,8 +18,20 @@ from services.address_matching import MATCHER_VERSION, normalize_address_text
 
 
 FEEDBACK_VERSION = "address-feedback-v1"
+ANNOTATION_VERSION = "address-annotation-v2"
 ACTIVE = "active"
 CONFLICT = "conflict"
+
+# Persist the short reason code in the annotation/history tables and keep the
+# user-facing text in one backend-owned mapping.  Projection readers must not
+# expose the internal code as the explanation shown in the workbench.
+MANUAL_UNMATCHED_REASON_LABELS = {
+    "insufficient_address": "地址信息不足",
+    "outside_existing_communities": "地址不属于现有小区",
+    "community_registry_missing": "小区库缺失",
+    "outside_task_community": "不在当前社区",
+    "other_review_required": "其他待核实",
+}
 
 
 def feedback_hmac(address: Any, community_name: Any) -> str:
@@ -30,6 +43,39 @@ def feedback_hmac(address: Any, community_name: Any) -> str:
         return ""
     payload = (
         f"{FEEDBACK_VERSION}:{normalized_community}:{normalized_address}"
+    ).encode("utf-8")
+    return hmac.new(
+        settings.registry_hmac_key.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def annotation_hmac(
+    original_address: Any,
+    current_address: Any,
+    community_name: Any,
+) -> str:
+    """Versioned fingerprint for a task annotation's complete address context.
+
+    Unlike positive feedback memory, an annotation must distinguish the
+    original address from a later reported current address. Empty fields are
+    deliberately encoded as empty components so an empty address never turns
+    into a shared ``''`` sentinel or accidentally remains valid after input
+    changes.
+    """
+    from config import settings
+
+    parts = tuple(
+        normalize_address_text(value)
+        for value in (original_address, current_address, community_name)
+    )
+    # Encode components structurally.  Delimiter concatenation would make
+    # values such as ``["a:", "b"]`` and ``["a", ":b"]`` indistinguishable.
+    payload = json.dumps(
+        [ANNOTATION_VERSION, *parts],
+        ensure_ascii=False,
+        separators=(",", ":"),
     ).encode("utf-8")
     return hmac.new(
         settings.registry_hmac_key.encode("utf-8"),
@@ -112,6 +158,58 @@ async def ensure_address_match_feedback_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
         """
     )
+
+
+async def record_feedback_unmatched(
+    cur,
+    *,
+    parser_type: str,
+    row_key: str,
+    address: Any,
+    community_name: Any,
+    current_address: Any = "",
+    reason_code: str,
+    recorded_by: int,
+    source_id: int | None = None,
+    source_revision: int | None = None,
+) -> str:
+    """Invalidate an exact positive feedback when an operator records no match.
+
+    The unmatched decision is intentionally kept in the task annotation table
+    and its own history table.  The history row carries only the source ID and
+    resulting revision as safe traceability metadata; callers execute it on
+    the same business cursor as the annotation write.  If an older positive
+    memory exists for the same normalized address/community key, it is moved
+    to ``conflict`` so a later projection rebuild cannot silently reuse a
+    now-disputed answer.
+    """
+    positive_key = feedback_hmac(address, community_name)
+    key = annotation_hmac(address, current_address, community_name)
+    if positive_key:
+        await cur.execute(
+            "SELECT status, conflict_count FROM _online_address_match_feedback "
+            "WHERE address_hmac=%s FOR UPDATE",
+            (positive_key,),
+        )
+        row = await cur.fetchone()
+        if row and str(row[0] or "") == ACTIVE:
+            await cur.execute(
+                "UPDATE _online_address_match_feedback SET status='conflict', "
+                "confirmed_entry_id=NULL, conflict_count=%s, "
+                "last_confirmed_at=UTC_TIMESTAMP(), last_confirmed_by=%s "
+                "WHERE address_hmac=%s",
+                (int(row[1] or 0) + 1, recorded_by, positive_key),
+            )
+    await cur.execute(
+        "INSERT INTO _online_task_address_unmatched_events "
+        "(parser_type,row_key,address_hmac,reason_code,recorded_by,source_id,source_revision) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (
+            parser_type, row_key, key, reason_code, recorded_by,
+            source_id, source_revision,
+        ),
+    )
+    return key
 
 
 async def load_feedback_memories(

@@ -1027,6 +1027,10 @@ async def ensure_online_editor_schema(cur) -> None:
             confirmed_entry_id BIGINT DEFAULT NULL,
             confirmed_by BIGINT DEFAULT NULL,
             confirmed_at DATETIME DEFAULT NULL,
+            manual_unmatched_reason VARCHAR(40) DEFAULT NULL,
+            manual_unmatched_address_hmac CHAR(64) DEFAULT NULL,
+            manual_unmatched_by BIGINT DEFAULT NULL,
+            manual_unmatched_at DATETIME DEFAULT NULL,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (parser_type, row_key),
@@ -1034,6 +1038,35 @@ async def ensure_online_editor_schema(cur) -> None:
             INDEX idx_task_address_match_community (parser_type, suggested_community_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    for column, definition in (
+        ("manual_unmatched_reason", "VARCHAR(40) DEFAULT NULL"),
+        ("manual_unmatched_address_hmac", "CHAR(64) DEFAULT NULL"),
+        ("manual_unmatched_by", "BIGINT DEFAULT NULL"),
+        ("manual_unmatched_at", "DATETIME DEFAULT NULL"),
+    ):
+        await _ensure_column(cur, "_online_task_address_matches", column, definition)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _online_task_address_unmatched_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            parser_type VARCHAR(50) NOT NULL,
+            row_key CHAR(32) NOT NULL,
+            address_hmac CHAR(64) NOT NULL DEFAULT '',
+            reason_code VARCHAR(40) NOT NULL,
+            recorded_by BIGINT NOT NULL,
+            source_id BIGINT DEFAULT NULL,
+            source_revision BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_task_address_unmatched_event_task (parser_type, row_key, created_at),
+            INDEX idx_task_address_unmatched_event_hmac (address_hmac, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    for column, definition in (
+        ("source_id", "BIGINT DEFAULT NULL"),
+        ("source_revision", "BIGINT DEFAULT NULL"),
+    ):
+        await _ensure_column(
+            cur, "_online_task_address_unmatched_events", column, definition
+        )
     await ensure_address_match_feedback_schema(cur)
     # 修复旧版本把正确结果“近期返吴”或“非本辖区”误判为未核查的投影状态。
     # 历史错拼值仍按已完成兼容；这里只更新本地投影，不写腾讯来源表。
