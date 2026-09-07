@@ -336,6 +336,19 @@ def test_manager_summary_counts_unique_accounts_and_instruction_states():
     assert day["duplicate_removed_count"] == 1
 
 
+def test_manager_summary_counts_address_change_as_an_instruction():
+    row = {
+        "zhUserIdCard": "110101199001010015", "gjUserName": "管家甲",
+        "population": "地址待变更", "comparisonTime": "2026-08-18 08:00:00",
+        "updateDate": "2026-08-18 08:00:00", "id": "1",
+        "pcsname": "滨湖新城派出所",
+    }
+
+    result = aggregate_rows("manager", [row], date(2026, 8, 18), date(2026, 8, 18))
+
+    assert result["rows"][0]["instruction_count"] == 1
+
+
 def test_invalid_identity_is_excluded_without_failing_the_day():
     result = aggregate_rows(
         "peace",

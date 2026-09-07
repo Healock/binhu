@@ -34,7 +34,6 @@ import {
   getQueryTypes,
   getQueryWritebackAudit,
   queryData,
-  updateQuerySourceCell,
   type QueryColumnMeta,
   type QueryDataRow,
   type QueryDependentOptions,
@@ -62,6 +61,8 @@ import {
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
 } from '../utils/querySpreadsheet'
+import { connectQueryRealtime, type QueryConnectionState } from '../utils/queryRealtime'
+import { canEditOnlineQuery } from '../utils/mobileTaskRouting'
 
 const MOBILE_CARD_PAGE_SIZE = 50
 
@@ -104,6 +105,10 @@ export default function DataQuery() {
   const [selectedSheetRow, setSelectedSheetRow] = useState<DisplayRow | null>(null)
   const [sheetSaving, setSheetSaving] = useState(false)
   const [sheetEditing, setSheetEditing] = useState(false)
+  const [sheetCommitFailure, setSheetCommitFailure] = useState<{
+    changes: QuerySheetCellChange[]
+    retry: () => Promise<void>
+  } | null>(null)
   const [refreshAvailable, setRefreshAvailable] = useState(false)
   const [sheetFullscreen, setSheetFullscreen] = useState(false)
   const [sheetRevision, setSheetRevision] = useState(0)
@@ -131,10 +136,18 @@ export default function DataQuery() {
   const versionContextRef = useRef('')
   const refreshBlockedRef = useRef(false)
   const pollingRef = useRef(false)
+  const queryRealtimeRef = useRef<ReturnType<typeof connectQueryRealtime> | null>(null)
+  const [queryRealtimeState, setQueryRealtimeState] = useState<QueryConnectionState>('disconnected')
   const [messageApi, messageContext] = message.useMessage()
 
   const isSuperAdmin = user?.role === 'super_admin'
     || user?.permission_groups?.some(group => group.code === 'super_admin')
+  const queryEditAllowed = canEditOnlineQuery(
+    user?.member?.position,
+    user?.role,
+    user?.permission_groups?.map(group => group.code),
+    user?.permissions,
+  )
   const sheetRequestFilters = useMemo(
     () => buildQuerySheetRequestFilters(sheetFilterCriteria),
     [sheetFilterCriteria],
@@ -198,7 +211,9 @@ export default function DataQuery() {
         sort_order: sortBy ? sortOrder : undefined,
       }))
       if (sequence !== fetchSequence.current) return
-      setRows(result.data)
+      setRows(queryEditAllowed
+        ? result.data
+        : result.data.map(row => ({ ...row, __editable_fields: [] })))
       setColumns(result.columns)
       setColumnMeta(result.column_meta || [])
       setDependentOptions(result.dependent_options)
@@ -207,7 +222,7 @@ export default function DataQuery() {
       setRowManageMessage(result.row_manage_message || '')
       setSourceReady(Boolean(result.source_ready))
       setWritebackEnabled(true)
-      setCanAdd(Boolean(result.can_add))
+      setCanAdd(Boolean(result.can_add) && queryEditAllowed)
       setRequiredFields(result.required_fields || [])
       setPendingCount(0)
       setDataSourceMode('local')
@@ -239,7 +254,7 @@ export default function DataQuery() {
     } finally {
       if (sequence === fetchSequence.current && !silent) setLoading(false)
     }
-  }, [selectedType, source, keyword, sheetRequestFilters, sortBy, sortOrder])
+  }, [queryEditAllowed, selectedType, source, keyword, sheetRequestFilters, sortBy, sortOrder])
 
   useEffect(() => {
     dataVersionRef.current = ''
@@ -294,6 +309,31 @@ export default function DataQuery() {
       document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [checkForUpdates, source])
+
+  useEffect(() => {
+    queryRealtimeRef.current?.close()
+    queryRealtimeRef.current = null
+    setQueryRealtimeState(source === 'online' ? 'connecting' : 'disconnected')
+    if (source !== 'online') return
+    const requestContext = `${selectedType}:${source}`
+    const realtime = connectQueryRealtime(
+      selectedType,
+      ({ data_version: latest }) => {
+        if (versionContextRef.current !== requestContext) return
+        if (!dataVersionRef.current) dataVersionRef.current = latest
+        else if (latest && latest !== dataVersionRef.current) {
+          if (refreshBlockedRef.current) setRefreshAvailable(true)
+          else void fetchData(true)
+        }
+      },
+      setQueryRealtimeState,
+    )
+    queryRealtimeRef.current = realtime
+    return () => {
+      realtime.close()
+      if (queryRealtimeRef.current === realtime) queryRealtimeRef.current = null
+    }
+  }, [fetchData, selectedType, source])
 
   useEffect(() => {
     if (refreshAvailable && !refreshBlocked) void fetchData(true)
@@ -362,6 +402,9 @@ export default function DataQuery() {
   )
 
   const handleSheetCommit = useCallback(async (changes: QuerySheetCellChange[]) => {
+    if (!queryEditAllowed) {
+      throw new Error('当前岗位不能通过在线数据查询修改数据')
+    }
     const revisions = new Map<number, number>()
     const newlyPendingSourceIds = new Set<number>()
     let completed = 0
@@ -371,16 +414,20 @@ export default function DataQuery() {
         const initialRevision = Number(change.row.__revision)
         if (!sourceId || !initialRevision) throw new Error('缺少本地任务版本')
         const expectedRevision = revisions.get(sourceId) || initialRevision
-        const result = await updateQuerySourceCell(selectedType, sourceId, {
+        const save = queryRealtimeRef.current?.save
+        if (!save) throw new Error('实时连接尚未就绪，请等待重连后再保存')
+        const result = await save(sourceId, {
           column: change.column,
           value: change.after,
           expected_revision: expectedRevision,
+          expected_row_hash: String(change.row.__row_hash || ''),
           explicit_text_edit: Boolean(change.explicitTextEdit),
         })
         revisions.set(sourceId, result.revision)
         const wasPending = Boolean(change.row.__pending)
         Object.assign(change.row, result.values, {
           __revision: result.revision,
+          __row_hash: result.row_hash || change.row.__row_hash,
           __row_key: result.row_key,
           __pending: result.pending_sync,
           __inspector_mismatch: Boolean(result.inspector_mismatch),
@@ -396,16 +443,22 @@ export default function DataQuery() {
       messageApi.success(changes.length > 1
         ? `已保存 ${changes.length} 个单元格到本地任务池`
         : '已保存到本地任务池')
+      setSheetCommitFailure(null)
       if (newlyPendingSourceIds.size > 0) {
         setPendingCount(current => current + newlyPendingSourceIds.size)
       }
     } catch (requestError) {
       const prefix = completed > 0 ? `已有 ${completed} 项写入；` : ''
-      messageApi.error(`${prefix}${errorText(requestError, '保存失败，已重新加载在线内容')}`)
-      await fetchData()
-      throw requestError
+      messageApi.error(`${prefix}${errorText(requestError, '保存失败，失败单元格已保留')}`)
+      const commitError = requestError && typeof requestError === 'object'
+        ? requestError
+        : new Error(errorText(requestError, '保存失败'))
+      Object.assign(commitError, {
+        querySheetFailedChanges: changes.slice(completed),
+      })
+      throw commitError
     }
-  }, [fetchData, messageApi, selectedType])
+  }, [fetchData, messageApi, queryEditAllowed, selectedType])
 
   const openAdd = () => {
     setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
@@ -463,19 +516,18 @@ export default function DataQuery() {
     }
     setDrawerSaving(true)
     try {
+      const save = queryRealtimeRef.current?.save
+      if (!save) throw new Error('实时连接尚未就绪，请等待重连后再保存')
       await saveChangedSourceFields(
         selectedDrawerSource,
         drawerDraft,
-        (column, value, expectedRevision) => updateQuerySourceCell(
-          selectedType,
-          selectedDrawerSource.id,
-          {
+        (column, value, expectedRevision, expectedRowHash) => save(selectedDrawerSource.id, {
             column,
             value,
             expected_revision: expectedRevision,
+            expected_row_hash: String(expectedRowHash || selectedDrawerSource.row_hash || ''),
             explicit_text_edit: true,
-          },
-        ),
+          }),
       )
       messageApi.success('修改已保存到本地任务池')
       setDrawerOpen(false)
@@ -610,6 +662,40 @@ export default function DataQuery() {
           description="你正在编辑或有未保存草稿，系统暂不自动刷新。保存或清空后会自动载入最新数据。"
         />
       )}
+      {source === 'online' && sheetCommitFailure && (
+        <Alert
+          type="warning"
+          showIcon
+          message="部分在线修改尚未确认"
+          description={`失败单元格已保留在工作表中（${sheetCommitFailure.changes.length} 项）。可显式重试失败项，或重新读取当前查询结果确认服务端状态。`}
+          action={(
+            <Space wrap>
+              <Button
+                size="small"
+                type="primary"
+                onClick={async () => {
+                  try {
+                    await sheetCommitFailure.retry()
+                    setSheetCommitFailure(null)
+                  } catch { /* 组件会保留新的失败单元格 */ }
+                }}
+              >
+                重试失败项
+              </Button>
+              <Button
+                size="small"
+                onClick={async () => {
+                  setSheetCommitFailure(null)
+                  setRefreshAvailable(false)
+                  await fetchData(true)
+                }}
+              >
+                重新读取确认
+              </Button>
+            </Space>
+          )}
+        />
+      )}
 
       <div
         className={`app-card query-spreadsheet-card hidden overflow-hidden md:block${sheetFullscreen ? ' query-spreadsheet-card--fullscreen' : ''}`}
@@ -716,6 +802,11 @@ export default function DataQuery() {
                 正在保存到滨湖平台
               </Tag>
             )}
+            {source === 'online' && queryRealtimeState !== 'connected' && (
+              <Tag color={queryRealtimeState === 'forbidden' ? 'error' : 'gold'}>
+                {queryRealtimeState === 'forbidden' ? '实时编辑无权限' : '实时编辑连接中'}
+              </Tag>
+            )}
             <Button
               size="small"
               icon={sheetFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
@@ -757,6 +848,7 @@ export default function DataQuery() {
               }}
               onSelectionChange={setSelectedSheetRow}
               onCommit={handleSheetCommit}
+              onCommitFailure={(changes, retry) => setSheetCommitFailure({ changes, retry })}
               onBlocked={messageApi.warning}
               onSavingChange={setSheetSaving}
               onEditingChange={setSheetEditing}

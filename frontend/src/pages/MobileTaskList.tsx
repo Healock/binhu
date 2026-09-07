@@ -1384,7 +1384,6 @@ export default function MobileTaskList({
                 loading={loading}
                 analysisMode={analysisOnly}
                 canClaimUnassigned={!analysisOnly && user?.member?.position === '组员'}
-                canManageAddressMatches={!analysisOnly && canBulkAssign}
                 selectionMode={false}
                 selectedRowKeys={[]}
                 canSelect={() => false}

@@ -47,8 +47,10 @@ import {
   querySheetPalette,
   queryInspectorMismatch,
   queryInspectorOptions,
+  querySheetEditGenerationMatches,
   querySheetTextCell,
   querySheetCellKey,
+  resolveQuerySheetCommitFailureChanges,
   resolveQuerySheetColumnWidth,
   resolveQuerySheetPasteValues,
   resolveQuerySheetSortRequest,
@@ -78,6 +80,10 @@ export interface QuerySpreadsheetProps {
   onFilterCriteriaChange: (criteria: Record<string, QuerySheetFilterCriteria>) => void
   onSelectionChange: (row: QueryDisplayRow | null) => void
   onCommit: (changes: QuerySheetCellChange[]) => Promise<void>
+  onCommitFailure?: (
+    changes: QuerySheetCellChange[],
+    retry: () => Promise<void>,
+  ) => void
   onBlocked: (message: string) => void
   onSavingChange?: (saving: boolean) => void
   onEditingChange?: (editing: boolean) => void
@@ -140,6 +146,7 @@ export function QuerySpreadsheet({
   onFilterCriteriaChange,
   onSelectionChange,
   onCommit,
+  onCommitFailure,
   onBlocked,
   onSavingChange,
   onEditingChange,
@@ -155,6 +162,7 @@ export function QuerySpreadsheet({
     onSortChange,
     onSelectionChange,
     onCommit,
+    onCommitFailure,
     onBlocked,
     onSavingChange,
     onEditingChange,
@@ -166,6 +174,7 @@ export function QuerySpreadsheet({
     onSortChange,
     onSelectionChange,
     onCommit,
+    onCommitFailure,
     onBlocked,
     onSavingChange,
     onEditingChange,
@@ -444,8 +453,20 @@ export function QuerySpreadsheet({
     const pendingEditedCells = new Set<string>()
     const explicitEditedValues = new Map<string, string>()
     const editingValues = new Map<string, string>()
+    const cellEditGenerations = new Map<string, number>()
+    const latestEditedValues = new Map<string, string>()
+    const failedRetryChanges = new Map<string, QuerySheetCellChange>()
     let internalClipboard: QuerySheetClipboardSnapshot | null = null
     let pendingPaste: { range: IRange; values: string[][] } | null = null
+
+    function richTextToPlainText(value: unknown): string | undefined {
+      if (value && typeof (value as { toPlainText?: unknown }).toPlainText === 'function') {
+        return (value as { toPlainText: () => string }).toPlainText()
+      }
+      if (typeof value === 'string') return value
+      if (value === null || value === undefined) return undefined
+      return String(value)
+    }
 
     const markEditedRange = (range: IRange, values?: string[][]) => {
       const rowCount = range.endRow - range.startRow + 1
@@ -459,16 +480,19 @@ export function QuerySpreadsheet({
           pendingEditedCells.add(key)
           const value = values?.[rowOffset]?.[columnOffset]
           if (value !== undefined) explicitEditedValues.set(key, value)
+          cellEditGenerations.set(key, (cellEditGenerations.get(key) || 0) + 1)
+          const latest = value !== undefined
+            ? value
+            : richTextToPlainText(worksheet.getRange(row, column).getValue()) || ''
+          latestEditedValues.set(key, latest)
+          const retryChange = failedRetryChanges.get(key)
+          if (retryChange) {
+            retryChange.before = String(retryChange.row[retryChange.column] ?? retryChange.before)
+            retryChange.after = latest
+            retryChange.explicitTextEdit = true
+          }
         }
       }
-    }
-
-    const richTextToPlainText = (value: unknown): string | undefined => {
-      if (value && typeof (value as { toPlainText?: unknown }).toPlainText === 'function') {
-        return (value as { toPlainText: () => string }).toPlainText()
-      }
-      if (typeof value === 'string') return value
-      return undefined
     }
 
     const restoreChanges = (changes: QuerySheetCellChange[]) => {
@@ -493,6 +517,100 @@ export function QuerySpreadsheet({
       callbacksRef.current.onSelectionChange(
         selectedQuerySheetRow(sheetRows, selectedWorksheetRow),
       )
+    }
+
+    const changeKey = (change: QuerySheetCellChange): string | null => {
+      const descriptorIndex = sheetRows.findIndex(item => item.data === change.row)
+      const columnIndex = columns.indexOf(change.column)
+      if (descriptorIndex < 0 || columnIndex < 0) return null
+      return querySheetCellKey(descriptorIndex + 1, columnIndex)
+    }
+
+    const preserveFailedChange = (
+      change: QuerySheetCellChange,
+      snapshotGeneration: number,
+    ): QuerySheetCellChange | null => {
+      const key = changeKey(change)
+      if (!key) return null
+      const currentGeneration = cellEditGenerations.get(key) || 0
+      const latest = latestEditedValues.get(key) ?? change.after
+      // A response may arrive after a newer edit.  The newer worksheet value
+      // is authoritative for recovery; never restore the stale batch value.
+      if (!querySheetEditGenerationMatches(snapshotGeneration, currentGeneration)) {
+        change.after = latest
+      }
+      change.row[change.column] = latest
+      const descriptorIndex = sheetRows.findIndex(item => item.data === change.row)
+      const columnIndex = columns.indexOf(change.column)
+      if (descriptorIndex >= 0 && columnIndex >= 0) {
+        suppressCommands = true
+        try {
+          worksheet
+            .getRange(descriptorIndex + 1, columnIndex)
+            .setValue(querySheetTextCell(latest, change.column))
+          applyInspectorValidation(descriptorIndex)
+        } finally {
+          suppressCommands = false
+        }
+      }
+      return {
+        ...change,
+        before: String(change.before ?? ''),
+        after: latest,
+      }
+    }
+
+    const commitSourceChanges = async (sourceChanges: QuerySheetCellChange[]) => {
+      if (!sourceChanges.length || disposed) return
+      const snapshots = new Map(
+        sourceChanges.flatMap(change => {
+          const key = changeKey(change)
+          if (!key) return []
+          return [[key, cellEditGenerations.get(key) || 0] as const]
+        }),
+      )
+      saving = true
+      callbacksRef.current.onSavingChange?.(true)
+      try {
+        await callbacksRef.current.onCommit(sourceChanges)
+        sourceChanges.forEach(change => {
+          const key = changeKey(change)
+          if (!key) return
+          const generation = cellEditGenerations.get(key) || 0
+          if (querySheetEditGenerationMatches(snapshots.get(key) || 0, generation)) {
+            failedRetryChanges.delete(key)
+          }
+        })
+      } catch (error) {
+        if (!disposed) {
+          const failed = resolveQuerySheetCommitFailureChanges(error, sourceChanges)
+          const retryable = failed.flatMap(change => {
+            const key = changeKey(change)
+            if (!key) return []
+            const recovered = preserveFailedChange(change, snapshots.get(key) || 0)
+            if (!recovered) return []
+            failedRetryChanges.set(key, recovered)
+            return [recovered]
+          })
+          const changedRows = new Set(
+            sourceChanges.map(change => sheetRows.findIndex(item => item.data === change.row)),
+          )
+          changedRows.forEach(rowIndex => applyRowAppearance(rowIndex, themeModeRef.current === 'dark'))
+          const retry = async () => {
+            const pending = [...failedRetryChanges.values()].map(change => ({ ...change }))
+            await commitSourceChanges(pending)
+          }
+          callbacksRef.current.onCommitFailure?.(retryable.map(change => ({ ...change })), retry)
+          callbacksRef.current.onBlocked(
+            retryable.length
+              ? '保存失败，失败单元格已保留；可显式重试或重新读取确认'
+              : '保存失败，请重新读取在线内容确认',
+          )
+        }
+      } finally {
+        saving = false
+        callbacksRef.current.onSavingChange?.(false)
+      }
     }
 
     const reconcileValues = async () => {
@@ -579,21 +697,7 @@ export function QuerySpreadsheet({
       reportSelection()
       const sourceChanges = accepted.filter(change => change.row.__kind !== 'draft')
       if (!sourceChanges.length) return
-
-      saving = true
-      callbacksRef.current.onSavingChange?.(true)
-      try {
-        await callbacksRef.current.onCommit(sourceChanges)
-        changedRows.forEach(rowIndex => applyRowAppearance(rowIndex, themeModeRef.current === 'dark'))
-      } catch {
-        if (!disposed) {
-          restoreChanges(sourceChanges)
-          changedRows.forEach(rowIndex => applyRowAppearance(rowIndex, themeModeRef.current === 'dark'))
-        }
-      } finally {
-        saving = false
-        callbacksRef.current.onSavingChange?.(false)
-      }
+      await commitSourceChanges(sourceChanges)
     }
 
     const scheduleReconcile = () => {

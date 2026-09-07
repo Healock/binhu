@@ -46,6 +46,7 @@ from services.diagnostics import ensure_diagnostic_schema
 from services.help_docs import ensure_help_docs_schema
 from services.address_match_feedback import ensure_address_match_feedback_schema
 from services.online_projection_jobs import ensure_online_projection_job_schema
+from services.online_summary_updates import ensure_online_summary_update_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -1132,6 +1133,7 @@ async def ensure_online_editor_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await ensure_online_projection_job_schema(cur)
+    await ensure_online_summary_update_schema(cur)
     await cur.execute(
         "INSERT IGNORE INTO _system_config (config_key, config_value) "
         "VALUES ('online_writeback_enabled', '0')"
@@ -2888,7 +2890,6 @@ class DatabaseManager:
                 await ensure_permission_schema(cur)
                 await ensure_online_editor_schema(cur)
                 await ensure_local_source_schema(cur)
-                await run_local_source_migration(conn)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
                 await ensure_qmf_registration_schema(cur)
@@ -2945,6 +2946,7 @@ class DatabaseManager:
                         unable_to_verify TINYINT(1) NOT NULL DEFAULT 0,
                         reached_bottom TINYINT(1) NOT NULL DEFAULT 0,
                         effective_workload TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                        source_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP,
@@ -2963,6 +2965,14 @@ class DatabaseManager:
                         "ALTER TABLE _daily_task_ledger "
                         "ADD COLUMN effective_workload "
                         "TINYINT UNSIGNED NOT NULL DEFAULT 0"
+                    )
+                await cur.execute(
+                    "SHOW COLUMNS FROM _daily_task_ledger LIKE 'source_revision'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _daily_task_ledger ADD COLUMN source_revision "
+                        "BIGINT UNSIGNED NOT NULL DEFAULT 0"
                     )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _daily_task_ledger_runs (
@@ -2992,6 +3002,11 @@ class DatabaseManager:
             async with cls._pools["workflow"].acquire() as conn:
                 async with conn.cursor() as cur:
                     await ensure_workflow_schema(cur)
+        # The initial local snapshot rebuild reads address, dispatch, review,
+        # responsibility and registry tables. Create all dependent schemas
+        # before the first migration, including in a fresh split-domain install.
+        async with cls._pools["online_data"].acquire() as conn:
+            await run_local_source_migration(conn)
         return cls
 
     @classmethod

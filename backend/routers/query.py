@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from database import get_db
 from config import settings
-from deps import require_admin_account, require_permission, require_super_admin
+from deps import require_online_query_edit, require_permission, require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
@@ -60,6 +60,7 @@ from services.permissions import (
     ONLINE_RAW_EDIT,
     ONLINE_RAW_ROW_MANAGE,
     ONLINE_RAW_VIEW,
+    can_edit_online_query,
 )
 from services.schema_compat import get_database_column_map, quote_identifier
 from services.task_workflow import TASK_WORKFLOWS, canonical_result_options
@@ -76,6 +77,11 @@ from services.task_assignment_responsibility import (
     migrate_responsibility_row_key,
     task_update_is_credited_to,
 )
+from services.business_time import get_business_date
+from services.online_summary_updates import (
+    enqueue_online_summary_update,
+    launch_online_summary_update_processing,
+)
 from services.online_projection_jobs import (
     enqueue_projection_jobs,
     new_save_operation_id,
@@ -86,12 +92,28 @@ from services.online_projection_jobs import (
 router = APIRouter(
     prefix="/api/query",
     tags=["数据查询"],
-    dependencies=[Depends(require_admin_account)],
+    dependencies=[Depends(require_permission(ONLINE_RAW_VIEW))],
 )
 QUERY_TYPES = [item for item in PARSER_REGISTRY if item != "default"]
 logger = logging.getLogger(__name__)
 LOCAL_SAVE_TRANSACTION_RETRIES = 3
 LOCAL_SAVE_LOCK_WAIT_SECONDS = 3
+
+
+async def _query_row_edit_capabilities(cur, user, parser, values):
+    """Return row editing fields for the query editor only.
+
+    Mobile task details use the broader ``row_edit_capabilities`` contract;
+    the query page has a separate elevated岗位 boundary.
+    """
+    capabilities = await row_edit_capabilities(cur, user, parser, values)
+    if not can_edit_online_query(user):
+        capabilities = {
+            **capabilities,
+            "editable_fields": [],
+            "can_edit": False,
+        }
+    return capabilities
 
 
 async def _connection_transaction_call(conn, method_name: str) -> None:
@@ -108,6 +130,10 @@ class CellUpdate(BaseModel):
     column: str = Field(min_length=1, max_length=200)
     value: str = Field(default="", max_length=10000)
     expected_revision: int = Field(gt=0)
+    # HTTP callers from older clients may omit this; the authenticated
+    # WebSocket editor supplies it so a same-revision stale snapshot cannot
+    # be accepted after a source refresh.
+    expected_row_hash: str | None = Field(default=None, min_length=1, max_length=128)
     explicit_text_edit: bool = False
 
 
@@ -694,6 +720,16 @@ def _mysql_error_number(exc: BaseException) -> int | None:
     return None
 
 
+def _validate_source_row_hash(source: dict, expected_row_hash: str | None) -> None:
+    """Validate an optional content fence after the source row is locked."""
+    if expected_row_hash is not None and str(source["row_hash"] or "") != str(expected_row_hash):
+        raise HTTPException(409, {
+            "code": "task_row_hash_conflict",
+            "message": "该任务内容已变化，请重新读取后再操作",
+            "current_revision": int(source["revision"]),
+        })
+
+
 async def _update_local_source_fields(
     **kwargs,
 ) -> dict:
@@ -746,6 +782,7 @@ async def _update_local_source_fields_once(
     source_id: int,
     changes: dict[str, str],
     expected_revision: int,
+    expected_row_hash: str | None = None,
     request: Request,
     user: dict,
     conn,
@@ -813,6 +850,7 @@ async def _update_local_source_fields_once(
                 ),
             )
             source = await _load_source_row(cur, parser_type, source_id, lock=True)
+        _validate_source_row_hash(source, expected_row_hash)
         # Every local write follows source row -> canonical local source ->
         # authoritative business row.  The explicit reads remove the former
         # inversion where concurrent saves acquired the latter two locks in
@@ -1076,6 +1114,18 @@ async def _update_local_source_fields_once(
             revision=locked_revision + 1,
             operation_id=operation_id,
         )
+        # The summary trigger is part of the same authoritative local
+        # transaction.  It contains identifiers and revision only; the
+        # bounded consumer re-reads the task row before applying a delta.
+        await enqueue_online_summary_update(
+            cur,
+            task_id=int(source["physical_row"]),
+            parser_type=parser_type,
+            row_key=str(new_key),
+            revision=locked_revision + 1,
+            business_date=await get_business_date(cur),
+            operation_id=operation_id,
+        )
         community = parser.community_value(after)
         audiences = ["authenticated"]
         if community:
@@ -1096,6 +1146,7 @@ async def _update_local_source_fields_once(
             str((user.get("member") or {}).get("name") or ""),
         )
         await conn.commit()
+        launch_online_summary_update_processing()
         # These secondary platform ledgers use separate database domains.  A
         # failure after the authoritative transaction has committed must not
         # be surfaced as a failed save or cause the transaction retry wrapper
@@ -1157,6 +1208,7 @@ async def update_source_fields(
     source_id: int,
     changes: dict[str, str],
     expected_revision: int,
+    expected_row_hash: str | None = None,
     request: Request,
     user: dict,
     conn,
@@ -1176,6 +1228,7 @@ async def update_source_fields(
                 source_id=source_id,
                 changes=changes,
                 expected_revision=expected_revision,
+                expected_row_hash=expected_row_hash,
                 request=request,
                 user=user,
                 conn=conn,
@@ -1496,6 +1549,7 @@ async def queue_source_fields(
     changes: dict[str, str],
     base_values: dict[str, str] | None = None,
     expected_revision: int,
+    expected_row_hash: str | None = None,
     request: Request,
     user: dict,
     conn,
@@ -1518,6 +1572,7 @@ async def queue_source_fields(
             source_id=source_id,
             changes=changes,
             expected_revision=expected_revision,
+            expected_row_hash=expected_row_hash,
             request=request,
             user=user,
             conn=conn,
@@ -2195,7 +2250,7 @@ async def _projection_query(
                 if local_data_source_enabled()
                 else bool(row[3])
             )
-            capabilities = await row_edit_capabilities(cur, user, parser, values)
+            capabilities = await _query_row_edit_capabilities(cur, user, parser, values)
             direct_source = source_count == 1 and row[5] is not None
             editable_fields = (
                 capabilities["editable_fields"] if direct_source and not conflict and enabled else []
@@ -2372,7 +2427,7 @@ async def list_source_rows(
             values = json_value(raw_values, {})
             if allowed is not None and parser.community_value(values) not in allowed:
                 continue
-            capabilities = await row_edit_capabilities(cur, user, parser, values)
+            capabilities = await _query_row_edit_capabilities(cur, user, parser, values)
             result.append({
                 "id": int(source_id),
                 "physical_row": int(physical_row),
@@ -2392,7 +2447,7 @@ async def update_source_cell(
     source_id: int,
     data: CellUpdate,
     request: Request,
-    user: dict = Depends(require_permission(ONLINE_RAW_EDIT)),
+    user: dict = Depends(require_online_query_edit),
     conn=Depends(get_db),
 ):
     # Platform edits are committed locally first; Tencent remains a queued
@@ -2403,6 +2458,7 @@ async def update_source_cell(
         changes={data.column: data.value},
         base_values=None,
         expected_revision=data.expected_revision,
+        expected_row_hash=data.expected_row_hash,
         request=request,
         user=user,
         conn=conn,

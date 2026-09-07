@@ -20,10 +20,12 @@ import {
   querySheetTextCell,
   querySheetCellKey,
   resolveQuerySheetColumnWidth,
+  resolveQuerySheetCommitFailureChanges,
   resolveQuerySheetPasteValues,
   resolveQuerySheetSortRequest,
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
+  querySheetEditGenerationMatches,
   toggleQuerySheetFullscreen,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
@@ -92,7 +94,46 @@ test('社区和核查人使用紧凑箭头下拉并感知其他用户更新', ()
   assert.match(pageSource, /visibilitychange/)
 })
 
+test('在线数据查询入口只要求查看权限，不复用管理员硬门槛', () => {
+  const appSource = readFileSync(
+    new URL('../src/App.tsx', import.meta.url),
+    'utf8',
+  )
+  const navigationSource = readFileSync(
+    new URL('../src/navigation/mobileNavigation.ts', import.meta.url),
+    'utf8',
+  )
+  assert.match(appSource, /<Route path="\/query" element={<QueryEntry \/>}/)
+  assert.match(appSource, /<ProtectedRoute requirePermission="online\.raw\.view" \/>/)
+  assert.match(navigationSource, /id: 'online_query'[\s\S]*?permission: 'online\.raw\.view'/)
+  assert.doesNotMatch(appSource, /function QueryEntry\(\)[\s\S]*?adminAccess/)
+  assert.match(appSource, /function QueryEntry\(\)[\s\S]*?return <LazyPage><DataQuery \/><\/LazyPage>/)
+})
+
 const columns = ['社区', '核查人', '姓名']
+
+test('保存批次失败时只把明确未确认的单元格放入重试集合', () => {
+  const row = {
+    社区: '长板',
+    姓名: '测试',
+    __row_key: 'one',
+    __source_id: 12,
+  }
+  const changes = [
+    { row, column: '社区', before: '长板', after: '冬梅' },
+    { row, column: '姓名', before: '测试', after: '新名字' },
+  ]
+  const error = Object.assign(new Error('第二项失败'), {
+    querySheetFailedChanges: [changes[1]],
+  })
+  assert.deepEqual(resolveQuerySheetCommitFailureChanges(error, changes), [changes[1]])
+  assert.deepEqual(resolveQuerySheetCommitFailureChanges(new Error('未知失败'), changes), changes)
+})
+
+test('迟到提交响应只允许恢复同一编辑代次', () => {
+  assert.equal(querySheetEditGenerationMatches(3, 3), true)
+  assert.equal(querySheetEditGenerationMatches(3, 4), false)
+})
 
 test('Univer 排序列按当前选区映射为后台字段', () => {
   assert.deepEqual(resolveQuerySheetSortRequest(columns, 0, [

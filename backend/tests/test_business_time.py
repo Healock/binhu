@@ -4,7 +4,9 @@ import unittest
 from services.business_time import (
     business_date_range_utc_bounds,
     current_business_date,
+    get_business_timezone_name,
 )
+from unittest.mock import AsyncMock, patch
 
 
 class BusinessTimeTests(unittest.TestCase):
@@ -37,6 +39,17 @@ class BusinessTimeTests(unittest.TestCase):
             current_business_date("Not/A-Timezone", utc_time),
             date(2026, 7, 27),
         )
+
+
+class BusinessTimezoneRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_split_domain_uses_platform_configuration(self):
+        from config import settings
+        cur = AsyncMock()
+        cur.fetchone.return_value = ('UTC',)
+        with patch.object(settings, 'PLATFORM_DOMAIN_ACTIVE', True), \
+             patch.object(settings, 'MYSQL_PLATFORM_DB', 'Shadow_Platform'):
+            self.assertEqual(await get_business_timezone_name(cur), 'UTC')
+        self.assertIn('`Shadow_Platform`.`_system_config`', cur.execute.call_args.args[0])
 
 
 if __name__ == "__main__":

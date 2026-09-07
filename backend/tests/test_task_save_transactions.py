@@ -17,6 +17,28 @@ class _Connection:
 
 
 class LocalTaskSaveRetryTests(unittest.IsolatedAsyncioTestCase):
+    def test_hash_conflict_is_a_409_fence(self):
+        with self.assertRaises(HTTPException) as raised:
+            query._validate_source_row_hash(
+                {"row_hash": "current", "revision": 8}, "stale"
+            )
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "task_row_hash_conflict")
+
+    async def test_hash_conflict_rolls_back_the_local_save_transaction(self):
+        conn = _Connection()
+        conflict = HTTPException(409, {
+            "code": "task_row_hash_conflict",
+            "message": "该任务内容已变化，请重新读取后再操作",
+        })
+        inner = AsyncMock(side_effect=conflict)
+        with patch.object(query, "_update_local_source_fields_once", inner):
+            with self.assertRaises(HTTPException) as raised:
+                await query._update_local_source_fields(conn=conn)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "task_row_hash_conflict")
+        self.assertEqual(conn.rollbacks, 1)
+
     async def test_deadlock_retries_complete_transaction(self):
         conn = _Connection()
         outcome = {"revision": 2}
@@ -75,6 +97,13 @@ class LocalTaskSaveRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"code": "task_revision_conflict"', source)
         self.assertIn('"revision": locked_revision + 1', source)
         self.assertNotIn('"revision": expected_revision + 1', source)
+
+    def test_local_save_checks_hash_after_locking_source(self):
+        source = inspect.getsource(query._update_local_source_fields_once)
+        self.assertLess(
+            source.index('source = await _load_source_row(cur, parser_type, source_id, lock=True)'),
+            source.index('_validate_source_row_hash(source, expected_row_hash)'),
+        )
 
     def test_post_commit_ledgers_cannot_reenter_transaction_retry(self):
         source = inspect.getsource(query._update_local_source_fields_once)

@@ -22,6 +22,39 @@ export interface QuerySheetCellChange {
   explicitTextEdit?: boolean
 }
 
+/**
+ * The page may attach the changes that were not acknowledged when a batch
+ * write fails.  Keeping this contract in the spreadsheet utility lets the
+ * editor preserve acknowledged cells and offer a retry for only the
+ * unacknowledged cells.
+ */
+export interface QuerySheetCommitFailure extends Error {
+  querySheetFailedChanges?: QuerySheetCellChange[]
+}
+
+function querySheetChangeIdentity(change: QuerySheetCellChange): string {
+  const row = change.row
+  const rowId = row.__source_id ?? row.__draft_id ?? row.__row_key
+  return `${rowId === undefined ? '' : String(rowId)}:${change.column}`
+}
+
+export function resolveQuerySheetCommitFailureChanges(
+  error: unknown,
+  changes: QuerySheetCellChange[],
+): QuerySheetCellChange[] {
+  const failed = (error as QuerySheetCommitFailure | null | undefined)?.querySheetFailedChanges
+  if (!Array.isArray(failed)) return changes
+  const failedKeys = new Set(failed.map(querySheetChangeIdentity))
+  return changes.filter(change => failedKeys.has(querySheetChangeIdentity(change)))
+}
+
+export function querySheetEditGenerationMatches(
+  expectedGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return expectedGeneration === currentGeneration
+}
+
 export function querySheetCellKey(row: number, column: number): string {
   return `${row}:${column}`
 }

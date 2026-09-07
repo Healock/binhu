@@ -1085,6 +1085,7 @@ export interface QueryDataRow extends Record<string, unknown> {
   __pending?: boolean
   __source_id?: number | null
   __revision?: number | null
+  __row_hash?: string | null
   __physical_row?: number | null
   __editable_fields?: string[]
   __can_delete?: boolean
@@ -1178,6 +1179,7 @@ export async function updateQuerySourceCell(
     column: string
     value: string
     expected_revision: number
+    expected_row_hash?: string
     explicit_text_edit?: boolean
   },
 ): Promise<{
@@ -1186,6 +1188,7 @@ export async function updateQuerySourceCell(
   revision: number
   pending_sync: boolean
   message: string
+  row_hash?: string
 }> {
   const { data } = await api.patch(`/query/${type}/source-rows/${sourceId}`, payload)
   return data
@@ -2087,11 +2090,19 @@ export async function getMobileTaskAssignmentWorkbench(
 export async function confirmMobileTaskAddressMatch(
   parserType: string,
   rowKey: string,
+  sourceId: number,
   smallCommunityId: number,
+  expectedRevision: number,
+  expectedRowHash: string,
 ): Promise<{ message: string; address_match: MobileTaskAddressMatch }> {
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/confirm`,
-    { small_community_id: smallCommunityId },
+    {
+      source_id: sourceId,
+      small_community_id: smallCommunityId,
+      expected_revision: expectedRevision,
+      expected_row_hash: expectedRowHash,
+    },
     activeRequest,
   )
   return data
@@ -2100,6 +2111,7 @@ export async function confirmMobileTaskAddressMatch(
 export async function resolveMobileTaskAddressConflict(
   parserType: string,
   rowKey: string,
+  sourceId: number,
   smallCommunityId: number,
   expectedRevision: number,
   expectedRowHash: string,
@@ -2107,6 +2119,7 @@ export async function resolveMobileTaskAddressConflict(
   const { data } = await api.post(
     `/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/resolve-conflict`,
     {
+      source_id: sourceId,
       small_community_id: smallCommunityId,
       expected_revision: expectedRevision,
       expected_row_hash: expectedRowHash,

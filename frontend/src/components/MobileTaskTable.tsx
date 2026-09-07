@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'rea
 import {
   getMobileTaskInlineEditors,
   claimMobileTask,
-  confirmMobileTaskAddressMatch,
   searchRegistrationProperties,
   updateMobileTask,
   updateMobileTaskAnalysis,
@@ -70,7 +69,6 @@ interface MobileTaskTableProps {
   loading: boolean
   analysisMode?: boolean
   canClaimUnassigned?: boolean
-  canManageAddressMatches?: boolean
   selectionMode: boolean
   selectedRowKeys: Key[]
   canSelect: (task: MobileTaskItem) => boolean
@@ -99,7 +97,6 @@ export default function MobileTaskTable({
   loading,
   analysisMode = false,
   canClaimUnassigned = false,
-  canManageAddressMatches = false,
   selectionMode,
   selectedRowKeys,
   canSelect,
@@ -118,7 +115,6 @@ export default function MobileTaskTable({
   const [registrationProperties, setRegistrationProperties] = useState<Record<string, InlineRegistrationPropertyState>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [savingRowKey, setSavingRowKey] = useState('')
-  const [confirmingAddressMatchKey, setConfirmingAddressMatchKey] = useState('')
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
   const loadingEditorKeysRef = useRef<Set<string>>(new Set())
   const editorElementsRef = useRef<Map<string, HTMLElement>>(new Map())
@@ -645,30 +641,6 @@ export default function MobileTaskTable({
     await saveEditor(task, item, changes, claim, { id: property.id, version: property.version })
   }
 
-  const confirmAddressMatch = async (task: MobileTaskItem, entryId: number) => {
-    const candidate = task.address_match?.candidates.find(item => Number(item.entry_id) === entryId)
-    const candidateName = String(candidate?.name || '所选小区')
-    Modal.confirm({
-      title: '确认任务小区归属？',
-      content: `确认后，该任务才允许进入单人分配或平均分配。当前选择：${candidateName}`,
-      okText: '确认归属',
-      cancelText: '取消',
-      onOk: async () => {
-        setConfirmingAddressMatchKey(task.task_key)
-        try {
-          const result = await confirmMobileTaskAddressMatch(task.parser_type, task.row_key, entryId)
-          message.success(result.message)
-          await onSaved()
-        } catch (reason: any) {
-          message.error(errorMessage(reason, '小区归属确认失败'))
-          throw reason
-        } finally {
-          setConfirmingAddressMatchKey('')
-        }
-      },
-    })
-  }
-
   const renderAddressMatch = (task: MobileTaskItem) => {
     const match = task.address_match
     const label = ADDRESS_MATCH_LABELS[match?.status || 'unmatched'] || ADDRESS_MATCH_LABELS.unmatched
@@ -700,16 +672,10 @@ export default function MobileTaskTable({
             </Button>
           </div>
         )}
-        {canManageAddressMatches && match?.status !== 'confirmed' && match?.status !== 'conflict' && options.length > 0 && (
-          <Select
-            showSearch
-            optionFilterProp="label"
-            placeholder="选择候选小区并人工确认"
-            options={options}
-            loading={confirmingAddressMatchKey === task.task_key}
-            disabled={selectionMode || Boolean(confirmingAddressMatchKey)}
-            onChange={entryId => void confirmAddressMatch(task, entryId)}
-          />
+        {match?.status !== 'confirmed' && match?.status !== 'conflict' && options.length > 0 && (
+          <span className="text-xs text-[var(--app-text-secondary)]">
+            请前往“确认地址”页面完成人工标注
+          </span>
         )}
       </section>
     )

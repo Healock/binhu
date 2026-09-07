@@ -53,8 +53,8 @@ VENUE_EXPORT = "venue.export"
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
     (ONLINE_RAW_VIEW, "数据查看", "查询在线原始及归档数据"),
-    (ONLINE_RAW_EDIT, "数据业务", "修改腾讯在线表格中的现有数据"),
-    (ONLINE_RAW_ROW_MANAGE, "数据业务", "新增或删除腾讯在线表格原始行"),
+    (ONLINE_RAW_EDIT, "数据业务", "修改在线数据查询中的现有本地数据"),
+    (ONLINE_RAW_ROW_MANAGE, "数据业务", "新增或归档在线数据查询中的本地数据"),
     (ONLINE_TASK_MANAGE, "数据业务", "管理现有流口任务及研判"),
     (VISIT_SUMMARY_VIEW, "数据查看", "查看走访概览和汇总"),
     (PERSONNEL_BASIC_VIEW, "基础资料", "查看人员基础信息"),
@@ -265,6 +265,39 @@ def legacy_permissions(role: str) -> tuple[list[str], str, str]:
 
 def has_permission(user: dict[str, Any], permission: str) -> bool:
     return permission in set(user.get("permissions") or [])
+
+
+QUERY_EDIT_POSITIONS = {
+    "基础管控",
+    "中队长",
+    "所队领导",
+}
+
+
+def can_edit_online_query(user: dict[str, Any]) -> bool:
+    """判断是否可以编辑在线查询表格。
+
+    ``online.raw.edit`` 仍是普通任务详情保存所需的能力，不能单独作为
+    在线查询编辑入口的授权条件。查询表格的任意时间修改只开放给内勤、
+    管理岗位；片长、社区民警、组长、组员继续按原规则编辑自己的任务详情。
+    """
+    if not has_permission(user, ONLINE_RAW_EDIT):
+        return False
+    group_codes = {
+        str(group.get("code") or "").strip()
+        for group in user.get("permission_groups") or []
+        if isinstance(group, dict)
+    }
+    primary_code = str(
+        (user.get("permission_group") or {}).get("code") or ""
+    ).strip()
+    group_codes.add(primary_code)
+    if group_codes & {"admin", "super_admin"}:
+        return True
+    if str(user.get("role") or "") in {"admin", "super_admin"}:
+        return True
+    position = str((user.get("member") or {}).get("position") or "").strip()
+    return position in QUERY_EDIT_POSITIONS
 
 
 def permitted_community(

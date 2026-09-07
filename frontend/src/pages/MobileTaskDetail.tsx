@@ -23,7 +23,6 @@ import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
   getMobileTaskResidenceDetail,
-  confirmMobileTaskAddressMatch,
   resolveMobileTaskAddressConflict,
   manuallyConfirmRegistration,
   getQmfLegacyStatus,
@@ -69,7 +68,6 @@ import RegistrationLinkStatus from '../components/RegistrationLinkStatus'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
-import { canBulkAssignMobileTasks } from '../utils/mobileTaskRouting'
 const STATE_LABELS = {
   unchecked: { text: '未核查', color: 'red' },
   checked: { text: '待补结果', color: 'orange' },
@@ -181,7 +179,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [manualConfirmNote, setManualConfirmNote] = useState('')
   const [manualConfirming, setManualConfirming] = useState(false)
   const [addressMatchEntryId, setAddressMatchEntryId] = useState<number | undefined>()
-  const [addressMatchConfirming, setAddressMatchConfirming] = useState(false)
   const [addressConflictResolving, setAddressConflictResolving] = useState(false)
   const autosaveTimerRef = useRef<number | null>(null)
   const saveRef = useRef<(() => Promise<void>) | null>(null)
@@ -201,12 +198,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       && (data.task.source_count > 1 || data.task.conflict),
   )
   const interactionLocked = readonlyView || localSourceConflict
-  const canManageAddressMatch = canBulkAssignMobileTasks(
-    user?.member?.position,
-    user?.role,
-    user?.permission_groups?.map(group => group.code),
-    user?.permissions,
-  )
   const visibleEditorFields = useMemo(() => (
     !interactionLocked && data && selectedSource
       ? mobileTaskEditorFields(
@@ -921,6 +912,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           const result = await resolveMobileTaskAddressConflict(
             parserType,
             rowKey,
+            source.id,
             entryId,
             source.revision,
             source.row_hash,
@@ -1115,19 +1107,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     <Button onClick={() => navigate('/police-addresses')}>维护小区地址库</Button>
                   )}
                 </div>
-              ) : canManageAddressMatch && !interactionLocked ? (
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  value={addressMatchEntryId}
-                  placeholder="核对后选择唯一小区"
-                  options={addressMatchCandidates.map(candidate => ({
-                    value: candidate.entryId,
-                    label: `${candidate.name}${candidate.communityName ? ` · ${candidate.communityName}` : ''} · ${Math.round(candidate.score * 100)} 分`,
-                  }))}
-                  loading={addressMatchConfirming}
-                  onChange={setAddressMatchEntryId}
-                />
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {addressMatchCandidates.slice(0, 5).map(candidate => (
@@ -1135,30 +1114,10 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   ))}
                 </div>
               )}
-              {addressMatch?.status !== 'conflict' && canManageAddressMatch && !interactionLocked && (
-                <Button
-                  type="primary"
-                  loading={addressMatchConfirming}
-                  disabled={!addressMatchEntryId}
-                  onClick={async () => {
-                    if (!addressMatchEntryId) return
-                    setAddressMatchConfirming(true)
-                    try {
-                      const result = await confirmMobileTaskAddressMatch(parserType, rowKey, addressMatchEntryId)
-                      setData(current => current ? {
-                        ...current,
-                        address_match: result.address_match,
-                        task: { ...current.task, address_match: result.address_match },
-                      } : current)
-                      setAddressMatchEntryId(undefined)
-                      message.success(result.message)
-                    } catch (reason: any) {
-                      message.error(detailError(reason, '小区归属确认失败'))
-                    } finally {
-                      setAddressMatchConfirming(false)
-                    }
-                  }}
-                >确认小区归属</Button>
+              {addressMatch?.status !== 'conflict' && addressMatch?.status !== 'confirmed' && (
+                <span className="text-xs text-[var(--app-text-secondary)]">
+                  请前往“确认地址”页面完成人工标注
+                </span>
               )}
             </div>
           )}

@@ -40,7 +40,10 @@ SOURCE_META = {
 
 CLASSIFIER_VERSION = "v4"
 PAGE_SIZE = 200
-INSTRUCTION_RESULTS = {"流口未登记", "流口已注销"}
+# Manager-code instruction metrics include records that need address
+# correction.  Keep this classifier in one place so the dashboard and export
+# paths use the same business definition.
+INSTRUCTION_RESULTS = {"流口未登记", "流口已注销", "地址待变更"}
 
 # High-confidence location markers. They are intentionally evaluated only
 # after the maintained place directory, so a future directory entry can

@@ -130,6 +130,14 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         permission: 'online.raw.view',
       },
       {
+        id: 'address_confirmation',
+        path: '/address-confirmation',
+        label: '确认地址',
+        shortLabel: '确认地址',
+        icon: 'online_check',
+        permission: 'online.raw.edit',
+      },
+      {
         id: 'police_tasks',
         path: '/police-tasks',
         label: '下发任务处理',

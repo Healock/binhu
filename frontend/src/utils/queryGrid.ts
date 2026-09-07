@@ -159,6 +159,7 @@ export function sourceToDisplay(
     __source_count: 1,
     __source_id: source.id,
     __revision: source.revision,
+    __row_hash: source.row_hash,
     __physical_row: source.physical_row,
     __editable_fields: source.editable_fields,
     __can_delete: source.can_delete,
@@ -203,15 +204,17 @@ export async function saveChangedSourceFields(
     column: string,
     value: string,
     expectedRevision: number,
-  ) => Promise<{ revision: number }>,
+    expectedRowHash?: string,
+  ) => Promise<{ revision: number; row_hash?: string }>,
 ): Promise<number> {
   const changed = source.editable_fields.filter(
     column => draft[column] !== source.values[column],
   )
   let revision = source.revision
   for (const column of changed) {
-    const result = await save(column, draft[column] || '', revision)
+    const result = await save(column, draft[column] || '', revision, source.row_hash)
     revision = result.revision
+    source.row_hash = result.row_hash || source.row_hash
   }
   return revision
 }

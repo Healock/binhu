@@ -32,6 +32,7 @@ import MobileTaskHome from './pages/MobileTaskHome'
 import MobileTaskList from './pages/MobileTaskList'
 import MobileTaskDetail from './pages/MobileTaskDetail'
 import PoliceAddressManagement from './pages/PoliceAddressManagement'
+import AddressConfirmation from './pages/AddressConfirmation'
 import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
 import PoliceDispatchWorkbench from './pages/PoliceDispatchWorkbench'
 import PublicProfile from './pages/PublicProfile'
@@ -70,13 +71,7 @@ function QueryEntry() {
   if (shouldUseMobileTaskWorkbench(user?.member?.position, mobile)) {
     return <Navigate to="/tasks" replace />
   }
-  const permissionGroupCodes = user?.permission_groups?.map(group => group.code) || []
-  const adminAccess = permissionGroupCodes.length > 0
-    ? permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
-    : ['admin', 'super_admin'].includes(user?.role || '')
-  return adminAccess
-    ? <LazyPage><DataQuery /></LazyPage>
-    : <Navigate to="/" replace />
+  return <LazyPage><DataQuery /></LazyPage>
 }
 
 function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
@@ -158,6 +153,9 @@ function App() {
                 <Route path="/tasks/home" element={<MobileTaskHomeEntry />} />
                 <Route path="/tasks" element={<MobileTaskEntry />} />
                 <Route path="/tasks/:parserType/:rowKey" element={<MobileTaskEntry detail />} />
+              </Route>
+              <Route element={<ProtectedRoute requireAnyPermission={['online.raw.edit', 'online.task.manage']} />}>
+                <Route path="/address-confirmation" element={<AddressConfirmation />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.task.manage" />}>
                 <Route path="/police-analysis/:parserType/:rowKey" element={<MobileTaskDetail mode="analysis" />} />

@@ -39,6 +39,23 @@ export function isFlowTaskAdmin(
     || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(String(code || '').trim()))
 }
 
+const ONLINE_QUERY_EDIT_POSITIONS = new Set([
+  '基础管控',
+  '中队长',
+  '所队领导',
+])
+
+export function canEditOnlineQuery(
+  position?: string | null,
+  role?: string | null,
+  permissionGroupCodes: string[] = [],
+  permissions: string[] = [],
+): boolean {
+  if (!permissions.includes('online.raw.edit')) return false
+  return ONLINE_QUERY_EDIT_POSITIONS.has(String(position || '').trim())
+    || isFlowTaskAdmin(role, permissionGroupCodes)
+}
+
 export function isFlowTaskElevated(
   position?: string | null,
   role?: string | null,
