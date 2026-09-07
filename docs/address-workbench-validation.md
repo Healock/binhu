@@ -2,6 +2,14 @@
 
 日期：2026-09-08。分支：`codex/ux/address-confirmation-workbench`；基线 `71c81fd2`（main）。本次保持 open PR，不合并、不部署、不打版本标签，PR #518/dev 未修改。
 
+## 交付状态
+
+- 实现提交：`a0acf8e4`，已推送到独立分支。
+- PR：[#519](https://github.com/Healock/binhu/pull/519)，目标 `main`，保持 open。
+- CI：创建 PR 后已启动；最终结果以 PR 当前 head 的 GitHub Checks 为准，不以旧提交结果代替。四项检查为模板、后端与发布检查、前端、Desktop clients。
+- 合并、生产部署、版本标签：未执行。
+- Desktop clients CI 与真实客户端安装验收分别记录，不代表已发布桌面安装包。
+
 ## 实现范围
 
 - 桌面任务小区字段、手机卡片、独立详情统一为可点击状态标签，删除候选大面板及废弃样式。
