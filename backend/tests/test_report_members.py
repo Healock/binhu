@@ -269,6 +269,14 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("report_row.数据总数 = 0", normalized_zero_sql)
         self.assertIn("existing.社区 IS NULL", normalized_zero_sql)
 
+    def test_summary_keeps_first_community_when_member_moves_or_has_multiple_departments(self):
+        rows = [("合成原社区", "合成核查员", 1, 0, 0, 1, 1, 0, 1),
+                ("合成另一社区", "合成核查员", 2, 0, 0, 2, 1, 0, 1)]
+        merged = merge_inspector_rows(
+            rows, [("合成现社区", "合成核查员")], preserve_community=True,
+        )
+        self.assertEqual({r[0]: r[2] for r in merged}, {"合成原社区": 1, "合成另一社区": 2})
+
     def test_total_summary_merges_same_person_across_business_tables(self):
         rows = [
             ("业务社区甲", "张三", 10, 2, 3, 5, 0.5, 1, 0.4),

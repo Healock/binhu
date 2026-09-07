@@ -2899,7 +2899,7 @@ async def confirm_mobile_task_address_match(
                 f"""
                 SELECT projection.community, projection.source_count,
                        projection.conflict, address_match.original_address,
-                       source.id, source.revision, source.row_hash
+                       source.id, source.revision, source.row_hash, source.physical_row
                 FROM _online_source_projection AS projection
                 LEFT JOIN _online_task_address_matches AS address_match
                   ON address_match.parser_type=projection.parser_type
@@ -2991,6 +2991,26 @@ async def confirm_mobile_task_address_match(
                     parser_type, row_key,
                 ),
             )
+            # A confirmation changes task metadata even when source values
+            # are unchanged. Advance the same fence used by subsequent edits.
+            next_revision = int(projection[5]) + 1
+            await cur.execute(
+                "UPDATE _online_source_rows SET revision=%s WHERE id=%s",
+                (next_revision, int(projection[4])),
+            )
+            await cur.execute(
+                "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() "
+                "WHERE parser_type=%s AND local_task_id=%s AND status='active'",
+                (next_revision, parser_type, int(projection[7])),
+            )
+            from services.business_time import get_business_date
+            from services.online_summary_updates import enqueue_online_summary_update
+            await enqueue_online_summary_update(
+                cur, task_id=int(projection[7]), parser_type=parser_type,
+                row_key=row_key, revision=next_revision,
+                business_date=await get_business_date(cur),
+                operation_id=f"address-confirm-{projection[4]}-{next_revision}",
+            )
             await rebuild_projection_rows(cur, parser_type, [row_key])
             result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
         await conn.commit()
@@ -3000,6 +3020,7 @@ async def confirm_mobile_task_address_match(
     await record_admin_audit(
         user,
         "mobile_tasks.address_match_confirm",
+        conn=conn,
         target_type="mobile_task_address_match",
         target_name=f"{parser_type}:{row_key}",
         detail={"small_community_id": int(entry[0])},
