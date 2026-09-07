@@ -148,7 +148,7 @@ export default function AddressConfirmation() {
     dirtyRef.current = false; setDirty(false); setTarget(null); setDetail(null); setResume(null)
     setParams(previous => { const next = new URLSearchParams(previous); next.delete('row_key'); return next }, { replace: true, state: location.state })
   }
-  const returnToTasks = () => { if (allowLeave()) { setPendingNavigationChanges(false); if (location.state?.fromTask) navigate(-1); else navigate('/tasks') } }
+  const returnToTasks = () => { if (allowLeave()) { dirtyRef.current = false; setDirty(false); setPendingNavigationChanges(false); if (location.state?.fromTask) navigate(-1); else navigate('/tasks') } }
   const match = detail?.address_match || detail?.task.address_match
   const label = ADDRESS_STATES[match?.status || 'unmatched'] || ADDRESS_STATES.unmatched
   const sourceProblem = Boolean(detail && (detail.task.conflict || detail.sources.length !== 1))
@@ -227,7 +227,7 @@ export default function AddressConfirmation() {
   return <div ref={root} className={`app-page address-workbench ${narrow ? 'is-narrow' : ''} ${target ? 'has-selection' : ''}`}>
     <PageHeader title="确认地址" description="核对地址，选择小区。每次保存后都可以回看和重新标注。" />
     <div className="address-workbench-navigation">
-      <Button icon={<ArrowLeftOutlined />} onClick={returnToTasks} disabled={saving}>返回流口核查</Button>
+      <Button aria-label="返回流口核查" icon={<ArrowLeftOutlined />} onClick={returnToTasks} disabled={saving}>返回流口核查</Button>
       <Button icon={<HistoryOutlined />} onClick={() => setShowRecent(value => !value)}>最近处理{recent.length ? `（${recent.length}）` : ''}</Button>
     </div>
     {showRecent && <section className="address-recent" aria-label="最近处理">

@@ -59,6 +59,17 @@ try {
  const expand=page.getByRole('button',{name:'展开侧边栏',exact:true});if(await expand.count())await expand.click()
  await page.getByRole('button',{name:'收起侧边栏',exact:true}).click()
  await page.screenshot({path:`${out}/shell-125-percent-collapsed.png`,fullPage:true})
+ // Explicit discard must not prompt a second time when the return button triggers POP.
+ await page.evaluate(()=>{const state=history.state;history.replaceState({...state,idx:0},'', '/address-confirmation');history.pushState({...state,idx:1,usr:{fromTask:true}},'', '/address-confirmation?parser_type=全链条&row_key=fixture-1')})
+ await page.reload();await page.getByRole('heading',{name:'虚构任务01',exact:true}).waitFor()
+ await page.getByRole('radio',{name:'虚构小区甲',exact:false}).check()
+ let discardPrompts=0
+ const acceptDiscard=async dialog=>{discardPrompts++;await dialog.accept()}
+ page.on('dialog',acceptDiscard)
+ await page.getByRole('button',{name:'返回流口核查',exact:true}).click()
+ await page.waitForURL(url=>!url.searchParams.has('row_key'))
+ page.off('dialog',acceptDiscard)
+ assert.equal(discardPrompts,1,'Return must ask about discarding the draft exactly once')
  assert.deepEqual(errors,[])
  console.log('PASS app shell, browser-back draft cancellation, exact task save, 12 viewport/themes and collapsed sidebar')
 } catch(e) {
