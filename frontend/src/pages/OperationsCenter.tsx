@@ -77,6 +77,7 @@ import AppTable from '../components/AppTable'
 import useSystemTime from '../hooks/useSystemTime'
 import { downloadBlob } from '../utils/fileDownload'
 import { resolveRuntimeApiUrl } from '../utils/apiEnvironment'
+import { auditStreamUrl, clearAuditStreamTimer, rememberAuditId } from '../utils/auditStream'
 
 const STATUS_COLORS: Record<string, string> = {
   running: 'processing',
@@ -1037,23 +1038,163 @@ function AuditTab() {
   const [action, setAction] = useState('')
   const [actionOptions, setActionOptions] = useState<AuditActionOption[]>([])
   const [refreshToken, setRefreshToken] = useState(0)
+  const cursorRef = useRef(0)
+  const requestSequenceRef = useRef(0)
+  const snapshotVersionRef = useRef(0)
+  const snapshotActionRef = useRef<string | null>(null)
+  const streamStartedRef = useRef(false)
+  const reconcileTimerRef = useRef<number | null>(null)
+  const seenAuditIdsRef = useRef<Set<number>>(new Set())
 
   useEffect(() => {
+    const sequence = ++requestSequenceRef.current
+    let disposed = false
     setLoading(true)
-    getAuditEvents({ page, page_size: pageSize, action: action || undefined })
-      .then(result => {
+    const load = async () => {
+      try {
+        const result = await getAuditEvents({ page, page_size: pageSize, action: action || undefined })
+        // For a non-first page, obtain the stream cursor serially after the
+        // visible page. This prevents a second parallel snapshot from racing
+        // the first query and starting the stream at an inconsistent point.
+        const latest = page === 1
+          ? result
+          : await getAuditEvents({ page: 1, page_size: 1, action: action || undefined })
+        if (disposed || sequence !== requestSequenceRef.current) return
+        cursorRef.current = latest.data[0]?.id || 0
+        snapshotActionRef.current = action
+        snapshotVersionRef.current += 1
+        result.data.forEach(row => rememberAuditId(seenAuditIdsRef.current, row.id))
         setData(result.data)
         setTotal(result.total)
         setActionOptions(result.action_options)
-      })
-      .catch(() => message.error('操作记录加载失败'))
-      .finally(() => setLoading(false))
+      } catch {
+        if (!disposed && sequence === requestSequenceRef.current) {
+          message.error('操作记录加载失败')
+        }
+      } finally {
+        if (!disposed && sequence === requestSequenceRef.current) setLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      disposed = true
+    }
   }, [action, page, pageSize, refreshToken])
+
+  useEffect(() => {
+    streamStartedRef.current = false
+    snapshotActionRef.current = null
+    seenAuditIdsRef.current.clear()
+    if (reconcileTimerRef.current !== null) {
+      reconcileTimerRef.current = clearAuditStreamTimer(
+        reconcileTimerRef.current,
+        window.clearTimeout,
+      )
+    }
+  }, [action])
+
+  useEffect(() => {
+    let disposed = false
+    let stream: EventSource | null = null
+    let waitTimer: number | null = null
+
+    const scheduleReconcile = () => {
+      if (disposed) return
+      if (reconcileTimerRef.current === null) {
+        reconcileTimerRef.current = window.setTimeout(() => {
+          reconcileTimerRef.current = null
+          setRefreshToken(value => value + 1)
+        }, 250)
+      }
+    }
+
+    const connect = async () => {
+      try {
+        // Wait for the first authoritative page snapshot. This keeps the
+        // initial page query and stream cursor in one ordered sequence while
+        // leaving page refreshes free to update the table without replacing
+        // the long-lived connection.
+        if (!snapshotVersionRef.current || snapshotActionRef.current !== action) {
+          if (!disposed) waitTimer = window.setTimeout(() => void connect(), 50)
+          return
+        }
+        if (streamStartedRef.current) return
+        streamStartedRef.current = true
+        // The cursor belongs to the same authoritative snapshot that loaded
+        // the table. On a reconnect EventSource supplies Last-Event-ID.
+        if (disposed) return
+        const cursor = cursorRef.current
+        stream = new EventSource(
+          auditStreamUrl(
+            cursor,
+            action,
+            resolveRuntimeApiUrl('/api/admin/ops/audit/stream'),
+          ),
+          { withCredentials: true },
+        )
+        stream.onopen = () => {
+          // One authoritative reconciliation after opening closes the race
+          // between the page snapshot and rows committed during connection
+          // setup. Subsequent events are coalesced below.
+          scheduleReconcile()
+        }
+        stream.addEventListener('audit_record', event => {
+          try {
+            const item = JSON.parse((event as MessageEvent<string>).data) as AuditEvent
+            if (!item.id) return
+            if (!rememberAuditId(seenAuditIdsRef.current, item.id)) return
+            // The stream is a notification channel. Reloading the current
+            // page merges the authoritative, fully redacted audit payload so
+            // the live placeholder never permanently hides details.
+            scheduleReconcile()
+          } catch {
+            // The next page refresh remains authoritative for malformed data.
+          }
+        })
+        stream.addEventListener('audit_unavailable', () => {
+          scheduleReconcile()
+        })
+        stream.addEventListener('auth_revoked', () => {
+          stream?.close()
+          stream = null
+        })
+        stream.addEventListener('replaced', () => {
+          // Deliberate server-side replacement must not trigger EventSource's
+          // automatic reconnect loop and evict the newer tab again.
+          stream?.close()
+          stream = null
+        })
+        stream.addEventListener('reconnect', () => {
+          // The server is closing this bounded connection; leave EventSource
+          // open so its native reconnect sends Last-Event-ID.
+          scheduleReconcile()
+        })
+      } catch {
+        // The normal audit query remains usable if the live channel is down.
+      }
+    }
+
+    connect()
+    return () => {
+      disposed = true
+      if (waitTimer !== null) {
+        waitTimer = clearAuditStreamTimer(waitTimer, window.clearTimeout)
+      }
+      if (reconcileTimerRef.current !== null) {
+        reconcileTimerRef.current = clearAuditStreamTimer(
+          reconcileTimerRef.current,
+          window.clearTimeout,
+        )
+      }
+      stream?.close()
+      stream = null
+    }
+  }, [action])
 
   return (
     <div className="flex flex-col gap-4">
       <ListToolbar
-        notice={<Alert type="info" showIcon message="默认显示姓名和中文摘要；展开记录可查看原始审计字段。操作记录不保存密码、令牌、Cookie 或请求正文。" />}
+        notice={<Alert type="info" showIcon message="默认显示姓名和中文摘要；实时通道只发送新记录通知并自动重新对账，点击刷新可再次从数据库校准。操作记录不保存密码、令牌、Cookie 或请求正文。" />}
         filters={<Select
           allowClear
           showSearch
@@ -1072,7 +1213,7 @@ function AuditTab() {
           }}
         />}
         meta={<span>共 {total} 条操作记录</span>}
-        actions={<Button icon={<ReloadOutlined />} onClick={() => setRefreshToken(value => value + 1)}>刷新</Button>}
+        actions={<Button icon={<ReloadOutlined />} onClick={() => setRefreshToken(value => value + 1)}>刷新并重新对账</Button>}
       />
       <AppTable<AuditEvent>
         rowKey="id"

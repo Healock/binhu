@@ -454,15 +454,28 @@ class RegistrationManualConfirm(BaseModel):
 
 
 class AddressMatchConfirm(BaseModel):
+    source_id: int = Field(gt=0)
     small_community_id: int = Field(gt=0)
+    # Address annotation is a write against the current local task snapshot.
+    # Require the caller to fence the decision with the source version so a
+    # stale confirmation cannot overwrite a newer edit.
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
 
 
 class AddressMatchConflictResolution(BaseModel):
     """管理员确认冲突候选后，将任务社区改为候选正式社区并重新匹配。"""
 
+    source_id: int = Field(gt=0)
     small_community_id: int = Field(gt=0)
     expected_revision: int = Field(gt=0)
     expected_row_hash: str = Field(min_length=1, max_length=128)
+
+
+def _validate_address_source_identity(actual_source_id: int, expected_source_id: int) -> None:
+    """Fence address writes to the exact source row shown to the operator."""
+    if int(actual_source_id) != int(expected_source_id):
+        raise HTTPException(409, "任务来源已变化，请刷新后重试")
 
 
 class SyncConflictResolution(BaseModel):
@@ -2885,12 +2898,19 @@ async def confirm_mobile_task_address_match(
             await cur.execute(
                 f"""
                 SELECT projection.community, projection.source_count,
-                       projection.conflict, address_match.original_address
+                       projection.conflict, address_match.original_address,
+                       source.id, source.revision, source.row_hash
                 FROM _online_source_projection AS projection
                 LEFT JOIN _online_task_address_matches AS address_match
                   ON address_match.parser_type=projection.parser_type
                  AND address_match.row_key=projection.row_key
+                JOIN _online_source_rows AS source
+                  ON source.parser_type=projection.parser_type
+                 AND source.row_key=projection.row_key
+                 AND source.archived_at IS NULL
                 WHERE projection.parser_type=%s AND projection.row_key=%s
+                  AND source.spreadsheet_id=0
+                  AND source.source_kind IN ('local_table','local_dispatch')
                   AND {scope_where}
                 FOR UPDATE
                 """,
@@ -2901,6 +2921,11 @@ async def confirm_mobile_task_address_match(
                 raise HTTPException(404, "任务不存在或不在当前账号可操作范围内")
             if bool(projection[2]) or int(projection[1] or 0) != 1:
                 raise HTTPException(409, "任务存在重复或冲突来源，暂不能确认小区")
+            if int(projection[4] or 0) != int(data.source_id) or (
+                int(projection[5] or 0) != int(data.expected_revision)
+                or str(projection[6] or "") != str(data.expected_row_hash)
+            ):
+                raise HTTPException(409, "任务已发生变化，请刷新后重新确认小区")
             await cur.execute(
                 """
                 SELECT entry.id, entry.name, entry.community_id, community.name
@@ -3035,6 +3060,7 @@ async def resolve_mobile_task_address_conflict(
             raise HTTPException(404, "任务不存在或不在当前账号可处理范围内")
         if str(source[1] or "") != row_key:
             raise HTTPException(409, "任务主键已变化，请刷新后重试")
+        _validate_address_source_identity(source[0], data.source_id)
         if int(source[2] or 0) != data.expected_revision or str(source[3] or "") != data.expected_row_hash:
             raise HTTPException(409, "任务已被其他人更新，请刷新后重试")
         if int(source[8] or 0) != 1 or bool(source[9]):

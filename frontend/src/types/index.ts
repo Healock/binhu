@@ -401,6 +401,7 @@ export type MobileNavigationItemId =
   | 'online_summary'
   | 'online_query'
   | 'flow_tasks'
+  | 'address_confirmation'
   | 'visit_summary'
   | 'code_summary'
   | 'data_upload'

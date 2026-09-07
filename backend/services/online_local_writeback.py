@@ -8,6 +8,7 @@ from typing import Any
 import uuid
 
 from database import db_manager
+from services.business_time import get_business_date
 from services.local_source import (
     local_data_source_enabled,
     local_row_hash,
@@ -436,6 +437,20 @@ async def apply_local_system_changes(
         row_keys=[old_key, new_key],
         source_id=source_id,
         revision=next_revision,
+        operation_id=operation_id,
+    )
+    # Keep the summary trigger in the same authoritative transaction.  It is
+    # metadata only; the consumer re-reads the task row after commit and
+    # fences by revision before changing any report projection.
+    from services.online_summary_updates import enqueue_online_summary_update
+
+    await enqueue_online_summary_update(
+        cur,
+        task_id=physical_id,
+        parser_type=parser_type,
+        row_key=new_key,
+        revision=next_revision,
+        business_date=await get_business_date(cur),
         operation_id=operation_id,
     )
     return audit_id, next_revision, after, new_key

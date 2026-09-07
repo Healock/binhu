@@ -51,6 +51,7 @@ from services.permissions import (
     ONLINE_RAW_EDIT,
     ONLINE_RAW_ROW_MANAGE,
     ONLINE_RAW_VIEW,
+    can_edit_online_query,
 )
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
@@ -76,6 +77,29 @@ def make_user(position, *, communities=None, view_scope="own_department", permis
         },
         "permission_groups": [],
     }
+
+
+class OnlineQueryPermissionTests(unittest.TestCase):
+    def test_elevated_positions_can_edit_query_without_changing_task_edit_contract(self):
+        for position in ("基础管控", "中队长", "所队领导"):
+            with self.subTest(position=position):
+                self.assertTrue(can_edit_online_query(make_user(position)))
+
+        for position in ("片长", "社区民警"):
+            with self.subTest(position=position):
+                self.assertFalse(can_edit_online_query(make_user(position)))
+
+    def test_flow_positions_keep_task_edit_permission_but_not_query_edit(self):
+        for position in ("组长", "组员"):
+            with self.subTest(position=position):
+                user = make_user(position, communities=["长板"])
+                self.assertTrue(ONLINE_RAW_EDIT in user["permissions"])
+                self.assertFalse(can_edit_online_query(user))
+
+    def test_admin_group_can_edit_query_without_member_position(self):
+        user = make_user("", permissions=[ONLINE_RAW_VIEW, ONLINE_RAW_EDIT])
+        user["permission_groups"] = [{"code": "admin"}]
+        self.assertTrue(can_edit_online_query(user))
 
 
 class SqlAwareCursor:
@@ -703,6 +727,34 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             "备注",
             editable_fields_for_row(user, traffic.COLUMNS, {"核查结果": ""}, extra_fields=traffic.MOBILE_EDITABLE_FIELDS),
         )
+
+    def test_elevated_positions_can_edit_historical_business_fields(self):
+        for position in ("基础管控", "中队长", "所队领导"):
+            with self.subTest(position=position):
+                user = make_user(position)
+                for parser_type in ("疑似返苏", "出租房屋核查", "苏州涉警"):
+                    parser = get_parser(parser_type)
+                    fields = editable_fields_for_row(
+                        user,
+                        parser.COLUMNS,
+                        {"核查结果": "已核查"},
+                        extra_fields=parser.MOBILE_EDITABLE_FIELDS,
+                    )
+                    self.assertEqual(fields, parser.COLUMNS)
+
+    def test_ordinary_flow_positions_do_not_get_full_historical_edit_surface(self):
+        for position in ("组长", "组员"):
+            with self.subTest(position=position):
+                user = make_user(position, communities=["长板"])
+                for parser_type in ("疑似返苏", "出租房屋核查", "苏州涉警"):
+                    parser = get_parser(parser_type)
+                    fields = editable_fields_for_row(
+                        user,
+                        parser.COLUMNS,
+                        {"核查结果": "已核查"},
+                        extra_fields=parser.MOBILE_EDITABLE_FIELDS,
+                    )
+                    self.assertNotEqual(fields, parser.COLUMNS)
 
     async def test_batch_validation_can_save_result_and_secondary_together(self):
         user = make_user("组员", communities=["长板"])

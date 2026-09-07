@@ -277,27 +277,52 @@ async def get_summary(date_str: str) -> dict:
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT table_name FROM _daily_report_meta "
-                "WHERE report_date = %s AND RIGHT(parser_type, 9) = '_snapshot' "
-                "LIMIT 1",
-                (date_str,),
+                "SELECT table_name, generation_method FROM _daily_report_meta "
+                "WHERE report_date = %s AND ("
+                "RIGHT(parser_type, 9) = '_snapshot' OR "
+                "(generation_method = 'incremental' AND "
+                "table_name LIKE %s)) "
+                "ORDER BY CASE WHEN RIGHT(parser_type, 9) = '_snapshot' "
+                "THEN 0 ELSE 1 END LIMIT 1",
+                (date_str, f"{date_str}_daily_%_inspector"),
             )
-            if not await cur.fetchone():
+            source_meta = await cur.fetchone()
+            if not source_meta:
                 return {
                     "exists": False,
                     "message": f"{date_str} 没有同步快照，暂无总汇总表",
                 }
 
-            await cur.execute(
-                "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
-                (f"{date_str}_daily_summary",),
+            # A first platform mutation may create only the incremental
+            # inspector/community tables.  Those tables are already the
+            # durable public summary input; do not require the periodic
+            # snapshot scheduler or a pre-existing summary metadata row.
+            source_generation = (
+                str(source_meta[1]).lower()
+                if len(source_meta) > 1 and source_meta[1] is not None
+                else "snapshot"
             )
-            if not await cur.fetchone():
-                return {
-                    "exists": False,
-                    "message": f"{date_str} 尚未生成总汇总表",
-                }
-
+            if source_generation != "incremental":
+                await cur.execute(
+                    "SELECT table_name FROM _daily_report_meta WHERE table_name = %s",
+                    (f"{date_str}_daily_summary",),
+                )
+                summary_meta = await cur.fetchone()
+            else:
+                summary_meta = None
+            if not summary_meta and source_generation != "incremental":
+                await cur.execute(
+                    "SELECT table_name FROM _daily_report_meta "
+                    "WHERE report_date=%s AND generation_method='incremental' "
+                    "AND table_name LIKE %s LIMIT 1",
+                    (date_str, f"{date_str}_daily_%_inspector"),
+                )
+                summary_source = await cur.fetchone()
+                if not summary_source:
+                    return {
+                        "exists": False,
+                        "message": f"{date_str} 尚未生成总汇总表",
+                    }
             summary_types = await _get_summary_types(cur)
             alias_lookup = await get_community_alias_lookup(cur)
             all_inspector_rows = []

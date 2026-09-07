@@ -773,6 +773,28 @@ CREATE TABLE IF NOT EXISTS _online_projection_jobs (
     INDEX idx_projection_job_source (source_id, source_revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS _online_summary_updates (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT UNSIGNED NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    row_key VARCHAR(128) NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL,
+    business_date DATE NOT NULL,
+    operation_id VARCHAR(128) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME DEFAULT NULL,
+    error_code VARCHAR(80) NOT NULL DEFAULT '',
+    last_error VARCHAR(500) NOT NULL DEFAULT '',
+    finished_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_online_summary_update (parser_type, task_id, revision, business_date),
+    INDEX idx_online_summary_update_due (status, next_attempt_at, created_at),
+    INDEX idx_online_summary_update_task (task_id, business_date, revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _online_local_changes (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     audit_id BIGINT NOT NULL,
@@ -1630,6 +1652,7 @@ CREATE TABLE IF NOT EXISTS _daily_task_ledger (
     unable_to_verify  TINYINT(1) NOT NULL DEFAULT 0,
     reached_bottom    TINYINT(1) NOT NULL DEFAULT 0,
     effective_workload TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    source_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
     created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (report_date, parser_type, row_key),

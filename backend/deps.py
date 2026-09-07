@@ -22,6 +22,7 @@ from services.permissions import (
     PERSONNEL_BASIC_VIEW,
     PREFERENCES_MANAGE,
     SYNC_TRIGGER,
+    can_edit_online_query,
     has_permission,
     legacy_permissions,
     parse_permissions,
@@ -543,6 +544,18 @@ async def require_admin_account(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要管理员权限",
+        )
+    return user
+
+
+async def require_online_query_edit(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Require the elevated岗位契约 for the online query editor."""
+    if not can_edit_online_query(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前岗位不能通过在线数据查询修改数据",
         )
     return user
 

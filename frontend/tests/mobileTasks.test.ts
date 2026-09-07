@@ -28,6 +28,7 @@ import { retainAvailableMobileTaskFilters } from '../src/utils/mobileTaskFilters
 import {
   canAccessFlowTaskWorkbench,
   canBulkAssignMobileTasks,
+  canEditOnlineQuery,
   isFlowTaskAdmin,
   isFlowTaskElevated,
   isFlowTaskPosition,
@@ -63,6 +64,18 @@ test('管理员和超级管理员可以进入流口岗任务工作台', () => {
   assert.equal(canAccessFlowTaskWorkbench('', 'super_admin'), true)
   assert.equal(canAccessFlowTaskWorkbench('社区民警', 'member', []), true)
   assert.equal(canAccessFlowTaskWorkbench('', 'member', [], ['online.task.manage']), true)
+})
+
+test('在线查询编辑只开放基础管控、中队长、所队领导和管理员', () => {
+  for (const position of ['基础管控', '中队长', '所队领导']) {
+    assert.equal(canEditOnlineQuery(position, 'member', [], ['online.raw.edit']), true)
+  }
+  for (const position of ['片长', '社区民警', '组长', '组员']) {
+    assert.equal(canEditOnlineQuery(position, 'member', [], ['online.raw.edit']), false)
+  }
+  assert.equal(canEditOnlineQuery('', 'member', ['admin'], ['online.raw.edit']), true)
+  assert.equal(canEditOnlineQuery('', 'member', ['super_admin'], ['online.raw.edit']), true)
+  assert.equal(canEditOnlineQuery('基础管控', 'member', [], []), false)
 })
 
 test('组长及上级任务岗位可以批量分配，组员不可以', () => {
@@ -936,7 +949,9 @@ test('唯一可靠建议作为自动匹配直接参与分配', () => {
   assert.match(pageSource, /placeholder="全部小区"/)
   assert.match(pageSource, /匹配状态/)
   assert.match(tableSource, /小区归属/)
-  assert.match(tableSource, /confirmMobileTaskAddressMatch/)
+  assert.doesNotMatch(tableSource, /confirmMobileTaskAddressMatch/)
+  assert.match(tableSource, /请前往“确认地址”页面完成人工标注/)
+  assert.match(readFileSync(new URL('../src/pages/AddressConfirmation.tsx', import.meta.url), 'utf8'), /确认地址/)
   assert.match(tableSource, /打开详情处理/)
   assert.match(detailSource, /原始地址只读保留，不会被匹配结果覆盖/)
   assert.match(detailSource, /候选小区/)

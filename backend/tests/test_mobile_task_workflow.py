@@ -42,6 +42,7 @@ from routers.mobile_tasks import (
     _task_filter_options,
     _task_order,
     _validate_assignment,
+    _validate_address_source_identity,
     claim_mobile_task,
     is_flow_task_admin,
     is_flow_task_elevated,
@@ -110,6 +111,30 @@ class InternalTransferConnection:
 
 
 class MobileTaskWorkflowTests(unittest.TestCase):
+    def test_address_write_rejects_source_id_mismatch(self):
+        with self.assertRaises(HTTPException) as raised:
+            _validate_address_source_identity(11, 12)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("来源已变化", str(raised.exception.detail))
+
+    def test_address_confirmation_requires_source_and_revision_fences(self):
+        from routers.mobile_tasks import AddressMatchConfirm, AddressMatchConflictResolution
+
+        confirmation = AddressMatchConfirm(
+            source_id=11,
+            small_community_id=22,
+            expected_revision=4,
+            expected_row_hash="h" * 64,
+        )
+        conflict = AddressMatchConflictResolution(
+            source_id=11,
+            small_community_id=22,
+            expected_revision=4,
+            expected_row_hash="h" * 64,
+        )
+        self.assertEqual(confirmation.source_id, conflict.source_id)
+        self.assertEqual(confirmation.expected_revision, 4)
+
     def test_analysis_search_only_counts_review_stages_across_businesses(self):
         data = AnalysisTaskSearch(
             parser_types=["全链条", "疑似未注销模型三"],

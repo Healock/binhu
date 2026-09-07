@@ -453,6 +453,15 @@ async def _reconcile_deleted_archive_item(conn, item: tuple) -> str:
                 expected_revision=int(expected_revision),
                 expected_hash=str(expected_hash),
             )
+            task_id = None
+            if source_exists:
+                await cur.execute(
+                    "SELECT physical_row FROM _online_source_rows "
+                    "WHERE id=%s AND parser_type=%s AND row_key=%s FOR UPDATE",
+                    (source_id, parser_type, row_key),
+                )
+                source_identity = await cur.fetchone()
+                task_id = int(source_identity[0]) if source_identity else None
 
         current, archives = await _platform_rows_for_reconciliation(
             conn, parser, str(row_key)
@@ -519,6 +528,18 @@ async def _reconcile_deleted_archive_item(conn, item: tuple) -> str:
                 if cur.rowcount != 1:
                     raise ArchiveStageError(
                         "current_row_changed_after_external_delete", "reconcile_source_remove"
+                    )
+                if task_id is not None:
+                    from services.business_time import get_business_date
+                    from services.online_summary_updates import enqueue_online_summary_update
+                    await enqueue_online_summary_update(
+                        cur,
+                        task_id=task_id,
+                        parser_type=str(parser_type),
+                        row_key=str(row_key),
+                        revision=int(expected_revision),
+                        business_date=await get_business_date(cur),
+                        operation_id=f"archive-{int(export_id)}-{int(source_id)}",
                     )
             await cur.execute(
                 "UPDATE _fullchain_archive_export_items "
@@ -881,6 +902,8 @@ async def _commit_platform_archive(
     *,
     export_id: int,
     source_id: int,
+    task_id: int | None = None,
+    source_revision: int | None = None,
     parser_type: str,
     row_key: str,
     values: dict[str, str],
@@ -895,6 +918,22 @@ async def _commit_platform_archive(
     try:
         await _stage_platform_archive(conn, parser, export_id, row_key, values)
         async with conn.cursor() as cur:
+            if task_id is not None and source_revision is not None:
+                from services.business_time import get_business_date
+                from services.online_summary_updates import enqueue_online_summary_update
+
+                # Keep the archive mutation and its durable summary trigger
+                # in one transaction.  The consumer observes the source as
+                # removed and retains the day's already credited workload.
+                await enqueue_online_summary_update(
+                    cur,
+                    task_id=int(task_id),
+                    parser_type=str(parser_type),
+                    row_key=str(row_key),
+                    revision=int(source_revision),
+                    business_date=await get_business_date(cur),
+                    operation_id=f"archive-{int(export_id)}-{int(source_id)}",
+                )
             if supports_unverifiable_review(parser_type):
                 try:
                     await mark_flow_archived(cur, parser_type, row_key, export_id)
@@ -1176,6 +1215,8 @@ async def run_fullchain_archive_export(export_id: int) -> None:
                             parser,
                             export_id=export_id,
                             source_id=int(source_id),
+                            task_id=int(physical_row),
+                            source_revision=int(revision),
                             parser_type=export_parser_type,
                             row_key=str(row[7]),
                             values=source_values,

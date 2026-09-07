@@ -149,6 +149,10 @@ class LocalSourceHelpersTest(unittest.TestCase):
             "INSERT INTO _online_projection_jobs" in call[0]
             for call in cursor.calls
         ))
+        self.assertTrue(any(
+            "INSERT INTO _online_summary_updates" in call[0]
+            for call in cursor.calls
+        ))
 
     def test_local_query_editing_does_not_depend_on_tencent_writeback_switch(self):
         projection_source = inspect.getsource(query._projection_query)
