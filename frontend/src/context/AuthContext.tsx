@@ -1,3 +1,4 @@
+import { clearRecentAnnotations } from '../utils/addressAnnotation'
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import {
   changeOwnPassword,
@@ -84,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applyBootstrap(payload, expected)
         setUser(await getCurrentUser())
       } catch (error) {
+        clearRecentAnnotations()
         setUser(null)
         if (expected === 'shadow') {
           const message = error instanceof Error ? error.message : '影子压测环境当前不可用'
@@ -146,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       { handleUnauthorized: false, markActivity: false },
     ).catch(() => {})
     clearRoleDashboardCaches(window.sessionStorage)
+    clearRecentAnnotations()
     setUser(null)
     resetApiEnvironment()
     setEnvironment('production')

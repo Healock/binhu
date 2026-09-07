@@ -29,6 +29,7 @@ from services.business_time import get_business_date
 from services.data_scope import community_names_for_scopes
 from services.online_edit_permissions import (
     effective_view_communities,
+    formal_community,
     inspector_option_context,
     row_edit_capabilities,
 )
@@ -37,9 +38,15 @@ from services.online_source import (
     json_value,
     rebuild_projection,
     rebuild_projection_rows,
+    _task_annotation_addresses,
 )
 from services.address_matching import MATCHER_VERSION
-from services.address_match_feedback import record_feedback_confirmation
+from services.address_match_feedback import (
+    MANUAL_UNMATCHED_REASON_LABELS,
+    annotation_hmac,
+    record_feedback_confirmation,
+    record_feedback_unmatched,
+)
 from services.online_local_writeback import (
     apply_local_system_changes,
     launch_local_change_processing,
@@ -459,6 +466,21 @@ class AddressMatchConfirm(BaseModel):
     # Address annotation is a write against the current local task snapshot.
     # Require the caller to fence the decision with the source version so a
     # stale confirmation cannot overwrite a newer edit.
+    expected_revision: int = Field(gt=0)
+    expected_row_hash: str = Field(min_length=1, max_length=128)
+
+
+class AddressMatchManualUnmatched(BaseModel):
+    """固定原因的人工“无匹配小区”结论。"""
+
+    source_id: int = Field(gt=0)
+    reason_code: Literal[
+        "insufficient_address",
+        "outside_existing_communities",
+        "community_registry_missing",
+        "outside_task_community",
+        "other_review_required",
+    ]
     expected_revision: int = Field(gt=0)
     expected_row_hash: str = Field(min_length=1, max_length=128)
 
@@ -2872,6 +2894,354 @@ async def select_mobile_tasks_for_assignment(
     }
 
 
+ADDRESS_MANUAL_UNMATCHED_LABELS = MANUAL_UNMATCHED_REASON_LABELS
+
+
+@router.get("/{parser_type}/{row_key}/address-match/options")
+async def get_mobile_task_address_match_options(
+    parser_type: str,
+    row_key: str,
+    keyword: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=100),
+    selected_id: int | None = Query(default=None, gt=0),
+    user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
+    conn=Depends(get_db),
+):
+    """Return the task fence and searchable same-community address entries.
+
+    The endpoint deliberately exposes only enabled entries belonging to the
+    task's formal community.  It can read automatically matched and already
+    confirmed tasks so a deep link from a task label remains useful.
+    """
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    context = await _flow_context(conn, user)
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            SELECT projection.community, projection.source_count,
+                   projection.conflict, address_match.original_address,
+                   source.id, source.revision, source.row_hash,
+                   projection.small_community_id, projection.small_community_name,
+                   projection.address_match_status, projection.address_match_reason,
+                   projection.address_match_candidates, projection.source_revision,
+                   projection.values_json, address_match.manual_unmatched_reason
+            FROM _online_source_projection AS projection
+            LEFT JOIN _online_task_address_matches AS address_match
+              ON address_match.parser_type=projection.parser_type
+             AND address_match.row_key=projection.row_key
+            JOIN _online_source_rows AS source
+              ON source.parser_type=projection.parser_type
+             AND source.row_key=projection.row_key
+             AND source.archived_at IS NULL
+            WHERE projection.parser_type=%s AND projection.row_key=%s
+              AND source.spreadsheet_id=0
+              AND source.source_kind IN ('local_table','local_dispatch')
+              AND {scope_where}
+            ORDER BY source.id LIMIT 1
+            """,
+            (parser_type, row_key, *scope_params),
+        )
+        task = await cur.fetchone()
+        if not task:
+            raise HTTPException(404, "任务不存在或不在当前账号可查看范围内")
+
+        task_community_raw = str(task[0] or "").strip()
+        # Address options are a read operation.  Resolve aliases from the
+        # registry directly instead of using ``inspector_option_context``:
+        # that helper intentionally limits its result to users with
+        # ``online.raw.edit`` and would make a read-only task viewer see an
+        # empty option list (or a non-formal community).  The write endpoints
+        # still perform their own permission and community checks.
+        task_community = await formal_community(cur, task_community_raw)
+        task_community = task_community or task_community_raw
+        normalized_keyword = keyword.strip()
+        entry_where = (
+            "community.name=%s AND entry.enabled=1 AND community.is_active=1"
+        )
+        entry_params: list[object] = [task_community]
+        if normalized_keyword:
+            entry_where += " AND (entry.name LIKE %s OR entry.normalized_name LIKE %s)"
+            entry_params.extend([
+                f"%{normalized_keyword}%", f"%{normalized_keyword}%",
+            ])
+        await cur.execute(
+            f"""
+            SELECT entry.id, entry.name, entry.community_id, community.name,
+                   entry.detail_address
+            FROM _police_address_entries AS entry
+            JOIN _communities AS community ON community.id=entry.community_id
+            WHERE {entry_where}
+            ORDER BY entry.name, entry.id
+            LIMIT %s OFFSET %s
+            """,
+            (*entry_params, page_size, (page - 1) * page_size),
+        )
+        entries = await cur.fetchall()
+        await cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM _police_address_entries AS entry
+            JOIN _communities AS community ON community.id=entry.community_id
+            WHERE {entry_where}
+            """,
+            entry_params,
+        )
+        total = int((await cur.fetchone() or (0,))[0] or 0)
+
+        # Keep a selected entry visible when the current search term or page
+        # would otherwise hide it.  The same-community predicate is reused.
+        selected = None
+        if selected_id:
+            await cur.execute(
+                """
+                SELECT entry.id, entry.name, entry.community_id, community.name,
+                       entry.detail_address
+                FROM _police_address_entries AS entry
+                JOIN _communities AS community ON community.id=entry.community_id
+                WHERE entry.id=%s AND entry.enabled=1 AND community.is_active=1
+                  AND community.name=%s
+                """,
+                (selected_id, task_community),
+            )
+            selected = await cur.fetchone()
+        if selected and not any(int(row[0]) == int(selected[0]) for row in entries):
+            entries = [selected, *entries]
+
+        await cur.execute(
+            """
+            SELECT reason_code, created_at, source_id, source_revision
+            FROM _online_task_address_unmatched_events
+            WHERE parser_type=%s AND row_key=%s
+            ORDER BY id DESC LIMIT 20
+            """,
+            (parser_type, row_key),
+        )
+        history = [
+            {
+                "reason_code": str(row[0] or ""),
+                "created_at": _iso_utc(row[1]),
+                "source_id": int(row[2]) if row[2] is not None else None,
+                "source_revision": int(row[3]) if row[3] is not None else None,
+            }
+            for row in await cur.fetchall()
+        ]
+
+        can_manage = _can_assign_tasks(context) and (
+            has_permission(user, ONLINE_RAW_EDIT)
+            or has_permission(user, ONLINE_TASK_MANAGE)
+        )
+    editable = can_manage and int(task[1] or 0) == 1 and not bool(task[2])
+    status = str(task[9] or "unmatched")
+    source_values = json_value(task[13], {})
+    return {
+        "task": {
+            "parser_type": parser_type,
+            "row_key": row_key,
+            "source_id": int(task[4]),
+            "revision": int(task[5]),
+            "row_hash": str(task[6] or ""),
+            "source_revision": int(task[12] or task[5] or 0),
+            "community": task_community,
+            "original_address": str(task[3] or ""),
+            "current_address": str(source_values.get("现住址") or ""),
+            "small_community_id": int(task[7]) if task[7] is not None else None,
+            "small_community_name": str(task[8] or ""),
+            "address_match_status": status,
+            "address_match_reason": str(task[10] or ""),
+            "address_match_candidates": json_value(task[11], []),
+            "manual_unmatched_reason": str(task[14] or ""),
+        },
+        "community": task_community,
+        "items": [
+            {
+                "id": int(row[0]),
+                "name": str(row[1] or ""),
+                "community_id": int(row[2]) if row[2] is not None else None,
+                "community_name": str(row[3] or ""),
+                "detail_address": str(row[4] or ""),
+            }
+            for row in entries
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "capabilities": {
+            "confirm": editable,
+            "manual_unmatched": editable,
+            "resolve_conflict": int(task[1] or 0) == 1 and not bool(task[2])
+            and can_confirm_registration(user) and (
+                has_permission(user, ONLINE_RAW_EDIT)
+                or has_permission(user, ONLINE_TASK_MANAGE)
+            ),
+        },
+        "manual_unmatched_reasons": [
+            {"code": code, "label": label}
+            for code, label in ADDRESS_MANUAL_UNMATCHED_LABELS.items()
+        ],
+        "manual_unmatched_reason": str(task[14] or ""),
+        "history": history,
+    }
+
+
+@router.post("/{parser_type}/{row_key}/address-match/manual-unmatched")
+async def mark_mobile_task_address_manual_unmatched(
+    parser_type: str,
+    row_key: str,
+    data: AddressMatchManualUnmatched,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """Record an explicit human conclusion that no known community applies."""
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以标注小区归属")
+    scope_where, scope_params = _scope_where(
+        context,
+        "all" if context.get("admin_mode") else "community",
+    )
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT projection.community, projection.source_count,
+                       projection.conflict, address_match.original_address,
+                       source.id, source.revision, source.row_hash,
+                       source.physical_row, projection.source_revision,
+                       projection.values_json
+                FROM _online_source_projection AS projection
+                LEFT JOIN _online_task_address_matches AS address_match
+                  ON address_match.parser_type=projection.parser_type
+                 AND address_match.row_key=projection.row_key
+                JOIN _online_source_rows AS source
+                  ON source.parser_type=projection.parser_type
+                 AND source.row_key=projection.row_key
+                 AND source.archived_at IS NULL
+                WHERE projection.parser_type=%s AND projection.row_key=%s
+                  AND source.spreadsheet_id=0
+                  AND source.source_kind IN ('local_table','local_dispatch')
+                  AND {scope_where}
+                FOR UPDATE
+                """,
+                (parser_type, row_key, *scope_params),
+            )
+            projection = await cur.fetchone()
+            if not projection:
+                raise HTTPException(404, "任务不存在或不在当前账号可操作范围内")
+            if bool(projection[2]) or int(projection[1] or 0) != 1:
+                raise HTTPException(409, "任务存在重复或冲突来源，暂不能标注小区")
+            if (
+                int(projection[4] or 0) != int(data.source_id)
+                or int(projection[5] or 0) != int(data.expected_revision)
+                or str(projection[6] or "") != str(data.expected_row_hash)
+            ):
+                raise HTTPException(409, "任务已发生变化，请刷新后重新标注")
+            assignment_context = await inspector_option_context(
+                cur, user, assignment_only=True,
+            )
+            aliases = assignment_context.get("community_aliases") or {}
+            community_name = aliases.get(
+                str(projection[0] or "").strip(), str(projection[0] or "").strip()
+            )
+            address = str(projection[3] or "")
+            source_values = json_value(projection[9], {})
+            original_address, current_address = _task_annotation_addresses(
+                parser_type, source_values
+            )
+            next_revision = int(projection[5]) + 1
+            annotation_key = annotation_hmac(
+                original_address, current_address, community_name
+            )
+            await record_feedback_unmatched(
+                cur,
+                parser_type=parser_type,
+                row_key=row_key,
+                address=original_address,
+                community_name=community_name,
+                current_address=current_address,
+                reason_code=data.reason_code,
+                recorded_by=int(user["id"]),
+                source_id=int(projection[4]),
+                source_revision=next_revision,
+            )
+            await cur.execute(
+                """
+                INSERT INTO _online_task_address_matches (
+                    parser_type, row_key, original_address,
+                    suggested_entry_id, suggested_community_id,
+                    suggested_community_name, match_status, match_score,
+                    match_method, match_reason, candidates_json,
+                    matcher_version, confirmed_entry_id, confirmed_by,
+                    confirmed_at, manual_unmatched_reason,
+                    manual_unmatched_address_hmac, manual_unmatched_by,
+                    manual_unmatched_at
+                ) VALUES (%s,%s,%s,NULL,NULL,'','manual_unmatched',0,
+                          '人工标注',%s,JSON_ARRAY(),%s,NULL,%s,NULL,
+                          %s,%s,%s,UTC_TIMESTAMP())
+                ON DUPLICATE KEY UPDATE
+                    original_address=VALUES(original_address),
+                    suggested_entry_id=NULL, suggested_community_id=NULL,
+                    suggested_community_name='', match_status='manual_unmatched',
+                    match_score=0, match_method='人工标注',
+                    match_reason=VALUES(match_reason), candidates_json=JSON_ARRAY(),
+                    matcher_version=VALUES(matcher_version), confirmed_entry_id=NULL,
+                    confirmed_by=VALUES(confirmed_by), confirmed_at=NULL,
+                    manual_unmatched_reason=VALUES(manual_unmatched_reason),
+                    manual_unmatched_address_hmac=VALUES(manual_unmatched_address_hmac),
+                    manual_unmatched_by=VALUES(manual_unmatched_by),
+                    manual_unmatched_at=UTC_TIMESTAMP()
+                """,
+                (
+                    parser_type, row_key, original_address or current_address,
+                    ADDRESS_MANUAL_UNMATCHED_LABELS[data.reason_code], MATCHER_VERSION,
+                    int(user["id"]), data.reason_code, annotation_key, int(user["id"]),
+                ),
+            )
+            await cur.execute(
+                "UPDATE _online_source_rows SET revision=%s WHERE id=%s",
+                (next_revision, int(projection[4])),
+            )
+            await cur.execute(
+                "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() "
+                "WHERE parser_type=%s AND local_task_id=%s AND status='active'",
+                (next_revision, parser_type, int(projection[7])),
+            )
+            from services.business_time import get_business_date
+            from services.online_summary_updates import enqueue_online_summary_update
+            await enqueue_online_summary_update(
+                cur, task_id=int(projection[7]), parser_type=parser_type,
+                row_key=row_key, revision=next_revision,
+                business_date=await get_business_date(cur),
+                operation_id=f"address-manual-unmatched-{projection[4]}-{next_revision}",
+            )
+            await rebuild_projection_rows(cur, parser_type, [row_key])
+            result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    await record_admin_audit(
+        user,
+        "mobile_tasks.address_match.manual_unmatched",
+        conn=conn,
+        target_type="mobile_task_address_match",
+        target_name=f"{parser_type}:{row_key}",
+        detail={"reason_code": data.reason_code},
+        **request_audit_fields(request),
+    )
+    return {"message": "已记录无匹配小区", "address_match": result}
+
+
 @router.post("/{parser_type}/{row_key}/address-match/confirm")
 async def confirm_mobile_task_address_match(
     parser_type: str,
@@ -2983,7 +3353,11 @@ async def confirm_mobile_task_address_match(
                     matcher_version=VALUES(matcher_version),
                     confirmed_entry_id=VALUES(confirmed_entry_id),
                     confirmed_by=VALUES(confirmed_by),
-                    confirmed_at=VALUES(confirmed_at)
+                    confirmed_at=VALUES(confirmed_at),
+                    manual_unmatched_reason=NULL,
+                    manual_unmatched_address_hmac=NULL,
+                    manual_unmatched_by=NULL,
+                    manual_unmatched_at=NULL
                 """,
                 (
                     int(entry[0]), int(entry[2]), str(entry[3] or ""),

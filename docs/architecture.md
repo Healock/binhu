@@ -1305,3 +1305,16 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 ## 用户无感问题诊断
 
 业务失败响应由 FastAPI 全局中间件异步记录脱敏现场到 `PlatformData.diagnostic_jobs`，不读取请求正文，不阻塞原请求。运维人员在运维中心按用户姓名检索最近错误，必要时将 `captured` 记录排入独立 `diagnostic-worker`，生成 `diagnostic_reports`。诊断保留 90 天，Redis Stream 仅作为快速唤醒通道，Worker 始终以 MySQL 队列为可靠兜底；诊断自身异常不得影响业务请求。
+
+
+## 地址标注工作台与人工无匹配结论（待合并）
+
+流口任务仅提供 `/address-confirmation?parser_type=...&row_key=...` 定位入口，不在 URL 携带业务正文。工作台按精确定位读取任务；状态筛选只影响队列。只读任务权限允许访问，写入继续独立校验既有任务管理权限及社区范围。
+
+`GET /api/mobile-tasks/{parser_type}/{row_key}/address-match/options` 返回同正式社区启用小区、分页/搜索、选中项和操作能力。算法候选不是可选项白名单；跨社区修正使用独立高权限接口。普通确认和 `POST .../address-match/manual-unmatched` 使用 `source_id + expected_revision + expected_row_hash`。
+
+`manual_unmatched` 表示人工“无匹配小区”。兼容新增字段保存固定原因、操作者、时间和版本化 HMAC；历史事件保存在 `_online_task_address_unmatched_events`。指纹覆盖原始地址、现住址和正式社区，空值也参与；不新增地址正文副本。正向反馈记忆继续使用原有精确地址/社区键，负结论与正向记忆矛盾时停止复用。投影重建保留有效人工结论，输入改变进入待复核，不能重新自动分配。
+
+人工写入在本地事务内更新结论、来源 revision、汇总更新输入及无匹配历史事件；历史事件只保存原因码、任务定位、来源 ID 和来源 revision 等安全摘要，不复制地址正文。管理员审计通过同一连接在业务提交后单独记录，不能把管理员审计行视为与业务结论原子提交；审计写入失败应进入运维告警和对账。MySQL 是唯一业务真相，未启用 Kafka/Flink/Redis，也不引入腾讯业务路径。客户端最近处理仅在内存保留 20 个定位和结果类型，不保存业务正文。
+
+本节描述本 PR 的待合并实现；真实 MySQL 建表、重复初始化、驱动和事务回滚仍需独立环境验收，不以模拟测试代替。

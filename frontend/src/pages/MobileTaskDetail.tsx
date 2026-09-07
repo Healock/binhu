@@ -1,3 +1,4 @@
+import AddressStatusTag from '../components/AddressStatusTag'
 import {
   ArrowLeftOutlined,
   FileSearchOutlined,
@@ -23,7 +24,6 @@ import {
   getMobileTaskDetail,
   getMobileTaskAnalysisDetail,
   getMobileTaskResidenceDetail,
-  resolveMobileTaskAddressConflict,
   manuallyConfirmRegistration,
   getQmfLegacyStatus,
   searchRegistrationProperties,
@@ -77,15 +77,6 @@ const STATE_LABELS = {
 const STRUCTURED_REVIEW_TYPES = new Set([
   '全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警',
 ])
-
-const ADDRESS_MATCH_STATUS = {
-  unmatched: { label: '未匹配', color: 'default' },
-  suggested: { label: '自动匹配', color: 'processing' },
-  ambiguous: { label: '多候选待确认', color: 'warning' },
-  conflict: { label: '地址冲突', color: 'error' },
-  confirmed: { label: '已人工确认', color: 'success' },
-  invalid: { label: '无效或低信息地址', color: 'default' },
-} as const
 
 function firstValue(values: Record<string, string>, fields: string[]) {
   for (const field of fields) {
@@ -178,8 +169,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [manualConfirmReason, setManualConfirmReason] = useState<'address_mismatch' | 'address_ambiguous'>('address_mismatch')
   const [manualConfirmNote, setManualConfirmNote] = useState('')
   const [manualConfirming, setManualConfirming] = useState(false)
-  const [addressMatchEntryId, setAddressMatchEntryId] = useState<number | undefined>()
-  const [addressConflictResolving, setAddressConflictResolving] = useState(false)
   const autosaveTimerRef = useRef<number | null>(null)
   const saveRef = useRef<(() => Promise<void>) | null>(null)
   const savingRef = useRef(false)
@@ -876,63 +865,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   ]
   const registrationLink = data.registration_link || data.task.registration_link || null
   const addressMatch = data.address_match || data.task.address_match || null
-  const addressMatchStatus = ADDRESS_MATCH_STATUS[
-    addressMatch?.status || 'unmatched'
-  ]
-  const addressMatchCandidates = (addressMatch?.candidates || [])
-    .map(candidate => ({
-      entryId: Number(candidate.entry_id || 0),
-      name: String(candidate.name || ''),
-      communityName: String(candidate.community_name || ''),
-      score: Number(candidate.score || 0),
-      reason: String(candidate.reason || ''),
-    }))
-    .filter(candidate => candidate.entryId > 0 && candidate.name)
-  const canResolveAddressConflict = Boolean(
-    user && (
-      ['基础管控', '中队长', '所队领导'].includes(String(user.member?.position || ''))
-      || ['admin', 'super_admin'].includes(String(user.role || ''))
-    ),
-  )
-  const canManageAddressLibrary = Boolean((user?.permissions || []).includes('police.address.manage'))
-  const resolveAddressConflict = async () => {
-    const source = selectedSource
-    const entryId = addressMatchEntryId || addressMatchCandidates[0]?.entryId
-    if (!source || !entryId || addressMatch?.status !== 'conflict') return
-    const candidate = addressMatchCandidates.find(item => item.entryId === entryId)
-    const targetCommunity = candidate?.communityName || '候选所属社区'
-    Modal.confirm({
-      title: '处理地址冲突？',
-      content: `这会把任务社区从“${data?.task.community || '未填写'}”修正为“${targetCommunity}”，并重新生成小区匹配。原始地址仍会保留，是否继续？`,
-      okText: '修正并重新匹配',
-      cancelText: '取消',
-      onOk: async () => {
-        setAddressConflictResolving(true)
-        try {
-          const result = await resolveMobileTaskAddressConflict(
-            parserType,
-            rowKey,
-            source.id,
-            entryId,
-            source.revision,
-            source.row_hash,
-          )
-          setData(current => current ? {
-            ...current,
-            task: result.task_update ? { ...current.task, ...result.task_update } : current.task,
-            address_match: result.task_update?.address_match || current.address_match,
-          } : current)
-          setAddressMatchEntryId(undefined)
-          message.success(result.message)
-        } catch (reason: any) {
-          message.error(detailError(reason, '地址冲突处理失败，请刷新后重试'))
-          throw reason
-        } finally {
-          setAddressConflictResolving(false)
-        }
-      },
-    })
-  }
   const reviewFlow = data.task.review_flow || null
   const qmfLegacyStatusView = qmfLegacyStatus ? (() => {
     switch (qmfLegacyStatus.state) {
@@ -1024,6 +956,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               </dd>
             </div>
           ))}
+          <div className="mobile-task-detail-facts__item">
+            <dt>小区</dt><dd className="address-task-fact"><span>{addressMatch?.small_community_name || '未关联小区'}</span><AddressStatusTag task={{ ...data.task, address_match: addressMatch }} beforeOpen={async () => {
+              const deadline = Date.now() + 15000
+              while (savingRef.current && Date.now() < deadline) await new Promise(resolve => window.setTimeout(resolve, 100))
+              if (savingRef.current) { message.warning('仍在保存，请稍后再打开'); return false }
+              if (dirty) await saveRef.current?.()
+              await new Promise(resolve => window.setTimeout(resolve, 0))
+              return confirmPendingNavigation()
+            }} /></dd>
+          </div>
         </dl>
         {parserType === '全链条' && sourceTags.length > 0 && (
           <div className="mobile-task-source-cloud mobile-task-source-cloud--detail">
@@ -1035,96 +977,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             </div>
           </div>
         )}
-
-        <div className="mobile-task-address-match">
-          <div className="mobile-task-address-match__header">
-            <div>
-              <span>小区归属</span>
-              <strong>{addressMatch?.small_community_name || '未关联小区'}</strong>
-            </div>
-            <Tag color={addressMatchStatus.color}>{addressMatchStatus.label}</Tag>
-          </div>
-          <div className="mobile-task-address-match__facts">
-            <span>原始地址只读保留，不会被匹配结果覆盖。</span>
-            <span>所属社区：{data.task.community || '未填写'}</span>
-            <span>匹配依据：{addressMatch?.reason || '尚未生成可靠建议'}</span>
-            {addressMatch?.method && (
-              <span>方式：{addressMatch.method} · {Math.round((addressMatch.score || 0) * 100)} 分</span>
-            )}
-          </div>
-          {addressMatch?.status === 'conflict' && (
-            <Alert
-              type="warning"
-              showIcon
-              message="这条任务不是无法处理，而是需要先解决社区归属冲突"
-              description={addressMatchCandidates.length > 0
-                ? `候选小区：${addressMatchCandidates.slice(0, 3).map(item => `${item.name}${item.communityName ? `（${item.communityName}）` : ''}`).join('、')}。确认地址后，可由基础管控及以上岗位将任务社区修正为候选所属社区并重新匹配。`
-                : '暂未找到可安全处理的候选。请联系基础管控或管理员修正任务地址、维护小区地址库后重新匹配。'}
-            />
-          )}
-          {addressMatch?.status === 'conflict' && addressMatchCandidates.length === 0 && (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-[var(--app-text-secondary)]">下一步：联系基础管控或管理员处理地址冲突。</span>
-              {canManageAddressLibrary && (
-                <Button onClick={() => navigate('/police-addresses')}>维护小区地址库</Button>
-              )}
-            </div>
-          )}
-          {addressMatchCandidates.length > 0 && (
-            <div className="mobile-task-address-match__candidates">
-              <span>候选小区</span>
-              {addressMatch?.status === 'conflict' ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {addressMatchCandidates.slice(0, 5).map(candidate => (
-                    <Tag key={candidate.entryId} color={addressMatchEntryId === candidate.entryId ? 'gold' : undefined}>
-                      {candidate.name}{candidate.communityName ? ` · ${candidate.communityName}` : ''} · {Math.round(candidate.score * 100)} 分
-                    </Tag>
-                  ))}
-                  {canResolveAddressConflict && !interactionLocked && (
-                    <>
-                      {addressMatchCandidates.length > 1 && (
-                        <Select
-                          showSearch
-                          optionFilterProp="label"
-                          value={addressMatchEntryId}
-                          placeholder="选择要采用的候选"
-                          options={addressMatchCandidates.map(candidate => ({
-                            value: candidate.entryId,
-                            label: `${candidate.name}${candidate.communityName ? ` · ${candidate.communityName}` : ''} · ${Math.round(candidate.score * 100)} 分`,
-                          }))}
-                          onChange={setAddressMatchEntryId}
-                        />
-                      )}
-                      <Button
-                        type="primary"
-                        loading={addressConflictResolving}
-                        onClick={() => void resolveAddressConflict()}
-                      >按候选社区修正并重新匹配</Button>
-                    </>
-                  )}
-                  {!canResolveAddressConflict && <span className="text-[var(--app-text-secondary)]">请联系基础管控或管理员处理</span>}
-                  {canManageAddressLibrary && (
-                    <Button onClick={() => navigate('/police-addresses')}>维护小区地址库</Button>
-                  )}
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {addressMatchCandidates.slice(0, 5).map(candidate => (
-                    <Tag key={candidate.entryId}>{candidate.name} · {Math.round(candidate.score * 100)} 分</Tag>
-                  ))}
-                </div>
-              )}
-              {addressMatch?.status !== 'conflict' && addressMatch?.status !== 'confirmed' && (
-                <span className="text-xs text-[var(--app-text-secondary)]">
-                  请前往“确认地址”页面完成人工标注
-                </span>
-              )}
-            </div>
-          )}
-          {addressMatch?.status === 'confirmed' && (
-            <p>人工确认结果不会被后续规则重跑覆盖。</p>
-          )}
-        </div>
 
         <div className="mobile-task-detail-primary-actions">
           {!interactionLocked && <MobilePhonePicker

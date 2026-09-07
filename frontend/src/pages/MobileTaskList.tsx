@@ -1,3 +1,5 @@
+import AddressStatusTag from '../components/AddressStatusTag'
+import { addressAnnotationUrl } from '../utils/addressAnnotation'
 import {
   CopyOutlined,
   DownloadOutlined,
@@ -361,7 +363,7 @@ export default function MobileTaskList({
       ),
   )
 
-  const openTask = useCallback((task: MobileTaskItem) => {
+  const openTask = useCallback((task: MobileTaskItem, addressAnnotation = false) => {
     const scrollContainer = pageRootRef.current?.closest('main')
     writeMobileTaskListSnapshot({
       mode,
@@ -386,7 +388,7 @@ export default function MobileTaskList({
       row_key: task.task_key,
       saved_at: Date.now(),
     })
-    navigate(`${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`)
+    navigate(addressAnnotation ? addressAnnotationUrl(task) : `${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`, { state: { fromTask: addressAnnotation } })
   }, [analysisOnly, facets, keywordInput, mode, navigate, page, rows, scope, sourceMessage, taskDisplayMode, total])
 
   const loadOptions = useCallback(async () => {
@@ -1389,6 +1391,7 @@ export default function MobileTaskList({
                 canSelect={() => false}
                 onSelect={() => undefined}
                 onOpen={openTask}
+                onAddressOpen={task => openTask(task, true)}
                 onCopy={(value, label) => void copyValue(value, label)}
                 sort={sort}
                 onSortChange={setSort}
@@ -1554,17 +1557,7 @@ export default function MobileTaskList({
                   )}
                   <div className="mobile-task-card-address-match">
                     <span>{addressMatch?.small_community_name || '未关联小区'}</span>
-                    <Tag color={addressMatch?.status === 'confirmed' ? 'success' : addressMatch?.status === 'conflict' ? 'error' : addressMatch?.status === 'suggested' ? 'processing' : 'default'}>
-                      {addressMatch?.status === 'confirmed'
-                        ? '已确认'
-                        : addressMatch?.status === 'suggested'
-                          ? '系统建议'
-                          : addressMatch?.status === 'ambiguous'
-                            ? '待确认'
-                            : addressMatch?.status === 'conflict'
-                              ? '地址冲突'
-                              : '未匹配'}
-                    </Tag>
+                    <AddressStatusTag task={task} onOpen={() => openTask(task, true)} />
                   </div>
                   {['analyzed', 'initial_extension', 'deep_pending', 'deep_extension'].includes(task.review_stage) && task.summary.analysis && (
                     <div className="mobile-task-analysis">

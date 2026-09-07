@@ -1455,7 +1455,7 @@ export interface MobileTaskFilterOption {
 export interface MobileTaskAddressMatch {
   small_community_id: number | null
   small_community_name: string
-  status: 'unmatched' | 'suggested' | 'ambiguous' | 'conflict' | 'confirmed' | 'invalid'
+  status: 'unmatched' | 'suggested' | 'ambiguous' | 'conflict' | 'confirmed' | 'invalid' | 'manual_unmatched' | 'review_required'
   score: number
   method: string
   reason: string
@@ -4962,4 +4962,19 @@ export const workflowApi = {
   async reconcilePhotoImport(batchId: number) {
     return (await api.post(`/workflow/photo-imports/${batchId}/reconcile`, { confirm: true }, activeRequest)).data as PhotoImportReconcileResult
   },
+}
+
+export interface AddressAnnotationOptions {
+  manual_unmatched_reason?: string
+  items: Array<{ id: number; name: string; community_id: number; community_name: string; detail_address?: string }>
+  total: number
+  community: string
+  capabilities: { confirm: boolean; manual_unmatched: boolean; resolve_conflict: boolean }
+  history?: Array<{ action?: string; reason_code: string; created_at: string }>
+}
+export async function getAddressAnnotationOptions(parserType: string, rowKey: string, params: { keyword?: string; page?: number; page_size?: number; selected_id?: number } = {}): Promise<AddressAnnotationOptions> {
+  return (await api.get(`/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/options`, { params })).data
+}
+export async function markAddressManualUnmatched(parserType: string, rowKey: string, payload: { source_id: number; expected_revision: number; expected_row_hash: string; reason_code: string }): Promise<{ message: string; address_match: MobileTaskAddressMatch }> {
+  return (await api.post(`/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/manual-unmatched`, payload, activeRequest)).data
 }

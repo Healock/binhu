@@ -30,6 +30,8 @@ const MATCH_STATUS_LABELS: Record<string, { label: string; color: string }> = {
   ambiguous: { label: '多候选待确认', color: 'warning' },
   conflict: { label: '地址冲突', color: 'error' },
   invalid: { label: '无效地址', color: 'default' },
+  manual_unmatched: { label: '无匹配小区', color: 'default' },
+  review_required: { label: '待确认', color: 'warning' },
   unmatched: { label: '未关联小区', color: 'default' },
 }
 
