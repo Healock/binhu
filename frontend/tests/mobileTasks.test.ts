@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { analysisImportReason } from '../src/utils/analysisImport.ts'
+
+test('研判导入只显示可读错误信息，不渲染结构化正文', () => {
+  assert.equal(analysisImportReason('版本已变化'), '版本已变化')
+  assert.equal(analysisImportReason({ message: '请重新导出', rows: [{ private: 'fixture' }] }), '请重新导出')
+  assert.equal(analysisImportReason({ rows: ['fixture'] }, '请重试'), '请重试')
+  assert.equal(analysisImportReason(null, '请重试'), '请重试')
+})
 
 import {
   buildMobileTaskChanges,

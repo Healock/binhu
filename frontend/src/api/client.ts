@@ -2034,7 +2034,7 @@ export async function importMobileTaskAnalysis(file: File): Promise<{
   success_count: number
   failed_count: number
   success: Array<{ row: number; task: string; state: string }>
-  failed: Array<{ row: number; reason: string }>
+  failed: Array<{ row: number; reason: unknown }>
 }> {
   const form = new FormData()
   form.append('file', file)

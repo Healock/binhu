@@ -1,4 +1,5 @@
 import AddressStatusTag from '../components/AddressStatusTag'
+import { analysisImportReason } from '../utils/analysisImport'
 import { addressAnnotationUrl } from '../utils/addressAnnotation'
 import {
   CopyOutlined,
@@ -285,8 +286,16 @@ export default function MobileTaskList({
     success_count: number
     failed_count: number
     success: Array<{ row: number; task: string; state: string }>
-    failed: Array<{ row: number; reason: string }>
+    failed: Array<{ row: number; reason: unknown }>
+    error?: string
   } | null>(null)
+  const importResultRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (analysisImportResult) {
+      importResultRef.current?.scrollIntoView({ block: 'nearest', behavior: 'auto' })
+      importResultRef.current?.focus({ preventScroll: true })
+    }
+  }, [analysisImportResult])
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
   const [smallCommunities, setSmallCommunities] = useState<string[]>(readMulti(searchParams, 'small_community'))
   const [matchStatuses, setMatchStatuses] = useState<string[]>(readMulti(searchParams, 'match_status'))
@@ -997,8 +1006,10 @@ export default function MobileTaskList({
       setAnalysisImportResult(result)
       if (result.failed_count) {
         message.warning(`已导入 ${result.success_count} 条，${result.failed_count} 条需要处理；请查看页面下方的问题明细`)
-      } else {
+      } else if (result.success_count > 0) {
         message.success(`已导入 ${result.success_count} 条研判结果`)
+      } else {
+        message.warning('没有导入任何研判结果，请填写本次研判决定和研判意见后重试')
       }
       await load(1, false, true)
     } catch (reason: any) {
@@ -1006,7 +1017,9 @@ export default function MobileTaskList({
       if (reason?.response?.data instanceof Blob) {
         try { detail = JSON.parse(await reason.response.data.text())?.detail } catch { detail = '' }
       }
-      message.error(detail || '研判文件导入失败')
+      const error = analysisImportReason(detail, '文件导入未完成。请检查文件格式；网络中断时先刷新任务核对已处理状态，再重新导出待处理任务。')
+      setAnalysisImportResult({ success_count: 0, failed_count: 0, success: [], failed: [], error })
+      message.error(error)
     } finally {
       setImportingAnalysis(false)
     }
@@ -1368,7 +1381,7 @@ export default function MobileTaskList({
       )}
 
       {analysisOnly && analysisImportResult && (
-        <section className="app-card mobile-task-analysis-import-result" aria-live="polite" aria-label="研判导入结果">
+        <section ref={importResultRef} tabIndex={-1} className="app-card mobile-task-analysis-import-result" aria-live="polite" aria-label="研判导入结果">
           <div className="mobile-task-analysis-import-result__header">
             <div>
               <strong>导入结果</strong>
@@ -1376,24 +1389,24 @@ export default function MobileTaskList({
             </div>
             <Button type="text" onClick={() => setAnalysisImportResult(null)}>关闭结果</Button>
           </div>
-          {analysisImportResult.failed_count > 0 ? <>
+          {analysisImportResult.error ? <Alert type="error" showIcon message="导入未完成" description={analysisImportResult.error} /> : analysisImportResult.failed_count > 0 ? <>
             <Alert
               type="warning"
               showIcon
               message="部分行没有写入，请按下面的行号修正后重新导入"
-              description="已成功的行不会重复产生新的研判记录；问题行保留原文件内容，修正后可以再次选择 XLSX 导入。"
+              description="请仅保留需要处理的行再导入，清空已成功行的本次研判决定。遇到版本冲突，请重新导出最新待研判任务后填写。"
             />
             <div className="mobile-task-analysis-import-result__issues" role="list" aria-label="需要处理的导入行">
               {analysisImportResult.failed.map(item => (
-                <div key={`${item.row}-${item.reason}`} role="listitem">
-                  <strong>第 {item.row} 行</strong><span>{item.reason}</span>
+                <div key={item.row} role="listitem">
+                  <strong>第 {item.row} 行</strong><span>{analysisImportReason(item.reason)}</span>
                 </div>
               ))}
             </div>
-            <Upload accept=".xlsx" showUploadList={false} beforeUpload={file => { void importAnalysis(file); return false }}>
-              <Button type="primary" loading={importingAnalysis}>重新导入修正后的文件</Button>
-            </Upload>
-          </> : <Alert type="success" showIcon message="全部研判结果已导入" description="列表已刷新，当前筛选下的待研判任务会同步减少。" />}
+          </> : analysisImportResult.success_count > 0 ? <Alert type="success" showIcon message="已填写的研判结果已导入" description="空白决定行不提交。列表已刷新，可继续核对待研判任务。" /> : <Alert type="info" showIcon message="没有导入任何研判结果" description="请在平台导出的 XLSX 中填写“本次研判决定”（成功或失败）和“研判意见”后重新导入；空白决定行会跳过。" />}
+          {(analysisImportResult.error || analysisImportResult.failed_count > 0 || analysisImportResult.success_count === 0) && <Upload accept=".xlsx" disabled={importingAnalysis} showUploadList={false} beforeUpload={file => { void importAnalysis(file); return false }}>
+            <Button type="primary" loading={importingAnalysis}>重新导入修正后的文件</Button>
+          </Upload>}
         </section>
       )}
 
