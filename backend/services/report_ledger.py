@@ -3,6 +3,7 @@
 import re
 from datetime import date
 from typing import Any
+from config import settings
 
 from services.business_time import (
     get_business_date,
@@ -18,6 +19,12 @@ _SNAPSHOT_NAME = re.compile(
     r"^\d{4}-\d{2}-\d{2}_snapshot_[A-Za-z0-9]+$"
 )
 _SOURCE_TABLE = re.compile(r"^t_[a-z0-9_]+$")
+
+
+def _database_identifier(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        raise ValueError('invalid report database identifier')
+    return name
 
 
 def _snapshot_identifier(table_name: str) -> str:
@@ -102,12 +109,14 @@ async def refresh_daily_ledger(
             (report_date, builder.parser_type),
         )
 
-    # The responsibility join appears before all date predicates in the SQL,
-    # so its parser parameter must be bound first as well.
-    inner_parameters: list[Any] = [builder.parser_type]
+    # MySQL binds placeholders by textual order.  The online/archive
+    # predicate and activity CASE appear in SELECT expressions before the
+    # responsibility JOIN, so bind their date ranges first and the JOIN's
+    # parser discriminator last.
+    inner_parameters: list[Any] = []
     if is_current_day:
         online_sql = (
-            "EXISTS (SELECT 1 FROM OnlineData."
+            f"EXISTS (SELECT 1 FROM {_database_identifier(settings.MYSQL_ONLINE_DATA_DB)}."
             f"{source_table} live WHERE live._row_key=t._row_key)"
         )
     else:
@@ -117,7 +126,7 @@ async def refresh_daily_ledger(
             report_date,
         )
         online_sql = (
-            "NOT EXISTS (SELECT 1 FROM OnlineDataArchive."
+            f"NOT EXISTS (SELECT 1 FROM {_database_identifier(settings.MYSQL_ARCHIVE_DB)}."
             f"{archive_table} archived "
             "WHERE archived._row_key=t._row_key "
             "AND archived._archived_at >= %s "
@@ -161,6 +170,8 @@ async def refresh_daily_ledger(
         previous_unfinished_sql = "0"
         join_sql = ""
 
+    inner_parameters.append(builder.parser_type)
+
     inner_sql = f"""
         SELECT
             t._row_key AS row_key,
@@ -183,7 +194,7 @@ async def refresh_daily_ledger(
           ON community_alias.alias = TRIM(t.`{community}`)
         LEFT JOIN OnlineData._communities AS formal_community
           ON formal_community.id = community_alias.community_id
-        LEFT JOIN OnlineData._task_assignment_responsibilities AS responsibility
+        LEFT JOIN {_database_identifier(settings.MYSQL_ONLINE_DATA_DB)}._task_assignment_responsibilities AS responsibility
           ON responsibility.parser_type=%s
          AND responsibility.row_key=t._row_key
     """
@@ -252,15 +263,19 @@ async def refresh_daily_ledger(
         FROM ({derived_sql}) candidate
         WHERE {candidate_filter}
         ON DUPLICATE KEY UPDATE
-            source=VALUES(source),
-            included=VALUES(included),
-            online_present=VALUES(online_present),
-            community=VALUES(community),
-            inspector=VALUES(inspector),
-            task_state=VALUES(task_state),
-            unable_to_verify=VALUES(unable_to_verify),
-            reached_bottom=VALUES(reached_bottom),
-            effective_workload=VALUES(effective_workload),
+            source=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.source,VALUES(source)),
+            included=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.included,VALUES(included)),
+            online_present=IF(
+                _daily_task_ledger.source_revision>0,
+                _daily_task_ledger.online_present,
+                VALUES(online_present)
+            ),
+            community=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.community,VALUES(community)),
+            inspector=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.inspector,VALUES(inspector)),
+            task_state=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.task_state,VALUES(task_state)),
+            unable_to_verify=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.unable_to_verify,VALUES(unable_to_verify)),
+            reached_bottom=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.reached_bottom,VALUES(reached_bottom)),
+            effective_workload=IF(_daily_task_ledger.source_revision>0,_daily_task_ledger.effective_workload,VALUES(effective_workload)),
             updated_at=CURRENT_TIMESTAMP
     """
     await cur.execute(
@@ -307,21 +322,21 @@ async def refresh_daily_ledger(
               ON community_alias.alias = TRIM(p.`{previous_community}`)
             LEFT JOIN OnlineData._communities AS formal_community
               ON formal_community.id = community_alias.community_id
-            LEFT JOIN OnlineData._task_assignment_responsibilities AS responsibility
+            LEFT JOIN {_database_identifier(settings.MYSQL_ONLINE_DATA_DB)}._task_assignment_responsibilities AS responsibility
               ON responsibility.parser_type=%s
              AND responsibility.row_key=p._row_key
             WHERE t._row_key IS NULL
               AND ({previous_state}) <> 'completed'
             ON DUPLICATE KEY UPDATE
-                source='removed',
-                included=0,
-                online_present=0,
-                community=VALUES(community),
-                inspector=VALUES(inspector),
-                task_state=VALUES(task_state),
-                unable_to_verify=VALUES(unable_to_verify),
-                reached_bottom=VALUES(reached_bottom),
-                effective_workload=0,
+                source=IF(source_revision>0,source,'removed'),
+                included=IF(source_revision>0,included,0),
+                online_present=IF(source_revision>0,online_present,0),
+                community=IF(source_revision>0,community,VALUES(community)),
+                inspector=IF(source_revision>0,inspector,VALUES(inspector)),
+                task_state=IF(source_revision>0,task_state,VALUES(task_state)),
+                unable_to_verify=IF(source_revision>0,unable_to_verify,VALUES(unable_to_verify)),
+                reached_bottom=IF(source_revision>0,reached_bottom,VALUES(reached_bottom)),
+                effective_workload=IF(source_revision>0,effective_workload,0),
                 updated_at=CURRENT_TIMESTAMP
             """,
             (report_date, builder.parser_type, builder.parser_type),
@@ -340,6 +355,7 @@ async def refresh_daily_ledger(
         WHERE ledger.report_date=%s
           AND ledger.parser_type=%s
           AND ledger.included=1
+          AND ledger.source_revision=0
           AND ledger.task_state <> 'completed'
           AND current_snapshot._row_key IS NULL
         """,
