@@ -232,7 +232,7 @@ async def _stage_platform_archive(
 ) -> None:
     """在同一事务中写入历史库并移除当前业务表。"""
     table = parser.table_name
-    archive_table = f"OnlineDataArchive.{table}_archive"
+    archive_table = f"{quote_identifier(settings.MYSQL_ARCHIVE_DB)}.{quote_identifier(table + '_archive')}"
     try:
         column_map = await get_database_column_map(conn, archive_table, parser)
         if any(column not in column_map for column in parser.COLUMNS):
@@ -287,7 +287,7 @@ def _snapshot_digest(parser, values: dict[str, str]) -> str:
 
 async def _platform_rows_for_reconciliation(conn, parser, row_key: str):
     current_map = await get_database_column_map(conn, parser.table_name, parser)
-    archive_table = f"OnlineDataArchive.{parser.table_name}_archive"
+    archive_table = f"{quote_identifier(settings.MYSQL_ARCHIVE_DB)}.{quote_identifier(parser.table_name + '_archive')}"
     archive_map = await get_database_column_map(conn, archive_table, parser)
     try:
         current_columns = [quote_identifier(current_map[column]) for column in parser.COLUMNS]
@@ -343,7 +343,7 @@ async def _insert_archive_from_snapshot(
     row_key: str,
     values: dict[str, str],
 ) -> None:
-    archive_table = f"OnlineDataArchive.{parser.table_name}_archive"
+    archive_table = f"{quote_identifier(settings.MYSQL_ARCHIVE_DB)}.{quote_identifier(parser.table_name + '_archive')}"
     column_map = await get_database_column_map(conn, archive_table, parser)
     try:
         columns = [quote_identifier(column_map[column]) for column in parser.COLUMNS]
@@ -1030,7 +1030,7 @@ async def _run_local_archive_export(conn, export_id: int) -> None:
             try:
                 async with conn.cursor() as cur:
                     await cur.execute(
-                        "SELECT revision,row_hash,archived_at FROM _online_source_rows "
+                        "SELECT revision,row_hash,archived_at,physical_row FROM _online_source_rows "
                         "WHERE id=%s AND parser_type=%s FOR UPDATE",
                         (source_id, parser_type),
                     )
@@ -1046,13 +1046,23 @@ async def _run_local_archive_export(conn, export_id: int) -> None:
                         conn, parser, export_id, str(row[1]), values
                     )
                     await cur.execute(
-                        "UPDATE _online_source_rows SET archived_at=UTC_TIMESTAMP() WHERE id=%s",
+                        "UPDATE _online_source_rows SET archived_at=UTC_TIMESTAMP(), "
+                        "revision=revision+1 WHERE id=%s",
                         (source_id,),
                     )
                     await cur.execute(
                         "UPDATE _local_source_records SET status='archived',archived_at=UTC_TIMESTAMP(), "
-                        "updated_at=UTC_TIMESTAMP() WHERE source_kind=%s AND source_ref=%s",
+                        "revision=revision+1, updated_at=UTC_TIMESTAMP() "
+                        "WHERE source_kind=%s AND source_ref=%s",
                         (str(row[5] or "local_table"), str(row[6] or "")),
+                    )
+                    from services.business_time import get_business_date
+                    from services.online_summary_updates import enqueue_online_summary_update
+                    await enqueue_online_summary_update(
+                        cur, task_id=int(source[3]), parser_type=parser_type,
+                        row_key=str(row[1]), revision=int(source[0]) + 1,
+                        business_date=await get_business_date(cur),
+                        operation_id=f"local-archive-{export_id}-{source_id}",
                     )
                     from services.online_source import rebuild_projection
                     await rebuild_projection(cur, parser_type, reconcile_graph=False)

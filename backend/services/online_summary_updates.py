@@ -350,10 +350,8 @@ async def _load_authoritative_task(row: dict[str, Any]) -> dict[str, Any] | None
         async with conn.cursor() as cur:
             await cur.execute(
                 f"SELECT t.`_row_key`,t.`id`,"
-                f"COALESCE(NULLIF(TRIM(responsibility.first_community), ''), "
-                f"TRIM(t.`{builder.community_column}`)),"
-                f"COALESCE(NULLIF(TRIM(responsibility.first_inspector), ''), "
-                f"TRIM(t.`{builder.inspector_column}`)),"
+                "COALESCE(NULLIF(TRIM(responsibility.first_community), ''), '未分配社区'),"
+                "TRIM(IFNULL(responsibility.first_inspector, '')),"
                 f"{state_sql},{unable_sql},{reached_sql},s.revision "
                 f"FROM `{table}` t JOIN _online_source_rows s ON s.parser_type=%s AND s.row_key=t.`_row_key` AND s.archived_at IS NULL "
                 f"LEFT JOIN {_online_table('_task_assignment_responsibilities')} responsibility "
@@ -465,7 +463,8 @@ async def _apply_update(row: dict[str, Any]) -> None:
             await conn.begin()
             try:
                 await cur.execute(
-                    "SELECT task_state,effective_workload,source_revision,community,inspector "
+                    "SELECT task_state,effective_workload,source_revision,community,inspector,"
+                    "included,unable_to_verify,reached_bottom "
                     "FROM _daily_task_ledger WHERE report_date=%s AND parser_type=%s AND row_key=%s FOR UPDATE",
                     (row["business_date"], row["parser_type"], row["row_key"]),
                 )
@@ -484,8 +483,9 @@ async def _apply_update(row: dict[str, Any]) -> None:
                     await cur.execute(
                         "SELECT task_state,effective_workload,community,inspector "
                         "FROM _daily_task_ledger "
-                        "WHERE report_date=DATE_SUB(%s, INTERVAL 1 DAY) "
-                        "AND parser_type=%s AND row_key=%s LIMIT 1",
+                        "WHERE report_date < %s "
+                        "AND parser_type=%s AND row_key=%s "
+                        "ORDER BY report_date DESC LIMIT 1",
                         (row["business_date"], row["parser_type"], row["row_key"]),
                     )
                     historical_state = await cur.fetchone()
@@ -507,12 +507,16 @@ async def _apply_update(row: dict[str, Any]) -> None:
                         previous[4] if previous is not None else historical_previous[3]
                     )
                     values = {
-                        "source": "removed", "included": 0,
+                        # Preserve completed work credited earlier today,
+                        # matching the regular daily-ledger archive rule.
+                        "source": "removed",
+                        "included": int(previous[5]) if previous and previous_state == "completed" else 0,
                         "online_present": 0,
                         "community": baseline_community or "",
                         "inspector": baseline_inspector or "",
                         "task_state": previous_state,
-                        "unable_to_verify": 0, "reached_bottom": 0,
+                        "unable_to_verify": int(previous[6]) if previous else 0,
+                        "reached_bottom": int(previous[7]) if previous else 0,
                         # Removing a task from the online snapshot must not
                         # erase work already credited on that date.
                         "effective_workload": previous_workload,
@@ -651,20 +655,22 @@ async def _refresh_affected_report_groups(
         FROM _daily_task_ledger ledger
         LEFT JOIN {_organization_table('_community_aliases')} alias ON alias.alias=ledger.community
         LEFT JOIN {_organization_table('_communities')} formal ON formal.id=alias.community_id
-        JOIN {_organization_table('_grid_members')} person
-          ON LOWER(TRIM(person.name)) = LOWER(TRIM(ledger.inspector))
-        JOIN {_organization_table('_grid_member_department_links')} person_link
-          ON person_link.member_id=person.id
-        JOIN {_organization_table('_departments')} department
-          ON department.id=person_link.department_id
-         AND department.department_type='community'
-        JOIN {_organization_table('_communities')} person_community
-          ON person_community.id=department.community_id
         WHERE ledger.report_date=%s AND ledger.parser_type=%s
           AND ledger.included=1 AND ledger.inspector<>''
           AND ledger.inspector<>'核查人' AND ledger.community<>''
           AND ledger.community NOT IN ('社区','下发社区')
-          AND person.position IN ('组长','组员')
+          AND EXISTS (
+            SELECT 1 FROM {_organization_table('_grid_members')} person
+            JOIN {_organization_table('_grid_member_department_links')} person_link
+              ON person_link.member_id=person.id
+            JOIN {_organization_table('_departments')} department
+              ON department.id=person_link.department_id
+             AND department.department_type='community'
+            JOIN {_organization_table('_communities')} person_community
+              ON person_community.id=department.community_id
+            WHERE LOWER(TRIM(person.name))=LOWER(TRIM(ledger.inspector))
+              AND person.position IN ('组长','组员')
+          )
           AND COALESCE(formal.name, ledger.community) IN ({marks})
         GROUP BY COALESCE(formal.name, ledger.community), ledger.inspector
         """,
@@ -718,6 +724,7 @@ async def _process_update(row: dict[str, Any]) -> None:
 
 async def process_online_summary_updates_once(limit: int = 10) -> int:
     """Apply a bounded batch; callers may run this after commit or in a loop."""
+    await _ensure_day_baseline()
     async with _consumer_lock:
         rows = await _claim_update_rows(limit)
         if not rows:
@@ -731,7 +738,42 @@ async def process_online_summary_updates_once(limit: int = 10) -> int:
                 await _process_update(item)
 
         await asyncio.gather(*(bounded(item) for item in rows))
-        return len(rows)
+    return len(rows)
+
+
+_baseline_date: date | None = None
+_baseline_lock = asyncio.Lock()
+
+
+async def _ensure_day_baseline() -> None:
+    """Seed unchanged carryover tasks once per day before incremental updates.
+
+    Isolated runners explicitly disable the report scheduler and seed their
+    own fixtures. Production uses the existing local snapshot builder; a
+    failed baseline keeps the durable queue pending instead of showing a
+    partial day's population as a complete summary.
+    """
+    if not settings.LOCAL_REPORT_SCHEDULER_ENABLED:
+        return
+    from services.business_time import get_business_date
+    global _baseline_date
+    pool = _daily_pool()
+    conn = await _acquire(pool)
+    try:
+        async with conn.cursor() as cur:
+            today = await get_business_date(cur)
+    finally:
+        pool.release(conn)
+    if _baseline_date == today:
+        return
+    async with _baseline_lock:
+        if _baseline_date == today:
+            return
+        from services.local_report_scheduler import refresh_local_daily_reports_once
+        result = await refresh_local_daily_reports_once()
+        if result.get('status') != 'success':
+            raise RuntimeError('summary_baseline_not_ready')
+        _baseline_date = today
 
 
 async def run_online_summary_update_worker() -> None:

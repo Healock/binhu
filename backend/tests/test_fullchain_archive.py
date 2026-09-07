@@ -622,12 +622,13 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         cursor = _Cursor()
         parser = type("Parser", (), {"table_name": "t_fullchain", "COLUMNS": ["姓名"]})()
 
-        await _stage_platform_archive(
-            _Connection(cursor), parser, 123, "a" * 32, {"姓名": "测试人员"}
-        )
+        with patch("services.fullchain_archive_jobs.settings.MYSQL_ARCHIVE_DB", "ReleaseShadow_archive"):
+            await _stage_platform_archive(
+                _Connection(cursor), parser, 123, "a" * 32, {"姓名": "测试人员"}
+            )
 
         self.assertEqual(len(cursor.executions), 3)
-        self.assertIn("DELETE FROM OnlineDataArchive.t_fullchain_archive", cursor.executions[0][0])
+        self.assertIn("DELETE FROM `ReleaseShadow_archive`.`t_fullchain_archive`", cursor.executions[0][0])
         self.assertEqual(cursor.executions[0][1][1], "fullchain_feedback_export:123")
         self.assertIn("_archive_reason", cursor.executions[1][0])
         self.assertIn("DELETE FROM `t_fullchain`", cursor.executions[2][0])

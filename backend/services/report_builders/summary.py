@@ -379,6 +379,7 @@ async def get_summary(date_str: str) -> dict:
             inspector_rows = merge_inspector_rows(
                 all_inspector_rows,
                 active_members,
+                preserve_community=True,
             )
             community_rows = aggregate_community_rows(inspector_rows)
             member_counts: dict[str, int] = {}
