@@ -512,6 +512,8 @@ html.desktop-shell .ant-notification-topRight {
 }
 
 .mobile-task-analysis-import-result {
+  padding: 16px;
+  scroll-margin: 16px;
   display: grid;
   gap: 12px;
 }
