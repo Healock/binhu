@@ -72,6 +72,11 @@ from services.work_activity import (
     record_work_activity,
 )
 from services.task_outbox_bridge import enqueue_task_event
+from services.business_time import get_business_date
+from services.online_summary_updates import (
+    enqueue_online_summary_update,
+    launch_online_summary_update_processing,
+)
 from services.task_assignment_responsibility import (
     capture_first_assignment,
     migrate_responsibility_row_key,
@@ -1119,6 +1124,15 @@ async def _update_local_source_fields_once(
             operation_id=operation_id,
             changed_fields=ordered_columns,
         )
+        await enqueue_online_summary_update(
+            cur,
+            task_id=int(source["physical_row"]),
+            parser_type=parser_type,
+            row_key=str(new_key),
+            revision=locked_revision + 1,
+            business_date=await get_business_date(cur),
+            operation_id=operation_id,
+        )
         activity_credited = await task_update_is_credited_to(
             cur,
             parser_type,
@@ -1133,6 +1147,7 @@ async def _update_local_source_fields_once(
                 conn=conn,
             )
         await conn.commit()
+        launch_online_summary_update_processing()
         warnings = []
         if inspector_context is not None and "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
             inspector_context or {},

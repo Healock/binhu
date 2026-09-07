@@ -627,7 +627,7 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(cursor.executions), 3)
-        self.assertIn("DELETE FROM OnlineDataArchive.t_fullchain_archive", cursor.executions[0][0])
+        self.assertIn("DELETE FROM `OnlineDataArchive`.`t_fullchain_archive`", cursor.executions[0][0])
         self.assertEqual(cursor.executions[0][1][1], "fullchain_feedback_export:123")
         self.assertIn("_archive_reason", cursor.executions[1][0])
         self.assertIn("DELETE FROM `t_fullchain`", cursor.executions[2][0])
