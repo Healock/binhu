@@ -4,6 +4,13 @@
 
 ## 事件总线与实时计算基础设施（长期演进，影子阶段）
 
+### PR #512 收尾（2026-09-08）
+
+- [PR #512](https://github.com/Healock/binhu/pull/512) 已关闭，未合并到 `main`；原 `perf/0.28.8-burst-capacity` 分支和既有验收记录保留。
+- 已重新获取远端分支并通过 Git 祖先关系检查：PR 最新提交 `6b965b88f361410b275344a3efdd7c1a03e13d1f` 已包含于 `origin/dev`，后续工作由 dev 长期架构线承接。
+- 关闭旧 PR 不代表 75 人复测通过，也不解除现有服务器停止线。性能治理、Outbox 全量接入、Flink/Redis 双轨与 75 人复测继续按本节阶段和恢复入口执行。
+- 生产发布记录保留在 #514、#515、#516（v0.28.9）；日报修复向 dev 的适配另由 [PR #518](https://github.com/Healock/binhu/pull/518) 跟踪。本次收尾不部署、不压测、不清理资源。
+
 ### dev 日报 revision fence 适配（2026-09-08）
 
 - 提交：`8ab8dea2` 补充 PyYAML 测试依赖和快照 fence；`3f14ce85` 补齐本地汇总队列、表结构、worker、保存/系统修改/本地归档接线。工作分支为 `codex/dev/summary-revision-adaptation`，目标为 `dev`。
