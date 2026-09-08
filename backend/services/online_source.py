@@ -103,7 +103,7 @@ def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
     if local_data_source_enabled():
         prefix = f"{alias}."
         local_kinds = (
-            f"{prefix}source_kind IN ('local_table','local_dispatch')"
+            f"{prefix}source_kind IN ('local_table','local_dispatch','one_time_continuation_import')"
         )
         return (
             f" AND {prefix}spreadsheet_id=0"

@@ -2049,7 +2049,7 @@ async def _mobile_export_workbook(
     context = await _flow_context(conn, user)
     active_source_filter = (
         " AND source.spreadsheet_id=0 "
-        "AND source.source_kind IN ('local_table','local_dispatch')"
+        "AND source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')"
         if local_data_source_enabled() else ""
     )
     if isinstance(data, AnalysisTaskSearch):
@@ -2941,7 +2941,7 @@ async def get_mobile_task_address_match_options(
              AND source.archived_at IS NULL
             WHERE projection.parser_type=%s AND projection.row_key=%s
               AND source.spreadsheet_id=0
-              AND source.source_kind IN ('local_table','local_dispatch')
+              AND source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')
               AND {scope_where}
             ORDER BY source.id LIMIT 1
             """,
@@ -3129,7 +3129,7 @@ async def mark_mobile_task_address_manual_unmatched(
                  AND source.archived_at IS NULL
                 WHERE projection.parser_type=%s AND projection.row_key=%s
                   AND source.spreadsheet_id=0
-                  AND source.source_kind IN ('local_table','local_dispatch')
+              AND source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')
                   AND {scope_where}
                 FOR UPDATE
                 """,
@@ -3280,7 +3280,7 @@ async def confirm_mobile_task_address_match(
                  AND source.archived_at IS NULL
                 WHERE projection.parser_type=%s AND projection.row_key=%s
                   AND source.spreadsheet_id=0
-                  AND source.source_kind IN ('local_table','local_dispatch')
+              AND source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')
                   AND {scope_where}
                 FOR UPDATE
                 """,
