@@ -528,15 +528,23 @@ async def _property_search_result(
     keyword = data.keyword.strip()
     if keyword:
         like_value = f"%{keyword}%"
+        # Short address forms often combine an alias with building/room text
+        # (for example ``上亿1-101``).  Search the textual alias fragment as
+        # well, while the existing building/room predicates match the rest.
+        alias_fragment = "".join(ch for ch in keyword if not ch.isdigit() and ch not in " -_#栋幢室号")[:8]
+        alias_like = f"%{alias_fragment}%" if len(alias_fragment) >= 2 else like_value
         where.append(
             "(property.community_name_snapshot LIKE %s OR property.natural_address LIKE %s OR property.normalized_address LIKE %s "
             "OR property.source_house_no LIKE %s OR property.building LIKE %s OR property.room LIKE %s "
             "OR property.housing_type LIKE %s OR property.residence_type LIKE %s "
             "OR property_match.small_community_name LIKE %s "
+            "OR EXISTS (SELECT 1 FROM _police_address_entries entry "
+            "WHERE entry.id=property_match.small_community_id AND entry.enabled=1 "
+            "AND CAST(entry.aliases_json AS CHAR) LIKE %s) "
             "OR EXISTS (SELECT 1 FROM registry_address_aliases alias "
             "WHERE alias.property_id=property.id AND alias.enabled=1 AND alias.alias LIKE %s))"
         )
-        params.extend([like_value] * 10)
+        params.extend([like_value] * 10 + [alias_like, like_value])
 
     clause = " WHERE " + " AND ".join(where) if where else ""
     joins = (

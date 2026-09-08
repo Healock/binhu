@@ -197,6 +197,16 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         )
       : []
   ), [data, formValues, interactionLocked, selectedSource])
+  const orderedEditorFields = useMemo(() => {
+    if (!registrationClosureEnabled) return visibleEditorFields
+    return [...visibleEditorFields].sort((left, right) => {
+      if (left === '现住址') return -1
+      if (right === '现住址') return 1
+      if (left === data?.workflow.result_field) return 1
+      if (right === data?.workflow.result_field) return -1
+      return 0
+    })
+  }, [data?.workflow.result_field, registrationClosureEnabled, visibleEditorFields])
   const preservedSecondaryFeedback = useMemo(() => (
     data && selectedSource
       ? data.workflow.secondary_fields
@@ -1293,7 +1303,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前任务没有可编辑字段" />
           ) : (
             <div className="space-y-4">
-              {visibleEditorFields.map(field => {
+              {orderedEditorFields.map(field => {
                 const metadata = selectedSource.cell_meta[field] || { type: 'text' }
                 const resultField = field === data.workflow.result_field
                 const optionSource = resultField
