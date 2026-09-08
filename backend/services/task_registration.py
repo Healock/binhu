@@ -451,6 +451,28 @@ async def select_registration_property(
         actor_user_id=user_id,
     )
 
+async def save_pending_registration_address(
+    cur, *, parser_type: str, row_key: str, source_id: int,
+    source_revision: int, source_row_hash: str, task_community: str,
+    user_id: int | None,
+) -> None:
+    """Keep a real address pending until its property record is created."""
+    await cur.execute(
+        """INSERT INTO _task_registration_links
+           (parser_type,row_key,source_id,source_revision,source_row_hash,
+            task_community,property_id,property_version,status,reason_code,
+            selected_by,selected_at)
+           VALUES (%s,%s,%s,%s,%s,%s,NULL,NULL,'pending_establishment',
+                   'property_not_established',%s,UTC_TIMESTAMP())
+           ON DUPLICATE KEY UPDATE source_id=VALUES(source_id),
+             source_revision=VALUES(source_revision),source_row_hash=VALUES(source_row_hash),
+             task_community=VALUES(task_community),property_id=NULL,property_version=NULL,
+             status='pending_establishment',reason_code='property_not_established',
+             selected_by=VALUES(selected_by),selected_at=UTC_TIMESTAMP()""",
+        (parser_type, row_key, source_id, source_revision, source_row_hash[:64],
+         task_community[:200], user_id),
+    )
+
 
 async def migrate_registration_link(
     cur,

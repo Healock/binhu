@@ -2319,6 +2319,7 @@ export async function updateMobileTask(
     expected_revision: number
     registration_property_id?: number
     registration_property_version?: number
+    registration_pending_address?: string
   },
 ): Promise<MobileTaskSaveResult> {
   const { data } = await api.patch(

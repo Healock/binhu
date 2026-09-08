@@ -1082,7 +1082,7 @@ export default function MobileTaskList({
           </div>
 
           <div className={`mobile-task-filter-secondary${analysisOnly ? ' mobile-task-filter-secondary--analysis' : ''}`}>
-            <label className="mobile-task-filter-field">
+            {responsiveLayout.isCompact && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">社区</span>
               <Select
                 mode="multiple"
@@ -1100,8 +1100,8 @@ export default function MobileTaskList({
                 }))}
                 onChange={setCommunities}
               />
-            </label>
-            {!analysisOnly && <label className="mobile-task-filter-field">
+            </label>}
+            {!analysisOnly && responsiveLayout.isCompact && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">小区</span>
               <Select
                 mode="multiple"
@@ -1120,7 +1120,7 @@ export default function MobileTaskList({
                 onChange={setSmallCommunities}
               />
             </label>}
-            <label className="mobile-task-filter-field">
+            {responsiveLayout.isCompact && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">核查人</span>
               <Select
                 mode="multiple"
@@ -1138,7 +1138,7 @@ export default function MobileTaskList({
                 }))}
                 onChange={setInspectors}
               />
-            </label>
+            </label>}
             {!analysisOnly && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">匹配状态</span>
               <Select
@@ -1446,6 +1446,17 @@ export default function MobileTaskList({
                 sort={sort}
                 onSortChange={setSort}
                 onSaved={() => load(page, false, true)}
+                filterOptions={{
+                  community: communityOptions.map(option => ({ text: `${option.label}（${option.count}）`, value: option.value })),
+                  smallCommunity: smallCommunityOptions.map(option => ({ text: `${option.label}（${option.count}）`, value: option.value })),
+                  inspector: inspectorOptions.map(option => ({ text: `${option.label}（${option.count}）`, value: option.value })),
+                }}
+                onTableFiltersChange={filters => {
+                  setCommunities((filters.community || []).map(String))
+                  setSmallCommunities((filters.small_community || []).map(String))
+                  setInspectors((filters.inspector || []).map(String))
+                  setPage(1)
+                }}
               />
             </div>
           )}
