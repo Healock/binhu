@@ -2831,6 +2831,7 @@ async def select_mobile_tasks_for_assignment(
     if local_data_source_enabled():
         assignment_source_condition = (
             f"{_active_source_count_sql(parser_type)} <= 1 "
+            "AND projection.address_match_status IN ('confirmed','suggested') "
             "AND TRIM(COALESCE(projection.community,''))<>''"
         )
     async with conn.cursor() as cur:
