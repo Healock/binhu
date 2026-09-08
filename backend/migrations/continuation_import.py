@@ -114,6 +114,7 @@ def parse_file(parser_type: str, path: Path) -> tuple[list[dict[str, str]], dict
                 aliases[standard] = name
     parsed: list[dict[str, str]] = []
     invalid = 0
+    invalid_rows: list[dict[str, str]] = []
     for values in rows[header_index + 1 :]:
         physical_row = values[0]
         values = values[data_offset:]
@@ -124,12 +125,14 @@ def parse_file(parser_type: str, path: Path) -> tuple[list[dict[str, str]], dict
             continue
         try:
             parser.validate_new_row(item)
-        except ValueError:
+        except ValueError as exc:
             invalid += 1
+            code = "missing_required_field" if "不能为空" in str(exc) or "业务主键" in str(exc) else "invalid_row"
+            invalid_rows.append({"physical_row": str(physical_row), "reason_code": code})
             continue
         item["__physical_row"] = str(physical_row)
         parsed.append(item)
-    return parsed, {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "valid": len(parsed), "invalid": invalid, "header_row": header_index + 1}
+    return parsed, {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "valid": len(parsed), "invalid": invalid, "invalid_rows": invalid_rows, "header_row": header_index + 1}
 
 
 async def _connect():
