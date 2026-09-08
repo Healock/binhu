@@ -55,7 +55,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
             clause = active_source_sql_filter("全链条", "source_row")
         self.assertIn("source_row.spreadsheet_id=0", clause)
         self.assertIn(
-            "source_row.source_kind IN ('local_table','local_dispatch')",
+            "source_row.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
             clause,
         )
         self.assertNotIn("legacy-model-three", clause)
@@ -66,7 +66,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
             )
         self.assertIn("source_row.spreadsheet_id=0", model_three_clause)
         self.assertIn(
-            "source_row.source_kind IN ('local_table','local_dispatch')",
+            "source_row.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
             model_three_clause,
         )
         self.assertNotIn("legacy-model-three", model_three_clause)
