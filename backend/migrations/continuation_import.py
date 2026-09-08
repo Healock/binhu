@@ -87,8 +87,11 @@ def _sheet_rows(path: Path) -> list[list[str]]:
                         text = "".join(t.text or "" for t in inline.findall(".//x:t", ns))
                     cells[col] = text
                 if cells:
-                    rows.append([cells.get(i, "") for i in range(max(cells) + 1)])
-            if any(HEADER_HINTS.get(parser, "") in row for parser in HEADER_HINTS for row in rows[:5]):
+                    # 保留 XLSX 中的真实物理行号，不能因为空行被过滤而偏移来源引用。
+                    physical = int(re.search(r"\d+", row.attrib.get("r", "1")).group(0))
+                    values = [cells.get(i, "") for i in range(max(cells) + 1)]
+                    rows.append([str(physical), *values])
+            if any(HEADER_HINTS.get(parser, "") in row for parser in HEADER_HINTS for row in rows[:10]):
                 return rows
         return []
 
@@ -99,7 +102,8 @@ def parse_file(parser_type: str, path: Path) -> tuple[list[dict[str, str]], dict
     header_index = next((i for i, row in enumerate(rows[:10]) if HEADER_HINTS[parser_type] in row), None)
     if header_index is None:
         raise ValueError(f"{path.name}: 未找到表头")
-    header = rows[header_index]
+    header = rows[header_index][1:]
+    data_offset = 1  # 第一个元素是保存下来的 XLSX 物理行号
     aliases = {column: column for column in parser.COLUMNS}
     # 历史工作簿常把身份证号写成“身份证号码”；这是已知安全别名。
     if "身份证号" in aliases and "身份证号" not in header and "身份证号码" in header:
@@ -110,7 +114,9 @@ def parse_file(parser_type: str, path: Path) -> tuple[list[dict[str, str]], dict
                 aliases[standard] = name
     parsed: list[dict[str, str]] = []
     invalid = 0
-    for physical_row, values in enumerate(rows[header_index + 1 :], header_index + 2):
+    for values in rows[header_index + 1 :]:
+        physical_row = values[0]
+        values = values[data_offset:]
         if not any(str(v).strip() for v in values):
             continue
         item = {column: _excel_value(values[header.index(aliases[column])] if aliases[column] in header and header.index(aliases[column]) < len(values) else "") for column in parser.COLUMNS}
