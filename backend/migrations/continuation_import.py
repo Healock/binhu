@@ -21,6 +21,7 @@ from services.domain_routing import DomainRoutingCursor
 
 from services.local_source import create_local_source_row, ensure_local_source_schema
 from migrations.continuation_workbook import read_workbook
+from services.parsers import get_parser
 from services.online_summary_updates import ensure_online_summary_update_schema, enqueue_online_summary_update
 from services.unverifiable_review import ensure_unverifiable_review_schema, ensure_flow_for_values
 from services.task_assignment_responsibility import ensure_task_assignment_responsibility_schema
