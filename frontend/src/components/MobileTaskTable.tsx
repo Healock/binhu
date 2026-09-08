@@ -71,6 +71,8 @@ interface MobileTaskTableProps {
   sort: MobileTaskSort
   onSortChange: (sort: MobileTaskSort) => void
   onSaved: () => Promise<void> | void
+  filterOptions?: { community: { text: string; value: string }[]; smallCommunity: { text: string; value: string }[]; inspector: { text: string; value: string }[] }
+  onTableFiltersChange?: (filters: Record<string, Key[] | null>) => void
 }
 
 function errorMessage(reason: any, fallback: string) {
@@ -100,6 +102,8 @@ export default function MobileTaskTable({
   sort,
   onSortChange,
   onSaved,
+  filterOptions,
+  onTableFiltersChange,
 }: MobileTaskTableProps) {
   const tableRef = useRef<HTMLDivElement>(null)
   const responsiveLayout = useResponsiveLayout(tableRef)
@@ -109,6 +113,7 @@ export default function MobileTaskTable({
   const editorValuesRef = useRef(editorValues)
   editorValuesRef.current = editorValues
   const [registrationProperties, setRegistrationProperties] = useState<Record<string, InlineRegistrationPropertyState>>({})
+  const [pendingAddressMode, setPendingAddressMode] = useState<Record<string, boolean>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [savingRowKey, setSavingRowKey] = useState('')
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
@@ -307,6 +312,8 @@ export default function MobileTaskTable({
           Object.keys(changes).map(field => [field, source.values[field] || '']),
         ),
         expected_revision: source.revision,
+        ...(registrationProperty ? {} : (field === '现住址' && pendingAddressMode[task.task_key]
+          ? { registration_pending_address: value } : {})),
         ...(registrationProperty ? {
           registration_property_id: registrationProperty.id,
           registration_property_version: registrationProperty.version,
@@ -818,7 +825,19 @@ export default function MobileTaskTable({
                   )}
                   {registrationAddressField ? (
                     <div className="grid gap-1">
-                      <Select
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-[var(--app-text-secondary)]">地址方式</span>
+                        <Button type="link" size="small" className="h-auto p-0" onClick={() => setPendingAddressMode(current => ({ ...current, [task.task_key]: !current[task.task_key] }))}>
+                          {pendingAddressMode[task.task_key] ? '选择已有房屋' : '填写待建档地址'}
+                        </Button>
+                      </div>
+                      {pendingAddressMode[task.task_key] ? (
+                        <Input.TextArea size="small" autoSize={{ minRows: 1, maxRows: 3 }} placeholder="请输入现住址（房屋档案尚未建立）" value={values[field] || ''} onChange={event => {
+                          const nextValue = event.target.value
+                          setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: nextValue } }))
+                          scheduleFieldSave(task, item, field, nextValue)
+                        }} onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, values[field] || '') }} />
+                      ) : <Select
                         showSearch
                         filterOption={false}
                         size="small"
@@ -835,8 +854,8 @@ export default function MobileTaskTable({
                           const property = availableRegistrationProperties.find(item => item.id === value)
                           if (property) void saveRegistrationProperty(task, item, property)
                         }}
-                      />
-                      <span className="mobile-task-table-inline-hint">选定房屋后，待登记结果和现住址会一次保存。</span>
+                      />}
+                      <span className="mobile-task-table-inline-hint">{pendingAddressMode[task.task_key] ? '待建立房屋档案，建档后可在确认地址中补挂。' : '选定房屋后，待登记结果和现住址会一次保存。'}</span>
                     </div>
                   ) : metadata.type === 'select' || field === '核查人' ? (
                     <div className="grid gap-1">
@@ -1007,6 +1026,8 @@ export default function MobileTaskTable({
     {
       title: '社区',
       dataIndex: 'community',
+      filters: filterOptions?.community,
+      filteredValue: filterOptions ? undefined : null,
       width: 105,
       responsivePriority: 'always',
       ellipsis: true,
@@ -1015,6 +1036,7 @@ export default function MobileTaskTable({
     {
       title: '小区',
       key: 'small_community',
+      filters: filterOptions?.smallCommunity,
       width: 165,
       responsivePriority: 'standard',
       render: (_, task) => {
@@ -1032,6 +1054,7 @@ export default function MobileTaskTable({
     {
       title: '核查人',
       dataIndex: 'inspector',
+      filters: filterOptions?.inspector,
       width: 105,
       responsivePriority: 'always',
       ellipsis: true,
@@ -1223,7 +1246,8 @@ export default function MobileTaskTable({
           expandedRowRender: renderExpandedRow,
         }}
         pagination={false}
-        onChange={(_, __, sorter) => {
+        onChange={(filters, __, sorter) => {
+          onTableFiltersChange?.(filters as Record<string, Key[] | null>)
           const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter
           if (activeSorter.order !== 'ascend') {
             onSortChange('priority')

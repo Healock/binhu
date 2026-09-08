@@ -113,6 +113,7 @@ from services.residence_status_scan import (
 from services.task_registration import (
     REGISTRATION_TASK_TYPES,
     cancel_registration_link,
+    save_pending_registration_address,
     is_registration_task,
     migrate_registration_link,
     refresh_registration_source_context_after_writeback,
@@ -441,6 +442,7 @@ class TaskBatchUpdate(BaseModel):
     expected_revision: int = Field(gt=0)
     registration_property_id: int | None = Field(default=None, gt=0)
     registration_property_version: int | None = Field(default=None, gt=0)
+    registration_pending_address: str | None = Field(default=None, max_length=500)
 
 
 class UnverifiableDecision(BaseModel):
@@ -699,6 +701,8 @@ def _registration_update_hooks(
         return None, None, False
     if bool(data.registration_property_id) != bool(data.registration_property_version):
         raise HTTPException(422, "房屋编号和房屋版本必须同时提交")
+    if data.registration_pending_address is not None and data.registration_property_id:
+        raise HTTPException(422, "已有房屋和待建档地址不能同时提交")
 
     workflow = TASK_WORKFLOWS[parser_type]
     prepared: dict = {}
@@ -764,6 +768,13 @@ def _registration_update_hooks(
             prepared["property"] = property_row
             return {"现住址": property_row["address"]}
 
+        if data.registration_pending_address is not None:
+            pending_address = data.registration_pending_address.strip()
+            if not pending_address or any(ord(ch) < 32 for ch in pending_address):
+                raise HTTPException(422, "待建档地址不能为空或包含控制字符")
+            prepared["pending_address"] = pending_address
+            return {"现住址": pending_address}
+
         existing_usable = bool(
             existing
             and existing.get("property_id")
@@ -826,6 +837,14 @@ def _registration_update_hooks(
                     source_revision=int(revision),
                     source_row_hash=local_row_hash(after),
                     identity_hmac=str(projection_context[0] or ""),
+                    task_community=str(projection_context[1] or ""),
+                    user_id=int(user.get("id")) if user.get("id") else None,
+                )
+            elif prepared.get("pending_address"):
+                await save_pending_registration_address(
+                    cur, parser_type=parser_type, row_key=row_key_after,
+                    source_id=int(source["id"]), source_revision=int(revision),
+                    source_row_hash=local_row_hash(after),
                     task_community=str(projection_context[1] or ""),
                     user_id=int(user.get("id")) if user.get("id") else None,
                 )
