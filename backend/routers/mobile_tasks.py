@@ -126,6 +126,37 @@ from services.residence_status_scan import _load_current_target, _lookup_registr
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
+
+
+@router.get("/my-history")
+async def my_task_history(
+    limit: int = Query(default=100, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """Return the current user's recent task operations, without sensitive payloads."""
+    user_id = int(user.get("id") or 0)
+    if not user_id:
+        return {"data": []}
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id,action,target_type,target_name,result,created_at "
+            "FROM _admin_audit_log WHERE user_id=%s "
+            "AND (target_type IN ('online_task','mobile_task','online_source') "
+            "OR action LIKE 'mobile_tasks.%%' OR action LIKE 'online.local_%%') "
+            "ORDER BY id DESC LIMIT %s",
+            (user_id, limit),
+        )
+        rows = await cur.fetchall()
+    return {"data": [
+        {
+            "id": int(row[0]), "action": str(row[1] or ""),
+            "target_type": str(row[2] or ""), "task_key": str(row[3] or ""),
+            "result": str(row[4] or ""),
+            "created_at": row[5].isoformat() + "Z" if row[5] else "",
+        }
+        for row in rows
+    ]}
 logger = logging.getLogger(__name__)
 FlowScope = Literal["mine", "community", "all"]
 TaskStatus = Literal[

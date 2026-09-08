@@ -458,6 +458,20 @@ export async function getAdminTaskQueue(): Promise<AdminTaskQueueResponse> {
   return data
 }
 
+export interface MyTaskHistoryItem {
+  id: number
+  action: string
+  target_type: string
+  task_key: string
+  result: string
+  created_at: string
+}
+
+export async function getMyTaskHistory(limit = 100): Promise<{ data: MyTaskHistoryItem[] }> {
+  const { data } = await api.get('/mobile-tasks/my-history', { ...passiveRequest, params: { limit } })
+  return data
+}
+
 export async function getAdminTaskQueueDetails(
   source: string,
   page = 1,
