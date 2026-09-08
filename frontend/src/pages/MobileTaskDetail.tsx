@@ -595,8 +595,14 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       const latestDraft = { ...formValuesRef.current }
       setError(status === 409
         ? '数据冲突，请核对冲突字段后重试；其他草稿已保留'
-        : status === 503 || code === 'task_save_busy' || code === 'task_save_timeout'
-          ? '系统繁忙，草稿未丢失，请稍后点击“重试保存”'
+        : code === 'task_save_timeout'
+          ? '保存等待数据库锁超时，草稿已保留，请稍后点击“重试保存”'
+          : code === 'task_save_busy'
+            ? '当前任务正在被其他操作保存，草稿已保留，请稍后点击“重试保存”'
+            : code === 'database_pool_busy'
+              ? '当前服务连接繁忙，草稿已保留，请稍后点击“重试保存”'
+              : status === 503
+                ? '当前服务暂时不可用，草稿已保留，请稍后点击“重试保存”'
           : detailError(reason, '保存失败，请稍后重试；当前草稿已保留'))
       if (status === 409 && code === 'task_revision_conflict') {
         const currentValues = conflictDetail?.current_values || {}
