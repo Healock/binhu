@@ -146,6 +146,7 @@ async def _connect():
 
 
 async def apply_import(run_id: str, parsed: dict[str, list[dict[str, str]]], reports: list[dict]) -> None:
+    raise RuntimeError("apply_disabled_pending_transaction_and_runtime_verification")
     from config import settings
     if settings.APP_ENVIRONMENT != "production" or not settings.LOCAL_DATA_SOURCE_ENABLED or settings.TXDOCS_ENABLED:
         raise RuntimeError("生产身份或本地数据源开关不符合要求，拒绝写入")
@@ -164,7 +165,15 @@ async def apply_import(run_id: str, parsed: dict[str, list[dict[str, str]]], rep
                     business_date = item.get(date_field, "") if date_field else ""
                     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", business_date):
                         raise ValueError("business_date_unresolved")
-                    await cur.execute("INSERT INTO _online_summary_updates (task_id,parser_type,row_key,revision,business_date,operation_id,status) VALUES (%s,%s,%s,1,%s,%s,'pending') ON DUPLICATE KEY UPDATE operation_id=VALUES(operation_id),updated_at=UTC_TIMESTAMP()", (result["local_task_id"], parser_type, result["row_key"], business_date, run_id))
+                    from datetime import date
+                    await enqueue_online_summary_update(cur, task_id=result["local_task_id"], parser_type=parser_type, row_key=result["row_key"], revision=1, business_date=date.fromisoformat(business_date), operation_id=run_id)
+                    await capture_first_assignment(cur, parser_type=parser_type, row_key=result["row_key"], community=item.get(parser.COMMUNITY_COLUMN, ""), inspector=item.get("核查人", ""), source="continuation_import")
+                keys = [str(item.get("__row_key", "")) for item in parsed[parser_type] if item.get("__row_key")]
+                if not keys:
+                    # create_local_source_row returns the key; retain it without copying business data.
+                    await cur.execute("SELECT row_key FROM _online_source_rows WHERE source_kind=%s AND source_ref LIKE %s", ("one_time_continuation_import", f"continuation:{run_id}:%"))
+                    keys = [str(row[0]) for row in await cur.fetchall()]
+                await rebuild_projection_keys(cur, parser_type, keys, reconcile_graph=True)
             await conn.commit()
     except Exception:
         await conn.rollback()
