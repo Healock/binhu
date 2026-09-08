@@ -41,6 +41,7 @@ from routers.mobile_tasks import (
     _task_photo_results,
     _task_filter_options,
     _task_order,
+    _task_where,
     _validate_assignment,
     _validate_address_source_identity,
     claim_mobile_task,
@@ -492,6 +493,12 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(request.status, "checked")
         self.assertEqual(request.communities, ["长板", EMPTY_FILTER_VALUE])
         self.assertEqual(request.sort, "updated_asc")
+
+    def test_task_search_accepts_inspection_result_filter(self):
+        request = TaskSearch(results=["已登记", EMPTY_FILTER_VALUE])
+        where, params = _task_where({"admin_mode": True, "community_values": None, "name": "管理员甲"}, "全链条", request)
+        self.assertIn("核查结果", where)
+        self.assertIn("已登记", params)
 
     def test_task_search_accepts_address_and_identity_sorting(self):
         self.assertEqual(TaskSearch(sort="address_asc").sort, "address_asc")
