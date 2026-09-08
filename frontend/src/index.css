@@ -8863,6 +8863,15 @@ html[data-theme='dark'] .fullscreen-notice__panel { box-shadow: 0 24px 70px rgb(
 .address-community-options .ant-radio-wrapper-checked { border-color:#1677ff; background:rgba(22,119,255,.06); }
 .address-recommendations,.address-evidence { display:grid; gap:10px; }
 .address-recommendations > div,.address-evidence > div { display:flex; flex-wrap:wrap; gap:8px; }
+.address-evidence > .address-match-evidence { display:grid; gap:12px; }
+.address-match-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0; }
+.address-match-metrics > div { display:grid; align-content:start; gap:4px; min-width:0; }
+.address-match-metrics dt { color:var(--app-text-secondary); font-size:12px; }
+.address-match-metrics dd { margin:0; font-weight:600; overflow-wrap:anywhere; }
+.address-match-evidence p { margin:0; }
+.address-candidate-evidence { display:grid; gap:10px; list-style:none; margin:0; padding:0; }
+.address-candidate-evidence li { display:grid; gap:4px; padding-top:10px; border-top:1px solid var(--app-border); overflow-wrap:anywhere; }
+.address-candidate-evidence li > div { display:flex; flex-wrap:wrap; gap:8px; }
 .address-selected { padding:10px 12px; border-radius:6px; background:rgba(22,119,255,.07); font-size:13px; }
 .address-saved { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 12px; border:1px solid var(--app-border); border-radius:8px; font-size:13px; }
 .address-saved > .anticon { color:#389e0d; }
@@ -8883,6 +8892,7 @@ html[data-theme='dark'] .fullscreen-notice__panel { box-shadow: 0 24px 70px rgb(
   .address-workbench { gap:12px; }
   .address-community-options { grid-template-columns:minmax(0,1fr); }
   .address-facts > div { grid-template-columns:minmax(0,1fr); gap:4px; }
+  .address-match-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .address-submit > div { display:grid; grid-template-columns:minmax(0,1fr); }
 }
 
