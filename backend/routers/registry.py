@@ -533,10 +533,13 @@ async def _property_search_result(
             "OR property.source_house_no LIKE %s OR property.building LIKE %s OR property.room LIKE %s "
             "OR property.housing_type LIKE %s OR property.residence_type LIKE %s "
             "OR property_match.small_community_name LIKE %s "
+            "OR EXISTS (SELECT 1 FROM _police_address_entries entry "
+            "WHERE entry.id=property_match.small_community_id AND entry.enabled=1 "
+            "AND JSON_SEARCH(entry.aliases_json, 'one', %s, NULL, '$[*]') IS NOT NULL) "
             "OR EXISTS (SELECT 1 FROM registry_address_aliases alias "
             "WHERE alias.property_id=property.id AND alias.enabled=1 AND alias.alias LIKE %s))"
         )
-        params.extend([like_value] * 10)
+        params.extend([like_value] * 11)
 
     clause = " WHERE " + " AND ".join(where) if where else ""
     joins = (
