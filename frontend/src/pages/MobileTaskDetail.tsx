@@ -1099,6 +1099,13 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     registrationLink.property.room,
                   ].filter(Boolean).join(' '),
                 },
+                ...(registrationLink.property.source_house_no ? [{
+                  key: 'house_no',
+                  label: '户号',
+                  children: <Button type="link" className="h-auto p-0" onClick={() => void copy(registrationLink.property?.source_house_no || '', '户号')}>
+                    {registrationLink.property.source_house_no}
+                  </Button>,
+                }] : []),
                 {
                   key: 'match',
                   label: '比对进度',
