@@ -129,6 +129,7 @@ export default function MobileTaskTable({
     value: string
   }>>({})
   const activeAutosavesRef = useRef<Set<string>>(new Set())
+  const taskSaveChainsRef = useRef<Record<string, Promise<void>>>({})
   const queuedAutosavesRef = useRef<Record<string, {
     task: MobileTaskItem
     item: MobileTaskInlineEditorItem
@@ -398,9 +399,15 @@ export default function MobileTaskTable({
         })
       }
       message.error(
-        status === 503 || code === 'task_save_busy' || code === 'task_save_timeout'
-          ? '系统繁忙，草稿未丢失，请稍后手动重试保存'
-          : status === 409
+        code === 'task_save_timeout'
+          ? '保存等待数据库锁超时，草稿已保留，请稍后重试保存'
+          : code === 'task_save_busy'
+            ? '当前任务正在被其他操作保存，草稿已保留，请稍后重试保存'
+            : code === 'database_pool_busy'
+              ? '当前服务连接繁忙，草稿已保留，请稍后重试保存'
+              : status === 503
+                ? '当前服务暂时不可用，草稿已保留，请稍后重试保存'
+                : status === 409
             ? '数据冲突，当前草稿已保留，请核对后重试'
             : errorMessage(reason, '保存失败，当前草稿已保留'),
       )
@@ -454,6 +461,13 @@ export default function MobileTaskTable({
     return confirmed ? true : null
   }
 
+  const enqueueTaskSave = (taskKey: string, operation: () => Promise<boolean>) => {
+    const previous = taskSaveChainsRef.current[taskKey] || Promise.resolve()
+    const run = previous.catch(() => undefined).then(operation)
+    taskSaveChainsRef.current[taskKey] = run.then(() => undefined, () => undefined)
+    return run
+  }
+
   const saveField = async (
     task: MobileTaskItem,
     item: MobileTaskInlineEditorItem,
@@ -488,10 +502,10 @@ export default function MobileTaskTable({
     }
     if (autosave) {
       activeAutosavesRef.current.add(autosaveKey)
-      const saved = await saveEditor(task, currentItem, changes, claim, undefined, {
+      const saved = await enqueueTaskSave(task.task_key, () => saveEditor(task, currentItem, changes, claim, undefined, {
         autosaveKey,
         silent: true,
-      })
+      }))
       activeAutosavesRef.current.delete(autosaveKey)
       const queued = queuedAutosavesRef.current[autosaveKey]
       delete queuedAutosavesRef.current[autosaveKey]
@@ -503,7 +517,7 @@ export default function MobileTaskTable({
         }
       }
     } else {
-      await saveEditor(task, item, changes, claim)
+      await enqueueTaskSave(task.task_key, () => saveEditor(task, item, changes, claim))
     }
   }
 
@@ -545,6 +559,7 @@ export default function MobileTaskTable({
     autosaveSequenceRef.current = {}
     activeAutosavesRef.current.clear()
     queuedAutosavesRef.current = {}
+    taskSaveChainsRef.current = {}
   }, [])
 
   const searchRegistrationProperty = async (task: MobileTaskItem, keyword: string) => {

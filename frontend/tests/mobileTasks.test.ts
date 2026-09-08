@@ -835,7 +835,7 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /该任务暂未分配核查人，是否领取任务？/)
   assert.match(tableSource, /okText: '领取并保存'/)
   assert.match(tableSource, /const claim = await confirmClaim\(task, source\.values\)/)
-  assert.match(tableSource, /await saveEditor\(task, item, changes, claim\)/)
+  assert.match(tableSource, /enqueueTaskSave\(task\.task_key, \(\) => saveEditor\(task, item, changes, claim\)\)/)
   assert.match(tableSource, /\[field\]: source\.values\[field\] \|\| ''/)
   assert.match(pageSource, /canClaimUnassigned=\{!analysisOnly && user\?\.member\?\.position === '组员'\}/)
   assert.match(clientSource, /source-rows\/\$\{sourceId\}\/claim/)
