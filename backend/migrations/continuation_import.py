@@ -17,9 +17,15 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import aiomysql
+from services.domain_routing import DomainRoutingCursor
 
 from services.local_source import create_local_source_row, ensure_local_source_schema
 from migrations.continuation_workbook import read_workbook
+from services.online_summary_updates import ensure_online_summary_update_schema, enqueue_online_summary_update
+from services.unverifiable_review import ensure_unverifiable_review_schema, ensure_flow_for_values
+from services.task_assignment_responsibility import ensure_task_assignment_responsibility_schema
+from services.online_source import rebuild_projection_keys
+from services.business_time import get_business_date
 
 FILES = {
     "疑似未注销模型三": "疑似未注销模型三.xlsx",
@@ -140,40 +146,72 @@ def parse_file(parser_type: str, path: Path) -> tuple[list[dict[str, str]], dict
     return parsed, {"file": path.name, "sha256": file_hash, "valid": len(parsed), "invalid": invalid, "invalid_rows": invalid_rows, "header_row": header_index + 1}
 
 
-async def _connect():
+async def _connect(*, autocommit=False):
     from config import settings
-    return await aiomysql.connect(host=settings.MYSQL_HOST, port=settings.MYSQL_PORT, user=settings.MYSQL_USER, password=settings.MYSQL_PASSWORD, db=settings.MYSQL_ONLINE_DATA_DB, autocommit=False, charset="utf8mb4")
+    return await aiomysql.connect(host=settings.MYSQL_HOST, port=settings.MYSQL_PORT, user=settings.MYSQL_USER, password=settings.MYSQL_PASSWORD, db=settings.MYSQL_ONLINE_DATA_DB, autocommit=autocommit, charset="utf8mb4", cursorclass=DomainRoutingCursor)
 
-
-async def apply_import(run_id: str, parsed: dict[str, list[dict[str, str]]], reports: list[dict]) -> None:
-    raise RuntimeError("apply_disabled_pending_transaction_and_runtime_verification")
-    from config import settings
-    if settings.APP_ENVIRONMENT != "production" or not settings.LOCAL_DATA_SOURCE_ENABLED or settings.TXDOCS_ENABLED:
-        raise RuntimeError("生产身份或本地数据源开关不符合要求，拒绝写入")
+async def prepare_import_schema() -> None:
     conn = await _connect()
     try:
         async with conn.cursor() as cur:
             await ensure_local_source_schema(cur)
+            await ensure_online_summary_update_schema(cur)
+            await ensure_task_assignment_responsibility_schema(cur)
+            await ensure_unverifiable_review_schema(cur)
+            await cur.execute("""CREATE TABLE IF NOT EXISTS _continuation_import_runs (
+                run_id VARCHAR(80) PRIMARY KEY, status VARCHAR(20) NOT NULL,
+                preview_sha256 CHAR(64) NOT NULL, total_count INT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                committed_at DATETIME NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        await conn.commit()
+    finally:
+        conn.close()
+
+
+async def apply_import(run_id: str, parsed: dict[str, list[dict[str, str]]], reports: list[dict]) -> None:
+    from config import settings
+    if settings.APP_ENVIRONMENT != "production" or not settings.LOCAL_DATA_SOURCE_ENABLED or settings.TXDOCS_ENABLED:
+        raise RuntimeError("生产身份或本地数据源开关不符合要求，拒绝写入")
+    await prepare_import_schema()
+    conn = await _connect()
+    try:
+        async with conn.cursor() as cur:
+            digest = hashlib.sha256(json.dumps(reports, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            await cur.execute("SELECT status,preview_sha256 FROM _continuation_import_runs WHERE run_id=%s FOR UPDATE", (run_id,))
+            prior = await cur.fetchone()
+            if prior and str(prior[0]) == "committed":
+                if str(prior[1]) != digest: raise RuntimeError("run_id_preview_mismatch")
+                return
+            if prior and str(prior[0]) not in {"prepared", "failed"}:
+                raise RuntimeError("import_run_in_progress")
+            await cur.execute("SELECT COUNT(*) FROM _online_source_rows WHERE source_kind=%s AND archived_at IS NULL", ("one_time_continuation_import",))
+            if int((await cur.fetchone())[0] or 0):
+                raise RuntimeError("continuation_sources_already_present")
+            await cur.execute("INSERT INTO _continuation_import_runs(run_id,status,preview_sha256,total_count) VALUES(%s,'running',%s,%s) ON DUPLICATE KEY UPDATE status='running',preview_sha256=VALUES(preview_sha256),total_count=VALUES(total_count)", (run_id,digest,sum(r['total'] for r in reports)))
+            operation_date = await get_business_date(cur)
+            all_keys = {}
             for report in reports:
                 parser_type = report["parser_type"]
                 parser = get_parser(parser_type)
+                keys = []
                 for item in parsed[parser_type]:
-                    physical = item.pop("__physical_row")
-                    source_ref = f"continuation:{run_id}:{report['sha256']}:{report['header_row']}:{physical}"[:190]
-                    result = await create_local_source_row(cur, parser_type, item, source_kind="one_time_continuation_import", source_ref=source_ref)
-                    date_field = next((name for name in ("下发日期", "下发时间", "截止时间") if item.get(name)), None)
-                    business_date = item.get(date_field, "") if date_field else ""
-                    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", business_date):
-                        raise ValueError("business_date_unresolved")
-                    from datetime import date
-                    await enqueue_online_summary_update(cur, task_id=result["local_task_id"], parser_type=parser_type, row_key=result["row_key"], revision=1, business_date=date.fromisoformat(business_date), operation_id=run_id)
-                    await capture_first_assignment(cur, parser_type=parser_type, row_key=result["row_key"], community=item.get(parser.COMMUNITY_COLUMN, ""), inspector=item.get("核查人", ""), source="continuation_import")
-                keys = [str(item.get("__row_key", "")) for item in parsed[parser_type] if item.get("__row_key")]
-                if not keys:
-                    # create_local_source_row returns the key; retain it without copying business data.
-                    await cur.execute("SELECT row_key FROM _online_source_rows WHERE source_kind=%s AND source_ref LIKE %s", ("one_time_continuation_import", f"continuation:{run_id}:%"))
-                    keys = [str(row[0]) for row in await cur.fetchall()]
+                    physical = item["row"]
+                    values = dict(item["values"])
+                    source_ref = item["source_ref"]
+                    result = await create_local_source_row(cur, parser_type, values, source_kind="one_time_continuation_import", source_ref=source_ref)
+                    keys.append(result["row_key"])
+                    inspector = values.get("核查人", "").strip()
+                    community = values.get(parser.COMMUNITY_COLUMN, "").strip()
+                    if inspector:
+                        await cur.execute("INSERT IGNORE INTO _task_assignment_responsibilities(parser_type,row_key,first_community,first_inspector,capture_source) VALUES(%s,%s,%s,%s,'continuation_import')", (parser_type,result["row_key"],community,inspector))
+                    await enqueue_online_summary_update(cur, task_id=result["local_task_id"], parser_type=parser_type, row_key=result["row_key"], revision=1, business_date=operation_date, operation_id=run_id)
+                    if parser_type != "疑似未注销模型三":
+                        await ensure_flow_for_values(cur, parser_type, result["row_key"], result["id"], 1, result["row_hash"], values)
+                all_keys[parser_type] = keys
+            for parser_type, keys in all_keys.items():
                 await rebuild_projection_keys(cur, parser_type, keys, reconcile_graph=True)
+            await cur.execute("UPDATE _continuation_import_runs SET status='committed',committed_at=UTC_TIMESTAMP() WHERE run_id=%s", (run_id,))
             await conn.commit()
     except Exception:
         await conn.rollback()
