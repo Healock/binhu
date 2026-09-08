@@ -108,17 +108,26 @@ async def archive_due_qmf_tasks() -> int:
                 columns = ["截止时间", "核查人", "姓名", "身份证号", "联系方式", "地址", "下发社区", "核查结果", "备注"]
                 quoted = ",".join(f"`{column}`" for column in columns)
                 await cur.execute(
-                    f"INSERT IGNORE INTO OnlineDataArchive.t_suspect_unrevoked_archive "
+                    f"INSERT INTO OnlineDataArchive.t_suspect_unrevoked_archive "
                     f"(_row_key,{quoted},_archive_reason) "
                     f"SELECT _row_key,{quoted},'qmf_feedback_match' FROM t_suspect_unrevoked "
                     f"WHERE _row_key IN ({placeholders})",
                     keys,
                 )
                 await cur.execute(
+                    "UPDATE _local_source_records SET status='archived', "
+                    "archived_at=UTC_TIMESTAMP(), revision=revision+1, "
+                    "updated_at=UTC_TIMESTAMP() "
+                    f"WHERE parser_type=%s AND business_key IN ({placeholders}) "
+                    "AND status='active'",
+                    (MODEL_THREE_PARSER, *keys),
+                )
+                await cur.execute(
                     f"DELETE FROM t_suspect_unrevoked WHERE _row_key IN ({placeholders})", keys
                 )
                 await cur.execute(
-                    f"DELETE FROM _online_source_rows WHERE parser_type=%s AND row_key IN ({placeholders})",
+                    f"DELETE FROM _online_source_rows WHERE parser_type=%s AND row_key IN ({placeholders}) "
+                    "AND archived_at IS NULL",
                     (MODEL_THREE_PARSER, *keys),
                 )
                 await cur.execute(

@@ -17,6 +17,7 @@ from services.qmf_status import (
     STATUS_UNAVAILABLE,
 )
 from services.qmf_status_scan import (
+    archive_due_qmf_tasks,
     SCAN_CONCURRENCY,
     _current_item_context,
     create_status_scan_run,
@@ -79,6 +80,59 @@ class _Pool:
 
 
 class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
+    async def _run_archive(self, rows, fail_sql=None):
+        cursor = _Cursor(rows)
+        execute = cursor.execute
+
+        async def checked_execute(sql, params=None):
+            await execute(sql, params)
+            if fail_sql and fail_sql in sql:
+                raise RuntimeError("synthetic_archive_failure")
+
+        cursor.execute = checked_execute
+        pool = _Pool(cursor)
+        conn = pool._conn
+        conn.begin = AsyncMock()
+        conn.commit = AsyncMock()
+        conn.rollback = AsyncMock()
+        with patch("services.qmf_status_scan._pool", return_value=pool), patch(
+            "services.qmf_status_scan.reconcile_projection_task_graph", new_callable=AsyncMock
+        ):
+            if fail_sql:
+                with self.assertRaisesRegex(RuntimeError, "synthetic_archive_failure"):
+                    await archive_due_qmf_tasks()
+                conn.rollback.assert_awaited_once()
+                conn.commit.assert_not_awaited()
+            else:
+                self.assertEqual(await archive_due_qmf_tasks(), len(rows))
+                conn.commit.assert_awaited_once()
+                conn.rollback.assert_not_awaited()
+        return cursor.statements
+
+    async def test_archive_updates_local_ledger_before_removing_tasks(self):
+        statements = await self._run_archive([("fixture-a",), ("fixture-b",)])
+        ledger_index = next(i for i, (sql, _) in enumerate(statements) if sql.startswith("UPDATE _local_source_records"))
+        sql, params = statements[ledger_index]
+        self.assertIn("status='archived'", sql)
+        self.assertIn("revision=revision+1", sql)
+        self.assertIn("AND status='active'", sql)
+        self.assertEqual(params, ("疑似未注销模型三", "fixture-a", "fixture-b"))
+        self.assertLess(ledger_index, next(i for i, (sql, _) in enumerate(statements) if sql.startswith("DELETE FROM t_suspect_unrevoked")))
+        self.assertTrue(any("DELETE FROM _online_source_rows" in sql and "archived_at IS NULL" in sql for sql, _ in statements))
+        self.assertFalse(any("INSERT IGNORE" in sql for sql, _ in statements))
+
+    async def test_archive_rolls_back_when_ledger_update_fails(self):
+        statements = await self._run_archive([("fixture-a",)], "UPDATE _local_source_records")
+        self.assertFalse(any(sql.startswith("DELETE") for sql, _ in statements))
+
+    async def test_archive_rolls_back_if_archive_insert_fails(self):
+        statements = await self._run_archive([("fixture-a",)], "INSERT INTO OnlineDataArchive")
+        self.assertFalse(any(sql.startswith("DELETE") for sql, _ in statements))
+
+    async def test_no_due_tasks_does_not_mutate_ledgers(self):
+        statements = await self._run_archive([])
+        self.assertEqual(len(statements), 1)
+
     def test_scan_start_and_read_routes_use_separate_permissions(self):
         routes = {
             route.path: {
