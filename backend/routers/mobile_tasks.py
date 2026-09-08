@@ -2831,7 +2831,6 @@ async def select_mobile_tasks_for_assignment(
     if local_data_source_enabled():
         assignment_source_condition = (
             f"{_active_source_count_sql(parser_type)} <= 1 "
-            "AND projection.address_match_status IN ('confirmed','suggested') "
             "AND TRIM(COALESCE(projection.community,''))<>''"
         )
     async with conn.cursor() as cur:
@@ -5012,9 +5011,6 @@ async def bulk_assign_mobile_tasks(
             continue
         if item["source_count"] != 1:
             skipped.append({"row_key": row_key, "reason": "存在重复本地来源，请先处理来源异常"})
-            continue
-        if item["address_match_status"] not in {"confirmed", "suggested"}:
-            skipped.append({"row_key": row_key, "reason": "小区归属未形成唯一可靠结果，尚未确认"})
             continue
         if not source_rows_by_key.get(row_key):
             skipped.append({"row_key": row_key, "reason": "找不到来源行"})

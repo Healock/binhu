@@ -662,7 +662,7 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"inspector_counts_by_community"', source)
         self.assertEqual(MAX_BULK_ASSIGNMENT_TASKS, 2000)
 
-    def test_assignment_accepts_confirmed_or_unique_automatic_small_community(self):
+    def test_assignment_uses_formal_community_without_small_community_gate(self):
         from routers.mobile_tasks import (
             bulk_assign_mobile_tasks,
             select_mobile_tasks_for_assignment,
@@ -670,15 +670,57 @@ class MobileTaskAssignmentTests(unittest.IsolatedAsyncioTestCase):
 
         selection_source = inspect.getsource(select_mobile_tasks_for_assignment)
         bulk_source = inspect.getsource(bulk_assign_mobile_tasks)
-        self.assertIn(
+        self.assertNotIn(
             "projection.address_match_status IN ('confirmed','suggested')",
             selection_source,
         )
-        self.assertIn(
+        self.assertNotIn(
             'item["address_match_status"] not in {"confirmed", "suggested"}',
             bulk_source,
         )
-        self.assertIn("小区归属未形成唯一可靠结果", bulk_source)
+        self.assertIn('assignment_context["community_aliases"]', bulk_source)
+        self.assertIn('item["source_count"] != 1', bulk_source)
+        self.assertIn("只能分配给任务所属社区的在岗组员", bulk_source)
+
+    async def test_bulk_assign_known_community_without_small_community(self):
+        from routers.mobile_tasks import bulk_assign_mobile_tasks
+
+        for match_status in ("unmatched", "ambiguous", "manual_unmatched", "confirmed", "suggested"):
+            with self.subTest(match_status=match_status):
+                cur = AsyncMock()
+                cur.__aenter__.return_value = cur
+                cur.fetchall.side_effect = [
+                    [("fictional-row", "测试社区", "", "pending", 0, 1, match_status, None, "")],
+                    [(1, "fictional-row", 2, 1, "fictional-hash", {}, "local:全链条")],
+                ]
+                conn = MagicMock()
+                conn.cursor.return_value = cur
+                conn.begin = AsyncMock()
+                conn.commit = AsyncMock()
+                conn.rollback = AsyncMock()
+                with (
+                    patch("routers.mobile_tasks._require_task_edit_user", side_effect=lambda user: user),
+                    patch("routers.mobile_tasks._flow_context", AsyncMock(return_value={"admin_mode": True})),
+                    patch("routers.mobile_tasks._can_assign_tasks", return_value=True),
+                    patch("routers.mobile_tasks._scope_where", return_value=("1=1", [])),
+                    patch("routers.mobile_tasks.local_data_source_enabled", return_value=True),
+                    patch("routers.mobile_tasks.inspector_option_context", AsyncMock(return_value={
+                        "community_aliases": {"测试社区": "测试社区"},
+                        "inspectors_by_community": {"测试社区": ["虚构核查员"]},
+                    })),
+                    patch("routers.mobile_tasks.apply_local_system_changes", AsyncMock()) as apply,
+                    patch("routers.mobile_tasks.capture_first_assignment", AsyncMock()),
+                    patch("routers.mobile_tasks.record_admin_audit", AsyncMock()),
+                    patch("routers.mobile_tasks.request_audit_fields", return_value={}),
+                ):
+                    result = await bulk_assign_mobile_tasks(
+                        "全链条", BulkAssignmentRequest(row_keys=["fictional-row"], inspector="虚构核查员"),
+                        MagicMock(), {"id": 1}, conn,
+                    )
+                self.assertEqual(result["updated"], 1)
+                self.assertEqual(result["skipped"], 0)
+                apply.assert_awaited_once()
+                conn.commit.assert_awaited_once()
 
     def test_bulk_assignment_requires_bounded_chunks(self):
         request = BulkAssignmentRequest(

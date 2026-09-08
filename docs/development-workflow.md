@@ -15,7 +15,7 @@
 - 规则匹配不得覆盖任务原始地址和原始社区。唯一、有效、无街道或社区冲突的 `suggested` 作为“自动匹配”直接使用；人工 `confirmed` 修正仍是最高优先级，投影重建和维护重跑不得覆盖。
 - 候选先按规范化小区名和正式社区去重。去重后只有一个有效候选时应直接成为 `suggested`；测试必须单独覆盖“一个弱候选”“同一小区重复地址项”和“两个真实不同小区分数接近”，防止继续把单候选误报为 `ambiguous`。
 - 人工反馈记忆只允许复用完全相同的规范化地址和正式社区。测试要覆盖重复确认计数、不同小区确认触发冲突熔断、跨社区不复用、停用小区不复用、硬冲突不被记忆覆盖，并确认反馈表和普通审计都不保存地址正文。
-- 指令核查列表、详情和分配工作台必须同时核对社区、小区和匹配状态筛选。`confirmed` 或唯一可靠的 `suggested` 且来源唯一、社区一致的任务可进入单人或平均分配；`ambiguous/conflict/unmatched/invalid`、停用小区和来源异常仍必须返回明确跳过原因。
+- 指令核查分配以当前正式社区和来源唯一性为准，小区匹配状态不是门槛。使用虚构任务验证 `unmatched`、`ambiguous`、`manual_unmatched` 等无小区场景仍可分配给同社区在岗核查人；社区不明、越权、来源异常、已完成和已有核查人继续拒绝或跳过。选择接口、单人分配和平均分配保持一致。
 - 房屋档案要验证小区列、匹配状态、候选依据、待确认数量、单条修正、批量确认和详情展示；页面不得把匹配对象渲染成 `[object Object]`。
 - 房屋维护命令固定为：`python backend/migrations/property_small_community_matching.py measure`、`migrate --apply`、`verify`。生产写入前备份 `RegistryData`；若同次发布包含在线任务投影结构，则备份范围提升为 `OnlineData + RegistryData`。
 - 在线任务匹配规则升级固定执行：`python -m migrations.address_match_feedback measure`、`migrate --apply`、`verify`。先记录单候选误报数量，写入前备份 `OnlineData`，重算后核对 `ambiguous` 只剩真实多候选或无候选记录；人工 `confirmed` 数量和目标小区必须保持不变。
