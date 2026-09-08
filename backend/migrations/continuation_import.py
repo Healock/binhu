@@ -207,7 +207,7 @@ async def apply_import(run_id: str, parsed: dict[str, list[dict[str, str]]], rep
                         await cur.execute("INSERT IGNORE INTO _task_assignment_responsibilities(parser_type,row_key,first_community,first_inspector,capture_source) VALUES(%s,%s,%s,%s,'continuation_import')", (parser_type,result["row_key"],community,inspector))
                     await enqueue_online_summary_update(cur, task_id=result["local_task_id"], parser_type=parser_type, row_key=result["row_key"], revision=1, business_date=operation_date, operation_id=run_id)
                     if parser_type != "疑似未注销模型三":
-                        await ensure_flow_for_values(cur, parser_type, result["row_key"], result["id"], 1, result["row_hash"], values)
+                        await ensure_flow_for_values(cur, parser_type=parser_type, row_key=result["row_key"], source_id=result["id"], source_revision=1, source_row_hash=result["row_hash"], values=values)
                 all_keys[parser_type] = keys
             for parser_type, keys in all_keys.items():
                 await rebuild_projection_keys(cur, parser_type, keys, reconcile_graph=True)
