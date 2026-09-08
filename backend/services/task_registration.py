@@ -276,6 +276,7 @@ async def registration_links_by_rows(
                link.manual_confirmed_at,
                property.natural_address,property.building,property.room,
                property.normalized_address,property.status,property.current_version,
+               property.source_house_no,
                property.community_id,property.community_name_snapshot
         FROM _task_registration_links AS link
         LEFT JOIN `{registry}`.registry_properties AS property
@@ -323,6 +324,7 @@ async def registration_links_by_rows(
                 "version": int(row[17] or 0),
                 "community_id": int(row[18]) if row[18] is not None else None,
                 "community_name": str(row[19] or ""),
+                "source_house_no": str(row[20] or ""),
             },
         }
     return result

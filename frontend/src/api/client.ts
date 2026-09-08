@@ -1395,6 +1395,7 @@ export interface MobileTaskRegistrationProperty {
   version: number
   community_id: number | null
   community_name: string
+  source_house_no: string
 }
 
 export interface MobileTaskRegistrationLink {
