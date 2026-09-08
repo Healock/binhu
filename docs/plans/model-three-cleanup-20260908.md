@@ -41,6 +41,28 @@
 
 修复版本为 0.28.11，VERSION 与客户端配置使用版本同步脚本统一更新。PR #524 的地址得分界面不纳入本次发布。
 
-代码按 PR → CI → main → 正式部署流程交付，部署状态需单独核对。数据库维护已执行，不能用程序回退撤销清理。若需恢复任务，须另行授权，先冻结写入并基于维护前备份和定位清单恢复关联记录，不能整库覆盖后续业务。
+代码已按 PR → CI → main → 正式部署流程交付，详细证据见下节。数据库维护已执行，不能用程序回退撤销清理。若需恢复任务，须另行授权，先冻结写入并基于维护前备份和定位清单恢复关联记录，不能整库覆盖后续业务。
 
 后续新任务可以按正常导入流程创建；当前归零不代表禁止以后导入。后续应盘点其他归档入口是否完整关闭来源登记，不借本次维护扩大数据清理范围。
+
+## 0.28.11 发布与上线复核
+
+以下为 2026-09-08 当次检查结果，后续状态应重新查询，不把本节快照视作永久实时状态。
+
+| 环节 | 可核实结果 |
+| --- | --- |
+| 代码提交 | `d6490d08a0b4f893a016dbb738a433f46202cd37` |
+| PR | [#525](https://github.com/Healock/binhu/pull/525)，已合并 |
+| PR CI | [34180997267](https://github.com/Healock/binhu/actions/runs/34180997267)，成功 |
+| main 合并提交 | `d4129cc404877b08fc5c2c15eaa91c6db7d719a5` |
+| main CI | [34181392716](https://github.com/Healock/binhu/actions/runs/34181392716)，后端、前端、Desktop clients 均成功 |
+| 生产部署 | [34182819289](https://github.com/Healock/binhu/actions/runs/34182819289)，成功；`backup_scope=all`、`release_scope=full` |
+| 客户端发布 | [34181692779](https://github.com/Healock/binhu/actions/runs/34181692779)，Win7、Win10/11、Android 及 publish 均成功 |
+| 标签与 Release | [v0.28.11](https://github.com/Healock/binhu/releases/tag/v0.28.11)，已公开；两个 Windows 平台均包含 full/delta 包与校验文件，Android APK 已发布 |
+| 实机验收 | 未执行 Windows/Android 真实设备安装和升级验收，自动构建不能替代 |
+
+生产 `current.json` 的版本与提交均与上述部署目标一致，内部健康接口返回 `status=ok`、`version=0.28.11`。Backend 运行正常，从本次启动时间起检查未发现 ERROR、CRITICAL 或 Python traceback。运行配置再次确认为 `APP_ENVIRONMENT=production`、`LOCAL_DATA_SOURCE_ENABLED=true`、`TXDOCS_ENABLED=false`；容器中的归档代码已包含来源登记收尾与严格归档插入。
+
+部署重启后只读复查：模型三当前业务、未归档来源、任务投影及 active 本地来源登记均为 **0**；归档数量仍为 **8,164**。未执行生产测试写入，也未重复执行清理。
+
+上线复核计数、健康/配置摘要与 SHA-256 已写入上述受限证据目录的 `post-deploy-0.28.11-counts.tsv`、`post-deploy-0.28.11-health.txt`、`post-deploy-0.28.11.sha256`。固定发布流程另保留程序、旧镜像和八库备份，程序回滚不得自动恢复数据库。
