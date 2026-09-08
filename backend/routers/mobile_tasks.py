@@ -1479,7 +1479,7 @@ def _analysis_order(data: AnalysisTaskSearch) -> str:
         return f"{stage_order}, projection.updated_at ASC, projection.row_key"
     if data.sort == "updated_desc":
         return f"{stage_order}, projection.updated_at DESC, projection.row_key"
-    return f"{stage_order}, projection.updated_at DESC, projection.row_key"
+    return f"{stage_order}, projection.row_key"
 
 
 def _task_order(parser_type: str, sort: SortMode) -> str:
@@ -1497,7 +1497,7 @@ def _task_order(parser_type: str, sort: SortMode) -> str:
         )
     return (
         f"{_priority_order(parser_type)}, {_address_order(parser_type)}, "
-        "projection.updated_at DESC, projection.row_key"
+        "projection.row_key"
     )
 
 

@@ -1082,7 +1082,7 @@ export default function MobileTaskList({
           </div>
 
           <div className={`mobile-task-filter-secondary${analysisOnly ? ' mobile-task-filter-secondary--analysis' : ''}`}>
-            {responsiveLayout.isCompact && <label className="mobile-task-filter-field">
+            <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">社区</span>
               <Select
                 mode="multiple"
@@ -1100,8 +1100,8 @@ export default function MobileTaskList({
                 }))}
                 onChange={setCommunities}
               />
-            </label>}
-            {!analysisOnly && responsiveLayout.isCompact && <label className="mobile-task-filter-field">
+            </label>
+            {!analysisOnly && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">小区</span>
               <Select
                 mode="multiple"
@@ -1120,7 +1120,7 @@ export default function MobileTaskList({
                 onChange={setSmallCommunities}
               />
             </label>}
-            {responsiveLayout.isCompact && <label className="mobile-task-filter-field">
+            <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">核查人</span>
               <Select
                 mode="multiple"
@@ -1138,7 +1138,7 @@ export default function MobileTaskList({
                 }))}
                 onChange={setInspectors}
               />
-            </label>}
+            </label>
             {!analysisOnly && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">匹配状态</span>
               <Select
@@ -1445,17 +1445,18 @@ export default function MobileTaskList({
                 onCopy={(value, label) => void copyValue(value, label)}
                 sort={sort}
                 onSortChange={setSort}
-                onSaved={() => load(page, false, true)}
-                filterOptions={{
-                  community: communityOptions.map(option => ({ text: `${option.label}（${option.count}）`, value: option.value })),
-                  smallCommunity: smallCommunityOptions.map(option => ({ text: `${option.label}（${option.count}）`, value: option.value })),
-                  inspector: inspectorOptions.map(option => ({ text: `${option.label}（${option.count}）`, value: option.value })),
-                }}
-                onTableFiltersChange={filters => {
-                  setCommunities((filters.community || []).map(String))
-                  setSmallCommunities((filters.small_community || []).map(String))
-                  setInspectors((filters.inspector || []).map(String))
-                  setPage(1)
+                onSaved={async context => {
+                  const scrollContainer = pageRootRef.current?.closest('main') as HTMLElement | null
+                  const scrollTop = scrollContainer?.scrollTop || window.scrollY
+                  await load(page, false, true)
+                  if (context?.taskKey) {
+                    window.requestAnimationFrame(() => {
+                      const anchor = pageRootRef.current?.querySelector<HTMLElement>(`[data-mobile-task-row-key="${CSS.escape(context.taskKey)}"]`)
+                      if (anchor) anchor.scrollIntoView({ block: 'center', behavior: 'auto' })
+                      if (scrollContainer) scrollContainer.scrollTop = scrollTop
+                      else window.scrollTo({ top: scrollTop, behavior: 'auto' })
+                    })
+                  }
                 }}
               />
             </div>
