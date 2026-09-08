@@ -13,6 +13,7 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 from services.parsers import get_parser
+from services.parsers import get_parser
 
 NS = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
@@ -104,6 +105,8 @@ def read_workbook(parser_type: str, path: Path, run_id: str):
     report = {"parser_type": parser_type, "file": path.name, "sha256": digest,
               "sheets": [], "issues": [], "adjustments": [], "total": 0}
     records = []
+    states = Counter()
+    results = Counter()
     keys = defaultdict(list)
     for sheet, part, epoch, rows in read_sheets(path):
         summary = {"sheet": sheet, "part": part, "blank_rows": 0, "preamble_rows": 0,
@@ -153,11 +156,26 @@ def read_workbook(parser_type: str, path: Path, run_id: str):
                     values[column] = normalize_date(values[column], epoch_1904=epoch)
                 except (ValueError, OverflowError):
                     row_issues.append("invalid_date:" + column)
-            result_field = getattr(__import__("services.task_workflow", fromlist=["TASK_WORKFLOWS"]).TASK_WORKFLOWS[parser_type], "result_field")
+            # Keep preview independent of production settings/DB connections.
+            result_field = {
+                "全链条": "核查结果", "出租房屋核查": "核查结果",
+                "疑似返苏": "核查反馈", "疑似未注销模型三": "核查结果",
+            }[parser_type]
             result_value = values.get(result_field, "")
-            if (parser_type, result_value) in RESULT_ALIASES:
-                values[result_field] = RESULT_ALIASES[(parser_type, result_value)]
-                report["adjustments"].append({"sheet": sheet, "row": physical, "field": result_field, "code": "canonical_result_alias"})
+            known_result = RESULT_ALIASES.get((parser_type, result_value), result_value)
+            known_results = {
+                "全链条": {"已登记", "待登记", "无法核实", "移交（所内）", "移交（所外）", "移交", "无需登记", "离苏"},
+                "出租房屋核查": {"已登记", "待登记", "离苏", "常口", "无需登记，原因写备注", "移交，移交哪个社区写备注", "无法核实"},
+                "疑似返苏": {"已登记", "无需登记", "无法核实", "移交，备注后面填写移交哪个社区"},
+                "疑似未注销模型三": {"在吴", "近期返吴", "离吴"},
+            }[parser_type]
+            if known_result and known_result not in known_results:
+                row_issues.append("unsupported_result")
+            else:
+                # Preserve the colleague's exact result. Mapping is explanatory only.
+                results[result_value] += 1
+            result_text = str(values.get(result_field, "") or "").strip()
+            states[("checked" if "无法核实" in result_text else "completed" if result_text else "unchecked")] += 1
             if parser_type == "疑似未注销模型三" and digest == MODEL_HASH and part == "xl/worksheets/sheet1.xml" and physical == 48:
                 if values["联系方式"]:
                     row_issues.append("approved_phone_override_not_empty")
@@ -181,6 +199,10 @@ def read_workbook(parser_type: str, path: Path, run_id: str):
         if len(locators) > 1:
             report["issues"].append({"code": "duplicate_business_key", "rows": locators})
     report["total"] = len(records)
+    if not records:
+        report["issues"].append({"code": "empty_workbook"})
+    report["states"] = dict(states)
+    report["results"] = dict(results)
     report["issue_count"] = len(report["issues"])
     report["ready"] = not report["issues"]
     return records, report

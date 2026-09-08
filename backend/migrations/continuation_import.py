@@ -19,7 +19,7 @@ from xml.etree import ElementTree as ET
 import aiomysql
 
 from services.local_source import create_local_source_row, ensure_local_source_schema
-from services.parsers import get_parser
+from migrations.continuation_workbook import read_workbook
 
 FILES = {
     "疑似未注销模型三": "疑似未注销模型三.xlsx",
@@ -192,15 +192,17 @@ def main() -> None:
     parsed: dict[str, list[dict[str, str]]] = {}
     reports: list[dict] = []
     for parser_type, filename in FILES.items():
-        rows, report = parse_file(parser_type, args.input_dir / filename)
+        rows, report = read_workbook(parser_type, args.input_dir / filename, args.run_id)
         report["parser_type"] = parser_type
         parsed[parser_type] = rows
         reports.append(report)
-    output = {"run_id": args.run_id, "reports": reports, "total_valid": sum(r["valid"] for r in reports), "apply": args.apply}
+    output = {"run_id": args.run_id, "reports": reports, "total_valid": sum(r["total"] for r in reports), "apply": args.apply}
     if args.report:
         args.report.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(output, ensure_ascii=False, indent=2))
     if args.apply:
+        if any(not report.get("ready") for report in reports):
+            raise SystemExit("preview_not_ready")
         asyncio.run(apply_import(args.run_id, parsed, reports))
 
 
