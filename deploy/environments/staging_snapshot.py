@@ -7,7 +7,7 @@ impossible for the import tool.
 """
 from __future__ import annotations
 
-import argparse, hashlib, json, re, secrets
+import argparse, hashlib, hmac, json, re, secrets
 from pathlib import Path
 
 SENSITIVE = re.compile(r"姓名|身份证|手机号|密码|token|cookie|照片|附件|原始地址|核查补充|核查反馈|备注|source_text|person[_-]?name|phone|identity[_-]?number", re.I)
@@ -18,6 +18,7 @@ def snapshot_id() -> str:
 
 def sanitize(src: Path, dst: Path) -> dict:
     counts = {"input": 0, "output": 0, "rejected": 0}
+    salt = secrets.token_bytes(32)
     dst.parent.mkdir(parents=True, exist_ok=True)
     with src.open(encoding="utf-8") as r, dst.open("x", encoding="utf-8") as w:
         for line in r:
@@ -26,14 +27,13 @@ def sanitize(src: Path, dst: Path) -> dict:
             if not REQUIRED <= item.keys():
                 counts["rejected"] += 1
                 continue
-            # Preserve relationship keys, replace the payload with a stable
-            # per-snapshot token; production values never enter staging.
-            token = hashlib.sha256((str(item["record_key"]) + str(item["value"])).encode()).hexdigest()[:16]
-            item["value"] = f"synthetic-{token}"
-            for key in list(item):
-                if SENSITIVE.search(str(key)):
-                    item[key] = f"synthetic-{hashlib.sha256((str(key)+str(item[key])).encode()).hexdigest()[:16]}"
-            w.write(json.dumps(item, ensure_ascii=False) + "\n")
+            # Only named fields may cross the boundary. Never copy unknown
+            # JSON/text fields. Keys are stable within this snapshot only.
+            safe = {"record_type": "synthetic"}
+            for key in ("record_key", "community_key", "address_key", "value"):
+                token = hmac.new(salt, (key + str(item[key])).encode(), hashlib.sha256).hexdigest()[:24]
+                safe[key] = f"synthetic-{token}"
+            w.write(json.dumps(safe, ensure_ascii=False) + "\n")
             counts["output"] += 1
     if counts["rejected"]:
         raise SystemExit("sanitization rejected records; review the private report before import")

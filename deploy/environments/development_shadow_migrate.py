@@ -14,15 +14,15 @@ def extract(source: Path, output: Path) -> None:
         if not path.is_file() or SECRET.search(path.name):
             continue
         rel = path.relative_to(source)
-        if rel.suffix not in {".yml", ".yaml", ".json", ".env", ".toml", ".conf"}:
+        if rel.suffix not in {".yml", ".yaml", ".env", ".toml", ".conf"} or "artifact" in rel.parts:
             continue
         text = path.read_text(errors="replace")
-        text = re.sub(r"(?im)^([^#\n]*(?:password|secret|token|credential)[^=\n]*)=.*$", r"\1=[REDACTED]", text)
+        text = re.sub(r"(?im)^([^#\n]*(?:password|secret|token|credential|key|url)[^=\n]*)=.*$", r"\1=[REDACTED]", text)
         target = output / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
         hashes[str(rel)] = hashlib.sha256(text.encode()).hexdigest()
-    (output / "manifest.json").write_text(json.dumps({"template": "shadow", "state_copied": False, "hashes": hashes}, indent=2), encoding="utf-8")
+    (output / "manifest.json").write_text(json.dumps({"template": "shadow", "state_copied": False, "artifacts_excluded": True, "hashes": hashes}, indent=2), encoding="utf-8")
 
 def main() -> None:
     p = argparse.ArgumentParser(); p.add_argument("source", type=Path); p.add_argument("output", type=Path); args = p.parse_args(); extract(args.source, args.output)
