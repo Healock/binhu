@@ -935,7 +935,7 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
   assert.match(styleSource, /mobile-task-assignment-workbench[\s\S]*overflow: hidden/)
 })
 
-test('唯一可靠建议作为自动匹配直接参与分配', () => {
+test('地址匹配状态不阻断已归属社区的人工分配', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
@@ -964,9 +964,9 @@ test('唯一可靠建议作为自动匹配直接参与分配', () => {
   const annotation = readFileSync(new URL('../src/pages/AddressConfirmation.tsx', import.meta.url), 'utf8')
   assert.match(annotation, /修正到此社区并重新匹配/)
   assert.match(annotation, /联系基础管控或管理员处理/)
-  assert.match(workbenchSource, /status === 'confirmed' \|\| status === 'suggested'/)
+  assert.match(workbenchSource, /const isAssignableMatch = \(_status: string\) => true/)
+  assert.match(workbenchSource, /地址匹配状态只描述小区关联质量，不决定任务能否分配核查人/)
   assert.match(workbenchSource, /自动匹配/)
-  assert.match(workbenchSource, /“自动匹配”和“已人工确认”的任务可直接分配/)
   assert.match(pageSource, /analysisImportResult/)
   assert.match(pageSource, /条需要处理[\s\S]*问题明细/)
   assert.match(pageSource, /重新导入修正后的文件/)

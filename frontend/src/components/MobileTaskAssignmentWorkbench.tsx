@@ -36,7 +36,10 @@ const MATCH_STATUS_LABELS: Record<string, { label: string; color: string }> = {
   unmatched: { label: '未关联小区', color: 'default' },
 }
 
-const isAssignableMatch = (status: string) => status === 'confirmed' || status === 'suggested'
+// 地址匹配状态只描述小区关联质量，不决定任务能否分配核查人。
+// 只要任务已归属社区且没有来源重复/任务完成等硬性问题，就应允许人工继续处理，
+// 包括“未关联小区”“地址冲突”和“无效地址”。
+const isAssignableMatch = (_status: string) => true
 
 export default function MobileTaskAssignmentWorkbench({
   open,
