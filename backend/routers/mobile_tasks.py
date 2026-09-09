@@ -567,6 +567,7 @@ class TaskSearch(BaseModel):
     communities: list[str] = Field(default_factory=list, max_length=50)
     small_communities: list[str] = Field(default_factory=list, max_length=50)
     match_status: list[str] = Field(default_factory=list, max_length=20)
+    results: list[str] = Field(default_factory=list, max_length=30)
     inspectors: list[str] = Field(default_factory=list, max_length=50)
     watch_categories: list[int] = Field(default_factory=list, max_length=50)
     qmf_feedback_states: list[QmfFeedbackState] = Field(
@@ -1295,10 +1296,12 @@ def _multi_filter_condition(
     params: list[str] = []
     if non_empty:
         placeholders = ", ".join(["%s"] * len(non_empty))
-        predicates.append(f"projection.{column} IN ({placeholders})")
+        field_sql = column if column.startswith("TRIM(") else f"projection.{column}"
+        predicates.append(f"{field_sql} IN ({placeholders})")
         params.extend(non_empty)
     if include_empty:
-        predicates.append(f"TRIM(COALESCE(projection.{column}, ''))='' ")
+        field_sql = column if column.startswith("TRIM(") else f"projection.{column}"
+        predicates.append(f"TRIM(COALESCE({field_sql}, ''))='' ")
     return "(" + " OR ".join(predicates) + ")", params
 
 
@@ -1344,17 +1347,21 @@ def _task_where(
     match_status_condition, match_status_params = _multi_filter_condition(
         "address_match_status", data.match_status
     )
+    result_condition, result_params = _multi_filter_condition(
+        _json_field(TASK_WORKFLOWS[parser_type].result_field), data.results
+    )
     inspector_condition, inspector_params = _multi_filter_condition(
         "inspector", data.inspectors
     )
     where_parts.extend([
         community_condition, small_community_condition,
-        match_status_condition, inspector_condition,
+        match_status_condition, inspector_condition, result_condition,
     ])
     params.extend(community_params)
     params.extend(small_community_params)
     params.extend(match_status_params)
     params.extend(inspector_params)
+    params.extend(result_params)
     keyword = data.keyword.strip()
     if keyword:
         where_parts.append("projection.search_text LIKE %s")
@@ -2345,6 +2352,7 @@ async def _task_filter_options(
     communities: list[str] | None = None,
     small_communities: list[str] | None = None,
     match_status: list[str] | None = None,
+    results: list[str] | None = None,
     review_stage: ReviewStage = "all",
 ) -> dict:
     capability_user = _task_capability_user(user)
@@ -2364,6 +2372,9 @@ async def _task_filter_options(
     match_status_condition, match_status_params = _multi_filter_condition(
         "address_match_status", match_status or []
     )
+    result_condition, result_params = _multi_filter_condition(
+        _json_field(TASK_WORKFLOWS[parser_type].result_field), results or []
+    )
     if community_condition != "1=1":
         inspector_where = f"{inspector_where} AND {community_condition}"
         inspector_params.extend(community_params)
@@ -2373,9 +2384,12 @@ async def _task_filter_options(
     if match_status_condition != "1=1":
         inspector_where = f"{inspector_where} AND {match_status_condition}"
         inspector_params.extend(match_status_params)
+    if result_condition != "1=1":
+        inspector_where = f"{inspector_where} AND {result_condition}"
+        inspector_params.extend(result_params)
     result = {
         "communities": [], "small_communities": [],
-        "match_statuses": [], "inspectors": [], "watch_categories": [],
+        "match_statuses": [], "results": [], "inspectors": [], "watch_categories": [],
     }
     for column, key, empty_label in (
         ("community", "communities", "社区未填写"),
@@ -2409,6 +2423,21 @@ async def _task_filter_options(
                 "label": normalized or empty_label,
                 "count": int(count or 0),
             })
+    result_field = _json_field(TASK_WORKFLOWS[parser_type].result_field)
+    result_where = " AND ".join([
+        where_sql, community_condition, small_community_condition, match_status_condition,
+    ])
+    await cur.execute(
+        f"SELECT {result_field}, COUNT(*) FROM _online_source_projection AS projection "
+        f"WHERE {result_where} GROUP BY {result_field}",
+        [*params, *community_params, *small_community_params, *match_status_params],
+    )
+    result_counts = {str(value or "").strip(): int(count or 0) for value, count in await cur.fetchall()}
+    result["results"] = [
+        {"value": value or EMPTY_FILTER_VALUE, "label": value or "未填写",
+         "count": result_counts.get(value, 0)}
+        for value in ["", *TASK_WORKFLOWS[parser_type].result_options]
+    ]
     if settings.REGISTRY_FEATURE_ENABLED:
         registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
         await cur.execute(
@@ -2778,6 +2807,7 @@ async def get_mobile_task_filter_options(
     community: list[str] = Query(default=[]),
     small_community: list[str] = Query(default=[]),
     match_status: list[str] = Query(default=[]),
+    result: list[str] = Query(default=[]),
     review_stage: ReviewStage = Query("all"),
     user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
     conn=Depends(get_db),
@@ -2790,6 +2820,7 @@ async def get_mobile_task_filter_options(
             return {
                 "source_ready": False,
                 "communities": [],
+                "results": [],
                 "inspectors": [],
                 "watch_categories": [],
                 "assignment": {
@@ -2807,6 +2838,7 @@ async def get_mobile_task_filter_options(
             communities=community,
             small_communities=small_community,
             match_status=match_status,
+            results=result,
             review_stage=review_stage,
         )
     return {"source_ready": True, **options}

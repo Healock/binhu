@@ -298,6 +298,7 @@ export default function MobileTaskList({
   }, [analysisImportResult])
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
   const [smallCommunities, setSmallCommunities] = useState<string[]>(readMulti(searchParams, 'small_community'))
+  const [results, setResults] = useState<string[]>(readMulti(searchParams, 'result'))
   const [matchStatuses, setMatchStatuses] = useState<string[]>(readMulti(searchParams, 'match_status'))
   const [inspectors, setInspectors] = useState<string[]>(readMulti(searchParams, 'inspector'))
   const [watchCategories, setWatchCategories] = useState<number[]>(readMultiNumber(searchParams, 'watch_category'))
@@ -329,6 +330,7 @@ export default function MobileTaskList({
   const keyword = useDebouncedValue(keywordInput.trim(), 350, keywordFlush)
   const [communityOptions, setCommunityOptions] = useState<MobileTaskFilterOption[]>([])
   const [smallCommunityOptions, setSmallCommunityOptions] = useState<MobileTaskFilterOption[]>([])
+  const [resultOptions, setResultOptions] = useState<MobileTaskFilterOption[]>([])
   const [matchStatusOptions, setMatchStatusOptions] = useState<MobileTaskFilterOption[]>([])
   const [inspectorOptions, setInspectorOptions] = useState<MobileTaskFilterOption[]>([])
   const [assignment, setAssignment] = useState(EMPTY_ASSIGNMENT)
@@ -424,11 +426,13 @@ export default function MobileTaskList({
           {},
           smallCommunities,
           matchStatuses,
+          results,
         )
       if (requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
       setSmallCommunityOptions(result.small_communities || [])
       setMatchStatusOptions(result.match_statuses || [])
+      setResultOptions(result.results || [])
       setInspectorOptions(result.inspectors)
       setAssignment(result.assignment || EMPTY_ASSIGNMENT)
       setWatchCategoryOptions(result.watch_categories || [])
@@ -464,7 +468,7 @@ export default function MobileTaskList({
     } finally {
       if (requestId === optionsRequestId.current) setOptionsLoading(false)
     }
-  }, [analysisOnly, analysisParserTypes, communities, inspectors, matchStatuses, parserType, reviewStage, scope, smallCommunities])
+  }, [analysisOnly, analysisParserTypes, communities, inspectors, matchStatuses, results, parserType, reviewStage, scope, smallCommunities])
 
   useEffect(() => { void loadOptions() }, [loadOptions])
 
@@ -509,6 +513,7 @@ export default function MobileTaskList({
           communities,
           small_communities: smallCommunities,
           match_status: matchStatuses,
+          results,
           inspectors,
           watch_categories: watchCategories,
           qmf_feedback_states: qmfFeedbackStates,
@@ -560,7 +565,7 @@ export default function MobileTaskList({
       }
       if (append) loadingMoreRef.current = false
     }
-  }, [analysisOnly, analysisParserTypes, communities, inspectors, keyword, matchStatuses, parserType, priority, qmfFeedbackStates, reviewStage, scope, smallCommunities, sort, status, watchCategories])
+  }, [analysisOnly, analysisParserTypes, communities, inspectors, keyword, matchStatuses, results, parserType, priority, qmfFeedbackStates, reviewStage, scope, smallCommunities, sort, status, watchCategories])
 
   const loadQmfScan = useCallback(async (silent = true) => {
     if (!isModelThree) {
@@ -739,13 +744,14 @@ export default function MobileTaskList({
     communities.forEach(value => next.append('community', value))
     smallCommunities.forEach(value => next.append('small_community', value))
     matchStatuses.forEach(value => next.append('match_status', value))
+    if (!analysisOnly) results.forEach(value => next.append('result', value))
     inspectors.forEach(value => next.append('inspector', value))
     watchCategories.forEach(value => next.append('watch_category', String(value)))
     if (isModelThree) qmfFeedbackStates.forEach(value => next.append('qmf_state', value))
     if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, matchStatuses, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, smallCommunities, sort, status, watchCategories])
+  }, [analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, matchStatuses, results, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, smallCommunities, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -755,6 +761,7 @@ export default function MobileTaskList({
     setCommunities([])
     setSmallCommunities([])
     setMatchStatuses([])
+    setResults([])
     setInspectors([])
     setWatchCategories([])
     setQmfFeedbackStates([])
@@ -770,6 +777,7 @@ export default function MobileTaskList({
     setCommunities([])
     setSmallCommunities([])
     setMatchStatuses([])
+    setResults([])
     setInspectors([])
     setWatchCategories([])
     setQmfFeedbackStates([])
@@ -869,6 +877,11 @@ export default function MobileTaskList({
       label: `匹配：${optionText(value, MATCH_STATUS_OPTIONS, value)}`,
       remove: () => setMatchStatuses(current => current.filter(item => item !== value)),
     }))
+    if (!analysisOnly) results.forEach(value => chips.push({
+      key: `result:${value}`,
+      label: `核查结果：${optionText(value, resultOptions, value === '__empty__' ? '未填写' : value)}`,
+      remove: () => setResults(current => current.filter(item => item !== value)),
+    }))
     if (!analysisOnly && status !== 'all') chips.push({
       key: 'status',
       label: `状态：${optionText(status, STATUS_OPTIONS, status)}`,
@@ -905,7 +918,7 @@ export default function MobileTaskList({
       remove: () => setKeywordInput(''),
     })
     return chips
-  }, [analysisOnly, analysisParserSelection, communities, communityOptions, inspectors, inspectorOptions, isModelThree, keywordInput, matchStatuses, priority, qmfFeedbackStates, reviewStage, smallCommunities, smallCommunityOptions, sort, status, watchCategories, watchCategoryOptions])
+  }, [analysisOnly, analysisParserSelection, communities, communityOptions, inspectors, inspectorOptions, isModelThree, keywordInput, matchStatuses, results, resultOptions, priority, qmfFeedbackStates, reviewStage, smallCommunities, smallCommunityOptions, sort, status, watchCategories, watchCategoryOptions])
 
   const filtersActive = activeFilterChips.length > 0
 
@@ -963,6 +976,7 @@ export default function MobileTaskList({
           communities,
           small_communities: smallCommunities,
           match_status: matchStatuses,
+          ...(!analysisOnly ? { results } : {}),
           inspectors,
           watch_categories: watchCategories,
           sort,
@@ -976,6 +990,7 @@ export default function MobileTaskList({
           communities,
           small_communities: smallCommunities,
           match_status: matchStatuses,
+          ...(!analysisOnly ? { results } : {}),
           inspectors,
           watch_categories: watchCategories,
           qmf_feedback_states: qmfFeedbackStates,
@@ -1140,6 +1155,26 @@ export default function MobileTaskList({
               />
             </label>}
             {!analysisOnly && <label className="mobile-task-filter-field">
+              <span className="mobile-task-filter-field__label">核查结果</span>
+              <Select
+                aria-label="筛选核查结果"
+                mode="multiple"
+                size={responsiveLayout.isWide ? 'middle' : 'large'}
+                value={results}
+                loading={optionsLoading}
+                maxTagCount={responsiveLayout.isWide ? 2 : 1}
+                showSearch
+                allowClear
+                optionFilterProp="label"
+                placeholder="全部核查结果"
+                options={resultOptions.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={setResults}
+              />
+            </label>}
+            {!analysisOnly && <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">匹配状态</span>
               <Select
                 mode="multiple"
@@ -1157,7 +1192,7 @@ export default function MobileTaskList({
 
           <div className="mobile-task-filter-controls">
             <span className="mobile-task-filter-controls__summary">
-              {filtersActive ? `已启用 ${activeFilterChips.length} 个筛选条件` : '可组合选择社区、小区、核查人和匹配状态'}
+              {filtersActive ? `已启用 ${activeFilterChips.length} 个筛选条件` : '可组合选择社区、小区、核查人、核查结果和匹配状态'}
             </span>
             <div className="mobile-task-filter-controls__actions">
               <Button type="link" onClick={() => setMoreOpen(value => !value)}>

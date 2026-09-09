@@ -1912,6 +1912,7 @@ export interface MobileTaskSearchParams {
   communities?: string[]
   small_communities?: string[]
   match_status?: string[]
+  results?: string[]
   inspectors?: string[]
   watch_categories?: number[]
   qmf_feedback_states?: QmfFeedbackState[]
@@ -1945,6 +1946,7 @@ function mobileTaskSearchPayload(params: MobileTaskSearchParams) {
     communities: params.communities || [],
     small_communities: params.small_communities || [],
     match_status: params.match_status || [],
+    results: params.results || [],
     inspectors: params.inspectors || [],
     watch_categories: params.watch_categories || [],
     qmf_feedback_states: params.qmf_feedback_states || [],
@@ -2152,11 +2154,13 @@ export async function getMobileTaskFilterOptions(
   options: { passive?: boolean } = {},
   smallCommunities: string[] = [],
   matchStatuses: string[] = [],
+  results: string[] = [],
 ): Promise<{
   source_ready: boolean
   communities: MobileTaskFilterOption[]
   small_communities: MobileTaskFilterOption[]
   match_statuses: MobileTaskFilterOption[]
+  results: MobileTaskFilterOption[]
   inspectors: MobileTaskFilterOption[]
   assignment: {
     enabled: boolean
@@ -2177,6 +2181,7 @@ export async function getMobileTaskFilterOptions(
   communities.forEach(value => params.append('community', value))
   smallCommunities.forEach(value => params.append('small_community', value))
   matchStatuses.forEach(value => params.append('match_status', value))
+  results.forEach(value => params.append('result', value))
   const { data } = await api.get(
     `/mobile-tasks/${encodeURIComponent(parserType)}/filter-options`,
     { ...(options.passive ? {} : activeRequest), params },

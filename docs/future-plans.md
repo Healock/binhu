@@ -11,7 +11,6 @@
 | 外部出勤和请假系统对接 | 已确定方向，未开始 | [外部出勤和请假系统](future-plans/external-attendance-leave.md) |
 | 流口标签与确认地址工作台 | PR/验收台账独立维护 | [流口标签与确认地址工作台](future-plans/flow-address-confirmation.md) |
 | 地址匹配智能化升级 | 规划中，Dev 验证前未开始 | [地址匹配智能化升级](future-plans/address-matching-intelligence.md) |
-| 生产接口拥堵诊断与抗压治理 | 已完成只读排查，整改未开始 | [生产接口拥堵诊断与抗压治理](future-plans/production-congestion-observability.md) |
 
 ## 目录规则
 
