@@ -7,7 +7,7 @@ import useSystemTime from '../hooks/useSystemTime'
 
 export default function MyTaskHistoryFloat() {
   const mobile = useMobileViewport()
-  const { formatDateTime } = useSystemTime()
+  const formatDateTime = useSystemTime()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [items, setItems] = useState<MyTaskHistoryItem[]>([])
@@ -22,3 +22,4 @@ export default function MyTaskHistoryFloat() {
     </Drawer>
   </>
 }
+
