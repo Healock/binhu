@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse, hashlib, json, re, secrets
 from pathlib import Path
 
-SENSITIVE = re.compile(r"姓名|身份证|手机号|密码|token|cookie|照片|附件|原始地址|核查补充|核查反馈|备注|source_text", re.I)
+SENSITIVE = re.compile(r"姓名|身份证|手机号|密码|token|cookie|照片|附件|原始地址|核查补充|核查反馈|备注|source_text|person[_-]?name|phone|identity[_-]?number", re.I)
 REQUIRED = {"record_type", "record_key", "community_key", "address_key", "value"}
 
 def snapshot_id() -> str:
