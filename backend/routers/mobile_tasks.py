@@ -2874,10 +2874,7 @@ async def select_mobile_tasks_for_assignment(
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
 
     where_sql, query_params = _task_where(context, parser_type, data)
-    assignment_source_condition = (
-        "projection.conflict=0 "
-        "AND TRIM(COALESCE(projection.community,''))<>''"
-    )
+    assignment_source_condition = "TRIM(COALESCE(projection.community,''))<>''"
     if local_data_source_enabled():
         assignment_source_condition = (
             f"{_active_source_count_sql(parser_type)} <= 1 "
