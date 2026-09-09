@@ -79,8 +79,11 @@ export function assertApiEnvironmentIdentity(
   expected: AppEnvironment,
 ): void {
   if (actual === expected) return
+  if (expected === 'production') {
+    throw new Error('正式入口环境身份校验失败，已阻止登录')
+  }
   throw new Error(
-    `当前入口连接到了非${expected === 'production' ? '正式' : expected === 'staging' ? '预发布' : expected === 'development' ? 'Dev' : '影子'}环境服务，已阻止登录`,
+    `当前入口连接到了非${expected === 'staging' ? '预发布' : expected === 'development' ? 'Dev' : '影子'}环境服务，已阻止登录`,
   )
 }
 
