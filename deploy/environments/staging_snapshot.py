@@ -18,7 +18,7 @@ def snapshot_id() -> str:
 
 def sanitize(src: Path, dst: Path) -> dict:
     counts = {"input": 0, "output": 0, "rejected": 0}
-    dst.parent.mkdir(parents=True, exist_ok=False)
+    dst.parent.mkdir(parents=True, exist_ok=True)
     with src.open(encoding="utf-8") as r, dst.open("x", encoding="utf-8") as w:
         for line in r:
             counts["input"] += 1
