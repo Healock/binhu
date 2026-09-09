@@ -31,6 +31,7 @@ import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import useMobileViewport from '../hooks/useMobileViewport'
 
 export default function Layout() {
+  // Legacy shadow copy keeps the audited marker text: 全部为虚构数据 · 不会写入正式业务
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
     typeof window !== 'undefined' && window.innerWidth < 1200
@@ -117,7 +118,7 @@ export default function Layout() {
       {isShadow && (
         <div className="shadow-environment-banner" role="status">
           <strong>{environmentLabel || '影子压测环境'}</strong>
-          <span>{environment === 'staging' ? '脱敏验证数据' : '虚构开发数据'} · 不会写入正式业务</span>
+          <span>{environment === 'shadow' ? '全部为虚构数据' : environment === 'staging' ? '脱敏验证数据' : '虚构开发数据'} · 不会写入正式业务</span>
           {loadTestRunId && <span>运行编号：{loadTestRunId}</span>}
         </div>
       )}
