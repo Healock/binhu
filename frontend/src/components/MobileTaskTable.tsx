@@ -128,6 +128,7 @@ export default function MobileTaskTable({
   const claimPromptKeysRef = useRef<Set<string>>(new Set())
   const registrationSearchSequenceRef = useRef<Record<string, number>>({})
   const registrationResultDraftRef = useRef<Record<string, string>>({})
+  const composingRef = useRef<Record<string, boolean>>({})
   const autosaveTimersRef = useRef<Record<string, number>>({})
   const autosaveSequenceRef = useRef<Record<string, number>>({})
   const autosaveRetryRef = useRef<Record<string, {
@@ -540,13 +541,14 @@ export default function MobileTaskTable({
     value: string,
   ) => {
     const key = `${task.task_key}:${field}`
+    if (composingRef.current[task.task_key]) return
     const previous = autosaveTimersRef.current[key]
     if (previous) window.clearTimeout(previous)
     autosaveTimersRef.current[key] = window.setTimeout(() => {
       delete autosaveTimersRef.current[key]
       const currentItem = editorItemsRef.current[task.task_key] || item
       void saveField(task, currentItem, field, value, true)
-    }, 700)
+    }, 1500)
   }
 
   const cancelScheduledFieldSave = (taskKey: string, field: string) => {
@@ -855,6 +857,8 @@ export default function MobileTaskTable({
                           aria-label="待建档现住址" placeholder="请输入现住址（房屋档案尚未建立）"
                           disabled={selectionMode || savingRowKey === task.task_key}
                           value={values[field] || ''}
+                          onCompositionStart={() => { composingRef.current[task.task_key] = true }}
+                          onCompositionEnd={() => { composingRef.current[task.task_key] = false; scheduleFieldSave(task, item, field, values[field] || '') }}
                           onChange={event => {
                             const nextValue = event.target.value
                             setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: nextValue } }))
@@ -935,6 +939,8 @@ export default function MobileTaskTable({
                       disabled={selectionMode || savingRowKey === task.task_key}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
+                      onCompositionStart={() => { composingRef.current[task.task_key] = true }}
+                      onCompositionEnd={() => { composingRef.current[task.task_key] = false; scheduleFieldSave(task, item, field, values[field] || '') }}
                       onChange={event => {
                         const nextValue = event.target.value
                         setEditorValues(current => ({
