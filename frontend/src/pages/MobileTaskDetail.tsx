@@ -1349,6 +1349,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     {registrationClosureEnabled && field === '现住址'
                       && data.workflow.result_field
                       && (formValues[data.workflow.result_field] || '').trim() === '待登记' ? (
+                      <>
                       <Select
                         showSearch
                         allowClear
@@ -1384,6 +1385,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         {registrationMatchStatus === 'none' && '未找到正式房屋，可填写待建档地址'}
                         {registrationMatchStatus === 'error' && '地址匹配暂时失败，请重试或填写待建档地址'}
                       </span>
+                      </>
                     ) : metadata.type === 'select' || field === '核查人' ? (
                       <Select
                         allowClear
