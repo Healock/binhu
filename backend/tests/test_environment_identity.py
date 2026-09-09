@@ -6,7 +6,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import Settings, settings
-from services.environment_identity import is_shadow_username, production_username_allowed
+from services.environment_identity import is_shadow_username, production_username_allowed, username_allowed_in_environment
 
 
 class EnvironmentIdentityTests(unittest.TestCase):
@@ -19,12 +19,13 @@ class EnvironmentIdentityTests(unittest.TestCase):
             LOAD_TEST_RUN_ID="LT-20260902-01",
         )
         self.assertEqual(configured.APP_ENVIRONMENT, "shadow")
-        with self.assertRaises(ValueError):
-            Settings(
-                MYSQL_PASSWORD="test-password",
-                ENCRYPTION_KEY="test-encryption-key",
-                APP_ENVIRONMENT="staging",
-            )
+        staging = Settings(
+            MYSQL_PASSWORD="test-password",
+            ENCRYPTION_KEY="test-encryption-key",
+            APP_ENVIRONMENT="staging",
+            SESSION_COOKIE_NAME="binhu_staging_session",
+        )
+        self.assertEqual(staging.APP_ENVIRONMENT, "staging")
 
     def test_shadow_environment_requires_its_cookie(self):
         with self.assertRaises(ValueError):
@@ -53,6 +54,16 @@ class EnvironmentIdentityTests(unittest.TestCase):
             self.assertTrue(production_username_allowed("observer"))
         with patch.object(settings, "APP_ENVIRONMENT", "shadow"):
             self.assertTrue(production_username_allowed("observer@shadow"))
+
+    def test_accounts_are_bound_to_environment(self):
+        with patch.object(settings, "APP_ENVIRONMENT", "staging"):
+            self.assertTrue(production_username_allowed("observer@staging"))
+            self.assertFalse(production_username_allowed("observer@dev"))
+            self.assertFalse(production_username_allowed("observer"))
+        with patch.object(settings, "APP_ENVIRONMENT", "development"):
+            self.assertTrue(production_username_allowed("observer@dev"))
+            self.assertFalse(production_username_allowed("observer@staging"))
+        self.assertFalse(username_allowed_in_environment("observer@staging", "production"))
 
 
 if __name__ == "__main__":

@@ -43,6 +43,8 @@ function installSessionStorage() {
 test('shadow suffix selects the shadow environment without fuzzy matching', () => {
   assert.equal(environmentForUsername('observer@shadow'), 'shadow')
   assert.equal(environmentForUsername(' Observer@Shadow '), 'shadow')
+  assert.equal(environmentForUsername('observer@staging'), 'staging')
+  assert.equal(environmentForUsername('observer@dev'), 'development')
   assert.equal(environmentForUsername('shadow-observer'), 'production')
 })
 
@@ -54,6 +56,17 @@ test('shadow environment stays in session storage and resolves only the fixed pa
   assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/shadow-api/auth/login')
   resetApiEnvironment()
   assert.equal(getApiEnvironment(), 'production')
+
+  setApiEnvironment('staging')
+  assert.equal(getApiEnvironment(), 'staging')
+  assert.equal(getApiBaseUrl(), '/staging/api')
+  assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/staging/api/auth/login')
+
+  setApiEnvironment('development')
+  assert.equal(getApiEnvironment(), 'development')
+  assert.equal(getApiBaseUrl(), '/dev/api')
+  assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/dev/api/auth/login')
+  resetApiEnvironment()
   assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/api/auth/login')
 })
 
