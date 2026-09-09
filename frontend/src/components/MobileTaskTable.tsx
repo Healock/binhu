@@ -3,7 +3,7 @@ import {
   CopyOutlined,
   ExclamationCircleOutlined,
 } from '@ant-design/icons'
-import { Button, Input, Modal, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
+import { AutoComplete, Button, Input, Modal, Select, Table, Tag, Tooltip, message, type TableColumnsType } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
 import {
   getMobileTaskInlineEditors,
@@ -849,41 +849,37 @@ export default function MobileTaskTable({
                   )}
                   {registrationAddressField ? (
                     <div className="grid gap-1">
-                      <Button type="link" size="small" disabled={selectionMode || savingRowKey === task.task_key} onClick={() => setPendingAddressMode(current => ({ ...current, [task.task_key]: !current[task.task_key] }))}>
-                        {pendingAddressMode[task.task_key] ? '选择已有房屋' : '填写待建档地址'}
-                      </Button>
-                      {pendingAddressMode[task.task_key] ? (
-                        <Input.TextArea size="small" autoSize={{ minRows: 1, maxRows: 3 }}
-                          aria-label="待建档现住址" placeholder="请输入现住址（房屋档案尚未建立）"
-                          disabled={selectionMode || savingRowKey === task.task_key}
-                          value={values[field] || ''}
-                          onCompositionStart={() => { composingRef.current[task.task_key] = true }}
-                          onCompositionEnd={() => { composingRef.current[task.task_key] = false; scheduleFieldSave(task, item, field, values[field] || '') }}
-                          onChange={event => {
-                            const nextValue = event.target.value
-                            setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: nextValue } }))
-                            scheduleFieldSave(task, item, field, nextValue)
-                          }}
-                          onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, values[field] || '') }}
-                        />
-                      ) : <Select
-                        showSearch
-                        filterOption={false}
+                      <AutoComplete
+                        className="w-full"
                         size="small"
-                        placeholder="搜索并选择辖区档案中的唯一房屋"
+                        value={values[field] || ''}
+                        placeholder="输入地址，搜索房屋档案或直接作为待建档地址"
                         disabled={selectionMode || savingRowKey === task.task_key}
-                        loading={registrationPropertyState?.loading}
-                        value={registrationPropertyState?.selectedId ?? linkedRegistrationProperty?.id}
-                        options={availableRegistrationProperties.map(property => ({
-                          value: property.id,
-                          label: registrationPropertyLabel(property),
-                        }))}
+                        options={[
+                          ...availableRegistrationProperties.map(property => ({
+                            value: `property:${property.id}`,
+                            label: <span><Tag color="blue">房屋档案</Tag>{registrationPropertyLabel(property)}</span>,
+                          })),
+                          ...((values[field] || '').trim() ? [{
+                            value: `pending:${values[field]}`,
+                            label: <span><Tag>待建档</Tag>使用当前输入作为待建档地址</span>,
+                          }] : []),
+                        ]}
                         onSearch={keyword => void searchRegistrationProperty(task, keyword)}
-                        onChange={value => {
-                          const property = availableRegistrationProperties.find(item => item.id === value)
-                          if (property) void saveRegistrationProperty(task, item, property)
+                        onChange={nextValue => {
+                          setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
+                          setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: nextValue } }))
                         }}
-                      />}
+                        onSelect={selected => {
+                          if (selected.startsWith('property:')) {
+                            const property = availableRegistrationProperties.find(item => item.id === Number(selected.slice(9)))
+                            if (property) void saveRegistrationProperty(task, item, property)
+                          } else {
+                            setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
+                          }
+                        }}
+                        onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, values[field] || '') }}
+                      />
                       <span className="mobile-task-table-inline-hint" aria-live="polite">
                         {pendingAddressMode[task.task_key] ? '待建立房屋档案，建档后补挂正式房屋。' : registrationPropertyState?.matchStatus === 'matching' ? '正在识别地址…' : registrationPropertyState?.matchStatus === 'unique' ? '根据核查补充信息找到唯一候选，请确认' : registrationPropertyState?.matchStatus === 'multiple' ? '找到多个候选，请选择' : registrationPropertyState?.matchStatus === 'none' ? '未找到正式房屋，可填写待建档地址' : registrationPropertyState?.matchStatus === 'error' ? '地址匹配暂时失败，请重试或填写待建档地址' : '选定房屋后，待登记结果和现住址会一次保存。'}
                       </span>
