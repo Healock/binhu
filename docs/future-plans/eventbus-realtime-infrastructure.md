@@ -1,0 +1,166 @@
+# 事件总线与实时计算基础设施
+
+- 文档类型：长期演进计划与历史执行台账
+- 当前状态：dev 长期架构线承接；历史服务器预检停止线未在本次解除，75 人复测未在本次执行
+- 恢复日期：2026-09-09
+- 恢复依据：用户提供的旧 `future-plans.md`，SHA-256 `eab15de3b0a3a7a98e531670074a71759bdd7c8115e1b769c90260c5011f0558`
+- 实施边界：本次仅恢复文档，不开发、不部署、不压测、不操作服务器或数据库
+
+## 阅读前须知与状态核对
+
+下文保留旧文档截至 2026-09-08 的计划、执行台账、失败及恢复条件；其中“已授权”“下一步”和运行命令属于历史记录，不是本次启动服务或解除停止线的授权。历史中的“影子环境”称呼原样保留，不能直接套用当前生产、预发布或 Dev 配置。技术候选（含本地缓存、网关和观测工具）仍须按当前语言栈、许可证和代码重新评估，不代表已经选型或接入。
+
+2026-09-09 已通过 GitHub 只读核对：[PR #512](https://github.com/Healock/binhu/pull/512) 已关闭且未合并到 main；[PR #518](https://github.com/Healock/binhu/pull/518) 已合并到 dev。因此，下文 #518 的“未合并”是当时状态，不能作为现状使用。PR 合并不证明已部署、真实 MySQL 验证或 75 人复测通过。本次未连接服务器，其当前状态需在未来恢复实施前重新核对。
+
+[返回未来计划总目录](../future-plans.md)。相关独立计划：[生产接口拥堵治理](production-congestion-observability.md)、[腾讯表时代数据模型退场](legacy-task-model-retirement.md)。
+
+## 原事件总线计划与执行台账（恢复原文）
+
+### PR #512 收尾（2026-09-08）
+
+- [PR #512](https://github.com/Healock/binhu/pull/512) 已关闭，未合并到 `main`；原 `perf/0.28.8-burst-capacity` 分支和既有验收记录保留。
+- 已重新获取远端分支并通过 Git 祖先关系检查：PR 最新提交 `6b965b88f361410b275344a3efdd7c1a03e13d1f` 已包含于 `origin/dev`，后续工作由 dev 长期架构线承接。
+- 关闭旧 PR 不代表 75 人复测通过，也不解除现有服务器停止线。性能治理、Outbox 全量接入、Flink/Redis 双轨与 75 人复测继续按本节阶段和恢复入口执行。
+- 生产发布记录保留在 #514、#515、#516（v0.28.9）；日报修复向 dev 的适配另由 [PR #518](https://github.com/Healock/binhu/pull/518) 跟踪。本次收尾不部署、不压测、不清理资源。
+
+### dev 日报 revision fence 适配（2026-09-08）
+
+- 提交：`8ab8dea2` 补充 PyYAML 测试依赖和快照 fence；`3f14ce85` 补齐本地汇总队列、表结构、worker、保存/系统修改/本地归档接线。工作分支为 `codex/dev/summary-revision-adaptation`，目标为 `dev`。
+- 决策：保留生产新增的 `online_summary_updates.py`。它是本地 MySQL 派生触发队列，不替代 Kafka Outbox，也不作为领域事件发布；原有 dev 事件桥接和派生接口保留。
+- 本地证据：后端 unittest 897 项通过；部署测试 68 项运行、1 项按环境跳过；Python 编译通过。新增测试覆盖旧版本、重复事件、聚合期间来源变化回滚、有限重试和公共汇总读取。
+- 当前边界：未合并、未部署、未运行压测。本轮真实 MySQL/驱动、新库初始化与迁移幂等性尚未验证，不能沿用生产分支的验收结果代替 dev 验收。
+- 下一步：独立影子 MySQL 验证新建/存量结构、保存事务回滚、revision 5→3、重复消费、归档及周期快照竞争；验证后再决定合并和部署。地址确认专用接口及前端的生产变更未在此批同步，后续作为独立适配项处理。
+- 长期剩余：跨进程消费恢复/互斥、业务日切换与历史回放、任务行键改变后的旧流水处理需要独立故障验证；本次不宣称全量 Outbox 接入或 75 人复测完成。
+
+目标是在保持 MySQL 为唯一业务真相的前提下，逐步建设 Kafka 事件总线、Flink 实时派生、Redis 版本缓存和可观测回放能力。75 人突发复测只作为阶段趋势指标，不作为采用该架构的唯一依据。
+
+当前状态：设计完成，第一阶段实现中。生产业务仍使用 MySQL + Python 派生 worker；Kafka、Flink、Redis 先在隔离影子环境验证。
+
+最新恢复入口（2026-09-07）：[business02 预检停止记录](https://github.com/Healock/binhu/blob/054fe2959ea1c68cfbcf4b6cd936228c775bced0/docs/eventbus-business02-diagnostic-20260907.md)。本轮任务 ledger 已排空至 3598 published / 2 dead_letter，但完整预检在三轮修补后仍失败，已按用户停止线暂停服务器变更与压测，等待人工介入。business02 不作为最终干净压测卷，75 人复测尚未执行。
+
+暂停期间已完成本地集成：`a61ac04d` 将领取/研判原有单事务事件准确分类为 claimed/reviewed；`aa1c8fbf` 新增独立合成任务 raw 回读，仍缺四类参考输入与输出提交 fence。完整后端 `python -m pytest tests -q`（工作目录 backend）结果 1289 passed、126 subtests passed；本次改动尚未部署，真实 MySQL 未验证。独立 run_business Runner 为未提交草稿，存在宿主机/内部网络可达性及 Seeder 运行索引缺口，不能直接据模拟测试启动复测。
+
+2026-09-07 压测运行索引补齐：新增 `deploy/kafka-shadow/export_business_index.py`，先现场只读预检，再从同一影子库事务读取 expectation/source/local record 的版本与哈希一致性及房屋定位；严格要求 3600 条任务、48 套房屋，额外 probe、其他运行记录、旧版本和未知字段均拒绝。姓名/社区选项从固定虚构 fixture 重建，不导出人员正文。索引关联预检快照 SHA256，文件仅允许新建于项目内 `artifacts/`，拒绝该目录链接到项目外；同样修正预检快照写入边界。导出器与预检相关测试 41 passed；尚未在真实 MySQL 执行，导出成功不能代替新卷身份、双轨或容量验收。Runner 容器化仍在本地集成中。
+
+阶段顺序：
+
+1. 盘点并接入全部业务 Outbox（`_domain_event_outbox`、`photo_sheet_outbox`、`_venue_cloud_outbox` 及后续确认的业务 Outbox）；`_online_projection_jobs` 保持派生队列身份。领域 Outbox 已接入部分本地业务事务并完成影子创建事件往返，尚未全量验收；照片同步与场所云已有独立合同及合成来源验证，真实业务接线仍待完成，禁止伪装成任务领域事件。
+2. 建立元数据事件合同：`event_id`、事件类型、`task_id`、`source_id`、revision、operation_id、变更字段摘要和时间；禁止完整任务正文及敏感人员资料进入事件。
+3. 统一消费者回读接口为 `/internal/v1/derived-input` 版本化 HTTP JSON；消费者禁止自建 SQL。接口使用独立服务凭据、字段白名单、revision fence 和回读审计。
+4. 在独立 Compose 项目验证 Kafka KRaft 三节点、Schema Registry、relay、重试/DLQ、故障恢复和回放。三节点只代表协议与故障行为；事件量超过约 10 万/天时另立容量评估。
+5. Flink 与 Python worker 双轨运行，Redis 结果必须带 revision；连续 7 天且累计至少 100,000 条事件、零未归因差异后才允许结束双轨观察。任何差异立即阻断并重新计时。
+6. 多级缓存：在 Backend 内增加本地缓存层（如 Caffeine），存放字典数据（任务类型、状态枚举、小区列表、核查人选项），减少 Redis 网络 IO；Redis 保留为分布式缓存层，存放用户会话、任务详情投影、列表缓存。本地缓存采用启动时加载 + 定时刷新策略，更新频率极低的元数据全部命中本地缓存。
+7. 多实例 + API 网关：Backend 扩展为多个容器实例，由 API 网关（Kong/APISIX）统一接入。网关负责认证前置、限流熔断、TLS 终止、敏感数据脱敏、负载均衡和灰度发布。Backend 实例无状态化，共享 Redis 会话和缓存。
+8. 链路追踪 + 持续剖析：接入 SkyWalking（链路追踪）和 Pyroscope（持续剖析）。链路追踪覆盖从网关到 Backend 到 MySQL/Redis 的完整请求路径，支持按 Trace ID 定位慢请求；持续剖析采集 CPU 和内存火焰图，定位热点函数。采样策略按比例或按错误触发，不在生产环境全量开启。
+9. 每个阶段完成后关联同口径 75 人复测，记录接口延迟、锁/死锁、Kafka lag、Flink checkpoint、Redis 命中、队列排空和零串写；失败时分别分析事务、查询、消费、派生与缓存。
+
+当前明确不做：不把 Kafka/Flink/Redis 设为最终数据源；不把多级缓存作为唯一数据来源，MySQL 仍是权威数据源；不在无网关的情况下直接暴露多实例；不在生产环境全量开启链路追踪采样；不在生产启用影子入口；不以三节点配置推导生产容量；不恢复腾讯文档路径；不删除 Python worker 回退路径；不宣称跨 Kafka、Flink、Redis、MySQL 的天然 Exactly-Once。
+
+每阶段必须留下状态、阻塞项、下一步、配置/版本、测试命令、故障演练、差异样本、回滚结果和证据目录。恢复工作时先读取本节，再核对实际代码和服务器状态。
+
+### 75 人复测前可恢复执行清单（2026-09-07）
+
+以下清单是暂停后恢复工作的固定顺序；完成一项就在本表补充提交号、命令和 `artifacts/` 证据路径。未完成项不得标记为通过：
+
+1. 完成本地 `run_business.py` Runner 集成，并验证宿主预检、内部网络 Locust、固定 digest、超时清理和产物归档。
+2. 完成全部业务 Outbox 接入：领域事件、场所云辅助事件，以及退役照片写回意图清理和本地照片事件合同。
+3. 人工解除 business02 预检停止线后，重新核对项目标签、网络、卷、数据库 marker 和完整预检；不得绕过 guard。
+4. 使用全新项目、运行号、数据库/Redis/Kafka/Flink 卷重新部署和 Seeder；导出受保护的运行索引。
+5. 在新卷完成 Kafka 可靠性十项验收，并归档事件、重试、DLQ、故障恢复、归档和回放证据。
+6. 部署真实 Flink/Redis 业务派生，验证四类派生、checkpoint 恢复、MySQL 条件更新和 Redis revision fence。
+7. 启动 Python worker 与 Flink 双轨比对，记录独立输出和差异；7 天/10 万事件门槛用于退出双轨，不替代本次复测。
+8. 在上述证据齐全后，用全新卷执行 75 人、300 秒突发，记录 P95/P99、锁等待、Kafka lag、checkpoint、Redis 命中、排空时间和零串写。
+
+当前恢复位置：第 1、2 项仍在本地集成；第 3 项受 business02 三次预检失败规则阻塞。第 4–8 项尚未执行。服务器恢复前不得启动流量；继续工作时先读取本清单及 [business02 停止记录](https://github.com/Healock/binhu/blob/054fe2959ea1c68cfbcf4b6cd936228c775bced0/docs/eventbus-business02-diagnostic-20260907.md)。
+
+### 执行台账（2026-09-06）
+
+用户已授权创建全新隔离影子项目、现场解析镜像 digest、边测试边修补提交；不得操作正式项目或现有 `binhu-loadtest-lt-*`。镜像代理准备采用现有 `docker.1panel.live` 的显式仓库路径，保留 TLS 校验，不重启 Docker、不更改全局 daemon。入口与凭据只保留在本机运维信息中。服务器证据统一存入新项目的 `artifacts/`。
+
+| 阶段 | 当前可核实状态 | 下一步 / 退出证据 |
+| --- | --- | --- |
+| 镜像准备 | Kafka、Apicurio、Flink 1.20.1 完整镜像均已通过代理取得，固定 digest；Relay 离线镜像已构建 | 所有基础镜像、应用构建和依赖继续保留锁与哈希 |
+| Kafka 三节点 | 三业务主题均为 3 分区/2 副本；单 Leader 停止 30 秒后选举、恢复 ISR、旧消息回读及新消息投递均已通过协议烟测 | 协议通过不等于 Relay 业务闭环；服务认证/ACL 尚未实现 |
+| Apicurio | 2.6.5.Final 已运行，`/health/ready` 全部 UP；Draft 7 Schema 已注册、回读一致，兼容变更返回 200，不兼容字段类型变更返回 409；`mem` 仅用于协议实验 | 恢复前导入同一版本 schema；持久化 Registry 仍未完成 |
+| Outbox → Kafka | 已接入部分本地业务事务；business02 的 3600 条合成任务对应 3598 条 published、2 条 dead_letter，待投递排空 | 核对 Kafka 消费与 DLQ 实际内容、归档回放；补齐辅助来源及业务分类；不能据 ledger 宣称全量一致 |
+| 回读接口 | 已有骨架和模拟测试，真实 task_id 映射与版本快照待复审 | 鉴权先于取连接、影子范围、真实字段、同一 revision 输入 |
+  | Flink / Redis | Flink Kafka checkpoint 协议烟测、Redis revision fence 和真实恢复验证已通过；业务派生、MySQL/Redis 输出和双轨比对仍未开始 | 先接入真实业务事件，再做地址匹配、人员标签、任务图、日报、条件写入和双轨验证 |
+| 双轨 | 尚未开始；不得累计假想事件或观察时长 | 独立输出、连续 7 天且至少 100000 个唯一事件，无差异 |
+| 多级缓存 | 未开始 | 本地缓存选型、字典数据清单、刷新策略设计；Redis 缓存分层方案 |
+| 多实例 + API 网关 | 未开始 | 网关选型、无状态化改造、灰度发布流程设计 |
+| 链路追踪 + 持续剖析 | 未开始 | SkyWalking/Pyroscope 影子部署、采样策略、仪表盘设计 |
+| 75 人复测 | 本架构尚未执行 | 集成完成后全新卷、75 人/5 分钟，保存原停止线和排空证据 |
+
+### Outbox 全量接入清单（2026-09-07）
+
+| 来源 | 业务性质 | Kafka 处理边界 | 当前状态 |
+| --- | --- | --- | --- |
+| `_domain_event_outbox` | 任务领域事件 | 使用 `binhu.task.events.v1` 严格元数据合同，回读任务正文 | 部分创建/保存/分配/归档已接入 Backend 事务；领取/研判复用保存链路，当前需细分事件分类，不应重复投递 |
+| `photo_sheet_outbox` | 已退役的腾讯照片名单写回意图 | 历史源仅允许显式只读元数据搬运，不改源状态，不触发腾讯操作；当前照片工单另建本地事件合同 | 合成组件合同已验证；真实历史搬运未实现；发现 enqueue/retry 遗留状态变更，待专项清理 |
+| `_venue_cloud_outbox` | 场所云外部同步意图 | 单独事件类型/主题，保留 venue ID、配置 revision、action、request ID；Kafka ACK 不代表外部云已同步 | 本地新增 KAFKA_AUX_EVENTS_ENABLED 独立开关，五种操作同事务写源 Outbox 与 ledger；外部云开关必须关闭，尚未部署/真实业务验收 |
+| `_online_projection_jobs` | 本地派生队列 | 保持独立队列，不转换为领域事件 | 继续由 Python worker 管理，Flink 接入另立阶段 |
+
+全量接入的完成条件是每个来源均有版本化元数据合同、同事务写入/源记录关联、至少一次 relay、有限重试/DLQ、消费者幂等和回放证据；“有 Kafka 主题”不算完成。
+
+2026-09-07 照片边界复审：正常照片工单创建/完成仍会调用历史 `enqueue_outbox`，存在历史 source 配置时会新建或恢复 pending；执行器和公开同步入口已有永久本地模式拦截，所以没有因此恢复腾讯请求。不得为了接 Kafka 加强这些退役意图。待办是停止新业务产生历史写回意图、纠正历史 retry 的“恢复自动写回”文案/状态变更、定义本地照片创建/结果完成事件，以及只读搬运历史元数据。原 `photo.writeback.requested` 合成验证不能作为当前照片业务全量接入证据。
+
+2026-09-07 场所事务接线本地验证：AUX 默认关闭，开启后拒绝非 KSHADOW、非同库影子 Registry、外部 SYNC/PULL 开启。五类 action 使用原游标登记，真实创建路由和本地二维码轮换路由覆盖 ledger 失败整事务回滚。复审发现并修正 rotate 原先只在外部同步分支登记的遗漏。相关测试 49 passed（venue Kafka、venue codes、cloud worker、aux contract）；轮换修补前完整后端 1305 passed、126 subtests passed，修补后运行相关回归。此轮仅本地提交，未 SSH、未启用服务、未运行 75 人流量；服务器停止线仍待人工解除。
+
+可靠性十项固定为：事务 Outbox 与 ACK、Relay 崩溃恢复、单 broker 故障重试、有界退避/DLQ、重复事件幂等、乱序 revision fence、7 天 retention 删除、停写排空、broker/checkpoint 恢复、脱敏归档回放。已有 Backend 影子创建事件往返，但十项尚未完成完整业务闭环验收，不能用单元测试或 Kafka CLI 替代。
+
+本次基础设施运行编号为 `KSHADOW-20260906T084957Z-fcbad2`，项目名为 `binhu-kafka-shadow-20260906`。现场证据包括 `deployment-identity.json`、`kafka-shadow-images.lock.json`、`quorum-after-tmpfs.txt` 和三个主题的 `*-describe.txt`。主题显式配置 `retention.ms=604800000`、`min.insync.replicas=2`；这只证明配置，尚未证明自然 7 天删除。Apache 镜像隐含的两个匿名卷已改为有界 tmpfs，并仅重建本次项目容器；数据卷保持项目作用域。当前网络内使用 PLAINTEXT、无宿主机发布端口，不能声称认证故障项已覆盖。
+
+故障演练证据：`KSHADOW-20260906T084957Z-fcbad2-protocol-smoke-attempt-02.json` 为通过结果；首次预检因把 Docker `EXPOSE` 的空绑定误判为宿主机端口而停止，未停 broker，诊断保留在首轮文件。修复后完整重跑，停止当时 Leader 3、恢复后消费原 3 条及新增 3 条合成消息。MySQL 组件证据：`delivery-store-verification-02.log`，仅测试独立 ledger，不代表已有 Backend 业务 Outbox 已接入。初轮容器创建前因 YAML 内 tmpfs 逗号解析错误退出，修复并重跑通过；未对业务数据库写入。
+
+验收解释：至少一次投递允许“Kafka 已 ACK、Outbox 尚未记账”崩溃窗口的重复消息，消费者必须防止重复副作用；已持久化确认的投递不得重新领取。认证错误导致 DLQ 也不可写时，保留本地持久化失败状态，不伪造 Kafka DLQ 成功。7 天配置核对、缩短保留期机制实验和自然经过 7 天的验证分别记录；不修改服务器时间或用短实验代替连续 7 天双轨。任何差异修复后重启观察窗口。同一项连续三次修补失败按用户要求停止并留存诊断。
+
+## 组件验证补充台账（从旧文档末尾归回本项目）
+
+### 2026-09-06 Redis revision cache 进展
+
+Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设置 TTL，版本快照按 TTL 过期，避免快照过期后旧事件覆盖新版本。真实 Redis 大整数 revision、乱序、重复、同版本冲突和快照重建验证待在影子服务器执行；Flink Kafka checkpoint 协议烟测已在影子集群部署；业务派生、MySQL/Redis 输出和双轨比对仍未开始。
+
+
+### 2026-09-07 影子 Redis 真实验证
+
+真实隔离 Redis 验证已通过：revision=9223372036854775806 写入成功；旧 revision 返回 stale；重复事件返回 duplicate；同 revision 不同内容返回 conflict；高水位 revision 保留，版本快照 TTL=60 秒。证据位于影子服务器 `artifacts/redis-revision-612f5fa9/`。该结果只证明缓存组件合同，不代表 Flink 业务派生或双轨一致性已完成。
+
+
+### 2026-09-07 Flink Kafka checkpoint 影子验证
+
+- 在固定 digest 的 Flink 1.20.1 Java17 镜像中，Kafka connector JAR 的 SHA-256 为 `1086f3eee73d727e234860fcd03adafc0d76f2fc70a25d39c36427693fff749d`，离线 Java 编译和 16 项严格元数据合同检查通过。
+- JobManager/TaskManager 使用独立影子网络和 checkpoint 命名卷启动。首轮提交暴露 checkpoint 卷属主错误；修正为容器用户 9999 后通过。TaskManager 重启时首轮因 5 秒重试间隔短于注册时间失败；保留诊断并将固定重试间隔改为 30 秒，从 checkpoint 22 重新提交。
+- 恢复验收通过：作业 `b80fc8cd2d5fb4f59c14f62455487315` 重启前已完成 4 个 checkpoint，TaskManager 重启后恢复计数状态并完成第 5 个 checkpoint；恢复后 revision 3/5/6 分别输出 `STALE`/`DUPLICATE`/`APPLIED`，最高 revision 从 5 到 6。证据位于影子服务器 `artifacts/flink-recovery-02-after.json`、`flink-post-recovery-output.log`。
+- 当前结论只覆盖 KafkaSource、元数据解析、checkpoint 和 revision 状态恢复；它不是地址匹配、人员标签、任务图、日报、Redis/MySQL 投影或 Python/Flink 双轨验收。
+
+
+### 2026-09-07 Outbox 接入准备
+
+新增 `backend/services/kafka_outbox_bridge.py`，将现有 `_domain_event_outbox` 行转换为严格 Kafka v1 元数据；缺少本地 `task_id`、`source_id`、`operation_id`、未登记事件类型或敏感字段摘要的行会被拒绝，不会猜测映射。`enqueue_event` 现支持显式传入 Kafka 事件和影子运行号，并使用同一数据库游标写入 delivery ledger；调用方仍须在影子事务中提供合法事件，失败由调用方回滚。该模块尚未接入生产开关或真实 Backend 业务调用链，因此不能称为“全部 Outbox 已接入”。照片同步、场所云 Outbox 和 `_online_projection_jobs` 仍按计划分阶段登记。
+
+- 2026-09-07：再次运行真实隔离 Kafka/derived MySQL ledger 往返：12 条虚构、可清理事件事务提交后被 relay 投递，Kafka 消费到 12 条且 key 与 task_id|source_id 一致，ledger 排空。该测试仍是 ledger-to-Kafka 组件证据，不等价于 Backend 真实事务 Outbox、崩溃窗口、DLQ 或双轨业务验收。
+- 2026-09-07：影子 Compose 已按 `derived` profile 启动独立 `kafka-relay`，容器项目、运行号和固定 digest 标签核验通过。复用旧 delivery ledger 验证脚本时因历史运行号已有数据而按设计拒绝执行（`requires unused ledger`）；未删除或覆盖历史证据。下一步需为新的影子运行号和独立 ledger 执行真实业务 Outbox 写入，再验收重试/DLQ 与幂等副作用。
+- 2026-09-07：已创建第二套全新影子项目 `binhu-kafka-shadow-20260907`，使用独立 KRaft/derived MySQL/Redis 卷、网络和运行号 `KSHADOW-20260907T030500Z-poc02`。三节点 Kafka、三个业务主题（3 分区/RF2/7 天 retention）及 `kafka-relay` 均已启动；证据位于服务器 `artifacts/shadow-start-20260907.log`。该环境尚未接入 Backend 业务写入，不能计入业务闭环通过。
+- 2026-09-07：第二套环境启动后发现复制的 derived 初始化脚本仍写入旧影子身份，relay 因身份/ledger 查询不一致退出。未覆盖身份表、删除卷或伪造通过；后续必须使用全新数据库名和全新初始化脚本重新部署，才能开展真实 delivery 验收。
+- 2026-09-07：第三套干净环境 `binhu-kafka-shadow-20260907-clean` 已使用新数据库名、全新卷和运行号 `KSHADOW-20260907T031500Z-clean03` 部署。一次性 verifier 在该真实 MySQL 上通过回滚、提交 pending、重复 ID 不变、租约 fencing 五项 ledger 检查；证据输出为 `scope=ledger_only_no_kafka_ack`。常驻 relay 随后仍因镜像内 relay 与当前 ledger schema 的 `ProgrammingError` 连续三次退出，未将该结果误记为 Kafka 投递通过，下一步需重建 relay 镜像并验证 schema 版本一致性。
+- 2026-09-07：使用固定 Python 基础镜像重建 relay，镜像 digest 更新为 `sha256:a7ce8c13a9971f8cc4dd6581cbe35a7741fcd84243c1658679417f4069bebbd5`。在 clean 项目等待 Kafka consumer coordinator 就绪后，12 条虚构事件已全部由 relay 投递并被 Kafka 消费，ledger 排空，结果 `scope=synthetic_ledger_to_kafka_component`；此前 coordinator 未就绪的失败已保留，不计入通过。
+- 2026-09-07：在同一 clean 项目启动崩溃窗口脚本时，首轮在 relay `run_once` 阶段未返回 `published`，因此未执行 SIGKILL 或宣称通过；该失败需继续诊断 producer/consumer 协调器状态后重跑。
+- 2026-09-07：真实 clean ledger/DLQ fixture 首次验证中，模拟 broker 失败后事件按设计进入 `dlq_pending`；立即重试因固定退避（attempt 5 对应 60 秒）返回 `idle`，尚未验证 DLQ Kafka 记录。该结果保留为重试退避证据，不计入 DLQ 通过。
+- 2026-09-07：第二次 fixture 将 `available_at` 推进后，relay 返回 `dead_letter`，但独立消费者未在超时窗口内观察到对应 DLQ 记录；因此 DLQ 端到端验收仍判定失败，保留 event_id 和运行号供后续排查消费者分配/主题可见性。
+- 2026-09-07：直接查询 clean Kafka 高水位确认 DLQ 分区 0 已有 1 条消息；按固定 partition/offset 消费成功读到 event_id `9fb9cb60-bbad-43c7-86c3-cd028b2797a2`。此前失败是消费者组分配/观察窗口问题，不是 DLQ 写入失败；仍需补一份稳定的自动化消费者验收脚本。
+- 2026-09-07：新增 `deploy/kafka-shadow/verify_dlq_visibility.py`，等待消费者组完成 assignment 后按 event_id 校验 DLQ 消息。clean 影子环境执行通过，event `9fb9cb60-bbad-43c7-86c3-cd028b2797a2` 在 partition 0/offset 0 可见；该脚本只读主题，不提交 offset。
+- 2026-09-07：Flink `event_id` 去重修复已完成本地提交，但 clean 服务器仅有旧构建目录，尝试用锁定 Flink 镜像离线编译时主机缺少 `jar` 打包命令，未替换运行中的作业；未把未部署代码记为运行时通过。
+- 2026-09-07：clean 项目已恢复固定 digest 的 Flink JobManager/TaskManager 与 checkpoint 卷，服务均为 `running`；当前 Flink REST 作业列表为空，尚未提交 clean 运行号对应的 JAR，故不计入 Flink 业务验收。
+- 2026-09-07：clean Flink 新 JAR 已用服务器 `build.py` 成功构建（source hash `ccb7f244ea5bace3`、job SHA-256 `468144db71d5858ccbd6a461fb6c2eb4f72a7be4c140991b82d2b2efa1d49f`），并完成 TaskManager 注册。提交前发现 compose 仍缺少作业环境变量且旧作业常量绑定历史运行号，未提交作业或宣称通过；后续需先生成 clean 专用 topic/运行号适配包。
+- 2026-09-07：定位首轮失败原因为常驻 relay 与一次性 fixture 竞争同一运行号的事件。停止常驻 relay 后，clean 项目真实 SIGKILL ACK 窗口验收通过：已确认事件消费 1 次，不确定 ACK 事件消费 2 次，租约 90 秒后重投，最终 ledger 均为 `published`（attempts 1/2）。范围为 `synthetic_ledger_real_sigkill_ack_window`，仍不等价于 Backend 业务副作用幂等。
+
+
+### 2026-09-07 Relay 崩溃窗口真实验证
+
+在独立影子 MySQL/Kafka 上完成真实 SIGKILL 验收：一条已确认事件只投递 1 次且不再领取；另一条在 Kafka ACK 后、ledger 提交前被杀死，90 秒租约过期后重投，消费者收到 2 次，最终 ledger `published` 且 `event_attempts=2`。这验证了至少一次语义与 lease fencing；消费者幂等副作用仍需通过真实派生投影表完成，不能把 Kafka broker 的重复消息当作自动幂等。服务器证据为 `artifacts/relay-crash-verification-01.log`。
+
+
+- 2026-09-07：clean Flink 运行号 `KSHADOW-20260907T031500Z-clean03` 已创建协议 topic（3 分区、RF2、7 天 retention），固定 digest JAR 上传并提交作业 `efbc05e34d04cabef75edc502eeee688`。4 条虚构元数据事件验证：重复 event_id 输出 `DUPLICATE` 且计数不增加，revision=3 输出 `STALE`，revision=6 输出 `APPLIED`；作业持续 RUNNING，checkpoint 1–10 全部 COMPLETED。范围仍是元数据协议/revision 状态恢复，不代表业务派生、Redis/MySQL 投影或双轨完成。
+- 2026-09-07：clean 运行号辅助 Outbox 真实影子验收通过。使用全新、可追踪合成照片/场所 Outbox 行，在同一隔离 MySQL 事务中验证回滚时源行与 Kafka ledger 均不残留、提交后重复登记保持幂等；relay 按事件类型投递到 `binhu.photo.events.v1` 与 `binhu.venue.events.v1`，未进入任务主题。Kafka ledger 最终 `published`，源 Outbox 状态保持 `pending`/attempt=0，证明 Kafka 确认不会伪造外部照片或场所云副作用。证据：服务器 `artifacts/aux-transport-096732e89649-retry1/result.json`，运行镜像 `sha256:015550036328b5a6996713009b1758a7d84e4351513ad7bd6988133819d57c13`。该结果仍是合成来源闭环，不等价于生产业务 Outbox 全量接入。
+- 2026-09-07：准备业务影子栈前发现宿主机可用内存约 2.1 GiB，未启动负载。核对项目、运行号、网络及挂载后，暂停被 clean 运行替代的 `binhu-kafka-shadow-20260906` 和 `binhu-kafka-shadow-20260907` 共 15 个容器，保留全部卷、checkpoint 和运行证据；可用内存恢复到约 7.2 GiB。证据为 clean 项目 `artifacts/pause-obsolete-eventbus/result.json`。生产、既有 `binhu-loadtest-lt-*` 未修改，7 天双轨观察仍未开始。
+- 2026-09-07：新增隔离业务项目 `binhu-kafka-shadow-20260907-business01`，运行号 `KSHADOW-20260907-business01`。真实 Compose 合并检查、全新 MySQL 三库初始化、Backend 启动及内部网关 HTTP 200 已完成，证据位于该项目 `artifacts/business-bootstrap-retry1/`。修复了旧 derived 挂载/profile 残留、schema 路径和数据库名称替换；网关首次因非特权容器内 chown 失败退出，改为 UID 101 后完整复验通过。启动前已关闭该影子库备份计划，后续新卷 bootstrap 自动关闭。首轮 HTTP 证据暴露版本为 0.0.0，已补充从根目录 VERSION 传入 APP_VERSION，复核单独记录。此环境仍是业务接线准备，尚未造数、双轨或执行 75 人复测；最终容量验收须另建含全部修补的新卷。
