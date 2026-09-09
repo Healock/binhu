@@ -46,6 +46,7 @@ interface InlineRegistrationPropertyState {
   loading: boolean
   options: MobileTaskRegistrationProperty[]
   selectedId?: number
+  matchStatus?: 'idle' | 'matching' | 'unique' | 'multiple' | 'none' | 'error'
 }
 
 function registrationPropertyAddress(property: MobileTaskRegistrationProperty) {
@@ -597,13 +598,15 @@ export default function MobileTaskTable({
           ...(current[task.task_key] || {}),
           loading: false,
           options: result.data || [],
+          matchStatus: (result.data || []).length === 1 ? 'unique' : (result.data || []).length > 1 ? 'multiple' : 'none',
+          selectedId: (result.data || []).length === 1 ? result.data[0].id : current[task.task_key]?.selectedId,
         },
       }))
     } catch {
       if (registrationSearchSequenceRef.current[task.task_key] !== sequence) return
       setRegistrationProperties(current => ({
         ...current,
-        [task.task_key]: { ...(current[task.task_key] || {}), loading: false, options: [] },
+          [task.task_key]: { ...(current[task.task_key] || {}), loading: false, options: [], matchStatus: 'error' },
       }))
       message.error({
         key: `mobile-task-registration-property-${task.task_key}`,
@@ -877,7 +880,9 @@ export default function MobileTaskTable({
                           if (property) void saveRegistrationProperty(task, item, property)
                         }}
                       />}
-                      <span className="mobile-task-table-inline-hint">{pendingAddressMode[task.task_key] ? '待建立房屋档案，建档后补挂正式房屋。' : '选定房屋后，待登记结果和现住址会一次保存。'}</span>
+                      <span className="mobile-task-table-inline-hint" aria-live="polite">
+                        {pendingAddressMode[task.task_key] ? '待建立房屋档案，建档后补挂正式房屋。' : registrationPropertyState?.matchStatus === 'matching' ? '正在识别地址…' : registrationPropertyState?.matchStatus === 'unique' ? '根据核查补充信息找到唯一候选，请确认' : registrationPropertyState?.matchStatus === 'multiple' ? '找到多个候选，请选择' : registrationPropertyState?.matchStatus === 'none' ? '未找到正式房屋，可填写待建档地址' : registrationPropertyState?.matchStatus === 'error' ? '地址匹配暂时失败，请重试或填写待建档地址' : '选定房屋后，待登记结果和现住址会一次保存。'}
+                      </span>
                     </div>
                   ) : metadata.type === 'select' || field === '核查人' ? (
                     <div className="grid gap-1">
@@ -909,6 +914,13 @@ export default function MobileTaskTable({
                           }
                           if (!(registrationResultField && nextValue === '待登记')) {
                             void saveField(task, item, field, nextValue)
+                          } else {
+                            const snapshot = editorValues[task.task_key] || source.values
+                            const addressHint = String(snapshot['核查补充信息'] || snapshot['核查反馈'] || '').trim()
+                            if (addressHint) {
+                              setRegistrationProperties(current => ({ ...current, [task.task_key]: { ...(current[task.task_key] || { options: [] }), loading: true, matchStatus: 'matching', selectedId: undefined } }))
+                              void searchRegistrationProperty(task, addressHint)
+                            }
                           }
                         }}
                       />
@@ -929,6 +941,20 @@ export default function MobileTaskTable({
                           ...current,
                           [task.task_key]: { ...values, [field]: nextValue },
                         }))
+                        if (mobileTaskUsesRegistrationClosure(task.parser_type)
+                          && registrationResult === '待登记'
+                          && (field === '核查补充信息' || field === '核查反馈')) {
+                          const previousTimer = registrationSearchSequenceRef.current[`${task.task_key}:timer`]
+                          if (previousTimer) window.clearTimeout(previousTimer)
+                          const timer = window.setTimeout(() => {
+                            const hint = nextValue.trim()
+                            if (hint) {
+                              setRegistrationProperties(current => ({ ...current, [task.task_key]: { ...(current[task.task_key] || { options: [] }), loading: true, matchStatus: 'matching', selectedId: undefined } }))
+                              void searchRegistrationProperty(task, hint)
+                            }
+                          }, 700)
+                          registrationSearchSequenceRef.current[`${task.task_key}:timer`] = timer
+                        }
                         scheduleFieldSave(task, item, field, nextValue)
                       }}
                       onBlur={() => {
