@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_app_environment(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized not in {"production", "shadow"}:
-            raise ValueError("APP_ENVIRONMENT 只允许 production 或 shadow")
+        if normalized not in {"production", "staging", "development", "shadow"}:
+            raise ValueError("APP_ENVIRONMENT 只允许 production、staging、development 或历史兼容的 shadow")
         return normalized
 
     # MySQL（同一实例，八个按业务域划分的数据库）
@@ -182,6 +182,14 @@ class Settings(BaseSettings):
     def validate_cross_site_cookie_security(self):
         if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
             raise ValueError("SameSite=None 必须同时启用 Secure Cookie")
+        expected_cookie = {
+            "production": "binhu_session",
+            "staging": "binhu_staging_session",
+            "development": "binhu_dev_session",
+            "shadow": "binhu_shadow_session",
+        }[self.APP_ENVIRONMENT]
+        if self.SESSION_COOKIE_NAME != expected_cookie:
+            raise ValueError(f"{self.APP_ENVIRONMENT} 环境必须使用对应的会话 Cookie")
         if self.APP_ENVIRONMENT == "shadow" and self.SESSION_COOKIE_NAME != "binhu_shadow_session":
             raise ValueError("影子环境必须使用 binhu_shadow_session Cookie")
         if self.APP_ENVIRONMENT == "shadow" and not self.LOAD_TEST_RUN_ID.strip():

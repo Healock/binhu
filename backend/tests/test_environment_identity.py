@@ -19,12 +19,13 @@ class EnvironmentIdentityTests(unittest.TestCase):
             LOAD_TEST_RUN_ID="LT-20260902-01",
         )
         self.assertEqual(configured.APP_ENVIRONMENT, "shadow")
-        with self.assertRaises(ValueError):
-            Settings(
-                MYSQL_PASSWORD="test-password",
-                ENCRYPTION_KEY="test-encryption-key",
-                APP_ENVIRONMENT="staging",
-            )
+        staging = Settings(
+            MYSQL_PASSWORD="test-password",
+            ENCRYPTION_KEY="test-encryption-key",
+            APP_ENVIRONMENT="staging",
+            SESSION_COOKIE_NAME="binhu_staging_session",
+        )
+        self.assertEqual(staging.APP_ENVIRONMENT, "staging")
 
     def test_shadow_environment_requires_its_cookie(self):
         with self.assertRaises(ValueError):
