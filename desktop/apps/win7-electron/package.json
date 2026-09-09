@@ -1,10 +1,9 @@
 {
   "name": "@binhu/win7-electron",
-  "version": "0.28.13",
+  "version": "0.28.14",
   "private": true,
   "main": "src/main.js",
   "scripts": {
     "start": "electron ."
   }
 }
-
