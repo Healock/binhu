@@ -322,9 +322,13 @@ async def registration_links_by_rows(
                 "normalized_address": str(row[15] or ""),
                 "status": str(row[16] or ""),
                 "version": int(row[17] or 0),
-                "community_id": int(row[18]) if row[18] is not None else None,
-                "community_name": str(row[19] or ""),
-                "source_house_no": str(row[20] or ""),
+                "community_id": int(row[19]) if row[19] is not None else None,
+                "community_name": str(row[20] or ""),
+                # SELECT order is source_house_no, community_id,
+                # community_name_snapshot; keep the household number from
+                # the registry instead of accidentally displaying the
+                # community name as the task's 户号.
+                "source_house_no": str(row[18] or ""),
             },
         }
     return result
