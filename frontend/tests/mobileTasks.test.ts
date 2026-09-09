@@ -1226,27 +1226,11 @@ test('全所范围为只读说明，普通用户仍可切换我的和社区', ()
 })
 
 test('流口任务使用固定任务顺序且不提供交互排序', () => {
-  const pageSource = readFileSync(
-    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
-    'utf8',
-  )
-  const clientSource = readFileSync(
-    new URL('../src/api/client.ts', import.meta.url),
-    'utf8',
-  )
-  const tableSource = readFileSync(
-    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
-    'utf8',
-  )
-
-  assert.match(pageSource, /默认（状态 \+ 地址）/)
+  const pageSource = readFileSync(new URL('../src/pages/MobileTaskList.tsx', import.meta.url), 'utf8')
+  const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
+  assert.match(pageSource, /固定任务顺序/)
   assert.doesNotMatch(pageSource, /最近更新/)
-  assert.match(tableSource, /title: '身份证号码'[\s\S]*?sorter: true[\s\S]*?sort === 'identity_asc'/)
-  assert.match(tableSource, /title: '地址'[\s\S]*?sorter: true[\s\S]*?sort === 'address_asc'/)
-  assert.match(tableSource, /activeSorter\.columnKey === 'identity_number'[\s\S]*?onSortChange\('identity_asc'\)/)
-  assert.match(tableSource, /activeSorter\.columnKey === 'address'[\s\S]*?onSortChange\('address_asc'\)/)
-  assert.match(clientSource, /MobileTaskSort =[\s\S]*?'address_asc'[\s\S]*?'identity_asc'/)
-  assert.match(clientSource, /sort: params\.sort \|\| 'priority'/)
+  assert.doesNotMatch(tableSource, /sorter: true/)
 })
 
 test('流口任务数量卡按全部、普通待处理、等待研判、已研判、来源异常、已完成排列', () => {
