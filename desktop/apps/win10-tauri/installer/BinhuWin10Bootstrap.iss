@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.28.12"
+  #define AppVersion "0.28.13"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "0.28.12.0"
+  #define NumericVersion "0.28.13.0"
 #endif
 #ifndef VelopackSetup
   #error VelopackSetup must point to the Velopack setup executable.
@@ -127,3 +127,4 @@ begin
   if ResultCode <> 0 then
     Result := Format('客户端安装失败，退出代码：%d。', [ResultCode]);
 end;
+

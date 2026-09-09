@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.28.12"
+  #define AppVersion "0.28.13"
 #endif
 #ifndef NumericVersion
-  #define NumericVersion "0.28.12.0"
+  #define NumericVersion "0.28.13.0"
 #endif
 #ifndef VelopackSetup
   #error VelopackSetup must point to the baseline Velopack Setup executable.
@@ -158,3 +158,4 @@ function NeedRestart(): Boolean;
 begin
   Result := VxKexRestartRequired;
 end;
+
