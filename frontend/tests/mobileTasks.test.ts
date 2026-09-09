@@ -1227,33 +1227,12 @@ test('全所范围为只读说明，普通用户仍可切换我的和社区', ()
   assert.doesNotMatch(pageSource, /<Button[^>]*>全所<\/Button>/)
 })
 
-test('流口任务支持按地址或身份证号对完整结果排序', () => {
-  const pageSource = readFileSync(
-    new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
-    'utf8',
-  )
-  const clientSource = readFileSync(
-    new URL('../src/api/client.ts', import.meta.url),
-    'utf8',
-  )
-  const tableSource = readFileSync(
-    new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
-    'utf8',
-  )
-
-  assert.match(pageSource, /默认（状态 \+ 地址）/)
-  assert.match(pageSource, /地址升序[\s\S]*?address_asc/)
-  assert.match(pageSource, /身份证号升序[\s\S]*?identity_asc/)
-  assert.match(pageSource, />排序方式</)
-  assert.match(pageSource, /options=\{SORT_OPTIONS\}/)
-  assert.match(pageSource, /sort=\{sort\}/)
-  assert.match(pageSource, /onSortChange=\{setSort\}/)
-  assert.match(tableSource, /title: '身份证号码'[\s\S]*?sorter: true[\s\S]*?sort === 'identity_asc'/)
-  assert.match(tableSource, /title: '地址'[\s\S]*?sorter: true[\s\S]*?sort === 'address_asc'/)
-  assert.match(tableSource, /activeSorter\.columnKey === 'identity_number'[\s\S]*?onSortChange\('identity_asc'\)/)
-  assert.match(tableSource, /activeSorter\.columnKey === 'address'[\s\S]*?onSortChange\('address_asc'\)/)
-  assert.match(clientSource, /MobileTaskSort =[\s\S]*?'address_asc'[\s\S]*?'identity_asc'/)
-  assert.match(clientSource, /sort: params\.sort \|\| 'priority'/)
+test('流口任务使用固定任务顺序且不提供交互排序', () => {
+  const pageSource = readFileSync(new URL('../src/pages/MobileTaskList.tsx', import.meta.url), 'utf8')
+  const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
+  assert.match(pageSource, /固定任务顺序/)
+  assert.doesNotMatch(pageSource, /最近更新/)
+  assert.doesNotMatch(tableSource, /sorter: true/)
 })
 
 test('流口任务数量卡按全部、普通待处理、等待研判、已研判、来源异常、已完成排列', () => {
@@ -1329,3 +1308,5 @@ test('全民防仅保留反馈状态只读查询，不再提供真实登记入�
   assert.doesNotMatch(clientSource, /export async function (prepare|execute)QmfRegistration/)
   assert.doesNotMatch(clientSource, /retryQmfTencentMarker/)
 })
+
+

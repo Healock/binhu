@@ -113,11 +113,7 @@ const PRIORITY_OPTIONS = [
 ] satisfies Array<{ label: string; value: MobileTaskPriority }>
 
 const SORT_OPTIONS = [
-  { label: '默认（状态 + 地址）', value: 'priority' },
-  { label: '地址升序', value: 'address_asc' },
-  { label: '身份证号升序', value: 'identity_asc' },
-  { label: '最近更新', value: 'updated_desc' },
-  { label: '最早更新', value: 'updated_asc' },
+  { label: '固定任务顺序', value: 'priority' },
 ] satisfies Array<{ label: string; value: MobileTaskSort }>
 
 const STATE_LABELS = {
@@ -1236,14 +1232,7 @@ export default function MobileTaskList({
                 onChange={value => setPriority(value as MobileTaskPriority)}
               />
             </label>}
-            <label className="mobile-task-filter-field">
-              <span className="mobile-task-filter-field__label">排序方式</span>
-              <Select
-                value={sort}
-                options={SORT_OPTIONS}
-                onChange={value => setSort(value as MobileTaskSort)}
-              />
-            </label>
+            <span className="mobile-task-filter-field__hint">任务按进入队列的固定顺序显示，编辑后不会改变位置</span>
             <label className="mobile-task-filter-field">
               <span className="mobile-task-filter-field__label">人员标签分类</span>
               <Select

@@ -555,8 +555,8 @@ class MobileTaskWorkflowTests(unittest.TestCase):
 
     def test_identity_sort_uses_visible_address_as_stable_tiebreaker(self):
         sql = _task_order("出租房屋核查", "identity_asc")
-        self.assertIn("身份证号", sql)
-        self.assertIn("房屋地址", sql)
+        self.assertEqual(sql, "projection.row_key")
+        self.assertNotIn("updated_at", sql)
         self.assertNotIn("现住址", sql)
 
     def test_analysis_field_sort_uses_each_business_contract(self):
@@ -1435,3 +1435,4 @@ class MobileTaskPhotoResultTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

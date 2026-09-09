@@ -1163,7 +1163,7 @@ export default function MobileTaskTable({
         key: 'identity_number',
         width: 190,
         responsivePriority: 'always' as const,
-        sorter: true,
+        sorter: false,
         sortDirections: ['ascend'] as const,
         sortOrder: sort === 'identity_asc' ? 'ascend' as const : null,
         render: (_: unknown, task: MobileTaskItem) => task.summary.identity_number ? (
@@ -1216,7 +1216,7 @@ export default function MobileTaskTable({
         width: 250,
         responsivePriority: 'always' as const,
         ellipsis: true,
-        sorter: true,
+        sorter: false,
         sortDirections: ['ascend'] as const,
         sortOrder: sort === 'address_asc' ? 'ascend' as const : null,
         render: (_: unknown, task: MobileTaskItem) => {
@@ -1332,3 +1332,4 @@ export default function MobileTaskTable({
     </div>
   )
 }
+
