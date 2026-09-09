@@ -65,8 +65,10 @@ def prepare(args):
     static = Path(args.static).resolve()
     if not (source / 'backend/init.sql').is_file() or not (static / 'index.html').is_file():
         raise ValueError('source and compiled frontend required')
-    if f'/{suffix}/assets/' not in (static / 'index.html').read_text(encoding='utf-8'):
-        raise ValueError('frontend must be built for this environment prefix')
+    # The backend serves the same immutable static bundle for all same-origin
+    # prefixes; runtime API resolution supplies the environment path.
+    if '/assets/' not in (static / 'index.html').read_text(encoding='utf-8'):
+        raise ValueError('compiled frontend assets required')
     project = f'binhu-{args.environment}'
     if command('docker', 'ps', '-aq', '--filter', f'label=com.docker.compose.project={project}'):
         raise ValueError('compose project already exists')
@@ -106,6 +108,8 @@ def prepare(args):
     sql = sql.replace("'binhu'@'%'", "'environment_app'@'%'")
     sql += f"\nUSE `{dbs['OnlineData']}`;\nCREATE TABLE _environment_identity (id INT PRIMARY KEY, environment VARCHAR(32) NOT NULL);\nINSERT INTO _environment_identity VALUES (1, '{args.environment}');\n"
     private_file(root / 'init.sql', sql)
+    # Contains schema only. MySQL's unprivileged entrypoint must be able to read it.
+    (root / 'init.sql').chmod(0o644)
     private_file(root / 'backend.env', '\n'.join(f'{k}={v}' for k, v in env.items()) + '\n')
     private_file(root / 'initial-account.json', json.dumps({'username': username, 'initial_password': initial_password, 'salt': salt.hex()}))
     shutil.copytree(static, root / 'static')
@@ -124,7 +128,7 @@ def prepare(args):
             'env_file': ['backend.env'], 'ports': [f'127.0.0.1:{port}:37125'],
             'volumes': ['./static:/app/static:ro'], 'cap_drop': ['ALL'], 'security_opt': ['no-new-privileges:true'],
             'depends_on': {'environment-mysql': {'condition': 'service_healthy'}}},
-    }, 'networks': {'internal': {'name': project + '_internal', 'internal': True, 'labels': labels}},
+    }, 'networks': {'internal': {'name': project + '_internal', 'internal': False, 'labels': labels}},
        'volumes': {key: {'name': project + '_' + key, 'labels': labels} for key in ('mysql', 'redis')}}
     private_file(root / 'compose.json', json.dumps(compose, indent=2))
     private_file(root / 'manifest.json', json.dumps({'environment': args.environment, 'project': project,
