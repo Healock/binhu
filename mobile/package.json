@@ -1,6 +1,6 @@
 {
   "name": "@binhu/mobile",
-  "version": "0.28.12",
+  "version": "0.28.13",
   "private": true,
   "scripts": {
     "android:frontend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-local-frontend.ps1",
@@ -11,3 +11,4 @@
     "android:build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-android.ps1 -Action BuildRelease"
   }
 }
+
