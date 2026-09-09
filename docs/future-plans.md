@@ -11,6 +11,7 @@
 | 外部出勤和请假系统对接 | 已确定方向，未开始 | [外部出勤和请假系统](future-plans/external-attendance-leave.md) |
 | 流口标签与确认地址工作台 | PR/验收台账独立维护 | [流口标签与确认地址工作台](future-plans/flow-address-confirmation.md) |
 | 地址匹配智能化升级 | 规划中，Dev 验证前未开始 | [地址匹配智能化升级](future-plans/address-matching-intelligence.md) |
+| 生产、预发布与 Dev 环境建设 | 架构调整中，尚未完成服务器验收 | [环境建设](future-plans/environment-triad.md) |
 
 ## 目录规则
 
@@ -19,6 +20,4 @@
 - 已完成项目应迁移到 `docs/plans/` 或链接明确的完成台账，不能继续伪装成未开始计划。
 - 历史归档文件不回写；当前计划不得包含凭据、完整地址、身份证号、手机号或其他敏感正文。
 - 生产、预发布和 Dev 的称呼和边界按项目文档及当前运行规则保持一致。
-# 未来计划总目录
-
-环境三分建设的实施边界和验收要求见 [生产、预发布与 Dev 双环境建设](future-plans/environment-triad.md)。
+| 生产、预发布与 Dev 环境建设 | 架构调整中，尚未完成服务器验收 | [环境建设](future-plans/environment-triad.md) |\r\n
