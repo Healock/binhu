@@ -127,3 +127,16 @@ test('任务分配和行内编辑在紧凑桌面宽度保持完整可操作', ()
   assert.match(styles, /\.mobile-task-table-inline-editor\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s)
   assert.doesNotMatch(styles, /\.mobile-task-table-inline-editor\s*\{[^}]*min-width:\s*1044px;/s)
 })
+
+test('紧凑布局下流口展开编辑区覆盖通用展开行内边距', () => {
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  const genericRule = styles.indexOf('.app-shell--compact .ant-table-expanded-row > td {')
+  const taskRule = styles.indexOf('.app-shell--compact .mobile-task-table .ant-table-expanded-row > td {')
+
+  assert.ok(genericRule >= 0, '应保留通用展开行内边距规则')
+  assert.ok(taskRule > genericRule, '流口任务专用覆盖规则必须位于通用规则之后')
+  assert.match(
+    styles.slice(taskRule, taskRule + 220),
+    /padding:\s*0\s+0\s+10px\s*!important;/,
+  )
+})
