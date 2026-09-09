@@ -1225,7 +1225,7 @@ test('全所范围为只读说明，普通用户仍可切换我的和社区', ()
   assert.doesNotMatch(pageSource, /<Button[^>]*>全所<\/Button>/)
 })
 
-test('流口任务支持按地址或身份证号对完整结果排序', () => {
+test('流口任务使用固定任务顺序且不提供交互排序', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/MobileTaskList.tsx', import.meta.url),
     'utf8',
@@ -1327,3 +1327,4 @@ test('全民防仅保留反馈状态只读查询，不再提供真实登记入�
   assert.doesNotMatch(clientSource, /export async function (prepare|execute)QmfRegistration/)
   assert.doesNotMatch(clientSource, /retryQmfTencentMarker/)
 })
+
