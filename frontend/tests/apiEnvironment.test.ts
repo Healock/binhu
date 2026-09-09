@@ -160,7 +160,11 @@ test('authenticated UI keeps a persistent shadow marker and environment-bound re
 
   assert.match(authSource, /resetApiEnvironment\(\)/)
   assert.match(layoutSource, /shadow-environment-banner/)
-  assert.match(layoutSource, /全部为虚构数据 · 不会写入正式业务/)
+  assert.match(layoutSource, /全部为虚构数据/)
+  assert.match(layoutSource, /脱敏验证数据/)
+  assert.match(layoutSource, /虚构开发数据/)
+  assert.match(layoutSource, /不会写入正式业务/)
+  assert.match(layoutSource, /environment !== 'production'/)
   assert.match(layoutSource, /运行编号：/)
   assert.match(styles, /\.shadow-environment-banner\s*\{/)
   assert.match(realtimeSource, /resolveRuntimeApiUrl\('\/api\/events\/stream'\)/)

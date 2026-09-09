@@ -31,7 +31,6 @@ import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import useMobileViewport from '../hooks/useMobileViewport'
 
 export default function Layout() {
-  // Legacy shadow copy keeps the audited marker text: 全部为虚构数据 · 不会写入正式业务
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
     typeof window !== 'undefined' && window.innerWidth < 1200
