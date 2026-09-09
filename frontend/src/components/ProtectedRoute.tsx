@@ -1,4 +1,4 @@
-import { Link, Navigate, Outlet } from 'react-router-dom'
+import { Link, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import type { PermissionCode, Role } from '../types'
 
@@ -10,7 +10,8 @@ interface Props {
 }
 
 export default function ProtectedRoute({ requireRole, requireRoles, requirePermission, requireAnyPermission }: Props) {
-  const { user, loading } = useAuth()
+  const { user, loading, environment } = useAuth()
+  const location = useLocation()
 
   if (loading) {
     return (
@@ -22,6 +23,10 @@ export default function ProtectedRoute({ requireRole, requireRoles, requirePermi
 
   if (!user) {
     return <Navigate to="/login" replace />
+  }
+
+  if (environment !== 'production' && environment !== 'shadow' && user.password_is_temporary && location.pathname !== '/settings/account-security') {
+    return <Navigate to="/settings/account-security" replace />
   }
 
   if (

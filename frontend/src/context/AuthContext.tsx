@@ -13,6 +13,7 @@ import { clearRoleDashboardCaches } from '../utils/dashboardCache'
 import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
 import {
   assertApiEnvironmentIdentity,
+  environmentPath,
   environmentForUsername,
   getApiEnvironment,
   resetApiEnvironment,
@@ -103,6 +104,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (username: string, password: string) => {
     const targetEnvironment = environmentForUsername(username)
+    const prefix = environmentPath()
+    if ((prefix === '/dev' && targetEnvironment !== 'development')
+      || (prefix === '/staging' && targetEnvironment !== 'staging')) {
+      throw new Error('账号不属于当前环境，请使用对应的环境账号')
+    }
+    if (!prefix && (targetEnvironment === 'development' || targetEnvironment === 'staging')) {
+      throw new Error(`请先打开 ${targetEnvironment === 'development' ? '/dev/' : '/staging/'} 入口，再登录环境账号`)
+    }
     setApiEnvironment(targetEnvironment)
     setEnvironment(targetEnvironment)
     try {
@@ -171,7 +180,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const changePassword = async (currentPassword: string, newPassword: string) => {
     await changeOwnPassword(currentPassword, newPassword)
-    await refreshUser()
+    // Password changes invalidate every session; do not fetch /me with that session.
+    setUser(null)
   }
 
   return (
