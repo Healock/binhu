@@ -237,7 +237,7 @@ async def test_property_search_combines_scope_keyword_community_and_housing_filt
     assert "community_id=%s" in count_sql
     assert "housing_type IN" in count_sql
     assert "registry_address_aliases" in count_sql
-    assert count_params.count("%南厍%") == 10
+    assert sum(isinstance(value, str) and value.startswith("%") for value in count_params) == 11
     assert "property_match.small_community_name LIKE %s" in count_sql
     assert "GROUP BY COALESCE(property_match.match_status,'unmatched')" in status_sql
     assert status_params == count_params

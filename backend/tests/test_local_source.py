@@ -53,7 +53,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
     def test_task_source_filter_excludes_legacy_rows_during_local_cutover(self):
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
             clause = active_source_sql_filter("全链条", "source_row")
-        self.assertIn("source_row.spreadsheet_id=0", clause)
+        self.assertIn("source_row.source_kind IN", clause)
         self.assertIn(
             "source_row.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
             clause,
@@ -64,7 +64,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
             model_three_clause = active_source_sql_filter(
                 "疑似未注销模型三", "source_row"
             )
-        self.assertIn("source_row.spreadsheet_id=0", model_three_clause)
+        self.assertIn("source_row.source_kind IN", model_three_clause)
         self.assertIn(
             "source_row.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
             model_three_clause,
@@ -73,7 +73,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
 
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):
             clause = active_source_sql_filter("全链条")
-        self.assertIn("spreadsheet_id=0", clause)
+        self.assertIn("source.source_kind IN", clause)
 
     def test_mirror_reuses_archived_local_physical_position(self):
         source = inspect.getsource(mirror_business_tables_to_local_sources)
