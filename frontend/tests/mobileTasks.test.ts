@@ -1240,12 +1240,7 @@ test('流口任务使用固定任务顺序且不提供交互排序', () => {
   )
 
   assert.match(pageSource, /默认（状态 \+ 地址）/)
-  assert.match(pageSource, /地址升序[\s\S]*?address_asc/)
-  assert.match(pageSource, /身份证号升序[\s\S]*?identity_asc/)
-  assert.match(pageSource, />排序方式</)
-  assert.match(pageSource, /options=\{SORT_OPTIONS\}/)
-  assert.match(pageSource, /sort=\{sort\}/)
-  assert.match(pageSource, /onSortChange=\{setSort\}/)
+  assert.doesNotMatch(pageSource, /最近更新/)
   assert.match(tableSource, /title: '身份证号码'[\s\S]*?sorter: true[\s\S]*?sort === 'identity_asc'/)
   assert.match(tableSource, /title: '地址'[\s\S]*?sorter: true[\s\S]*?sort === 'address_asc'/)
   assert.match(tableSource, /activeSorter\.columnKey === 'identity_number'[\s\S]*?onSortChange\('identity_asc'\)/)
@@ -1327,4 +1322,5 @@ test('全民防仅保留反馈状态只读查询，不再提供真实登记入�
   assert.doesNotMatch(clientSource, /export async function (prepare|execute)QmfRegistration/)
   assert.doesNotMatch(clientSource, /retryQmfTencentMarker/)
 })
+
 
