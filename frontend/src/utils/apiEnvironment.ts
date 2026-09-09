@@ -40,6 +40,17 @@ export function getApiEnvironment(): AppEnvironment {
   return 'production'
 }
 
+export function environmentPath(): string {
+  const path = typeof window === 'undefined' ? '' : window.location.pathname
+  if (/^\/staging(?:\/|$)/i.test(path)) return '/staging'
+  if (/^\/dev(?:\/|$)/i.test(path)) return '/dev'
+  return ''
+}
+
+export function environmentLoginPath(): string {
+  return `${environmentPath()}/login`
+}
+
 export function setApiEnvironment(environment: AppEnvironment): void {
   const storage = safeSessionStorage()
   if (storage) {

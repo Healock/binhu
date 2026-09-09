@@ -1,3 +1,4 @@
+import { environmentLoginPath } from '../utils/apiEnvironment.ts'
 import { useEffect, useState } from 'react'
 import { Alert, Button, Form, Input, List, Popconfirm, Tag, message } from 'antd'
 import { LockOutlined, UserOutlined } from '@ant-design/icons'
@@ -55,7 +56,7 @@ export default function AccountSecuritySettings() {
       await changePassword(values.currentPassword, values.newPassword)
       form.resetFields()
       message.success('密码已修改，请使用新密码重新登录')
-      window.location.href = '/login'
+      window.location.href = environmentLoginPath()
     } catch (error) {
       message.error(errorMessage(error))
     }
@@ -141,7 +142,7 @@ export default function AccountSecuritySettings() {
                   onConfirm={async () => {
                     try {
                       await revokeAllAuthSessions()
-                      window.location.href = '/login'
+                      window.location.href = environmentLoginPath()
                     } catch {
                       message.error('退出全部设备失败')
                     }

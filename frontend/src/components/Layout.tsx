@@ -45,7 +45,7 @@ export default function Layout() {
     environmentLabel,
     loadTestRunId,
   } = useAuth()
-  const isShadow = environment === 'shadow'
+  const isShadow = environment !== 'production'
   const navigate = useNavigate()
   const location = useLocation()
   const layout = useResponsiveLayout()
@@ -94,9 +94,9 @@ export default function Layout() {
 
   useEffect(() => {
     const baseTitle = '滨湖智慧平台'
-    document.title = isShadow ? `${baseTitle} · 影子环境` : baseTitle
+    document.title = isShadow ? `${baseTitle} · ${environmentLabel}` : baseTitle
     return () => { document.title = baseTitle }
-  }, [isShadow])
+  }, [isShadow, environmentLabel])
 
   useEffect(() => {
     if (location.pathname === '/') {
@@ -117,7 +117,7 @@ export default function Layout() {
       {isShadow && (
         <div className="shadow-environment-banner" role="status">
           <strong>{environmentLabel || '影子压测环境'}</strong>
-          <span>全部为虚构数据 · 不会写入正式业务</span>
+          <span>{environment === 'staging' ? '脱敏验证数据' : '虚构开发数据'} · 不会写入正式业务</span>
           {loadTestRunId && <span>运行编号：{loadTestRunId}</span>}
         </div>
       )}
@@ -163,7 +163,7 @@ export default function Layout() {
                     <div className="text-xs text-slate-500">
                       {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                     </div>
-                    {isShadow && <Tag color="orange" className="mt-2">影子环境</Tag>}
+                    {isShadow && <Tag color="orange" className="mt-2">{environmentLabel}</Tag>}
                   </div>
                   <Button
                     block
@@ -233,7 +233,7 @@ export default function Layout() {
           <div className="app-sidebar__identity min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900">滨湖智慧平台</div>
             <div className="text-xs text-slate-500">v{clientVersion}</div>
-            {isShadow && <div className="text-[10px] font-semibold text-orange-700">影子环境</div>}
+            {isShadow && <div className="text-[10px] font-semibold text-orange-700">{environmentLabel}</div>}
           </div>
           <button
             type="button"
@@ -312,7 +312,7 @@ export default function Layout() {
                 <div className="mt-0.5 truncate text-xs text-slate-500">
                   {user.username} · {user.permission_group?.name || ROLE_LABELS[user.role] || user.role}
                 </div>
-                {isShadow && <div className="mt-0.5 truncate text-[10px] font-semibold text-orange-700">影子压测环境</div>}
+                {isShadow && <div className="mt-0.5 truncate text-[10px] font-semibold text-orange-700">{environmentLabel}</div>}
               </button>
               {!mobile && <NotificationCenter />}
             </div>

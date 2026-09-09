@@ -475,7 +475,11 @@ async def _load_current_user(
 
 
 async def get_current_user(request: Request) -> dict:
-    return await _load_current_user(request, check_maintenance=True)
+    user = await _load_current_user(request, check_maintenance=True)
+    if settings.APP_ENVIRONMENT in {"staging", "development"} and user.get("password_is_temporary"):
+        if request.url.path not in {"/api/auth/me", "/api/auth/password", "/api/auth/logout", "/api/auth/sessions"}:
+            raise HTTPException(status_code=403, detail={"code": "password_change_required", "message": "首次登录请先修改临时密码"})
+    return user
 
 
 async def get_bootstrap_user(request: Request) -> dict | None:

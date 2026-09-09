@@ -96,6 +96,11 @@ from services.online_summary_updates import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化数据库连接池，关闭时清理"""
+    if settings.APP_ENVIRONMENT in {"staging", "development"}:
+        from services.environment_runtime import isolated_lifespan
+        async with isolated_lifespan():
+            yield
+        return
     await init_db()
     interrupted_backups = await recover_interrupted_backups()
     if interrupted_backups:
