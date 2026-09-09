@@ -34,10 +34,11 @@ def prepare(template: Path, output: Path, run_id: str) -> dict:
         text = re.sub(r'(?im)^([^#\n]*(?:password|secret|token|credential|key|url)[^=\n]*)=.*$', r'\1=[REDACTED]', text)
         text = text.replace('shadow', 'development').replace('SHADOW', 'DEVELOPMENT')
         text = re.sub(r'(?m)^\s*container_name:.*$', '', text)
-        dest = output / rel
+        dest_rel = Path('compose.yml') if rel.name in {'docker-compose.yml','docker-compose.yaml'} else rel
+        dest = output / dest_rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(text, encoding='utf-8'); dest.chmod(0o600)
-        copied.append(str(rel))
+        copied.append(str(dest_rel))
     compose = output / 'compose.yml'
     if not compose.exists():
         raise ValueError('template compose missing')
