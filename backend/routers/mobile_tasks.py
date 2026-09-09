@@ -1514,22 +1514,11 @@ def _analysis_order(data: AnalysisTaskSearch) -> str:
 
 
 def _task_order(parser_type: str, sort: SortMode) -> str:
-    completed_last = "CASE WHEN projection.task_state='completed' THEN 1 ELSE 0 END"
-    if sort == "updated_asc":
-        return f"{completed_last}, projection.updated_at ASC, projection.row_key"
-    if sort == "updated_desc":
-        return f"{completed_last}, projection.updated_at DESC, projection.row_key"
-    if sort == "address_asc":
-        return f"{_original_address_order(parser_type)}, projection.row_key"
-    if sort == "identity_asc":
-        return (
-            f"{_identity_order(parser_type)}, "
-            f"{_original_address_order(parser_type)}, projection.row_key"
-        )
-    return (
-        f"{_priority_order(parser_type)}, {_address_order(parser_type)}, "
-        "projection.row_key"
-    )
+    # Task order is a queue invariant.  Editing results, feedback, address,
+    # inspector or updated_at must never move a row while users process it.
+    # row_key is immutable for a local task and provides deterministic order
+    # across refreshes, pagination and exports.
+    return "projection.row_key"
 
 
 async def _analysis_filter_options(
