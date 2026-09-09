@@ -55,6 +55,17 @@ class AssignmentProjectionTests(unittest.TestCase):
         )
         self.assertEqual(result[-1], 0)
 
+    def test_address_conflict_with_unique_source_remains_queue_ready(self):
+        result = assignment_projection_fields(
+            "疑似未注销模型三",
+            {},
+            community="社区一",
+            source_count=1,
+            conflict=True,
+            task_state_value="unchecked",
+        )
+        self.assertEqual(result[-1], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

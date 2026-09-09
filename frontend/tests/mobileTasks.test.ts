@@ -1033,14 +1033,16 @@ test('指令核查编辑器使用防抖自动保存并提供失败重试', () =>
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
-  assert.match(tableSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 700\)/)
+  assert.match(tableSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 1500\)/)
+  assert.match(tableSource, /onCompositionStart/)
+  assert.match(detailSource, /onCompositionEnd/)
   assert.match(tableSource, /保存失败[\s\S]*?重试/)
   assert.match(tableSource, /autosaveSequenceRef/)
   assert.match(tableSource, /activeAutosavesRef/)
   assert.match(tableSource, /queuedAutosavesRef/)
   assert.match(tableSource, /task_revision_conflict/)
   assert.match(tableSource, /current_values/)
-  assert.match(detailSource, /scheduleAutoSave\(700\)/)
+  assert.match(detailSource, /scheduleAutoSave\(1500\)/)
   assert.match(detailSource, /savingRef/)
   assert.match(detailSource, /formGenerationRef/)
   assert.match(detailSource, /task_update/)

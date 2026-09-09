@@ -153,7 +153,9 @@ def assignment_projection_fields(
         not str(values.get("核查人") or "").strip()
         and task_state_value != "completed"
         and int(source_count or 0) == 1
-        and not conflict
+        # Address matching conflicts only affect automatic small-community
+        # allocation.  A task with a known community still needs a human
+        # inspector and must remain assignable for manual resolution.
     )
     return source_label, address_display, sort_key, queue_ready
 
