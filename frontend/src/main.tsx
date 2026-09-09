@@ -14,6 +14,13 @@ import {
 } from './utils/themeMode'
 import './index.css'
 
+function runtimeBasename(): string {
+  const path = window.location.pathname.toLowerCase()
+  if (path === '/staging' || path.startsWith('/staging/')) return '/staging'
+  if (path === '/dev' || path.startsWith('/dev/')) return '/dev'
+  return ''
+}
+
 dayjs.locale('zh-cn')
 
 if (import.meta.env.VITE_NATIVE_MOBILE === 'true') {
@@ -47,7 +54,7 @@ applyThemeToDocument(resolveThemeMode(
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={runtimeBasename()}>
       <App />
     </BrowserRouter>
   </React.StrictMode>,

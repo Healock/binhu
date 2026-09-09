@@ -6,7 +6,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import Settings, settings
-from services.environment_identity import is_shadow_username, production_username_allowed
+from services.environment_identity import is_shadow_username, production_username_allowed, username_allowed_in_environment
 
 
 class EnvironmentIdentityTests(unittest.TestCase):
@@ -54,6 +54,16 @@ class EnvironmentIdentityTests(unittest.TestCase):
             self.assertTrue(production_username_allowed("observer"))
         with patch.object(settings, "APP_ENVIRONMENT", "shadow"):
             self.assertTrue(production_username_allowed("observer@shadow"))
+
+    def test_accounts_are_bound_to_environment(self):
+        with patch.object(settings, "APP_ENVIRONMENT", "staging"):
+            self.assertTrue(production_username_allowed("observer@staging"))
+            self.assertFalse(production_username_allowed("observer@dev"))
+            self.assertFalse(production_username_allowed("observer"))
+        with patch.object(settings, "APP_ENVIRONMENT", "development"):
+            self.assertTrue(production_username_allowed("observer@dev"))
+            self.assertFalse(production_username_allowed("observer@staging"))
+        self.assertFalse(username_allowed_in_environment("observer@staging", "production"))
 
 
 if __name__ == "__main__":

@@ -1582,3 +1582,11 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 回退不能直接启动不理解 `manual_unmatched` 的旧 worker：先暂停相关人工写入及投影 worker，保留数据库与历史事件，核对旧代码的状态兼容性。需要向后兼容补丁或继续停用相关任务，禁止清空人工结论、回填虚构小区、删除历史事件或在规则重建时覆盖结论。恢复前重新核对结论数量、来源 revision、反馈冲突和汇总队列。
 
 浏览器组件验收可在本机 Vite 运行 `frontend/tests/addressWorkbench.browser.mjs`；通过 `PLAYWRIGHT_MODULE` 指定已安装 Playwright，`PLAYWRIGHT_CHANNEL` 指定浏览器（默认 msedge）。HTTP 全部使用虚构拦截，不连接数据库，输出在忽略的 `scratch/address-ux/`。生产构建不包含 tests fixture 页面。
+# 环境入口与隔离（production / staging / development）
+
+正式环境使用 `/` 和 `binhu_session`。预发布使用 `/staging/`、脱敏数据和
+`binhu_staging_session`；Dev 使用 `/dev/`、虚构数据和 `binhu_dev_session`。
+入口、Bootstrap 返回的环境身份、数据库和 Compose 项目必须一致，任何不一致都应拒绝登录，不能回退到生产 API。
+
+预发布账号使用 `@staging` 后缀，Dev 账号使用 `@dev` 后缀；这些账号不能跨环境使用。
+旧 `@shadow` 仅用于历史迁移和证据核对，停用前必须先完成新环境验收和影子资源证据留存。

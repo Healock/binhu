@@ -30,13 +30,13 @@ export function environmentForUsername(username: string): AppEnvironment {
 }
 
 export function getApiEnvironment(): AppEnvironment {
-  const stored = safeSessionStorage()?.getItem(STORAGE_KEY)
-  if (stored === 'staging' || stored === 'development' || stored === 'shadow') return stored
   if (typeof window !== 'undefined') {
     const path = window.location.pathname.toLowerCase()
     if (path === '/staging' || path.startsWith('/staging/')) return 'staging'
     if (path === '/dev' || path.startsWith('/dev/')) return 'development'
   }
+  const stored = safeSessionStorage()?.getItem(STORAGE_KEY)
+  if (stored === 'staging' || stored === 'development' || stored === 'shadow') return stored
   return 'production'
 }
 

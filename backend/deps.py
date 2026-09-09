@@ -32,6 +32,7 @@ from services.member_departments import get_member_departments
 from services.maintenance import enforce_maintenance, is_super_admin_user
 from services.dashboard_scope import is_admin_account
 from services.session_devices import infer_device_type, hash_device_id
+from services.environment_identity import username_allowed_in_environment
 
 
 FEATURE_PERMISSION_GATES = {
@@ -186,6 +187,10 @@ async def _load_current_user(
             row = await cur.fetchone()
             if not row:
                 raise _auth_error("session_expired", "登录会话已失效")
+            if not username_allowed_in_environment(row[1]):
+                # A cookie copied between environment prefixes must never grant
+                # access even if the session id happens to exist in that DB.
+                raise _auth_error("environment_account_mismatch", "账号不属于当前环境")
 
             active_session_id = row[11]
             session_device_type = str(row[27] or "").strip().lower() if len(row) > 27 else ""

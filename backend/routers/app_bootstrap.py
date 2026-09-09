@@ -67,6 +67,19 @@ async def get_app_bootstrap(
     return {
         "server_version": APP_VERSION,
         "environment": settings.APP_ENVIRONMENT,
+        "environment_id": settings.APP_ENVIRONMENT,
+        "data_kind": {
+            "production": "真实业务数据",
+            "staging": "生产脱敏副本",
+            "development": "虚构或脱敏开发数据",
+            "shadow": "历史压测数据",
+        }.get(settings.APP_ENVIRONMENT, "未知数据"),
+        "api_entry": {
+            "production": "/api",
+            "staging": "/staging/api",
+            "development": "/dev/api",
+            "shadow": "/shadow-api",
+        }.get(settings.APP_ENVIRONMENT, "/api"),
         "environment_label": (
             settings.APP_ENVIRONMENT_LABEL.strip()
             or {
