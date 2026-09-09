@@ -1,4 +1,4 @@
-export type AppEnvironment = 'production' | 'shadow'
+export type AppEnvironment = 'production' | 'staging' | 'development' | 'shadow'
 
 export interface ApiEnvironmentSnapshot {
   environment: AppEnvironment
@@ -6,7 +6,11 @@ export interface ApiEnvironmentSnapshot {
 }
 
 const STORAGE_KEY = 'binhu_api_environment'
-const SHADOW_SUFFIX = '@shadow'
+const ENVIRONMENT_SUFFIXES: Array<[string, AppEnvironment]> = [
+  ['@staging', 'staging'],
+  ['@dev', 'development'],
+  ['@shadow', 'shadow'],
+]
 
 function configuredProductionBaseUrl(): string {
   return String(import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '') || '/api'
@@ -21,17 +25,25 @@ function safeSessionStorage(): Storage | null {
 }
 
 export function environmentForUsername(username: string): AppEnvironment {
-  return username.trim().toLowerCase().endsWith(SHADOW_SUFFIX) ? 'shadow' : 'production'
+  const normalized = username.trim().toLowerCase()
+  return ENVIRONMENT_SUFFIXES.find(([suffix]) => normalized.endsWith(suffix))?.[1] || 'production'
 }
 
 export function getApiEnvironment(): AppEnvironment {
-  return safeSessionStorage()?.getItem(STORAGE_KEY) === 'shadow' ? 'shadow' : 'production'
+  const stored = safeSessionStorage()?.getItem(STORAGE_KEY)
+  if (stored === 'staging' || stored === 'development' || stored === 'shadow') return stored
+  if (typeof window !== 'undefined') {
+    const path = window.location.pathname.toLowerCase()
+    if (path === '/staging' || path.startsWith('/staging/')) return 'staging'
+    if (path === '/dev' || path.startsWith('/dev/')) return 'development'
+  }
+  return 'production'
 }
 
 export function setApiEnvironment(environment: AppEnvironment): void {
   const storage = safeSessionStorage()
   if (storage) {
-    if (environment === 'shadow') storage.setItem(STORAGE_KEY, environment)
+    if (environment !== 'production') storage.setItem(STORAGE_KEY, environment)
     else storage.removeItem(STORAGE_KEY)
   }
   if (
@@ -50,10 +62,11 @@ export function resetApiEnvironment(): void {
 export function getApiBaseUrl(environment = getApiEnvironment()): string {
   const productionBase = configuredProductionBaseUrl()
   if (environment === 'production') return productionBase
+  const path = environment === 'staging' ? '/staging/api' : environment === 'development' ? '/dev/api' : '/shadow-api'
   if (/^https?:\/\//i.test(productionBase)) {
-    return `${new URL(productionBase).origin}/shadow-api`
+    return `${new URL(productionBase).origin}${path}`
   }
-  return '/shadow-api'
+  return path
 }
 
 export function getApiEnvironmentSnapshot(): ApiEnvironmentSnapshot {
@@ -67,25 +80,24 @@ export function assertApiEnvironmentIdentity(
 ): void {
   if (actual === expected) return
   throw new Error(
-    expected === 'shadow'
-      ? '影子入口连接到了非影子服务，已阻止登录'
-      : '正式入口环境身份校验失败，已阻止登录',
+    `当前入口连接到了非${expected === 'production' ? '正式' : expected === 'staging' ? '预发布' : expected === 'development' ? 'Dev' : '影子'}环境服务，已阻止登录`,
   )
 }
 
 export function resolveRuntimeApiUrl(input: string): string {
   if (/^[a-z][a-z\d+.-]*:/i.test(input) || input.startsWith('//')) {
-    if (getApiEnvironment() !== 'shadow') return input
+    if (getApiEnvironment() === 'production') return input
     const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
     const target = new URL(input, browserOrigin)
-    const shadowBase = new URL(getApiBaseUrl('shadow'), browserOrigin)
-    if (target.origin !== shadowBase.origin) {
-      throw new Error('影子环境已阻止跨域 API 请求')
+    const environmentBase = new URL(getApiBaseUrl(), browserOrigin)
+    if (target.origin !== environmentBase.origin) {
+      throw new Error('当前环境已阻止跨域 API 请求')
     }
+    const basePath = environmentBase.pathname.replace(/\/$/, '')
     if (target.pathname === '/api' || target.pathname.startsWith('/api/')) {
-      target.pathname = `/shadow-api${target.pathname.slice(4)}`
-    } else if (target.pathname !== '/shadow-api' && !target.pathname.startsWith('/shadow-api/')) {
-      throw new Error('影子环境只允许访问固定的 /shadow-api 入口')
+      target.pathname = `${basePath}${target.pathname.slice(4)}`
+    } else if (target.pathname !== basePath && !target.pathname.startsWith(`${basePath}/`)) {
+      throw new Error('当前环境只允许访问固定的 API 入口')
     }
     return target.toString()
   }
@@ -98,7 +110,7 @@ export function resolveRuntimeApiUrl(input: string): string {
 export function resolveRuntimeAssetUrl(assetUrl: string | null | undefined): string | null {
   if (!assetUrl) return null
   if (/^[a-z][a-z\d+.-]*:/i.test(assetUrl) || assetUrl.startsWith('//')) {
-    if (getApiEnvironment() !== 'shadow') return assetUrl
+    if (getApiEnvironment() === 'production') return assetUrl
     try {
       const target = new URL(assetUrl, window.location.origin)
       const apiBase = new URL(getApiBaseUrl(), window.location.origin)
@@ -106,7 +118,8 @@ export function resolveRuntimeAssetUrl(assetUrl: string | null | undefined): str
       if (target.pathname === '/api' || target.pathname.startsWith('/api/')) {
         return resolveRuntimeApiUrl(target.toString())
       }
-      return target.pathname === '/shadow-api' || target.pathname.startsWith('/shadow-api/')
+      const basePath = apiBase.pathname.replace(/\/$/, '')
+      return target.pathname === basePath || target.pathname.startsWith(`${basePath}/`)
         ? target.toString()
         : null
     } catch {
