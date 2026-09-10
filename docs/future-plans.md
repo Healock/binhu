@@ -1,6 +1,6 @@
 # 未来计划
 
-这里记录已经确定方向、但当前还没有开始实施的功能。总目录只提供项目索引；每项计划的范围、状态、验收和实施边界维护在对应项目文档中。
+这里记录尚未完成的长期项目及相关执行台账；具体是否已开始实施，以各项目状态和证据为准。总目录只提供项目索引；每项计划的范围、状态、验收和实施边界维护在对应项目文档中。
 
 开始任何项目之前，必须重新核对 `AGENTS.md`、实际代码、当前需求、环境身份、数据范围和现有 PR 状态。计划中的内容不能当作已开发、已验证、已部署或已发布的事实。
 
@@ -8,6 +8,9 @@
 
 | 项目 | 当前状态 | 文档 |
 | --- | --- | --- |
+| 事件总线与实时计算基础设施 | dev 长期架构线承接；历史停止线及待验收项保留 | [事件总线与实时计算基础设施](future-plans/eventbus-realtime-infrastructure.md) |
+| 腾讯表时代数据模型退场 | 长期迁移规划，实施前重新盘点 | [腾讯表时代数据模型退场](future-plans/legacy-task-model-retirement.md) |
+| 生产接口拥堵诊断与抗压治理 | 排查记录已归档，整改另行推进 | [生产接口拥堵治理](future-plans/production-congestion-observability.md) |
 | 外部出勤和请假系统对接 | 已确定方向，未开始 | [外部出勤和请假系统](future-plans/external-attendance-leave.md) |
 | 流口标签与确认地址工作台 | PR/验收台账独立维护 | [流口标签与确认地址工作台](future-plans/flow-address-confirmation.md) |
 | 地址匹配智能化升级 | 规划中，Dev 验证前未开始 | [地址匹配智能化升级](future-plans/address-matching-intelligence.md) |
