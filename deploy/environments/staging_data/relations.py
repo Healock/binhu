@@ -18,7 +18,7 @@ REVIEW_ACTIONS = {'legacy_unverifiable_backfill','formal_result_submitted','ente
     'administrative_bulk_archive','maintenance_archived'}
 REGISTRATION_ACTIONS = {'property_selected','registration_cancelled','residence_match','residence_mismatch',
     'registration_confirmation_enqueue_failed','registration_confirmed','registration_writeback_failed',
-    'manual_confirmation','manual_registration_confirmed','pending_address_saved','property_linked'}
+    'manual_confirmation','manual_registration_confirmed','pending_address_saved','property_linked','source_archived'}
 UNMATCHED_REASONS = {'insufficient_address','outside_existing_communities','community_registry_missing',
     'outside_task_community','other_review_required'}
 
@@ -61,7 +61,9 @@ def history_rows(review, registration, flows, current, remapped, codec):
         key=(flow['parser_type'],flow['row_key'])
         action=enum(row['action'],REVIEW_ACTIONS,empty=False)
         # Export job IDs in archive outcomes are replaced with a safe summary.
-        outcome='archived' if action=='archive_exported' else enum(row['outcome'], REVIEW_STATES | {'success','failure'})
+        outcome=('archived' if action in {'archive_exported','administrative_bulk_archive','maintenance_archived'}
+                 else ('source_removed' if row['outcome']=='source_removed' else
+                       ('empty' if not row['outcome'] else enum(row['outcome'], REVIEW_STATES | {'success','failure'}))))
         fence=transform_fence(row,current[key],remapped[key]['source'],codec)
         output['OnlineData._unverifiable_review_events'].append({
             'id':codec.reference('review_event',row['id']), 'flow_id':codec.reference('flow',row['flow_id']),
