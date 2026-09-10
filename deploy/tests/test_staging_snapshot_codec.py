@@ -79,3 +79,6 @@ class SnapshotCodecTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+# Keep the dispatch date contract covered by the PR synchronization check.
+
