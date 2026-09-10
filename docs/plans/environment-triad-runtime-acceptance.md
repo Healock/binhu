@@ -45,9 +45,21 @@ PR #563 的 PR CI `34424666290` 和主线 CI `34425055670` 均成功，已合并
 实际只读检查表明运行的是 Apicurio 2.6.5.Final，其兼容接口在 8080 的
 `/apis/ccompat/v7`，代码误用了 8081；现有实例还是无持久存储的 mem 镜像，
 subject 列表为空。失败输出与原配置保存在独立 `dev-pipeline-3fdfb086` 证据目录。
-后续补丁纠正固定接口并准备 Dev KafkaSQL journal，实际注册和恢复仍待验收。
+PR #564 已合并到 `bec97ffb`，PR CI `34426137971` 和主线 CI `34426572521`
+均成功。Dev Registry 已替换为官方 Quay 固定摘要的 Apicurio KafkaSQL 镜像，
+仅替换 Registry 服务；Dev Kafka 三个 broker 的 ID 和启动时间均不变。
+`dev.registry.storage.v1` 为单分区三副本 journal，min ISR=2，无时间/字节过期。
+Schema ID=1、version=1，Registry 重启后的合同 SHA-256 与重启前一致。
+新 worker 已部署，重复消息重放后 MySQL/Redis revision 仍为 3、投递台账仍为
+三个 published；现有 Flink 作业累计完成 264 次检查点、零失败（该检查时点）。
+Registry 重启初始化期间的连接失败，以及 worker 重建期间提前验证返回 137
+均保留在独立证据文件，随后就绪验证成功，不记作首次即成功。
+五个生产容器 ID、启动时间和重启次数与原基线相同，生产 Bootstrap 正常。
+数据库/Redis 密码未命中本次检查的 worker/Flink 日志与作业 plan/config。
+证据目录为 `environment-triad/dev-pipeline-79edefbf`；Flink Java 作业仍是原
+`a9409fce` 构建，尚未把后续语句编号诊断代码切入当前运行作业。
 
-- Schema Registry 合同注册和启动一致性校验的实际运行。
+- Schema Registry 合同注册、启动一致性和重启持久化已验证；后续持续记录版本变化。
 - 业务派生计算、Backend/实时查询、WebSocket、完整故障与消息重放验收。
   当前元数据聚合不能替代地址匹配、人员标签或任务图业务计算。
 - 真正的 Staging 白名单生产脱敏副本、引用关系报告、零敏感值扫描及失败回退。
@@ -55,3 +67,15 @@ subject 列表为空。失败输出与原配置保存在独立 `dev-pipeline-3fd
 - 内置浏览器首次改密与业务页面验收。HTTP 登录通过不等同页面体验已验收。
 - Staging 新运行编号下的 75 人/5 分钟复测及清理。
 - 完成替代能力后才核对旧 shadow 的监控、回滚和运行依赖，停用账号/入口并清理资源。
+
+## Staging 白名单准备工具（尚未导入）
+
+新增 `deploy/environments/staging_data/` 的只读 `measure`/`export` 入口：
+一次一致性事务读取当前任务、组织和地址图，生成独立假主键和假名，检查任务与
+来源集合、引用关系及嵌套 JSON 敏感值。历史 revision 和哈希一致/过期语义保留。
+密码、会话、附件及未知配置不导出；每次独立编号，失败证据不覆盖。
+
+本地部署工具测试 114 项运行，112 项通过、2 项按既有条件跳过；Python 编译通过。
+当前尚无服务器真实 MySQL 导出验证或 Staging 导入。工具固定输出
+`ready_for_application_switch=false`，等待历史摘要、任务地址确认、登记 HMAC、
+候选八库导入和目标验证补齐，不以纯测试签署数据可用。
