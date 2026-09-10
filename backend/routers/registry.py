@@ -544,7 +544,11 @@ async def _property_search_result(
             "OR EXISTS (SELECT 1 FROM registry_address_aliases alias "
             "WHERE alias.property_id=property.id AND alias.enabled=1 AND alias.alias LIKE %s))"
         )
-        params.extend([like_value] * 10 + [alias_like, like_value])
+        # Nine direct property fields precede the small-community alias
+        # lookup and the registry alias lookup in the predicate above.
+        # Keep the parameter count exactly aligned with the placeholders;
+        # aiomysql otherwise raises ``not all arguments converted``.
+        params.extend([like_value] * 9 + [alias_like, like_value])
 
     clause = " WHERE " + " AND ".join(where) if where else ""
     joins = (

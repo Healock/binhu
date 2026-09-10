@@ -164,6 +164,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }>>([])
   const [registrationPropertyId, setRegistrationPropertyId] = useState<number | undefined>()
   const [registrationPropertyVersion, setRegistrationPropertyVersion] = useState<number | undefined>()
+  const [registrationPendingAddress, setRegistrationPendingAddress] = useState('')
   const [registrationPropertyLoading, setRegistrationPropertyLoading] = useState(false)
   const [registrationMatchStatus, setRegistrationMatchStatus] = useState<'idle' | 'matching' | 'unique' | 'multiple' | 'none' | 'error'>('idle')
   const [manualConfirmOpen, setManualConfirmOpen] = useState(false)
@@ -231,7 +232,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     registrationClosureEnabled
       && data
       && (formValues[data.workflow.result_field] || '').trim() === '待登记'
-      && (!registrationPropertyId || !registrationPropertyVersion),
+      && (!registrationPendingAddress.trim() && (!registrationPropertyId || !registrationPropertyVersion)),
   )
 
   const shouldClaimUnassigned = mode === 'tasks'
@@ -504,6 +505,9 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               registration_property_id: registrationPropertyId,
               registration_property_version: registrationPropertyVersion,
             }
+          : {}),
+        ...(registrationPendingAddress.trim() && !registrationPropertyId
+          ? { registration_pending_address: registrationPendingAddress.trim() }
           : {}),
       })
       const savedValues = mergeMobileTaskSaveValues(
@@ -1348,7 +1352,19 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                       && data.workflow.result_field
                       && (formValues[data.workflow.result_field] || '').trim() === '待登记' ? (
                       <>
-                      <Select
+                      {registrationMatchStatus === 'error' ? <Input.TextArea
+                        autoSize={{ minRows: 2, maxRows: 4 }}
+                        value={registrationPendingAddress}
+                        placeholder="房屋档案不可用，可填写待建档现住址"
+                        onChange={event => {
+                          setRegistrationPendingAddress(event.target.value)
+                          setRegistrationPropertyId(undefined)
+                          setRegistrationPropertyVersion(undefined)
+                          updateDraftValues(current => ({ ...current, 现住址: event.target.value }))
+                        }}
+                        onBlur={() => { if (registrationPendingAddress.trim()) scheduleAutoSave(0) }}
+                        aria-describedby="registration-match-status"
+                      /> : <Select
                         showSearch
                         allowClear
                         filterOption={false}
@@ -1375,7 +1391,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                           }
                         }}
                         aria-describedby="registration-match-status"
-                      />
+                      />}
                       <span id="registration-match-status" className="text-xs text-[var(--app-text-secondary)]" aria-live="polite">
                         {registrationMatchStatus === 'matching' && '正在识别地址…'}
                         {registrationMatchStatus === 'unique' && '根据核查补充信息找到唯一候选，请确认'}

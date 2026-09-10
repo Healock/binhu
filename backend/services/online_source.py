@@ -103,12 +103,14 @@ def active_source_sql_filter(parser_type: str, alias: str = "source") -> str:
     if local_data_source_enabled():
         prefix = f"{alias}."
         local_kinds = (
-            f"{prefix}source_kind IN ('local_table','local_dispatch','one_time_continuation_import')"
+            f"{prefix}spreadsheet_id=0 AND {prefix}source_kind IN ('local_table','local_dispatch','one_time_continuation_import')"
         )
-        return (
-            f" AND {prefix}spreadsheet_id=0"
-            f" AND {local_kinds}"
-        )
+        # Local source rows are identified by ``source_kind``.  Older
+        # production schemas may not yet have the legacy spreadsheet_id
+        # compatibility column; task-facing local queries must remain
+        # usable during that additive migration instead of failing with
+        # ``Unknown column ... spreadsheet_id``.
+        return f" AND {local_kinds}"
     return ""
 
 
