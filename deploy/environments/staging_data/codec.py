@@ -160,6 +160,23 @@ class Codec:
                         matches += self.scan(value)
         return matches
 
+    def scan_table_summary(self, tables):
+        """Return only table/field/count metadata for a failed final scan."""
+        from services.registry_import import NORMAL_HOUSING_TYPES
+        summary = []
+        for table, rows in tables.items():
+            for column in sorted({key for row in rows for key in row}):
+                count = 0
+                for row in rows:
+                    value = row.get(column)
+                    if table == 'RegistryData.registry_properties' and column == 'housing_type':
+                        enum(value, NORMAL_HOUSING_TYPES)
+                    else:
+                        count += self.scan(value)
+                if count:
+                    summary.append({'table': table, 'field': column, 'count': count})
+        return summary
+
 
 def enum(value, allowed, *, empty=True):
     if value is None or value == "":

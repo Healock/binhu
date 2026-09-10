@@ -46,12 +46,24 @@ def safe_diagnostics(value):
     for key, item in value.items():
         if key in counts and type(item) is int and 0 <= item <= 10**9:
             result[key] = item
+        elif key == 'match_count' and type(item) is int and 0 <= item <= 10**9:
+            result[key] = item
         elif key == 'parser_type' and isinstance(item, str) and item in TASK_TYPES:
             result[key] = item
         elif key == 'by_parser_and_source_kind' and isinstance(item, dict) and len(item) <= 32:
             allowed = {p + '|' + s for p in (*TASK_TYPES, 'unknown_parser') for s in
                 ('local_table', 'local_dispatch', 'one_time_continuation_import', 'unknown_source_kind')}
             result[key] = {k:v for k,v in item.items() if k in allowed and type(v) is int and 0 <= v <= 10**9}
+        elif key == 'fields' and isinstance(item, list) and len(item) <= 64:
+            safe = []
+            for entry in item:
+                if (isinstance(entry, dict) and set(entry) == {'table', 'field', 'count'}
+                        and all(isinstance(entry[k], str) and len(entry[k]) <= 128 for k in ('table', 'field'))
+                        and type(entry['count']) is int and 0 <= entry['count'] <= 10**9
+                        and re.fullmatch(r'[A-Za-z0-9_.]+', entry['table'])):
+                        safe.append({'table': entry['table'], 'field': entry['field'], 'count': entry['count']})
+            if safe:
+                result[key] = safe
     return result
 
 
