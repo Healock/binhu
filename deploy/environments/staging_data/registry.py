@@ -65,7 +65,7 @@ def transform(rows, codec: Codec, *, actor_ids=()):
             "normalized_name": codec.text("small_community_name", row["name"], "验证小区"),
             "detail_address": codec.address(row["community_id"], row["detail_address"]),
             "community_id": codec.reference("community", row["community_id"]),
-            "address_type": enum(row["address_type"], {"community", "road", "building", "other"}, empty=False),
+            "address_type": enum(row["address_type"], {"community", "apartment", "construction_dormitory", "other"}, empty=False),
             "enabled": integer(row["enabled"], maximum=1), "aliases_json": "[]", "source_flags": "[]", "pattern": ""})
     for row in properties.values():
         address = codec.address(row["community_id"], row["natural_address"])

@@ -23,6 +23,23 @@ def fixture():
 
 
 class RegistrySnapshotTests(unittest.TestCase):
+    def test_address_types_follow_current_business_contract(self):
+        import ast
+        tree=ast.parse((Path(__file__).resolve().parents[2]/'backend/routers/police_dispatch.py').read_text(encoding='utf-8'))
+        model=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=='AddressCreate')
+        field=next(node for node in model.body if isinstance(node,ast.AnnAssign) and node.target.id=='address_type')
+        allowed=ast.literal_eval(field.annotation.slice)
+        for kind in allowed:
+            with self.subTest(kind=kind):
+                rows=fixture()
+                rows['RegistryData._police_address_entries'][0]['address_type']=kind
+                result=transform(rows,Codec(b'a'*32))
+                self.assertEqual(result['tables']['RegistryData._police_address_entries'][0]['address_type'],kind)
+        rows=fixture()
+        rows['RegistryData._police_address_entries'][0]['address_type']='unreviewed_text'
+        with self.assertRaisesRegex(SnapshotError,'unknown_enum'):
+            transform(rows,Codec(b'a'*32))
+
     def test_relations_and_confirmation_are_preserved_without_source_ids(self):
         result=transform(fixture(),Codec(b'a'*32))
         tables=result['tables']
