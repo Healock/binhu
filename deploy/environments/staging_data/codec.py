@@ -31,6 +31,7 @@ class Codec:
         self._numbers = {}
         self._number_owners = {}
         self._number_counts = {}
+        self.categorical_overlaps = {}
 
     def digest(self, kind, value):
         payload = (kind + "\0" + str(value)).encode("utf-8")
@@ -149,30 +150,58 @@ class Codec:
         any other column, nested JSON or generic scan remains sensitive.
         Revalidate here so the final scan works on serialized data too.
         """
-        from services.registry_import import NORMAL_HOUSING_TYPES
-        matches = 0
-        for table, rows in tables.items():
-            for row in rows:
-                for column, value in row.items():
-                    if table == 'RegistryData.registry_properties' and column == 'housing_type':
-                        enum(value, NORMAL_HOUSING_TYPES)
-                    else:
-                        matches += self.scan(value)
-        return matches
+        return sum(item['count'] for item in self.scan_table_summary(tables))
+
+    def assert_tables_safe(self, tables):
+        fields = self.scan_table_summary(tables)
+        if fields:
+            raise SnapshotError('source_sensitive_value_detected', diagnostics={
+                'match_count': sum(item['count'] for item in fields), 'fields': fields,
+            })
 
     def scan_table_summary(self, tables):
-        """Return only table/field/count metadata for a failed final scan."""
+        """Return table/field/count metadata, never a matched source value."""
         from services.registry_import import NORMAL_HOUSING_TYPES
+        from services.parsers import get_parser
+        from services.task_workflow import TASK_WORKFLOWS
+        from .tasks import TASK_TYPES, result_categories
+        contracts = {kind: (get_parser(kind), TASK_WORKFLOWS[kind]) for kind in TASK_TYPES}
+        by_table = {'OnlineData.' + parser.table_name: (parser, workflow)
+                    for parser, workflow in contracts.values()}
         summary = []
         for table, rows in tables.items():
             for column in sorted({key for row in rows for key in row}):
                 count = 0
+                overlaps = 0
                 for row in rows:
                     value = row.get(column)
                     if table == 'RegistryData.registry_properties' and column == 'housing_type':
                         enum(value, NORMAL_HOUSING_TYPES)
+                        overlaps += self.scan(value)
+                    elif table in by_table and column == by_table[table][1].result_field:
+                        # A result is a closed business category, not source prose.
+                        # Revalidate even after JSON serialization, retaining the
+                        # exact scan for the same bytes in every other field.
+                        enum(value, result_categories(by_table[table][1]))
+                        overlaps += self.scan(value)
+                    elif (table in {'OnlineData._online_source_rows', 'OnlineData._local_source_records'}
+                          and column == 'values_json' and row.get('parser_type') in contracts):
+                        parser, workflow = contracts[row['parser_type']]
+                        try:
+                            decoded = json.loads(value) if isinstance(value, str) else value
+                        except (ValueError, RecursionError):
+                            raise SnapshotError('invalid_embedded_json') from None
+                        if (not isinstance(decoded, dict) or set(decoded) != set(parser.COLUMNS)
+                                or any(not isinstance(v, (str, type(None))) for v in decoded.values())):
+                            raise SnapshotError('task_value_contract_mismatch')
+                        result = decoded[workflow.result_field]
+                        enum(result, result_categories(workflow))
+                        overlaps += self.scan(result)
+                        count += self.scan({k: v for k, v in decoded.items() if k != workflow.result_field})
                     else:
                         count += self.scan(value)
+                if overlaps:
+                    self.categorical_overlaps[(table, column)] = overlaps
                 if count:
                     summary.append({'table': table, 'field': column, 'count': count})
         return summary

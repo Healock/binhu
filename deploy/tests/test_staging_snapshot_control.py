@@ -1,14 +1,38 @@
 import tempfile
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from deploy.environments.staging_data.control import private_json, source_program, safe_diagnostics
 
 
 class ControlTests(unittest.TestCase):
+    def test_diagnostic_parser_contract_matches_current_business_fields(self):
+        from deploy.environments.staging_data.diagnostic_contract import TASK_COLUMNS
+        from deploy.environments.staging_data.tasks import TASK_TYPES
+        from services.parsers import get_parser
+        expected = {'OnlineData.' + get_parser(t).table_name: tuple(get_parser(t).COLUMNS)
+                    for t in TASK_TYPES}
+        self.assertEqual(TASK_COLUMNS, expected)
+
+    def test_host_diagnostics_require_no_backend_imports(self):
+        root = str(Path(__file__).resolve().parents[2])
+        code = ('import sys; sys.path.insert(0, ' + repr(root) + '); '
+                'from deploy.environments.staging_data.control import safe_diagnostics; '
+                'assert safe_diagnostics({"source_count": 1}) == {"source_count": 1}')
+        result = subprocess.run([sys.executable, '-I', '-S', '-c', code], capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+
+    def test_unknown_table_or_column_is_not_a_safe_identifier(self):
+        rows = [{'table':'OnlineData.t_fullchain','field':'SyntheticSecret-abc','count':1},
+                {'table':'SyntheticSecret_abc','field':'status','count':1},
+                {'table':'RegistryData.registry_properties','field':'status','count':2}]
+        self.assertEqual(safe_diagnostics({'fields':rows}), {'fields':[rows[2]]})
+
     def test_reader_program_compiles_and_never_logs_connection_secrets(self):
         program, hashes = source_program('staging-'+'a'*16, b'a'*32, measure=True)
         compile(program, '<snapshot-reader>', 'exec')
-        self.assertEqual(set(hashes), {'codec','registry','tasks','fences','organization','relations','digests','build'})
+        self.assertEqual(set(hashes), {'codec','registry','tasks','fences','organization','relations','digests','reconciliation','build'})
         self.assertIn("source_settings(settings)", program)
         self.assertIn("'snapshot_source_operation_failed'", program)
         self.assertNotIn('print(settings', program)

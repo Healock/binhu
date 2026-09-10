@@ -4,6 +4,48 @@ from deploy.environments.staging_data.tasks import business_date
 
 
 class SnapshotCodecTests(unittest.TestCase):
+    def test_source_category_requires_flat_text_values_in_both_source_tables(self):
+        import json
+        from services.parsers import get_parser
+        codec = Codec(b'a' * 32)
+        codec.remember('待登记')
+        values = {field: '' for field in get_parser('全链条').COLUMNS}
+        values.update({'核查结果': '待登记', '研判': {'nested': 'synthetic'}})
+        for table in ('OnlineData._online_source_rows', 'OnlineData._local_source_records'):
+            with self.subTest(table=table), self.assertRaisesRegex(SnapshotError, 'task_value_contract_mismatch'):
+                codec.assert_tables_safe({table: [{'parser_type': '全链条',
+                                                  'values_json': json.dumps(values)}]})
+
+    def test_result_contract_never_exempts_other_fields_or_unknown_values(self):
+        import json
+        codec = Codec(b'a' * 32)
+        codec.remember('待登记')
+        self.assertEqual(codec.scan({'核查结果': '待登记'}), 1)
+        for table, row in (
+            ('OnlineData.t_fullchain', {'研判': '待登记'}),
+            ('OnlineData.t_fullchain', {'研判': json.dumps({'核查结果': '待登记'})}),
+            ('OnlineData._online_source_rows', {'values_json': json.dumps({'核查结果': '待登记'})}),
+        ):
+            with self.subTest(table=table), self.assertRaises(SnapshotError):
+                codec.assert_tables_safe({table: [row]})
+        with self.assertRaises(SnapshotError):
+            codec.assert_tables_safe({'OnlineData.t_fullchain': [{'核查结果': 'arbitrary-note'}]})
+
+    def test_late_sensitive_value_in_embedded_json_still_blocks_final_scan(self):
+        import json
+        from deploy.environments.staging_data.control import safe_diagnostics
+        codec = Codec(b'a' * 32)
+        tables = {'OnlineData._online_source_rows': [
+            {'values_json': json.dumps({'nested': ['synthetic-private', 'synthetic-private']})}]}
+        codec.assert_tables_safe(tables)
+        codec.remember('synthetic-private')
+        with self.assertRaises(SnapshotError) as caught:
+            codec.assert_tables_safe(tables)
+        self.assertEqual(safe_diagnostics(caught.exception.diagnostics), {
+            'match_count': 2, 'fields': [{'table': 'OnlineData._online_source_rows',
+                                        'field': 'values_json', 'count': 2}]})
+        self.assertNotIn('synthetic-private', repr(caught.exception.diagnostics))
+
     def test_snapshot_stability_and_different_salts(self):
         a,b = Codec(b'a'*32), Codec(b'b'*32)
         self.assertEqual(a.address(1,'验证原始Ａ 1'), a.address(1,'验证原始A1'))

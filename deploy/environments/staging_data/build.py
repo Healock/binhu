@@ -14,6 +14,7 @@ from .fences import transform_fence
 from .organization import FIELDS as ORGANIZATION_FIELDS, transform as transform_organization
 from .relations import ADDRESS_FIELDS, REVIEW_EVENT_FIELDS, REGISTRATION_EVENT_FIELDS, address_rows, history_rows
 from .digests import identity_digest, address_digest, annotation_digest, matching_state
+from .reconciliation import summarize
 
 FLOW_FIELDS = ("id", "parser_type", "row_key", "cycle_no", "source_id", "source_revision", "source_row_hash", "state", "flow_version", "review_due_date", "original_deadline", "previous_deadline", "feedback_submitted", "created_by", "last_actor_id", "last_action_at", "resolved_at", "finalized_at", "archived_at", "created_at", "updated_at")
 REGISTRATION_FIELDS = ("parser_type", "row_key", "source_id", "source_revision", "source_row_hash", "identity_hmac", "last_address_hmac", "task_community", "property_id", "property_version", "status", "match_count", "selected_by", "selected_at", "confirmed_by", "manual_confirmed_at", "confirmed_at", "created_at", "updated_at")
@@ -25,7 +26,8 @@ def source_settings(settings):
     if (settings.APP_ENVIRONMENT != "production" or not settings.MYSQL_DOMAIN_DATABASES_ENABLED
             or not settings.PLATFORM_DOMAIN_ACTIVE or not settings.REGISTRY_ADDRESS_DOMAIN_ACTIVE):
         raise SnapshotError("source_environment_or_domain_mismatch")
-    names = {"ONLINE_DATA": "OnlineData", "PLATFORM": "PlatformData", "REGISTRY": "RegistryData"}
+    names = {"ONLINE_DATA": "OnlineData", "PLATFORM": "PlatformData", "REGISTRY": "RegistryData",
+             "ARCHIVE": "OnlineDataArchive"}
     if any(getattr(settings, "MYSQL_" + key + "_DB") != value for key,value in names.items()):
         raise SnapshotError("source_database_name_mismatch")
 
@@ -126,13 +128,17 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 business_keys = {(row['id'], row['_row_key']) for row in business}
                 source_keys = {(row['physical_row'], row['row_key']) for row in selected}
                 if business_keys != source_keys:
+                    ledgers = await select(cur, 'OnlineData._local_source_records',
+                        ('local_task_id', 'business_key', 'status'), ' WHERE parser_type=%s', (parser_type,))
+                    archive = await select(cur, 'OnlineDataArchive.' + parser.table_name + '_archive', ('_row_key',))
                     raise SnapshotError("business_source_count_or_key_mismatch", diagnostics={
                         "parser_type": parser_type,
-                        "source_count": len(source_keys),
-                        "business_count": len(business_keys),
-                        "source_only_count": len(source_keys - business_keys),
-                        "business_only_count": len(business_keys - source_keys),
+                        **summarize(business, selected, ledgers, {r['_row_key'] for r in archive}),
                     })
+                if (len({r['_row_key'] for r in business}) != len(business)
+                        or len({r['row_key'] for r in selected}) != len(selected)):
+                    raise SnapshotError('duplicate_current_business_key', diagnostics={
+                        'parser_type': parser_type, **summarize(business, selected, [], set())})
                 codec.allocate(parser.table_name,[row["id"] for row in business])
                 tables["OnlineData."+parser.table_name]=[]
                 new_keys=set()
@@ -212,13 +218,10 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 result['annotation_digest_states'].append({**metadata,
                     'state':matching_state(row['manual_unmatched_address_hmac'],expected)})
             tables.update(history_rows(review_events,registration_events,flow_map,current,remapped,codec))
-            matches = codec.scan_tables(tables)
-            if matches:
-                raise SnapshotError("source_sensitive_value_detected", diagnostics={
-                    'match_count': matches,
-                    'fields': codec.scan_table_summary(tables),
-                })
+            codec.assert_tables_safe(tables)
             result["report"].update({"snapshot_id":snapshot_id,"current_task_count":len(sources),
+                "categorical_value_overlaps":[{'table':table,'field':field,'count':count}
+                    for (table,field),count in sorted(codec.categorical_overlaps.items())],
                 "flow_count":len(retained_flows),"registration_count":len(retained_registrations),
                 "excluded_noncurrent_flows":len(flows)-len(retained_flows),
                 "excluded_noncurrent_registrations":len(registrations)-len(retained_registrations),

@@ -8,6 +8,15 @@ from deploy.environments.staging_data.organization import transform
 
 
 class OrganizationTests(unittest.TestCase):
+    def test_early_scan_reports_organization_field(self):
+        from deploy.environments.staging_data.control import safe_diagnostics
+        rows, codec = self.fixture()
+        codec.remember('在岗')
+        with self.assertRaisesRegex(SnapshotError, 'source_sensitive_value_detected') as caught:
+            transform(rows, codec, {normalized('虚构社区'): 1})
+        self.assertEqual(safe_diagnostics(caught.exception.diagnostics)['fields'],
+            [{'table': 'PlatformData._grid_members', 'field': 'status', 'count': 1}])
+
     def fixture(self):
         codec = Codec(b'a' * 32)
         codec.allocate('community', [1])

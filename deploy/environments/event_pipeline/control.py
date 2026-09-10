@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-import time
+import tempfile
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
 
@@ -50,9 +50,9 @@ def measure():
 
 def apply():
     report = measure()
-    evidence = ROOT / ("apply-evidence-" + str(time.time_ns()))
-    # Never overwrite earlier success or failure output.
-    evidence.mkdir(mode=0o700)
+    # Atomically allocate a private directory even if the clock repeats or
+    # concurrent attempts start within the same platform clock tick.
+    evidence = Path(tempfile.mkdtemp(prefix="apply-evidence-", dir=ROOT))
     schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                              "run", "--rm", "--no-deps", "relay", "python", "-m",
                              "event_pipeline.schema_registry", "verify"],
