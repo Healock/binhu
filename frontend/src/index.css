@@ -6175,6 +6175,13 @@ html.native-mobile-shell .app-sidebar__item-label {
   padding: 10px 12px !important;
 }
 
+/* Task editors are rendered inside an expanded cell. Keep the editor flush
+   with the primary task row even in compact shells; the generic expanded-row
+   spacing above is intended for read-only detail tables. */
+.app-shell--compact .mobile-task-table .ant-table-expanded-row > td {
+  padding: 0 0 10px !important;
+}
+
 @media (max-width: 1199px) and (min-width: 768px) {
   .desktop-app-content .app-content {
     padding-inline: 16px;
