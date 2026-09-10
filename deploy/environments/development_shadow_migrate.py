@@ -1,30 +1,54 @@
-"""Copy the old shadow topology as a Dev template without copying state."""
+"""Capture hashes of shadow configuration; never copy arbitrary secret values."""
 from __future__ import annotations
-import argparse, hashlib, json, re
+import argparse
+import hashlib
+import json
 from pathlib import Path
 
-SECRET = re.compile(r"password|secret|token|credential|private", re.I)
+ALLOWED = {'docker-compose.yml', 'docker-compose.business.yml',
+           'docker-compose.derived.yml', 'shadow-gateway.conf'}
+
+
+def checked_path(path: Path) -> Path:
+    if not path.is_absolute() or path == Path(path.anchor):
+        raise ValueError('absolute non-root path required')
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('symlinks forbidden')
+    return path.resolve()
+
 
 def extract(source: Path, output: Path) -> None:
-    if source.resolve() == output.resolve() or not source.exists():
-        raise SystemExit("invalid shadow source/output")
-    output.mkdir(parents=True, exist_ok=False)
-    hashes = {}
-    for path in source.rglob("*"):
-        if not path.is_file() or SECRET.search(path.name):
-            continue
-        rel = path.relative_to(source)
-        if rel.suffix not in {".yml", ".yaml", ".env", ".toml", ".conf"} or "artifact" in rel.parts:
-            continue
-        text = path.read_text(errors="replace")
-        text = re.sub(r"(?im)^([^#\n]*(?:password|secret|token|credential|key|url)[^=\n]*)=.*$", r"\1=[REDACTED]", text)
-        target = output / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        hashes[str(rel)] = hashlib.sha256(text.encode()).hexdigest()
-    (output / "manifest.json").write_text(json.dumps({"template": "shadow", "state_copied": False, "artifacts_excluded": True, "hashes": hashes}, indent=2), encoding="utf-8")
+    source, output = checked_path(source), checked_path(output)
+    if not source.is_dir() or output.exists() or output.is_relative_to(source):
+        raise ValueError('new evidence directory outside source required')
+    files = {}
+    for name in sorted(ALLOWED):
+        path = source / name
+        if path.is_symlink():
+            raise ValueError('symlink configuration rejected')
+        if path.is_file():
+            raw = path.read_bytes()
+            files[name] = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+    if 'docker-compose.yml' not in files:
+        raise ValueError('shadow Compose required')
+    output.mkdir(parents=True, mode=0o700)
+    target = output / 'manifest.json'
+    target.write_text(json.dumps({'template': 'shadow', 'state_copied': False,
+        'evidence_only': True, 'artifacts_excluded': True,
+        'configuration_values_copied': False, 'files': files}, indent=2), encoding='utf-8')
+    target.chmod(0o600)
+
 
 def main() -> None:
-    p = argparse.ArgumentParser(); p.add_argument("source", type=Path); p.add_argument("output", type=Path); args = p.parse_args(); extract(args.source, args.output)
+    p = argparse.ArgumentParser()
+    p.add_argument('source', type=Path)
+    p.add_argument('output', type=Path)
+    a = p.parse_args()
+    try:
+        extract(a.source, a.output)
+    except (ValueError, OSError):
+        raise SystemExit('evidence capture failed; originals retained') from None
 
-if __name__ == "__main__": main()
+
+if __name__ == '__main__':
+    main()

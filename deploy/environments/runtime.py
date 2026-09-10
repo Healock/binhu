@@ -106,7 +106,8 @@ def prepare(args):
     for domain in sorted(DOMAINS, key=len, reverse=True):
         sql = re.sub(r'\b' + re.escape(domain) + r'\b', dbs[domain], sql)
     sql = sql.replace("'binhu'@'%'", "'environment_app'@'%'")
-    sql += f"\nUSE `{dbs['OnlineData']}`;\nCREATE TABLE _environment_identity (id INT PRIMARY KEY, environment VARCHAR(32) NOT NULL);\nINSERT INTO _environment_identity VALUES (1, '{args.environment}');\n"
+    for database in dbs.values():
+        sql += f"\nUSE `{database}`;\nCREATE TABLE _environment_identity (id INT PRIMARY KEY, environment VARCHAR(32) NOT NULL);\nINSERT INTO _environment_identity VALUES (1, '{args.environment}');\n"
     private_file(root / 'init.sql', sql)
     # Contains schema only. MySQL's unprivileged entrypoint must be able to read it.
     (root / 'init.sql').chmod(0o644)

@@ -1,6 +1,7 @@
 """Fail-closed non-production startup policy, before any schema initialization."""
 from contextlib import asynccontextmanager
 import asyncio
+import re
 import aiomysql
 from config import settings
 
@@ -12,7 +13,7 @@ def validate_target(config):
     prefix = "Dev_" if environment == "development" else "Staging_"
     names = [getattr(config, f"MYSQL_{domain}_DB") for domain in (
         "ONLINE_DATA", "ARCHIVE", "DAILY_REPORT", "PLATFORM", "VISIT", "DISPATCH", "REGISTRY", "WORKFLOW")]
-    if len(set(names)) != 8 or any(not name.startswith(prefix) for name in names):
+    if len(set(names)) != 8 or any(not name.startswith(prefix) or not re.fullmatch(r'[A-Za-z0-9_]+', name) for name in names):
         raise ValueError("isolated database names required")
     if config.MYSQL_HOST != "environment-mysql" or config.MYSQL_USER != "environment_app":
         raise ValueError("isolated database endpoint required")
@@ -29,10 +30,12 @@ async def verify_database_identity():
         db=settings.MYSQL_ONLINE_DATA_DB, connect_timeout=5)
     try:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT environment FROM _environment_identity WHERE id=1")
-            row = await cur.fetchone()
-            if not row or row[0] != settings.APP_ENVIRONMENT:
-                raise ValueError("database environment identity mismatch")
+            for domain in ("ONLINE_DATA", "ARCHIVE", "DAILY_REPORT", "PLATFORM", "VISIT", "DISPATCH", "REGISTRY", "WORKFLOW"):
+                name = getattr(settings, f"MYSQL_{domain}_DB")
+                await cur.execute(f"SELECT environment FROM `{name}`._environment_identity WHERE id=1")
+                row = await cur.fetchone()
+                if not row or row[0] != settings.APP_ENVIRONMENT:
+                    raise ValueError("database environment identity mismatch")
     finally:
         conn.close()
 
