@@ -35,3 +35,8 @@ fails closed. It never replaces an existing marker or copies business data.
 MySQL DDL commits independently; preserve failed-run evidence and remeasure after
 failure. A partially created empty marker is deliberately not overwritten.
 Deploy the backend's all-eight-domain startup check only after this verification.
+
+The [Dev metadata pipeline](event_pipeline/README.md) provides a closed task-event
+contract, durable delivery ledger, fixed Flink aggregation and revision-fenced
+Redis bridge. Its preparation/startup and minimal synthetic acceptance are separate
+from schema-registry, recovery and full business integration acceptance.

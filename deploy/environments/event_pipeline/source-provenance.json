@@ -1,0 +1,10 @@
+{
+  "source": "preserved legacy shadow relay image code; no runtime configuration or data",
+  "files": {
+    "kafka_event_contract.py": "b7b9598d1b386b2cab17e31383e4c133eaccb7a872a9637f757e81b56cf2e9a6",
+    "kafka_envelope.py": "cb287d51121380298fae6f35d2fa10fc2c72def1c03003628e8ac9886b31aff3",
+    "kafka_relay.py": "5de31ae4e6f6b194c6f723e0a3f15ffda3d8a61562829985e9f38455a6f4655e",
+    "kafka_delivery_store.py": "5bf7ab8baf7fcb8cb2d94b7f1888ef7bd8e5890df9d4f65ce4eb3530cd5ff8d5",
+    "derived_revision_cache.py": "df8aba56c8fae7180338fb745eeb17de5d87a0e94988646ba9202cb7de25d198"
+  }
+}
