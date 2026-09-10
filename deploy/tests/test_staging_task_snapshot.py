@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'backend'))
@@ -58,6 +59,32 @@ class TaskSnapshotTests(unittest.TestCase):
         parser,values,codec=self.fixture()
         values['核查结果']='not a result'
         with self.assertRaises(SnapshotError):transform_values(parser,TASK_WORKFLOWS['全链条'],values,{normalized('虚构原社区'):1},codec)
+
+    def test_result_text_collision_is_only_exempt_at_validated_result_fields(self):
+        parser, values, codec = self.fixture()
+        values['研判'] = '待登记'
+        safe = transform_values(parser, TASK_WORKFLOWS['全链条'], values, {normalized('虚构原社区'): 1}, codec)
+        item = source_record(parser, {'id': 5, 'physical_row': 9, 'revision': 3, 'row_key': 'old'}, safe, codec)
+        tables = {'OnlineData.t_fullchain': [item['task']],
+                  'OnlineData._online_source_rows': [item['source']],
+                  'OnlineData._local_source_records': [item['local_record']]}
+        self.assertEqual(codec.scan_tables(json.loads(json.dumps(tables))), 0)
+        # The exemption cannot leak through to generic or nested free text.
+        self.assertEqual(codec.scan('待登记'), 1)
+        item['source']['cell_meta_json'] = json.dumps({'nested': ['待登记']})
+        self.assertEqual(codec.scan_tables(tables), 1)
+        item['source']['cell_meta_json'] = '{}'
+        payload = json.loads(item['source']['values_json'])
+        payload['研判'] = '待登记'
+        item['source']['values_json'] = json.dumps(payload)
+        self.assertEqual(codec.scan_tables(tables), 1)
+
+    def test_serialized_task_contract_rejects_unknown_result_or_extra_fields(self):
+        parser, values, codec = self.fixture()
+        for payload in ({**values, '核查结果': 'private text'}, {**values, 'extra': 'private text'}):
+            with self.assertRaises(SnapshotError):
+                codec.scan_tables({'OnlineData._online_source_rows': [
+                    {'parser_type': '全链条', 'values_json': json.dumps(payload)}]})
         parser,values,codec=self.fixture()
         values['private_body']='synthetic'
         with self.assertRaises(SnapshotError):transform_values(parser,TASK_WORKFLOWS['全链条'],values,{normalized('虚构原社区'):1},codec)
