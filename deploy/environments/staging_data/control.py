@@ -65,7 +65,7 @@ async def main():
 try:
     asyncio.run(main())
 except SnapshotError as exc:
-    print(json.dumps({'ok':False,'reason':str(exc)}))
+    print(json.dumps({'ok':False,'reason':exc.reason,'diagnostics':exc.diagnostics},ensure_ascii=True))
 except Exception:
     print(json.dumps({'ok':False,'reason':'snapshot_source_operation_failed'}))
 '''
@@ -117,6 +117,7 @@ def execute(action, *, exclude_orphan_property_links=False):
             'maximum_excluded_links':3 if exclude_orphan_property_links else 0})
         private_json(path / 'code-hashes.json', hashes)
         started = time.monotonic()
+        diagnostics = {}
         try:
             response = subprocess.run(['docker', 'exec', '-i', before['container_id'], 'python', '-'],
                 input=program, capture_output=True, text=True, timeout=300)
@@ -128,6 +129,7 @@ def execute(action, *, exclude_orphan_property_links=False):
             envelope = json.loads(lines[0])
             if not envelope.get('ok'):
                 code = envelope.get('reason', '')
+                diagnostics = envelope.get('diagnostics') if isinstance(envelope.get('diagnostics'), dict) else {}
                 raise SnapshotError(code if re.fullmatch('[a-z_]{1,100}', code) else 'snapshot_reader_failed')
             result = envelope['result']
             after = preflight()
@@ -143,7 +145,8 @@ def execute(action, *, exclude_orphan_property_links=False):
             return {'snapshot_id': snapshot_id, 'action': action, **result['report']}
         except Exception as exc:
             code = str(exc) if isinstance(exc, SnapshotError) else 'snapshot_operation_failed'
-            private_json(path / 'failure.json', {'reason': code, 'snapshot_id': snapshot_id})
+            private_json(path / 'failure.json', {'reason': code, 'snapshot_id': snapshot_id,
+                'diagnostics': diagnostics})
             raise SnapshotError(code) from None
 
 
