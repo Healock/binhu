@@ -303,6 +303,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       setRegistrationPropertyId(pendingRegistration ? link?.property_id || undefined : undefined)
       setRegistrationPropertyVersion(pendingRegistration ? link?.property_version || undefined : undefined)
       setRegistrationProperties(pendingRegistration && link?.property ? [link.property] : [])
+      setRegistrationPendingAddress(pendingRegistration && !link?.property ? String(source?.values['现住址'] || '') : '')
+      setRegistrationMatchStatus(pendingRegistration && !link?.property ? 'none' : 'idle')
       if (source) selectSource(source)
     } catch (reason: any) {
       setError(detailError(reason, '任务详情读取失败'))
@@ -1352,7 +1354,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                       && data.workflow.result_field
                       && (formValues[data.workflow.result_field] || '').trim() === '待登记' ? (
                       <>
-                      {registrationMatchStatus === 'error' ? <Input.TextArea
+                      {registrationMatchStatus === 'error' || registrationMatchStatus === 'none' ? <Input.TextArea
                         autoSize={{ minRows: 2, maxRows: 4 }}
                         value={registrationPendingAddress}
                         placeholder="房屋档案不可用，可填写待建档现住址"
