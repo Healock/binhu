@@ -241,7 +241,7 @@ export default function AddressConfirmation() {
         <Select aria-label="业务类型" value={filter.parser} disabled={saving} onChange={parser => changeFilter({ parser, community: '' })} options={MOBILE_TASK_TYPES.map(value => ({ value, label: value }))} />
         <Select aria-label="社区" allowClear placeholder="全部授权社区" value={filter.community || undefined} disabled={saving} onChange={community => changeFilter({ community: community || '' })} options={communities} />
         <Select aria-label="处理状态" value={filter.state} disabled={saving} options={stateOptions} onChange={state => changeFilter({ state })} />
-        <Input aria-label="搜索任务" allowClear prefix={<SearchOutlined />} placeholder="搜索姓名或地址" value={filter.keyword} disabled={saving} onChange={event => changeFilter({ keyword: event.target.value })} />
+        <Input aria-label="搜索任务" allowClear prefix={<SearchOutlined />} placeholder="搜索原始地址" value={filter.keyword} disabled={saving} onChange={event => changeFilter({ keyword: event.target.value })} />
       </>} meta={<span>{loading ? '正在更新队列…' : `共 ${total} 条任务`}</span>} />
       {queueError && <Alert type="error" showIcon message={queueError} action={<Button onClick={() => void fetchQueue()}>重试加载</Button>} />}
       <div className="address-workbench-columns">
@@ -249,8 +249,7 @@ export default function AddressConfirmation() {
           <div className="address-section-heading"><strong>任务队列</strong><span>选择一条开始核对</span></div>
           <Spin spinning={loading}><div className="address-queue-items">
             {!rows.length && !loading ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选下没有任务" /> : rows.map(task => <button type="button" key={task.task_key} className={`address-queue-row ${sameTask(task, target) ? 'is-selected' : ''}`} aria-current={sameTask(task, target) ? 'true' : undefined} disabled={saving} onClick={() => open(task)}>
-              <span className="address-queue-title"><strong>{task.summary.title || '未填写姓名'}</strong><Tag color={ADDRESS_STATES[task.address_match?.status || 'unmatched']?.color}>{ADDRESS_STATES[task.address_match?.status || 'unmatched']?.text || '待标注'}</Tag></span>
-              <span className="address-queue-address">{task.summary.original_address || '未填写原始地址'}</span>
+              <span className="address-queue-title"><strong>{task.summary.original_address || '未填写原始地址'}</strong><Tag color={ADDRESS_STATES[task.address_match?.status || 'unmatched']?.color}>{ADDRESS_STATES[task.address_match?.status || 'unmatched']?.text || '待标注'}</Tag></span>
               <span className="address-muted">{task.community || '未填写社区'}{task.address_match?.small_community_name ? ` · ${task.address_match.small_community_name}` : ''}</span>
             </button>)}
           </div></Spin>
@@ -262,7 +261,7 @@ export default function AddressConfirmation() {
           {narrow && target && <Button icon={<ArrowLeftOutlined />} onClick={leaveDetail} disabled={saving}>返回任务队列</Button>}
           {error && <Alert type="error" showIcon message={error} action={target && versionConflict && <Button disabled={saving || detailLoading} onClick={() => void refreshConflict()}>重新核对最新版本</Button>} />}
           {!target ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="从左侧选择任务，开始核对小区归属" /> : detailLoading ? <div className="address-loading"><Spin aria-label="正在读取最新任务" /></div> : detail && <>
-            <header className="address-review-heading"><div><span className="address-eyebrow">正在核对 · {detail.task.parser_type}</span><h2 ref={heading} tabIndex={-1} aria-live="polite">{detail.task.summary.title || '未填写姓名'}</h2></div><Tag color={label.color}>{label.text}</Tag></header>
+            <header className="address-review-heading"><div><span className="address-eyebrow">正在核对 · {detail.task.parser_type}</span><h2 ref={heading} tabIndex={-1} aria-live="polite">{detail.task.summary.original_address || '未填写原始地址'}</h2></div><Tag color={label.color}>{label.text}</Tag></header>
             {!rows.some(item => sameTask(item, target)) && <p className="address-muted">此任务不在当前队列筛选中，正在按任务入口查看。</p>}
             <section className="address-facts" aria-label="核对地址">
               <div><span>原始地址</span><strong>{detail.task.summary.original_address || '未填写'}</strong></div>

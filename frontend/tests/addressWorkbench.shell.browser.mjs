@@ -11,7 +11,8 @@ let readonly=false
 let optionFailure=false
 let delayedId=0
 const entries=Array.from({length:23},(_,i)=>({id:i+1,status:'unmatched',revision:1,selected:null}))
-const task=e=>({task_key:`全链条:fixture-${e.id}`,parser_type:'全链条',row_key:`fixture-${e.id}`,community:'虚构测试社区',task_state:'unchecked',summary:{title:`虚构任务${String(e.id).padStart(2,'0')}`,original_address:`虚构测试路${e.id}号 · 仅用于界面验收的长地址，不代表真实地点`},address_match:{status:e.status,small_community_id:e.selected,small_community_name:e.selected?(e.selected===1?'虚构小区甲':'虚构小区乙'):'',candidates:[],reason:'暂无算法候选'}})
+const address=id=>`虚构测试路${id}号 · 仅用于界面验收的长地址，不代表真实地点`
+const task=e=>({task_key:`全链条:fixture-${e.id}`,parser_type:'全链条',row_key:`fixture-${e.id}`,community:'虚构测试社区',task_state:'unchecked',summary:{title:`虚构任务${String(e.id).padStart(2,'0')}`,original_address:address(e.id)},address_match:{status:e.status,small_community_id:e.selected,small_community_name:e.selected?(e.selected===1?'虚构小区甲':'虚构小区乙'):'',candidates:[],reason:'暂无算法候选'}})
 await context.route('**/*',async r=>{
  const u=new URL(r.request().url()); if(u.origin!=='http://127.0.0.1:5197')return r.abort(); if(!u.pathname.startsWith('/api/'))return r.continue()
  const p=decodeURIComponent(u.pathname), send=(v,status=200)=>r.fulfill({status,contentType:'application/json',body:JSON.stringify(v)})
@@ -29,10 +30,10 @@ await context.route('**/*',async r=>{
 })
 try {
  await page.goto('http://127.0.0.1:5197/address-confirmation?parser_type=全链条&row_key=fixture-1')
- await page.getByRole('heading',{name:'虚构任务01',exact:true}).waitFor()
+ await page.getByRole('heading',{name:address(1),exact:true}).waitFor()
  await page.evaluate(()=>{const state=history.state;history.replaceState({...state,idx:0},'', '/previous-fixture');history.pushState({...state,idx:1},'', '/address-confirmation?parser_type=全链条&row_key=fixture-1')})
  await page.reload()
- await page.getByRole('heading',{name:'虚构任务01',exact:true}).waitFor()
+ await page.getByRole('heading',{name:address(1),exact:true}).waitFor()
  await page.getByRole('radio',{name:'虚构小区乙',exact:false}).check()
  const dialog=page.waitForEvent('dialog');await page.evaluate(()=>history.back());await (await dialog).dismiss()
  await page.waitForTimeout(200)
@@ -45,7 +46,7 @@ try {
   for(const mode of ['light','dark']) {
    await page.evaluate(mode=>localStorage.setItem('binhu-theme-mode',mode),mode)
    await page.reload()
-   await page.getByRole('heading',{name:'虚构任务01',exact:true}).waitFor()
+   await page.getByRole('heading',{name:address(1),exact:true}).waitFor()
    await page.getByRole('button',{name:'确认并停留',exact:true}).scrollIntoViewIfNeeded()
    await page.getByRole('button',{name:'确认并停留',exact:true}).click({trial:true})
    await page.waitForTimeout(150)
@@ -55,13 +56,13 @@ try {
  }
  // 125% scaling equivalent available CSS area, with the navigation sidebar collapsed.
  await page.setViewportSize({width:1536,height:864})
- await page.reload();await page.getByRole('heading',{name:'虚构任务01',exact:true}).waitFor()
+ await page.reload();await page.getByRole('heading',{name:address(1),exact:true}).waitFor()
  const expand=page.getByRole('button',{name:'展开侧边栏',exact:true});if(await expand.count())await expand.click()
  await page.getByRole('button',{name:'收起侧边栏',exact:true}).click()
  await page.screenshot({path:`${out}/shell-125-percent-collapsed.png`,fullPage:true})
  // Explicit discard must not prompt a second time when the return button triggers POP.
  await page.evaluate(()=>{const state=history.state;history.replaceState({...state,idx:0},'', '/address-confirmation');history.pushState({...state,idx:1,usr:{fromTask:true}},'', '/address-confirmation?parser_type=全链条&row_key=fixture-1')})
- await page.reload();await page.getByRole('heading',{name:'虚构任务01',exact:true}).waitFor()
+ await page.reload();await page.getByRole('heading',{name:address(1),exact:true}).waitFor()
  await page.getByRole('radio',{name:'虚构小区甲',exact:false}).check()
  let discardPrompts=0
  const acceptDiscard=async dialog=>{discardPrompts++;await dialog.accept()}
