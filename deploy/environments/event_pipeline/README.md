@@ -40,6 +40,17 @@
    `verify` 只报告最小事件流，不会替这些步骤或业务集成签署通过。
 
 Schema Registry 使用固定内部服务与 `dev.task.events.v1-value` subject。
+已部署的实现为 Apicurio 2.x，兼容 API 固定在
+`http://schema-registry:8080/apis/ccompat/v7`，不能使用 Confluent 默认的 8081。
+长期实例必须使用 KafkaSQL 镜像，日志 topic 为 `dev.registry.storage.v1`，
+不得使用重启丢失数据的 registry-mem 镜像。先留存旧配置与空 subject 查询证据，
+再以 `event_pipeline.registry_runtime --image <已核验KafkaSQL镜像ID>` 生成
+独立的 registry Compose 文件。该文件仅包含同一 Dev eventbus 项目的 registry
+服务；应用时只更新此服务，不使用 `--remove-orphans`，不重建 broker。
+先在 Dev Kafka 建立单分区、三副本、min ISR=2 的专属 journal，关闭自动建 topic；
+journal 保留全部历史，不套用任务 topic 的 24 小时过期策略。
+JVM 显式限制处理器数量、堆与 metaspace，出现 OOM 应退出并留下失败证据。
+注册后必须重启 registry 并确认 subject、版本与合同哈希仍相同，才算持久化验收通过。
 先以新 worker 镜像执行 `python -m event_pipeline.schema_registry apply`，再启动
 新 relay/bridge；启动会检查 Registry 的 JSON Schema 与当前代码完全相同，
 身份不匹配或重定向即拒绝。topic 仍使用原始 JSON，不采用 Confluent 二进制 framing；
