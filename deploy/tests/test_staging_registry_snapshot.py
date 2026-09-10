@@ -1,0 +1,57 @@
+import copy
+import unittest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
+from deploy.environments.staging_data.codec import Codec, SnapshotError
+from deploy.environments.staging_data.registry import transform
+
+
+def fixture():
+    return {
+        'PlatformData._areas':[{'id':1,'name':'虚构原片区'}],
+        'PlatformData._communities':[{'id':1,'name':'虚构原社区','area_id':1,'is_active':1}],
+        'RegistryData._police_address_entries':[{'id':1,'name':'虚构原小区','detail_address':'虚构原路一号',
+            'community_id':1,'address_type':'community','enabled':1}],
+        'RegistryData.registry_properties':[{'id':1,'street':'虚构原街道','community_id':1,
+            'natural_address':'虚构原路一号101室','building':'原一栋','room':'原101',
+            'housing_type':'个人出租','residence_type':'虚构原用途','source_house_no':'fictional-house-no',
+            'status':'active','current_version':3}],
+        'RegistryData.registry_property_small_community_links':[{'property_id':1,'small_community_id':1,
+            'community_id':1,'match_status':'confirmed','confirmed_by':12,'confirmed_at':'2026-09-10 00:00:00','property_version':3}],
+    }
+
+
+class RegistrySnapshotTests(unittest.TestCase):
+    def test_relations_and_confirmation_are_preserved_without_source_ids(self):
+        result=transform(fixture(),Codec(b'a'*32))
+        tables=result['tables']
+        prop=tables['RegistryData.registry_properties'][0]
+        entry=tables['RegistryData._police_address_entries'][0]
+        community=tables['PlatformData._communities'][0]
+        link=tables['RegistryData.registry_property_small_community_links'][0]
+        self.assertEqual(prop['community_id'],community['id'])
+        self.assertEqual(link['property_id'],prop['id'])
+        self.assertEqual(link['small_community_id'],entry['id'])
+        self.assertEqual(link['confirmed_by'],result['actors'][0]['id'])
+        self.assertEqual(link['match_status'],'confirmed')
+        self.assertEqual(prop['current_version'],3)
+        self.assertNotEqual(prop['id'],1)
+        self.assertEqual(result['report']['source_counts'],result['report']['output_counts'])
+        self.assertFalse(result['report']['ready_for_application_switch'])
+
+    def test_unknown_column_and_broken_reference_are_rejected(self):
+        rows=fixture()
+        rows['RegistryData.registry_properties'][0]['private_json']='not exported'
+        with self.assertRaises(SnapshotError):transform(rows,Codec(b'a'*32))
+        rows=fixture()
+        rows['RegistryData.registry_property_small_community_links'][0]['small_community_id']=99
+        with self.assertRaises(SnapshotError):transform(rows,Codec(b'a'*32))
+
+    def test_duplicate_primary_key_fails_instead_of_dropping_a_row(self):
+        rows=fixture()
+        rows['RegistryData.registry_properties'].append(copy.deepcopy(rows['RegistryData.registry_properties'][0]))
+        with self.assertRaises(SnapshotError):transform(rows,Codec(b'a'*32))
+
+
+if __name__=='__main__':unittest.main()
