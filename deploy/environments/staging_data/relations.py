@@ -11,9 +11,11 @@ REGISTRATION_EVENT_FIELDS = ('id','parser_type','row_key','source_id','property_
 MATCH_STATES = {'suggested','confirmed','ambiguous','unmatched','conflict','invalid','review_required','manual_unmatched'}
 FLOW_STATES = {'initial_pending','initial_extension','deep_pending','deep_extension',
     'final_unverifiable','resolved','archived','source_exception'}
+REVIEW_STATES = FLOW_STATES | {'source_removed'}
 REVIEW_ACTIONS = {'legacy_unverifiable_backfill','formal_result_submitted','entered_unverifiable',
     'feedback_recorded','feedback_cleared','automatic_transition_resumed','automatic_transition_paused',
-    'review_decision','archive_exported','formal_result_detected','overdue_auto_transition'}
+    'review_decision','archive_exported','formal_result_detected','overdue_auto_transition',
+    'administrative_bulk_archive','maintenance_archived'}
 REGISTRATION_ACTIONS = {'property_selected','registration_cancelled','residence_match','residence_mismatch',
     'registration_confirmation_enqueue_failed','registration_confirmed','registration_writeback_failed',
     'manual_confirmation','manual_registration_confirmed','pending_address_saved','property_linked'}
@@ -59,11 +61,11 @@ def history_rows(review, registration, flows, current, remapped, codec):
         key=(flow['parser_type'],flow['row_key'])
         action=enum(row['action'],REVIEW_ACTIONS,empty=False)
         # Export job IDs in archive outcomes are replaced with a safe summary.
-        outcome='archived' if action=='archive_exported' else enum(row['outcome'], FLOW_STATES | {'success','failure'})
+        outcome='archived' if action=='archive_exported' else enum(row['outcome'], REVIEW_STATES | {'success','failure'})
         fence=transform_fence(row,current[key],remapped[key]['source'],codec)
         output['OnlineData._unverifiable_review_events'].append({
             'id':codec.reference('review_event',row['id']), 'flow_id':codec.reference('flow',row['flow_id']),
-            'stage':enum(row['stage'],FLOW_STATES),'action':action,'outcome':outcome,
+            'stage':enum(row['stage'],REVIEW_STATES),'action':action,'outcome':outcome,
             'actor_user_id':codec.reference('actor',row['actor_user_id']),
             'automatic':integer(row['automatic'],maximum=1),**fence,
             'protected_text':None,'safe_reason_code':'staging_snapshot_summary','created_at':date_value(row['created_at'])})
