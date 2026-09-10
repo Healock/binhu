@@ -40,19 +40,18 @@ def safe_diagnostics(value):
     if not isinstance(value, dict) or len(value) > 16:
         return {}
     result = {}
+    from .tasks import TASK_TYPES
+    counts = {'source_count', 'business_count', 'source_only_count', 'business_only_count',
+              'total', 'duplicate_business_key_count', 'duplicate_source_key_count'}
     for key, item in value.items():
-        if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
-            continue
-        if isinstance(item, bool):
+        if key in counts and type(item) is int and 0 <= item <= 10**9:
             result[key] = item
-        elif isinstance(item, int) and 0 <= item <= 10**9:
+        elif key == 'parser_type' and isinstance(item, str) and item in TASK_TYPES:
             result[key] = item
-        elif isinstance(item, str) and len(item) <= 100:
-            result[key] = item if re.fullmatch(r"[A-Za-z0-9_./| -]*", item) else "redacted"
-        elif isinstance(item, dict) and len(item) <= 32:
-            nested = safe_diagnostics(item)
-            if nested:
-                result[key] = nested
+        elif key == 'by_parser_and_source_kind' and isinstance(item, dict) and len(item) <= 32:
+            allowed = {p + '|' + s for p in (*TASK_TYPES, 'unknown_parser') for s in
+                ('local_table', 'local_dispatch', 'one_time_continuation_import', 'unknown_source_kind')}
+            result[key] = {k:v for k,v in item.items() if k in allowed and type(v) is int and 0 <= v <= 10**9}
     return result
 
 
