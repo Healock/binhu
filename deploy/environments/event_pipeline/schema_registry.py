@@ -7,7 +7,9 @@ import urllib.request
 
 from .services.kafka_event_contract import EVENT_FIELDS, EVENT_TYPES, CHANGED_FIELDS, SOURCE_TABLE_NAMES
 
-BASE = "http://schema-registry:8081"
+# The deployed registry is Apicurio 2.x. Its Confluent-compatible API is
+# explicitly namespaced; 8081 belongs to neither this service nor this API.
+BASE = "http://schema-registry:8080/apis/ccompat/v7"
 SUBJECT = "dev.task.events.v1-value"
 
 

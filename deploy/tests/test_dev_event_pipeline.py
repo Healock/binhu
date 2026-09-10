@@ -15,6 +15,7 @@ from deploy.environments.event_pipeline.services.kafka_relay import KafkaRelay, 
 from deploy.environments.event_pipeline.services.kafka_delivery_store import MySQLDeliveryStore
 from deploy.environments.event_pipeline.services.derived_revision_cache import RevisionCache, CacheContractError
 from deploy.environments.event_pipeline import schema_registry
+from deploy.environments.event_pipeline import registry_runtime
 from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
 
@@ -77,6 +78,34 @@ class ContractTests(unittest.TestCase):
             schema_registry.request("/subjects/production/versions")
         with self.assertRaises(ValueError):
             schema_registry.NoRedirect().redirect_request(None, None, 302, None, None, "https://external.invalid")
+
+    def test_apicurio_endpoint_and_durable_dev_registry(self):
+        self.assertEqual(schema_registry.BASE, "http://schema-registry:8080/apis/ccompat/v7")
+        spec = registry_runtime.specification("sha256:" + "a" * 64)
+        self.assertEqual(set(spec["services"]), {"schema-registry"})
+        service = spec["services"]["schema-registry"]
+        self.assertNotIn("ports", service)
+        self.assertNotIn("volumes", service)
+        env = service["environment"]
+        self.assertEqual(env["REGISTRY_KAFKASQL_TOPIC"], "dev.registry.storage.v1")
+        self.assertEqual(env["REGISTRY_KAFKASQL_TOPIC_AUTO_CREATE"], "false")
+        self.assertIn("ActiveProcessorCount=2", env["JAVA_OPTIONS"])
+        self.assertIn("ExitOnOutOfMemoryError", env["JAVA_OPTIONS"])
+        with self.assertRaises(ValueError):
+            registry_runtime.specification("apicurio:latest")
+
+    def test_registry_refuses_foreign_services_and_networks(self):
+        net = {"Internal": True, "Labels": {"com.docker.compose.project": registry_runtime.PROJECT}, "Containers": {}}
+        def item(name, service):
+            return {"Name": name, "Config": {"Labels": {"com.docker.compose.project": registry_runtime.PROJECT,
+                    "com.docker.compose.service": service}}, "NetworkSettings": {"Networks": {registry_runtime.NETWORK: {}}},
+                    "State": {"Running": True}}
+        registry = item(registry_runtime.REGISTRY, "schema-registry")
+        broker = item(registry_runtime.BROKER, "kafka-1")
+        registry_runtime.validate_network(net, registry, broker)
+        broker["NetworkSettings"]["Networks"]["production"] = {}
+        with self.assertRaises(ValueError):
+            registry_runtime.validate_network(net, registry, broker)
 
     def test_every_target_is_fixed_and_environment_guarded(self):
         valid = settings()
