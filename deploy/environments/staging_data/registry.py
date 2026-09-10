@@ -32,7 +32,7 @@ def validate_input(rows):
             raise SnapshotError("duplicate_registry_primary_key")
 
 
-def transform(rows, codec: Codec, *, actor_ids=()):
+def transform(rows, codec: Codec, *, actor_ids=(), exclude_orphan_property_links=False):
     from services.registry_import import NORMAL_HOUSING_TYPES
     validate_input(rows)
     for table, kind in KINDS.items():
@@ -43,6 +43,7 @@ def transform(rows, codec: Codec, *, actor_ids=()):
     communities = {row["id"]: row for row in rows["PlatformData._communities"]}
     entries = {row["id"]: row for row in rows["RegistryData._police_address_entries"]}
     properties = {row["id"]: row for row in rows["RegistryData.registry_properties"]}
+    rejected = []
 
     def community_name(value):
         if value is None:
@@ -88,6 +89,16 @@ def transform(rows, codec: Codec, *, actor_ids=()):
         if prop is None:
             raise SnapshotError("orphan_property_link")
         entry = entries.get(row["small_community_id"])
+        if row['small_community_id'] is not None and entry is None:
+            if (not exclude_orphan_property_links
+                    or row['match_status'] not in {'ambiguous','suggested','conflict'}
+                    or row['confirmed_by'] is not None or row['confirmed_at'] is not None):
+                raise SnapshotError('unresolved_property_small_community')
+            rejected.append({'property_id':codec.reference('property',row['property_id']),
+                'match_status':row['match_status'],'reason':'missing_small_community'})
+            if len(rejected)>3:
+                raise SnapshotError('orphan_exclusion_scope_exceeded')
+            continue
         # A pre-existing conflict may be a legitimate business state. Preserve
         # separate references and the status; never guess a corrected community.
         entry_id = codec.reference("small_community", row["small_community_id"])
@@ -109,4 +120,6 @@ def transform(rows, codec: Codec, *, actor_ids=()):
             "report": {"source_counts": {key: len(value) for key,value in rows.items()},
                        "output_counts": {key: len(value) for key,value in output.items()},
                        "sensitive_value_matches": 0, "reference_integrity": True,
+                       "rejected_property_links": rejected,
+                       "rejected_property_link_count": len(rejected),
                        "scope": "current_registry_graph", "ready_for_application_switch": False}}

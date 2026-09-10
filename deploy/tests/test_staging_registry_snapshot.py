@@ -23,6 +23,37 @@ def fixture():
 
 
 class RegistrySnapshotTests(unittest.TestCase):
+    def test_explicit_orphan_exclusion_retains_houses_and_reports_rejections(self):
+        rows=fixture()
+        links=rows['RegistryData.registry_property_small_community_links']
+        links[0].update(small_community_id=99,match_status='suggested',confirmed_by=None,confirmed_at=None)
+        original=copy.deepcopy(rows)
+        with self.assertRaisesRegex(SnapshotError,'unresolved_property_small_community'):
+            transform(rows,Codec(b'a'*32))
+        result=transform(rows,Codec(b'a'*32),exclude_orphan_property_links=True)
+        self.assertEqual(rows,original)
+        self.assertEqual(len(result['tables']['RegistryData.registry_properties']),1)
+        self.assertEqual(result['tables']['RegistryData.registry_property_small_community_links'],[])
+        self.assertEqual(result['report']['rejected_property_link_count'],1)
+        rejected=result['report']['rejected_property_links'][0]
+        self.assertEqual(rejected['property_id'],result['tables']['RegistryData.registry_properties'][0]['id'])
+        self.assertEqual(rejected['reason'],'missing_small_community')
+        for field,value in (('match_status','confirmed'),('confirmed_by',12),('confirmed_at','2026-09-10 00:00:00')):
+            protected=copy.deepcopy(rows)
+            protected['RegistryData.registry_property_small_community_links'][0][field]=value
+            with self.assertRaises(SnapshotError):
+                transform(protected,Codec(b'a'*32),exclude_orphan_property_links=True)
+
+    def test_orphan_exclusion_cannot_expand_beyond_three_relations(self):
+        rows=fixture()
+        prop=rows['RegistryData.registry_properties'][0]
+        link=rows['RegistryData.registry_property_small_community_links'][0]
+        rows['RegistryData.registry_properties']=[dict(prop,id=i) for i in range(1,5)]
+        rows['RegistryData.registry_property_small_community_links']=[dict(link,property_id=i,
+            small_community_id=99,match_status='conflict',confirmed_by=None,confirmed_at=None) for i in range(1,5)]
+        with self.assertRaisesRegex(SnapshotError,'orphan_exclusion_scope_exceeded'):
+            transform(rows,Codec(b'a'*32),exclude_orphan_property_links=True)
+
     def test_address_types_follow_current_business_contract(self):
         import ast
         tree=ast.parse((Path(__file__).resolve().parents[2]/'backend/routers/police_dispatch.py').read_text(encoding='utf-8'))
