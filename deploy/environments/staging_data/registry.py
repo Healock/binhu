@@ -114,7 +114,7 @@ def transform(rows, codec: Codec, *, actor_ids=(), exclude_orphan_property_links
             "property_version": integer(row["property_version"], minimum=1, maximum=2**32-1),
             "match_score": 0, "match_method": "staging_snapshot", "match_reason": "脱敏副本，原匹配证据不导入",
             "matcher_version": "staging_snapshot", "match_evidence": None})
-    if codec.scan(output):
+    if codec.scan_tables(output):
         raise SnapshotError("source_sensitive_value_detected")
     return {"tables": output, "actors": [{"id": codec.reference("actor", value)} for value in sorted(actors)],
             "report": {"source_counts": {key: len(value) for key,value in rows.items()},

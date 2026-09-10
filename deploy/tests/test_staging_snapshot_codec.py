@@ -33,5 +33,19 @@ class SnapshotCodecTests(unittest.TestCase):
         with self.assertRaises(SnapshotError):date_value('unreviewed source body')
         self.assertEqual(date_value('2026-09-10'),'2026-09-10')
 
+    def test_closed_housing_enum_does_not_mask_sensitive_text_elsewhere(self):
+        a = Codec(b'a' * 32)
+        value = '自购房屋'
+        a.remember(value)
+        tables = {
+            'RegistryData.registry_properties': [{'housing_type': value, 'residence_type': value}],
+        }
+        self.assertEqual(a.scan_tables(tables), 1)
+
+    def test_closed_housing_enum_rejects_unknown_value(self):
+        a = Codec(b'a' * 32)
+        with self.assertRaises(SnapshotError):
+            a.scan_tables({'RegistryData.registry_properties': [{'housing_type': '任意正文'}]})
+
 
 if __name__=='__main__':unittest.main()

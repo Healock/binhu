@@ -194,7 +194,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 result['annotation_digest_states'].append({**metadata,
                     'state':matching_state(row['manual_unmatched_address_hmac'],expected)})
             tables.update(history_rows(review_events,registration_events,flow_map,current,remapped,codec))
-            if codec.scan(tables):
+            if codec.scan_tables(tables):
                 raise SnapshotError("source_sensitive_value_detected")
             result["report"].update({"snapshot_id":snapshot_id,"current_task_count":len(sources),
                 "flow_count":len(retained_flows),"registration_count":len(retained_registrations),

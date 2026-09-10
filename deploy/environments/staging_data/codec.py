@@ -136,6 +136,25 @@ class Codec:
             return self.scan(decoded)
         return 0
 
+    def scan_tables(self, tables):
+        """Scan a table envelope with one explicit categorical field contract.
+
+        A public housing category can also occur in source free text. Only the
+        direct registry housing_type column is categorical; the same value in
+        any other column, nested JSON or generic scan remains sensitive.
+        Revalidate here so the final scan works on serialized data too.
+        """
+        from services.registry_import import NORMAL_HOUSING_TYPES
+        matches = 0
+        for table, rows in tables.items():
+            for row in rows:
+                for column, value in row.items():
+                    if table == 'RegistryData.registry_properties' and column == 'housing_type':
+                        enum(value, NORMAL_HOUSING_TYPES)
+                    else:
+                        matches += self.scan(value)
+        return matches
+
 
 def enum(value, allowed, *, empty=True):
     if value is None or value == "":
