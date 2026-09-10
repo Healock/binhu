@@ -1,7 +1,8 @@
 # Staging 白名单副本准备器
 
-本模块目前提供 `measure` 与 `export`，用于在生产服务器受保护边界内生成
-独立编号的脱敏材料。尚未提供数据库导入或应用切换；报告中的
+本模块提供 `control measure/export`，用于在生产服务器受保护边界内生成
+独立编号的脱敏材料；`apply_control measure/create/import` 可向独立候选八库导入。
+尚未提供应用切换；报告中的
 `ready_for_application_switch=false` 必须保留，不能把导出成功当作 Staging 验收。
 
 ```sh
@@ -29,6 +30,19 @@ python -m deploy.environments.staging_data.control export
 这是一道选定源值的精确扫描，结合封闭输出格式使用，不是任意 PII 检测器。
 虚构证件号码采用无真实行政区含义的测试前缀，不保证通过外部行政区校验。
 
-后续导入前还须补齐历史动作摘要、任务人工地址确认、Staging 专属登记 HMAC、
-候选八库重建/切换/回退和完整目标验证。报告显式列出未通过门槛。
+已支持历史动作摘要、任务人工地址确认和候选库 Staging 专属登记 HMAC 重建。
+应用切换前仍须完成候选库真实导入、完整目标验证、投影重建及切换/回退验收。
+报告显式列出未通过门槛。
 旧 `staging_snapshot.py` 的简化 JSONL 工具不能替代本模块的关系和敏感值验收。
+
+地址类型采用当前业务接口的封闭枚举：`community`、`apartment`、
+`construction_dormitory`、`other`。未知值仍拒绝；不能通过允许任意字符串解决导出失败。
+
+2026-09-10 只读预检发现 3 条房屋小区关联指向缺失的小区记录，状态分别为
+`ambiguous`、`suggested`、`conflict`，各 1 条。该次导出未产生可导入副本，
+未修改生产数据、未切换 Staging。失败证据独立保留于服务器快照目录。
+用户已授权仅在 Staging 副本中排除这 3 条关系、保留房屋并记录拒绝清单，生产不改。
+使用 `control export --exclude-orphan-property-links` 显式启用；默认仍拒绝。
+开关最多允许排除 3 条上述状态且无确认人、确认时间的悬空关系，不能排除人工确认。
+报告使用重映射后的房屋 ID 记录每条拒绝原因；来源数量、输出数量及拒绝数量分别保留。
+超出范围仍停止，不能自动替换小区或静默丢弃。每次预检使用新快照编号。
