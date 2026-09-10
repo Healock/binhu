@@ -1,7 +1,10 @@
 import asyncio
 import copy
 import unittest
-from unittest.mock import AsyncMock
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from deploy.environments.event_pipeline.runtime import configuration, cache_result
 from deploy.environments.event_pipeline.prepare import compose
@@ -11,6 +14,9 @@ from deploy.environments.event_pipeline.services.kafka_event_contract import val
 from deploy.environments.event_pipeline.services.kafka_relay import KafkaRelay, Delivery
 from deploy.environments.event_pipeline.services.kafka_delivery_store import MySQLDeliveryStore
 from deploy.environments.event_pipeline.services.derived_revision_cache import RevisionCache, CacheContractError
+from deploy.environments.event_pipeline import schema_registry
+from deploy.environments.event_pipeline import checkpoint
+from deploy.environments.event_pipeline import control
 
 
 def settings():
@@ -30,6 +36,48 @@ def event():
 
 
 class ContractTests(unittest.TestCase):
+    def test_failed_schema_check_prevents_start_and_keeps_each_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}):
+            with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="schema unavailable")) as command:
+                for attempt in range(2):
+                    with self.assertRaises(ValueError):
+                        control.apply()
+                self.assertEqual(command.call_count, 2)
+                self.assertTrue(all("up" not in call.args[0] for call in command.call_args_list))
+            evidence = list(Path(tmp).glob("apply-evidence-*"))
+            self.assertEqual(len(evidence), 2)
+            self.assertTrue(all((entry / "schema-check.log").exists() for entry in evidence))
+
+    def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
+        items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink"}},
+                  "Mounts": [{"Name": checkpoint.VOLUME, "Destination": checkpoint.TARGET, "RW": True}],
+                  "NetworkSettings": {"Networks": {"binhu-development-eventbus_internal": {}}}}
+                 for name in (checkpoint.JM, checkpoint.TM)]
+        self.assertEqual(len(checkpoint.inspect_holders(items)), 2)
+        foreign = copy.deepcopy(items[0])
+        foreign["Name"] = "binhu-backend"
+        with self.assertRaises(ValueError):
+            checkpoint.inspect_holders(items + [foreign])
+        items[0]["Mounts"][0]["Destination"] = "/unexpected"
+        with self.assertRaises(ValueError):
+            checkpoint.inspect_holders(items)
+
+    def test_schema_registry_identity_and_closed_body(self):
+        import json
+        schema = schema_registry.schema()
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["properties"]["environment"], {"const": "development"})
+        response = {"schemaType": "JSON", "schema": json.dumps(schema), "id": 1, "version": 1}
+        with patch.object(schema_registry, "request", return_value=response):
+            self.assertTrue(schema_registry.verify()["verified"])
+        response["schema"] = "{}"
+        with patch.object(schema_registry, "request", return_value=response), self.assertRaises(ValueError):
+            schema_registry.verify()
+        with self.assertRaises(ValueError):
+            schema_registry.request("/subjects/production/versions")
+        with self.assertRaises(ValueError):
+            schema_registry.NoRedirect().redirect_request(None, None, 302, None, None, "https://external.invalid")
+
     def test_every_target_is_fixed_and_environment_guarded(self):
         valid = settings()
         self.assertEqual(configuration(valid)["DEV_RUN_ID"], "dev-test-1")
@@ -68,6 +116,8 @@ class ContractTests(unittest.TestCase):
             self.assertIn("cpus", service)
         self.assertFalse(any(v.get("external") for v in spec["volumes"].values()))
         self.assertIn("max:1024M", " ".join(spec["services"]["dev-derived-mysql"]["command"]))
+        self.assertEqual(spec["services"]["relay"]["depends_on"]["dev-derived-mysql"]["condition"], "service_healthy")
+        self.assertIn("-h127.0.0.1", spec["services"]["dev-derived-mysql"]["healthcheck"]["test"])
         with self.assertRaises(ValueError):
             compose({"mysql": "mysql:latest"})
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import time
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
 
@@ -49,11 +50,26 @@ def measure():
 
 def apply():
     report = measure()
-    evidence = ROOT / "apply-evidence"
+    evidence = ROOT / ("apply-evidence-" + str(time.time_ns()))
     # Never overwrite earlier success or failure output.
     evidence.mkdir(mode=0o700)
-    result = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
-                             "up", "-d"], capture_output=True, text=True, timeout=120)
+    schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                             "run", "--rm", "--no-deps", "relay", "python", "-m",
+                             "event_pipeline.schema_registry", "verify"],
+                            capture_output=True, text=True, timeout=45)
+    path = evidence / "schema-check.log"
+    path.write_text(schema.stdout + "\n" + schema.stderr)
+    path.chmod(0o600)
+    if schema.returncode:
+        raise ValueError("register the fixed Dev schema before starting workers")
+    try:
+        result = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                                 "up", "-d"], capture_output=True, text=True, timeout=420)
+    except subprocess.TimeoutExpired:
+        path = evidence / "startup-timeout.json"
+        path.write_text(json.dumps({"startup_timeout": True, "acceptance": "pending"}))
+        path.chmod(0o600)
+        raise ValueError("startup deadline reached; preserve resources and remeasure") from None
     path = evidence / "startup.log"
     path.write_text(result.stdout + "\n" + result.stderr)
     path.chmod(0o600)

@@ -118,6 +118,8 @@ async def bridge(config, pool):
 
 async def main(mode):
     config = configuration()
+    from .schema_registry import verify
+    await asyncio.to_thread(verify)
     pool = await connect(config)
     try:
         await (relay(config, pool) if mode == "relay" else bridge(config, pool))
