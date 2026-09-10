@@ -19,18 +19,31 @@
    --mysql-image <sha256镜像ID> --redis-image <sha256镜像ID>
    --worker-image <sha256镜像ID>`。仅生成新目录；拒绝已有目录、卷与项目。
 3. 执行 `python -m event_pipeline.control measure`，核对清单、网络、卷引用及内存；
-   再 `apply`。失败证据保留，不能覆盖旧输出后宣称首次成功。
+   用准备好的 Compose 执行 `run --rm --no-deps relay python -m
+   event_pipeline.schema_registry apply` 注册固定合同，再执行 control 的 `apply`。
+   启动前会再次检查合同。失败证据保留，不能覆盖旧输出后宣称首次成功。
+   新 MySQL 初始化可能超过两分钟；relay/bridge 必须等待 TCP 健康检查通过，
+   不能把容器启动或只开放临时 Unix socket 当作数据库就绪。
 4. 为 Dev Flink 准备 Kafka 3.3.0-1.20、JDBC 3.3.0-1.20、MySQL Connector/J 8.4.0
    依赖，下载校验与许可证记录保留在外部证据目录。Flink 为 1.20.1、Java 17。
    编译 `PipelineJob.java`，将私密 `pipeline.sql` 只读挂入
    `/opt/flink/private/pipeline.sql`，设置 `APP_ENVIRONMENT=development`。
    不使用会回显 SQL 和密码的交互 SQL Client；提交 Java 入口，并检查日志无凭据。
 5. JobManager 与 TaskManager 使用 Dev 自己的 checkpoint 卷和内部网络。
+   提交前执行 `python -m event_pipeline.checkpoint measure`，如新卷根目录属主
+   不匹配，再 `apply`；工具核对全部运行/停止容器的卷引用，只调整卷根目录，
+   不递归改写旧检查点。新 Docker 卷默认属于 root，不能假定 Flink 用户可写。
    注册 schema、确认作业为 RUNNING 后执行 `event_pipeline.verify seed`，
    再执行 `event_pipeline.verify verify`。首次验收包含重复入队、乱序 revision、
    Kafka ACK 后台账完成及 MySQL/Redis 最终 revision 一致。
 6. 另行记录 checkpoint/savepoint 创建、TaskManager 恢复、relay 重启和重放结果；
    `verify` 只报告最小事件流，不会替这些步骤或业务集成签署通过。
+
+Schema Registry 使用固定内部服务与 `dev.task.events.v1-value` subject。
+先以新 worker 镜像执行 `python -m event_pipeline.schema_registry apply`，再启动
+新 relay/bridge；启动会检查 Registry 的 JSON Schema 与当前代码完全相同，
+身份不匹配或重定向即拒绝。topic 仍使用原始 JSON，不采用 Confluent 二进制 framing；
+Registry 绑定合同版本，发送前 Python 验证器执行完整字段和时间/整数检查。
 
 ## 凭据、资源及回退
 

@@ -2,6 +2,7 @@
 
 - 当前状态：架构调整中，尚未完成服务器验收
 - 目标：生产保持正式业务；Dev 承载 Kafka、Redis、Flink 架构开发；Staging 承载脱敏回归和 75 人压测
+- 已执行检查见[三环境运行验收台账](../plans/environment-triad-runtime-acceptance.md)；基础容器或最小事件流通过不代表全部验收完成。
 
 ## 职责
 

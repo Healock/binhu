@@ -30,6 +30,8 @@ def compose(images):
     services = {
         "dev-derived-mysql": {**common, "image": images["mysql"], "env_file": ["mysql.env"],
             "mem_limit": "512m", "cpus": .5,
+            "healthcheck": {"test": ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "--silent"],
+                            "interval": "5s", "timeout": "3s", "retries": 36, "start_period": "180s"},
             "command": ["--innodb-buffer-pool-size=128M", "--max-connections=20",
                         "--innodb-file-per-table=OFF", "--innodb-data-file-path=ibdata1:12M:autoextend:max:1024M",
                         "--innodb-redo-log-capacity=64M", "--skip-log-bin"],
@@ -43,7 +45,8 @@ def compose(images):
             "mem_limit": "160m", "cpus": .25, "read_only": True, "tmpfs": ["/tmp:size=16m"],
             "command": ["python", "-m", "event_pipeline.runtime", mode],
             "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
-            "depends_on": ["dev-derived-mysql", "dev-derived-redis"]}
+            "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"},
+                           "dev-derived-redis": {"condition": "service_started"}}}
     return {"name": PROJECT, "services": services,
             "networks": {"internal": {"external": True, "name": NETWORK}},
             "volumes": {name: {"labels": {"binhu.environment": "development"}} for name in ("mysql", "redis")}}

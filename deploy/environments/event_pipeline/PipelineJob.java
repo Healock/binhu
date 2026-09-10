@@ -11,8 +11,10 @@ public final class PipelineJob {
         }
         String sql = Files.readString(Path.of("/opt/flink/private/pipeline.sql"));
         TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        int index = 0;
         try {
             for (String statement : sql.split(";")) {
+                index++;
                 String command = statement.strip();
                 if (command.startsWith("SET ")) {
                     String[] pair = command.substring(4).split(" = ", 2);
@@ -24,9 +26,14 @@ public final class PipelineJob {
                     table.executeSql(command);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception failure) {
             // SQL parser/planner exceptions may contain a JDBC credential.
-            throw new IllegalStateException("Dev job submission failed; private configuration requires review");
+            StringBuilder types = new StringBuilder();
+            Throwable cause = failure;
+            for (int depth = 0; depth < 12 && cause != null; depth++, cause = cause.getCause()) {
+                types.append(cause.getClass().getSimpleName()).append(" ");
+            }
+            throw new IllegalStateException("Dev statement " + index + " failed: " + types);
         }
     }
 }
