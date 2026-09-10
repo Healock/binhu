@@ -69,7 +69,7 @@ def prepare(args):
     if not version_file.is_file():
         raise ValueError('source version missing')
     version = version_file.read_text(encoding='utf-8').strip()
-    if not re.fullmatch(r'0|[1-9]\d*\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', version):
+    if not re.fullmatch(r'(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', version):
         raise ValueError('source version invalid')
     # The backend serves the same immutable static bundle for all same-origin
     # prefixes; runtime API resolution supplies the environment path.

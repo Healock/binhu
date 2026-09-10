@@ -64,7 +64,9 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
             unsupported = {}
             for row in sources:
                 if row["parser_type"] not in TASK_TYPES or row["source_kind"] not in allowed_source_kinds:
-                    key = f"{row['parser_type']}|{row['source_kind']}"
+                    parser_label = row["parser_type"] if row["parser_type"] in TASK_TYPES else "unknown_parser"
+                    source_label = row["source_kind"] if row["source_kind"] in allowed_source_kinds else "unknown_source_kind"
+                    key = f"{parser_label}|{source_label}"
                     unsupported[key] = unsupported.get(key, 0) + 1
             if unsupported:
                 raise SnapshotError("unsupported_current_source", diagnostics={

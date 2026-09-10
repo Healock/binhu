@@ -185,6 +185,19 @@ def date_value(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
     text = str(value).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            raise SnapshotError("unrecognized_date") from None
+    # Keep Python's strict ISO parser for values already emitted by MySQL,
+    # including timezone offsets and ``Z``. Then accept the explicit local
+    # import formats below; arbitrary prose is still rejected.
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.isoformat(sep=" ")
+    except ValueError:
+        pass
     # Accept the formats used by current local imports while rejecting free
     # text and impossible calendar dates. Normalized output stays stable.
     formats = (
@@ -199,4 +212,3 @@ def date_value(value):
         except ValueError:
             continue
     raise SnapshotError("unrecognized_date") from None
-    return text

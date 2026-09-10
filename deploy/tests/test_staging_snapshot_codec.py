@@ -1,5 +1,6 @@
 import unittest
 from deploy.environments.staging_data.codec import Codec, SnapshotError, enum, date_value
+from deploy.environments.staging_data.tasks import business_date
 
 
 class SnapshotCodecTests(unittest.TestCase):
@@ -37,6 +38,16 @@ class SnapshotCodecTests(unittest.TestCase):
         self.assertEqual(date_value('2026/9/8'), '2026-09-08')
         self.assertEqual(date_value('2026/09/08 17:20:00'), '2026-09-08 17:20:00')
         self.assertEqual(date_value('2026-09-08T17:20:00'), '2026-09-08 17:20:00')
+        self.assertEqual(date_value('2026-09-08T17:20:00+08:00'), '2026-09-08 17:20:00+08:00')
+
+    def test_business_date_formats_are_explicit_and_fail_closed(self):
+        self.assertEqual(business_date('2026-09-08'), '2026-09-08')
+        self.assertEqual(business_date('2026/9/8'), '2026/9/8')
+        self.assertEqual(business_date('2026-09-08 17:20:00'), '2026-09-08 17:20:00')
+        with self.assertRaises(SnapshotError):
+            business_date('2026-09-08 备注正文')
+        with self.assertRaises(SnapshotError):
+            business_date('2026-02-30')
 
     def test_impossible_calendar_date_is_rejected(self):
         with self.assertRaises(SnapshotError):date_value('2026/02/30')

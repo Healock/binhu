@@ -35,6 +35,27 @@ def private_json(path, value):
         os.fsync(stream.fileno())
 
 
+def safe_diagnostics(value):
+    """Keep failure reports aggregate and bounded at the server boundary."""
+    if not isinstance(value, dict) or len(value) > 16:
+        return {}
+    result = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
+            continue
+        if isinstance(item, bool):
+            result[key] = item
+        elif isinstance(item, int) and 0 <= item <= 10**9:
+            result[key] = item
+        elif isinstance(item, str) and len(item) <= 100:
+            result[key] = item if re.fullmatch(r"[A-Za-z0-9_./| -]*", item) else "redacted"
+        elif isinstance(item, dict) and len(item) <= 32:
+            nested = safe_diagnostics(item)
+            if nested:
+                result[key] = nested
+    return result
+
+
 def source_program(snapshot_id, salt, *, measure, exclude_orphan_property_links=False):
     modules = {name: (Path(__file__).parent / (name + '.py')).read_text(encoding='utf-8') for name in MODULES}
     # Load reviewed pure modules in memory. No code or business file is written
@@ -129,7 +150,7 @@ def execute(action, *, exclude_orphan_property_links=False):
             envelope = json.loads(lines[0])
             if not envelope.get('ok'):
                 code = envelope.get('reason', '')
-                diagnostics = envelope.get('diagnostics') if isinstance(envelope.get('diagnostics'), dict) else {}
+                diagnostics = safe_diagnostics(envelope.get('diagnostics'))
                 raise SnapshotError(code if re.fullmatch('[a-z_]{1,100}', code) else 'snapshot_reader_failed')
             result = envelope['result']
             after = preflight()
