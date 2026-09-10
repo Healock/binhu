@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from deploy.environments.staging_data.control import private_json, source_program
+from deploy.environments.staging_data.control import private_json, source_program, safe_diagnostics
 
 
 class ControlTests(unittest.TestCase):
@@ -23,6 +23,17 @@ class ControlTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 private_json(path, {'reason':'second_attempt'})
             self.assertEqual(path.read_bytes(), original)
+
+    def test_diagnostics_are_aggregate_and_do_not_echo_free_text(self):
+        value = safe_diagnostics({
+            'parser_type': '全链条',
+            'source_count': 2,
+            'secret': '姓名张三13800138000',
+            'nested': {'field': 'ok'},
+        })
+        self.assertEqual(value['source_count'], 2)
+        self.assertEqual(value['secret'], 'redacted')
+        self.assertNotIn('张三', repr(value))
 
 
 if __name__ == '__main__':

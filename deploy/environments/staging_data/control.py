@@ -35,6 +35,27 @@ def private_json(path, value):
         os.fsync(stream.fileno())
 
 
+def safe_diagnostics(value):
+    """Keep failure reports aggregate and bounded at the server boundary."""
+    if not isinstance(value, dict) or len(value) > 16:
+        return {}
+    result = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
+            continue
+        if isinstance(item, bool):
+            result[key] = item
+        elif isinstance(item, int) and 0 <= item <= 10**9:
+            result[key] = item
+        elif isinstance(item, str) and len(item) <= 100:
+            result[key] = item if re.fullmatch(r"[A-Za-z0-9_./| -]*", item) else "redacted"
+        elif isinstance(item, dict) and len(item) <= 32:
+            nested = safe_diagnostics(item)
+            if nested:
+                result[key] = nested
+    return result
+
+
 def source_program(snapshot_id, salt, *, measure, exclude_orphan_property_links=False):
     modules = {name: (Path(__file__).parent / (name + '.py')).read_text(encoding='utf-8') for name in MODULES}
     # Load reviewed pure modules in memory. No code or business file is written
@@ -65,7 +86,7 @@ async def main():
 try:
     asyncio.run(main())
 except SnapshotError as exc:
-    print(json.dumps({'ok':False,'reason':str(exc)}))
+    print(json.dumps({'ok':False,'reason':exc.reason,'diagnostics':exc.diagnostics},ensure_ascii=True))
 except Exception:
     print(json.dumps({'ok':False,'reason':'snapshot_source_operation_failed'}))
 '''
@@ -117,6 +138,7 @@ def execute(action, *, exclude_orphan_property_links=False):
             'maximum_excluded_links':3 if exclude_orphan_property_links else 0})
         private_json(path / 'code-hashes.json', hashes)
         started = time.monotonic()
+        diagnostics = {}
         try:
             response = subprocess.run(['docker', 'exec', '-i', before['container_id'], 'python', '-'],
                 input=program, capture_output=True, text=True, timeout=300)
@@ -128,6 +150,7 @@ def execute(action, *, exclude_orphan_property_links=False):
             envelope = json.loads(lines[0])
             if not envelope.get('ok'):
                 code = envelope.get('reason', '')
+                diagnostics = safe_diagnostics(envelope.get('diagnostics'))
                 raise SnapshotError(code if re.fullmatch('[a-z_]{1,100}', code) else 'snapshot_reader_failed')
             result = envelope['result']
             after = preflight()
@@ -143,7 +166,8 @@ def execute(action, *, exclude_orphan_property_links=False):
             return {'snapshot_id': snapshot_id, 'action': action, **result['report']}
         except Exception as exc:
             code = str(exc) if isinstance(exc, SnapshotError) else 'snapshot_operation_failed'
-            private_json(path / 'failure.json', {'reason': code, 'snapshot_id': snapshot_id})
+            private_json(path / 'failure.json', {'reason': code, 'snapshot_id': snapshot_id,
+                'diagnostics': diagnostics})
             raise SnapshotError(code) from None
 
 

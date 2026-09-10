@@ -60,9 +60,19 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
             sources = await select(cur, "OnlineData._online_source_rows",
                 ("id", "parser_type", "physical_row", "revision", "row_key", "row_hash", "values_json", "source_kind"),
                 " WHERE archived_at IS NULL AND spreadsheet_id=0 ORDER BY id")
-            if any(row["parser_type"] not in TASK_TYPES or row["source_kind"] not in {
-                    'local_table', 'local_dispatch', 'one_time_continuation_import'} for row in sources):
-                raise SnapshotError("unsupported_current_source")
+            allowed_source_kinds = {'local_table', 'local_dispatch', 'one_time_continuation_import'}
+            unsupported = {}
+            for row in sources:
+                if row["parser_type"] not in TASK_TYPES or row["source_kind"] not in allowed_source_kinds:
+                    parser_label = row["parser_type"] if row["parser_type"] in TASK_TYPES else "unknown_parser"
+                    source_label = row["source_kind"] if row["source_kind"] in allowed_source_kinds else "unknown_source_kind"
+                    key = f"{parser_label}|{source_label}"
+                    unsupported[key] = unsupported.get(key, 0) + 1
+            if unsupported:
+                raise SnapshotError("unsupported_current_source", diagnostics={
+                    "by_parser_and_source_kind": unsupported,
+                    "total": sum(unsupported.values()),
+                })
             if len({(row["parser_type"], row["physical_row"]) for row in sources}) != len(sources):
                 raise SnapshotError("ambiguous_current_source")
             flows = await select(cur,"OnlineData._unverifiable_review_flows",FLOW_FIELDS)
@@ -113,8 +123,16 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 parser=get_parser(parser_type)
                 business=await select(cur,"OnlineData."+parser.table_name,("id","_row_key"))
                 selected=[row for row in sources if row["parser_type"]==parser_type]
-                if {(row['id'],row['_row_key']) for row in business} != {(row['physical_row'],row['row_key']) for row in selected}:
-                    raise SnapshotError("business_source_count_or_key_mismatch")
+                business_keys = {(row['id'], row['_row_key']) for row in business}
+                source_keys = {(row['physical_row'], row['row_key']) for row in selected}
+                if business_keys != source_keys:
+                    raise SnapshotError("business_source_count_or_key_mismatch", diagnostics={
+                        "parser_type": parser_type,
+                        "source_count": len(source_keys),
+                        "business_count": len(business_keys),
+                        "source_only_count": len(source_keys - business_keys),
+                        "business_only_count": len(business_keys - source_keys),
+                    })
                 codec.allocate(parser.table_name,[row["id"] for row in business])
                 tables["OnlineData."+parser.table_name]=[]
                 new_keys=set()

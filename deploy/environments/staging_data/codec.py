@@ -9,7 +9,12 @@ from datetime import date, datetime
 
 
 class SnapshotError(ValueError):
-    """Only fixed, non-sensitive reason codes may cross the tool boundary."""
+    """Fixed reason code plus safe, aggregate diagnostic metadata."""
+
+    def __init__(self, reason, *, diagnostics=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.diagnostics = diagnostics or {}
 
 
 def normalized(value):
@@ -180,8 +185,30 @@ def date_value(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
     text = str(value).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            raise SnapshotError("unrecognized_date") from None
+    # Keep Python's strict ISO parser for values already emitted by MySQL,
+    # including timezone offsets and ``Z``. Then accept the explicit local
+    # import formats below; arbitrary prose is still rejected.
     try:
-        datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.isoformat(sep=" ")
     except ValueError:
-        raise SnapshotError("unrecognized_date") from None
-    return text
+        pass
+    # Accept the formats used by current local imports while rejecting free
+    # text and impossible calendar dates. Normalized output stays stable.
+    formats = (
+        "%Y-%m-%d", "%Y/%m/%d", "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f",
+    )
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.isoformat(sep=" ") if "H" in fmt else parsed.date().isoformat()
+        except ValueError:
+            continue
+    raise SnapshotError("unrecognized_date") from None

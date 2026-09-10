@@ -39,6 +39,31 @@
 
 ## 尚需完成的验收
 
+## 2026-09-11：固定入口和账号隔离复核
+
+- 通过生产服务器只读 HTTP 检查，`/staging/api/app/bootstrap` 返回
+  `environment=staging`、`api_entry=/staging/api`、`environment_label=预发布环境 · 脱敏数据`；
+  `/dev/api/app/bootstrap` 返回 `environment=development`、`api_entry=/dev/api`、
+  `environment_label=Dev 环境 · 虚构数据`。
+- `observer@staging` 使用服务器受保护初始化材料可登录 Staging，返回
+  `binhu_staging_session`；同一账号访问 Production 和 Dev 均返回 401。
+  `observer@dev` 可登录 Dev，返回 `binhu_dev_session`；同一账号访问 Production
+  和 Staging 均返回 401。密码正文不写入台账。
+- 当前服务器资源只读快照显示 Production、Staging、Dev 使用不同 Compose 项目、
+  数据库命名空间和内部网络；Dev eventbus、Flink、pipeline 项目均已运行，
+  但这不等于完整业务事件闭环和 Staging 可用副本已签署。
+- Staging 副本仍未生成。近期独立失败证据只记录固定原因码：
+  `source_sensitive_value_detected`、`unrecognized_business_date`、
+  `unknown_enum`、`unsupported_current_source` 和
+  `business_source_count_or_key_mismatch`。工具在这些门禁失败时没有写入候选库，
+  没有切换 Staging 应用，也没有修改 Production。
+- 因此固定入口和账号隔离已通过，但 Staging 脱敏副本、Dev 完整业务闭环、浏览器
+  业务验收、75 人复测和 Shadow 退役仍不能签署。
+- 两套现有环境的健康接口版本均为 `0.0.0`。复核发现环境准备器此前未把源代码
+  `VERSION` 写入 `APP_VERSION`；已在本分支补上版本文件存在性、SemVer 校验、环境
+  变量和 manifest 记录。现有运行实例未因该代码改动自动切换，必须在合并主线后以
+  同一候选制品重新准备/更新环境，再复核版本身份。
+
 PR #563 的 PR CI `34424666290` 和主线 CI `34425055670` 均成功，已合并到
 `fc515d55`。部署前五个生产容器 ID、启动时间及重启次数与原基线一致。
 新 worker 镜像已构建，但 Schema Registry 前置校验拒绝连接，尚未切换 worker。
