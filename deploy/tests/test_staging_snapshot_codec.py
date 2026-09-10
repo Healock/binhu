@@ -77,6 +77,12 @@ class SnapshotCodecTests(unittest.TestCase):
         with self.assertRaises(SnapshotError):
             a.scan_tables({'RegistryData.registry_properties': [{'housing_type': '任意正文'}]})
 
+    def test_sensitive_scan_summary_contains_only_table_field_and_count(self):
+        a = Codec(b'a' * 32)
+        a.remember('source-value')
+        summary = a.scan_table_summary({'OnlineData.t_fullchain': [{'备注': 'source-value'}]})
+        self.assertEqual(summary, [{'table': 'OnlineData.t_fullchain', 'field': '备注', 'count': 1}])
+
 
 if __name__=='__main__':unittest.main()
 
