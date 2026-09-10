@@ -55,6 +55,13 @@ export function releaseNotesCandidates(locationHref?: string): string[] {
 
   if (locationHref) {
     try {
+      const location = new URL(locationHref)
+      const environment = /^\/(dev|staging)(?:\/|$)/i.exec(location.pathname)?.[1].toLowerCase()
+      if (environment && (location.protocol === 'https:' || location.protocol === 'http:')) {
+        // These are isolated web deployments. Missing/stale notes must not
+        // select Production's release information through desktop fallbacks.
+        return [new URL(`/${environment}/release-notes.json`, location.origin).toString()]
+      }
       add(new URL('release-notes.json', locationHref).toString())
     } catch (_error) {
       // Fall through to the relative candidates below.

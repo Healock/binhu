@@ -25,6 +25,34 @@ const sectionedNotes = {
   }],
 }
 
+test('nonproduction release notes stay at the fixed environment root on deep links', () => {
+  for (const prefix of ['dev', 'staging']) {
+    for (const route of ['', '/login', '/tasks/detail/123']) {
+      assert.deepEqual(releaseNotesCandidates(`https://example.test/${prefix}${route}`), [
+        `https://example.test/${prefix}/release-notes.json`,
+      ])
+    }
+  }
+})
+
+test('missing, stale or invalid environment notes never fall back to production', async () => {
+  for (const prefix of ['dev', 'staging']) {
+    for (const fixture of [
+      () => new Response('missing', { status: 404 }),
+      () => new Response(JSON.stringify(validNotes), { status: 200 }),
+      () => new Response('<html>not a note</html>', { status: 200 }),
+    ]) {
+      const requests: string[] = []
+      const result = await loadReleaseNotes('0.28.15', async input => {
+        requests.push(String(input))
+        return fixture()
+      }, `https://example.test/${prefix}/tasks/detail/123`)
+      assert.equal(result, null)
+      assert.deepEqual(requests, [`https://example.test/${prefix}/release-notes.json`])
+    }
+  }
+})
+
 test('release notes use the current local protocol before generic fallbacks', () => {
   assert.deepEqual(releaseNotesCandidates('binhu://app/login').slice(0, 2), [
     'binhu://app/release-notes.json',
