@@ -59,3 +59,46 @@ The [Dev metadata pipeline](event_pipeline/README.md) provides a closed task-eve
 contract, durable delivery ledger, fixed Flink aggregation and revision-fenced
 Redis bridge. Its preparation/startup and minimal synthetic acceptance are separate
 from schema-registry, recovery and full business integration acceptance.
+
+## Immutable candidate packages
+
+`python -m deploy.environments.artifact build --repository <checkout> --commit
+<full-commit-sha> --output <new-private-directory>` builds the portable frontend
+from a Git archive. Local edits and untracked files are excluded. Keep the
+reported artifact ID with the developer acceptance record. `verify --output`
+checks archive hashes, contained files, VERSION, migration hashes and Git archive
+commit metadata. These are consistency checks, not a digital signature: transfer
+the expected artifact ID separately through the trusted deployment channel.
+
+On the authorized Linux host, run `python -m deploy.environments.image build
+--artifact <package-directory> --expected-artifact-id <recorded-id> --output
+<new-private-build-directory>`. Only transfer `artifact.json`, `source.tar` and
+`frontend.tar`, not the npm installation or mutable extracted build workspace.
+The image tool extracts the archived backend afresh, adds the archived VERSION
+and its APP_VERSION setting, and records the resulting immutable Docker image ID.
+It then checks image labels, runtime version and every file under `/app` in a
+network-disabled container with CPU/memory limits. A failed build retains its
+failure marker and cannot be reused. `image verify` repeats these checks without
+building another image. Build logs remain in the private output directory.
+
+Before building, check production health and resources. The CLI requires at least
+2 GiB available RAM and 8 GiB free in Docker's filesystem; these floors do not
+replace ongoing resource monitoring. Building or verifying an image does not
+update application containers, initialize databases, accept a Dev run or permit
+Staging promotion. Same-image deployment, paired rollback and application
+acceptance remain separate gates. Candidate manifests deliberately retain
+`ready_for_staging=false` until an independent acceptance workflow is completed.
+
+For the existing Dev application, `python -m deploy.environments.update
+measure-development --artifact <package> --image-directory <verified-image-run>
+--expected-artifact-id <recorded-id>` validates configuration hashes, isolated
+databases, resource availability and the candidate image. `apply-development`
+uses the same arguments plus `--evidence
+/srv/deploy-backups/environment-triad/dev-update-<16-hex-run-id>` and repeats all
+checks under the environment deployment lock. It backs up Dev's eight databases,
+configuration and static files before replacing the backend image and static
+mount together. MySQL and Redis are not recreated. Failed application startup
+restores the previous configuration and image and checks their health; database
+backups are never automatically imported. Preserve the failure report if rollback
+health fails. The command does not support Staging promotion: that still requires
+the full Dev acceptance and Staging data gates.
