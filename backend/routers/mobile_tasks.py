@@ -94,6 +94,7 @@ from services.unverifiable_review import (
     STATE_LABELS as UNVERIFIABLE_STATE_LABELS,
     UNVERIFIABLE_REVIEW_TYPES,
     apply_decision,
+    is_unverifiable_result,
     prepare_decision,
     review_events_for_flow,
     review_flows_by_rows,
