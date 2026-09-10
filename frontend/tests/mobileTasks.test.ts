@@ -1024,7 +1024,7 @@ test('流口任务保存使用本地版本并且不再暴露腾讯冲突处理',
   assert.doesNotMatch(tableSource, /已自动保存并写回腾讯表格/)
 })
 
-test('指令核查编辑器使用防抖自动保存并提供失败重试', () => {
+test('指令核查编辑器仅在失焦后保存并提供失败重试', () => {
   const tableSource = readFileSync(
     new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
     'utf8',
@@ -1042,7 +1042,9 @@ test('指令核查编辑器使用防抖自动保存并提供失败重试', () =>
   assert.match(tableSource, /queuedAutosavesRef/)
   assert.match(tableSource, /task_revision_conflict/)
   assert.match(tableSource, /current_values/)
-  assert.match(detailSource, /scheduleAutoSave\(1500\)/)
+  assert.doesNotMatch(detailSource, /scheduleAutoSave\(1500\)/)
+  assert.match(detailSource, /失焦才提交文字草稿/)
+  assert.match(detailSource, /onBlur=\{\(\) =>/)
   assert.match(detailSource, /savingRef/)
   assert.match(detailSource, /formGenerationRef/)
   assert.match(detailSource, /task_update/)

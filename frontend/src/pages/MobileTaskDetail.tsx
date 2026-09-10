@@ -180,6 +180,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const formValuesRef = useRef<Record<string, string>>({})
   const registrationSearchRequestRef = useRef(0)
   const composingRef = useRef(false)
+  const focusedFieldRef = useRef<string | null>(null)
   const selectedSource = useMemo(
     () => data?.sources.find(source => source.id === selectedSourceId) || null,
     [data, selectedSourceId],
@@ -583,7 +584,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         } : source),
       } : current)
       const draftChangedDuringSave = formGenerationRef.current !== requestGeneration
-      if (!draftChangedDuringSave) {
+      if (!draftChangedDuringSave && !focusedFieldRef.current) {
         setFormValues(savedValues)
         formValuesRef.current = savedValues
       }
@@ -654,17 +655,14 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     setImmediateSaveSequence(current => current + 1)
   }, [])
 
+  // 文本字段只在失焦后保存；输入停顿、重渲染和输入法组合期间均不发起请求。
+  // immediateSaveSequence 仅供下拉/日期等非文本控件使用。
   useEffect(() => {
     if (!dirty || interactionLocked || mode === 'analysis' || saving || registrationDraftIncomplete) return
-    const shouldSaveImmediately = immediateSaveSequence > handledImmediateSaveRef.current
+    if (immediateSaveSequence <= handledImmediateSaveRef.current) return
     handledImmediateSaveRef.current = immediateSaveSequence
-    if (shouldSaveImmediately) scheduleAutoSave(0)
-    else if (!composingRef.current) scheduleAutoSave(1500)
-    return () => {
-      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
-      autosaveTimerRef.current = null
-    }
-  }, [dirty, formValues, immediateSaveSequence, interactionLocked, mode, registrationDraftIncomplete, saving, scheduleAutoSave])
+    scheduleAutoSave(0)
+  }, [dirty, immediateSaveSequence, interactionLocked, mode, registrationDraftIncomplete, saving, scheduleAutoSave])
 
   useEffect(() => () => {
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
@@ -1423,29 +1421,34 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         autoSize={{ minRows: field === '现住址' ? 2 : 3, maxRows: 7 }}
                         placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : undefined}
                         value={formValues[field] || ''}
-                        onCompositionStart={() => { composingRef.current = true; if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current) }}
-                        onCompositionEnd={() => { composingRef.current = false; requestImmediateSave() }}
-                        onChange={event => {
-                          const value = event.target.value
-                          updateDraftValues(current => ({ ...current, [field]: value }))
+                        onFocus={() => { focusedFieldRef.current = field }}
+                        onBlur={() => {
+                          if (focusedFieldRef.current === field) focusedFieldRef.current = null
                           if (registrationClosureEnabled
                             && (formValues[data.workflow.result_field] || '').trim() === '待登记'
                             && (field === '核查补充信息' || field === '核查反馈')) {
-                            window.setTimeout(() => {
-                              const hint = value.trim()
-                              if (hint) {
-                                setRegistrationMatchStatus('matching')
-                                void loadRegistrationProperties(hint).then(properties => {
-                                  if (properties.length === 1) {
-                                    const property = properties[0]
-                                    setRegistrationPropertyId(property.id)
-                                    setRegistrationPropertyVersion(property.version)
-                                    updateDraftValues(current => ({ ...current, 现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim() }))
-                                  }
-                                })
-                              }
-                            }, 700)
+                            const hint = (formValuesRef.current[field] || '').trim()
+                            if (hint) {
+                              setRegistrationMatchStatus('matching')
+                              void loadRegistrationProperties(hint).then(properties => {
+                                if (properties.length === 1) {
+                                  const property = properties[0]
+                                  setRegistrationPropertyId(property.id)
+                                  setRegistrationPropertyVersion(property.version)
+                                  updateDraftValues(current => ({ ...current, 现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim() }))
+                                }
+                              })
+                            }
                           }
+                          // 失焦才提交文字草稿；不使用输入防抖，避免打断连续输入。
+                          if (!composingRef.current && dirty && !registrationDraftIncomplete) scheduleAutoSave(0)
+                        }}
+                        onCompositionStart={() => { composingRef.current = true; if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current) }}
+                        onCompositionEnd={() => { composingRef.current = false }}
+                        onChange={event => {
+                          const value = event.target.value
+                          updateDraftValues(current => ({ ...current, [field]: value }))
+                          // 地址匹配也不在输入过程中触发；待用户离开字段后由失焦流程处理。
                         }}
                       />
                     )}
