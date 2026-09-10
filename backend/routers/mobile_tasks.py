@@ -92,9 +92,12 @@ from services.unverifiable_review import (
     INITIAL_EXTENSION,
     INITIAL_PENDING,
     STATE_LABELS as UNVERIFIABLE_STATE_LABELS,
-    UNVERIFIABLE_REVIEW_TYPES,
+UNVERIFIABLE_REVIEW_TYPES,
+is_unverifiable_result,
     apply_decision,
     prepare_decision,
+    NEW_CLUE,
+    NO_NEW_CLUE,
     review_events_for_flow,
     review_flows_by_rows,
     supports_unverifiable_review,
@@ -480,7 +483,7 @@ class UnverifiableDecision(BaseModel):
     """Structured two-stage decision for an unresolved task."""
 
     stage: Literal["initial_pending", "deep_pending"]
-    outcome: Literal["success", "failure"]
+    outcome: Literal["success", "failure", "new_clue", "no_new_clue"]
     opinion: str = Field(min_length=1, max_length=2000)
     flow_version: int = Field(gt=0)
     expected_revision: int = Field(gt=0)
@@ -2071,6 +2074,14 @@ def _mobile_export_row(
     ]
     if not include_internal:
         return public_values
+    public_values = [
+        *public_values[:9],
+        "",  # 本次研判结果由基础管控填写
+        "",  # 本次研判意见由基础管控填写
+        public_values[9],  # 历史研判意见
+        public_values[10],  # 已有核查反馈
+        *public_values[11:],
+    ]
     return [
         parser_type,
         row_key,
@@ -2161,7 +2172,7 @@ async def _mobile_export_workbook(
         headers = [
             "业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本",
             "姓名", "身份证号", "手机号", "原地址", "现住址", "社区", "核查人",
-            "任务状态", "研判阶段", "本次研判决定", "研判意见", "复核反馈", "核查结果", "截止日期",
+            "任务状态", "研判阶段", "本次研判结果", "研判意见", "历史研判意见", "已有核查反馈", "核查结果", "截止日期",
             "来源异常", "待同步",
         ]
     else:
@@ -2173,6 +2184,9 @@ async def _mobile_export_workbook(
         type_label,
         headers,
         export_rows,
+        dropdown_column="P" if include_internal_columns else None,
+        dropdown_values=("发现新线索", "未发现新线索"),
+        hidden_columns=("A", "C", "D", "E", "F") if include_internal_columns else (),
     )
     return workbook, len(export_rows)
 
@@ -2726,67 +2740,45 @@ async def import_mobile_task_analysis(
     if not values:
         raise HTTPException(400, "研判文件为空")
     headers = [str(value or "").strip() for value in values[0]]
-    required = ["业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本", "研判阶段", "本次研判决定", "研判意见"]
+    required = ["业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本", "研判阶段", "本次研判结果", "研判意见"]
+    legacy_header = "本次研判决定" in headers and "本次研判结果" not in headers
+    if legacy_header:
+        required[-2] = "本次研判决定"
     missing = [header for header in required if header not in headers]
     if missing:
         raise HTTPException(400, f"研判文件缺少字段：{'、'.join(missing)}")
     index = {header: headers.index(header) for header in required}
-    succeeded: list[dict] = []
-    failed: list[dict] = []
+    succeeded: list[dict] = []; failed: list[dict] = []; skipped: list[dict] = []; legacy_count = 0
     for row_number, row in enumerate(values[1:], start=2):
         cell = lambda key: str(row[index[key]] or "").strip() if index[key] < len(row) else ""
-        outcome = cell("本次研判决定").lower()
+        outcome = cell(required[-2]).lower()
         if not outcome:
-            continue
+            skipped.append({"row": row_number, "reason": "本次研判结果为空"}); continue
         parser_type = cell("业务类型")
         try:
-            source_id = int(cell("来源ID"))
-            expected_revision = int(cell("来源版本"))
-            flow_version = int(cell("流程版本"))
+            source_id = int(cell("来源ID")); expected_revision = int(cell("来源版本")); flow_version = int(cell("流程版本"))
         except ValueError:
-            failed.append({"row": row_number, "reason": "来源ID、来源版本和流程版本必须是数字"})
-            continue
-        normalized_outcome = {"成功": "success", "研判成功": "success", "success": "success", "失败": "failure", "研判失败": "failure", "failure": "failure"}.get(outcome)
+            failed.append({"row": row_number, "reason": "来源ID、来源版本和流程版本必须是数字"}); continue
+        mapping = {"发现新线索": NEW_CLUE, "未发现新线索": NO_NEW_CLUE, "成功": NEW_CLUE, "研判成功": NEW_CLUE, "success": NEW_CLUE, "失败": NO_NEW_CLUE, "研判失败": NO_NEW_CLUE, "failure": NO_NEW_CLUE}
+        normalized_outcome = mapping.get(outcome)
         if normalized_outcome is None:
-            failed.append({"row": row_number, "reason": "本次研判决定只能填写成功或失败"})
-            continue
-        stage = {
-            INITIAL_PENDING: INITIAL_PENDING,
-            UNVERIFIABLE_STATE_LABELS[INITIAL_PENDING]: INITIAL_PENDING,
-            DEEP_PENDING: DEEP_PENDING,
-            UNVERIFIABLE_STATE_LABELS[DEEP_PENDING]: DEEP_PENDING,
-        }.get(cell("研判阶段"))
+            failed.append({"row": row_number, "reason": "本次研判结果只能填写发现新线索或未发现新线索"}); continue
+        if outcome in {"成功", "研判成功", "success", "失败", "研判失败", "failure"} or legacy_header: legacy_count += 1
+        stage = {INITIAL_PENDING: INITIAL_PENDING, UNVERIFIABLE_STATE_LABELS[INITIAL_PENDING]: INITIAL_PENDING, DEEP_PENDING: DEEP_PENDING, UNVERIFIABLE_STATE_LABELS[DEEP_PENDING]: DEEP_PENDING}.get(cell("研判阶段"))
         if stage is None:
-            failed.append({"row": row_number, "reason": "研判阶段不是当前可提交的初步或深度待研判状态"})
-            continue
+            failed.append({"row": row_number, "reason": "研判阶段不是当前可提交的初步或深度待研判状态"}); continue
         if not parser_type or not supports_unverifiable_review(parser_type):
-            failed.append({"row": row_number, "reason": "该业务不支持通过研判文件提交两级研判"})
-            continue
+            failed.append({"row": row_number, "reason": "该业务不支持通过研判文件提交两级研判"}); continue
+        if not cell("研判意见"):
+            failed.append({"row": row_number, "reason": "请填写本次研判意见"}); continue
         try:
-            decision = UnverifiableDecision(
-                stage=stage,
-                outcome=normalized_outcome,
-                opinion=cell("研判意见"),
-                flow_version=flow_version,
-                expected_revision=expected_revision,
-                expected_row_hash=cell("来源行哈希"),
-            )
-            result = await decide_mobile_task_unverifiable_review(
-                parser_type, source_id, decision, request, user, conn,
-            )
-            succeeded.append({"row": row_number, "task": f"{parser_type}:{cell('任务标识')}", "state": result.get("review_flow", {}).get("state", "")})
+            decision = UnverifiableDecision(stage=stage, outcome=normalized_outcome, opinion=cell("研判意见"), flow_version=flow_version, expected_revision=expected_revision, expected_row_hash=cell("来源行哈希"))
+            result = await decide_mobile_task_unverifiable_review(parser_type, source_id, decision, request, user, conn)
+            succeeded.append({"row": row_number, "task": f"{parser_type}:{cell('任务标识')}", "state": result.get("review_flow", {}).get("state", ""), "next_step": result.get("review_flow", {}).get("state_label", "")})
         except (HTTPException, ValueError) as exc:
-            reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
-            failed.append({"row": row_number, "reason": reason})
-    await record_admin_audit(
-        user,
-        "mobile_tasks.analysis_import",
-        target_type="mobile_task_analysis",
-        target_name=file.filename or "研判文件",
-        detail={"file_format": "XLSX", "success_count": len(succeeded), "failed_count": len(failed)},
-        **request_audit_fields(request),
-    )
-    return {"success_count": len(succeeded), "failed_count": len(failed), "success": succeeded, "failed": failed}
+            failed.append({"row": row_number, "reason": exc.detail if isinstance(exc, HTTPException) else str(exc)})
+    await record_admin_audit(user, "mobile_tasks.analysis_import", target_type="mobile_task_analysis", target_name=file.filename or "研判文件", detail={"file_format": "XLSX", "success_count": len(succeeded), "failed_count": len(failed), "skipped_count": len(skipped)}, **request_audit_fields(request))
+    return {"success_count": len(succeeded), "failed_count": len(failed), "skipped_count": len(skipped), "legacy_count": legacy_count, "success": succeeded, "failed": failed, "skipped": skipped}
 
 
 @router.get("/{parser_type}/filter-options")

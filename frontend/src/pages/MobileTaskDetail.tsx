@@ -144,7 +144,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [transferCommunity, setTransferCommunity] = useState<string>()
   const [transferLeader, setTransferLeader] = useState<string>()
   const [transferring, setTransferring] = useState(false)
-  const [decisionOutcome, setDecisionOutcome] = useState<'success' | 'failure'>('success')
+  const [decisionOutcome, setDecisionOutcome] = useState<'new_clue' | 'no_new_clue'>('new_clue')
   const [decisionOpinion, setDecisionOpinion] = useState('')
   const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
   const [photoSubmitting, setPhotoSubmitting] = useState(false)
@@ -1259,7 +1259,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                   ? '该任务属于依赖链中的其他负责人，仅供了解前置或后置关系'
                   : mode === 'analysis'
                     ? STRUCTURED_REVIEW_TYPES.has(parserType)
-                      ? '按当前阶段选择研判成功或失败，并填写本阶段意见'
+                      ? '按当前阶段选择发现新线索或未发现新线索，并填写本阶段意见'
                       : '填写或修改研判内容，清空后将重新回到待研判'
                     : data.dependency_blocked
                       ? '基础管控可同时研判；重新核实后可直接修改结果并保存'
@@ -1279,7 +1279,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                 message={data.task.review_flow?.state_label || '两级研判'}
                 description={data.task.review_flow?.review_due_date
                   ? `系统计算的复核截止日期：${data.task.review_flow.review_due_date}，到期后自动进入下一阶段。`
-                  : '请明确选择研判成功或研判失败，并填写结构化意见。'}
+                  : '请明确选择发现新线索或未发现新线索，并填写结构化意见。'}
               />
               {data.task.review_flow && ['initial_pending', 'deep_pending'].includes(data.task.review_flow.state) ? (
                 <>
@@ -1288,8 +1288,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     size="large"
                     value={decisionOutcome}
                     options={[
-                      { value: 'success', label: '研判成功（进入延时复核）' },
-                      { value: 'failure', label: '研判失败（进入下一阶段）' },
+                      { value: 'new_clue', label: '发现新线索（进入延时核查）' },
+                      { value: 'no_new_clue', label: '未发现新线索（进入下一阶段）' },
                     ]}
                     onChange={value => setDecisionOutcome(value)}
                   />
@@ -1565,3 +1565,4 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     </div>
   )
 }
+

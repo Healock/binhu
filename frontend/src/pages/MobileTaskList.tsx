@@ -1020,7 +1020,7 @@ export default function MobileTaskList({
       } else if (result.success_count > 0) {
         message.success(`已导入 ${result.success_count} 条研判结果`)
       } else {
-        message.warning('没有导入任何研判结果，请填写本次研判决定和研判意见后重试')
+        message.warning('没有导入任何研判结果，请填写本次研判结果和研判意见后重试')
       }
       await load(1, false, true)
     } catch (reason: any) {
@@ -1418,7 +1418,7 @@ export default function MobileTaskList({
               type="warning"
               showIcon
               message="部分行没有写入，请按下面的行号修正后重新导入"
-              description="请仅保留需要处理的行再导入，清空已成功行的本次研判决定。遇到版本冲突，请重新导出最新待研判任务后填写。"
+              description="请仅保留需要处理的行再导入，清空已成功行的本次研判结果。遇到版本冲突，请重新导出最新待研判任务后填写。"
             />
             <div className="mobile-task-analysis-import-result__issues" role="list" aria-label="需要处理的导入行">
               {analysisImportResult.failed.map(item => (
@@ -1427,7 +1427,7 @@ export default function MobileTaskList({
                 </div>
               ))}
             </div>
-          </> : analysisImportResult.success_count > 0 ? <Alert type="success" showIcon message="已填写的研判结果已导入" description="空白决定行不提交。列表已刷新，可继续核对待研判任务。" /> : <Alert type="info" showIcon message="没有导入任何研判结果" description="请在平台导出的 XLSX 中填写“本次研判决定”（成功或失败）和“研判意见”后重新导入；空白决定行会跳过。" />}
+          </> : analysisImportResult.success_count > 0 ? <Alert type="success" showIcon message="已填写的研判结果已导入" description="空白决定行不提交。列表已刷新，可继续核对待研判任务。" /> : <Alert type="info" showIcon message="没有导入任何研判结果" description="请在平台导出的 XLSX 中填写“本次研判结果”（成功或失败）和“研判意见”后重新导入；空白决定行会跳过。" />}
           {(analysisImportResult.error || analysisImportResult.failed_count > 0 || analysisImportResult.success_count === 0) && <Upload accept=".xlsx" disabled={importingAnalysis} showUploadList={false} beforeUpload={file => { void importAnalysis(file); return false }}>
             <Button type="primary" loading={importingAnalysis}>重新导入修正后的文件</Button>
           </Upload>}

@@ -103,9 +103,9 @@ async def test_analysis_export_can_be_imported_with_chinese_stage(monkeypatch):
         "研判任务",
         [
             "业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希",
-            "流程版本", "研判阶段", "本次研判决定", "研判意见",
+            "流程版本", "研判阶段", "本次研判结果", "研判意见",
         ],
-        [["疑似返苏", "task-1", 31, 4, "abc123", 2, "初步待研判", "成功", "继续核查"]],
+        [["疑似返苏", "task-1", 31, 4, "abc123", 2, "初步待研判", "发现新线索", "继续核查"]],
     )
     captured = {}
 
@@ -133,7 +133,7 @@ async def test_analysis_export_can_be_imported_with_chinese_stage(monkeypatch):
     assert captured["parser_type"] == "疑似返苏"
     assert captured["source_id"] == 31
     assert captured["decision"].stage == "initial_pending"
-    assert captured["decision"].outcome == "success"
+    assert captured["decision"].outcome == "new_clue"
 
 
 class _PropertySortCursor:

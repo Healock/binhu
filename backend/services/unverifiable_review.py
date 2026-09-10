@@ -29,6 +29,8 @@ FINAL_UNVERIFIABLE = "final_unverifiable"
 RESOLVED = "resolved"
 ARCHIVED = "archived"
 SOURCE_EXCEPTION = "source_exception"
+NEW_CLUE = "new_clue"
+NO_NEW_CLUE = "no_new_clue"
 
 ACTIVE_STATES = {
     INITIAL_PENDING,
@@ -789,20 +791,21 @@ async def prepare_decision(
         raise ValueError("研判流程已经被其他人更新，请刷新后重试")
     if expected_row_hash != str(source.get("row_hash") or ""):
         raise ValueError("腾讯来源版本已经变化，请刷新后重试")
-    if outcome not in {"success", "failure"}:
-        raise ValueError("请选择研判成功或研判失败")
+    outcome = {"success": NEW_CLUE, "failure": NO_NEW_CLUE, NEW_CLUE: NEW_CLUE, NO_NEW_CLUE: NO_NEW_CLUE}.get(outcome, outcome)
+    if outcome not in {NEW_CLUE, NO_NEW_CLUE}:
+        raise ValueError("请选择发现新线索或未发现新线索")
     if not opinion.strip():
         raise ValueError("请填写研判意见")
     business_date = await get_business_date(cur)
-    due = review_due_date(business_date, stage) if outcome == "success" else None
+    due = review_due_date(business_date, stage) if outcome == NEW_CLUE else None
     next_state = (
-        INITIAL_EXTENSION if stage == INITIAL_PENDING and outcome == "success"
+        INITIAL_EXTENSION if stage == INITIAL_PENDING and outcome == NEW_CLUE
         else DEEP_PENDING if stage == INITIAL_PENDING
-        else DEEP_EXTENSION if outcome == "success"
+        else DEEP_EXTENSION if outcome == NEW_CLUE
         else FINAL_UNVERIFIABLE
     )
     stage_name = "初步研判" if stage == INITIAL_PENDING else "深度研判"
-    outcome_name = "成功" if outcome == "success" else "失败"
+    outcome_name = "发现新线索" if outcome == NEW_CLUE else "未发现新线索"
     summary = f"{stage_name}{outcome_name}：{opinion.strip()}"
     if due:
         summary += f"；复核截止 {due.isoformat()}"
