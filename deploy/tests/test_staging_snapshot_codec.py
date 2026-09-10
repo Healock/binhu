@@ -52,6 +52,17 @@ class SnapshotCodecTests(unittest.TestCase):
     def test_impossible_calendar_date_is_rejected(self):
         with self.assertRaises(SnapshotError):date_value('2026/02/30')
 
+    def test_dispatch_month_day_retains_precision_without_guessing_year(self):
+        for value in ('09-08', '9-8', '02-29', '2.29'):
+            with self.subTest(value=value):
+                self.assertEqual(business_date(value), value)
+        for value in ('02-30', '13-01', '09-08 synthetic-note', '2025-02-29', '2026-09-08T99:00:00'):
+            with self.subTest(value=value), self.assertRaises(SnapshotError):
+                business_date(value)
+        for value in (None, '', '  '):
+            self.assertEqual(business_date(value), '')
+        self.assertEqual(business_date('2026-09-08T17:20:00'), '2026-09-08T17:20:00')
+
     def test_closed_housing_enum_does_not_mask_sensitive_text_elsewhere(self):
         a = Codec(b'a' * 32)
         value = '自购房屋'

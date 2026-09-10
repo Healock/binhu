@@ -19,11 +19,21 @@ def business_date(value):
     text = str(value or "").strip()
     if not text:
         return ""
+    # Current dispatch writes %m-%d. Validate month/day against a leap year
+    # solely to allow February 29; never invent or export an absent year.
+    if re.fullmatch(r"\d{1,2}[-.]\d{1,2}", text):
+        month, day = re.split(r"[-.]", text)
+        try:
+            date(2000, int(month), int(day))
+        except ValueError:
+            raise SnapshotError("invalid_business_date") from None
+        return text
     # Preserve supported date precision, and never copy arbitrary free text
     # merely because it was stored in a date-labelled VARCHAR column.
     for pattern, fmt in ((r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),
                          (r"\d{4}/\d{1,2}/\d{1,2}", "%Y/%m/%d"),
-                         (r"\d{1,2}\.\d{1,2}", "%m.%d"),
+                         (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", "%Y-%m-%dT%H:%M:%S"),
+                         (r"\d{4}/\d{1,2}/\d{1,2} \d{2}:\d{2}:\d{2}", "%Y/%m/%d %H:%M:%S"),
                          (r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", "%Y-%m-%d %H:%M:%S")):
         if re.fullmatch(pattern, text):
             try:

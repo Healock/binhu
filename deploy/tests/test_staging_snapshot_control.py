@@ -32,8 +32,16 @@ class ControlTests(unittest.TestCase):
             'nested': {'field': 'ok'},
         })
         self.assertEqual(value['source_count'], 2)
-        self.assertEqual(value['secret'], 'redacted')
+        self.assertNotIn('secret', value)
         self.assertNotIn('张三', repr(value))
+
+    def test_ascii_credentials_and_arbitrary_nested_keys_are_not_safe_metadata(self):
+        self.assertEqual(safe_diagnostics({'password': 'SyntheticToken-ABC123',
+            'nested': {'field': 'Bearer SyntheticToken'}, 'source_count': '19900000000'}), {})
+        deep = {'source_count': 1}
+        for _ in range(100):
+            deep = {'nested': deep}
+        self.assertEqual(safe_diagnostics(deep), {})
 
 
 if __name__ == '__main__':
