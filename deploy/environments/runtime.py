@@ -65,6 +65,12 @@ def prepare(args):
     static = Path(args.static).resolve()
     if not (source / 'backend/init.sql').is_file() or not (static / 'index.html').is_file():
         raise ValueError('source and compiled frontend required')
+    version_file = source / 'VERSION'
+    if not version_file.is_file():
+        raise ValueError('source version missing')
+    version = version_file.read_text(encoding='utf-8').strip()
+    if not re.fullmatch(r'0|[1-9]\d*\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', version):
+        raise ValueError('source version invalid')
     # The backend serves the same immutable static bundle for all same-origin
     # prefixes; runtime API resolution supplies the environment path.
     if '/assets/' not in (static / 'index.html').read_text(encoding='utf-8'):
@@ -84,7 +90,8 @@ def prepare(args):
     initial_password = 'Init-' + hmac.new(salt, username.encode(), hashlib.sha256).hexdigest()[:24] + '!'
     dbs = {name: prefix + name for name in DOMAINS}
     env = {
-        'APP_ENVIRONMENT': args.environment, 'SESSION_COOKIE_NAME': cookie,
+        'APP_ENVIRONMENT': args.environment, 'APP_VERSION': version,
+        'SESSION_COOKIE_NAME': cookie,
         'SESSION_COOKIE_SECURE': 'true', 'SESSION_COOKIE_SAMESITE': 'lax',
         'MYSQL_HOST': 'environment-mysql', 'MYSQL_USER': 'environment_app',
         'MYSQL_PASSWORD': db_password, 'MYSQL_POOL_SIZE': '4',
@@ -132,7 +139,7 @@ def prepare(args):
     }, 'networks': {'internal': {'name': project + '_internal', 'internal': False, 'labels': labels}},
        'volumes': {key: {'name': project + '_' + key, 'labels': labels} for key in ('mysql', 'redis')}}
     private_file(root / 'compose.json', json.dumps(compose, indent=2))
-    private_file(root / 'manifest.json', json.dumps({'environment': args.environment, 'project': project,
+    private_file(root / 'manifest.json', json.dumps({'environment': args.environment, 'version': version, 'project': project,
         'port': port, 'images': images, 'databases': dbs,
         'hashes': {p: digest(root / p) for p in ('compose.json', 'backend.env', 'init.sql')}}, indent=2))
     print(json.dumps({'environment': args.environment, 'prepared': True, 'started': False}))
