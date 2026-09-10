@@ -18,6 +18,10 @@ from routers.registry import PropertySearch, _property_search_result
 from services.xlsx_export import build_xlsx
 
 
+def test_mobile_task_review_route_imports_unverifiable_result_validator():
+    assert callable(mobile_tasks.is_unverifiable_result)
+
+
 def test_xlsx_export_escapes_formula_like_user_text():
     payload = build_xlsx("测试", ["字段"], [["=HYPERLINK(\"bad\")"], ["普通文本"]])
     sheet = load_workbook(payload, data_only=False).active
