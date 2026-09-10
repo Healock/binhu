@@ -15,6 +15,13 @@ DATES = {"下发日期", "下发时间", "截止日期", "截止时间", "创建
 REDACTED = {"来源", "登记情况", "研判", "二次反馈", "二次核查结果", "备注", "出警内容", "出警类别", "出警单位", "参考派出所", "入住方式"}
 
 
+def result_categories(workflow):
+    allowed = set(workflow.result_options) | set(workflow.valid_results)
+    if workflow.parser_type == '疑似返苏':
+        allowed.add('无需登记，原因写备注')
+    return allowed
+
+
 def business_date(value):
     text = str(value or "").strip()
     if not text:
@@ -76,10 +83,7 @@ def transform_values(parser, workflow, values, community_by_name, codec: Codec):
         elif field in DATES:
             result[field] = business_date(value)
         elif field == workflow.result_field:
-            allowed = set(workflow.result_options) | set(workflow.valid_results)
-            if parser.parser_type == "疑似返苏":
-                allowed.add("无需登记，原因写备注")
-            result[field] = enum(value, allowed)
+            result[field] = enum(value, result_categories(workflow))
         elif field == "接警编号":
             result[field] = codec.text("case_reference", value, "staging-case-")
         elif field in REDACTED:
@@ -87,8 +91,7 @@ def transform_values(parser, workflow, values, community_by_name, codec: Codec):
             result[field] = "脱敏验证内容" if value else ""
         else:
             raise SnapshotError("unreviewed_task_field")
-    if codec.scan(result):
-        raise SnapshotError("source_sensitive_value_detected")
+    codec.assert_tables_safe({'OnlineData.' + parser.table_name: [result]})
     return result
 
 

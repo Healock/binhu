@@ -12,7 +12,7 @@ import time
 from .codec import SnapshotError
 
 ROOT = Path('/srv/deploy-backups/environment-triad/staging-snapshots')
-MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations', 'digests', 'build')
+MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations', 'digests', 'reconciliation', 'build')
 
 
 def safe_directory(path, *, create=False):
@@ -41,8 +41,12 @@ def safe_diagnostics(value):
         return {}
     result = {}
     from .tasks import TASK_TYPES
+    from .diagnostic_contract import diagnostic_fields
+    allowed_fields = diagnostic_fields()
     counts = {'source_count', 'business_count', 'source_only_count', 'business_only_count',
-              'total', 'duplicate_business_key_count', 'duplicate_source_key_count'}
+              'total', 'duplicate_business_key_count', 'duplicate_source_key_count',
+              'business_only_active_ledger_count', 'business_only_archived_ledger_count',
+              'business_only_no_ledger_count', 'business_only_archive_key_count'}
     for key, item in value.items():
         if key in counts and type(item) is int and 0 <= item <= 10**9:
             result[key] = item
@@ -60,7 +64,7 @@ def safe_diagnostics(value):
                 if (isinstance(entry, dict) and set(entry) == {'table', 'field', 'count'}
                         and all(isinstance(entry[k], str) and len(entry[k]) <= 128 for k in ('table', 'field'))
                         and type(entry['count']) is int and 0 <= entry['count'] <= 10**9
-                        and re.fullmatch(r'[A-Za-z0-9_.]+', entry['table'])):
+                        and entry['field'] in allowed_fields.get(entry['table'], ())):
                         safe.append({'table': entry['table'], 'field': entry['field'], 'count': entry['count']})
             if safe:
                 result[key] = safe

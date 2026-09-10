@@ -66,6 +66,5 @@ def transform(rows, codec, communities):
             'permission_group_id': None, 'group_assignment_mode': 'inherited'})
     if linked != {row['id'] for row in members.values()}:
         raise SnapshotError('member_account_reference_missing')
-    if codec.scan(output):
-        raise SnapshotError('source_sensitive_value_detected')
+    codec.assert_tables_safe(output)
     return output

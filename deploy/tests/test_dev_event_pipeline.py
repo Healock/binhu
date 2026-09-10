@@ -38,7 +38,7 @@ def event():
 
 class ContractTests(unittest.TestCase):
     def test_failed_schema_check_prevents_start_and_keeps_each_attempt(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}), patch('time.time_ns', return_value=123):
             with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="schema unavailable")) as command:
                 for attempt in range(2):
                     with self.assertRaises(ValueError):

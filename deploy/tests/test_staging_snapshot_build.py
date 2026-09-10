@@ -37,13 +37,16 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
     def fixture(self):
         settings = SimpleNamespace(APP_ENVIRONMENT='production', MYSQL_DOMAIN_DATABASES_ENABLED=True,
             PLATFORM_DOMAIN_ACTIVE=True, REGISTRY_ADDRESS_DOMAIN_ACTIVE=True,
-            MYSQL_ONLINE_DATA_DB='OnlineData', MYSQL_PLATFORM_DB='PlatformData', MYSQL_REGISTRY_DB='RegistryData')
+            MYSQL_ONLINE_DATA_DB='OnlineData', MYSQL_PLATFORM_DB='PlatformData', MYSQL_REGISTRY_DB='RegistryData',
+            MYSQL_ARCHIVE_DB='OnlineDataArchive')
         tables = {name: [] for name in [*FIELDS, *ORG_FIELDS]}
         tables['PlatformData._areas'] = [{'id': 1, 'name': '虚构片区'}]
         tables['PlatformData._communities'] = [{'id': 1, 'name': '虚构社区', 'area_id': 1, 'is_active': 1}]
         tables['PlatformData._community_aliases'] = []
         for kind in TASK_TYPES:
             tables['OnlineData.' + get_parser(kind).table_name] = []
+            tables['OnlineDataArchive.' + get_parser(kind).table_name + '_archive'] = []
+        tables['OnlineData._local_source_records'] = []
         parser = get_parser('全链条')
         values = {field: '' for field in parser.COLUMNS}
         values.update({'社区': '虚构社区', '姓名': '虚构甲', '身份证号': 'fictional-id', '地址': '虚构路', '核查结果': '待登记'})
@@ -66,6 +69,13 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
             await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
         self.assertEqual(cur.commands, [])
 
+    async def test_archive_database_identity_is_checked_before_queries(self):
+        settings, _, cur, conn = self.fixture()
+        settings.MYSQL_ARCHIVE_DB = 'Staging_OnlineDataArchive'
+        with self.assertRaisesRegex(SnapshotError, 'source_database_name_mismatch'):
+            await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
+        self.assertEqual(cur.commands, [])
+
     async def test_consistent_readonly_transaction_and_safe_source_hash(self):
         settings, _, cur, conn = self.fixture()
         result = await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
@@ -83,6 +93,18 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         tables['OnlineData.t_fullchain'] = []
         with self.assertRaisesRegex(SnapshotError, '^business_source_count_or_key_mismatch$'):
             await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
+        conn.rollback.assert_awaited_once()
+
+    async def test_active_record_is_not_excluded_by_an_old_archive_with_same_key(self):
+        settings, tables, _, conn = self.fixture()
+        tables['OnlineData._online_source_rows'] = []
+        tables['OnlineData._local_source_records'] = [
+            {'local_task_id': 1, 'business_key': 'old', 'status': 'active'}]
+        tables['OnlineDataArchive.t_fullchain_archive'] = [{'_row_key': 'old'}]
+        with self.assertRaisesRegex(SnapshotError, 'business_source_count_or_key_mismatch') as caught:
+            await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
+        self.assertEqual(caught.exception.diagnostics['business_only_active_ledger_count'], 1)
+        self.assertEqual(caught.exception.diagnostics['business_only_archive_key_count'], 1)
         conn.rollback.assert_awaited_once()
 
     async def test_supported_local_origins_and_rejection_of_external_sources(self):

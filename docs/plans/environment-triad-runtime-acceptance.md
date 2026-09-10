@@ -52,10 +52,9 @@
 - 当前服务器资源只读快照显示 Production、Staging、Dev 使用不同 Compose 项目、
   数据库命名空间和内部网络；Dev eventbus、Flink、pipeline 项目均已运行，
   但这不等于完整业务事件闭环和 Staging 可用副本已签署。
-- Staging 副本仍未生成。近期独立失败证据只记录固定原因码：
-  `source_sensitive_value_detected`、`unrecognized_business_date`、
-  `unknown_enum`、`unsupported_current_source` 和
-  `business_source_count_or_key_mismatch`。工具在这些门禁失败时没有写入候选库，
+- Staging 副本仍未生成。早期排查曾记录多个固定原因码，其中部分来自临时诊断，
+  不能全部当作未经修改的标准工具验收。当前可复核的标准工具失败见下方
+  2026-09-11 数据门禁诊断记录。工具在门禁失败时没有写入候选库，
   没有切换 Staging 应用，也没有修改 Production。
 - 因此固定入口和账号隔离已通过，但 Staging 脱敏副本、Dev 完整业务闭环、浏览器
   业务验收、75 人复测和 Shadow 退役仍不能签署。
@@ -104,3 +103,27 @@ Registry 重启初始化期间的连接失败，以及 worker 重建期间提前
 当前尚无服务器真实 MySQL 导出验证或 Staging 导入。工具固定输出
 `ready_for_application_switch=false`，等待历史摘要、任务地址确认、登记 HMAC、
 候选八库导入和目标验证补齐，不以纯测试签署数据可用。
+
+## 2026-09-11：数据门禁诊断与来源缺失
+
+- 本次重新读取 Bootstrap：Production 为 `0.28.15`，Dev/Staging 仍为 `0.0.0`；
+  环境身份分别正确。客户端构建和主线 CI 不能替代非生产运行版本更新。
+- 当前 Dev 验证器返回最小事件流通过，MySQL/Redis revision 正确、3 条 published；
+  `business_integration_verified=false`、`checkpoint_recovery_verified=false`。
+  前面的历史恢复证据只覆盖对应元数据实验，不能签署完整业务恢复。
+- `staging-1ac3a948054d4681`：修复提前扫描缺少诊断后，标准 measure 定位到
+  `OnlineData.t_fullchain` 的核查结果字段同值命中。该字段已通过业务枚举校验。
+- 按字段合同重新校验结果类别后，`staging-bbb872ad8fb9ea4c` 到达来源一致性检查，
+  模型三业务表 261 条、当前来源 0 条。未写入候选库或切换 Staging。
+- `staging-4e95b6b19439b90e` 增加只读分类统计：261 条全部有 active 登记，
+  archived 登记 0 条，缺登记 0 条，重复业务键 0 条；65 条在归档中有同业务键。
+  同业务键的旧归档不能证明当前 active 记录可以丢弃。
+- 独立只读核对 `source-reconciliation-e60bbcad1d05a4f8`：当前本地和非本地来源
+  均为 0；261 条业务值、业务键、登记内容和哈希全部一致，歧义 0 条。
+  这是来源恢复方案的测量依据，尚未执行任何恢复。前面的三次诊断因脚本解析器
+  标识错误失败，均保留独立失败记录，不能用这次成功结果覆盖。
+- 工具包在 `environment-triad/snapshot-diagnostics-*` 独立目录留存，每包校验
+  tar SHA-256 和逐文件 manifest，未覆盖早期代码或失败证据。
+
+当前继续阻止完整副本导入；生产业务数据保持不变。Staging 来源恢复方式待确认，
+Dev 业务闭环、同一制品晋级、浏览器回归和 75 人复测仍未完成。

@@ -23,6 +23,17 @@ def fixture():
 
 
 class RegistrySnapshotTests(unittest.TestCase):
+    def test_early_scan_reports_field_without_echoing_source(self):
+        from deploy.environments.staging_data.control import safe_diagnostics
+        codec = Codec(b'a'*32)
+        codec.remember('active')
+        with self.assertRaisesRegex(SnapshotError, 'source_sensitive_value_detected') as caught:
+            transform(fixture(), codec)
+        diagnostics = safe_diagnostics(caught.exception.diagnostics)
+        self.assertEqual(diagnostics['fields'], [{'table': 'RegistryData.registry_properties',
+            'field': 'status', 'count': 1}])
+        self.assertNotIn('active', str(diagnostics))
+
     def test_explicit_orphan_exclusion_retains_houses_and_reports_rejections(self):
         rows=fixture()
         links=rows['RegistryData.registry_property_small_community_links']
