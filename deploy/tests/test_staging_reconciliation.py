@@ -27,4 +27,3 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(result['source_count'], 2)
         self.assertEqual(result['duplicate_business_key_count'], 1)
         self.assertEqual(result['duplicate_source_key_count'], 1)
-
