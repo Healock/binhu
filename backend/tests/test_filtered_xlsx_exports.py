@@ -19,6 +19,7 @@ from services.xlsx_export import build_xlsx
 
 
 def test_mobile_task_review_route_imports_unverifiable_result_validator():
+    """Keep the import used by the production validation callback explicit."""
     assert callable(mobile_tasks.is_unverifiable_result)
 
 
