@@ -52,6 +52,9 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
             'revision': 5, 'row_key': 'old', 'row_hash': 'a'*64, 'values_json': json.dumps(values), 'source_kind': 'local_table'}]
         tables['OnlineData._unverifiable_review_flows'] = []
         tables['OnlineData._task_registration_links'] = []
+        tables['OnlineData._online_task_address_matches'] = []
+        tables['OnlineData._unverifiable_review_events'] = []
+        tables['OnlineData._task_registration_events'] = []
         cur = Cursor(tables)
         conn = SimpleNamespace(cursor=lambda: cur, rollback=AsyncMock())
         return settings, tables, cur, conn
@@ -81,6 +84,17 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SnapshotError, '^business_source_count_or_key_mismatch$'):
             await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
         conn.rollback.assert_awaited_once()
+
+    async def test_supported_local_origins_and_rejection_of_external_sources(self):
+        for kind in ('local_table','local_dispatch','one_time_continuation_import','txdocs','local_unknown'):
+            settings,tables,_,conn=self.fixture()
+            tables['OnlineData._online_source_rows'][0]['source_kind']=kind
+            if kind in ('txdocs','local_unknown'):
+                with self.assertRaisesRegex(SnapshotError,'^unsupported_current_source$'):
+                    await build(conn,'staging-'+'a'*16,b'a'*32,settings=settings)
+            else:
+                result=await build(conn,'staging-'+'a'*16,b'a'*32,settings=settings)
+                self.assertEqual(result['report']['current_task_count'],1)
 
 
 if __name__ == '__main__':
