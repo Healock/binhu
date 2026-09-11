@@ -47,6 +47,46 @@ jobs:
       - name: Run backend tests
         run: python -m unittest discover -s tests
         working-directory: backend
+
+  hotfix-candidate:
+    name: Prebuild backend hotfix candidate
+    if: github.event_name == 'pull_request'
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the PR commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Build candidate archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p hotfix-candidate
+          git archive --format=tar.gz --output=hotfix-candidate/source.tar.gz HEAD VERSION backend deploy
+          sha256sum hotfix-candidate/source.tar.gz > hotfix-candidate/SHA256SUMS
+          CANDIDATE_COMMIT='${{ github.event.pull_request.head.sha }}' python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          source = Path('hotfix-candidate/source.tar.gz')
+          payload = {
+              'schema': 1,
+              'commit': os.environ['CANDIDATE_COMMIT'],
+              'version': Path('VERSION').read_text().strip(),
+              'release_scope': 'backend',
+              'ready_for_hotfix': True,
+              'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+          }
+          Path('hotfix-candidate/manifest.json').write_text(json.dumps(payload, indent=2) + '\n')
+          PY
+      - name: Upload reusable hotfix candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: binhu-hotfix-candidate-${{ github.sha }}
+          path: hotfix-candidate
+          retention-days: 30
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Validate Docker Compose configuration

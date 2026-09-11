@@ -129,6 +129,7 @@ timing_database_backup=0
 timing_switch_files=0
 timing_container_recreate=0
 timing_health_checks=0
+backup_id=""
 
 cleanup() {
   [[ "$incoming_bundle" == "$state_dir/incoming/"* ]] \
@@ -161,6 +162,9 @@ payload = {
     "started_at": "$started_at",
     "finished_at": "$finished_at",
     "release_dir": "$release_dir",
+    "release_kind": "$release_kind",
+    "hotfix_id": "$hotfix_id",
+    "backup_id": "$backup_id",
     "program_backup": "$program_backup",
     "rollback_image": "$rollback_tag",
     "timings_seconds": {
@@ -369,6 +373,36 @@ log "deployment preflight completed in ${timing_preflight}s"
 
 previous_version="$(tr -d '\r\n' < "$project_dir/VERSION")"
 [[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "current VERSION is invalid"
+
+verify_hotfix_prebackup() {
+  [[ "$release_kind" == "hotfix" ]] || return 0
+  readonly prebackup_root="${BINHU_DEPLOY_PREBACKUP_DIR:-/var/lib/binhu-deploy/prebackups}"
+  readonly prebackup_max_age="${BINHU_DEPLOY_PREBACKUP_MAX_AGE_SECONDS:-86400}"
+  [[ -d "$prebackup_root" ]] || fail "hotfix prebackup directory is missing"
+  local manifest
+  manifest="$(find "$prebackup_root" -mindepth 2 -maxdepth 2 -type f -name backup-manifest.json -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+  [[ -n "$manifest" && -f "$manifest" ]] || fail "no hotfix prebackup manifest found"
+  python3 - "$manifest" "$prebackup_max_age" "$previous_version" <<'PY'
+import hashlib, json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+manifest_path = Path(sys.argv[1])
+payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+if payload.get('backup_scope') != 'online': raise SystemExit('prebackup scope mismatch')
+created = datetime.fromisoformat(str(payload.get('created_at', '')).replace('Z', '+00:00'))
+if (datetime.now(timezone.utc) - created).total_seconds() > int(sys.argv[2]): raise SystemExit('hotfix prebackup is expired')
+if payload.get('database_version') not in (None, sys.argv[3]): raise SystemExit('prebackup database version mismatch')
+entries = payload.get('databases') or []
+online = next((item for item in entries if item.get('database') in {'OnlineData', 'OnlineData.sql.gz'}), None)
+if not online or not online.get('sha256') or not online.get('size_bytes'): raise SystemExit('OnlineData prebackup manifest is incomplete')
+backup_file = manifest_path.parent / str(online.get('filename', ''))
+if not backup_file.is_file() or backup_file.stat().st_size != int(online['size_bytes']): raise SystemExit('OnlineData prebackup file is missing or truncated')
+if hashlib.sha256(backup_file.read_bytes()).hexdigest() != online['sha256']: raise SystemExit('OnlineData prebackup checksum mismatch')
+PY
+  backup_id="$(basename "$(dirname "$manifest")")"
+  log "hotfix prebackup verified: ${backup_id}"
+}
+
 if [[ "$release_scope" == "frontend" ]]; then
   docker image inspect binhu-backend:latest >/dev/null
   log "reusing current backend image for frontend release"
@@ -385,6 +419,7 @@ fi
 
 readonly backup_dir="$project_dir/deploy-backups/automated/$release_id"
 install -d -o root -g root -m 0700 "$backup_dir"
+verify_hotfix_prebackup
 program_backup="$backup_dir/program.tar.gz"
 program_backup_started="$(date +%s)"
 case "$release_scope" in
@@ -419,20 +454,22 @@ backup_database() {
 }
 
 database_backup_started="$(date +%s)"
-case "$backup_scope" in
-  online) backup_database OnlineData ;;
-  daily) backup_database daily_report ;;
-  all)
-    backup_database OnlineData
-    backup_database OnlineDataArchive
-    backup_database daily_report
-    backup_database PlatformData
-    backup_database VisitData
-    backup_database DispatchData
-    backup_database RegistryData
-    backup_database WorkflowData
-    ;;
-esac
+if [[ "$release_kind" != "hotfix" ]]; then
+  case "$backup_scope" in
+    online) backup_database OnlineData ;;
+    daily) backup_database daily_report ;;
+    all)
+      backup_database OnlineData
+      backup_database OnlineDataArchive
+      backup_database daily_report
+      backup_database PlatformData
+      backup_database VisitData
+      backup_database DispatchData
+      backup_database RegistryData
+      backup_database WorkflowData
+      ;;
+  esac
+fi
 
 python3 - "$backup_dir" "$backup_scope" "$release_scope" <<'PY'
 import gzip

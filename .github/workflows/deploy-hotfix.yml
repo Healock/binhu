@@ -20,6 +20,11 @@ on:
         description: Current production VERSION (unchanged by a hotfix)
         required: true
         type: string
+      backup_scope:
+        description: Prebackup scope (must be online)
+        required: true
+        default: online
+        type: string
 
 permissions:
   contents: read
@@ -36,6 +41,7 @@ jobs:
     env:
       EXPECTED_VERSION: ${{ inputs.expected_version }}
       HOTFIX_ID: ${{ inputs.hotfix_id }}
+      BACKUP_SCOPE: ${{ inputs.backup_scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,24 +59,40 @@ jobs:
           [[ "$HOTFIX_ID" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]]
           [[ "$(tr -d '\r\n' < VERSION)" == "$EXPECTED_VERSION" ]]
           printf 'RELEASE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - name: Download PR candidate artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: backend/requirements-test.txt
-      - name: Run hotfix checks
+          run-id: ${{ inputs.artifact_run_id }}
+          path: candidate-artifact
+          github-token: ${{ github.token }}
+      - name: Verify candidate artifact
+        shell: bash
         run: |
-          python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
-          python -m unittest discover -s backend/tests
-          python -m unittest discover -s deploy/tests
-          python -m compileall -q backend deploy
+          set -Eeuo pipefail
+          manifest="$(find candidate-artifact -name manifest.json -type f | head -n 1)"
+          [[ -n "$manifest" ]] || { echo 'candidate manifest missing' >&2; exit 1; }
+          python - "$manifest" "${{ inputs.ref }}" "$EXPECTED_VERSION" "$BACKUP_SCOPE" <<'PY'
+          import json, pathlib, re, subprocess, sys
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if manifest.get('release_scope') != 'backend' or not manifest.get('ready_for_hotfix'):
+              raise SystemExit('candidate is not backend hotfix-ready')
+          if manifest.get('version') != sys.argv[3]:
+              raise SystemExit('candidate version mismatch')
+          if sys.argv[4] != 'online':
+              raise SystemExit('hotfix backup scope must be online')
+          commit = manifest.get('commit', '')
+          if not re.fullmatch(r'[0-9a-f]{40}', commit):
+              raise SystemExit('candidate commit is not a full SHA')
+          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          pathlib.Path('release-commit.txt').write_text(commit + '\n')
+          PY
+          printf 'RELEASE_COMMIT=%s\n' "$(cat release-commit.txt)" >> "$GITHUB_ENV"
       - name: Build hotfix bundle
         run: |
           mkdir -p release-output
           python deploy/build_release_bundle.py \
             --repository . --commit "$RELEASE_COMMIT" \
-            --backup-scope online --release-scope backend \
+            --backup-scope "$BACKUP_SCOPE" --release-scope backend \
             --release-kind hotfix --hotfix-id "$HOTFIX_ID" \
             --output release-output/binhu-hotfix.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
