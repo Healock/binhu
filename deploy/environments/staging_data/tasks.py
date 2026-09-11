@@ -48,6 +48,15 @@ def business_date(value):
             except ValueError:
                 raise SnapshotError("invalid_business_date") from None
             return text
+    # MySQL drivers may serialize a valid datetime with ISO ``T`` separator
+    # or fractional seconds; normalize only these strict datetime forms.
+    iso = text.replace('T', ' ', 1)
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.year >= 1900:
+        return text
     raise SnapshotError("unrecognized_business_date")
 
 
