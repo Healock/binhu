@@ -9,6 +9,8 @@ const page = await context.newPage()
 const errors = []
 page.on('pageerror', error => errors.push(error.message))
 let searches = 0, editors = 0, removed = 0, failSearch = false, revision = 1, canEdit = true, failEditors = false, failSave = false
+const searchPages = []
+const savedFeedback = new Map()
 const writes = []
 const task = id => ({ task_key: `全链条:fixture-${id}`, row_key: `fixture-${id}`, parser_type: '全链条',
   summary: { title: `虚构任务${id}`, original_address: '虚构测试路，仅用于自动化验收', current_address: '', result: '无法核实', secondary_feedback: '', analysis: '', phone: '', identity_number: '', date: '2026-09-11', deadline: '2026-09-13' },
@@ -16,7 +18,7 @@ const task = id => ({ task_key: `全链条:fixture-${id}`, row_key: `fixture-${i
 })
 const detail = id => ({ task: task(id), data_source_mode: 'local', writeback_enabled: canEdit, editable: canEdit,
   workflow: { parser_type: '全链条', result_field: '核查结果', title_fields: ['姓名'], date_fields: ['截止日期'], phone_fields: [], identity_fields: [], source_fields: [], address_fields: ['现住址'], analysis_fields: ['研判'], secondary_fields: ['二次反馈'], columns: [] },
-  sources: [{ id, revision, row_hash: `fixture-hash-${revision}`, row_key: `fixture-${id}`, source_available: true, state: 'checked', values: { 姓名: `虚构任务${id}`, 核查结果: '无法核实', 现住址: '虚构测试地址', 二次反馈: revision > 1 ? '虚构新的核查反馈' : '' }, editable_fields: ['核查结果', '现住址', '二次反馈'], cell_meta: { 核查结果: { type: 'select', options: ['无法核实', '待登记'] } }, source_kind: 'local_table' }], events: [], writeback: null,
+  sources: [{ id, revision, row_hash: `fixture-hash-${revision}`, row_key: `fixture-${id}`, source_available: true, state: 'checked', values: { 姓名: `虚构任务${id}`, 核查人: '虚构网格员', 核查结果: '无法核实', 现住址: '虚构测试地址', 二次反馈: savedFeedback.get(id) ?? (revision > 1 ? '虚构新的核查反馈' : '') }, editable_fields: ['核查结果', '现住址', '二次反馈'], cell_meta: { 核查结果: { type: 'select', options: [{ text: '无法核实' }, { text: '待登记' }] } }, source_kind: 'local_table' }], events: [], writeback: null,
 })
 await context.route('**/*', async route => {
   const url = new URL(route.request().url())
@@ -33,6 +35,7 @@ await context.route('**/*', async route => {
     await new Promise(resolve => setTimeout(resolve, 350))
     if (failSearch) return send({ detail: '虚构刷新失败' }, 503)
     const body = route.request().postDataJSON()
+    searchPages.push(body.page)
     const all = Array.from({ length: 100 }, (_, i) => i + 1).filter(id => id !== removed)
     return send({ data: all.slice((body.page - 1) * 50, body.page * 50).map(task), total: all.length, page: body.page, source_ready: true })
   }
@@ -43,12 +46,15 @@ await context.route('**/*', async route => {
     if (failEditors) return send({ detail: '虚构填写项暂不可用' }, 503)
     return send({ items: Object.fromEntries(keys.map(key => [key, { available: true, detail: detail(Number(key.split('-')[1])) }])) })
   }
-  if (path.match(/\/mobile-tasks\/全链条\/(?:\d+|fixture-\d+)$/) && route.request().method() !== 'GET') {
+  const saveMatch = path.match(/\/mobile-tasks\/全链条\/source-rows\/(\d+)$/)
+  if (saveMatch && route.request().method() === 'PATCH') {
     const body = route.request().postDataJSON()
     writes.push(body)
     if (failSave) return send({ detail: '虚构版本冲突，草稿保留' }, 409)
     revision++
-    return send({ values: { ...detail(15).sources[0].values, ...body.changes }, revision, message: '已保存' })
+    const id = Number(saveMatch[1])
+    if (body.changes['二次反馈']) savedFeedback.set(id, body.changes['二次反馈'])
+    return send({ values: { ...detail(id).sources[0].values, ...body.changes }, revision, message: '已保存' })
   }
   const match = path.match(/\/mobile-tasks\/全链条\/fixture-(\d+)$/)
   if (match) return send(detail(Number(match[1])))
@@ -123,6 +129,43 @@ try {
   assert.ok(Math.abs(await page.locator('main').evaluate(el => el.scrollTop) - scrolled) <= 4)
   removed = 0
 
+  // Use the actual editable textarea and PATCH endpoint, not Select's search input.
+  await page.goto(`${origin}/tasks?type=全链条`)
+  await row.waitFor()
+  await row.scrollIntoViewIfNeeded()
+  const editor = page.locator('[data-mobile-task-editor-row-key="全链条:fixture-15"]')
+  const feedback = editor.locator('label').filter({ has: page.locator('span', { hasText: /^二次反馈$/ }) }).locator('textarea').first()
+  await feedback.waitFor()
+  failSave = true
+  const rejectedSave = page.waitForResponse(response => response.url().includes('/source-rows/15') && response.request().method() === 'PATCH')
+  await feedback.fill('虚构待保存草稿')
+  await feedback.blur()
+  assert.equal((await rejectedSave).status(), 409)
+  assert.ok(writes.some(body => body.changes['二次反馈'] === '虚构待保存草稿'))
+  assert.equal(await feedback.inputValue(), '虚构待保存草稿')
+  page.once('dialog', dialog => dialog.accept())
+  await row.dblclick()
+  await page.getByRole('button', { name: /返\s*回$/ }).waitFor()
+  revision++
+  await page.goBack()
+  await editor.getByText('数据冲突，草稿已保留', { exact: true }).first().waitFor()
+  assert.equal(await feedback.inputValue(), '虚构待保存草稿')
+  failSave = false
+
+  // Metadata refresh failure retains the editor and exposes a working retry.
+  page.once('dialog', dialog => dialog.accept())
+  await row.dblclick()
+  await page.getByRole('button', { name: /返\s*回$/ }).waitFor()
+  failEditors = true
+  await page.goBack()
+  await editor.getByRole('button', { name: '重新核对' }).waitFor()
+  assert.equal(await feedback.inputValue(), '虚构待保存草稿')
+  assert.equal(await feedback.isDisabled(), true)
+  failEditors = false
+  await editor.getByRole('button', { name: '重新核对' }).click()
+  await page.waitForFunction(() => !document.querySelector('[data-mobile-task-editor-row-key="全链条:fixture-15"] fieldset')?.disabled)
+  assert.equal(await feedback.inputValue(), '虚构待保存草稿')
+
   const measurements = []
   const out = process.env.TEST_OUTPUT
   if (out) mkdirSync(out, { recursive: true })
@@ -134,9 +177,12 @@ try {
       const multiPage = width === 1280 && height === 960 && !dark
       if (multiPage) {
         await page.locator('.mobile-task-table-primary-row').first().waitFor()
+        // Let the scroll listener and initial editor layout settle before user scrolling.
+        await page.waitForTimeout(900)
         await page.locator('main').evaluate(el => {
           el.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }))
           el.scrollTop = el.scrollHeight
+          el.dispatchEvent(new Event('scroll'))
         })
       }
       const target = page.locator(`${selector}[data-mobile-task-row-key="全链条:fixture-15"]`)
