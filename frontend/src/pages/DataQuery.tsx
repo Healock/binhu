@@ -137,6 +137,8 @@ export default function DataQuery() {
   const pollingRef = useRef(false)
   const queryRealtimeRef = useRef<ReturnType<typeof connectQueryRealtime> | null>(null)
   const [queryRealtimeState, setQueryRealtimeState] = useState<QueryConnectionState>('disconnected')
+  const [remotePresence, setRemotePresence] = useState<Record<number, { displayName: string; mode: string; color: string }>>({})
+  const presenceTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
   const [messageApi, messageContext] = message.useMessage()
 
   const isSuperAdmin = user?.role === 'super_admin'
@@ -327,6 +329,24 @@ export default function DataQuery() {
             else void fetchData(true)
             return
           }
+          if (event.type === 'selection_presence') {
+            const userId = Number(event.user_id || 0)
+            if (!userId || userId === Number(user?.id || 0)) return
+            const name = String(event.display_name || '协作者')
+            const color = `hsl(${Math.abs(userId * 137) % 360} 70% 42%)`
+            setRemotePresence(current => ({ ...current, [userId]: { displayName: name, mode: String(event.mode || 'viewing'), color } }))
+            const previous = presenceTimersRef.current[userId]
+            if (previous) clearTimeout(previous)
+            presenceTimersRef.current[userId] = setTimeout(() => {
+              setRemotePresence(current => {
+                const next = { ...current }
+                delete next[userId]
+                return next
+              })
+              delete presenceTimersRef.current[userId]
+            }, 10000)
+            return
+          }
           if (event.type !== 'row_changed' || source !== 'online') return
           const sourceId = Number(event.source_id || 0)
           const rowKey = String(event.row_key || '')
@@ -352,7 +372,7 @@ export default function DataQuery() {
       realtime.close()
       if (queryRealtimeRef.current === realtime) queryRealtimeRef.current = null
     }
-  }, [fetchData, selectedType, source])
+  }, [fetchData, selectedType, source, user?.id])
 
   useEffect(() => {
     if (refreshAvailable && !refreshBlocked) void fetchData(true)
@@ -836,6 +856,15 @@ export default function DataQuery() {
             </Button>
           </div>
         </div>
+        {source === 'online' && Object.keys(remotePresence).length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2" aria-label="当前协作者">
+            {Object.entries(remotePresence).map(([id, presence]) => (
+              <Tag key={id} color={presence.color}>
+                {presence.displayName}{presence.mode === 'editing' ? ' 正在编辑' : ' 正在查看'}
+              </Tag>
+            ))}
+          </div>
+        )}
         <Spin
           spinning={loading}
         tip="正在加载本地业务数据"
