@@ -47,6 +47,8 @@ export function connectQueryRealtime(
   let retryDelay = 1000
   let lastEventId = 0
   let lastDataVersion = ''
+  let pendingPresence: Record<string, unknown> | null = null
+  let presenceTimer: ReturnType<typeof setTimeout> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   const prefix = Math.random().toString(36).slice(2)
   const pending = new Map<string, {
@@ -117,8 +119,15 @@ export function connectQueryRealtime(
   connect()
   return {
     sendPresence(payload: Omit<Record<string, unknown>, 'type'>) {
-      if (stopped || !socket || socket.readyState !== 1) return false
-      socket.send(JSON.stringify({ type: 'selection_presence', ...payload }))
+      if (stopped) return false
+      pendingPresence = payload
+      if (presenceTimer) clearTimeout(presenceTimer)
+      presenceTimer = setTimeout(() => {
+        presenceTimer = undefined
+        if (!pendingPresence || !socket || socket.readyState !== 1) return
+        try { socket.send(JSON.stringify({ type: 'selection_presence', ...pendingPresence })) } catch { /* reconnect will clear stale presence */ }
+        pendingPresence = null
+      }, 250)
       return true
     },
     resume(afterEventId: number, dataVersion: string) {
@@ -146,6 +155,8 @@ export function connectQueryRealtime(
     close() {
       stopped = true
       clearTimeout(retry)
+      clearTimeout(presenceTimer)
+      pendingPresence = null
       socket?.close()
       failPending()
     },
