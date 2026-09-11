@@ -7,6 +7,7 @@ from typing import Iterable, Sequence
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
+from openpyxl.worksheet.datavalidation import DataValidation
 
 
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -23,6 +24,10 @@ def build_xlsx(
     title: str,
     headers: Sequence[str],
     rows: Iterable[Sequence[object]],
+    *,
+    dropdown_column: str | None = None,
+    dropdown_values: Sequence[str] = (),
+    hidden_columns: Sequence[str] = (),
 ) -> BytesIO:
     workbook = Workbook()
     sheet = workbook.active
@@ -42,6 +47,14 @@ def build_xlsx(
         letter = column[0].column_letter
         width = min(max(max((len(str(cell.value or "")) for cell in column), default=8) + 2, 10), 48)
         sheet.column_dimensions[letter].width = width
+    for column in hidden_columns:
+        sheet.column_dimensions[column].hidden = True
+    if dropdown_column and dropdown_values and sheet.max_row >= 2:
+        validation = DataValidation(
+            type="list", formula1='"' + ",".join(dropdown_values) + '"', allow_blank=True
+        )
+        sheet.add_data_validation(validation)
+        validation.add(f"{dropdown_column}2:{dropdown_column}{sheet.max_row}")
     output = BytesIO()
     workbook.save(output)
     output.seek(0)

@@ -2461,7 +2461,7 @@ export async function decideMobileTaskUnverifiableReview(
   sourceId: number,
   payload: {
     stage: 'initial_pending' | 'deep_pending'
-    outcome: 'success' | 'failure'
+    outcome: 'new_clue' | 'no_new_clue' | 'success' | 'failure'
     opinion: string
     flow_version: number
     expected_revision: number

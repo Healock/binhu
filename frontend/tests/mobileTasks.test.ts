@@ -520,7 +520,7 @@ test('流口任务和待研判任务按当前筛选排序导出并支持研判�
   assert.match(listSource, /导入研判结果/)
 })
 
-test('研判详情只提供结构化成功失败决定，不再自由保存研判文字', () => {
+test('研判详情只提供结构化研判结果，不再自由保存研判文字', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
@@ -530,8 +530,8 @@ test('研判详情只提供结构化成功失败决定，不再自由保存研�
     'utf8',
   )
   assert.match(detailSource, /decideMobileTaskUnverifiableReview/)
-  assert.match(detailSource, /研判成功（进入延时复核）/)
-  assert.match(detailSource, /研判失败（进入下一阶段）/)
+  assert.match(detailSource, /发现新线索（进入延时核查）/)
+  assert.match(detailSource, /未发现新线索（进入下一阶段）/)
   assert.match(detailSource, /提交本阶段研判/)
   assert.match(tableSource, /两级研判必须在详情中选择成功或失败并填写意见/)
   assert.match(tableSource, /进入研判详情/)
