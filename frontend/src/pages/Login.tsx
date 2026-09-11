@@ -19,7 +19,10 @@ import {
 import { getSafeLocalStorage } from '../utils/themeMode'
 
 export default function Login() {
-  const { login, clientVersion } = useAuth()
+  const { login, clientVersion, environment } = useAuth()
+  const environmentHeading = environment === 'development'
+    ? 'Dev 环境 · 虚构数据'
+    : environment === 'staging' ? '预发布环境 · 脱敏数据' : '登录系统'
   const navigate = useNavigate()
   const storage = getSafeLocalStorage()
   const [initialUsernames] = useState(() => readRememberedUsernames(storage))
@@ -156,7 +159,7 @@ export default function Login() {
               />
             )}
             <div className="login-form-card__heading">
-              <h3>登录系统</h3>
+              <h3>{environmentHeading}</h3>
               <p>请使用平台账号进入系统</p>
             </div>
 

@@ -71,10 +71,11 @@ def prepare(args):
     version = version_file.read_text(encoding='utf-8').strip()
     if not re.fullmatch(r'(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', version):
         raise ValueError('source version invalid')
-    # The backend serves the same immutable static bundle for all same-origin
-    # prefixes; runtime API resolution supplies the environment path.
-    if '/assets/' not in (static / 'index.html').read_text(encoding='utf-8'):
-        raise ValueError('compiled frontend assets required')
+    # Require the portable bundle. Root-based assets would resolve to Production
+    # even when the page itself was loaded through /dev/ or /staging/.
+    import runpy
+    renderer = runpy.run_path(str(source / 'backend/environment_static.py'))['render_environment_index']
+    renderer((static / 'index.html').read_text(encoding='utf-8'), args.environment)
     project = f'binhu-{args.environment}'
     if command('docker', 'ps', '-aq', '--filter', f'label=com.docker.compose.project={project}'):
         raise ValueError('compose project already exists')
