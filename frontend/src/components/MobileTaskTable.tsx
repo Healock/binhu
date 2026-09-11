@@ -57,6 +57,11 @@ function registrationPropertyLabel(property: MobileTaskRegistrationProperty) {
   return registrationPropertyAddress(property)
 }
 
+function registrationAddressValue(value: string) {
+  const text = String(value || '')
+  return text.startsWith('pending:') ? text.slice('pending:'.length) : text
+}
+
 interface MobileTaskTableProps {
   rows: MobileTaskItem[]
   loading: boolean
@@ -317,8 +322,14 @@ export default function MobileTaskTable({
           Object.keys(changes).map(field => [field, source.values[field] || '']),
         ),
         expected_revision: source.revision,
-        ...(!registrationProperty && pendingAddressMode[task.task_key] && changes['现住址']
-          ? { registration_pending_address: changes['现住址'] } : {}),
+        ...(!registrationProperty && (
+          (pendingAddressMode[task.task_key] && changes['现住址'])
+          || changes[detail.workflow.result_field] === '待登记'
+        ) ? {
+          registration_pending_address: registrationAddressValue(
+            changes['现住址'] || editorValuesRef.current[task.task_key]?.['现住址'] || source.values['现住址'] || '',
+          ),
+        } : {}),
         ...(registrationProperty ? {
           registration_property_id: registrationProperty.id,
           registration_property_version: registrationProperty.version,
@@ -852,9 +863,9 @@ export default function MobileTaskTable({
                       <AutoComplete
                         className="w-full"
                         size="small"
-                        value={values[field] || ''}
+                        value={registrationAddressValue(values[field] || '')}
                         placeholder="输入地址，搜索房屋档案或直接作为待建档地址"
-                        disabled={selectionMode || savingRowKey === task.task_key}
+                        disabled={selectionMode}
                         options={[
                           ...availableRegistrationProperties.map(property => ({
                             value: `property:${property.id}`,
@@ -868,7 +879,8 @@ export default function MobileTaskTable({
                         onSearch={keyword => void searchRegistrationProperty(task, keyword)}
                         onChange={nextValue => {
                           setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
-                          setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: nextValue } }))
+                          const address = registrationAddressValue(nextValue)
+                          setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: address } }))
                         }}
                         onSelect={selected => {
                           if (selected.startsWith('property:')) {
@@ -891,7 +903,7 @@ export default function MobileTaskTable({
                         showSearch
                         size="small"
                         placeholder="请选择"
-                        disabled={selectionMode || savingRowKey === task.task_key}
+                        disabled={selectionMode}
                         value={values[field] || undefined}
                         options={options}
                         onChange={value => {
@@ -915,8 +927,9 @@ export default function MobileTaskTable({
                           if (!(registrationResultField && nextValue === '待登记')) {
                             void saveField(task, item, field, nextValue)
                           } else {
+                            setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
                             const snapshot = editorValues[task.task_key] || source.values
-                            const addressHint = String(snapshot['核查补充信息'] || snapshot['核查反馈'] || '').trim()
+                            const addressHint = String(snapshot['现住址'] || '').trim()
                             if (addressHint) {
                               setRegistrationProperties(current => ({ ...current, [task.task_key]: { ...(current[task.task_key] || { options: [] }), loading: true, matchStatus: 'matching', selectedId: undefined } }))
                               void searchRegistrationProperty(task, addressHint)
@@ -932,7 +945,7 @@ export default function MobileTaskTable({
                     <Input.TextArea
                       size="small"
                       placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : '请输入'}
-                      disabled={selectionMode || savingRowKey === task.task_key}
+                      disabled={selectionMode}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
                       onCompositionStart={() => { composingRef.current[task.task_key] = true }}
@@ -962,7 +975,7 @@ export default function MobileTaskTable({
                       onBlur={() => {
                         // 离焦是立即保存，但必须取消尚未到期的防抖定时器，避免同一次编辑发送两次请求。
                         cancelScheduledFieldSave(task.task_key, field)
-                        void saveField(task, item, field, values[field] || '')
+                        void saveField(task, item, field, registrationAddressValue(values[field] || ''))
                       }}
                     />
                   )}

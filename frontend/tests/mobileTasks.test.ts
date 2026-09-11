@@ -189,6 +189,11 @@ test('行内待登记直接搜索任务社区房屋并原子保存', () => {
   assert.doesNotMatch(source, /return `\$\{property\.community_name \|\| ''\} \$\{registrationPropertyAddress\(property\)\}`\.trim\(\)/)
   assert.match(source, /选定房屋后，待登记结果和现住址会一次保存/)
   assert.doesNotMatch(source, /待登记需进入详情/)
+  assert.match(source, /function registrationAddressValue\(value: string\)/)
+  assert.match(source, /registration_pending_address: registrationAddressValue/)
+  assert.match(source, /setPendingAddressMode\(current => \(\{ \.\.\.current, \[task\.task_key\]: true \}\)\)/)
+  assert.match(source, /const addressHint = String\(snapshot\['现住址'\] \|\| ''\)/)
+  assert.doesNotMatch(source, /disabled=\{selectionMode \|\| savingRowKey === task\.task_key\}/)
 
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
