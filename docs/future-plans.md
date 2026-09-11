@@ -16,6 +16,7 @@
 | 地址匹配智能化升级 | 规划中，Dev 验证前未开始 | [地址匹配智能化升级](future-plans/address-matching-intelligence.md) |
 | 生产、预发布与 Dev 环境建设 | 架构调整中，尚未完成服务器验收 | [环境建设](future-plans/environment-triad.md) |
 | Dev 与 Staging 投入开发流程 | 规划中，待完成业务闭环、脱敏导入和验收 | [投入开发流程计划](future-plans/dev-staging-operational-readiness.md) |
+| 场所码云端独立接收与本地主动拉取 | 待评审、待实施 | [场所码云端独立接收与本地主动拉取](future-plans/venue-code-cloud-ingress.md) |
 
 ## 目录规则
 
