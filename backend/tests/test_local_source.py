@@ -58,6 +58,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
             "source_row.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
             clause,
         )
+        self.assertNotIn("source_row.spreadsheet_id", clause)
         self.assertNotIn("legacy-model-three", clause)
 
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
@@ -69,6 +70,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
             "source_row.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
             model_three_clause,
         )
+        self.assertNotIn("source_row.spreadsheet_id", model_three_clause)
         self.assertNotIn("legacy-model-three", model_three_clause)
 
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", False):

@@ -272,8 +272,8 @@ class BatchUpdateCursor(ConflictCursor):
 class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
     def test_model_three_uses_only_local_sources(self):
         predicate = active_source_sql_filter("疑似未注销模型三", "source")
-        self.assertIn("source.spreadsheet_id=0", predicate)
         self.assertIn("source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')", predicate)
+        self.assertNotIn("source.spreadsheet_id", predicate)
         self.assertNotIn("legacy-model-three", predicate)
         self.assertNotIn("physical_source", predicate)
 
@@ -934,8 +934,8 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             sql for sql in cursor.executed_sql
             if sql.startswith("SELECT source.id, source.row_key, source.values_json")
         )
-        self.assertIn("source.spreadsheet_id=0", source_sql)
         self.assertIn("source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')", source_sql)
+        self.assertNotIn("source.spreadsheet_id", source_sql)
         self.assertNotIn("legacy-model-three", source_sql)
         self.assertNotIn("physical_source", source_sql)
         self.assertEqual(cursor.many_rows[0][16], 1)
