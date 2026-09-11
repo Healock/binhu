@@ -2778,6 +2778,15 @@ async def import_mobile_task_analysis(
             succeeded.append({"row": row_number, "task": f"{parser_type}:{cell('任务标识')}", "state": result.get("review_flow", {}).get("state", ""), "next_step": result.get("review_flow", {}).get("state_label", "")})
         except (HTTPException, ValueError) as exc:
             failed.append({"row": row_number, "reason": exc.detail if isinstance(exc, HTTPException) else str(exc)})
+        except Exception:
+            # A database/connection failure must not turn a mixed workbook into
+            # an opaque HTTP 500. Roll back the current transaction and return a
+            # safe row-level reason; never expose SQL, credentials, or payloads.
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+            failed.append({"row": row_number, "reason": "task_save_failed"})
     await record_admin_audit(user, "mobile_tasks.analysis_import", target_type="mobile_task_analysis", target_name=file.filename or "研判文件", detail={"file_format": "XLSX", "success_count": len(succeeded), "failed_count": len(failed), "skipped_count": len(skipped)}, **request_audit_fields(request))
     return {"success_count": len(succeeded), "failed_count": len(failed), "skipped_count": len(skipped), "legacy_count": legacy_count, "success": succeeded, "failed": failed, "skipped": skipped}
 
