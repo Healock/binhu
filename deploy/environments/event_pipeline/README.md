@@ -39,6 +39,25 @@
 6. 另行记录 checkpoint/savepoint 创建、TaskManager 恢复、relay 重启和重放结果；
    `verify` 只报告最小事件流，不会替这些步骤或业务集成签署通过。
 
+## Dev Backend 业务事件桥
+
+Dev 的 `business-bridge` 服务只在 `development` 项目启用。它加入
+`binhu-development_internal` 和 Dev eventbus 内部网络，读取 Dev Backend 的
+Redis `binhu:events` 元数据流，把 `online.task.*` 事件转换为固定的 Dev Kafka
+合同，再写入独立 `Dev_EventPipeline` 投递台账。事件只包含业务类型、稳定的
+不透明任务标识、revision 和变化类别；姓名、证件号、手机号、地址和正文不会
+跨入 Kafka 或派生库。`BACKEND_REDIS_URL` 必须是 Dev Redis，包含
+`production` 或 `staging` 的目标会在启动时拒绝。
+
+该桥不连接 Production 或 Staging，也不改变 Backend 的业务事务。正常保存先
+提交 Backend 本地 outbox，再由桥和 relay 进行至少一次投递；事件 ID 去重和
+revision 栅栏负责重放安全。桥断开时业务保存仍可成功，恢复后从配置的 Redis
+游标继续读取；任何无法表示为受控 Dev 合同的事件都会被跳过并保留安全计数。
+
+完成业务闭环验收还必须验证：Dev 合成任务保存产生 outbox 事件、桥写入 Kafka
+投递台账、Schema Registry 接受合同、Flink 更新派生 revision、Redis/派生库
+读回一致，以及桥/relay 重启后的重复事件不产生第二个业务结果。
+
 Schema Registry 使用固定内部服务与 `dev.task.events.v1-value` subject。
 已部署的实现为 Apicurio 2.x，兼容 API 固定在
 `http://schema-registry:8080/apis/ccompat/v7`，不能使用 Confluent 默认的 8081。

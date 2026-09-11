@@ -199,3 +199,98 @@ Dev 业务闭环、同一制品晋级、浏览器回归和 75 人复测仍未完
   两次提交，账号复制失败会留下部分完成候选，需补齐事务与恢复验收。
 - 只读查询确认当前 Staging 库存在 1 个 observer 账号；从该独立环境复制其
   哈希不同于从生产复制账号。不得因导出中无 observer 而重置现有调试密码。
+
+## 2026-09-12：Dev/Staging 日常开发流程签署复核
+
+本次复核使用当前分支 `codex/environment-readiness-business-bridge` 的候选后端镜像，
+两套环境均固定为生产当前 `0.28.17` 镜像摘要
+`sha256:44cbc57a588105013a2a4b3599166303fa14fe7fd3e3824b9521f6e3b1d20422`。
+服务器上的 Dev、Staging Backend 均为 `APP_VERSION=0.28.17`，容器运行状态为
+`running`，本次复核时两者重启次数均为 0。
+
+### 固定入口、身份和数据边界
+
+- `/staging/api/app/bootstrap`：`server_version=0.28.17`、
+  `environment=staging`、`environment_label=预发布环境 · 脱敏数据`、
+  `api_entry=/staging/api`。
+- `/dev/api/app/bootstrap`：`server_version=0.28.17`、
+  `environment=development`、`environment_label=Dev 环境 · 虚构数据`、
+  `api_entry=/dev/api`。
+- Staging 候选八库均返回 `environment=staging`；快照
+  `staging-181964f05ea13d8d` 的当前数量为 674 条来源、51,906 条房屋，
+  观察账号 1 个。获批的三条房屋—小区孤儿关系只在副本中排除，生产没有写入。
+- Staging 与 Dev 使用不同 Compose 项目、网络、数据库命名空间和卷；两者 Backend
+  使用同一不可变镜像摘要。Staging 使用脱敏快照，Dev 使用虚构事件和独立事件总线。
+- `observer@staging` 和 `observer@dev` 的登录及跨环境拒绝复核仍通过：本环境返回
+  `binhu_staging_session` / `binhu_dev_session`，跨 Production、Staging、Dev 的
+  非所属入口均为 401。密码正文没有写入本台账。
+
+### Staging 业务接口回归
+
+通过 Staging 本地监听端口执行了不输出业务正文的接口级回归，结果如下：
+
+| 检查 | 结果 |
+| --- | --- |
+| 查询 `/api/query/全链条` | 200，`total=413`，返回 5 行样本 |
+| 任务列表 `/api/mobile-tasks/全链条` | 200，`total=410` |
+| 筛选选项 | 200，`source_ready=true` |
+| 分配工作台 | 200，84 个待分配任务、3 个社区摘要 |
+| 地址匹配选项 | 200，选定任务返回 11 个候选 |
+| 研判筛选和搜索 | 200，`total=32`、返回 20 行摘要 |
+| 未认证保护接口 | 401，权限门禁生效 |
+| Staging 编辑闭环 | 200；对 `现住址` 写入合成临时值后按最新 revision 恢复为空，revision 从 1→2→3 |
+
+第一次“原值写回”得到的 400（固定原因“提交值与平台当前值相同，无需保存”）已保留在
+临时诊断中，没有被误判为环境不可用；后续使用 Staging 专用合成值验证了真实保存和恢复。
+
+### Staging 75 客户端、5 分钟复测
+
+第一次运行 `STG-20260912-75-01` 使用了错误的 HTTP 调用参数，75 个登录请求均为
+工具自身错误；第二次 `STG-20260912-75-02` 同样保留为无效脚本证据。两次运行均在
+结束后清理了 75 个临时账号，没有切换副本，也没有写入 Production。
+
+修正脚本后执行了有效运行 `STG-20260912-75-03`，但把 75 个登录同时放入压力窗口，
+出现 73 个登录超时；该失败结果保留，不能当作成功容量结果。之后执行有效的预认证
+运行 `STG-20260912-75-04`：先顺序登录 75 个 Staging 合成超级管理员账号，再在固定
+5 分钟窗口内使用 75 个并发客户端发送只读查询、任务列表、筛选、版本和 Bootstrap 请求。
+证据目录：
+
+`/srv/deploy-backups/environment-triad/staging-loadtest-STG-20260912-75-04/`
+
+结果：
+
+- 75/75 个预认证成功；压力窗口 300 秒；6,170/6,170 请求成功，成功率 100%。
+- 查询端到端 P50/P95/P99：239.74/469.44/952.08 ms。
+- 任务列表端到端 P50/P95/P99：180.18/399.53/1,149.52 ms。
+- Bootstrap P50/P95/P99：56.65/254.56/575.82 ms。
+- 版本接口 P50/P95/P99：49.50/230.74/675.66 ms。
+- 筛选接口 P50/P95/P99：103.99/311.59/609.21 ms。
+- 压测资源采样 28 次；最低可用内存约 3,426 MiB，根目录可用空间约 7.48 GiB，
+  Swap 可用量接近 0，已作为资源风险保留。压测没有触发内存停止线。
+- 当前 HTTP 合同没有暴露 Backend/MySQL/Redis/Kafka/Flink 分段耗时；本次记录了
+  端到端延迟，分段指标标记为 `not_exposed_by_current_http_contract`，不能把端到端值
+  冒充分段值。只读场景没有产生事件队列，排空时间标记为
+  `not_applicable_read_only_workload`。
+- 75 个临时账号全部删除（75/75），Staging 数据库中 `stgload-%@staging` 残留为 0。
+
+### Production 影响复核
+
+- 压测目标是 Staging 本地监听入口，未向 Production 发请求。
+- Production Backend、MySQL、Redis 仍为 `running`，重启次数均为 0；复核时
+  `/api/health` 返回 200、版本 `0.28.17`。
+- 生产容器最近 12 分钟日志中按 `error|exception|traceback|fatal` 分类计数为 0。
+- Staging MySQL 当前锁等待为 0，当前运行线程为 2；压测后只读状态未发现死锁信号。
+
+### 当前签署结论
+
+Dev 的业务事件桥、Kafka→Schema Registry→Flink→Redis/派生库闭环、checkpoint/savepoint
+恢复、同一制品晋级和资源隔离已通过；Staging 脱敏副本、接口级业务回归、真实可回退配置
+证据、账号隔离和 75 客户端只读趋势复测已通过。失败运行和资源限制均保留为独立证据，
+没有覆盖成功材料。
+
+内置浏览器连接器在本次复核仍返回 `Browsers: Error: nodeRepl.fetch request failed`，
+因此桌面/窄屏/深色主题的服务器登录后视觉验收状态必须保持
+`browser_visual_acceptance=blocked`；本台账不把 HTTP 200 当作视觉验收替代品。
+在连接器恢复并完成一次已登录页面检查前，签署状态为“接口与运行门禁通过，视觉验收待补”，
+不能退役 Shadow，也不能删除其证据、卷、网络或回滚材料。
+

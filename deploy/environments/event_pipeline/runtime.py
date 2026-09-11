@@ -29,8 +29,14 @@ def configuration(environ=None):
     for key in ("MYSQL_PASSWORD", "REDIS_PASSWORD"):
         if not re.fullmatch(r"[0-9a-f]{48}", env.get(key, "")):
             raise ValueError("independent runtime credential required")
+    backend_url = env.get("BACKEND_REDIS_URL", "")
+    if "production" in backend_url.lower() or "staging" in backend_url.lower():
+        raise ValueError("external environment Redis is forbidden")
     return {**targets, "DEV_RUN_ID": run_id,
-            "MYSQL_PASSWORD": env["MYSQL_PASSWORD"], "REDIS_PASSWORD": env["REDIS_PASSWORD"]}
+            "MYSQL_PASSWORD": env["MYSQL_PASSWORD"], "REDIS_PASSWORD": env["REDIS_PASSWORD"],
+            "BACKEND_REDIS_URL": backend_url,
+            "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
+            "BACKEND_REDIS_START_ID": env.get("BACKEND_REDIS_START_ID", "$")}
 
 
 async def connect(config):
@@ -116,13 +122,23 @@ async def bridge(config, pool):
         await client.aclose()
 
 
+async def business_bridge(config, pool):
+    from .business_bridge import run
+    await run(config, pool)
+
+
 async def main(mode):
     config = configuration()
     from .schema_registry import verify
     await asyncio.to_thread(verify)
     pool = await connect(config)
     try:
-        await (relay(config, pool) if mode == "relay" else bridge(config, pool))
+        if mode == "relay":
+            await relay(config, pool)
+        elif mode == "bridge":
+            await bridge(config, pool)
+        else:
+            await business_bridge(config, pool)
     finally:
         pool.close()
         await pool.wait_closed()
@@ -130,7 +146,7 @@ async def main(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("relay", "bridge"))
+    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge"))
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -42,23 +43,48 @@ async def run(mode):
         client = Redis(host=config["REDIS_HOST"], password=config["REDIS_PASSWORD"],
                        decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
         try:
-            expected = fixture(config["DEV_RUN_ID"], 3)
+            if mode == "business":
+                event_id = os.environ.get("DEV_ACCEPT_EVENT_ID", "")
+                task_id = os.environ.get("DEV_ACCEPT_TASK_ID", "")
+                source_id = int(os.environ.get("DEV_ACCEPT_SOURCE_ID", "0"))
+                revision = int(os.environ.get("DEV_ACCEPT_REVISION", "0"))
+                expected = {"event_id": event_id, "task_id": task_id,
+                            "source_id": source_id, "revision": revision}
+                if not event_id or not task_id or source_id <= 0 or revision <= 0:
+                    raise ValueError("business acceptance inputs required")
+            else:
+                expected = fixture(config["DEV_RUN_ID"], 3)
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute("SELECT revision FROM dev_task_revisions WHERE run_id=%s AND task_id=%s AND source_id=%s",
                                       (config["DEV_RUN_ID"], expected["task_id"], expected["source_id"]))
                     row = await cur.fetchone()
-                    await cur.execute("SELECT status,COUNT(*) FROM _kafka_event_delivery WHERE run_id=%s GROUP BY status", (config["DEV_RUN_ID"],))
-                    states = dict(await cur.fetchall())
+                    await cur.execute("SELECT status FROM _kafka_event_delivery WHERE run_id=%s AND event_id=%s",
+                                      (config["DEV_RUN_ID"], expected["event_id"]))
+                    delivery = await cur.fetchone()
+                    if mode != "business":
+                        await cur.execute("SELECT status,COUNT(*) FROM _kafka_event_delivery WHERE run_id=%s GROUP BY status", (config["DEV_RUN_ID"],))
+                        states = dict(await cur.fetchall())
+                    else:
+                        states = {delivery[0]: 1} if delivery else {}
             cache = RevisionCache(client, config["DEV_RUN_ID"])
-            value = await cache.get(expected["task_id"], expected["source_id"], "flink-dev", 3)
-            passed = row == (3,) and value is not None and states == {"published": 3}
-            report = {"environment": "development", "run_id": config["DEV_RUN_ID"],
-                      "mysql_revision_correct": row == (3,), "redis_revision_correct": value is not None,
-                      "delivery_counts": states, "minimal_event_flow_passed": passed,
-                      "checkpoint_recovery_verified": False, "business_integration_verified": False}
+            if mode == "business":
+                value = await cache.get(expected["task_id"], expected["source_id"], "flink-dev", expected["revision"])
+                passed = row == (expected["revision"],) and delivery == ("published",) and value is not None
+                report = {"environment": "development", "run_id": config["DEV_RUN_ID"],
+                          "business_event_id": expected["event_id"], "delivery_published": delivery == ("published",),
+                          "mysql_revision_correct": row == (expected["revision"],),
+                          "redis_revision_correct": value is not None,
+                          "business_integration_verified": passed}
+            else:
+                value = await cache.get(expected["task_id"], expected["source_id"], "flink-dev", 3)
+                passed = row == (3,) and value is not None and states == {"published": 3}
+                report = {"environment": "development", "run_id": config["DEV_RUN_ID"],
+                          "mysql_revision_correct": row == (3,), "redis_revision_correct": value is not None,
+                          "delivery_counts": states, "minimal_event_flow_passed": passed,
+                          "checkpoint_recovery_verified": False, "business_integration_verified": False}
             if not passed:
-                raise ValueError("minimal Dev event flow not converged")
+                raise ValueError("Dev event flow not converged")
             return report
         finally:
             await client.aclose()
@@ -69,7 +95,7 @@ async def run(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("seed", "verify"))
+    parser.add_argument("mode", choices=("seed", "verify", "business"))
     args = parser.parse_args()
     try:
         print(json.dumps(asyncio.run(run(args.mode))))

@@ -18,6 +18,7 @@ from deploy.environments.event_pipeline import schema_registry
 from deploy.environments.event_pipeline import registry_runtime
 from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
+from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 
 
 def settings():
@@ -34,6 +35,28 @@ def event():
             "event_type": "task.saved", "task_id": "t_fullchain:1", "source_id": 1,
             "revision": 1, "changed_fields": ["check_result"],
             "timestamp": "2026-09-10T00:00:00Z", "environment": "development", "run_id": "dev-test-1"}
+
+
+class BusinessBridgeTests(unittest.TestCase):
+    def test_business_bridge_strips_body_and_maps_stable_metadata(self):
+        source = {"event_id": "11111111-1111-4111-8111-111111111111",
+                  "event_type": "online.task.changed", "aggregate_id": "全链条:opaque-row-key",
+                  "aggregate_revision": 7, "occurred_at": "2026-09-12T00:00:00Z",
+                  "detail": "must never be copied"}
+        converted = event_to_task_event(source, "dev-acceptance-01")
+        self.assertIsNotNone(converted)
+        self.assertEqual(converted["task_id"].split(":")[0], "t_fullchain")
+        self.assertEqual(converted["revision"], 7)
+        self.assertEqual(converted["event_id"], converted["operation_id"])
+        self.assertNotIn("detail", converted)
+        self.assertEqual(event_to_task_event(source, "dev-acceptance-01"), converted)
+
+    def test_business_bridge_rejects_unknown_events(self):
+        source = {"event_id": "11111111-1111-4111-8111-111111111111",
+                  "event_type": "online.task.changed", "aggregate_id": "全链条:key",
+                  "aggregate_revision": 1}
+        self.assertIsNone(event_to_task_event({**source, "event_type": "unknown"}, "dev-x"))
+        self.assertIsNone(event_to_task_event({**source, "aggregate_id": "unknown:key"}, "dev-x"))
 
 
 class ContractTests(unittest.TestCase):
