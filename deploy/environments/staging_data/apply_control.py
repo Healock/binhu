@@ -18,7 +18,9 @@ MODULES=('codec','digests','target','candidate','import_data')
 def command(args, *, stdin=None, timeout=30):
     result=subprocess.run(args,input=stdin,capture_output=True,text=True,timeout=timeout)
     if result.returncode:
-        raise SnapshotError('staging_candidate_command_failed')
+        # Do not emit argv/stdout/stderr: they can include connection details.
+        raise SnapshotError('staging_candidate_command_failed',
+                            diagnostics={'exit_code':result.returncode})
     return result.stdout
 
 
@@ -41,12 +43,16 @@ def grant_sql(snapshot_id):
         for name in database_names(snapshot_id).values())
 
 
-def program(snapshot_id, action, snapshot=None):
+def program(snapshot_id, action):
     modules={name:(Path(__file__).parent/(name+'.py')).read_text(encoding='utf-8') for name in MODULES}
     code="import sys,types,json,asyncio\npackage=types.ModuleType('snapshot_tool');package.__path__=[];sys.modules['snapshot_tool']=package\n"
     code+='sources='+repr(modules)+'\n'
     code+="for name,source in sources.items():\n    module=types.ModuleType('snapshot_tool.'+name);module.__package__='snapshot_tool';sys.modules[module.__name__]=module;exec(compile(source,'<snapshot_tool.'+name+'>','exec'),module.__dict__)\n"
-    code+='snapshot_id='+repr(snapshot_id)+'\naction='+repr(action)+'\nsnapshot='+repr(snapshot)+'\n'
+    code+='snapshot_id='+repr(snapshot_id)+'\naction='+repr(action)+'\n'
+    # Parse data as JSON, not as a Python literal. Large snapshots otherwise
+    # expand into millions of compiler AST nodes before the job can start,
+    # exhausting the bounded container even though the data fits in memory.
+    code+="snapshot=json.load(sys.stdin) if action=='import' else None\n"
     code+='''
 from config import settings
 import aiomysql
@@ -79,15 +85,15 @@ except Exception:print(json.dumps({'ok':False,'reason':'staging_candidate_job_fa
     return code, {name:hashlib.sha256(source.encode()).hexdigest() for name,source in modules.items()}
 
 
-def run_job(backend, code, name):
+def run_job(backend, code, name, *, snapshot=None):
     args=['docker','run','--rm','-i','--name',name,'--network','binhu-staging_internal',
         '--label','binhu.environment=staging','--label','binhu.snapshot-job=true',
         '--memory','1g','--cpus','1','--pids-limit','128','--read-only',
         '--tmpfs','/tmp:rw,noexec,nosuid,size=32m','--cap-drop','ALL',
         '--security-opt','no-new-privileges:true','--env-file','/srv/binhu-environments/staging/backend.env',
-        '--entrypoint','python',backend['Image'],'-']
+        '--entrypoint','python',backend['Image'],'-c',code]
     try:
-        output=command(args,stdin=code,timeout=300)
+        output=command(args,stdin=json.dumps(snapshot,ensure_ascii=True) if snapshot is not None else None,timeout=300)
     except subprocess.TimeoutExpired:
         # Stop only this exact temporary job after proving its labels. It has
         # no state volume and never shares the application container's cgroup.
@@ -135,9 +141,10 @@ def execute(action,snapshot_id):
                 command(['docker','exec','-i',mysql['Id'],'sh','-c',
                     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --protocol=socket -uroot --batch --skip-column-names'],
                     stdin=grant_sql(snapshot_id))
-            code,hashes=program(snapshot_id,action,snapshot if action=='import' else None)
+            code,hashes=program(snapshot_id,action)
             private_json(attempt/'code-hashes.json',hashes)
-            result=run_job(backend,code,'binhu-staging-snapshot-'+secrets.token_hex(6))
+            result=run_job(backend,code,'binhu-staging-snapshot-'+secrets.token_hex(6),
+                           snapshot=snapshot if action=='import' else None)
             after=preflight()
             if any(before[key]!=after[key] for key in ('container_id','started_at','restart_count')):
                 raise SnapshotError('production_baseline_changed')
@@ -146,7 +153,11 @@ def execute(action,snapshot_id):
             return result
         except Exception as exc:
             reason=str(exc) if isinstance(exc,SnapshotError) else 'staging_candidate_operation_failed'
-            private_json(attempt/'failure.json',{'reason':reason})
+            failure={'reason':reason}
+            exit_code=getattr(exc,'diagnostics',{}).get('exit_code')
+            if type(exit_code) is int and -255<=exit_code<=255:
+                failure['exit_code']=exit_code
+            private_json(attempt/'failure.json',failure)
             raise SnapshotError(reason) from None
 
 
