@@ -171,7 +171,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                     except KeyError:
                         raise SnapshotError('task_community_unresolved') from None
                     safe=transform_values(parser,TASK_WORKFLOWS[parser_type],values,communities,codec)
-                    entry=source_record(parser,{key:row[key] for key in ("id","physical_row","revision","row_key")},safe,codec)
+                    entry=source_record(parser,{key:row[key] for key in ("id","physical_row","revision","row_key","source_kind")},safe,codec)
                     new_key=entry["source"]["row_key"]
                     if new_key in new_keys:
                         raise SnapshotError("sanitized_business_key_collision")
