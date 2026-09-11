@@ -247,7 +247,7 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertIn("待登记", TASK_WORKFLOWS["全链条"].result_options)
         self.assertIn("移交（所内）", TASK_WORKFLOWS["全链条"].result_options)
         self.assertIn("移交（所外）", TASK_WORKFLOWS["全链条"].result_options)
-        self.assertIn("移交", TASK_WORKFLOWS["全链条"].result_options)
+        self.assertNotIn("移交", TASK_WORKFLOWS["全链条"].result_options)
 
     def test_suspect_return_uses_feedback_as_result(self):
         self.assertIn("离苏", TASK_WORKFLOWS["疑似返苏"].result_options)
@@ -1435,4 +1435,3 @@ class MobileTaskPhotoResultTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

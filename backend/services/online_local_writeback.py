@@ -86,10 +86,6 @@ def writeback_cell_metadata(
             known_texts.add(text)
 
     prepared["write_options"] = options
-    # Keep the editor's visible options in sync with the validated write list.
-    # Legacy full-chain ``移交`` remains readable from historical rows but is
-    # not a selectable value for new edits.
-    prepared["options"] = list(options)
     return prepared
 
 
