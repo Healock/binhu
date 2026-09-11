@@ -96,7 +96,8 @@ def transform_values(parser, workflow, values, community_by_name, codec: Codec):
 
 
 def source_record(parser, source, safe_values, codec: Codec):
-    if set(source) != {"id", "physical_row", "revision", "row_key"}:
+    if set(source) not in ({"id", "physical_row", "revision", "row_key"},
+                           {"id", "physical_row", "revision", "row_key", "source_kind"}):
         raise SnapshotError("source_column_contract_mismatch")
     if not isinstance(source["revision"], int) or not 1 <= source["revision"] <= 2**63-1:
         raise SnapshotError("invalid_source_revision")
