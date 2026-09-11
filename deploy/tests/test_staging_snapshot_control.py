@@ -32,7 +32,7 @@ class ControlTests(unittest.TestCase):
     def test_reader_program_compiles_and_never_logs_connection_secrets(self):
         program, hashes = source_program('staging-'+'a'*16, b'a'*32, measure=True)
         compile(program, '<snapshot-reader>', 'exec')
-        self.assertEqual(set(hashes), {'codec','registry','tasks','fences','organization','relations','digests','reconciliation','build'})
+        self.assertEqual(set(hashes), {'codec','registry','tasks','fences','organization','relations','digests','reconciliation','build','recovery'})
         self.assertIn("source_settings(settings)", program)
         self.assertIn("'snapshot_source_operation_failed'", program)
         self.assertNotIn('print(settings', program)
